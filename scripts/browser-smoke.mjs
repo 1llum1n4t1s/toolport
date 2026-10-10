@@ -640,6 +640,16 @@ try {
   ).toBeVisible();
   expect((await page.evaluate(() => window.toolportFixture)).missing).toEqual([]);
   await page.screenshot({ path: path.join(output, "profile-review-still-blocked.png") });
+  await page.goto(`${baseURL}/fixtures/`);
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Remove Toolport data", exact: true }).click();
+  const purgeDialog = page.getByRole("dialog", { name: "Remove Toolport data?" });
+  await expect(purgeDialog).toContainText("/fixture/home/.config/Toolport");
+  await expect(purgeDialog).toContainText("conduit-mcp");
+  await expect(purgeDialog).toContainText("Toolport-removal-report.json");
+  await page.screenshot({ path: path.join(output, "settings-purge-confirmation.png") });
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect((await page.evaluate(() => window.toolportFixture)).missing).toEqual([]);
   await page.goto(`${baseURL}/fixtures/?logos`);
   await expect(page.getByText("Dark logo fixture")).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
