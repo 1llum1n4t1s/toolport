@@ -126,7 +126,14 @@ fn round4_windows_manual_location_displays_ordinary_path() {
     let folder = data.dir.join("work-profile");
     std::fs::create_dir(&folder).unwrap();
     let id = add_client_location("codex", folder.to_str().unwrap()).unwrap();
+    // Older saved rows retain the native path used by their recovery records.
+    let native = std::fs::canonicalize(&folder).unwrap().join("config.toml");
+    let store = data.dir.join("client-locations.json");
+    let mut saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+    saved[0]["configPath"] = serde_json::json!(native);
+    std::fs::write(&store, saved.to_string()).unwrap();
     let row = read_client(&find_def(&id).unwrap());
     assert!(!row.config_path.starts_with(r"\\?\"), "{}", row.config_path);
     assert_eq!(add_client_location("codex", folder.to_str().unwrap()).unwrap(), id);
+    assert_eq!(locations::saved().unwrap()[0].config_path, native);
 }

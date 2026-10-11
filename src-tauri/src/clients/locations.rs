@@ -391,7 +391,7 @@ pub fn add_client_location(client_type: &str, folder: &str) -> Result<String, St
     let key = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
     let automatic_id = if client_type == "claude-code" {
         home().and_then(|root| std::fs::canonicalize(root).ok())
-            .and_then(|root| claude_folder_id(&root, &folder))
+            .and_then(|root| claude_folder_id(&display_path(&root), &folder))
     } else { None };
     let id = automatic_id.unwrap_or_else(|| format!("{client_type}@{}", &key[..16]));
     let label = folder.file_name().unwrap_or_default().to_string_lossy();
@@ -714,7 +714,7 @@ mod tests {
         let def = find_def(&id).unwrap();
         assert_eq!(
             resolved_definition_path(&def).unwrap(),
-            std::fs::canonicalize(folder.path()).unwrap().join("config.toml")
+            display_path(&std::fs::canonicalize(folder.path()).unwrap()).join("config.toml")
         );
         assert_eq!(
             discovery_capabilities(&id).auto_mode,
