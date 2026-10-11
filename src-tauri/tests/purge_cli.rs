@@ -65,8 +65,9 @@ fn purge_named_override_without_registry_never_deletes_user_files() {
 fn purge_override_with_registry_preserves_user_files_for_both_brand_overrides() {
     let env = conduit_lib::registry::DataDirTestEnv::new("purge_cli_user_files");
     for legacy in [false, true] {
-        let data = env.dir.join(if legacy { "Conduit" } else { "Toolport" });
-        std::fs::create_dir(&data).unwrap();
+        let root = env.dir.join(if legacy { "legacy" } else { "current" });
+        let data = root.join(if legacy { "Conduit" } else { "Toolport" });
+        std::fs::create_dir_all(&data).unwrap();
         std::fs::write(data.join("registry.json"), serde_json::to_vec(&conduit_lib::registry::Registry::default()).unwrap()).unwrap();
         for name in ["backups/tax.zip", "bin/personal-script", "logs/other-app.log", "daemon-notes.json"] {
             let path = data.join(name);
@@ -75,7 +76,7 @@ fn purge_override_with_registry_preserves_user_files_for_both_brand_overrides() 
         }
         std::fs::write(data.join("personal.txt"), "keep").unwrap();
         std::fs::write(data.join("secrets.enc"), "fixture").unwrap();
-        let mut command = isolated_command(&env.dir, &data);
+        let mut command = isolated_command(&root, &data);
         if legacy { command.env_remove("TOOLPORT_DATA_DIR").env("CONDUIT_DATA_DIR", &data); }
         let output = command.args(["--remove-data", "--confirm"]).output().unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
