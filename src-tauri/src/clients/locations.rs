@@ -354,7 +354,7 @@ mod tests {
         let def = find_def(&id).unwrap();
         assert_eq!(
             resolved_definition_path(&def).unwrap(),
-            folder.path().join("config.toml")
+            std::fs::canonicalize(folder.path()).unwrap().join("config.toml")
         );
         assert_eq!(
             discovery_capabilities(&id).auto_mode,
