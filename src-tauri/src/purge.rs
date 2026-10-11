@@ -190,12 +190,23 @@ fn app_resources(home: &Path) -> Vec<PathBuf> {
 
 fn remove_app_resources(report: &mut Report, shared: bool) {
     let Some(home) = dirs::home_dir() else { return; };
-    for path in app_resources(&home) {
-        if std::fs::symlink_metadata(&path).is_err() { continue; }
+    remove_resources(app_resources(&home), shared, report);
+}
+
+fn remove_resources(paths: Vec<PathBuf>, shared: bool, report: &mut Report) {
+    for path in paths {
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                report.leftovers.push(Leftover { path: path.display().to_string(), error: error.to_string() });
+                continue;
+            }
+        };
         if shared {
             report.preserved.push(format!("{} (shared app storage; another install or custom data directory is in use)", path.display()));
         } else {
-            if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata)) {
+            if metadata.is_dir() && !is_link(&metadata) {
                 remove_contents(&path, &[], report);
             }
             remove_path(&path, report);
@@ -335,6 +346,12 @@ fn run_with(
             dir.display()
         ));
     }
+    report.leftovers.extend(preflight(&dir));
+    inventory_startup(&mut report)?;
+    if !report.leftovers.is_empty() {
+        report.notes.push("Preflight failed. Clients, data, credentials and startup entries are unchanged.".into());
+        return Ok(report);
+    }
     let owner_path = dir.join("broker/owner.lock");
     if std::fs::symlink_metadata(dir.join("broker"))
         .is_ok_and(|metadata| is_link(&metadata))
@@ -360,12 +377,6 @@ fn run_with(
             owner_path.display()
         )
     })?;
-    report.leftovers.extend(preflight(&dir));
-    inventory_startup(&mut report)?;
-    if !report.leftovers.is_empty() {
-        report.notes.push("Preflight failed. Clients, data, credentials and startup entries are unchanged.".into());
-        return Ok(report);
-    }
     report.clients = disconnect()?;
     if report
         .clients
@@ -546,22 +557,27 @@ fn startup_entries(remove: bool, report: &mut Report) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     {
         let home = dirs::home_dir().ok_or("Could not resolve your home directory")?;
-        for (path, name) in autostart_files(&home).iter().zip(AUTOSTART_NAMES) {
-            match std::fs::read_to_string(path) {
-                Ok(contents) if owned_autostart(&contents, name) => { if remove { remove_path(path, report); } },
-                Ok(_) => {
-                    let preserved = format!("{} (foreign startup entry preserved)", path.display());
-                    if !report.preserved.contains(&preserved) { report.preserved.push(preserved); }
-                },
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => report.leftovers.push(Leftover {
-                    path: path.display().to_string(),
-                    error: error.to_string(),
-                }),
-            }
-        }
+        startup_files(autostart_files(&home), remove, report);
     }
     Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn startup_files(files: Vec<PathBuf>, remove: bool, report: &mut Report) {
+    for (path, name) in files.iter().zip(AUTOSTART_NAMES) {
+        match std::fs::read_to_string(path) {
+            Ok(contents) if owned_autostart(&contents, name) => { if remove { remove_path(path, report); } },
+            Ok(_) => {
+                let preserved = format!("{} (foreign startup entry preserved)", path.display());
+                if !report.preserved.contains(&preserved) { report.preserved.push(preserved); }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => report.leftovers.push(Leftover {
+                path: path.display().to_string(),
+                error: error.to_string(),
+            }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -806,17 +822,27 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn purge_foreign_startup_does_not_block_data_removal() {
         let env = crate::registry::DataDirTestEnv::new("purge_foreign_startup");
-        std::fs::write(env.dir.join("secrets.enc"), "fixture").unwrap();
+        let home = env.dir.with_extension("fake-home");
+        let files = autostart_files(&home);
+        std::fs::create_dir_all(files[0].parent().unwrap()).unwrap();
+        std::fs::write(&files[0], "foreign startup entry").unwrap();
+        let data = env.dir.clone();
+        // The startup file lives outside the selected data folder.
+        std::fs::write(data.join("secrets.enc"), "fixture").unwrap();
         let report = run_with(
             |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
             || Ok(crate::secrets::purge::Removal::default()),
-            |report| { report.preserved.push("foreign startup".into()); Ok(()) }, |_| Ok(()),
+            |report| { startup_files(files.clone(), false, report); Ok(()) },
+            |report| { startup_files(files.clone(), true, report); Ok(()) },
         ).unwrap();
         assert!(report.leftovers.is_empty());
-        assert_eq!(report.preserved, ["foreign startup"]);
-        assert!(!env.dir.join("secrets.enc").exists());
+        assert_eq!(report.preserved.len(), 1);
+        assert_eq!(std::fs::read_to_string(&files[0]).unwrap(), "foreign startup entry");
+        assert!(!data.join("secrets.enc").exists());
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
@@ -864,6 +890,21 @@ mod tests {
         assert!(paths.iter().all(|path| path.to_string_lossy().contains("com.tsout.conduit")));
         #[cfg(target_os = "macos")]
         assert_eq!(paths.len(), 5);
+    }
+
+    #[test]
+    fn purge_owned_app_storage_is_removed_and_shared_storage_is_reported() {
+        let env = crate::registry::DataDirTestEnv::new("purge_app_storage");
+        let path = env.dir.join("com.tsout.conduit");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("cookies"), "fixture").unwrap();
+        let mut report = Report::default();
+        remove_resources(vec![path.clone()], true, &mut report);
+        assert!(path.join("cookies").exists());
+        assert_eq!(report.preserved.len(), 1);
+        remove_resources(vec![path.clone()], false, &mut report);
+        assert!(!path.exists());
+        assert!(report.leftovers.is_empty());
     }
 
 }
