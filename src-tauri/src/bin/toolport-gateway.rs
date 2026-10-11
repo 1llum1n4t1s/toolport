@@ -40190,6 +40190,66 @@ mod tests {
     }
 
     #[test]
+    fn watcher_swap_retry_hides_catalog_when_saved_block_becomes_unreadable() {
+        let data = DataDirTestEnv::new("watcher-retry-unreadable-block");
+        for profile in [None, Some("work")] {
+            let state = http_state(false);
+            state.registry.lock().unwrap().set_safety_level(registry::SafetyLevel::Strict);
+            seed_legacy_review(&data.dir, profile, "v1");
+            let mut cached = readonly_router("srv", "Changed while quarantined.");
+            cached.requarantine(set_of(&["srv__read"]));
+            *state.router.lock().unwrap() = Arc::new(cached);
+            conduit_lib::registry_controller::release_quarantine(profile, "srv__read").unwrap();
+            let path = data.dir.join(match profile {
+                None => "quarantine.json".to_string(),
+                Some(id) => format!("quarantine-{id}.json"),
+            });
+            let saved = Arc::new(Mutex::new(String::new()));
+            let observed_store = Arc::clone(&saved);
+            let gates = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&gates);
+            let live = Arc::clone(&state.router);
+            let corrupt_path = path.clone();
+            *INTEGRITY_GATE_OBSERVER.lock().unwrap() = Some((
+                std::thread::current().id(), Box::new(move || {
+                    if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                        let mut current = live.lock().unwrap();
+                        *current = Arc::new((**current).clone());
+                    } else {
+                        // The first gate persisted the block and advanced its pin,
+                        // then lost its swap. Retry sees matching pins but cannot read
+                        // either the recovery store or the final enforcement store.
+                        *observed_store.lock().unwrap() = std::fs::read_to_string(&corrupt_path).unwrap();
+                        std::fs::write(&corrupt_path, "{ unreadable").unwrap();
+                    }
+                }),
+            ));
+            let reconciled = reconcile_quarantine(
+                &state.registry, &state.router, &state.stdio_upstream,
+                profile, None, &AtomicBool::new(false),
+            );
+            *INTEGRITY_GATE_OBSERVER.lock().unwrap() = None;
+            assert!(reconciled);
+            assert_eq!(gates.load(Ordering::SeqCst), 2);
+            assert!(!state.router.lock().unwrap().aggregated_tools().iter()
+                .any(|tool| tool["name"] == "srv__read"));
+            assert!(state.router.lock().unwrap().catalog_fail_closed());
+            // Repair restores the durable block, then exact review permits recovery.
+            std::fs::write(&path, &*saved.lock().unwrap()).unwrap();
+            reconcile_quarantine(&state.registry, &state.router, &state.stdio_upstream,
+                profile, None, &AtomicBool::new(false));
+            assert!(!state.router.lock().unwrap().aggregated_tools().iter()
+                .any(|tool| tool["name"] == "srv__read"));
+            let fp = integrity::baselines(profile)["srv__read"].fingerprint.clone();
+            integrity::release_definition(profile, "srv__read", &fp).unwrap();
+            assert!(reconcile_quarantine(&state.registry, &state.router, &state.stdio_upstream,
+                profile, None, &AtomicBool::new(false)));
+            assert!(state.router.lock().unwrap().aggregated_tools().iter()
+                .any(|tool| tool["name"] == "srv__read"));
+        }
+    }
+
+    #[test]
     fn watcher_release_retry_keeps_the_quarantine_written_by_its_first_gate() {
         let data = DataDirTestEnv::new("watcher-release-gate-retry");
         for profile in [None, Some("work")] {

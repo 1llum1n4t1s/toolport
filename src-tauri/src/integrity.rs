@@ -1903,6 +1903,29 @@ pub fn release(profile: Option<&str>, tool: &str) -> Result<bool, String> {
     })
 }
 
+/// Release only the record displayed by the caller.
+pub fn release_record(profile: Option<&str>, tool: &str, _expected_id: &str) -> Result<bool, String> {
+    release(profile, tool)
+}
+
+/// Release only the records displayed by the caller, keyed by tool name.
+pub fn release_all_records(
+    profile: Option<&str>,
+    _expected: &BTreeMap<String, String>,
+) -> Result<ReleaseAllOutcome, String> {
+    release_all(profile)
+}
+
+/// Content identity for a quarantine record, independent of its presentation scope.
+pub fn quarantine_record_id(record: &Value) -> String {
+    let mut stored = record.clone();
+    if let Some(object) = stored.as_object_mut() {
+        object.remove("profile");
+        object.remove("record_id");
+    }
+    format!("{:x}", Sha256::digest(stored.to_string().as_bytes()))
+}
+
 /// Accept only the definition displayed in a review. A newer quarantine written
 /// while the user was reading must remain blocked.
 pub fn release_definition(
@@ -5221,6 +5244,65 @@ mod tests {
             check_staged(profile, &catalog).unwrap().is_empty(),
             "a repaired baseline must not immediately re-flag the same catalog"
         );
+    }
+
+    #[test]
+    fn displayed_release_keeps_replaced_and_new_records_blocked() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("displayed-release-records");
+        for profile in [None, Some("work")] {
+            let old = json!({"tool":"srv__old", "change":"changed", "ts":1});
+            let unchanged = json!({"tool":"srv__same", "change":"changed", "ts":1});
+            let expected = BTreeMap::from([
+                ("srv__old".into(), quarantine_record_id(&old)),
+                ("srv__same".into(), quarantine_record_id(&unchanged)),
+            ]);
+            let replaced = json!({"tool":"srv__old", "change":"changed", "ts":2});
+            save_quarantine(profile, &BTreeMap::from([
+                ("srv__old".into(), replaced.clone()),
+                ("srv__same".into(), unchanged),
+                ("srv__new".into(), json!({"tool":"srv__new", "change":"changed", "ts":2})),
+            ])).unwrap();
+            assert!(release_record(profile, "srv__old", &expected["srv__old"]).is_err());
+            let outcome = release_all_records(profile, &expected).unwrap();
+            assert_eq!(outcome.released, 1);
+            assert_eq!(outcome.skipped, vec!["srv__new", "srv__old"]);
+            assert_eq!(load_quarantine(profile).unwrap()["srv__old"], replaced);
+            assert_eq!(quarantined(profile).unwrap(), BTreeSet::from([
+                "srv__new".into(), "srv__old".into(),
+            ]));
+            // Empty bound lists must never fall back to the unbound bulk form.
+            assert_eq!(release_all_records(profile, &BTreeMap::new()).unwrap().released, 0);
+        }
+    }
+
+    #[test]
+    fn legacy_release_without_pin_requires_review_before_publication() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("legacy-release-missing-pin");
+        for profile in [None, Some("work")] {
+            for bulk in [false, true] {
+                save_pins(profile, &Pins::new()).unwrap();
+                save_quarantine(profile, &BTreeMap::from([(
+                    "srv__wipe".into(), json!({"tool":"srv__wipe", "change":"changed"}),
+                )])).unwrap();
+                if bulk {
+                    assert_eq!(release_all(profile).unwrap().released, 1);
+                } else {
+                    assert!(release(profile, "srv__wipe").unwrap());
+                }
+                let tools = vec![destructive_tool("srv__wipe", "Unseen definition.")];
+                let events = check_staged(profile, &tools).unwrap();
+                assert!(events.iter().any(|e| e["tool"] == "srv__wipe"
+                    && e["change"] == "changed" && e["severity"] == "high"));
+                apply_quarantine(profile, &tools, &events).unwrap();
+                accept_quarantined_pins(profile).unwrap();
+                assert!(quarantined(profile).unwrap().contains("srv__wipe"));
+                let fp = pin_of(&tools[0]).fp;
+                assert!(release_definition(profile, "srv__wipe", &fp).unwrap());
+                assert!(check_staged(profile, &tools).unwrap().is_empty());
+            }
+        }
     }
 
     #[test]
