@@ -3623,7 +3623,13 @@ fn detect_clients_for_display_with_gateway(
 ) -> Result<Vec<DetectedClient>, String> {
     let definitions = machine_defs(true);
     let current = crate::registry::load()?;
-    let mut clients = detect_clients_for_display_in(definitions, current, resolve()?)?;
+    let gateway = resolve().unwrap_or_else(|error| {
+        let message = format!("toolport: skipping client gateway adoption: {error}");
+        eprintln!("{message}");
+        crate::gatewaylog::append(&message);
+        None
+    });
+    let mut clients = detect_clients_for_display_in(definitions, current, gateway)?;
     append_client_scan_errors(&mut clients);
     Ok(clients)
 }
