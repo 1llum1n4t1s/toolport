@@ -111,10 +111,18 @@ pub(super) fn store_error() -> Option<String> { saved().err() }
 /// Saving a v1 Claude profile must not narrow its existing gateway ownership.
 pub(super) fn legacy_gateway_ownership(id: &str) -> bool {
     if !id.contains('@') { return true; }
-    lookup(id).is_some_and(|row| !row.manual && row.client_type == "claude-code"
-        && home().is_some_and(|root| row.config_path.parent().is_some_and(|folder|
-            folder.parent() == Some(root.as_path())
-                && folder.file_name().and_then(|name| name.to_str()).is_some_and(legacy_claude_profile_name))))
+    let Some(row) = lookup(id).filter(|row| row.client_type == "claude-code") else { return false; };
+    let Some(root) = home() else { return false; };
+    if row.config_path.file_name().is_none_or(|name| name != ".claude.json") { return false; }
+    if row.config_path.parent().is_some_and(|folder|
+        folder.parent().is_some_and(|parent| same_path(parent, &root))
+            && folder.file_name().and_then(|name| name.to_str()).is_some_and(legacy_claude_profile_name))
+    { return true; }
+    // Manual registration canonicalizes folders, so a linked v1 profile is
+    // stored at its target. Match the home profile's config, not its saved ID.
+    std::fs::read_dir(&root).ok().is_some_and(|entries| entries.filter_map(Result::ok).any(|entry|
+        entry.file_name().to_str().is_some_and(legacy_claude_profile_name)
+            && same_path(&entry.path().join(".claude.json"), &row.config_path)))
 }
 
 pub(super) fn store_display_path() -> String {
