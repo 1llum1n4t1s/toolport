@@ -308,3 +308,16 @@ test("AppImage permits its declared deep-link and GTK runtime resources", async 
     /Unexpected/,
   );
 });
+
+// The CI-only overlay must not replace the product version or signing settings.
+test("MSI CI preview config keeps the product version and signing intact", async () => {
+  const { ciMsiConfig } = await import("./ci-msi-config.mjs");
+  for (const version of ["2.0.0-preview.9", "2.0.0"]) {
+    assert.deepEqual(ciMsiConfig(version), {
+      bundle: { windows: { wix: { version: "2.0.0" } } },
+    });
+  }
+  for (const version of ["256.0.0", "2.256.0", "2.0.65536", "bad"]) {
+    assert.throws(() => ciMsiConfig(version), /Invalid MSI version/);
+  }
+});

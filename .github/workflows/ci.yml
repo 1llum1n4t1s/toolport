@@ -37,8 +37,10 @@ jobs:
           save-if: false
       - run: npm ci
       # Same bundle command as Release; artifacts stay in CI and are not published.
-      - name: Build the real NSIS installer
-        run: npx tauri build --config src-tauri/tauri.bundle.conf.json --bundles nsis,msi -- --bin conduit
+      - name: Set the numeric MSI version for CI previews
+        run: node .github/scripts/ci-msi-config.mjs
+      - name: Build the real NSIS and MSI installers
+        run: npx tauri build --config src-tauri/tauri.bundle.conf.json --config src-tauri/tauri.ci-msi.conf.json --bundles nsis,msi -- --bin conduit
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
