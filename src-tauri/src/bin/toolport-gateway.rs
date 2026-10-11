@@ -12512,6 +12512,16 @@ impl HostState {
             view.fail_closed_catalog();
             return;
         }
+        // Cold views, reconnects and refreshes inherit the base router's old blocks.
+        // Restore on this private candidate before either scope's integrity check.
+        let checked_quarantine = match self.rooted_quarantine(scope) {
+            Some(set) => set,
+            None => {
+                view.fail_closed_catalog();
+                return;
+            }
+        };
+        view.requarantine_from_store(checked_quarantine.clone());
         let rooted_ids: HashSet<&str> = keys.iter().map(|key| key.server.as_str()).collect();
         let all_tools = view.shared_tools();
         let mut pending = BTreeSet::new();
@@ -12525,6 +12535,9 @@ impl HostState {
                     .and_then(|name| view.route_of(name))
                     .is_some_and(|(server, _)| rooted_ids.contains(server) == rooted)
             });
+            if tools.is_empty() {
+                continue;
+            }
             let policy_tools = view.policy_catalog(&tools);
             match maybe_check_integrity(&self.registry, &policy_tools, profile) {
                 Ok(found) => pending.extend(found.unwrap_or_default()),
@@ -12539,6 +12552,9 @@ impl HostState {
         }
         match self.rooted_quarantine(scope) {
             Some(mut quarantined) => {
+                // A release racing the gate waits for the next reconciliation,
+                // when its definition can be included in the checked candidate.
+                quarantined.extend(checked_quarantine);
                 quarantined.extend(pending);
                 view.requarantine_from_store(quarantined);
             }
@@ -40080,6 +40096,42 @@ mod tests {
                 .iter()
                 .any(|tool| tool["name"] == "srv__read"));
         }
+    }
+
+    #[test]
+    fn rooted_publication_defers_a_global_release_racing_the_gate() {
+        let data = DataDirTestEnv::new("rooted-racing-global-release");
+        let scope = format!("root:{}", registry::sha256_hex("/fixture/project"));
+        let state = http_state(false);
+        state.registry.lock().unwrap().set_safety_level(registry::SafetyLevel::Strict);
+        seed_legacy_review(&data.dir, None, "v1");
+        let mut candidate = readonly_router("srv", "Changed while quarantined.");
+        candidate.add(rooted_placement_fixture());
+        candidate.requarantine(set_of(&["srv__read"]));
+        let keys = vec![LaunchKey {
+            server: "rooted".into(), kind: "stdio", digest: "fixture".into(),
+        }];
+        *INTEGRITY_GATE_OBSERVER.lock().unwrap() = Some((
+            std::thread::current().id(),
+            Box::new(|| {
+                conduit_lib::registry_controller::release_quarantine(None, "srv__read").unwrap();
+            }),
+        ));
+        state.check_rooted_integrity(&mut candidate, &scope, &keys);
+        *INTEGRITY_GATE_OBSERVER.lock().unwrap() = None;
+        assert!(integrity::quarantined(None).unwrap().is_empty());
+        assert!(candidate.quarantined().contains("srv__read"));
+        assert!(!candidate.aggregated_tools().iter().any(|tool| tool["name"] == "srv__read"));
+        let candidate = Arc::new(candidate);
+        {
+            let mut pool = state.root_launch_pool.lock().unwrap();
+            pool.views.insert(keys.clone(), Arc::clone(&candidate));
+            pool.root_scopes.insert(keys.clone(), scope);
+        }
+        let checked = state.reconcile_rooted_view(&keys, candidate);
+        assert!(!checked.aggregated_tools().iter().any(|tool| tool["name"] == "srv__read"));
+        assert!(integrity::quarantined(None).unwrap().contains("srv__read"));
+        assert!(integrity::baselines(None)["srv__read"].fingerprint.starts_with("v3:"));
     }
 
     #[test]
