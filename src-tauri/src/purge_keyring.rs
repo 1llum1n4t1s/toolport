@@ -361,6 +361,13 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
 }
 
 #[cfg(test)]
+pub(crate) fn remove_fixture_accounts(scope: &Scope, accounts: &[&str]) -> Removal {
+    remove_owned(accounts.iter().copied(), scope,
+        |account| Ok((super::SERVICE.into(), (*account).into())),
+        |account| (*account).into(), |_| Ok(()))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]

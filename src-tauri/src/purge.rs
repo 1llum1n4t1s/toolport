@@ -535,6 +535,8 @@ fn owned_data_name(name: &str) -> bool {
     generated_file_name(name, owned_data_file)
         || matches!(name, "secret-service.lock" | "task-handle-key.lock" | "client-config-mutation.lock")
         || name.strip_prefix("daemon-").and_then(|s| s.strip_suffix(".lock")).is_some_and(|s| hex_name(s, 64))
+        || name.strip_prefix("oauth-refresh-").and_then(|s| s.strip_suffix(".lock"))
+            .is_some_and(|id| !id.is_empty() && crate::router::sanitize_segment(id) == id)
 }
 
 fn owned_data_file(name: &str) -> bool {
@@ -1224,7 +1226,9 @@ mod tests {
         assert!(report.leftovers.is_empty(), "{:?}", report.leftovers);
         for name in collisions {
             assert_eq!(std::fs::read_to_string(env.dir.join(name)).unwrap(), "user bytes", "{name}");
-            assert!(report.preserved.iter().any(|path| path.contains(name)), "{name}");
+            // Unknown directories are reported as a whole and never traversed.
+            let reported = if name == "broker/nested/broker/notes" { "broker/nested" } else { name };
+            assert!(report.preserved.iter().any(|path| path.contains(reported)), "{name}");
         }
         assert!(!env.dir.join("bin/toolport-gateway").exists());
         assert!(!env.dir.join("registry.json").exists());
@@ -1252,10 +1256,13 @@ mod tests {
             || {
                 assert!(!scope.all_installs);
                 assert!(scope.server_ids.contains("mine") && !scope.server_ids.contains("theirs"));
-                Ok(crate::secrets::purge::Removal { removed: vec!["mine::TOKEN".into()], ..Default::default() })
+                Ok(crate::secrets::purge::remove_fixture_accounts(&scope, &["mine::TOKEN", "theirs::TOKEN"]))
             }, |_| Ok(()), |_| Ok(()),
         ).unwrap();
         assert!(report.removed.contains(&"mine::TOKEN".into()));
+        assert!(!report.removed.contains(&"theirs::TOKEN".into()));
+        assert!(report.preserved.contains(&"theirs::TOKEN".into()));
+        assert!(report.notes.iter().any(|note| note.contains("may belong to another Toolport install")));
         assert!(report.leftovers.is_empty());
         assert!(!selected.exists());
     }
@@ -1263,7 +1270,7 @@ mod tests {
     #[test]
     fn purge_generated_names_match_writers_and_reject_loose_prefixes() {
         for path in ["daemon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
-            "daemon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.lock",
+            "daemon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.lock", "oauth-refresh-mine.lock",
             "bin/toolport-gateway-2.0.0-beta.1", "bin/toolport-gateway-2.0.0-0123456789ab.exe",
             "bin/.toolport-gateway.123.456.tmp", "bin/toolport-gateway.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tmp",
             "bin/gateway-manifest.json.123.1.conduit-tmp", "tool-cache-v2-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.servers.json",
