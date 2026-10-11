@@ -3,6 +3,12 @@ use std::process::Command;
 
 fn isolated_command(root: &std::path::Path, data: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_toolport-gateway"));
+    // Client-path overrides and other ambient config must not escape the fixture.
+    command.env_clear().env("PATH", std::env::var_os("PATH").unwrap_or_default());
+    #[cfg(windows)]
+    for key in ["SystemRoot", "WINDIR"] {
+        if let Some(value) = std::env::var_os(key) { command.env(key, value); }
+    }
     let home = root.join("home");
     command.env("TOOLPORT_DATA_DIR", data).env("HOME", &home).env("USERPROFILE", &home)
         .env("APPDATA", home.join("AppData/Roaming"))

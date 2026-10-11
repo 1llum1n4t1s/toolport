@@ -74,15 +74,19 @@ Resolve the reported client paths before retrying. Active gateway sessions block
 removal: close the listed sessions and retry. Toolport requests a graceful stop
 only from authenticated daemons for this data directory.
 
-The action removes all contents of the selected Toolport data directory,
+The action removes Toolport-created entries from the selected data directory,
 including registry, logs, caches, migration exports, client backups, encrypted
-secrets and published gateway copies in `bin/`. The empty directory may remain.
-By default, credential removal is limited to server accounts owned by the current
-registry. Accounts also used by another detected Toolport, Conduit or development
-install, shared master keys and unknown accounts are preserved. A custom data
-directory also checks the default location. Shared Team tokens are preserved
-when another install exists. Removed Team tokens are deleted locally only;
-the Teams client has no server-side revoke endpoint.
+secrets and published gateway copies in `bin/`. Other files and folders are
+preserved and listed in the report. The empty directory may remain.
+For a sole detected install with readable ownership, credential removal clears
+all Toolport accounts, including shared master keys and accounts for servers
+removed earlier. With another detected Toolport, Conduit or development install,
+cleanup is limited to the current registry's server accounts. Accounts also used
+by that install, shared master keys and unknown accounts are preserved. Unreadable
+ownership keeps credentials for retry. A custom data directory also checks the
+default location. Shared Team tokens are preserved when another install exists.
+Removed Team tokens are deleted locally only; the Teams client has no server-side
+revoke endpoint.
 
 To explicitly remove **all installs' credentials** in the shared `conduit-mcp`
 service, including orphaned chunks and master keys, use the separate CLI opt-in:
@@ -92,10 +96,15 @@ toolport-gateway --remove-data --all-installs --dry-run
 toolport-gateway --remove-data --all-installs --confirm
 ```
 
-This clears credentials used by other installs too, while deleting only the
-selected data folder. The Settings action always uses the narrower scope.
-With the encrypted file backend or no Linux Secret Service provider, the report
-records no keyring in use and removal continues. Startup cleanup precedes
+This clears credentials used by other installs too, while deleting only
+Toolport-created entries in the selected data folder. It can proceed with a
+corrupt registry, using independent client recovery snapshots. Client restoration
+failures still retain recovery data. Settings uses the automatic scope above.
+With an active encrypted file backend or a truly headless Linux host with no
+session bus or runtime directory, removal continues without a keyring. On a
+desktop, Toolport first tries the runtime directory's bus. An unavailable bus or
+Secret Service provider reports credential cleanup as incomplete and keeps the
+registry so retry can find the same accounts. Startup cleanup precedes
 credential deletion. Any partially completed cleanup lists removed and failed
 items separately and keeps the registry so retry uses the same ownership scope.
 Toolport's own launch-at-login entries are removed; changed or unrecognized
@@ -107,7 +116,8 @@ WebView storage for `com.tsout.conduit`. These are removed for a sole default
 install and preserved with an explanation when another install or a custom data
 directory is in use. Homebrew zap removes these app storage paths, while keeping
 registry/recovery data and credentials. Custom data directories require a valid
-Toolport registry regardless of their folder name.
+Toolport registry regardless of their folder name, except for the explicit
+`--all-installs` option when a corrupt registry file exists.
 
 Native client files, servers and installed package binaries are kept. The package manager removes installed binaries in step 2. The action
 uses the current data directory, including a custom `TOOLPORT_DATA_DIR`, an
