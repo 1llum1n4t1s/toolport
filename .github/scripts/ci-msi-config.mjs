@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import process from "node:process";
 
 // MSI accepts numeric versions only. Keep the app and NSIS preview version intact.
 export function ciMsiConfig(version) {
