@@ -3458,26 +3458,6 @@ pub fn detect_clients_for_display() -> Result<Vec<DetectedClient>, String> {
     let current = crate::registry::load()?;
     let detected: Vec<_> = definitions.iter().map(read_client).collect();
     let targets: Vec<_> = detected.iter().filter(|client| client.id.contains('@')).cloned().collect();
-    let prior_ids: HashMap<String, String> = targets.iter().filter_map(|client| {
-        if resolve_entry_state(&client.servers, current.client_managed_entries.get(&client.id)) != GatewayEntryState::Managed { return None; }
-        let text = read_config_file(Path::new(&client.config_path)).ok()?;
-        let prior_id = profile_key_from_config_text(&text, crate::brand::CLIENT_ID)
-            .or_else(|| profile_key_from_config_text(&text, crate::brand::CLIENT_ID_LEGACY))?;
-        (prior_id != client.id && current.client_scopes.contains_key(&prior_id)
-            && !current.client_scopes.contains_key(&client.id)).then(|| (client.id.clone(), prior_id))
-    }).collect();
-    // Stage access before changing the launch identity. A registry write failure
-    // must not leave an adopted gateway using broader default access.
-    if !prior_ids.is_empty() {
-        crate::registry::update(|registry| {
-            for (id, prior) in &prior_ids {
-                if let Some(scope) = registry.client_scopes.get(prior).cloned() {
-                    registry.client_scopes.entry(id.clone()).or_insert(scope);
-                }
-            }
-            Ok(())
-        })?;
-    }
     let mut changed = false;
     if let Some(path) = resolve_gateway_path()?.filter(|path| path.is_file()) {
         let repoint = repoint_stale_gateways_in(&path.to_string_lossy(), targets, &current.client_managed_entries);
@@ -7433,9 +7413,6 @@ fn repoint_stale_gateways_in(
             .ok_or("Unknown client".to_string())
             .and_then(|def| {
                 let path = resolved_definition_path(&def)?;
-                if location_identity_changed {
-                    if let Some(text) = &config_text { inherit_location_access(&client.id, text)?; }
-                }
                 mutation::run(&client.id, &path, def.format, || {
                     let fresh = read_client(&def);
                     if resolve_entry_state(&fresh.servers, managed.get(&client.id))
@@ -7444,6 +7421,11 @@ fn repoint_stale_gateways_in(
                         return Err(
                             "Client gateway changed during repoint; leaving it untouched".into(),
                         );
+                    }
+                    // Copy access under the config lock, before changing its
+                    // identity. A failed registry write must stop adoption.
+                    if def.location.is_some() {
+                        inherit_location_access(&client.id, &read_config_file(&path)?)?;
                     }
                     if !gateway_entry_needs_rewrite(
                         entry_name,
