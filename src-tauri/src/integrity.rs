@@ -3831,6 +3831,17 @@ struct ReviewCache {
 
 static REVIEW_CACHE: Mutex<Option<ReviewCache>> = Mutex::new(None);
 
+fn review_input_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        !name.ends_with(".lock")
+            && (name == "security.jsonl"
+                || name.starts_with("registry.")
+                || name.starts_with("quarantine")
+                || name.starts_with("tool-pins")
+                || name.starts_with("root-integrity-scopes"))
+    })
+}
+
 /// Metadata only: do not reload the registry or parse every profile store on an
 /// unchanged Activity tick. Include pins because missing quarantine is fail closed
 /// for established profiles, plus the scope index and registry for store discovery.
@@ -3839,17 +3850,7 @@ fn review_stamp() -> Option<ReviewStamp> {
     let mut files = BTreeMap::new();
     for entry in std::fs::read_dir(&dir).ok()? {
         let entry = entry.ok()?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if name.ends_with(".lock")
-            || !(name == "security.jsonl"
-                || name.starts_with("registry.")
-                || name.starts_with("quarantine")
-                || name.starts_with("tool-pins")
-                || name.starts_with("root-integrity-scopes"))
-        {
+        if !review_input_name(&entry.file_name()) {
             continue;
         }
         let metadata = entry.metadata().ok()?;
@@ -4597,11 +4598,12 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStringExt;
-            std::fs::write(
-                data.path.join(std::ffi::OsString::from_vec(vec![0xff])),
-                "unrelated",
-            )
-            .unwrap();
+            let name = std::ffi::OsString::from_vec(vec![0xff]);
+            assert!(!review_input_name(&name), "invalid UTF-8 is unrelated input");
+            // macOS filesystems reject this name with EILSEQ. Exercise the
+            // directory-entry path on Linux and the same production filter on Unix.
+            #[cfg(target_os = "linux")]
+            std::fs::write(data.path.join(name), "unrelated").unwrap();
         }
         review_events_cached(2000, read).unwrap();
         assert_eq!(
