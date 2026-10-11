@@ -12513,24 +12513,30 @@ impl HostState {
             return;
         }
         let rooted_ids: HashSet<&str> = keys.iter().map(|key| key.server.as_str()).collect();
-        let mut tools = view.shared_tools();
-        tools.retain(|tool| {
-            tool["name"]
-                .as_str()
-                .and_then(|name| view.route_of(name))
-                .is_some_and(|(server, _)| rooted_ids.contains(server))
-        });
-        let policy_tools = view.policy_catalog(&tools);
-        let pending = match maybe_check_integrity(&self.registry, &policy_tools, Some(scope)) {
-            Ok(pending) => pending.unwrap_or_default(),
-            Err((error, _)) => {
-                glog(&format!(
-                    "SECURITY: rooted catalog integrity check failed: {error}"
-                ));
-                view.fail_closed_catalog();
-                return;
+        let all_tools = view.shared_tools();
+        let mut pending = BTreeSet::new();
+        // A rooted view can restore ordinary tools before the base watcher runs.
+        // Check each definition against the pins belonging to its launch scope.
+        for (profile, rooted) in [(None, false), (Some(scope), true)] {
+            let mut tools = all_tools.clone();
+            tools.retain(|tool| {
+                tool["name"]
+                    .as_str()
+                    .and_then(|name| view.route_of(name))
+                    .is_some_and(|(server, _)| rooted_ids.contains(server) == rooted)
+            });
+            let policy_tools = view.policy_catalog(&tools);
+            match maybe_check_integrity(&self.registry, &policy_tools, profile) {
+                Ok(found) => pending.extend(found.unwrap_or_default()),
+                Err((error, _)) => {
+                    glog(&format!(
+                        "SECURITY: rooted catalog integrity check failed: {error}"
+                    ));
+                    view.fail_closed_catalog();
+                    return;
+                }
             }
-        };
+        }
         match self.rooted_quarantine(scope) {
             Some(mut quarantined) => {
                 quarantined.extend(pending);
@@ -40080,29 +40086,43 @@ mod tests {
     fn rooted_client_checks_released_legacy_global_tool_before_base_watcher() {
         let data = DataDirTestEnv::new("rooted-legacy-global-release");
         for version in ["v1", "v2"] {
-            rooted_client_checks_released_global_tool(&data.dir, Some(version));
+            for profile in ["default", "work"] {
+                for first in ["list", "search", "call"] {
+                    rooted_client_checks_released_global_tool(&data.dir, Some(version), profile, first);
+                }
+            }
         }
     }
 
     #[test]
     fn rooted_client_checks_global_tool_changed_during_quarantine() {
         let data = DataDirTestEnv::new("rooted-global-quarantine-change");
-        rooted_client_checks_released_global_tool(&data.dir, None);
+        for profile in ["default", "work"] {
+            for first in ["list", "search", "call"] {
+                rooted_client_checks_released_global_tool(&data.dir, None, profile, first);
+            }
+        }
     }
 
-    fn rooted_client_checks_released_global_tool(dir: &Path, legacy: Option<&str>) {
+    fn rooted_client_checks_released_global_tool(
+        dir: &Path,
+        legacy: Option<&str>,
+        profile: &str,
+        first: &str,
+    ) {
         let root = "/fixture/project";
         let scope = format!("root:{}", registry::sha256_hex(root));
         let state = http_state(false);
         state.daemon_mode.store(true, Ordering::SeqCst);
         let mut reg = Registry::default();
         reg.set_safety_level(registry::SafetyLevel::Strict);
+        reg.add_profile("Work");
         let ordinary = stub_server("srv", "Ordinary");
         let mut rooted = stub_server("rooted", "Rooted");
         rooted.cwd = Some("${ROOT}".into());
         reg.servers.extend([ordinary, rooted]);
-        reg.set_server_enabled("default", "srv", true).unwrap();
-        reg.set_server_enabled("default", "rooted", true).unwrap();
+        reg.set_server_enabled(profile, "srv", true).unwrap();
+        reg.set_server_enabled(profile, "rooted", true).unwrap();
         *state.registry.lock().unwrap() = reg.clone();
         registry::save(&reg).unwrap();
         let original = readonly_router("srv", "Reviewed definition.");
@@ -40153,13 +40173,29 @@ mod tests {
             ..Default::default()
         });
         let request = |req: Value, discovery| process_request(
-            &state, &req, &SearchGuard::default(), None, Some("default"),
-            Some("default"), None, Some("claude-code"), None, discovery,
+            &state, &req, &SearchGuard::default(), None, Some(profile),
+            Some(profile), None, Some("claude-code"), None, discovery,
         ).unwrap();
-        // No base watcher runs: the real rooted tools/list must perform the global gate.
-        let listed = request(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}), DiscoveryMode::Full);
+        // No base watcher runs: each real request entry must perform the global gate.
+        let initial = match first {
+            "search" => json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+                "name":"toolport_search_tools","arguments":{"query":"","server":"srv"}
+            }}),
+            "call" => json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+                "name":"srv__read","arguments":{}
+            }}),
+            _ => json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        };
+        let first_reply = request(initial, DiscoveryMode::Lazy);
         *INTEGRITY_GATE_OBSERVER.lock().unwrap() = None;
         assert_eq!(*seen.lock().unwrap(), Some(false), "candidate stayed hidden during the gate");
+        if first == "call" {
+            assert!(!first_reply["error"].is_null() || first_reply["result"]["isError"] == true,
+                "{first_reply}");
+        } else if first == "search" {
+            assert!(!first_reply.to_string().contains("srv__read"), "{first_reply}");
+        }
+        let listed = request(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}), DiscoveryMode::Full);
         assert!(listed["error"].is_null(), "{listed}");
         let tools = listed["result"]["tools"].as_array().unwrap();
         assert!(!tools.iter().any(|tool| tool["name"] == "srv__read"), "{listed}");
@@ -40168,6 +40204,10 @@ mod tests {
         let global = integrity::baselines(None);
         assert!(global["srv__read"].fingerprint.starts_with("v3:"));
         assert!(!global.contains_key("rooted__read"));
+        let durable: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("tool-pins.json")).unwrap(),
+        ).unwrap();
+        assert_eq!(durable["srv__read"]["review_on_upgrade"], false);
         assert!(!integrity::baselines(Some(&scope)).contains_key("srv__read"));
         assert!(Arc::ptr_eq(&base, &state.router.lock().unwrap()), "base watcher did not run");
         let searched = request(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
