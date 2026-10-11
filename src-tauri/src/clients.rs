@@ -3581,6 +3581,21 @@ pub(crate) fn purge_backup_client_id(client_id: &str) -> bool {
     defs().iter().any(|client| client.id == client_id)
 }
 
+/// Match the basenames used by backup_file and the two named Claude writers.
+pub(crate) fn purge_backup_name(client_id: &str, basename: &str) -> bool {
+    let Some(def) = find_def(client_id) else { return false; };
+    if client_id == "claude-code" && ["claude-", "claude-settings-"].iter().any(|prefix| {
+        basename.strip_prefix(prefix).and_then(|name| name.strip_suffix(".json"))
+            .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    }) { return true; }
+    let matches = |path: PathBuf| path.file_name().and_then(|name| name.to_str()) == Some(basename);
+    if resolved_definition_path(&def).is_ok_and(matches) { return true; }
+    // Also recognize copies from the client's standard config on another OS.
+    [Platform::Windows, Platform::MacOs, Platform::Linux].into_iter().any(|platform| {
+        resolve_client_config_path(client_id, Path::new("/"), platform).is_some_and(matches)
+    }) || client_id == "opencode" && basename == "opencode.jsonc"
+}
+
 pub(crate) fn backup_dir(client_id: &str) -> Option<PathBuf> {
     // Anchor to the same home-based dir as the registry (see registry::conduit_dir)
     // so config backups land in one place regardless of whether a packaged or

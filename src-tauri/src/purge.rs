@@ -561,8 +561,8 @@ fn generated_file_name(name: &str, owned: impl Fn(&str) -> bool) -> bool {
     name.strip_suffix(".lock").is_some_and(owned)
 }
 
-fn owned_data_name(name: &str) -> bool {
-    generated_file_name(name, owned_data_file)
+fn owned_data_name(name: &str, legacy: &std::collections::HashSet<String>) -> bool {
+    generated_file_name(name, |name| owned_data_file(name) || legacy.contains(name))
         || matches!(name, "secret-service.lock" | "task-handle-key.lock" | "client-config-mutation.lock")
         || name.strip_prefix("daemon-").and_then(|s| s.strip_suffix(".lock")).is_some_and(|s| hex_name(s, 64))
         || name.strip_prefix("oauth-refresh-").and_then(|s| s.strip_suffix(".lock"))
@@ -594,8 +594,8 @@ fn owned_data_file(name: &str) -> bool {
             let key = if *prefix == "tool-cache-" { key.strip_suffix(".servers").unwrap_or(key) } else { key };
             return hex_name(key, 64);
         }
-        // Pre-v2 stores used registry::slugify, without arbitrary punctuation.
-        suffix.strip_suffix(".json").is_some_and(|slug| !slug.is_empty() && crate::registry::slugify(slug) == slug)
+        // Legacy names are ambiguous without the registry's actual profile refs.
+        false
     })
 }
 
@@ -626,11 +626,11 @@ fn bin_file(name: &str) -> bool {
         .is_some_and(|(base, id)| hex_name(id, 32) && gateway_file(base))
 }
 
-fn backup_file(name: &str) -> bool {
+fn backup_file(client: &str, name: &str) -> bool {
     name == "moved-servers.json"
         || name.strip_prefix("original-").and_then(|s| s.strip_suffix(".json")).is_some_and(|s| hex_name(s, 64))
-        // clients::backup_file_named accepts a config basename, including overrides.
-        || name.split_once('-').is_some_and(|(stamp, basename)| decimal(stamp) && !basename.is_empty())
+        || name.split_once('-').is_some_and(|(stamp, basename)| decimal(stamp)
+            && stamp.parse::<u128>().is_ok() && crate::clients::purge_backup_name(client, basename))
 }
 
 fn export_file(name: &str) -> bool {
@@ -665,16 +665,21 @@ fn vector_file(name: &str) -> bool {
 #[derive(PartialEq)]
 enum DataEntry { File, Directory }
 
+#[cfg(test)]
 fn owned_data_entry(relative: &Path) -> Option<DataEntry> {
+    owned_data_entry_with_legacy(relative, &Default::default())
+}
+
+fn owned_data_entry_with_legacy(relative: &Path, legacy: &std::collections::HashSet<String>) -> Option<DataEntry> {
     let parts: Option<Vec<_>> = relative.iter().map(|part| part.to_str()).collect();
     let parts = parts?;
     let file = match parts.as_slice() {
         [name] if matches!(*name, "logs" | "bin" | "broker" | "backups" | "exports" | "children" | "daemon-runs" | "oauth-locks" | "search-vectors") => return Some(DataEntry::Directory),
-        [name] => owned_data_name(name),
+        [name] => owned_data_name(name, legacy),
         ["bin", name] => bin_file(name),
         ["broker", name] => matches!(*name, "owner.lock" | "approval.sock"),
         ["backups", client] if crate::clients::purge_backup_client_id(client) => return Some(DataEntry::Directory),
-        ["backups", client, name] => crate::clients::purge_backup_client_id(client) && generated_file_name(name, backup_file),
+        ["backups", client, name] => crate::clients::purge_backup_client_id(client) && generated_file_name(name, |name| backup_file(client, name)),
         ["exports", name] => generated_file_name(name, export_file),
         ["children" | "daemon-runs", name] => generated_file_name(name, pid_json),
         ["oauth-locks", name] => oauth_file(name),
@@ -685,11 +690,35 @@ fn owned_data_entry(relative: &Path) -> Option<DataEntry> {
     file.then_some(DataEntry::File)
 }
 
-fn remove_data_contents(dir: &Path, keep: &[PathBuf], report: &mut Report) {
-    remove_selected_contents(dir, dir, keep, report);
+fn legacy_store_names(dir: &Path) -> std::collections::HashSet<String> {
+    // Snapshot before registry deletion, without migration or recovery writes.
+    let registry = std::fs::read(dir.join("registry.json")).ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let mut names = std::collections::HashSet::new();
+    if let Some(profiles) = registry.as_ref().and_then(|value| value["profiles"].as_array()) {
+        for profile in profiles {
+            for field in ["id", "name"] {
+                if let Some(reference) = profile[field].as_str() {
+                    let slug = crate::registry::legacy_profile_store_slug(reference);
+                    if !slug.is_empty() {
+                        for prefix in ["tool-cache-", "tool-pins-", "quarantine-"] {
+                            names.insert(format!("{prefix}{slug}.json"));
+                            if prefix == "tool-cache-" { names.insert(format!("{prefix}{slug}.servers.json")); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    names
 }
 
-fn remove_selected_contents(root: &Path, dir: &Path, keep: &[PathBuf], report: &mut Report) {
+fn remove_data_contents(dir: &Path, keep: &[PathBuf], report: &mut Report) {
+    let legacy = legacy_store_names(dir);
+    remove_selected_contents(dir, dir, keep, &legacy, report);
+}
+
+fn remove_selected_contents(root: &Path, dir: &Path, keep: &[PathBuf], legacy: &std::collections::HashSet<String>, report: &mut Report) {
     let entries = match std::fs::read_dir(dir).and_then(|entries| entries.collect::<Result<Vec<_>, _>>()) {
         Ok(entries) => entries,
         Err(error) => {
@@ -700,10 +729,10 @@ fn remove_selected_contents(root: &Path, dir: &Path, keep: &[PathBuf], report: &
     for entry in entries {
         let path = entry.path();
         if keep.contains(&path) { continue; }
-        let selected = path.strip_prefix(root).ok().and_then(owned_data_entry);
+        let selected = path.strip_prefix(root).ok().and_then(|relative| owned_data_entry_with_legacy(relative, legacy));
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) if selected == Some(DataEntry::Directory) && metadata.is_dir() && !is_link(&metadata) => {
-                remove_selected_contents(root, &path, keep, report);
+                remove_selected_contents(root, &path, keep, legacy, report);
                 if !keep.iter().any(|keep| keep.starts_with(&path)) {
                     remove_empty_dirs(&path, report);
                 }

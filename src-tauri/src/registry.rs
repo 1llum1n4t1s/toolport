@@ -1805,7 +1805,7 @@ pub fn unmigrated_legacy_profile_store(profile: &str, pins: bool) -> bool {
 }
 
 /// The lossy filename mapping used before profile stores were keyed by stable ids.
-fn legacy_profile_store_slug(profile_ref: &str) -> String {
+pub(crate) fn legacy_profile_store_slug(profile_ref: &str) -> String {
     profile_ref
         .chars()
         .map(|c| {
