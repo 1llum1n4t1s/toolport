@@ -7107,6 +7107,120 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn legacy_quarantine_release_requires_review_through_filtered_catalog() {
+        legacy_release_through_filtered_catalog(false);
+    }
+
+    #[test]
+    fn legacy_bulk_release_requires_review_through_filtered_catalog() {
+        legacy_release_through_filtered_catalog(true);
+    }
+
+    fn legacy_release_through_filtered_catalog(bulk: bool) {
+        let data = crate::registry::DataDirTestEnv::new("legacy-release-filtered");
+        let mut reg = crate::registry::Registry::default();
+        reg.profiles.push(crate::registry::Profile {
+            id: "work".into(),
+            name: "Work".into(),
+            enabled_server_ids: vec![],
+            tool_scope: Default::default(),
+            instructions: None,
+            unknown_fields: Default::default(),
+        });
+        crate::registry::save(&reg).unwrap();
+        for profile in [None, Some("work")] {
+            for version in ["v1", "v2"] {
+                let pins = data.dir.join(
+                    profile
+                        .map(|id| {
+                            format!(
+                                "tool-pins-v2-{}.json",
+                                crate::registry::profile_store_key(id)
+                            )
+                        })
+                        .unwrap_or_else(|| "tool-pins.json".into()),
+                );
+                let quarantine = data.dir.join(
+                    profile
+                        .map(|id| {
+                            format!(
+                                "quarantine-v2-{}.json",
+                                crate::registry::profile_store_key(id)
+                            )
+                        })
+                        .unwrap_or_else(|| "quarantine.json".into()),
+                );
+                let mut baseline_router = Router::new();
+                baseline_router.add(mock_server("srv"));
+                crate::integrity::check(
+                    profile,
+                    &baseline_router.policy_catalog(&baseline_router.shared_tools()),
+                ).unwrap();
+                let mut baseline: Value =
+                    serde_json::from_str(&std::fs::read_to_string(&pins).unwrap()).unwrap();
+                baseline["srv__echo"] = json!(format!("{version}:old-baseline"));
+                std::fs::write(&pins, baseline.to_string()).unwrap();
+                let old_record = r#"{"srv__echo":{"tool":"srv__echo","server":"srv","change":"changed","reason":"Review this change","ts":1}}"#;
+                std::fs::write(&quarantine, old_record).unwrap();
+                let mut router = Router::with_policy(
+                    RegistryPolicy::default()
+                        .with_quarantine(crate::integrity::quarantined(profile).unwrap(), false),
+                );
+                router.add(mock_server("srv"));
+                let catalog = router.policy_catalog(&router.shared_tools());
+                assert!(!catalog.iter().any(|tool| tool["name"] == "srv__echo"));
+                assert!(crate::integrity::check_staged(profile, &catalog)
+                    .unwrap()
+                    .is_empty());
+                assert!(crate::integrity::baselines(profile)["srv__echo"]
+                    .fingerprint
+                    .starts_with(version));
+                assert_eq!(std::fs::read_to_string(&quarantine).unwrap(), old_record);
+                if bulk {
+                    let summary = crate::registry_controller::release_all_quarantine(&[
+                        profile.unwrap_or("").to_string(),
+                    ]);
+                    assert_eq!(summary.released, 1);
+                    assert!(summary.skipped.is_empty());
+                    assert!(summary.failed.is_empty());
+                } else {
+                    crate::registry_controller::release_quarantine(profile, "srv__echo").unwrap();
+                }
+                router.requarantine(crate::integrity::quarantined(profile).unwrap());
+                let catalog = router.policy_catalog(&router.shared_tools());
+                let events = crate::integrity::check_staged(profile, &catalog).unwrap();
+                assert!(events
+                    .iter()
+                    .any(|event| event["tool"] == "srv__echo" && event["severity"] == "high"));
+                crate::integrity::apply_quarantine(profile, &catalog, &events).unwrap();
+                crate::integrity::accept_quarantined_pins(profile).unwrap();
+                router.requarantine(crate::integrity::quarantined(profile).unwrap());
+                assert!(!router
+                    .aggregated_tools()
+                    .iter()
+                    .any(|tool| tool["name"] == "srv__echo"));
+                let reviewed_fp = events
+                    .iter()
+                    .find(|event| event["tool"] == "srv__echo")
+                    .unwrap()["new_fp"]
+                    .as_str()
+                    .unwrap();
+                assert!(
+                    crate::integrity::release_definition(profile, "srv__echo", reviewed_fp)
+                        .unwrap()
+                );
+                router.requarantine(crate::integrity::quarantined(profile).unwrap());
+                assert!(crate::integrity::check_staged(
+                    profile,
+                    &router.policy_catalog(&router.shared_tools())
+                )
+                .unwrap()
+                .is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn aggregates_and_namespaces_tools() {
         let mut router = Router::new();
         router.add(mock_server("github"));

@@ -3221,7 +3221,7 @@ impl ActivityPage {
 
         let security_status = gtk::Button::new();
         security_status.add_css_class("toolport-security-status");
-        security_status.set_tooltip_text(Some("Review retained security findings"));
+        security_status.set_tooltip_text(Some("Review tool changes"));
         let security_status_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         let security_status_icon = gtk::Image::from_icon_name("security-high-symbolic");
         security_status_icon.add_css_class("toolport-security-status-icon");
@@ -3236,7 +3236,7 @@ impl ActivityPage {
             .build();
         security_status_copy.append(&security_status_title);
         let security_status_detail = gtk::Label::builder()
-            .label("No important findings need review.")
+            .label("No changes need review.")
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -3357,7 +3357,7 @@ impl ActivityPage {
         security.set_margin_top(8);
         security.append(
             &gtk::Label::builder()
-                .label("These are retained findings, not necessarily active blocks. Review active quarantines in Settings.")
+                .label("Review changes to your servers and their tools.")
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
@@ -3804,7 +3804,7 @@ impl ActivityPage {
             self.security_expander
                 .set_label(Some("Protection history · Clear"));
             self.security_list.append(&empty_activity_label(
-                "No definition drift or injection events retained.",
+                "No tool changes or suspicious content to review.",
             ));
             return;
         }
@@ -3826,97 +3826,130 @@ impl ActivityPage {
             ));
             return;
         }
-        // Loud lane: what genuinely needs a human. A first sighting of a new
-        // tool is churn and goes quiet, even when annotated destructive.
-        let (loud, quiet): (Vec<serde_json::Value>, Vec<serde_json::Value>) =
-            live.into_iter().partition(|event| {
-                crate::integrity::event_severity(event) == "high"
-                    && !crate::integrity::security_event_is_new_tool(event)
-            });
-        let loud = security_attention_incidents(&loud);
-        let loud_count = crate::integrity::collapse_security_by_identity(&loud).len();
-        let quiet_count = crate::integrity::collapse_security_by_identity(&quiet).len();
-        self.set_security_status(&loud);
-        self.security_expander.set_label(Some(&if loud_count > 0 {
-            format!(
-                "Protection history · {loud_count} important, {} total",
-                loud_count + quiet_count
-            )
-        } else {
-            format!("Protection history · {quiet_count} quiet changes")
-        }));
-        for (event, count) in crate::integrity::collapse_security_by_identity(&loud)
+        let (older, live): (Vec<_>, Vec<_>) = live
             .into_iter()
-            .take(10)
-        {
+            .partition(|event| event["historical"] == true);
+        self.set_security_status(&live);
+        let groups = crate::integrity::group_tool_changes(&live);
+        self.security_expander
+            .set_label(Some(&if groups.is_empty() {
+                "Protection history · Security notices".to_string()
+            } else {
+                format!(
+                    "Protection history · {} server {}",
+                    groups.len(),
+                    if groups.len() == 1 {
+                        "update"
+                    } else {
+                        "updates"
+                    }
+                )
+            }));
+        for group in groups {
+            self.security_list
+                .append(&tool_change_group_card(&group, self.clone()));
+        }
+        if !older.is_empty() {
+            let history = gtk::Expander::builder()
+                .label(format!(
+                    "{} older tool-change records. Open history to review them.",
+                    older.len()
+                ))
+                .build();
+            let rows = gtk::Box::new(gtk::Orientation::Vertical, 8);
+            let page = self.clone();
+            let history_rows = rows.clone();
+            history.connect_expanded_notify(move |history| {
+                if history.is_expanded() && history_rows.first_child().is_none() {
+                    for group in crate::integrity::group_tool_changes(&older) {
+                        history_rows.append(&tool_change_group_card(&group, page.clone()));
+                    }
+                }
+            });
+            history.set_child(Some(&rows));
+            self.security_list.append(&history);
+        }
+        for (event, count) in crate::integrity::collapse_security_by_identity(
+            &live
+                .into_iter()
+                .filter(|event| event["type"] != "tool_drift")
+                .collect::<Vec<_>>(),
+        ) {
             self.security_list
                 .append(&security_notice_card(&event, count, self.clone()));
         }
-        if !quiet.is_empty() {
-            let collapsed = crate::integrity::collapse_security_by_identity(&quiet);
-            let expander = gtk::Expander::new(Some(&format!(
-                "Quiet drift history · {} benign {}",
-                collapsed.len(),
-                if collapsed.len() == 1 {
-                    "change"
-                } else {
-                    "changes"
+    }
+
+    fn accept_security(&self, events: Vec<serde_json::Value>) {
+        let keys = events.iter().map(security_dismissal_key).collect();
+        let page = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(move || -> Result<(), String> {
+                for event in events {
+                    let tool = event["tool"].as_str().unwrap_or("");
+                    if let Some(profiles) = event["blocked_profiles"].as_array() {
+                        for profile in profiles.iter().filter_map(serde_json::Value::as_str) {
+                            crate::integrity::release_definition(
+                                (!profile.is_empty()).then_some(profile),
+                                tool,
+                                event["new_fp"].as_str().ok_or("This older finding has no saved definition. Review the active block in Settings.")?,
+                            )?;
+                        }
+                    }
                 }
-            )));
-            expander.add_css_class("toolport-card");
-            bind_activity_expander(
-                &expander,
-                "security:quiet-history".to_string(),
-                self.expanded_activity_rows.clone(),
-                false,
-            );
-            let list = gtk::Box::new(gtk::Orientation::Vertical, 8);
-            list.set_margin_top(8);
-            let dismiss_all = gtk::Button::with_label("Dismiss all");
-            dismiss_all.add_css_class("flat");
-            dismiss_all.set_halign(gtk::Align::Start);
-            let keys: Vec<String> = quiet.iter().map(security_dismissal_key).collect();
-            let page_for_dismiss_all = self.clone();
-            dismiss_all.connect_clicked(move |_| {
-                page_for_dismiss_all.dismiss_security(keys.clone());
-            });
-            list.append(&dismiss_all);
-            for (event, count) in collapsed {
-                list.append(&security_notice_card(&event, count, self.clone()));
+                Ok(())
+            })
+            .await;
+            match result {
+                Ok(Ok(())) => {
+                    page.dismiss_security(keys);
+                    page.refresh();
+                }
+                Ok(Err(error)) => page.show_error(&format!("could not accept changes: {error}")),
+                Err(_) => page.show_error("accepting changes stopped unexpectedly"),
             }
-            expander.set_child(Some(&list));
-            self.security_list.append(&expander);
-        }
+        });
     }
 
     fn set_security_status(&self, important: &[serde_json::Value]) {
         self.security_status.remove_css_class("attention");
+        self.security_status.remove_css_class("review");
+        self.security_status_icon.remove_css_class("review");
         self.security_status_icon.remove_css_class("attention");
         if important.is_empty() {
             self.security_status_title.set_label("Protection active");
             self.security_status_detail
-                .set_label("No important findings need review.");
+                .set_label("No changes need review.");
             self.security_status
                 .set_tooltip_text(Some("Open security and diagnostic history"));
             return;
         }
-        self.security_status.add_css_class("attention");
-        self.security_status_icon.add_css_class("attention");
+        if important
+            .iter()
+            .any(|event| event["blocked"] == true || event["type"] == "result_injection_blocked")
+        {
+            self.security_status.add_css_class("attention");
+            self.security_status_icon.add_css_class("attention");
+        } else {
+            self.security_status.add_css_class("review");
+            self.security_status_icon.add_css_class("review");
+        }
+        let groups = crate::integrity::group_tool_changes(important);
         let incidents = security_attention_incidents(important);
         let collapsed = crate::integrity::collapse_security_by_identity(&incidents);
+        let count = groups.len()
+            + collapsed
+                .iter()
+                .filter(|(event, _)| event["type"] != "tool_drift")
+                .count();
         self.security_status_title.set_label(&format!(
-            "{} security {} to review",
-            collapsed.len(),
-            if collapsed.len() == 1 {
-                "finding"
-            } else {
-                "findings"
-            }
+            "{count} {} to review",
+            if count == 1 { "update" } else { "updates" }
         ));
         self.security_status_detail
-            .set_label(&security_status_detail(&collapsed));
+            .set_label(security_status_detail(important));
         self.security_status
-            .set_tooltip_text(Some("Open the important findings in Protection history"));
+            .set_tooltip_text(Some("Review changes in Protection history"));
     }
 
     fn reveal_security(&self) {
@@ -3953,7 +3986,7 @@ impl ActivityPage {
                     dismissed.push(key);
                 }
             }
-            const MAX_DISMISSED: usize = 500;
+            const MAX_DISMISSED: usize = 2000;
             let overflow = dismissed.len().saturating_sub(MAX_DISMISSED);
             if overflow > 0 {
                 dismissed.drain(..overflow);
@@ -4278,28 +4311,9 @@ fn security_event_kind(event: &serde_json::Value) -> &'static str {
     }
 }
 
-fn security_status_detail(collapsed: &[(serde_json::Value, usize)]) -> String {
-    let Some((event, _)) = collapsed.first() else {
-        return "No important findings need review.".to_string();
-    };
-    let timestamp = event
-        .get("ts")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-    let mut detail = format!(
-        "{} · {}",
-        security_event_kind(event),
-        relative_activity_time(timestamp)
-    );
-    if collapsed.len() > 1 {
-        detail.push_str(&format!(" · {} more", collapsed.len() - 1));
-    }
-    detail
-}
-
 fn security_dismissal_key(event: &serde_json::Value) -> String {
     let identity = crate::integrity::security_key(event);
-    if crate::integrity::event_severity(event) != "high" {
+    if event["type"] != "tool_drift" && crate::integrity::event_severity(event) != "high" {
         return identity;
     }
     let timestamp = event
@@ -4310,8 +4324,19 @@ fn security_dismissal_key(event: &serde_json::Value) -> String {
 }
 
 fn security_event_is_dismissed(event: &serde_json::Value, dismissed: &[String]) -> bool {
+    if event["type"] == "tool_drift" && event["profiles"].is_array() && event["blocked"] != false {
+        return false;
+    }
     let identity = crate::integrity::security_key(event);
-    if crate::integrity::event_severity(event) != "high" {
+    // Preserve v1 review markers only for old records known to be unblocked.
+    if event["type"] == "tool_drift"
+        && event["new_fp"].as_str().is_none()
+        && event["blocked"] == false
+        && dismissed.contains(&identity)
+    {
+        return true;
+    }
+    if event["type"] != "tool_drift" && crate::integrity::event_severity(event) != "high" {
         return dismissed.contains(&identity);
     }
     let timestamp = event
@@ -4381,6 +4406,153 @@ fn remember_activity_expansion(
     }
 }
 
+fn security_status_detail(events: &[serde_json::Value]) -> &'static str {
+    let changes: Vec<_> = events
+        .iter()
+        .filter(|event| event["type"] == "tool_drift")
+        .collect();
+    if changes.is_empty() {
+        "Security findings need review. Open Protection history for details."
+    } else if changes.iter().any(|event| event["blocked"] == true) {
+        "Some tools are blocked. Review the changes or accept them."
+    } else if changes.iter().any(|event| event["blocked"].is_null()) {
+        "Blocking status unavailable. Review in Settings > Quarantined tools."
+    } else {
+        "Not blocked. Review the changes or accept them."
+    }
+}
+
+fn change_can_be_accepted(event: &serde_json::Value) -> bool {
+    event["blocked"] == false
+        || (event["blocked"] == true
+            && event["new_fp"].is_string()
+            && event["blocked_profiles"]
+                .as_array()
+                .is_some_and(|profiles| !profiles.is_empty()))
+}
+
+fn group_can_be_accepted(group: &crate::integrity::ToolChangeGroup) -> bool {
+    group
+        .tools
+        .iter()
+        .all(|event| event.get("signatures").is_none() && change_can_be_accepted(event))
+}
+
+fn tool_change_group_card(
+    group: &crate::integrity::ToolChangeGroup,
+    page: ActivityPage,
+) -> gtk::Box {
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    card.add_css_class("toolport-card");
+    let name = group
+        .tools
+        .first()
+        .and_then(|event| event["server_name"].as_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(&group.server);
+    let heading = gtk::Button::new();
+    let heading_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let arrow = gtk::Image::from_icon_name("pan-end-symbolic");
+    heading_row.append(&arrow);
+    heading_row.append(
+        &gtk::Label::builder()
+            .label(format!(
+                "{name}: {}, {}",
+                crate::integrity::tool_change_summary(&group.tools),
+                relative_activity_time(group.ts)
+            ))
+            .xalign(0.0)
+            .hexpand(true)
+            .wrap(true)
+            .css_classes(["heading"])
+            .build(),
+    );
+    heading.set_child(Some(&heading_row));
+    heading.add_css_class("flat");
+    heading.set_halign(gtk::Align::Fill);
+    heading.set_tooltip_text(Some("Expand to review the changed tools"));
+    let tools = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    tools.set_margin_top(8);
+    let reveal = gtk::Revealer::new();
+    reveal.set_child(Some(&tools));
+    let expansion_key = format!(
+        "security:server:{}:{}:{}",
+        group.profile, group.server, group.ts
+    );
+    let expanded_rows = page.expanded_activity_rows.clone();
+    reveal.set_reveal_child(expanded_rows.borrow().contains(&expansion_key));
+    let detail_events = group.tools.clone();
+    let detail_page = page.clone();
+    if reveal.reveals_child() {
+        for event in &detail_events {
+            tools.append(&security_notice_card(event, 1, detail_page.clone()));
+        }
+    }
+    arrow.set_icon_name(Some(if reveal.reveals_child() {
+        "pan-down-symbolic"
+    } else {
+        "pan-end-symbolic"
+    }));
+    let reveal_for_toggle = reveal.clone();
+    heading.connect_clicked(move |_| {
+        let expanded = !reveal_for_toggle.reveals_child();
+        if expanded && tools.first_child().is_none() {
+            for event in &detail_events {
+                tools.append(&security_notice_card(event, 1, detail_page.clone()));
+            }
+        }
+        reveal_for_toggle.set_reveal_child(expanded);
+        arrow.set_icon_name(Some(if expanded {
+            "pan-down-symbolic"
+        } else {
+            "pan-end-symbolic"
+        }));
+        remember_activity_expansion(&mut expanded_rows.borrow_mut(), &expansion_key, expanded);
+    });
+    card.append(&heading);
+    let blocked = group
+        .tools
+        .iter()
+        .filter(|event| event["blocked"] == true)
+        .count();
+    let unknown = group.tools.iter().any(|event| event["blocked"].is_null());
+    let status = if blocked > 0 {
+        format!(
+            "{blocked} {} blocked. Review the changes or accept them.",
+            if blocked == 1 { "tool is" } else { "tools are" }
+        )
+    } else if unknown {
+        "Blocking status unavailable. Review in Settings > Quarantined tools.".to_string()
+    } else {
+        "Not blocked. Review the changes or accept them.".to_string()
+    };
+    let label = empty_activity_label(&status);
+    if blocked > 0 {
+        label.add_css_class("error");
+    }
+    card.append(&label);
+    let accept = gtk::Button::with_label("Accept all for this server");
+    accept.set_halign(gtk::Align::Start);
+    accept.set_sensitive(group_can_be_accepted(group));
+    if group
+        .tools
+        .iter()
+        .any(|event| event.get("signatures").is_some())
+    {
+        card.append(&empty_activity_label(
+            "Suspicious content found. Review and accept each tool separately.",
+        ));
+    }
+    let events = group.tools.clone();
+    accept.connect_clicked(move |button| {
+        button.set_sensitive(false);
+        page.accept_security(events.clone());
+    });
+    card.append(&accept);
+    card.append(&reveal);
+    card
+}
+
 /// One loud (or quiet-lane) security finding. The summary stays compact; expanding
 /// it reveals the evidence Toolport retained for review.
 fn security_notice_card(
@@ -4394,23 +4566,35 @@ fn security_notice_card(
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let kind = match event.get("type").and_then(serde_json::Value::as_str) {
         Some("sync_change_refused") => "synced change blocked".to_string(),
+        Some("tool_drift") => "Tool changed".to_string(),
         other => other.unwrap_or("security_event").replace('_', " "),
     };
     let badge = gtk::Label::new(Some(&kind));
     badge.add_css_class("toolport-badge");
     badge.set_valign(gtk::Align::Center);
     badge.set_halign(gtk::Align::Start);
-    badge.add_css_class(if crate::integrity::event_severity(event) == "high" {
-        "error"
-    } else {
-        "review"
-    });
+    badge.add_css_class(
+        if event["blocked"] == true || event["type"] == "result_injection_blocked" {
+            "error"
+        } else {
+            "review"
+        },
+    );
     row.append(&badge);
     let subject = ["tool", "server"]
         .into_iter()
         .filter_map(|field| event.get(field).and_then(serde_json::Value::as_str))
         .find(|value| !value.is_empty())
         .unwrap_or("integrity baseline");
+    let subject = if event["type"] == "tool_drift" {
+        subject
+            .split_once("__")
+            .map(|(_, tool)| tool)
+            .unwrap_or(subject)
+            .replace('_', " ")
+    } else {
+        subject.to_string()
+    };
     row.append(
         &gtk::Label::builder()
             .label(subject)
@@ -4418,7 +4602,7 @@ fn security_notice_card(
             .hexpand(true)
             .xalign(0.0)
             .wrap(true)
-            .css_classes(["heading", "monospace"])
+            .css_classes(["heading"])
             .build(),
     );
     if count > 1 {
@@ -4444,11 +4628,18 @@ fn security_notice_card(
             .css_classes(["toolport-muted", "caption"])
             .build(),
     );
+    let is_change = event["type"] == "tool_drift";
     let dismiss = gtk::Button::builder()
-        .icon_name("window-close-symbolic")
-        .tooltip_text("Mark this occurrence reviewed; a later important recurrence will reappear")
+        .label(if is_change {
+            "Accept this tool"
+        } else {
+            "Reviewed"
+        })
+        .tooltip_text("Accept this occurrence; a later change will reappear")
         .css_classes(["flat"])
         .build();
+    dismiss.set_sensitive(!is_change || change_can_be_accepted(event));
+    let accepted_event = event.clone();
     let key = security_dismissal_key(event);
     let expansion_key = format!("security:{key}");
     let page_for_dismiss = page.clone();
@@ -4458,7 +4649,11 @@ fn security_notice_card(
             .expanded_activity_rows
             .borrow_mut()
             .remove(&expansion_key_for_dismiss);
-        page_for_dismiss.dismiss_security(vec![key.clone()]);
+        if is_change {
+            page_for_dismiss.accept_security(vec![accepted_event.clone()]);
+        } else {
+            page_for_dismiss.dismiss_security(vec![key.clone()]);
+        }
     });
     row.append(&dismiss);
     card.set_label_widget(Some(&row));
@@ -4500,7 +4695,7 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
 
     match (event_type, change) {
         ("tool_drift", "changed") => {
-            lines.push("Definition changed since Toolport's trusted baseline.".to_string());
+            lines.push("This tool changed since it was last accepted.".to_string());
             let fields: Vec<&str> = event
                 .get("changed_fields")
                 .and_then(serde_json::Value::as_array)
@@ -4511,9 +4706,9 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
             for field in &fields {
                 let label = match *field {
                     "description" => "Description",
-                    "input_schema" => "Input schema",
-                    "output_schema" => "Output schema",
-                    "annotations" => "Annotations",
+                    "input_schema" => "Inputs",
+                    "output_schema" => "Output format",
+                    "annotations" => "Safety hints",
                     other => other,
                 };
                 lines.push(format!("Changed field: {label}"));
@@ -4553,6 +4748,36 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
                 .to_string(),
         ),
         _ => lines.push("Toolport retained this security event for review.".to_string()),
+    }
+
+    if event_type == "tool_drift" {
+        if let Some(parameters) = event.get("parameters") {
+            for (key, label) in [
+                ("added", "Added"),
+                ("removed", "Removed"),
+                ("changed", "Changed"),
+            ] {
+                let names: Vec<_> = parameters[key]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect();
+                if !names.is_empty() {
+                    lines.push(format!("{label} parameters: {}", names.join(", ")));
+                }
+            }
+        } else if change == "changed" {
+            lines.push("Parameter details were not saved for this older change.".to_string());
+        }
+        lines.push(
+            match event["blocked"].as_bool() {
+                Some(true) => "Blocked until you accept the changes.",
+                Some(false) => "Not blocked.",
+                None => "Blocking status unavailable. Review in Settings > Quarantined tools.",
+            }
+            .to_string(),
+        );
     }
 
     if let Some(signatures) = event
@@ -10341,6 +10566,74 @@ fn state_card(icon_name: &str, title: &str, body: &str, error: bool) -> gtk::Box
 mod tests {
     #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn tool_change_history_and_details_build_only_on_expand() {
+        use super::*;
+        let _data = crate::registry::DataDirTestEnv::new("gtk-lazy-security-history");
+        adw::init().unwrap();
+        let app = adw::Application::builder().build();
+        let page = ActivityPage::new(&app);
+        let mut snapshot = state::load_activity_snapshot().unwrap();
+        snapshot.security_events = (0..2000).map(|i| serde_json::json!({
+            "type":"tool_drift", "server":"srv", "tool":format!("srv__read_{i}"),
+            "change":"changed", "severity":"info", "ts":1, "blocked":false, "historical":true,
+        })).collect();
+        *page.last_snapshot.borrow_mut() = Some(snapshot);
+        page.render_security();
+        let history = page
+            .security_list
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::Expander>()
+            .unwrap();
+        let rows = history.child().unwrap().downcast::<gtk::Box>().unwrap();
+        assert!(
+            rows.first_child().is_none(),
+            "collapsed history must build no group cards"
+        );
+        history.set_expanded(true);
+        let card = rows.first_child().unwrap().downcast::<gtk::Box>().unwrap();
+        let reveal = card
+            .last_child()
+            .unwrap()
+            .downcast::<gtk::Revealer>()
+            .unwrap();
+        let details = reveal.child().unwrap().downcast::<gtk::Box>().unwrap();
+        assert!(
+            details.first_child().is_none(),
+            "collapsed groups must build no tool cards"
+        );
+        let heading = card
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::Button>()
+            .unwrap();
+        heading.emit_clicked();
+        let mut count = 0;
+        let mut child = details.first_child();
+        while let Some(row) = child {
+            count += 1;
+            child = row.next_sibling();
+        }
+        assert_eq!(count, 2000);
+        let first = details.first_child().unwrap();
+        heading.emit_clicked();
+        heading.emit_clicked();
+        assert_eq!(
+            details.first_child(),
+            Some(first),
+            "reopening reuses the built cards"
+        );
+        history.set_expanded(false);
+        history.set_expanded(true);
+        assert_eq!(
+            rows.first_child(),
+            Some(card.upcast()),
+            "history reuses its group cards"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn personal_sync_rows_keep_menu_focus_icon_and_notice_space() {
         adw::init().unwrap();
         let _data = crate::registry::DataDirTestEnv::new("gtk-personal-sync-rows");
@@ -10987,12 +11280,90 @@ mod tests {
         assert_eq!(
             security_review_lines(&event),
             vec![
-                "Definition changed since Toolport's trusted baseline.",
+                "This tool changed since it was last accepted.",
                 "Changed field: Description",
-                "Changed field: Annotations",
+                "Changed field: Safety hints",
                 "readOnlyHint: true to false",
+                "Parameter details were not saved for this older change.",
+                "Blocking status unavailable. Review in Settings > Quarantined tools.",
             ]
         );
+    }
+
+    #[test]
+    fn tool_change_review_lists_parameter_deltas_and_requires_the_displayed_block() {
+        let event = serde_json::json!({"type":"tool_drift", "change":"changed", "changed_fields":["input_schema"], "parameters":{"added":["comment"],"removed":["old_id"],"changed":["ttl"]}, "blocked":false});
+        let lines = security_review_lines(&event);
+        assert!(lines.contains(&"Added parameters: comment".to_string()));
+        assert!(lines.contains(&"Removed parameters: old_id".to_string()));
+        assert!(lines.contains(&"Changed parameters: ttl".to_string()));
+        assert!(lines.contains(&"Not blocked.".to_string()));
+        assert!(change_can_be_accepted(&event));
+        let mut blocked = event;
+        blocked["blocked"] = serde_json::json!(true);
+        blocked["blocked_profiles"] = serde_json::json!(["work"]);
+        assert!(!change_can_be_accepted(&blocked));
+        blocked["new_fp"] = serde_json::json!("v2:reviewed");
+        assert!(change_can_be_accepted(&blocked));
+        blocked["blocked"] = serde_json::Value::Null;
+        assert!(!change_can_be_accepted(&blocked));
+    }
+
+    #[test]
+    fn legacy_quarantine_review_stays_in_the_main_view_and_cannot_be_accepted() {
+        let data = crate::registry::DataDirTestEnv::new("gtk-legacy-quarantine-review");
+        let mut registry = crate::registry::Registry::default();
+        registry.profiles.push(crate::registry::Profile {
+            id: "work".into(),
+            name: "Work".into(),
+            enabled_server_ids: vec![],
+            tool_scope: Default::default(),
+            instructions: None,
+            unknown_fields: Default::default(),
+        });
+        crate::registry::save(&registry).unwrap();
+        let store = data.dir.join(format!(
+            "quarantine-v2-{}.json",
+            crate::registry::profile_store_key("work")
+        ));
+        std::fs::write(
+            store,
+            r#"{"srv__update":{"tool":"srv__update","change":"changed"}}"#,
+        )
+        .unwrap();
+        for profile in [serde_json::Value::Null, serde_json::json!("work")] {
+            let event = serde_json::json!({"type":"tool_drift", "tool":"srv__update", "server":"srv", "change":"changed", "profile":profile, "ts":1});
+            let mut lines = vec![event.to_string()];
+            lines.extend((2..=56).map(|ts| serde_json::json!({"type":"tool_drift", "tool":format!("other__read{ts}"), "server":"other", "ts":ts}).to_string()));
+            std::fs::write(data.dir.join("security.jsonl"), lines.join("\n") + "\n").unwrap();
+            let snapshot = state::load_activity_snapshot().unwrap();
+            let old = snapshot.security_events.last().unwrap();
+            assert!(old["blocked"].is_null());
+            assert_ne!(old["historical"], true);
+            assert!(!change_can_be_accepted(old));
+            assert!(!group_can_be_accepted(
+                &crate::integrity::group_tool_changes(&[old.clone()]).remove(0)
+            ));
+            assert!(security_review_lines(old)
+                .iter()
+                .any(|line| line.contains("Settings > Quarantined tools")));
+        }
+    }
+
+    #[test]
+    fn poison_flagged_drift_requires_per_tool_review_and_shows_signatures() {
+        let event = serde_json::json!({"type":"tool_drift", "server":"srv", "tool":"srv__update", "ts":100, "blocked":true, "blocked_profiles":["work"], "new_fp":"v2:reviewed", "signatures":["instruction_override"]});
+        let group = crate::integrity::group_tool_changes(&[event.clone()]).remove(0);
+        assert!(!group_can_be_accepted(&group));
+        assert!(change_can_be_accepted(&event));
+        assert!(security_review_lines(&event)
+            .iter()
+            .any(|line| line == "Matched signals: instruction override"));
+        let mut no_details = event;
+        no_details["signatures"] = serde_json::json!([]);
+        assert!(!group_can_be_accepted(
+            &crate::integrity::group_tool_changes(&[no_details]).remove(0)
+        ));
     }
 
     #[test]
@@ -11008,8 +11379,10 @@ mod tests {
         assert_eq!(
             security_review_lines(&event),
             vec![
-                "Definition changed since Toolport's trusted baseline.",
+                "This tool changed since it was last accepted.",
                 "This older event does not contain field-level change details.",
+                "Parameter details were not saved for this older change.",
+                "Blocking status unavailable. Review in Settings > Quarantined tools.",
             ]
         );
     }
@@ -11471,7 +11844,9 @@ mod tests {
                 .is_some_and(|error| error.contains("quarantine")),
             "the identity panel must say why it is unknown: {activity:?}"
         );
-        assert_eq!(activity.security_events, events);
+        let mut unknown_events = events.clone();
+        unknown_events[0]["blocked"] = serde_json::Value::Null;
+        assert_eq!(activity.security_events, unknown_events);
 
         std::fs::write(dir.join("quarantine.json"), "{}").unwrap();
         std::fs::write(dir.join("tool-pins.json"), "{ not json").unwrap();
@@ -11483,7 +11858,11 @@ mod tests {
                 .is_some_and(|error| error.contains("pin store")),
             "a lost pin baseline must not look like an empty identity panel: {activity:?}"
         );
-        assert_eq!(activity.security_events, events);
+        assert!(
+            crate::integrity::all_quarantined().is_err(),
+            "a lost trust store cannot establish that nothing is blocked"
+        );
+        assert_eq!(activity.security_events, unknown_events);
     }
 
     #[test]
@@ -11550,6 +11929,50 @@ mod tests {
     }
 
     #[test]
+    fn security_status_copy_uses_only_tool_changes_for_blocking_wording() {
+        for ty in [
+            "result_injection_blocked",
+            "sync_change_refused",
+            "tool_poison_flag",
+        ] {
+            let event = serde_json::json!({"type":ty, "blocked":false});
+            assert_eq!(
+                security_status_detail(&[event]),
+                "Security findings need review. Open Protection history for details."
+            );
+        }
+        let drift = serde_json::json!({"type":"tool_drift", "blocked":false});
+        let injection = serde_json::json!({"type":"result_injection_blocked", "blocked":true});
+        assert_eq!(
+            security_status_detail(&[drift, injection]),
+            "Not blocked. Review the changes or accept them."
+        );
+    }
+
+    #[test]
+    fn a_reviewed_shared_change_stays_visible_for_a_later_profile_block() {
+        let mut event = serde_json::json!({"type":"tool_drift", "server":"srv", "tool":"srv__read", "profiles":["personal", "work"], "blocked":true, "ts":1});
+        let markers = vec![security_dismissal_key(&event)];
+        assert!(!security_event_is_dismissed(&event, &markers));
+        event["blocked"] = serde_json::json!(false);
+        assert!(security_event_is_dismissed(&event, &markers));
+    }
+
+    #[test]
+    fn v1_drift_review_keeps_new_and_blocked_changes_visible() {
+        let mut event = serde_json::json!({"type":"tool_drift", "server":"srv", "tool":"srv__read", "change":"changed", "severity":"info", "blocked":false, "ts":1});
+        let markers = vec![crate::integrity::security_key(&event)];
+        assert!(security_event_is_dismissed(&event, &markers));
+        event["blocked"] = serde_json::Value::Null;
+        assert!(!security_event_is_dismissed(&event, &markers));
+        event["blocked"] = serde_json::json!(true);
+        assert!(!security_event_is_dismissed(&event, &markers));
+        event["blocked"] = serde_json::json!(false);
+        event["new_fp"] = serde_json::json!("v3:new");
+        assert!(!security_event_is_dismissed(&event, &markers));
+    }
+
+    #[test]
     fn reviewing_a_high_finding_does_not_hide_a_later_recurrence() {
         let finding = |ts| {
             serde_json::json!({
@@ -11566,6 +11989,13 @@ mod tests {
         assert!(security_event_is_dismissed(&finding(999), &markers));
         assert!(security_event_is_dismissed(&reviewed, &markers));
         assert!(!security_event_is_dismissed(&finding(1001), &markers));
+        let mut quiet_change = reviewed;
+        quiet_change["type"] = serde_json::json!("tool_drift");
+        quiet_change["severity"] = serde_json::json!("info");
+        let accepted = vec![security_dismissal_key(&quiet_change)];
+        assert!(security_event_is_dismissed(&quiet_change, &accepted));
+        quiet_change["ts"] = serde_json::json!(1001);
+        assert!(!security_event_is_dismissed(&quiet_change, &accepted));
     }
 
     #[test]
