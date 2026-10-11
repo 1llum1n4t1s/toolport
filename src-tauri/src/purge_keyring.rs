@@ -79,8 +79,8 @@ fn skipped_keyring(reason: &str) -> Removal {
 }
 
 #[cfg(target_os = "linux")]
-fn no_keyring() -> Removal {
-    Removal { notes: vec!["No keyring in use; encrypted file secrets are removed with the data folder.".into()], ..Removal::default() }
+fn no_keyring(team_token_in_file: bool) -> Removal {
+    Removal { team_token_in_file, notes: vec!["No keyring in use; encrypted file secrets are removed with the data folder.".into()], ..Removal::default() }
 }
 
 #[cfg(target_os = "linux")]
@@ -94,30 +94,34 @@ fn unavailable(error: &dbus_secret_service::Error) -> bool {
 }
 
 #[cfg(target_os = "linux")]
+fn missing_bus(error: &dbus_secret_service::Error) -> bool {
+    matches!(error, dbus_secret_service::Error::Dbus(error) if matches!(error.name(),
+        Some("org.freedesktop.DBus.Error.NoServer" | "org.freedesktop.DBus.Error.FileNotFound")))
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
     use dbus_secret_service::{EncryptionType, SecretService};
-    // Use the same backend selector as secret reads and writes, including the
-    // nonempty-key requirement. Merely having an environment variable is insufficient.
-    if super::file::active() {
-        return Ok(Removal {
-            team_token_in_file: super::file::get_secret_result(crate::teams::TEAM_TOKEN_SERVER, crate::teams::TEAM_TOKEN_KEY)
-                .ok().flatten().is_some(),
-            ..no_keyring()
-        });
-    }
+    // Follow the real backend selector, but still inventory an available desktop
+    // keyring: selecting the file backend does not remove its older OS tokens.
+    let file_active = super::file::active();
+    let team_token_in_file = file_active && super::file::get_secret_result(crate::teams::TEAM_TOKEN_SERVER, crate::teams::TEAM_TOKEN_KEY)
+        .ok().flatten().is_some();
     crate::hostenv::restore_session_bus_env();
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })));
+    let desktop_runtime = runtime.exists();
     if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none_or(|address| address.is_empty()) {
-        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })));
-        return Ok(if runtime.exists() {
+        return Ok(if desktop_runtime {
             skipped_keyring("No session bus found in the desktop runtime directory")
         } else {
             // A genuinely headless host has neither a session bus nor runtime data.
-            no_keyring()
+            no_keyring(team_token_in_file)
         });
     }
     let service = match SecretService::connect_with_max_prompt_timeout(EncryptionType::Dh, 5) {
         Ok(service) => service,
+        Err(error) if missing_bus(&error) && file_active && !desktop_runtime => return Ok(no_keyring(team_token_in_file)),
         Err(error) if unavailable(&error) => return Ok(skipped_keyring(&format!("Secret Service is unavailable: {error}"))),
         Err(error) => return Err(error.to_string()),
     };
@@ -127,7 +131,7 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
             super::SERVICE,
         )]))
         .map_err(|error| error.to_string())?;
-    Ok(remove_owned(
+    let mut report = remove_owned(
         entries.unlocked.into_iter().chain(entries.locked),
         scope,
         |item| {
@@ -140,7 +144,9 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
         },
         |item| format!("secret-service:{}", item.path),
         |item| item.delete().map_err(|error| error.to_string()),
-    ))
+    );
+    report.team_token_in_file = team_token_in_file;
+    Ok(report)
 }
 
 #[cfg(target_os = "windows")]

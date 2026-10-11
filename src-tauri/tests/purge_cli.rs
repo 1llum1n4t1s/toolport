@@ -111,13 +111,15 @@ fn purge_missing_desktop_bus_keeps_registry_for_credential_retry() {
     let registry = serde_json::to_vec(&conduit_lib::registry::Registry::default()).unwrap();
     std::fs::write(data.join("registry.json"), &registry).unwrap();
     std::fs::write(data.join("secrets.enc"), "fixture").unwrap();
-    let output = isolated_command(&env.dir, &data).env("XDG_RUNTIME_DIR", &runtime)
-        .env("TOOLPORT_SECRET_KEY", "").args(["--remove-data", "--confirm"]).output().unwrap();
-    assert!(!output.status.success());
-    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(report["leftovers"][0]["path"].as_str().unwrap().contains("credential cleanup not done"));
-    assert_eq!(std::fs::read(data.join("registry.json")).unwrap(), registry);
-    assert!(data.join("secrets.enc").exists());
+    for key in ["", "selected-file-backend"] {
+        let output = isolated_command(&env.dir, &data).env("XDG_RUNTIME_DIR", &runtime)
+            .env("TOOLPORT_SECRET_KEY", key).args(["--remove-data", "--confirm"]).output().unwrap();
+        assert!(!output.status.success());
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(report["leftovers"][0]["path"].as_str().unwrap().contains("credential cleanup not done"));
+        assert_eq!(std::fs::read(data.join("registry.json")).unwrap(), registry);
+        assert!(data.join("secrets.enc").exists());
+    }
     std::fs::remove_dir(runtime).unwrap();
     let output = isolated_command(&env.dir, &data).args(["--remove-data", "--confirm"]).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
@@ -147,11 +149,13 @@ fn purge_recovers_runtime_bus_but_keeps_registry_when_secret_service_is_closed()
     assert!(address.starts_with("unix:path="));
     let registry = serde_json::to_vec(&conduit_lib::registry::Registry::default()).unwrap();
     std::fs::write(data.join("registry.json"), &registry).unwrap();
-    let output = isolated_command(&env.dir, &data).env("XDG_RUNTIME_DIR", &runtime)
-        .env("TOOLPORT_SECRET_KEY", "").args(["--remove-data", "--confirm"]).output().unwrap();
-    assert!(!output.status.success());
-    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(report["leftovers"][0]["error"].as_str().unwrap().contains("Secret Service is unavailable"), "{report}");
-    assert_eq!(std::fs::read(data.join("registry.json")).unwrap(), registry);
-    assert!(report["removed"].as_array().unwrap().iter().all(|p| !p.as_str().unwrap().contains("registry.json")));
+    for key in ["", "selected-file-backend"] {
+        let output = isolated_command(&env.dir, &data).env("XDG_RUNTIME_DIR", &runtime)
+            .env("TOOLPORT_SECRET_KEY", key).args(["--remove-data", "--confirm"]).output().unwrap();
+        assert!(!output.status.success());
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(report["leftovers"][0]["error"].as_str().unwrap().contains("Secret Service is unavailable"), "{report}");
+        assert_eq!(std::fs::read(data.join("registry.json")).unwrap(), registry);
+        assert!(report["removed"].as_array().unwrap().iter().all(|p| !p.as_str().unwrap().contains("registry.json")));
+    }
 }

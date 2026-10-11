@@ -100,11 +100,13 @@ This clears credentials used by other installs too, while deleting only
 Toolport-created entries in the selected data folder. It can proceed with a
 corrupt registry, using independent client recovery snapshots. Client restoration
 failures still retain recovery data. Settings uses the automatic scope above.
-With an active encrypted file backend or a truly headless Linux host with no
-session bus or runtime directory, removal continues without a keyring. On a
-desktop, Toolport first tries the runtime directory's bus. An unavailable bus or
-Secret Service provider reports credential cleanup as incomplete and keeps the
-registry so retry can find the same accounts. Startup cleanup precedes
+On a truly headless Linux host with no session bus or runtime directory, removal
+continues without a keyring. An active encrypted file backend also permits
+headless cleanup when no Secret Service is available. On a desktop, Toolport first
+tries the runtime directory's bus and inventories older keyring tokens even if
+the file backend is selected. An unavailable desktop bus or Secret Service
+provider reports credential cleanup as incomplete and keeps the registry so
+retry can find the same accounts. Startup cleanup precedes
 credential deletion. Any partially completed cleanup lists removed and failed
 items separately and keeps the registry so retry uses the same ownership scope.
 Toolport's own launch-at-login entries are removed; changed or unrecognized
