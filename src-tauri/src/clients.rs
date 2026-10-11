@@ -36,6 +36,8 @@ mod zcode;
 mod round3_tests;
 #[cfg(test)]
 mod round4_tests;
+#[cfg(test)]
+mod round5_tests;
 
 /// One MCP server, normalized across every client format.
 #[derive(Debug, Clone, Serialize)]
