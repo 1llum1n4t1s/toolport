@@ -13,6 +13,9 @@ use windows_sys::Win32::Security::{
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 pub(super) fn secure(dir: &Path) -> Result<(), String> {
+    // The directory already exists. Canonicalization supplies the extended
+    // Win32 path so a long backup path keeps its private ACL too.
+    let dir = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
     let mut token = std::ptr::null_mut();
     // SAFETY: valid output handles/buffers; every owned allocation/handle is
     // released below. The SID remains in the aligned buffer until ACL creation.
@@ -58,9 +61,6 @@ pub(super) fn secure(dir: &Path) -> Result<(), String> {
         if result != 0 {
             return Err(std::io::Error::from_raw_os_error(result as i32).to_string());
         }
-        // The directory already exists. Canonicalization supplies the extended
-        // Win32 path so a long backup path keeps its private ACL too.
-        let dir = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
         let mut path: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
         let result = SetNamedSecurityInfoW(
             path.as_mut_ptr(),
