@@ -103,7 +103,7 @@ try {
   await expect(
     page.getByRole("dialog", { name: "Add client location", exact: true }),
   ).toHaveCount(0);
-  await expect(page.getByText("Claude Code (.claude2)", { exact: true })).toBeVisible();
+  await expect(page.getByText("Claude Code (claude2)", { exact: true })).toBeVisible();
   await page.screenshot({ path: path.join(output, "client-location-detail.png") });
   await page.getByRole("button", { name: "Clients", exact: true }).click();
   await page.getByRole("button", { name: /Codex/ }).click();

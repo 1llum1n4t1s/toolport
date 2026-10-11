@@ -680,7 +680,7 @@ mockIPC(
       case "add_client_location":
         fixtureLocations.push({
           id: `${String(args.clientType)}@fixture-${fixtureLocations.length}`,
-          name: `${args.clientType === "codex" ? "Codex" : "Claude Code"} (${String(args.folder).split("/").pop()})`,
+          name: `${args.clientType === "codex" ? "Codex" : "Claude Code"} (${String(args.folder).split("/").pop()?.replace(/^\./, "")})`,
           usesConnectors: false,
           configPath: `${String(args.folder)}/${args.clientType === "codex" ? "config.toml" : ".claude.json"}`,
           configExists: true,
