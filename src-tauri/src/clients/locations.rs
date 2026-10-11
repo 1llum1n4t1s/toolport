@@ -445,6 +445,22 @@ mod tests {
     }
 
     #[test]
+    fn later_background_adoption_keeps_existing_access_and_location_override() {
+        let _data = crate::registry::DataDirTestEnv::new("later-location-access");
+        let mut registry = crate::registry::Registry::default();
+        registry.client_scopes.insert("claude-code".into(), "work".into());
+        crate::registry::save(&registry).unwrap();
+        let text = r#"{"mcpServers":{"toolport":{"command":"toolport-gateway","env":{"TOOLPORT_CLIENT_ID":"claude-code"}}}}"#;
+        inherit_location_access("claude-code@claude2", text).unwrap();
+        let mut registry = crate::registry::load().unwrap();
+        assert_eq!(registry.client_scopes.get("claude-code@claude2"), Some(&"work".into()));
+        registry.client_scopes.insert("claude-code@claude2".into(), "personal".into());
+        crate::registry::save(&registry).unwrap();
+        inherit_location_access("claude-code@claude2", text).unwrap();
+        assert_eq!(crate::registry::load().unwrap().client_scopes.get("claude-code@claude2"), Some(&"personal".into()));
+    }
+
+    #[test]
     fn identity_only_adoption_preserves_existing_gateway_fields_and_restore_record() {
         let _data = crate::registry::DataDirTestEnv::new("location-identity-adoption");
         let folder = TempFolder::new();

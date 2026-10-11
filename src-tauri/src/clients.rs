@@ -3498,6 +3498,22 @@ pub fn detect_clients_for_display() -> Result<Vec<DetectedClient>, String> {
     Ok(if changed { definitions.iter().map(read_client).collect() } else { detected })
 }
 
+fn inherit_location_access(id: &str, text: &str) -> Result<(), String> {
+    if !id.contains('@') { return Ok(()); }
+    let Some(prior) = profile_key_from_config_text(text, crate::brand::CLIENT_ID)
+        .or_else(|| profile_key_from_config_text(text, crate::brand::CLIENT_ID_LEGACY)) else { return Ok(()); };
+    let current = crate::registry::load()?;
+    if prior == id || current.client_scopes.contains_key(id) || !current.client_scopes.contains_key(&prior) {
+        return Ok(());
+    }
+    crate::registry::update(|registry| {
+        if let Some(scope) = registry.client_scopes.get(&prior).cloned() {
+            registry.client_scopes.entry(id.into()).or_insert(scope);
+        }
+        Ok(())
+    })
+}
+
 /// A lightweight initial inventory: metadata only, no config or plugin reads.
 pub fn client_metadata() -> Vec<DetectedClient> {
     machine_defs(true).iter().map(|def| {
@@ -7417,6 +7433,9 @@ fn repoint_stale_gateways_in(
             .ok_or("Unknown client".to_string())
             .and_then(|def| {
                 let path = resolved_definition_path(&def)?;
+                if location_identity_changed {
+                    if let Some(text) = &config_text { inherit_location_access(&client.id, text)?; }
+                }
                 mutation::run(&client.id, &path, def.format, || {
                     let fresh = read_client(&def);
                     if resolve_entry_state(&fresh.servers, managed.get(&client.id))
