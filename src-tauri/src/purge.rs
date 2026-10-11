@@ -678,7 +678,7 @@ fn remove_selected_contents(root: &Path, dir: &Path, keep: &[PathBuf], report: &
                     remove_empty_dirs(&path, report);
                 }
             }
-            Ok(metadata) if selected.is_some() && (!metadata.is_dir() || is_link(&metadata)) => remove_path(&path, report),
+            Ok(metadata) if selected == Some(DataEntry::File) && !metadata.is_dir() && !is_link(&metadata) => remove_path(&path, report),
             Ok(_) => report.preserved.push(format!("{} (not a Toolport-created entry)", path.display())),
             Err(error) => report.leftovers.push(Leftover { path: path.display().to_string(), error: error.to_string() }),
         }
@@ -1284,6 +1284,39 @@ mod tests {
             "backups/tax.zip", "backups/claude-code/tax.zip", "backups/personal/123-file.json", "logs/other-app.log",
             "broker/personal", "exports/rules-notes.md", "oauth-locks/notes.lock", "children/notes.json"] {
             assert!(owned_data_entry(Path::new(path)).is_none(), "{path}");
+        }
+    }
+
+    #[test]
+    fn purge_directory_name_collisions_preserve_files_and_links() {
+        let env = crate::registry::DataDirTestEnv::new("purge_directory_collisions");
+        crate::registry::save(&crate::registry::Registry::default()).unwrap();
+        for name in ["bin", "backups"] { std::fs::write(env.dir.join(name), "user bytes").unwrap(); }
+        std::fs::create_dir(env.dir.join("gateway.log")).unwrap();
+        std::fs::write(env.dir.join("gateway.log/personal.txt"), "nested bytes").unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::create_dir(env.dir.join("native")).unwrap();
+            std::fs::write(env.dir.join("native/personal.txt"), "native bytes").unwrap();
+            std::os::unix::fs::symlink(env.dir.join("native"), env.dir.join("exports")).unwrap();
+            std::os::unix::fs::symlink(env.dir.join("native/personal.txt"), env.dir.join("secrets.enc")).unwrap();
+        }
+        let report = run_with(
+            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
+            || Ok(crate::secrets::purge::Removal::default()), |_| Ok(()), |_| Ok(()),
+        ).unwrap();
+        assert!(report.leftovers.is_empty(), "{:?}", report.leftovers);
+        for name in ["bin", "backups"] {
+            assert_eq!(std::fs::read_to_string(env.dir.join(name)).unwrap(), "user bytes");
+            let path = env.dir.join(name).display().to_string();
+            assert!(report.preserved.iter().any(|entry| entry.starts_with(&path)));
+        }
+        assert_eq!(std::fs::read_to_string(env.dir.join("gateway.log/personal.txt")).unwrap(), "nested bytes");
+        #[cfg(unix)]
+        {
+            assert!(std::fs::symlink_metadata(env.dir.join("exports")).unwrap().file_type().is_symlink());
+            assert!(std::fs::symlink_metadata(env.dir.join("secrets.enc")).unwrap().file_type().is_symlink());
+            assert_eq!(std::fs::read_to_string(env.dir.join("native/personal.txt")).unwrap(), "native bytes");
         }
     }
 
