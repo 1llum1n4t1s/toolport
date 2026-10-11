@@ -134,7 +134,7 @@ async fn detect_clients(
     // Reads several config files and scans plugin dirs - off the UI thread.
     let mut list = tauri::async_runtime::spawn_blocking(move || {
         if inspect_configs.unwrap_or(true) { clients::detect_clients_for_display() }
-        else { Ok(clients::client_metadata()) }
+        else { Ok(clients::detect_clients()) }
     })
         .await
         .map_err(|e| e.to_string())??;
@@ -156,6 +156,12 @@ async fn detect_clients(
 #[tauri::command]
 async fn client_location_types() -> Result<Vec<clients::ClientLocationType>, String> {
     tauri::async_runtime::spawn_blocking(clients::client_location_types).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn remove_client_location(client_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || clients::remove_client_location(&client_id))
+        .await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -4226,6 +4232,7 @@ pub fn run() {
             detect_clients,
             client_location_types,
             add_client_location,
+            remove_client_location,
             get_registry,
             take_registry_recovery_notice,
             import_servers,
@@ -5059,6 +5066,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             uses_connectors: false,
+            location_removable: false,
             config_path: String::new(),
             config_exists: true,
             app_present: true,

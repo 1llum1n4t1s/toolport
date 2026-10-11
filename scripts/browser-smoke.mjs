@@ -69,6 +69,34 @@ try {
     }
     await page.screenshot({ path: path.join(output, `catalog-react-${state}.png`) });
   }
+  await page.goto(`${baseURL}/fixtures/?connected-import`);
+  await expect(
+    page.getByRole("button", { name: "Import 2 from clients", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Skip setup", exact: true })).toHaveCount(
+    0,
+  );
+  const probesAtStartup = await page.evaluate(
+    () => window.toolportFixture.calls.probe_servers ?? 0,
+  );
+  await page.getByRole("button", { name: "Activity", exact: true }).click();
+  await expect(page.getByText("Protection active.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Servers", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Import 2 from clients", exact: true }),
+  ).toBeVisible();
+  expect(await page.evaluate(() => window.toolportFixture.calls.probe_servers ?? 0)).toBe(
+    probesAtStartup,
+  );
+  await page.screenshot({ path: path.join(output, "connected-client-import.png") });
+  await page.getByRole("button", { name: "Help", exact: true }).click();
+  await page.getByRole("button", { name: "Run setup again", exact: true }).click();
+  await page.getByRole("button", { name: /Set up MCP servers/ }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByText("Connected clients", { exact: true })).toBeVisible();
+  await expect(page.getByText("Codex", { exact: true })).toBeVisible();
+  await page.screenshot({ path: path.join(output, "onboarding-connected-client.png") });
   await page.goto(`${baseURL}/fixtures/`);
   await expect(page.getByText("GitHub", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "35.0k tokens saved" })).toBeVisible();
@@ -107,6 +135,14 @@ try {
     page.getByRole("heading", { name: "Claude Code (claude2)", exact: true }),
   ).toBeVisible();
   await page.screenshot({ path: path.join(output, "client-location-detail.png") });
+  await page.getByRole("button", { name: "Remove location", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Remove location", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Claude Code (claude2)", exact: true }),
+  ).toHaveCount(0);
   await page.getByRole("button", { name: "Clients", exact: true }).click();
   await page.getByRole("button", { name: /Codex/ }).click();
   await expect(page.getByRole("combobox", { name: "Access", exact: true })).toBeVisible();

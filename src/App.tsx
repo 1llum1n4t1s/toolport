@@ -282,7 +282,7 @@ function App() {
       setError(null);
       try {
         const [dc, recovery] = await Promise.all([
-          detectClients(view === "clients"),
+          detectClients(false),
           takeRegistryRecoveryNotice(),
         ]);
         // Inspecting locations can adopt an existing gateway and its access.
@@ -334,12 +334,31 @@ function App() {
         setLoading(false);
       }
     },
-    [reprobe, reprobeAfterMutation, view],
+    [reprobe, reprobeAfterMutation],
   );
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (view !== "clients") return;
+    let active = true;
+    void detectClients(true)
+      .then(async (detected) => {
+        const registry = await getRegistry();
+        if (!active) return;
+        registryRef.current = registry;
+        setRegistry(registry);
+        setClients(detected);
+      })
+      .catch((error) => {
+        if (active) toastError(`Couldn't refresh clients: ${error}`);
+      });
+    return () => {
+      active = false;
+    };
+  }, [view]);
 
   // An agent toggling a server through the gateway writes the registry; the backend
   // watches that file and emits this event, so the UI reflects the change live

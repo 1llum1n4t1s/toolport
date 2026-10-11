@@ -397,6 +397,7 @@ pub(super) struct ClientView {
     /// The global mode a client without its own choice inherits, if the user has one.
     pub(super) inherited_discovery: Option<String>,
     pub(super) config_error: bool,
+    pub(super) location_removable: bool,
 }
 
 impl ClientView {
@@ -434,6 +435,7 @@ impl ClientView {
             discovery_mode: None,
             inherited_discovery: None,
             config_error: client.error.is_some(),
+            location_removable: client.location_removable,
         }
     }
 }
@@ -1148,6 +1150,7 @@ mod tests {
             id: "codex".into(),
             name: "Codex".into(),
             uses_connectors: false,
+            location_removable: false,
             discovery: crate::clients::discovery_capabilities("codex"),
             config_path: "/private/config.toml".into(),
             config_exists: true,

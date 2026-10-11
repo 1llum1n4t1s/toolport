@@ -42,9 +42,7 @@ fn first_run_needed() -> Result<bool, String> {
     if has_servers {
         return Ok(false);
     }
-    // Startup checks use known ownership, not client config contents. The wizard
-    // scans only when its client setup step is opened.
-    Ok(registry.client_managed_entries.is_empty())
+    Ok(!crate::clients::detect_clients().iter().any(|client| client.gateway_installed))
 }
 
 #[cfg(test)]
@@ -962,6 +960,7 @@ mod tests {
                 discovery_mode: None,
                 inherited_discovery: None,
                 config_error: false,
+            location_removable: false,
             }],
             profiles: Vec::new(),
             sessions: Vec::new(),

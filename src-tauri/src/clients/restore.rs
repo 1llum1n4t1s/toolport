@@ -328,7 +328,7 @@ fn original_gateways(
     if client_id.contains('@') {
         if let Some(text) = text {
             for server in parse_client_content(format, text)? {
-                if detected_is_gateway(&server) && command_is_gateway_binary(server.command.as_deref().unwrap_or(""))
+                if matches!(server.name.as_str(), GATEWAY_ENTRY_NAME | LEGACY_GATEWAY_ENTRY_NAME) && command_is_gateway_binary(server.command.as_deref().unwrap_or(""))
                     && !names.contains(&server.name) { names.push(server.name); }
             }
         }

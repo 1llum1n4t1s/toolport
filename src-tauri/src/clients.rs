@@ -22,7 +22,7 @@ pub use disconnect::{all as disconnect_all, ClientResult as DisconnectResult};
 pub(crate) use disconnect::for_purge as disconnect_all_for_purge;
 mod discovery;
 mod locations;
-pub use locations::{add_client_location, client_location_types, ClientLocationType};
+pub use locations::{remove_client_location, add_client_location, client_location_types, ClientLocationType};
 #[cfg(feature = "test-support")]
 pub use locations::measure_scan as measure_client_location_scan;
 pub use discovery::DiscoveryCapabilities;
@@ -73,6 +73,7 @@ pub struct DetectedClient {
     /// (Claude Desktop) rather than the local config file. Their file-based count
     /// is misleading, so the UI shows a connector indicator instead.
     pub uses_connectors: bool,
+    pub location_removable: bool,
     pub discovery: DiscoveryCapabilities,
     pub config_path: String,
     pub config_exists: bool,
@@ -197,23 +198,26 @@ fn machine_defs(include_detected: bool) -> Vec<ClientDef> {
             definitions.push(def);
         }
     }
-    if include_detected { unique_config_definitions(definitions) } else { definitions }
+    unique_config_definitions(definitions)
 }
 
-// Prefer the stable location identity if an environment override also selects
-// that config. Keep legacy definitions in recovery inventories, but never let
-// display or background upkeep write one file through two different client IDs.
+// The main configured path keeps its existing identity and ownership. A file
+// must never be maintained through both a main and a location client ID.
 fn unique_config_definitions(mut definitions: Vec<ClientDef>) -> Vec<ClientDef> {
-    let location_paths: Vec<_> = definitions.iter()
-        .filter(|def| def.location.is_some())
+    let main_paths: Vec<_> = definitions.iter()
+        .filter(|def| def.location.is_none())
         .filter_map(|def| resolved_definition_path(def).ok())
         .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
         .collect();
-    definitions.retain(|def| def.location.is_some()
-        || resolved_definition_path(def).map_or(true, |path| {
-            let path = std::fs::canonicalize(&path).unwrap_or(path);
-            !location_paths.contains(&path)
-        }));
+    let mut seen = Vec::new();
+    definitions.retain(|def| {
+        let Ok(path) = resolved_definition_path(def) else { return true; };
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        if def.location.is_some() && main_paths.contains(&path) { return false; }
+        if seen.contains(&path) { return false; }
+        seen.push(path);
+        true
+    });
     definitions
 }
 
@@ -640,12 +644,22 @@ fn claude_code_config_paths() -> Vec<PathBuf> {
 
 /// Name-first, shallow discovery. Symlink directories are excluded so automatic
 /// discovery never follows a profile outside home. Config contents are not read.
+fn claude_profile_name(name: &str) -> bool {
+    if name == ".claude" { return true; }
+    let Some(suffix) = name.strip_prefix(".claude") else { return false; };
+    if !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()) { return true; }
+    let Some(label) = suffix.strip_prefix('-').filter(|label| !label.is_empty()) else { return false; };
+    let lower = label.to_ascii_lowercase();
+    !["backup", "bak", "old", "orig", "save", "saved", "tmp", "temp"]
+        .iter().any(|word| lower.split(['-', '.', '_']).any(|part| part == *word))
+}
+
 fn claude_profile_dirs(home: &Path) -> Result<Vec<String>, String> {
     let entries = std::fs::read_dir(home).map_err(|e| e.to_string())?;
     Ok(entries.filter_map(Result::ok).filter_map(|entry| {
         let name = entry.file_name().into_string().ok()?;
-        if !name.starts_with(".claude") { return None; }
-        if !entry.file_type().ok()?.is_dir() { return None; }
+        if !claude_profile_name(&name) { return None; }
+        if !entry.path().is_dir() { return None; }
         Some(name)
     }).collect())
 }
@@ -674,7 +688,7 @@ fn claude_code_config_paths_from(
     push(home.join(".claude.json"), &mut out);
     let mut siblings: Vec<&String> = home_dirs
         .iter()
-        .filter(|name| name.starts_with(".claude"))
+        .filter(|name| claude_profile_name(name))
         .collect();
     // read_dir order is unspecified; sort so the log and any diagnostics are stable.
     siblings.sort();
@@ -748,7 +762,7 @@ fn claude_settings_paths_from(
     push(claude_settings_path(&home.join(".claude")), &mut out);
     let mut siblings: Vec<&String> = home_dirs
         .iter()
-        .filter(|name| *name == ".claude" || name.starts_with(".claude-"))
+        .filter(|name| claude_profile_name(name))
         .collect();
     // read_dir order is unspecified; sort so the log and any diagnostics are stable.
     siblings.sort();
@@ -3377,6 +3391,7 @@ fn read_client(def: &ClientDef) -> DetectedClient {
             id: def.location.as_ref().map(|location| location.id.clone()).unwrap_or_else(|| def.id.to_string()),
             name: def.location.as_ref().map(|location| location.name.clone()).unwrap_or_else(|| def.name.to_string()),
             uses_connectors: def.uses_connectors,
+            location_removable: def.location.as_ref().is_some_and(|row| row.manual),
             discovery: def.discovery,
             config_path,
             config_exists,
@@ -3460,10 +3475,17 @@ pub fn detect_clients() -> Vec<DetectedClient> {
 pub fn detect_clients_for_display() -> Result<Vec<DetectedClient>, String> {
     let definitions = machine_defs(true);
     let current = crate::registry::load()?;
+    detect_clients_for_display_in(definitions, current, resolve_gateway_path()?)
+}
+
+fn detect_clients_for_display_in(
+    definitions: Vec<ClientDef>, current: crate::registry::Registry, gateway: Option<PathBuf>,
+) -> Result<Vec<DetectedClient>, String> {
     let detected: Vec<_> = definitions.iter().map(read_client).collect();
     let targets: Vec<_> = detected.iter().filter(|client| client.id.contains('@')).cloned().collect();
+    let mut failures = HashMap::new();
     let mut changed = false;
-    if let Some(path) = resolve_gateway_path()?.filter(|path| path.is_file()) {
+    if let Some(path) = gateway.filter(|path| path.is_file()) {
         let repoint = repoint_stale_gateways_in(&path.to_string_lossy(), targets, &current.client_managed_entries);
         if !repoint.repointed.is_empty() {
             changed = true;
@@ -3474,12 +3496,20 @@ pub fn detect_clients_for_display() -> Result<Vec<DetectedClient>, String> {
                 Ok(())
             })?;
         }
-        if let Some((_, error)) = repoint.failed.first() { return Err(error.clone()); }
+        failures.extend(repoint.failed);
     }
     for def in &definitions {
-        if let Some(location) = &def.location { locations::remember(location)?; }
+        if let Some(location) = &def.location {
+            if let Err(error) = locations::remember(location) {
+                failures.insert(def.client_id().to_string(), error);
+            }
+        }
     }
-    Ok(if changed { definitions.iter().map(read_client).collect() } else { detected })
+    let mut detected: Vec<_> = if changed { definitions.iter().map(read_client).collect() } else { detected };
+    for client in &mut detected {
+        if let Some(error) = failures.remove(&client.id) { client.error = Some(error); }
+    }
+    Ok(detected)
 }
 
 fn location_launch_id(format: Format, name: &str, text: &str) -> Result<Option<String>, String> {
@@ -3521,7 +3551,8 @@ pub fn client_metadata() -> Vec<DetectedClient> {
         let config_exists = path.is_some_and(|path| path.is_file());
         DetectedClient {
             id: def.client_id().into(), name: def.location.as_ref().map(|row| row.name.clone()).unwrap_or_else(|| def.name.into()),
-            uses_connectors: def.uses_connectors, discovery: def.discovery,
+            uses_connectors: def.uses_connectors,
+            location_removable: def.location.as_ref().is_some_and(|row| row.manual), discovery: def.discovery,
             app_present: app_present_for(&config_path, config_exists), config_path, config_exists,
             servers: Vec::new(), plugin_servers: Vec::new(), gateway_installed: false,
             entry_state: GatewayEntryState::Absent, error: None,
@@ -7146,11 +7177,20 @@ fn read_gateway_profile(client_id: &str) -> Option<String> {
 /// never be re-pointed onto a current binary. Deleting one out from under a plugin
 /// entry leaves a reference nothing will ever repair.
 pub fn referenced_gateway_paths() -> Option<Vec<PathBuf>> {
-    // Newly found profiles may still name an older gateway. Do not prune its
-    // binary before Clients has inspected and registered their launch references.
-    let saved = locations::saved().ok()?;
-    if locations::all().iter().any(|row| !saved.iter().any(|known| known.id == row.id)) { return None; }
-    referenced_gateway_paths_in(&detect_clients())
+    let mut paths = referenced_gateway_paths_in(&detect_clients())?;
+    for path in claude_code_config_paths() {
+        let text = read_config_file(&path).ok()?;
+        let servers = parse_client_content(Format::JsonMcpServers, &text).ok()?;
+        for server in servers {
+            if detected_is_gateway(&server) {
+                if let Some(command) = server.command.filter(|command| !command.trim().is_empty()) {
+                    let path = PathBuf::from(command);
+                    if !paths.contains(&path) { paths.push(path); }
+                }
+            }
+        }
+    }
+    Some(paths)
 }
 
 /// The pure half of [`referenced_gateway_paths`], over an already-probed client list so
@@ -7207,9 +7247,8 @@ pub fn repoint_stale_gateways(managed: &HashMap<String, ManagedEntry>) -> Repoin
     // Preserve paths cached by clients before their on-disk configs are repointed.
     #[cfg(target_os = "linux")]
     let before = referenced_gateway_paths();
-    let outcome = repoint_stale_gateways_in(&current, detect_clients(), managed);
-    // First-class locations are maintained by the pass above after Clients has
-    // registered them. Discovery at startup does not read new config contents.
+    let mut outcome = repoint_stale_gateways_in(&current, detect_clients(), managed);
+    repoint_other_claude_configs(&current, &mut outcome);
     log_repoint_outcome(&current, &outcome);
     #[cfg(target_os = "linux")]
     if let Some(dir) = crate::registry::conduit_dir().map(|d| d.join("bin")) {
@@ -7531,7 +7570,43 @@ fn repoint_stale_gateways_in(
 /// client id, and all of these files are `claude-code`, so recording a sibling would
 /// overwrite the resolved config's snapshot and make the next pass read that one as
 /// Customized - i.e. we would stop maintaining the config we actually manage.
-#[cfg(test)]
+fn repoint_other_claude_configs(current: &str, outcome: &mut RepointOutcome) {
+    let maintained: Vec<_> = machine_defs(false).iter()
+        .filter_map(|def| resolved_definition_path(def).ok()).collect();
+    let others: Vec<PathBuf> = claude_code_config_paths()
+        .into_iter()
+        .filter(|path| !maintained.iter().any(|known| locations::same_path(known, path)))
+        .collect();
+    for repair in claude_configs_needing_repair(&others, current) {
+        let ClaudeRepair {
+            path,
+            stored,
+            ..
+        } = repair;
+        let write = repair_secondary_claude_config(&path, current);
+        match write {
+            Ok(()) => {
+                let msg = format!(
+                    "toolport: re-pointed a secondary Claude Code config at {} from {stored} to {current}",
+                    path.display(),
+                );
+                eprintln!("{msg}");
+                crate::gatewaylog::append(&msg);
+                outcome.extra_claude_repointed.push(path);
+            }
+            Err(error) => {
+                let msg = format!(
+                    "toolport: could not re-point the secondary Claude Code config at {}: {error}",
+                    path.display(),
+                );
+                eprintln!("{msg}");
+                crate::gatewaylog::append(&msg);
+                outcome.extra_claude_failed.push((path, error));
+            }
+        }
+    }
+}
+
 fn repair_secondary_claude_config(path: &Path, current: &str) -> Result<(), String> {
     mutation::run("claude-code", path, Format::JsonMcpServers, || {
         // Selection happened before the mutation lock. Respect a subsequent edit.
@@ -7560,7 +7635,6 @@ fn repair_secondary_claude_config(path: &Path, current: &str) -> Result<(), Stri
 
 /// One secondary Claude config that needs its gateway entry repaired.
 #[derive(Debug, PartialEq, Eq)]
-#[cfg(test)]
 struct ClaudeRepair {
     path: PathBuf,
     /// This file's own `TOOLPORT_PROFILE`. These configs are scoped independently, so
@@ -7576,7 +7650,6 @@ struct ClaudeRepair {
 /// Legacy secondary repair selection, retained for regression tests against
 /// real files without a home directory, a `CLAUDE_CONFIG_DIR`, or an installed gateway
 /// binary to resolve. The caller does the writing.
-#[cfg(test)]
 fn claude_configs_needing_repair(paths: &[PathBuf], current: &str) -> Vec<ClaudeRepair> {
     let mut out = Vec::new();
     for path in paths {
@@ -7775,6 +7848,44 @@ mod tests {
 
     use super::*;
     use crate::registry::EnvVar;
+
+    #[test]
+    fn display_scan_keeps_healthy_rows_when_another_location_cannot_be_saved() {
+        let data = crate::registry::DataDirTestEnv::new("location-row-error");
+        // A directory in place of the location store makes remembering fail.
+        std::fs::create_dir(data.dir.join("client-locations.json")).unwrap();
+        let config = data.dir.join(".claude.json");
+        std::fs::write(&config, r#"{"mcpServers":{"notes":{"command":"notes"}}}"#).unwrap();
+        let mut bad = defs().into_iter().find(|def| def.id == "claude-code").unwrap();
+        bad.location = Some(locations::ClientLocation { id: "claude-code@fixture".into(), manual: false,
+            client_type: "claude-code".into(), name: "Claude Code (fixture)".into(), config_path: config });
+        let good = defs().into_iter().find(|def| def.id == "codex").unwrap();
+        let rows = detect_clients_for_display_in(vec![bad, good], crate::registry::Registry::default(), None).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].error.is_some());
+        assert!(rows[1].error.is_none());
+        assert_eq!(rows[0].servers[0].name, "notes");
+    }
+
+    #[test]
+    fn configured_claude_path_keeps_the_main_identity_and_registry_settings() {
+        let _data = crate::registry::DataDirTestEnv::new("location-main-identity");
+        let _env_lock = env_test_lock();
+        let folder = temp_path("claude-main-location");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(".claude.json"), r#"{"mcpServers":{"toolport":{"command":"/usr/bin/toolport-gateway", "env":{"TOOLPORT_CLIENT_ID":"claude-code"}},"notes":{"command":"notes"}}}"#).unwrap();
+        let _override = EnvRestore::set("CLAUDE_CONFIG_DIR", &folder);
+        let mut registry = crate::registry::Registry::default();
+        registry.client_discovery.insert("claude-code".into(), "full".into());
+        crate::registry::save(&registry).unwrap();
+        assert_eq!(add_client_location("claude-code", folder.to_str().unwrap()).unwrap(), "claude-code");
+        let rows = detect_clients();
+        let main = rows.iter().find(|client| client.id == "claude-code").unwrap();
+        assert!(main.gateway_installed);
+        assert!(main.servers.iter().any(|server| server.name == "notes"));
+        assert_eq!(crate::registry::load().unwrap().client_discovery["claude-code"], "full");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 
     #[test]
     fn legacy_bearer_detection_accepts_whitespace_and_requires_a_token_boundary() {
@@ -9783,6 +9894,7 @@ bad = "not-a-table"
             id: id.into(),
             name: id.into(),
             uses_connectors: false,
+            location_removable: false,
             discovery: discovery::capabilities(id),
             config_path: format!("/tmp/{id}.json"),
             config_exists: true,
