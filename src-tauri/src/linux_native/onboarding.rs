@@ -42,10 +42,12 @@ fn first_run_needed() -> Result<bool, String> {
     if has_servers {
         return Ok(false);
     }
-    let clients = state::detect_client_views()?;
-    Ok(should_offer(&registry, &clients))
+    // Startup checks use known ownership, not client config contents. The wizard
+    // scans only when its client setup step is opened.
+    Ok(registry.client_managed_entries.is_empty())
 }
 
+#[cfg(test)]
 fn should_offer(registry: &crate::registry::Registry, clients: &ClientSnapshot) -> bool {
     !registry
         .servers
