@@ -13,7 +13,19 @@ pub struct ClientResult {
 }
 
 pub fn all(dry_run: bool) -> Result<Vec<ClientResult>, String> {
-    let current = crate::registry_controller::registry_for_disconnect()?;
+    all_with_registry(dry_run, false)
+}
+
+pub(crate) fn for_purge(all_installs: bool) -> Result<Vec<ClientResult>, String> {
+    all_with_registry(false, all_installs)
+}
+
+fn all_with_registry(dry_run: bool, allow_unreadable: bool) -> Result<Vec<ClientResult>, String> {
+    let (current, recovery_only) = match crate::registry_controller::registry_for_disconnect() {
+        Ok(registry) => (registry, false),
+        Err(_) if allow_unreadable => (crate::registry::Registry::default(), true),
+        Err(error) => return Err(error),
+    };
     let mut clients = detect_clients();
     apply_entry_states(&mut clients, &current.client_managed_entries);
     let targets = clients.into_iter().filter(|client| {
@@ -26,7 +38,15 @@ pub fn all(dry_run: bool) -> Result<Vec<ClientResult>, String> {
         targets.map(|client| (client.id, client.config_path)),
         dry_run,
         |id| {
-            crate::registry_controller::disconnect_client(id).map(|result| result.outcome.warnings)
+            if recovery_only {
+                // Global removal can use the independent client snapshots without
+                // loading, migrating or overwriting a corrupt registry.
+                let def = find_def(id).ok_or("Unknown client")?;
+                let path = resolved_definition_path(&def)?;
+                restore_path(id, &path, def.format, None)
+            } else {
+                crate::registry_controller::disconnect_client(id).map(|result| result.outcome.warnings)
+            }
         },
     );
     // Secondary Claude profiles and settings have path-specific recovery records

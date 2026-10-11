@@ -4,6 +4,7 @@ use crate::purge::Leftover;
 #[derive(Default)]
 pub(crate) struct Removal {
     pub removed: Vec<String>,
+    pub team_token_removed: bool,
     pub preserved: Vec<String>,
     pub notes: Vec<String>,
     pub leftovers: Vec<Leftover>,
@@ -55,16 +56,30 @@ fn remove_owned<T>(
         } else if let Err(error) = delete(&entry) {
             report.leftovers.push(Leftover { path, error });
         } else {
-            report.removed.push(path);
+            record_deleted(&account, path, &mut report);
         }
     }
     report
 }
 
+fn record_deleted(account: &str, path: String, report: &mut Removal) {
+    let team = format!("{}::{}", crate::teams::TEAM_TOKEN_SERVER, crate::teams::TEAM_TOKEN_KEY);
+    report.team_token_removed |= account == team
+        || account.strip_prefix(&team).is_some_and(|suffix| suffix.starts_with("::toolport-chunk::"));
+    report.removed.push(path);
+}
+
 #[cfg(target_os = "linux")]
-fn no_keyring_in_use() -> bool {
-    super::file::active()
-        || (cfg!(target_os = "linux") && std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none())
+fn skipped_keyring(reason: &str) -> Removal {
+    Removal { leftovers: vec![Leftover {
+        path: "secret-service:conduit-mcp (credential cleanup not done)".into(),
+        error: format!("{reason}. Credentials may still exist. Start or unlock your Secret Service provider, then retry; the registry was retained."),
+    }], ..Removal::default() }
+}
+
+#[cfg(target_os = "linux")]
+fn no_keyring() -> Removal {
+    Removal { notes: vec!["No keyring in use; encrypted file secrets are removed with the data folder.".into()], ..Removal::default() }
 }
 
 #[cfg(target_os = "linux")]
@@ -80,12 +95,25 @@ fn unavailable(error: &dbus_secret_service::Error) -> bool {
 #[cfg(target_os = "linux")]
 pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
     use dbus_secret_service::{EncryptionType, SecretService};
-    if no_keyring_in_use() {
-        return Ok(Removal { notes: vec!["No keyring in use; encrypted file secrets are removed with the data folder.".into()], ..Removal::default() });
+    // Use the same backend selector as secret reads and writes, including the
+    // nonempty-key requirement. Merely having an environment variable is insufficient.
+    if super::file::active() {
+        return Ok(no_keyring());
+    }
+    crate::hostenv::restore_session_bus_env();
+    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none_or(|address| address.is_empty()) {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })));
+        return Ok(if runtime.exists() {
+            skipped_keyring("No session bus found in the desktop runtime directory")
+        } else {
+            // A genuinely headless host has neither a session bus nor runtime data.
+            no_keyring()
+        });
     }
     let service = match SecretService::connect_with_max_prompt_timeout(EncryptionType::Dh, 5) {
         Ok(service) => service,
-        Err(error) if unavailable(&error) => return Ok(Removal { notes: vec!["No keyring in use: no session bus or Secret Service provider.".into()], ..Removal::default() }),
+        Err(error) if unavailable(&error) => return Ok(skipped_keyring(&format!("Secret Service is unavailable: {error}"))),
         Err(error) => return Err(error.to_string()),
     };
     let entries = service
@@ -233,7 +261,7 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
                     });
                     continue;
                 };
-                legacy.push((unsafe { k((*reference).cast()) }, path));
+                legacy.push((unsafe { k((*reference).cast()) }, account, path));
             }
         }
         Err(error) if error.code() == -25300 => {}
@@ -290,7 +318,9 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
                 ));
                 let query = CFDictionary::from_CFType_pairs(&delete);
                 let status = SecItemDelete(query.as_concrete_TypeRef().cast());
-                if status == 0 || status == -25300 {
+                if status == 0 {
+                    record_deleted(&account, path, &mut report);
+                } else if status == -25300 {
                     report.removed.push(path);
                 } else {
                     report.leftovers.push(Leftover {
@@ -307,13 +337,13 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
         }
     }
     if report.leftovers.is_empty() {
-        for (reference, path) in legacy {
+        for (reference, account, path) in legacy {
             let status = unsafe { security_framework_sys::keychain_item::SecKeychainItemDelete(reference.as_CFTypeRef().cast_mut().cast()) };
-            if status == 0 { report.removed.push(path); }
+            if status == 0 { record_deleted(&account, path, &mut report); }
             else { report.leftovers.push(Leftover { path, error: format!("SecKeychainItemDelete: {status}") }); }
         }
     } else {
-        report.preserved.extend(legacy.into_iter().map(|(_, path)| format!("{path} (retained after keychain cleanup failure)")));
+        report.preserved.extend(legacy.into_iter().map(|(_, _, path)| format!("{path} (retained after keychain cleanup failure)")));
     }
     Ok(report)
 }
@@ -373,6 +403,31 @@ mod tests {
         assert!(unavailable(&dbus_secret_service::Error::Unavailable));
         assert!(!unavailable(&dbus_secret_service::Error::Locked));
         assert!(!unavailable(&dbus_secret_service::Error::Prompt));
+    }
+
+    #[test]
+    fn purge_sole_install_removes_master_internal_and_deleted_server_accounts() {
+        let items = ["__conduit_master_key__", "__toolport_internal__::task_key", "deleted-server::TOKEN", "mine::TOKEN::toolport-chunk::generation::0"];
+        let scope = Scope { all_installs: true, server_ids: Default::default() };
+        let report = remove_owned(items, &scope, |account| Ok(("conduit-mcp".into(), (*account).into())), |account| (*account).into(), |_| Ok(()));
+        assert_eq!(report.removed, items);
+        assert!(report.preserved.is_empty() && report.leftovers.is_empty());
+        assert!(!report.team_token_removed);
+    }
+
+    #[test]
+    fn purge_team_token_note_tracks_successful_deletion_only() {
+        let team = "__conduit_team__::member_token";
+        let scope = Scope { all_installs: true, server_ids: Default::default() };
+        for delete_team in [false, true] {
+            let report = remove_owned(["mine::TOKEN", team], &scope,
+                |account| Ok(("conduit-mcp".into(), (*account).into())), |account| (*account).into(),
+                |account| if *account == team && !delete_team { Err("locked".into()) } else { Ok(()) });
+            assert_eq!(report.team_token_removed, delete_team);
+        }
+        let report = remove_owned([team], &Scope { all_installs: false, server_ids: Default::default() },
+            |account| Ok(("conduit-mcp".into(), (*account).into())), |account| (*account).into(), |_| panic!("shared token must stay"));
+        assert!(!report.team_token_removed);
     }
 
 }

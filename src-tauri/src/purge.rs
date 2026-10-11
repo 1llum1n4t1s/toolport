@@ -145,18 +145,22 @@ fn other_installs(dir: &Path, candidates: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 fn credential_scope(dir: &Path, others: &[PathBuf], all_installs: bool) -> Result<crate::secrets::purge::Scope, String> {
+    if all_installs {
+        return Ok(crate::secrets::purge::Scope { all_installs: true, server_ids: Default::default() });
+    }
     let registry_path = dir.join("registry.json");
     let mut ids = std::collections::HashSet::new();
     if registry_path.exists() {
         // Raw read: loading a registry can migrate it or create recovery files.
-        let registry: serde_json::Value = serde_json::from_slice(&std::fs::read(&registry_path).map_err(|error| error.to_string())?)
-            .map_err(|error| format!("Credential ownership inventory: {error}"))?;
-        if let Some(servers) = registry["servers"].as_array() {
-            ids.extend(servers.iter().filter_map(|server| server["id"].as_str().map(str::to_owned)));
+        let error = |error| format!("Credential ownership inventory for {}: {error}", registry_path.display());
+        let registry: serde_json::Value = serde_json::from_slice(&std::fs::read(&registry_path).map_err(|e| error(e.to_string()))?)
+            .map_err(|e| error(e.to_string()))?;
+        let servers = registry["servers"].as_array().ok_or_else(|| error("missing servers array".into()))?;
+        // A sole install owns the whole service, including accounts for deleted servers.
+        if others.is_empty() {
+            return Ok(crate::secrets::purge::Scope { all_installs: true, server_ids: ids });
         }
-        if others.is_empty() && registry["team"].is_object() {
-            ids.insert(crate::teams::TEAM_TOKEN_SERVER.into());
-        }
+        ids.extend(servers.iter().filter_map(|server| server["id"].as_str().map(str::to_owned)));
     }
     for other in others {
         let registry = std::fs::read(other.join("registry.json")).ok()
@@ -228,9 +232,9 @@ pub fn plan_with_scope(all_installs: bool) -> Result<Plan, String> {
             .as_nanos()
     ));
     let mut resources = vec![
-        format!("All contents of {}: registry, settings, logs, caches, migration exports, client backups, encrypted secrets and published gateways in bin/", dir.display()),
+        format!("Toolport-created entries in {}: registry, settings, logs, caches, migration exports, client backups, encrypted secrets and published gateways in bin/. Other entries are preserved.", dir.display()),
         if all_installs { "ALL credentials in the shared conduit-mcp service for every Toolport install, including master keys and Team tokens. Other installations will lose access to these credentials.".into() }
-        else { "Only credentials owned by this registry. Shared master keys, unknown accounts and accounts needed by other detected installs are preserved. Use --all-installs in the CLI only to explicitly clear the entire shared service.".into() },
+        else { "All Toolport credentials when this is the sole detected install with readable ownership. Otherwise, only this registry's accounts; shared and unknown accounts are preserved. Use --all-installs in the CLI to explicitly clear the entire shared service.".into() },
         "Toolport's daemon for this data directory, after all active sessions have closed".into(),
     ];
     #[cfg(target_os = "windows")]
@@ -301,16 +305,20 @@ pub fn run() -> Result<Report, String> { run_with_scope(false) }
 
 pub fn run_with_scope(all_installs: bool) -> Result<Report, String> {
     let dir = data_dir()?;
-    verify_data_ownership(&dir)?;
     let others = other_installs(&dir, install_candidates(&dir));
     let scope = credential_scope(&dir, &others, all_installs)?;
+    // The explicit global option needs no account inventory from a corrupt registry.
+    // Cleanup still selects only Toolport-created names in this folder.
+    if !all_installs || !dir.join("registry.json").is_file() {
+        verify_data_ownership(&dir)?;
+    }
     let mut report = run_with(
         |dir| {
             let mut blockers = crate::gateway_publish::purge_blockers(dir);
             blockers.extend(crate::daemon::purge_idle_blockers(dir));
             blockers
         },
-        || crate::clients::disconnect_all(false),
+        || crate::clients::disconnect_all_for_purge(all_installs),
         |dir| {
             let mut blockers = crate::daemon::stop_for_purge(dir);
             blockers.extend(crate::gateway_publish::purge_blockers(dir));
@@ -320,9 +328,6 @@ pub fn run_with_scope(all_installs: bool) -> Result<Report, String> {
         |report| startup_entries(false, report),
         remove_autostart,
     )?;
-    if !report.removed.is_empty() {
-        report.notes.push("Team tokens deleted from this machine were removed locally only; no server-side revoke endpoint is available in the Teams client.".into());
-    }
     if report.leftovers.is_empty() {
         remove_app_resources(&mut report, !others.is_empty() || crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR").is_some());
     }
@@ -417,6 +422,9 @@ fn run_with(
     }
     match keyring() {
         Ok(removal) => {
+            if removal.team_token_removed {
+                report.notes.push("Team tokens deleted from this machine were removed locally only; no server-side revoke endpoint is available in the Teams client.".into());
+            }
             report.removed.extend(removal.removed);
             report.preserved.extend(removal.preserved);
             report.notes.extend(removal.notes);
@@ -431,11 +439,7 @@ fn run_with(
         return Ok(report);
     }
     let registry_path = dir.join("registry.json");
-    remove_contents(
-        &dir,
-        &[owner_path.clone(), registry_path.clone()],
-        &mut report,
-    );
+    remove_data_contents(&dir, &[owner_path.clone(), registry_path.clone()], &mut report);
     if report.leftovers.is_empty() {
         remove_path(&registry_path, &mut report);
     } else if registry_path.exists() {
@@ -447,7 +451,7 @@ fn run_with(
     // Windows cannot unlink an open owner lock. It is the last resource removed.
     drop(owner);
     remove_path(&owner_path, &mut report);
-    remove_empty_dirs(&dir, &mut report);
+    remove_empty_dirs(&dir.join("broker"), &mut report);
     Ok(report)
 }
 
@@ -483,6 +487,80 @@ fn remove_path(path: &Path, report: &mut Report) {
             error: error.to_string(),
         }),
     }
+}
+
+// Names come from registry/profile stores, clients, telemetry, daemon/broker,
+// secrets, Teams, native-shell state and the gateway's persisted caches.
+const DATA_FILES: &[&str] = &[
+    "registry.json", "registry-recovery.json", "registry.personal-sync-status.json", "routines.json",
+    "secrets.enc", "embeddings.json", "root-integrity-scopes.json",
+    "tool-cache.json", "tool-pins.json", "quarantine.json",
+    "audit.jsonl", "security.jsonl", "inspect.jsonl", "gateway.log", "daemon.log",
+    "savings.jsonl", "savings-v2.jsonl", "savings-v3.jsonl",
+    "search-trace.jsonl", "search-trace-v2.jsonl", "oauth-debug.log",
+    "last-daemon-exit.json", "approval-endpoint.json", "secret-reference-approvals.json",
+    "rate_limit_counters.json", "downstream_backoff.json", "team-sync-status.json",
+    "http-bridge-update-resume.json", "gtk-security-dismissed.json", "gtk-window-state.json",
+    ".secrets-file-migrated", ".keychain-dpk-migrated", ".tray-hint-shown",
+    ".gtk-star-prompt-done", "gtk-onboarding-complete", "agent-activity-removed",
+    "agent-guard-removed", "legacy-topology-retired.notice",
+];
+
+fn owned_data_name(name: &str) -> bool {
+    if matches!(name, "logs" | "bin" | "broker" | "backups" | "exports" | "children" | "daemon-runs" | "oauth-locks" | "search-vectors") {
+        return true;
+    }
+    // atomic_write appends a PID and sequence, then .conduit-tmp; lock_at appends .lock.
+    if let Some(base) = name.strip_suffix(".conduit-tmp") {
+        return base.rsplit_once('.').and_then(|(base, seq)| {
+            seq.parse::<u64>().ok()?;
+            let (base, pid) = base.rsplit_once('.')?;
+            pid.parse::<u32>().ok()?;
+            Some(owned_data_name(base))
+        }).unwrap_or(false);
+    }
+    if let Some(base) = name.strip_suffix(".lock") {
+        return matches!(base, "secret-service" | "task-handle-key" | "client-config-mutation")
+            || base.strip_prefix("oauth-refresh-").is_some_and(|id| !id.is_empty())
+            || base.strip_prefix("daemon-").is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+            || owned_data_file(base);
+    }
+    owned_data_file(name)
+}
+
+fn owned_data_file(name: &str) -> bool {
+    if DATA_FILES.contains(&name) || matches!(name, "gateway.log.1" | "daemon.log.1") {
+        return true;
+    }
+    if let Some(suffix) = name.strip_prefix("registry.json.") {
+        return matches!(suffix, "bak" | "bak.seq")
+            || suffix.strip_prefix("bak.").is_some_and(|seq| seq.parse::<u128>().is_ok())
+            || suffix.strip_prefix('v').and_then(|s| s.strip_suffix(".bak")).is_some_and(|s| {
+                s.split_once('-').is_some_and(|(v, ms)| v.parse::<u32>().is_ok() && ms.parse::<u128>().is_ok())
+            })
+            || suffix.strip_prefix("unreadable-").is_some_and(|s| {
+                s.parse::<u128>().is_ok() || s.strip_prefix("sha256-").is_some_and(|hash| {
+                    hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+                })
+            });
+    }
+    ["tool-cache-", "tool-pins-", "quarantine-", "daemon-", "team-activity-"].iter().any(|prefix| {
+        name.strip_prefix(prefix).and_then(|s| s.strip_suffix(".json")).is_some_and(|s| !s.is_empty())
+    })
+}
+
+fn remove_data_contents(dir: &Path, keep: &[PathBuf], report: &mut Report) {
+    let mut keep = keep.to_vec();
+    // Inventory once before mutation; unknown entries, including links, stay untouched.
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if !entry.file_name().to_str().is_some_and(owned_data_name) {
+                report.preserved.push(format!("{} (not a Toolport-created entry)", entry.path().display()));
+                keep.push(entry.path());
+            }
+        }
+    }
+    remove_contents(dir, &keep, report);
 }
 
 fn remove_contents(dir: &Path, keep: &[PathBuf], report: &mut Report) {
@@ -885,7 +963,7 @@ mod tests {
         assert_eq!(scope.server_ids, std::collections::HashSet::from(["dev-only".into()]));
         assert!(!scope.all_installs);
         let scope = credential_scope(&dev, &[], false).unwrap();
-        assert!(scope.server_ids.contains(crate::teams::TEAM_TOKEN_SERVER));
+        assert!(scope.all_installs);
         assert!(credential_scope(&dev, &others, true).unwrap().all_installs);
         std::fs::remove_file(main.join("registry.json")).unwrap();
         assert!(credential_scope(&dev, &others, false).unwrap().server_ids.is_empty());
@@ -914,6 +992,72 @@ mod tests {
         remove_resources(vec![path.clone()], false, &mut report);
         assert!(!path.exists());
         assert!(report.leftovers.is_empty());
+    }
+
+    #[test]
+    fn purge_data_names_preserve_user_files_after_first_run() {
+        let env = crate::registry::DataDirTestEnv::new("purge_data_names");
+        crate::registry::save(&crate::registry::Registry::default()).unwrap();
+        for name in ["personal.txt", "registry.json.owner-notes", "registry.json.bak.notes", "daemon-notes", "quarantine-notes.txt"] {
+            std::fs::write(env.dir.join(name), "keep").unwrap();
+        }
+        std::fs::create_dir_all(env.dir.join("documents/broker")).unwrap();
+        std::fs::write(env.dir.join("documents/broker/notes"), "keep nested").unwrap();
+        for name in ["registry.json.bak", "registry.json.bak.123", "registry.json.v2-123.bak", "registry.json.123.1.conduit-tmp", "registry.json.unreadable-123", "registry.personal-sync-status.json", "daemon-123.json", "tool-cache-v2-work.json", "team-activity-fixture.json.lock", "secret-service.lock", "downstream_backoff.json", "agent-guard-removed"] {
+            std::fs::write(env.dir.join(name), "fixture").unwrap();
+        }
+        for name in ["logs", "bin", "broker", "backups", "exports", "children", "daemon-runs", "oauth-locks", "search-vectors"] {
+            std::fs::create_dir_all(env.dir.join(name)).unwrap();
+            std::fs::write(env.dir.join(name).join("fixture"), "fixture").unwrap();
+        }
+        let report = run_with(
+            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
+            || Ok(crate::secrets::purge::Removal::default()), |_| Ok(()), |_| Ok(()),
+        ).unwrap();
+        assert!(report.leftovers.is_empty(), "{:?}", report.leftovers);
+        assert_eq!(report.preserved.len(), 6);
+        assert!(!env.dir.join("registry.json").exists());
+        assert!(!env.dir.join("secret-service.lock").exists());
+        assert_eq!(std::fs::read_to_string(env.dir.join("documents/broker/notes")).unwrap(), "keep nested");
+        assert_eq!(std::fs::read_dir(&env.dir).unwrap().count(), 6);
+    }
+
+    #[test]
+    fn purge_corrupt_registry_requires_global_scope_and_names_the_file() {
+        let env = crate::registry::DataDirTestEnv::new("purge_corrupt_registry");
+        let path = env.dir.join("registry.json");
+        std::fs::write(&path, "broken").unwrap();
+        let error = credential_scope(&env.dir, &[], false).err().unwrap();
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+        assert!(credential_scope(&env.dir, &[], true).unwrap().all_installs);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "broken");
+    }
+
+    #[test]
+    fn purge_sole_install_clears_service_only_with_readable_ownership() {
+        let env = crate::registry::DataDirTestEnv::new("purge_sole_install");
+        assert!(!credential_scope(&env.dir, &[], false).unwrap().all_installs);
+        std::fs::write(env.dir.join("registry.json"), r#"{"servers":[]}"#).unwrap();
+        assert!(credential_scope(&env.dir, &[], false).unwrap().all_installs);
+        let other = env.dir.join("other");
+        std::fs::create_dir(&other).unwrap();
+        let scope = credential_scope(&env.dir, &[other], false).unwrap();
+        assert!(!scope.all_installs && scope.server_ids.is_empty());
+    }
+
+    #[test]
+    fn purge_team_note_requires_a_deleted_team_token() {
+        let env = crate::registry::DataDirTestEnv::new("purge_team_note");
+        for team_token_removed in [false, true] {
+            std::fs::write(env.dir.join("secrets.enc"), "fixture").unwrap();
+            let report = run_with(
+                |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
+                || Ok(crate::secrets::purge::Removal { removed: vec!["fixture credential".into()], team_token_removed, ..Default::default() }),
+                |_| Ok(()), |_| Ok(()),
+            ).unwrap();
+            assert!(report.leftovers.is_empty());
+            assert_eq!(report.notes.iter().any(|note| note.contains("removed locally only")), team_token_removed);
+        }
     }
 
 }

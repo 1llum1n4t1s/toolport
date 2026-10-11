@@ -348,15 +348,32 @@ fn purge_descriptors(data_dir: &Path) -> Vec<PathBuf> {
     }).collect()
 }
 
+fn purge_descriptor_process(
+    pid: u32,
+    processes: &[crate::gateway_publish::GatewayProcess],
+    owned: impl FnOnce(u32) -> bool,
+) -> Result<bool, String> {
+    let Some(process) = processes.iter().find(|process| process.pid == pid) else {
+        // Process inventory includes known gateway images even when query access is denied.
+        return Ok(false);
+    };
+    match process.is_host_daemon {
+        Some(false) => return Ok(false),
+        None => return Err("Could not verify this gateway's daemon role; close it and retry".into()),
+        Some(true) => {}
+    }
+    if !owned(pid) {
+        return Err("Could not verify this daemon belongs to your user and session".into());
+    }
+    Ok(true)
+}
+
 fn verified_purge_descriptor(path: &Path) -> Result<Option<DaemonDescriptor>, String> {
     let Some(descriptor) = read_descriptor(path) else { return Ok(None); };
     // PID liveness alone is unsafe: it may now be a completely unrelated process.
     let processes = crate::gateway_publish::list_gateway_processes();
-    if !processes.iter().any(|process| process.pid == descriptor.pid && process.is_host_daemon == Some(true)) {
+    if !purge_descriptor_process(descriptor.pid, &processes, crate::gateway_publish::purge_process_owned)? {
         return Ok(None);
-    }
-    if !crate::gateway_publish::purge_process_owned(descriptor.pid) {
-        return Err("Could not verify this daemon belongs to your user and session".into());
     }
     match attempt_identity_probe(&descriptor) {
         Ok(identity) if identity.pid == descriptor.pid && identity.compat == descriptor.compat
@@ -408,7 +425,7 @@ pub(crate) fn stop_for_purge(data_dir: &Path) -> Vec<crate::purge::Leftover> {
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             while process_exists(descriptor.pid) {
                 // Recheck image identity too: never wait forever on a reused PID.
-                if !crate::gateway_publish::list_gateway_processes().iter().any(|process| process.pid == descriptor.pid && process.is_host_daemon == Some(true)) { return Ok(()); }
+                if !purge_descriptor_process(descriptor.pid, &crate::gateway_publish::list_gateway_processes(), crate::gateway_publish::purge_process_owned)? { return Ok(()); }
                 if std::time::Instant::now() >= deadline {
                     return Err(format!("Daemon PID {} remains busy or could not exit. Close active sessions and retry.", descriptor.pid));
                 }
@@ -1476,6 +1493,21 @@ mod tests {
         assert!(purge_idle_blockers(&env.dir).is_empty());
         assert!(stop_for_purge(&env.dir).is_empty());
         assert!(malformed.exists() && reused.exists());
+    }
+
+    #[test]
+    fn purge_unknown_daemon_role_or_owner_blocks_instead_of_becoming_stale() {
+        let mut process = crate::gateway_publish::GatewayProcess {
+            pid: 42, start_time: None, is_host_daemon: None, path: None,
+            basename: "toolport-gateway.exe".into(), parent: None,
+        };
+        assert!(purge_descriptor_process(42, &[process.clone()], |_| false).is_err());
+        process.is_host_daemon = Some(true);
+        assert!(purge_descriptor_process(42, &[process.clone()], |_| false).is_err());
+        assert!(purge_descriptor_process(42, &[process.clone()], |_| true).unwrap());
+        process.is_host_daemon = Some(false);
+        assert!(!purge_descriptor_process(42, &[process], |_| panic!("proven other role")).unwrap());
+        assert!(!purge_descriptor_process(42, &[], |_| panic!("no gateway process")).unwrap());
     }
 
 }

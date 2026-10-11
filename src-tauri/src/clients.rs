@@ -19,6 +19,7 @@ use crate::registry::{ManagedEntry, ServerEntry};
 mod backup_permissions;
 mod disconnect;
 pub use disconnect::{all as disconnect_all, ClientResult as DisconnectResult};
+pub(crate) use disconnect::for_purge as disconnect_all_for_purge;
 mod discovery;
 pub use discovery::DiscoveryCapabilities;
 mod moved;
