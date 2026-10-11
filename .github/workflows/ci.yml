@@ -36,7 +36,7 @@ jobs:
           cache-bin: "false"
           save-if: false
       - run: npm ci
-      # Same bundle command as Release; artifacts stay in CI and are not published.
+      # Use release bundle settings; installers stay in CI and are not published.
       - name: Set the numeric MSI version for CI previews
         run: node .github/scripts/ci-msi-config.mjs
       - name: Build the real NSIS and MSI installers
@@ -56,6 +56,7 @@ jobs:
           name: windows-nsis-validation
           path: |
             src-tauri/target/release/bundle/nsis/*-setup.exe*
+            src-tauri/target/release/bundle/msi/*.msi*
             .verify/windows-installer/**
           if-no-files-found: error
           retention-days: 7

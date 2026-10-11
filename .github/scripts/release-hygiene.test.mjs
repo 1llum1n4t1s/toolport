@@ -321,3 +321,17 @@ test("MSI CI preview config keeps the product version and signing intact", async
     assert.throws(() => ciMsiConfig(version), /Invalid MSI version/);
   }
 });
+
+test("NSIS manifest scopes standard wizard and dialog assets to the plugin directory", async () => {
+  const { assertManifest } = await import("./package-manifest.mjs");
+  const product = ["conduit.exe", "toolport-gateway.exe", "uninstall.exe"];
+  const assets = ["modern-wizard.bmp", "nsDialogs.dll", "NSISdl.dll"];
+  assertManifest([...product, ...assets.map((name) => `$PLUGINSDIR/${name}`)], "nsis");
+  for (const name of assets) {
+    assert.throws(() => assertManifest([...product, name], "nsis"), /Unexpected/);
+  }
+  assert.throws(
+    () => assertManifest([...product, "$PLUGINSDIR/surprise.dll"], "nsis"),
+    /Unexpected/,
+  );
+});

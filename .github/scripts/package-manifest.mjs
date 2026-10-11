@@ -21,9 +21,12 @@ const nsis = new Set([
   "toolport-gateway.exe",
   "uninstall.exe",
   "$PLUGINSDIR/toolport-preflight.exe",
+  "$PLUGINSDIR/modern-wizard.bmp",
   ...[
     "System",
     "nsExec",
+    "nsDialogs",
+    "NSISdl",
     "nsis_tauri_utils",
     "inetc",
     "ApplicationID",
