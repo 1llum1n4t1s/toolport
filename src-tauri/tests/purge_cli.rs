@@ -69,6 +69,28 @@ fn purge_r5_unconfirmed_cli_rejects_unowned_directory() {
 }
 
 #[test]
+fn purge_dry_run_and_confirm_report_the_same_ownership_error() {
+    let env = conduit_lib::registry::DataDirTestEnv::new("purge_cli_error_order");
+    let data = env.dir.join("Toolport");
+    std::fs::create_dir(&data).unwrap();
+    // A corrupt sibling install must not mask the selected folder's ownership error.
+    let other = env.dir.join("Toolport-dev");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(other.join("registry.json"), "{corrupt").unwrap();
+    for confirm in [false, true] {
+        let mut command = isolated_command(&env.dir, &data);
+        command.arg("--remove-data");
+        if confirm { command.arg("--confirm"); }
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(text.contains("Could not verify Toolport ownership"), "confirm={confirm}: {text}");
+        assert!(!text.contains("Credential ownership inventory"), "confirm={confirm}: {text}");
+    }
+    assert_eq!(std::fs::read(other.join("registry.json")).unwrap(), b"{corrupt");
+}
+
+#[test]
 fn purge_named_override_without_registry_never_deletes_user_files() {
     let env = conduit_lib::registry::DataDirTestEnv::new("purge_cli_named_override");
     let data = env.dir.join("Toolport");
