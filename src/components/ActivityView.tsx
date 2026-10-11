@@ -1,3 +1,10 @@
+import {
+  dismissalIndex,
+  dismissalKey,
+  eventSeverity,
+  securityKey,
+  selectSecurityEvents,
+} from "@/lib/securityReview";
 import { ToolChanges } from "./ToolChanges";
 import { activityClientName, clientIdentityTooltip } from "@/lib/clientIdentity";
 import { useWindowVisible } from "@/lib/windowVisible";
@@ -113,109 +120,11 @@ function eventBadge(e: SecurityEvent): { label: string; cls: string } {
 const SECURITY_DISMISSED_KEY = "toolport.security.dismissed";
 const SECURITY_DISMISSED_KEY_LEGACY = "conduit.security.dismissed";
 
-/** High-signal, interrupting events vs benign, quiet-history churn. The backend now
- * tags a `severity`; for events written before that (no field) we classify by type:
- * poison / injected-result / lost-baseline are high, a plain tool_drift is benign.
- * `warn` (SEC-01 definition-content drift) rides the actionable tier for display. */
-function eventSeverity(e: SecurityEvent): "high" | "info" {
-  if (e.severity === "high" || e.severity === "warn") return "high";
-  if (e.severity === "info") return "info";
-  if (
-    e.type === "tool_poison_flag" ||
-    e.type === "result_injection" ||
-    e.type === "result_injection_blocked" ||
-    e.type === "pins_load_failed"
-  ) {
-    return "high";
-  }
-  return "info";
-}
-
-/** The identity severity: the recorded tier when present, else the display tier. Keeps
- * a `warn` definition-content drift distinct from a later `high` event on the same tool. */
-function severityIdentity(e: SecurityEvent): string {
-  return e.severity ?? eventSeverity(e);
-}
-
-/** Durable per-event key for dismissal: identity (type, server, tool, change, severity),
- * NOT the timestamp. A benign drift that re-flags later (e.g. RevenueCat revising a beta
- * tool again) collapses to the same key, so dismissing it once keeps it dismissed instead
- * of returning as a brand-new, undismissable notice. Server + change are kept so tool-less
- * events (e.g. pins_load_failed) don't collide and dismiss each other. The RECORDED
- * severity is kept (not the display tier) so dismissing a tool's benign change never
- * masks a later HIGH-severity change on that same tool (e.g. it turns destructive) -
- * that must still interrupt. */
-function securityKey(e: SecurityEvent): string {
-  const severity = severityIdentity(e);
-  const identity = `${e.type}:${e.server ?? ""}:${e.tool ?? ""}:${e.change}:${severity}`;
-  return e.profile ? `${identity}:profile=${e.profile}` : identity;
-}
-
-/** Review changes and actionable findings through their occurrence timestamp.
- * A later definition must reappear regardless of its severity. */
-function dismissalKey(e: SecurityEvent): string {
-  const identity = securityKey(e);
-  return e.type === "tool_drift" || eventSeverity(e) === "high"
-    ? `${identity}@${e.ts}`
-    : identity;
-}
-
-/** An acceptance marker covers this occurrence and earlier duplicate reports.
- * Later tool changes require a new review. */
-function isDismissed(e: SecurityEvent, dismissed: Set<string>): boolean {
-  const identity = securityKey(e);
-  // v1 dismissed drift by identity. Keep that review for old, unblocked records;
-  // current definitions carry new_fp and require their own acceptance.
-  if (
-    e.type === "tool_drift" &&
-    !e.new_fp &&
-    e.blocked === false &&
-    dismissed.has(identity)
-  )
-    return true;
-  if (e.type !== "tool_drift" && eventSeverity(e) !== "high")
-    return dismissed.has(identity);
-  const prefix = `${identity}@`;
-  for (const marker of dismissed) {
-    if (!marker.startsWith(prefix)) continue;
-    const reviewedThrough = Number(marker.slice(prefix.length));
-    if (Number.isFinite(reviewedThrough) && reviewedThrough >= e.ts) return true;
-  }
-  return false;
-}
-
 /** Unique React list key. `securityKey` is deliberately timestamp-free (so dismissal is
  * durable), but two un-collapsed instances of the same drift can be on screen at once,
  * so the render key still needs the timestamp to stay unique. */
 function renderKey(e: SecurityEvent): string {
   return `${securityKey(e)}:${e.ts}`;
-}
-
-/** Each connected client runs its own gateway process, so a single server tool change
- * is flagged once PER client against the shared baseline, producing identical notices.
- * Collapse those: keep only the newest of any (type, server, tool, change, severity) seen
- * within a short window, so genuinely-separate changes over time are preserved. Severity
- * is part of the identity so a benign `info` revision can never collapse (and hide) a
- * later `high` one on the same tool - that loud signal must survive the dedupe. */
-function dedupeSecurity(events: SecurityEvent[]): SecurityEvent[] {
-  const WINDOW_MS = 10 * 60 * 1000;
-  const newestFirst = [...events].sort((a, b) => b.ts - a.ts);
-  const kept: SecurityEvent[] = [];
-  for (const e of newestFirst) {
-    const dupe = kept.some(
-      (k) =>
-        k.type === e.type &&
-        k.server === e.server &&
-        (k.profile || "") === (e.profile || "") &&
-        k.tool === e.tool &&
-        k.change === e.change &&
-        severityIdentity(k) === severityIdentity(e) &&
-        (e.type !== "tool_drift" || k.new_fp === e.new_fp) &&
-        Math.abs(k.ts - e.ts) <= WINDOW_MS,
-    );
-    if (!dupe) kept.push(e);
-  }
-  return kept;
 }
 
 /** Collapse the loud notices to one row per finding identity (securityKey), keeping the
@@ -1895,7 +1804,9 @@ export function ActivityView({
     getSecurityEvents(2000)
       .then((s) => {
         if (!alive) return;
-        setSecurity(s);
+        setSecurity((previous) =>
+          JSON.stringify(previous) === JSON.stringify(s) ? previous : s,
+        );
         setSecurityLoadStatus("ready");
       })
       .catch(() => {
@@ -1932,7 +1843,11 @@ export function ActivityView({
     }
   }
 
-  const liveSecurity = dedupeSecurity(security).filter((e) => !isDismissed(e, dismissed));
+  const reviewedIndex = useMemo(() => dismissalIndex(dismissed), [dismissed]);
+  const liveSecurity = useMemo(
+    () => selectSecurityEvents(security, dismissed, reviewedIndex),
+    [security, dismissed, reviewedIndex],
+  );
   // Split loud/actionable signal from benign churn so vendor revisions don't bury a real
   // poison or privilege-escalation flag (the failure this whole surface exists to avoid).
   //
@@ -1947,11 +1862,13 @@ export function ActivityView({
     e.type !== "tool_poison_flag" &&
     e.type !== "result_injection" &&
     e.type !== "result_injection_blocked";
-  const toolChanges = liveSecurity.filter(
-    (e) => e.type === "tool_drift" && !e.historical,
+  const toolChanges = useMemo(
+    () => liveSecurity.filter((e) => e.type === "tool_drift" && !e.historical),
+    [liveSecurity],
   );
-  const olderToolChanges = liveSecurity.filter(
-    (e) => e.type === "tool_drift" && e.historical,
+  const olderToolChanges = useMemo(
+    () => liveSecurity.filter((e) => e.type === "tool_drift" && e.historical),
+    [liveSecurity],
   );
   const highSecurity = liveSecurity.filter(
     (e) => e.type !== "tool_drift" && eventSeverity(e) === "high" && !isNewTool(e),

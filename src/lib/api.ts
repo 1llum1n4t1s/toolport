@@ -58,6 +58,8 @@ export interface SecurityEvent {
   server?: string;
   /** Stable profile id; empty for the HTTP union. Older events may omit it. */
   profile?: string;
+  /** Profiles that reported this shared definition change. */
+  profiles?: string[];
   tool?: string;
   change: string;
   changed_fields?: string[];

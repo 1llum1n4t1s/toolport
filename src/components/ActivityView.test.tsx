@@ -881,6 +881,28 @@ describe("ActivityView security drift dismissals", () => {
     expect(screen.queryByText("Tool changes")).not.toBeInTheDocument();
   });
 
+  it("retains a v1 review marker after accepting a 357-tool shared profile update", async () => {
+    localStorage.clear();
+    const legacyMarker = "tool_drift:older:older__read:changed:warn";
+    localStorage.setItem("toolport.security.dismissed", JSON.stringify([legacyMarker]));
+    const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+    getSecurityEvents.mockResolvedValue(
+      Array.from({ length: 357 }, (_, i) => ({
+        ...warnEvent(1_700_000_000_000),
+        tool: `srv__read${i}`,
+        profiles: ["", "a", "b", "c", "d", "e"],
+        blocked: false,
+      })),
+    );
+    render(<ActivityView refreshKey={0} registry={null} />);
+    await act(async () => {});
+    await user.click(screen.getByRole("button", { name: "Accept all for this server" }));
+    await act(async () => {});
+    const markers = JSON.parse(localStorage.getItem("toolport.security.dismissed")!);
+    expect(markers).toContain(legacyMarker);
+    expect(markers).toHaveLength(358);
+  });
+
   it("keeps separate definitions within the old duplicate window", async () => {
     getSecurityEvents.mockResolvedValue([
       { ...warnEvent(1_700_000_000_000), new_fp: "v2:old" },

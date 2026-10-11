@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { ToolChanges, groupToolChanges } from "./ToolChanges";
+import { ToolChanges, groupToolChanges, sanitizeSegment } from "./ToolChanges";
 import { securityFixture } from "@/test/security-fixture";
 import type { Registry } from "@/lib/types";
 const release = vi.fn().mockResolvedValue(undefined);
@@ -23,6 +23,30 @@ describe("server tool changes", () => {
     expect(
       groupToolChanges([...events, { ...events[0], ts: events[0].ts + 120_000 }]),
     ).toHaveLength(3);
+  });
+  it("keeps both definitions when a tool changes twice within a minute", () => {
+    const event = securityFixture()[0];
+    const groups = groupToolChanges([
+      { ...event, new_fp: "v3:first" },
+      { ...event, ts: event.ts + 1, new_fp: "v3:second" },
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].tools).toHaveLength(2);
+  });
+  it("matches Rust sanitization for ASCII and Unicode scalar values", () => {
+    expect(sanitizeSegment("file-system")).toBe("file_system");
+    expect(sanitizeSegment("file.🛠️é_01")).toBe("file_____01");
+    expect(sanitizeSegment("already_ok")).toBe("already_ok");
+  });
+  it("uses singular wording for one new tool", () => {
+    render(
+      <ToolChanges
+        events={[{ ...securityFixture()[0], change: "added" }]}
+        registry={registry}
+        onAccept={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Cloudflare (Full API): 1 new tool")).toBeInTheDocument();
   });
   it("keeps profiles separate for the same server and tool", () => {
     const event = securityFixture()[0];

@@ -1,8 +1,15 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronRight, ShieldCheck } from "lucide-react";
 import { releaseQuarantine, type SecurityEvent } from "@/lib/api";
 import type { Registry } from "@/lib/types";
 import { toastError } from "@/lib/toast";
+
+// Rust sanitize_segment maps Unicode scalar values, rather than UTF-16 code units.
+export function sanitizeSegment(value: string) {
+  return Array.from(value, (character) =>
+    /^[a-zA-Z0-9_]$/.test(character) ? character : "_",
+  ).join("");
+}
 
 export function groupToolChanges(events: SecurityEvent[]) {
   const groups: {
@@ -21,7 +28,15 @@ export function groupToolChanges(events: SecurityEvent[]) {
         group.ts - event.ts <= 60_000,
     );
     if (group) {
-      if (!group.tools.some((tool) => tool.tool === event.tool)) group.tools.push(event);
+      if (
+        !group.tools.some(
+          (tool) =>
+            tool.tool === event.tool &&
+            tool.new_fp === event.new_fp &&
+            tool.ts === event.ts,
+        )
+      )
+        group.tools.push(event);
     } else groups.push({ server, profile, ts: event.ts, tools: [event] });
   }
   return groups;
@@ -29,7 +44,8 @@ export function groupToolChanges(events: SecurityEvent[]) {
 
 function summary(tools: SecurityEvent[]) {
   const noun = tools.length === 1 ? "tool" : "tools";
-  if (tools.every((tool) => tool.change === "added")) return `${tools.length} new tools`;
+  if (tools.every((tool) => tool.change === "added"))
+    return `${tools.length} new ${noun}`;
   if (tools.every((tool) => tool.changed_fields?.includes("input_schema")))
     return `${tools.length} ${noun} changed their inputs`;
   if (tools.every((tool) => tool.changed_fields?.join() === "description"))
@@ -61,6 +77,7 @@ export function ToolChanges({
   registry: Registry | null;
   onAccept: (events: SecurityEvent[]) => void;
 }) {
+  const groups = useMemo(() => groupToolChanges(events), [events]);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   async function accept(events: SecurityEvent[]) {
@@ -88,14 +105,13 @@ export function ToolChanges({
         Tool changes
       </h3>
       <div className="space-y-3">
-        {groupToolChanges(events).map((group) => {
+        {groups.map((group) => {
           const blocked = group.tools.filter((tool) => tool.blocked === true).length;
           const unknown = group.tools.some((tool) => tool.blocked == null);
           const server =
             registry?.servers.find(
               (server) =>
-                server.id.replace(/[^a-zA-Z0-9_]/g, "_") === group.server ||
-                server.id === group.server,
+                sanitizeSegment(server.id) === group.server || server.id === group.server,
             )?.name || group.server;
           const canAccept =
             !unknown &&
@@ -158,7 +174,7 @@ export function ToolChanges({
                 <div className="mt-3 space-y-2">
                   {group.tools.map((event) => (
                     <details
-                      key={event.tool}
+                      key={`${event.tool}:${event.new_fp}:${event.ts}`}
                       className="rounded border border-border p-2 text-xs"
                     >
                       <summary className="cursor-pointer font-medium">

@@ -68,6 +68,9 @@ type Pins = BTreeMap<String, Pin>;
 struct Pin {
     /// Version-prefixed fingerprint of the whole definition (see `fingerprint`).
     fp: String,
+    /// A released legacy block must be reviewed again against a live definition.
+    #[serde(default)]
+    review_on_upgrade: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parameters: Option<BTreeMap<String, String>>,
     /// `readOnlyHint` at pin time, if the tool advertised one.
@@ -117,6 +120,7 @@ impl From<PinRepr> for Pin {
             PinRepr::Full(p) => p,
             PinRepr::Legacy(fp) => Pin {
                 fp,
+                review_on_upgrade: false,
                 parameters: None,
                 ro: None,
                 dh: None,
@@ -149,6 +153,7 @@ fn pin_with_source(tool: &Value, source_input_schema: Option<&str>) -> Pin {
     let parts = definition_parts(tool, source_input_schema);
     Pin {
         fp: pin_fingerprint(tool, &parts),
+        review_on_upgrade: false,
         parameters: Some(input_parameters(tool)),
         ro: read_hint(tool, "readOnlyHint"),
         dh: read_hint(tool, "destructiveHint"),
@@ -748,12 +753,19 @@ fn check_inner_with(
                 // A different fingerprint is only a real change if it came from the same
                 // algorithm version; a version mismatch is our format upgrade, not the
                 // tool's, so re-baseline quietly (no event, no re-scan).
-                Some(old) if old.fp != pin.fp && fp_version(&old.fp) == fp_version(&pin.fp) => {
-                    let sev = drift_severity(
-                        t,
-                        annotation_downgrade(old, t),
-                        definition_content_changed(old, &pin),
-                    );
+                Some(old)
+                    if old.review_on_upgrade
+                        || (old.fp != pin.fp && fp_version(&old.fp) == fp_version(&pin.fp)) =>
+                {
+                    let sev = if old.review_on_upgrade {
+                        SEV_HIGH
+                    } else {
+                        drift_severity(
+                            t,
+                            annotation_downgrade(old, t),
+                            definition_content_changed(old, &pin),
+                        )
+                    };
                     // Capture prior annotation flags on the event *before* re-baseline
                     // overwrites the pin (SOU-305). apply_quarantine stores them on the
                     // quarantine record so the UI can say "readOnlyHint: true → false"
@@ -1909,6 +1921,9 @@ pub fn release_definition(
             let captured = record["pending_pin"]["fp"]
                 .as_str()
                 .or_else(|| record["definition_fp"].as_str());
+            if captured.is_none() {
+                return Err("This older finding has no saved definition. Review the active block in Settings.".to_string());
+            }
             if captured != Some(expected_fp) {
                 return Err(
                     "The tool changed again. Refresh and review its latest definition.".to_string(),
@@ -1944,7 +1959,7 @@ fn release_inner(
         }
         None => None,
     };
-    if let Some(pending) = pending {
+    {
         // Establish the exact definition captured when this tool was quarantined before
         // removing the router block. For ordinary drift this is the recovery path when the
         // quarantine write succeeded but the subsequent staged-pin save failed or was skipped
@@ -1965,10 +1980,17 @@ fn release_inner(
                 }
             };
             let mut updated = pins.clone();
-            updated.insert(
-                tool.to_string(),
-                merge_pending_pin(pins.get(tool), pending, epoch_millis()),
-            );
+            if let Some(pending) = pending {
+                updated.insert(
+                    tool.to_string(),
+                    merge_pending_pin(pins.get(tool), pending, epoch_millis()),
+                );
+            }
+            if let Some(pin) = updated.get_mut(tool) {
+                if fp_version(&pin.fp) != PIN_FP_VERSION {
+                    pin.review_on_upgrade = true;
+                }
+            }
             if updated != pins {
                 save_pin(profile, &updated)?;
             }
@@ -3654,11 +3676,75 @@ pub fn record_sync_refusal(server: &str, detail: &str) {
     }));
 }
 
+fn record_drift_change(event: &Value, path: &Path) -> Result<(), String> {
+    let _lock = crate::registry::lock_at(path)?;
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let profile = event["profile"].as_str().unwrap_or("");
+    for line in lines.iter_mut().rev().take(KEEP_LINES) {
+        let Ok(mut previous) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if previous["type"] != "tool_drift" {
+            continue;
+        }
+        let mut identity = previous.clone();
+        identity.as_object_mut().unwrap().remove("profile");
+        let mut incoming = event.clone();
+        incoming.as_object_mut().unwrap().remove("profile");
+        if security_key(&identity) == security_key(&incoming)
+            && previous["new_fp"] == event["new_fp"]
+            && event["ts"]
+                .as_u64()
+                .unwrap_or(0)
+                .abs_diff(previous["ts"].as_u64().unwrap_or(0))
+                <= DEDUP_WINDOW_MS
+        {
+            let mut profiles: BTreeSet<String> = previous["profiles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect();
+            if profiles.is_empty() {
+                profiles.insert(previous["profile"].as_str().unwrap_or("").to_string());
+            }
+            if profiles.insert(profile.to_string()) {
+                previous.as_object_mut().unwrap().remove("profile");
+                previous["profiles"] = json!(profiles);
+                *line = previous.to_string();
+                return crate::registry::atomic_write(path, &format!("{}\n", lines.join("\n")));
+            }
+            return Ok(());
+        }
+    }
+    let mut merged = event.clone();
+    merged.as_object_mut().unwrap().remove("profile");
+    merged["profiles"] = json!([profile]);
+    let mut file = crate::registry::open_append_private(path).map_err(|error| error.to_string())?;
+    file.write_all(format!("{merged}\n").as_bytes())
+        .map_err(|error| error.to_string())?;
+    rotate_if_large(path);
+    Ok(())
+}
+
 fn record_event(event: &Value) {
     if let Some(path) = security_path() {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
+        if event["type"] == "tool_drift" {
+            let _ = record_drift_change(event, &path);
+            return;
+        }
+        let Ok(_lock) = crate::registry::lock_at(&path) else {
+            return;
+        };
         // Collapse the concurrent multi-gateway burst before it hits disk (see
         // `recently_recorded`), so the shared log carries one line per real change.
         if recently_recorded(event, &path) {
@@ -3724,7 +3810,19 @@ pub fn read_recent(limit: usize) -> std::io::Result<Vec<Value>> {
 #[derive(PartialEq)]
 struct ReviewStamp {
     dir: PathBuf,
-    files: BTreeMap<PathBuf, (SystemTime, u64)>,
+    files: BTreeMap<PathBuf, ReviewFileStamp>,
+}
+
+#[derive(PartialEq)]
+struct ReviewFileStamp {
+    modified: SystemTime,
+    len: u64,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64),
+    #[cfg(windows)]
+    identity: (u32, u32, u32),
+    #[cfg(not(any(unix, windows)))]
+    created: Option<SystemTime>,
 }
 
 struct ReviewCache {
@@ -3744,7 +3842,9 @@ fn review_stamp() -> Option<ReviewStamp> {
     for entry in std::fs::read_dir(&dir).ok()? {
         let entry = entry.ok()?;
         let name = entry.file_name();
-        let name = name.to_str()?;
+        let Some(name) = name.to_str() else {
+            continue;
+        };
         if name.ends_with(".lock")
             || !(name == "security.jsonl"
                 || name.starts_with("registry.")
@@ -3755,7 +3855,45 @@ fn review_stamp() -> Option<ReviewStamp> {
             continue;
         }
         let metadata = entry.metadata().ok()?;
-        files.insert(entry.path(), (metadata.modified().ok()?, metadata.len()));
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        #[cfg(windows)]
+        let identity = {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+            };
+            let file = std::fs::File::open(entry.path()).ok()?;
+            let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+            // A live file handle and a writable output buffer, retained for the call.
+            if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+                return None;
+            }
+            let info = unsafe { info.assume_init() };
+            (
+                info.dwVolumeSerialNumber,
+                info.nFileIndexHigh,
+                info.nFileIndexLow,
+            )
+        };
+        files.insert(
+            entry.path(),
+            ReviewFileStamp {
+                modified: metadata.modified().ok()?,
+                len: metadata.len(),
+                #[cfg(unix)]
+                identity: (
+                    metadata.dev(),
+                    metadata.ino(),
+                    metadata.ctime(),
+                    metadata.ctime_nsec(),
+                ),
+                #[cfg(windows)]
+                identity,
+                #[cfg(not(any(unix, windows)))]
+                created: metadata.created().ok(),
+            },
+        );
     }
     Some(ReviewStamp { dir, files })
 }
@@ -3793,6 +3931,16 @@ fn review_events_cached(
     Ok(events)
 }
 
+fn event_matches_profile(event: &Value, profile: &str) -> bool {
+    if let Some(profiles) = event["profiles"].as_array() {
+        profiles.iter().any(|value| value.as_str() == Some(profile))
+    } else {
+        event["profile"]
+            .as_str()
+            .is_none_or(|value| value == profile)
+    }
+}
+
 fn review_events_uncached(limit: usize) -> std::io::Result<Vec<Value>> {
     let mut events = read_recent(limit.min(KEEP_LINES))?;
     let quarantines = all_quarantined();
@@ -3803,10 +3951,9 @@ fn review_events_uncached(limit: usize) -> std::io::Result<Vec<Value>> {
                 // profile identity. A possible active block is not safe to dismiss.
                 let unknown = records.iter().any(|record| {
                     let profile = record["profile"].as_str();
-                    let event_profile = event["profile"].as_str();
                     record["tool"].as_str().is_some()
                         && record["tool"] == event["tool"]
-                        && (profile == event_profile || profile.is_none() || event_profile.is_none())
+                        && event_matches_profile(event, profile.unwrap_or(""))
                         && (event["new_fp"].as_str().is_none()
                             || record["pending_pin"]["fp"]
                                 .as_str()
@@ -3818,8 +3965,10 @@ fn review_events_uncached(limit: usize) -> std::io::Result<Vec<Value>> {
                     .filter(|record| {
                         record["tool"].as_str().is_some()
                             && record["tool"] == event["tool"]
-                            && record["profile"].as_str().unwrap_or("")
-                                == event["profile"].as_str().unwrap_or("")
+                            && event_matches_profile(
+                                event,
+                                record["profile"].as_str().unwrap_or(""),
+                            )
                             && event["new_fp"].as_str().is_some_and(|fp| {
                                 record["pending_pin"]["fp"]
                                     .as_str()
@@ -3836,8 +3985,10 @@ fn review_events_uncached(limit: usize) -> std::io::Result<Vec<Value>> {
                         !profiles.is_empty()
                             || (event["type"] == "pins_load_failed"
                                 && records.iter().any(|record| record["change"] == "tamper"
-                                    && record["profile"].as_str().unwrap_or("")
-                                        == event["profile"].as_str().unwrap_or("")))
+                                    && event_matches_profile(
+                                        event,
+                                        record["profile"].as_str().unwrap_or("")
+                                    )))
                     )
                 };
                 event["blocked_profiles"] = json!(profiles);
@@ -3884,8 +4035,12 @@ fn attach_drift_poison_signatures(events: &mut [Value]) {
                     event["type"] == "tool_poison_flag"
                         && event["tool"] == tool["tool"]
                         && event["server"] == tool["server"]
-                        && event["profile"].as_str().unwrap_or("")
-                            == tool["profile"].as_str().unwrap_or("")
+                        && if tool["profiles"].is_array() {
+                            event_matches_profile(&tool, event["profile"].as_str().unwrap_or(""))
+                        } else {
+                            event["profile"].as_str().unwrap_or("")
+                                == tool["profile"].as_str().unwrap_or("")
+                        }
                         && event["ts"].as_u64().unwrap_or(0) >= start
                 })
                 .collect();
@@ -3932,7 +4087,11 @@ pub fn group_tool_changes(events: &[Value]) -> Vec<ToolChangeGroup> {
                 && group.profile == profile
                 && group.ts.saturating_sub(ts) <= 60_000
         }) {
-            if !group.tools.iter().any(|tool| tool["tool"] == event["tool"]) {
+            if !group.tools.iter().any(|tool| {
+                tool["tool"] == event["tool"]
+                    && tool["new_fp"] == event["new_fp"]
+                    && tool["ts"] == event["ts"]
+            }) {
                 group.tools.push(event.clone());
             }
         } else {
@@ -3963,7 +4122,11 @@ pub fn tool_change_summary(events: &[Value]) -> String {
             if inputs == 1 { "tool" } else { "tools" }
         )
     } else if events.iter().all(|event| event["change"] == "added") {
-        format!("{} new tools", events.len())
+        format!(
+            "{} new {}",
+            events.len(),
+            if events.len() == 1 { "tool" } else { "tools" }
+        )
     } else if events
         .iter()
         .all(|event| event["changed_fields"] == json!(["description"]))
@@ -4137,38 +4300,6 @@ mod tests {
     }
 
     #[test]
-    fn v1_upgrade_preserves_quarantine_and_review_history() {
-        let _data_dir_lock = crate::registry::data_dir_test_lock();
-        let _data = TestDataDir::new("v1-review-upgrade");
-        let mut reg = crate::registry::Registry::default();
-        reg.profiles.push(crate::registry::Profile {
-            id: "work".into(), name: "Work".into(), enabled_server_ids: vec![],
-            tool_scope: Default::default(), instructions: None, unknown_fields: Default::default(),
-        });
-        crate::registry::save(&reg).unwrap();
-        let tool = json!({"name":"srv__read", "description":"Current definition"});
-        let event = json!({"type":"tool_drift", "server":"srv", "tool":"srv__read", "change":"changed", "severity":"warn", "ts":1});
-        let history = format!("{event}\n");
-        std::fs::write(_data.path.join("security.jsonl"), &history).unwrap();
-        for profile in [None, Some("work")] {
-            std::fs::write(pins_path(profile).unwrap(), r#"{"srv__read":"v1:old-baseline"}"#).unwrap();
-            let quarantine = r#"{"srv__read":{"tool":"srv__read","server":"srv","change":"changed","reason":"Review this change","ts":1}}"#;
-            let path = quarantine_path(profile).unwrap();
-            std::fs::write(&path, quarantine).unwrap();
-            assert!(check(profile, &vec![tool.clone()]).unwrap().is_empty());
-            assert!(quarantined(profile).unwrap().contains("srv__read"));
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), quarantine);
-            assert!(baselines(profile)["srv__read"].fingerprint.starts_with("v3:"));
-        }
-        let reviewed = review_events(2000).unwrap();
-        assert_eq!(reviewed.len(), 1);
-        assert!(reviewed[0]["blocked"].is_null());
-        assert!(reviewed[0].get("historical").is_none());
-        assert_eq!(security_key(&reviewed[0]), "tool_drift:srv:srv__read:changed:warn");
-        assert_eq!(std::fs::read_to_string(_data.path.join("security.jsonl")).unwrap(), history);
-    }
-
-    #[test]
     fn accepting_displayed_change_cannot_release_a_newer_definition() {
         let _data_dir_lock = crate::registry::data_dir_test_lock();
         let _data = TestDataDir::new("reviewed-definition");
@@ -4220,24 +4351,16 @@ mod tests {
             accept_quarantined_pins(Some(id)).unwrap();
         }
         let findings = dedupe_security(&review_events(2000).unwrap());
-        assert_eq!(findings.len(), 2);
-        assert_ne!(security_key(&findings[0]), security_key(&findings[1]));
-        assert!(findings.iter().all(|event| event["blocked"] == true));
-        let accepted = security_key(
-            findings
-                .iter()
-                .find(|e| e["profile"] == "personal")
-                .unwrap(),
-        );
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0]["profiles"], json!(["personal", "work"]));
+        assert_eq!(findings[0]["blocked_profiles"], json!(["personal", "work"]));
+        assert_eq!(findings[0]["blocked"], true);
         assert!(
             release_definition(Some("personal"), "srv__update", &pin_of(&after[0]).fp).unwrap()
         );
-        let remaining: Vec<_> = dedupe_security(&review_events(2000).unwrap())
-            .into_iter()
-            .filter(|event| security_key(event) != accepted)
-            .collect();
+        let remaining = review_events(2000).unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0]["profile"], "work");
+        assert_eq!(security_key(&remaining[0]), security_key(&findings[0]));
         assert_eq!(remaining[0]["blocked_profiles"], json!(["work"]));
         assert_eq!(remaining[0]["blocked"], true);
         assert!(!quarantined(Some("personal"))
@@ -4354,6 +4477,133 @@ mod tests {
     }
 
     #[test]
+    fn profile_refresh_retains_one_row_per_change_and_older_findings() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("large-profile-refresh");
+        let mut reg = crate::registry::Registry::default();
+        for id in ["a", "b", "c", "d", "e"] {
+            reg.profiles.push(crate::registry::Profile {
+                id: id.into(),
+                name: id.into(),
+                enabled_server_ids: vec![],
+                tool_scope: Default::default(),
+                instructions: None,
+                unknown_fields: Default::default(),
+            });
+        }
+        crate::registry::save(&reg).unwrap();
+        record_event(&json!({"type":"pins_load_failed", "ts":1, "detail":"Older blocked finding"}));
+        save_quarantine(
+            Some("a"),
+            &BTreeMap::from([(
+                "older__read".into(),
+                json!({"tool":"older__read", "change":"tamper"}),
+            )]),
+        )
+        .unwrap();
+        let before: Vec<_> = (0..357)
+            .map(|i| tool(&format!("srv__read_{i}"), "Before"))
+            .collect();
+        let after: Vec<_> = (0..357)
+            .map(|i| tool(&format!("srv__read_{i}"), "After"))
+            .collect();
+        for profile in [None, Some("a"), Some("b"), Some("c"), Some("d"), Some("e")] {
+            check(profile, &before).unwrap();
+            let changes = check_staged(profile, &after).unwrap();
+            assert_eq!(changes.len(), 357);
+            apply_quarantine(profile, &after, &changes).unwrap();
+            accept_quarantined_pins(profile).unwrap();
+        }
+        let events = review_events(KEEP_LINES).unwrap();
+        assert_eq!(events.len(), 358);
+        let older = events
+            .iter()
+            .find(|event| event["type"] == "pins_load_failed")
+            .unwrap();
+        assert_eq!(
+            older["blocked"], true,
+            "legacy profile-less baseline loss remains blocked"
+        );
+        for event in events.iter().filter(|event| event["type"] == "tool_drift") {
+            assert_eq!(event["profiles"], json!(["", "a", "b", "c", "d", "e"]));
+            assert_eq!(event["blocked_profiles"].as_array().unwrap().len(), 6);
+        }
+        assert_eq!(
+            std::fs::read_to_string(security_path().unwrap())
+                .unwrap()
+                .lines()
+                .count(),
+            358
+        );
+    }
+
+    #[test]
+    fn review_cache_detects_same_mtime_atomic_replacement_and_non_utf8_names() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let data = TestDataDir::new("review-cache-replace");
+        let path = data.path.join("security.jsonl");
+        std::fs::write(&path, "one").unwrap();
+        let stamp = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(123);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(stamp)
+            .unwrap();
+        let reads = std::cell::Cell::new(0);
+        let read = || {
+            reads.set(reads.get() + 1);
+            Ok(vec![])
+        };
+        review_events_cached(2000, read).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            std::fs::write(
+                data.path.join(std::ffi::OsString::from_vec(vec![0xff])),
+                "unrelated",
+            )
+            .unwrap();
+        }
+        review_events_cached(2000, read).unwrap();
+        assert_eq!(
+            reads.get(),
+            1,
+            "unrelated filenames must not disable caching"
+        );
+        let replacement = data.path.join("replacement");
+        std::fs::write(&replacement, "two").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_modified(stamp)
+            .unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        review_events_cached(2000, read).unwrap();
+        assert_eq!(
+            reads.get(),
+            2,
+            "atomic replacement must invalidate despite equal length and mtime"
+        );
+    }
+
+    #[test]
+    fn repeated_tool_changes_within_one_minute_remain_reviewable() {
+        let events = [
+            json!({"type":"tool_drift", "server":"srv", "tool":"srv__read", "new_fp":"v3:first", "ts":1}),
+            json!({"type":"tool_drift", "server":"srv", "tool":"srv__read", "new_fp":"v3:second", "ts":2}),
+        ];
+        let groups = group_tool_changes(&events);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].tools.len(), 2);
+        assert_eq!(
+            tool_change_summary(&[json!({"change":"added"})]),
+            "1 new tool"
+        );
+    }
+
+    #[test]
     fn review_cache_skips_unchanged_reads_and_invalidates_all_inputs() {
         let _data_dir_lock = crate::registry::data_dir_test_lock();
         let data = TestDataDir::new("review-cache");
@@ -4421,8 +4671,8 @@ mod tests {
         );
         let events = review_events(2000).unwrap();
         assert_eq!(events[0]["blocked_profiles"], json!([""]));
+        assert_eq!(events.len(), 2);
         assert_eq!(events[1]["blocked"], false);
-        assert_eq!(events[2]["blocked"], false);
         let mut durable = current;
         durable.as_object_mut().unwrap().remove("pending_pin");
         durable["definition_fp"] = json!("v2:new");
@@ -7451,6 +7701,7 @@ mod tests {
             "inputSchema": {"type":"object"}, "annotations": { "readOnlyHint": false } })];
         let old = Pin {
             fp: "v1:old".into(),
+            review_on_upgrade: false,
             parameters: None,
             ro: Some(true),
             dh: None,
@@ -7932,6 +8183,7 @@ mod tests {
     fn legacy_pin(fp: &str) -> Pin {
         Pin {
             fp: fp.to_string(),
+            review_on_upgrade: false,
             parameters: None,
             ro: None,
             dh: None,
