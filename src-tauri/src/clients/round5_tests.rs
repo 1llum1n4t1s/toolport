@@ -121,9 +121,8 @@ fn round5_unreadable_profile_link_does_not_skip_good_settings_cleanup() {
     exercise_bad_profile_link("unreadable");
 }
 
-#[cfg(windows)]
 #[test]
-fn round5_windows_bulk_disconnect_matches_native_recovery_paths() {
+fn round5_bulk_disconnect_matches_native_recovery_paths() {
     let data = crate::registry::DataDirTestEnv::new("round5-windows-recovery");
     let _home = TestHome::set(&data.dir);
     let folder = data.dir.join("work-profile");
@@ -140,6 +139,7 @@ fn round5_windows_bulk_disconnect_matches_native_recovery_paths() {
     let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport",
         "transport":"stdio", "command":"/new/toolport-gateway", "env":[{"key":"TOOLPORT_CLIENT_ID", "value":id}]})).unwrap();
     install_or_remove(&id, Some(&entry)).unwrap();
+    #[cfg(windows)]
     assert!(!read_client(&find_def(&id).unwrap()).config_path.starts_with(r"\\?\"));
     let results = disconnect_all(true).unwrap();
     assert_eq!(results.iter().filter(|result| result.client_id == id).count(), 1);
@@ -154,9 +154,9 @@ fn round5_windows_bulk_disconnect_matches_native_recovery_paths() {
     std::fs::write(&native, &edited).unwrap();
     assert!(read_client(&find_def(&id).unwrap()).gateway_installed);
     let results = disconnect_all(true).unwrap();
-    let result = results.iter().find(|result| result.client_id == id).unwrap();
-    assert_eq!(result.path, native.to_string_lossy());
-    assert_eq!(results.iter().filter(|result| result.client_id == id).count(), 1);
+    assert!(!results.iter().any(|result| result.client_id == id));
+    let results = disconnect_all(false).unwrap();
+    assert!(!results.iter().any(|result| result.client_id == id));
     assert_eq!(std::fs::read_to_string(&native).unwrap(), edited);
 }
 
