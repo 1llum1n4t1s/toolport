@@ -179,3 +179,10 @@ And the summary line: tools exposed (flat vs lazy), total-token delta as a perce
 - This measures the agent loop, not just the static tool-definition size. The static
   size (a fixed set of meta-tools, about 500 tokens with Code Mode off and about 870 with
   it on, against the whole catalog) is the upper bound; the loop shows what you actually pay.
+
+## Gateway version comparison
+
+The dependency-free Linux harness compares v1.24.0 with a supplied 2.0 binary
+against 18 offline mock servers. See [2.0 vs 1.24](../BENCHMARK.md#20-vs-124)
+for the method, fixture provenance, measured results and command.
+Run `node benchmark/gateway-compare.mjs --help` for options.

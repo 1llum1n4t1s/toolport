@@ -1,0 +1,138 @@
+{
+  "measuredAt": "2026-10-11T17:25:00.295Z",
+  "node": "v26.11.1",
+  "machine": {
+    "kernel": "7.2.8-5-omarchy-bore",
+    "arch": "x64",
+    "cpu": "Intel(R) Core(TM) i7-14700F",
+    "logicalCpus": 28
+  },
+  "method": {
+    "rounds": 3,
+    "coldPerRound": 5,
+    "callsPerMetricPerRound": 60,
+    "catalogTools": 1707,
+    "namespaces": 18,
+    "catalogSha256": "dab96329c20b19b6583b9d55564915193b47298a367bb3b1dfb484e540b719ed",
+    "queriesSha256": "49ef5e21ae008971f9f7e660e64ae818d927c4f9dceb2c01d4e8f31d3d11393d",
+    "queries": 285,
+    "latency": "sequential RPC wall time including Node JSON parsing; pooled nearest-rank percentiles",
+    "bytes": "compact JSON result payload, excluding JSON-RPC envelope",
+    "rss": "daemon Linux VmHWM after warm metrics; excludes adapter and mocks"
+  },
+  "buildProfiles": "Optimization flags were not retained with the supplied binaries; no release-profile equivalence is claimed.",
+  "results": {
+    "v1": {
+      "version": "1.24.0",
+      "sha256": "01a01dfc2778af80aefb6818845c4309e4a5c6569220b5f8606ea121ce8e1e76",
+      "summary": {
+        "cold_full_catalog_ms": {
+          "n": 15,
+          "p50": 1044.8910460000043,
+          "p95": 1349.5337479999944,
+          "min": 971.7215169999981,
+          "max": 1349.5337479999944
+        },
+        "full_list_ms": {
+          "n": 180,
+          "p50": 243.95816300000297,
+          "p95": 280.5170630000066,
+          "min": 215.4045480000059,
+          "max": 336.5081280000013
+        },
+        "tools_call_ms": {
+          "n": 180,
+          "p50": 0.6059740000018792,
+          "p95": 0.8590100000001257,
+          "min": 0.43796300000394695,
+          "max": 6.708389999999781
+        },
+        "lazy_list_ms": {
+          "n": 180,
+          "p50": 70.70423999999184,
+          "p95": 79.5902250000072,
+          "min": 61.44676000000618,
+          "max": 101.522782
+        },
+        "search_ms": {
+          "n": 180,
+          "p50": 51.07162999999127,
+          "p95": 60.60399200000029,
+          "min": 43.73442899998918,
+          "max": 71.63288000000466
+        },
+        "call_tool_ms": {
+          "n": 180,
+          "p50": 0.5293779999919934,
+          "p95": 0.6821530000015628,
+          "min": 0.41844700000365265,
+          "max": 1.0574179999966873
+        },
+        "daemon_peak_kib": {
+          "n": 3,
+          "p50": 717880,
+          "p95": 720888,
+          "min": 596420,
+          "max": 720888
+        },
+        "lazy_list_bytes": 8398
+      }
+    },
+    "v2": {
+      "version": "2.0.0-preview.9",
+      "sha256": "33dc26fba0096d326dd2bf68b9643ac1ef362368a4f478237c551c4b1a19c6e5",
+      "summary": {
+        "cold_full_catalog_ms": {
+          "n": 15,
+          "p50": 1087.5197030000054,
+          "p95": 1313.096602000005,
+          "min": 943.4948280000099,
+          "max": 1313.096602000005
+        },
+        "full_list_ms": {
+          "n": 180,
+          "p50": 34.70140099999844,
+          "p95": 48.62129299999651,
+          "min": 28.985262999980478,
+          "max": 117.46477500000037
+        },
+        "tools_call_ms": {
+          "n": 180,
+          "p50": 1.2101929999989807,
+          "p95": 1.6253619999988587,
+          "min": 0.8882220000014058,
+          "max": 3.0989790000021458
+        },
+        "lazy_list_ms": {
+          "n": 180,
+          "p50": 0.6434039999949164,
+          "p95": 0.8709859999944456,
+          "min": 0.43859799997881055,
+          "max": 152.69239700000617
+        },
+        "search_ms": {
+          "n": 180,
+          "p50": 4.080646999995224,
+          "p95": 6.331590000001597,
+          "min": 2.523672000010265,
+          "max": 8.129618000006303
+        },
+        "call_tool_ms": {
+          "n": 180,
+          "p50": 1.266801999998279,
+          "p95": 1.5517460000046412,
+          "min": 0.9938859999820124,
+          "max": 1.802520999997796
+        },
+        "daemon_peak_kib": {
+          "n": 3,
+          "p50": 267736,
+          "p95": 273960,
+          "min": 239664,
+          "max": 273960
+        },
+        "lazy_list_bytes": 2152
+      }
+    }
+  }
+}

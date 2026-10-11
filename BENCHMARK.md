@@ -8,6 +8,65 @@ model's context on every request.
 
 Reproduce it yourself: [`benchmark/`](benchmark/).
 
+## 2.0 vs 1.24
+
+Measured on 2026-10-11 on one Linux x86_64 workstation (Intel Core i7-14700F),
+using Node 26.11.1 and supplied v1.24.0 and 2.0.0-preview.9 gateway binaries.
+The 2.0 candidate includes #1159 and #1160. Binary hashes, machine details and
+unrounded measurements are in the [run summary](benchmark/results/gateway-compare-2026-10-11.json).
+The supplied binaries' optimization flags were not retained, so this is not a
+verified release-profile comparison.
+
+The [harness](benchmark/gateway-compare.mjs) generates an isolated registry with
+18 stdio mock servers and 1,707 tools from the existing
+[public catalog](src-tauri/tests/fixtures/search-eval-scale/README.md).
+Names, descriptions and schemas come from public definitions; sources, licenses
+and attribution are recorded in that fixture. It contains no personal catalog or
+credentials. Mock calls return fixed data and make no provider requests.
+
+Three rounds alternate binary order. Each binary gets 15 fresh-daemon starts
+and 180 sequential samples per warm metric. Timings include adapter transport
+and Node JSON parsing. Search cycles the first 61 public development queries,
+with one first search excluded per session; it measures latency, not accuracy.
+Calls use `slack__slack_list_channels` with `limit: 5`, through full-mode
+`tools/call` or lazy-mode `toolport_call_tool`. Every call must reach the mock
+exactly once and return the expected tool name.
+
+| Metric                            |     v1.24.0 | 2.0.0-preview.9 |
+| --------------------------------- | ----------: | --------------: |
+| Full-mode tools/call p50          |     0.61 ms |         1.21 ms |
+| Lazy toolport_call_tool p50       |     0.53 ms |         1.27 ms |
+| Warm same-session search p50      |    51.07 ms |         4.08 ms |
+| Lazy tools/list p50               |    70.70 ms |         0.64 ms |
+| Full tools/list p50               |   243.96 ms |        34.70 ms |
+| Cold spawn to full catalog p50    | 1,044.89 ms |     1,087.52 ms |
+| Daemon peak RSS, median of rounds |     701 MiB |         261 MiB |
+| Lazy tools/list result bytes      |       8,398 |           2,152 |
+
+Percentiles pool the samples across rounds. RSS is Linux `/proc` VmHWM after
+warm measurements, excluding adapters and mocks. Lazy bytes are compact JSON
+result payloads, excluding the JSON-RPC envelope. RSS varied across rounds:
+582 to 704 MiB for v1 and 234 to 268 MiB for 2.0. These are fixture results on
+one machine under uncontrolled load. Numbers vary with binaries, client parsing,
+query mix and load; they do not measure live providers or model task success.
+
+Run on Linux with Node 22 or newer and paths to both gateway binaries:
+
+```bash
+node benchmark/gateway-compare.mjs \
+  --v1 /absolute/path/to/v1.24.0/toolport-gateway \
+  --v2 /absolute/path/to/2.0/toolport-gateway \
+  --rounds 3 --cold 5 --calls 60 --out /tmp/gateway-compare.json
+```
+
+No npm install or API keys are needed. Each fixture uses temporary HOME, XDG,
+registry and data directories, a fake session bus and a disposable secret key.
+Only stdio mocks and the gateway's local loopback transport are used. Cleanup
+terminates owned processes on success, failure, SIGINT and SIGTERM. The benchmark
+is opt-in, outside `npm run verify` and shipped packages. Its output includes
+raw samples as well as the summary. The blind search set and live-client results
+are outside this comparison.
+
 ## Method
 
 - **Two modes**, same tasks, same model:
