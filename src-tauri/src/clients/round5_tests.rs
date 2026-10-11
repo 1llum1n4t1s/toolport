@@ -143,7 +143,9 @@ fn round5_windows_bulk_disconnect_matches_native_recovery_paths() {
     assert!(!read_client(&find_def(&id).unwrap()).config_path.starts_with(r"\\?\"));
     let results = disconnect_all(true).unwrap();
     assert_eq!(results.iter().filter(|result| result.client_id == id).count(), 1);
-    uninstall_gateway(&id).unwrap();
+    let results = disconnect_all(false).unwrap();
+    assert_eq!(results.iter().filter(|result| result.client_id == id).count(), 1);
+    assert!(results.iter().all(|result| result.error.is_none()));
     assert!(restore::released(&id, &native).unwrap());
     assert_eq!(std::fs::read_to_string(&native).unwrap(), original);
     // A native edit after release must not cause another client restoration.
