@@ -450,13 +450,13 @@ mod tests {
         let mut registry = crate::registry::Registry::default();
         registry.client_scopes.insert("claude-code".into(), "work".into());
         crate::registry::save(&registry).unwrap();
-        let text = r#"{"mcpServers":{"toolport":{"command":"toolport-gateway","env":{"TOOLPORT_CLIENT_ID":"claude-code"}}}}"#;
-        inherit_location_access("claude-code@claude2", text).unwrap();
+        let text = r#"{"mcpServers":{"other":{"env":{"TOOLPORT_CLIENT_ID":"unrelated"}},"toolport":{"command":"toolport-gateway","env":{"TOOLPORT_CLIENT_ID":"claude-code"}}}}"#;
+        inherit_location_access("claude-code@claude2", Format::JsonMcpServers, "toolport", text).unwrap();
         let mut registry = crate::registry::load().unwrap();
         assert_eq!(registry.client_scopes.get("claude-code@claude2"), Some(&"work".into()));
         registry.client_scopes.insert("claude-code@claude2".into(), "personal".into());
         crate::registry::save(&registry).unwrap();
-        inherit_location_access("claude-code@claude2", text).unwrap();
+        inherit_location_access("claude-code@claude2", Format::JsonMcpServers, "toolport", text).unwrap();
         assert_eq!(crate::registry::load().unwrap().client_scopes.get("claude-code@claude2"), Some(&"personal".into()));
     }
 

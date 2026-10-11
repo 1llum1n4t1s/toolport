@@ -3478,10 +3478,25 @@ pub fn detect_clients_for_display() -> Result<Vec<DetectedClient>, String> {
     Ok(if changed { definitions.iter().map(read_client).collect() } else { detected })
 }
 
-fn inherit_location_access(id: &str, text: &str) -> Result<(), String> {
+fn location_launch_id(format: Format, name: &str, text: &str) -> Result<Option<String>, String> {
+    let value = mutation::value(format, Some(text))?;
+    let container = moved::server_container(format, &value);
+    let entry = if matches!(format, Format::YamlMcpServersList) {
+        container.as_array().and_then(|entries| entries.iter().find(|entry| entry["name"] == name))
+    } else { container.get(name) };
+    let env_key = match format {
+        Format::JsonOpenCodeMcp => "environment",
+        Format::YamlExtensions => "envs",
+        _ => "env",
+    };
+    Ok(entry.and_then(|entry| entry[env_key].get(crate::brand::CLIENT_ID)
+        .or_else(|| entry[env_key].get(crate::brand::CLIENT_ID_LEGACY)))
+        .and_then(|value| value.as_str()).map(str::to_string))
+}
+
+fn inherit_location_access(id: &str, format: Format, name: &str, text: &str) -> Result<(), String> {
     if !id.contains('@') { return Ok(()); }
-    let Some(prior) = profile_key_from_config_text(text, crate::brand::CLIENT_ID)
-        .or_else(|| profile_key_from_config_text(text, crate::brand::CLIENT_ID_LEGACY)) else { return Ok(()); };
+    let Some(prior) = location_launch_id(format, name, text)? else { return Ok(()); };
     let current = crate::registry::load()?;
     if prior == id || current.client_scopes.contains_key(id) || !current.client_scopes.contains_key(&prior) {
         return Ok(());
@@ -7398,8 +7413,8 @@ fn repoint_stale_gateways_in(
         let config_text = find_def(&client.id)
             .and_then(|def| resolved_definition_path(&def).ok())
             .and_then(|path| read_config_file(&path).ok());
-        let location_identity_changed = client.id.contains('@') && config_text.as_deref()
-            .and_then(|text| profile_key_from_config_text(text, crate::brand::CLIENT_ID))
+        let location_identity_changed = client.id.contains('@') && find_def(&client.id)
+            .and_then(|def| config_text.as_deref().and_then(|text| location_launch_id(def.format, entry_name, text).ok().flatten()))
             .as_deref() != Some(client.id.as_str());
         if !location_identity_changed && !gateway_entry_needs_rewrite(entry_name, stored, current, config_text.as_deref())
             && entry
@@ -7425,7 +7440,7 @@ fn repoint_stale_gateways_in(
                     // Copy access under the config lock, before changing its
                     // identity. A failed registry write must stop adoption.
                     if def.location.is_some() {
-                        inherit_location_access(&client.id, &read_config_file(&path)?)?;
+                        inherit_location_access(&client.id, def.format, entry_name, &read_config_file(&path)?)?;
                     }
                     if !gateway_entry_needs_rewrite(
                         entry_name,
