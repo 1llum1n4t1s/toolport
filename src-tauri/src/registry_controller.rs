@@ -1510,7 +1510,23 @@ fn release_all_quarantine_inner(
 ) -> ReleaseAllSummary {
     let mut summary = ReleaseAllSummary::default();
     let empty = std::collections::BTreeMap::new();
-    for profile in profiles {
+    let mut scopes = profiles.to_vec();
+    if expected.is_some() {
+        // New scopes must stay blocked too, and appear in the outcome even if
+        // they were absent from the displayed list. They receive an empty bound set.
+        match crate::integrity::all_quarantined() {
+            Ok(records) => {
+                for record in records {
+                    let profile = record["profile"].as_str().unwrap_or_default().to_string();
+                    if !scopes.contains(&profile) {
+                        scopes.push(profile);
+                    }
+                }
+            }
+            Err(error) => summary.failed.push(error),
+        }
+    }
+    for profile in &scopes {
         let scope = (!profile.is_empty()).then_some(profile.as_str());
         let result = match expected {
             Some(expected) => crate::integrity::release_all_records(
@@ -3182,6 +3198,36 @@ mod tests {
     }
     use super::*;
     use crate::registry::ServerEntry;
+
+    #[test]
+    fn bound_bulk_release_reports_a_new_scope_without_releasing_it() {
+        let _lock = registry::data_dir_test_lock();
+        let dir = test_path("bound-bulk-new-scope");
+        std::fs::create_dir_all(&dir).unwrap();
+        let data = registry::DataDirOverride::set(&dir);
+        std::fs::write(dir.join("quarantine.json"), serde_json::json!({
+            "srv__read": {"tool":"srv__read", "change":"changed", "ts":1}
+        }).to_string()).unwrap();
+        let displayed = crate::integrity::all_quarantined().unwrap();
+        let expected = std::collections::BTreeMap::from([(
+            "".to_string(), std::collections::BTreeMap::from([(
+                "srv__read".to_string(), displayed[0]["record_id"].as_str().unwrap().to_string(),
+            )]),
+        )]);
+        let path = dir.join(format!("quarantine-v2-{}.json", registry::profile_store_key("new-scope")));
+        std::fs::write(path, serde_json::json!({
+            "other__read": {"tool":"other__read", "change":"changed", "ts":2}
+        }).to_string()).unwrap();
+        let summary = release_all_quarantine_records(&["".into()], &expected);
+        assert_eq!(summary.released, 1);
+        assert_eq!(summary.changed, vec!["other__read"]);
+        assert!(summary.skipped.is_empty());
+        assert!(summary.failed.is_empty());
+        assert!(crate::integrity::quarantined(Some("new-scope")).unwrap().contains("other__read"));
+        assert!(crate::integrity::quarantined(None).unwrap().is_empty());
+        drop(data);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     struct ZCodeImportFixture {
         root: PathBuf,

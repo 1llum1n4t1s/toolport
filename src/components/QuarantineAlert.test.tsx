@@ -197,6 +197,25 @@ describe("QuarantineAlert bulk re-approval", () => {
     expect(screen.getByRole("region")).toBeInTheDocument();
   });
 
+  it("reports a new profile's block without releasing an unseen scope", async () => {
+    const displayed = catalog(2);
+    listQuarantined.mockResolvedValueOnce(displayed);
+    listQuarantined.mockResolvedValue([
+      tool({ profile: "new-profile", record_id: "unseen-record" }),
+    ]);
+    releaseAllQuarantine.mockResolvedValue({ released: 2, skipped: [], changed: [] });
+    render(<QuarantineAlert />);
+    await screen.findByRole("region");
+    await confirmReapproveAll();
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        "Re-approved 2. 1 new or changed findings remain blocked. Refresh and review them.",
+      ),
+    );
+    expect(releaseAllQuarantine).toHaveBeenCalledTimes(1);
+    expect(toastSuccess).not.toHaveBeenCalled();
+  });
+
   it("keeps the card up and reports a failed bulk re-approval", async () => {
     listQuarantined.mockResolvedValue(catalog(3));
     releaseAllQuarantine.mockRejectedValue(new Error("store locked"));

@@ -76,6 +76,7 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
     try {
       const list = await listQuarantined();
       if (id === reqId.current) setItems(list);
+      return list;
     } catch {
       // Backend not up yet or a transient failure: keep the current list rather than
       // flashing empty, which would read as "all clear" when nothing was verified.
@@ -148,8 +149,26 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
       const failed = settled.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
       const released = outcomes.reduce((n, o) => n + o.released, 0);
       const skipped = outcomes.flatMap((o) => o.skipped);
-      const changed = outcomes.flatMap((o) => o.changed ?? []);
-      await refresh();
+      const changed = new Set(
+        settled.flatMap((result, index) =>
+          result.status === "fulfilled"
+            ? (result.value.changed ?? []).map(
+                (tool) => `${profiles[index]}\u0000${tool}`,
+              )
+            : [],
+        ),
+      );
+      const remaining = await refresh();
+      // Include blocks in scopes that were absent from the confirmation, and
+      // any newer findings written after the backend finished its bound release.
+      const displayedIds = new Set(
+        reviewed.map((q) => `${entryKey(q)}\u0000${q.record_id}`),
+      );
+      for (const q of remaining ?? []) {
+        if (!displayedIds.has(`${entryKey(q)}\u0000${q.record_id}`)) {
+          changed.add(entryKey(q));
+        }
+      }
       if (failed.length > 0) {
         // Say what did get through, so the number still on the card adds up.
         toastError(
@@ -157,9 +176,9 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
             failed.length === 1 ? "" : "s"
           } could not be re-approved: ${failed[0]}`,
         );
-      } else if (changed.length > 0) {
+      } else if (changed.size > 0) {
         toastError(
-          `Re-approved ${released}. ${changed.length} new or changed findings remain blocked. Refresh and review them.`,
+          `Re-approved ${released}. ${changed.size} new or changed findings remain blocked. Refresh and review them.`,
         );
       } else if (skipped.length > 0) {
         // Not a success: these are still blocked, and saying otherwise would send the
