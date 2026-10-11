@@ -65,7 +65,7 @@ fn round3_main_client_recognizes_repoints_and_deduplicates_custom_gateway_names(
     let value: serde_json::Value = serde_json::from_str(&read_config_file(&path).unwrap()).unwrap();
     assert_eq!(value["mcpServers"].as_object().unwrap().len(), 2);
     assert_eq!(value["mcpServers"]["toolport"]["command"], current.to_str().unwrap());
-    install_or_remove("cursor", None).unwrap();
+    uninstall_gateway("cursor").unwrap();
     assert!(!read_client(&def).gateway_installed);
 }
 
@@ -223,4 +223,31 @@ fn round3_windows_long_native_path_falls_back_when_canonicalization_fails() {
         let native = crate::registry::client_file::native_path(&path).unwrap();
         assert_eq!(native, path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>());
     });
+}
+
+#[test]
+fn round3_location_disconnect_removes_both_reserved_names_after_adoption() {
+    let data = crate::registry::DataDirTestEnv::new("round3-reserved-disconnect");
+    let folder = data.dir.join("profile");
+    std::fs::create_dir(&folder).unwrap();
+    let path = folder.join(".claude.json");
+    let original = serde_json::json!({"mcpServers": {
+        "toolport":{"command":"/missing/toolport-gateway"},
+        "conduit":{"command":"/missing/conduit-gateway"},
+        "foreign":{"command":"/missing/toolport-gateway", "args":["--foreign"]}
+    }});
+    std::fs::write(&path, original.to_string()).unwrap();
+    let id = add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
+    let gateway = data.dir.join("toolport-gateway");
+    std::fs::write(&gateway, "fixture").unwrap();
+    let rows = detect_clients_for_display_in(vec![find_def(&id).unwrap()], crate::registry::Registry::default(), Some(gateway)).unwrap();
+    assert!(rows[0].error.is_none());
+    let value: serde_json::Value = serde_json::from_str(&read_config_file(&path).unwrap()).unwrap();
+    assert_eq!(value["mcpServers"].as_object().unwrap().len(), 2);
+    assert_eq!(value["mcpServers"]["foreign"], original["mcpServers"]["foreign"]);
+    uninstall_gateway(&id).unwrap();
+    assert!(!read_client(&find_def(&id).unwrap()).gateway_installed);
+    let value: serde_json::Value = serde_json::from_str(&read_config_file(&path).unwrap()).unwrap();
+    assert_eq!(value["mcpServers"].as_object().unwrap().len(), 1);
+    assert_eq!(value["mcpServers"]["foreign"], original["mcpServers"]["foreign"]);
 }
