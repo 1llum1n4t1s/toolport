@@ -10,6 +10,7 @@ pub(super) fn migrate_v2_to_v3(value: &mut Value, _: &MigrationContext) -> Resul
     let document = value.as_object_mut().ok_or("registry must be an object")?;
     // Malformed typed fields are left to the framework's deserialization/recovery path.
     let Some(profiles) = document.get("profiles").and_then(Value::as_array) else {
+        keep_v1_lazy_discovery(document);
         return Ok(());
     };
     // Match the loader's legacy normalization before pinning the default:
@@ -83,6 +84,7 @@ pub(super) fn migrate_v2_to_v3(value: &mut Value, _: &MigrationContext) -> Resul
         Value::String(active.clone()),
     );
     document.insert("defaultAccessLegacyPolicy".into(), Value::Bool(true));
+    keep_v1_lazy_discovery(document);
     document.insert("accessUpgradeNoticeDismissed".into(), Value::Bool(false));
     document.insert("accessUpgradeNoticePending".into(), Value::Bool(true));
     if active_set != union || active_missing {
@@ -106,6 +108,24 @@ pub(super) fn migrate_v2_to_v3(value: &mut Value, _: &MigrationContext) -> Resul
             .insert("enabled".into(), Value::Bool(enabled));
     }
     Ok(())
+}
+
+/// 1.x ran every client in Lazy unless the user picked another mode. 2.0 treats an
+/// unset mode as Auto, which moves some clients to Full, so mark the old default.
+fn keep_v1_lazy_discovery(document: &mut serde_json::Map<String, Value>) {
+    let lazy = document
+        .get("lazyDiscovery")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let mode_set = document
+        .get("discoveryMode")
+        .and_then(Value::as_str)
+        .is_some_and(|mode| !mode.trim().is_empty());
+    if lazy && !mode_set {
+        // A blank mode meant the same default; 2.0 never writes one.
+        document.remove("discoveryMode");
+        document.insert("legacyLazyDiscovery".into(), Value::Bool(true));
+    }
 }
 
 #[cfg(test)]
@@ -164,6 +184,44 @@ mod tests {
         )
         .is_err());
         assert_eq!(value, original);
+    }
+
+    #[test]
+    fn upgraders_keep_the_lazy_discovery_they_had() {
+        let context = MigrationContext {
+            date: "2026-10-11".into(),
+            data_dir: std::env::temp_dir(),
+        };
+        for (lazy, mode, expected) in [
+            (None, None, Some("lazy")),
+            (Some(true), None, Some("lazy")),
+            (Some(false), None, Some("full")),
+            (Some(true), Some("grouped"), Some("grouped")),
+            (Some(true), Some(""), Some("lazy")),
+        ] {
+            let mut value = fixture(false);
+            if let Some(lazy) = lazy {
+                value["lazyDiscovery"] = json!(lazy);
+            }
+            if let Some(mode) = mode {
+                value["discoveryMode"] = json!(mode);
+            }
+            migrate_v2_to_v3(&mut value, &context).unwrap();
+            let reg: Registry = serde_json::from_value(value).unwrap();
+            assert_eq!(reg.chosen_global_discovery_mode(), expected, "{lazy:?} {mode:?}");
+            // Codex and Cursor would resolve to Full under Auto.
+            for client in ["codex", "cursor", "claude-code"] {
+                let resolved = crate::clients::client_discovery_mode(&reg, client);
+                assert_eq!(resolved, expected.unwrap(), "{client} {lazy:?} {mode:?}");
+            }
+        }
+        // A new install keeps Auto, and the Settings switch still works after upgrade.
+        assert_eq!(Registry::default().chosen_global_discovery_mode(), None);
+        let mut value = fixture(false);
+        migrate_v2_to_v3(&mut value, &context).unwrap();
+        let mut reg: Registry = serde_json::from_value(value).unwrap();
+        reg.set_lazy_discovery(false);
+        assert_eq!(crate::clients::client_discovery_mode(&reg, "claude-code"), "full");
     }
 
     #[test]
