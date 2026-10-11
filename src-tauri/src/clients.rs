@@ -1708,7 +1708,7 @@ impl CallerNames {
             .into_iter()
             .map(|def| (format!("adapter:{}", def.id), def.name.to_string()))
             .collect();
-        let mut resolved = HashSet::new();
+        let mut resolved = std::collections::HashSet::new();
         for id in entries.iter().filter_map(|entry| entry["client"].as_str()) {
             if let Some(adapter) = id.strip_prefix("adapter:").filter(|id| id.contains('@')) {
                 // Remember misses too, so deleted locations do not reread the
