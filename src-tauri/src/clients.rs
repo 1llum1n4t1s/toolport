@@ -3370,7 +3370,7 @@ fn read_client(def: &ClientDef) -> DetectedClient {
         // Clients with an explicit install dir use it (and ignore the config-parent
         // heuristic, which for them is wrong); everyone else uses the parent of
         // their resolved config path (which is their data dir, e.g. ~/.codex).
-        let install_marker = install_override(def.id);
+        let install_marker = if def.location.is_none() { install_override(def.id) } else { None };
         let app_present =
             app_present_with_override(&config_path, config_exists, install_marker.as_deref());
         DetectedClient {

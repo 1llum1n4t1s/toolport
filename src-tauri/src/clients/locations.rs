@@ -375,6 +375,10 @@ mod tests {
         assert!(!crate::registry::resolved_path().unwrap().exists());
         assert!(add_client_location("codex", "relative").is_err());
         assert!(!valid_id("codex@../escape"));
+        let claude_id = add_client_location("claude-code", folder.path().to_str().unwrap()).unwrap();
+        let claude = read_client(&find_def(&claude_id).unwrap());
+        assert!(claude.app_present);
+        assert!(!claude.config_exists);
     }
 
     #[test]
