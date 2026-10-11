@@ -182,18 +182,27 @@ fn rename_no_clobber(source: &Path, dest: &Path) -> std::io::Result<()> {
     }
 }
 
+// Rust's filesystem functions accept long paths, but our direct Win32 calls
+// need the extended path returned by canonicalize. Only resolve the existing
+// parent: a no-clobber destination or displaced backup does not exist yet.
+#[cfg(windows)]
+fn native_path(path: &Path) -> std::io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = path.file_name().ok_or_else(|| std::io::Error::new(
+        std::io::ErrorKind::InvalidInput, "Client file path has no filename"))?;
+    Ok(fs::canonicalize(parent)?.join(name).as_os_str().encode_wide()
+        .chain(Some(0)).collect())
+}
+
 #[cfg(windows)]
 fn rename_no_clobber(source: &Path, dest: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
-    let wide = |path: &Path| {
-        path.as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect::<Vec<_>>()
-    };
+    let source = native_path(source)?;
+    let dest = native_path(dest)?;
     // Zero flags omit MOVEFILE_REPLACE_EXISTING.
-    if unsafe { MoveFileExW(wide(source).as_ptr(), wide(dest).as_ptr(), 0) } != 0 {
+    if unsafe { MoveFileExW(source.as_ptr(), dest.as_ptr(), 0) } != 0 {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
@@ -314,17 +323,10 @@ fn exchange(replacement: &Path, dest: &Path, displaced: &Path) -> Result<bool, S
 
 #[cfg(windows)]
 fn exchange(replacement: &Path, dest: &Path, displaced: &Path) -> Result<bool, String> {
-    use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
-    let wide = |path: &Path| {
-        path.as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect::<Vec<_>>()
-    };
-    let source = wide(replacement);
-    let target = wide(dest);
-    let backup = wide(displaced);
+    let source = native_path(replacement).map_err(|e| e.to_string())?;
+    let target = native_path(dest).map_err(|e| e.to_string())?;
+    let backup = native_path(displaced).map_err(|e| e.to_string())?;
     if unsafe {
         ReplaceFileW(
             target.as_ptr(),
