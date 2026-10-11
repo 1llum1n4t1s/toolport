@@ -234,12 +234,48 @@ mod tests {
     }
 
     #[test]
+    fn access_and_caller_names_remain_independent_per_location() {
+        let _data = crate::registry::DataDirTestEnv::new("location-access");
+        let a = TempFolder::new();
+        let b = TempFolder::new();
+        let first = add_client_location("codex", a.path().to_str().unwrap()).unwrap();
+        let second = add_client_location("codex", b.path().to_str().unwrap()).unwrap();
+        assert_ne!(first, second);
+        let mut reg = crate::registry::Registry::default();
+        reg.client_scopes.insert(first.clone(), "first-access".into());
+        reg.client_scopes.insert(second.clone(), "second-access".into());
+        assert_eq!(resolve_launch_profile(&reg, Some(&first), &None), Some(reg.resolve_profile_id("first-access")));
+        assert_eq!(resolve_launch_profile(&reg, Some(&second), &None), Some(reg.resolve_profile_id("second-access")));
+        let entries = vec![serde_json::json!({"client":format!("adapter:{first}")}), serde_json::json!({"client":format!("adapter:{second}")})];
+        let names = CallerNames::for_entries(&entries);
+        assert_ne!(names.trusted_name(entries[0]["client"].as_str(), None), names.trusted_name(entries[1]["client"].as_str(), None));
+        assert_ne!(backup_dir(&first), backup_dir(&second));
+    }
+
+    #[test]
+    fn identity_only_adoption_preserves_existing_gateway_fields_and_restore_record() {
+        let _data = crate::registry::DataDirTestEnv::new("location-identity-adoption");
+        let folder = TempFolder::new();
+        let path = folder.path().join(".claude.json");
+        let raw = serde_json::json!({"mcpServers":{"toolport":{"command":"/usr/bin/toolport-gateway","args":["--private"],"env":{"TOOLPORT_CLIENT_ID":"claude-code","TOOLPORT_PROFILE":"work","KEEP":"value"},"unknown":42}}});
+        std::fs::write(&path, raw.to_string()).unwrap();
+        let id = add_client_location("claude-code", folder.path().to_str().unwrap()).unwrap();
+        mutation::run(&id, &path, Format::JsonMcpServers, || backfill_gateway_identity(&find_def(&id).unwrap(), &path, "toolport", &id)).unwrap();
+        let mut after: serde_json::Value = serde_json::from_str(&read_config_file(&path).unwrap()).unwrap();
+        assert_eq!(after["mcpServers"]["toolport"]["env"][crate::brand::CLIENT_ID], id);
+        after["mcpServers"]["toolport"]["env"][crate::brand::CLIENT_ID] = serde_json::json!("claude-code");
+        after["mcpServers"]["toolport"]["env"].as_object_mut().unwrap().remove(crate::brand::ATTRIBUTION_ID);
+        assert_eq!(after, raw);
+        assert!(restore::recorded_paths().iter().any(|(record_id, recorded, _)| record_id == &id && recorded == &path));
+    }
+
+    #[test]
     #[ignore = "scan benchmark; run explicitly with --ignored --nocapture"]
     fn scan_timings() {
         let root = TempFolder::new();
         for i in 0..10_000 { std::fs::write(root.path().join(format!("unrelated-{i}")), "").unwrap(); }
         for i in 0..20 {
-            let dir = root.path().join(format!(".claude{i}"));
+            let dir = root.path().join(format!(".claude-profile{i}"));
             std::fs::create_dir(&dir).unwrap();
             std::fs::write(dir.join(".claude.json"), "{}").unwrap();
         }

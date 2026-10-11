@@ -3446,11 +3446,22 @@ pub fn detect_clients_for_display() -> Result<Vec<DetectedClient>, String> {
     let current = crate::registry::load()?;
     let detected: Vec<_> = definitions.iter().map(read_client).collect();
     let targets: Vec<_> = detected.iter().filter(|client| client.id.contains('@')).cloned().collect();
+    let prior_scopes: HashMap<String, String> = targets.iter().filter_map(|client| {
+        let text = read_config_file(Path::new(&client.config_path)).ok()?;
+        let prior_id = profile_key_from_config_text(&text, crate::brand::CLIENT_ID)
+            .or_else(|| profile_key_from_config_text(&text, crate::brand::CLIENT_ID_LEGACY))?;
+        current.client_scopes.get(&prior_id).map(|scope| (client.id.clone(), scope.clone()))
+    }).collect();
+    let mut changed = false;
     if let Some(path) = resolve_gateway_path()?.filter(|path| path.is_file()) {
         let repoint = repoint_stale_gateways_in(&path.to_string_lossy(), targets, &current.client_managed_entries);
         if !repoint.repointed.is_empty() {
+            changed = true;
             crate::registry::update(|registry| {
-                for (id, entry) in &repoint.repointed { registry.set_client_managed_entry(id, entry.clone()); }
+                for (id, entry) in &repoint.repointed {
+                    registry.set_client_managed_entry(id, entry.clone());
+                    if let Some(scope) = prior_scopes.get(id) { registry.client_scopes.entry(id.clone()).or_insert_with(|| scope.clone()); }
+                }
                 Ok(())
             })?;
         }
@@ -3459,7 +3470,7 @@ pub fn detect_clients_for_display() -> Result<Vec<DetectedClient>, String> {
     for def in &definitions {
         if let Some(location) = &def.location { locations::remember(location)?; }
     }
-    Ok(definitions.iter().map(read_client).collect())
+    Ok(if changed { definitions.iter().map(read_client).collect() } else { detected })
 }
 
 /// A lightweight initial inventory: metadata only, no config or plugin reads.
