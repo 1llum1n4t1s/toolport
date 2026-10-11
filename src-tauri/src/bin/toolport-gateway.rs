@@ -10566,6 +10566,19 @@ fn reconcile_to_checked(
     profile: Option<&str>,
     want: BTreeSet<String>,
 ) -> bool {
+    reconcile_to_with(router, stdio, mcp_sessions, want, |next| {
+        let tools = next.shared_tools();
+        requarantine_if_needed(registry, next, tools, profile);
+    })
+}
+
+fn reconcile_to_with(
+    router: &Arc<Mutex<Arc<Router>>>,
+    stdio: &SessionState,
+    mcp_sessions: Option<&Arc<Mutex<HashMap<String, Arc<SessionState>>>>>,
+    want: BTreeSet<String>,
+    gate: impl Fn(&mut Router),
+) -> bool {
     for _ in 0..LIVE_ROUTER_EDIT_ATTEMPTS {
         let current = router
             .lock()
@@ -10578,8 +10591,7 @@ fn reconcile_to_checked(
         let mut next = (*current).clone();
         next.requarantine_from_store(want.clone());
         if restored {
-            let tools = next.shared_tools();
-            requarantine_if_needed(registry, &mut next, tools, profile);
+            gate(&mut next);
         }
         let mut live = router
             .lock()
@@ -10652,14 +10664,7 @@ fn edit_live_router(
     }
 }
 
-/// Apply a target quarantine set to the live router, re-filtering (and telling the client)
-/// only if it actually differs. Split out from the disk read so the decision logic is
-/// testable without touching `conduit_dir()`, which memoizes per process and so can't be
-/// redirected from a test once anything else has resolved it.
-///
-/// This is THE lift point for a fail-closed catalog (SBS-871): its only caller,
-/// `reconcile_quarantine`, gets here solely on a successful store read. Every other
-/// `requarantine` call sits on an error path and leaves the hide up.
+/// Exercise the shared publication path without on-disk integrity checks.
 #[cfg(test)]
 fn reconcile_to(
     router: &Arc<Mutex<Arc<Router>>>,
@@ -10667,31 +10672,7 @@ fn reconcile_to(
     mcp_sessions: Option<&Arc<Mutex<HashMap<String, Arc<SessionState>>>>>,
     want: BTreeSet<String>,
 ) -> bool {
-    // The set alone is not the enforcement state: a fail-closed router hides
-    // everything while reporting an empty set, so comparing sets only would make a
-    // successful read of an empty store a no-op and leave the gateway dark until
-    // the process restarted (SBS-871). A request mid-flight keeps serving its
-    // snapshot until it finishes.
-    let changed = edit_live_router(router, |live| {
-        (live.quarantined() != &want || live.catalog_fail_closed()).then(|| {
-            let mut next = live.clone();
-            next.requarantine_from_store(want.clone());
-            next
-        })
-    });
-    // Notify outside the router lock so a slow client write can't stall a request.
-    if changed {
-        // To the gateway log, not just stderr: MCP clients swallow a gateway's stderr, so a
-        // user reporting "re-approve didn't work" would send diagnostics with no trace of
-        // whether the reconcile ever ran. The failure path already logs here; this keeps the
-        // success path visible too.
-        glog("quarantine set changed on disk; re-filtering exposed tools");
-        eprintln!("toolport: quarantine set changed on disk; re-filtering exposed tools");
-        // Fan to HTTP MCP sessions too (SOU-328): quarantine/re-approval must not
-        // leave streamable-HTTP clients on a stale tools/list.
-        notify_tools_changed(stdio, mcp_sessions);
-    }
-    changed
+    reconcile_to_with(router, stdio, mcp_sessions, want, |_| {})
 }
 
 /// A fail-closed catalog serves nothing, so the last-good cache must go too
