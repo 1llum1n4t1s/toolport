@@ -21,14 +21,24 @@ pub struct ClientLocationType {
 
 /// The folder is the client's config folder, e.g. CODEX_HOME, not a project root.
 pub fn client_location_types() -> Vec<ClientLocationType> {
-    defs().into_iter().filter(|def| !def.uses_connectors).filter_map(|def| {
-        let file = (def.path)()?.file_name()?.to_str()?.to_string();
-        Some(ClientLocationType { id: def.id.into(), name: def.name.into(), config_file: file })
-    }).collect()
+    defs()
+        .into_iter()
+        .filter(|def| !def.uses_connectors)
+        .filter_map(|def| {
+            let file = (def.path)()?.file_name()?.to_str()?.to_string();
+            Some(ClientLocationType {
+                id: def.id.into(),
+                name: def.name.into(),
+                config_file: file,
+            })
+        })
+        .collect()
 }
 
 fn store_path() -> Result<PathBuf, String> {
-    Ok(crate::registry::conduit_dir().ok_or("Could not resolve local data folder")?.join("client-locations.json"))
+    Ok(crate::registry::conduit_dir()
+        .ok_or("Could not resolve local data folder")?
+        .join("client-locations.json"))
 }
 
 pub(super) fn saved() -> Result<Vec<ClientLocation>, String> {
@@ -36,8 +46,13 @@ pub(super) fn saved() -> Result<Vec<ClientLocation>, String> {
         Ok(bytes) => {
             let rows: Vec<ClientLocation> = serde_json::from_slice(&bytes)
                 .map_err(|_| "Could not read saved client locations".to_string())?;
-            if rows.iter().any(|row| !valid_id(&row.id) || !row.config_path.is_absolute()
-                || !defs().iter().any(|def| def.id == row.client_type && !def.uses_connectors)) {
+            if rows.iter().any(|row| {
+                !valid_id(&row.id)
+                    || !row.config_path.is_absolute()
+                    || !defs()
+                        .iter()
+                        .any(|def| def.id == row.client_type && !def.uses_connectors)
+            }) {
                 return Err("Invalid saved client location".into());
             }
             Ok(rows)
@@ -48,14 +63,25 @@ pub(super) fn saved() -> Result<Vec<ClientLocation>, String> {
 }
 
 fn valid_id(id: &str) -> bool {
-    id.split_once('@').is_some_and(|(kind, key)| !kind.is_empty() && !key.is_empty() && key != "." && key != "..") && id.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_.@%".contains(&c))
+    id.split_once('@')
+        .is_some_and(|(kind, key)| !kind.is_empty() && !key.is_empty() && key != "." && key != "..")
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"-_.@%".contains(&c))
 }
 
 fn folder_key(folder: &str) -> String {
-    folder.trim_start_matches('.').bytes().map(|byte| {
-        if byte.is_ascii_alphanumeric() || b"-_".contains(&byte) { (byte as char).to_string() }
-        else { format!("%{byte:02X}") }
-    }).collect()
+    folder
+        .trim_start_matches('.')
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"-_".contains(&byte) {
+                (byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
 }
 
 fn automatic(home: &Path) -> Vec<ClientLocation> {
@@ -67,7 +93,9 @@ fn automatic_with_primary(home: &Path, primary: Option<&Path>) -> Vec<ClientLoca
     let mut rows = Vec::new();
     for folder in claude_profile_dirs(home).unwrap_or_default() {
         let config_path = home.join(&folder).join(".claude.json");
-        if !config_path.is_file() || primary == Some(config_path.as_path()) { continue; }
+        if !config_path.is_file() || primary == Some(config_path.as_path()) {
+            continue;
+        }
         rows.push(ClientLocation {
             id: format!("claude-code@{}", folder_key(&folder)),
             client_type: "claude-code".into(),
@@ -80,15 +108,26 @@ fn automatic_with_primary(home: &Path, primary: Option<&Path>) -> Vec<ClientLoca
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
-    a == b || std::fs::canonicalize(a).ok().zip(std::fs::canonicalize(b).ok()).is_some_and(|(a, b)| a == b)
+    a == b
+        || std::fs::canonicalize(a)
+            .ok()
+            .zip(std::fs::canonicalize(b).ok())
+            .is_some_and(|(a, b)| a == b)
 }
 
 pub(super) fn all() -> Vec<ClientLocation> {
     let mut rows = home().map(|home| automatic(&home)).unwrap_or_default();
     match saved() {
-        Ok(saved) => for row in saved {
-            if !rows.iter().any(|auto| same_path(&auto.config_path, &row.config_path)) { rows.push(row); }
-        },
+        Ok(saved) => {
+            for row in saved {
+                if !rows
+                    .iter()
+                    .any(|auto| same_path(&auto.config_path, &row.config_path))
+                {
+                    rows.push(row);
+                }
+            }
+        }
         Err(error) => eprintln!("toolport: {error}"),
     }
     rows
@@ -96,25 +135,43 @@ pub(super) fn all() -> Vec<ClientLocation> {
 
 /// A known automatic ID resolves without enumerating home or reading a config.
 pub(super) fn lookup(id: &str) -> Option<ClientLocation> {
-    if !valid_id(id) { return None; }
-    if let Some(row) = saved().ok()?.into_iter().find(|row| row.id == id) { return Some(row); }
+    if !valid_id(id) {
+        return None;
+    }
+    if let Some(row) = saved().ok()?.into_iter().find(|row| row.id == id) {
+        return Some(row);
+    }
     let key = id.strip_prefix("claude-code@")?;
     let mut bytes = Vec::new();
     let mut chars = key.as_bytes().iter().copied();
     while let Some(byte) = chars.next() {
         bytes.push(if byte == b'%' {
-            u8::from_str_radix(std::str::from_utf8(&[chars.next()?, chars.next()?]).ok()?, 16).ok()?
-        } else { byte });
+            u8::from_str_radix(
+                std::str::from_utf8(&[chars.next()?, chars.next()?]).ok()?,
+                16,
+            )
+            .ok()?
+        } else {
+            byte
+        });
     }
     let label = String::from_utf8(bytes).ok()?;
     let folder = format!(".{label}");
-    if !folder.starts_with(".claude") || folder_key(&folder) != key { return None; }
+    if !folder.starts_with(".claude") || folder_key(&folder) != key {
+        return None;
+    }
     let root = home()?;
     let path = root.join(&folder);
     // Do not follow an automatically discovered directory outside home later.
-    if !std::fs::symlink_metadata(&path).ok()?.is_dir() { return None; }
-    Some(ClientLocation { id: id.into(), client_type: "claude-code".into(),
-        name: format!("Claude Code ({label})"), config_path: path.join(".claude.json") })
+    if !std::fs::symlink_metadata(&path).ok()?.is_dir() {
+        return None;
+    }
+    Some(ClientLocation {
+        id: id.into(),
+        client_type: "claude-code".into(),
+        name: format!("Claude Code ({label})"),
+        config_path: path.join(".claude.json"),
+    })
 }
 
 pub(super) fn remember(row: &ClientLocation) -> Result<(), String> {
@@ -123,52 +180,90 @@ pub(super) fn remember(row: &ClientLocation) -> Result<(), String> {
     let mut rows = saved()?;
     if !rows.iter().any(|saved| saved.id == row.id) {
         rows.push(row.clone());
-        crate::registry::atomic_write(&store, &serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())?)?;
+        crate::registry::atomic_write(
+            &store,
+            &serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())?,
+        )?;
     }
     Ok(())
 }
 
 pub fn add_client_location(client_type: &str, folder: &str) -> Result<String, String> {
-    let kind = client_location_types().into_iter().find(|kind| kind.id == client_type)
+    let kind = client_location_types()
+        .into_iter()
+        .find(|kind| kind.id == client_type)
         .ok_or("Choose a supported client type")?;
     let raw = PathBuf::from(folder.trim());
-    let folder = if folder.trim() == "~" { home().ok_or("Could not resolve home")? }
-        else if let Some(relative) = folder.trim().strip_prefix("~/") { home().ok_or("Could not resolve home")?.join(relative) }
-        else { raw };
-    if !folder.is_absolute() { return Err("Choose an absolute client config folder".into()); }
-    let folder = std::fs::canonicalize(&folder).map_err(|_| "Choose an existing client config folder")?;
-    if !folder.is_dir() { return Err("Choose a client config folder, not a file".into()); }
+    let folder = if folder.trim() == "~" {
+        home().ok_or("Could not resolve home")?
+    } else if let Some(relative) = folder.trim().strip_prefix("~/") {
+        home().ok_or("Could not resolve home")?.join(relative)
+    } else {
+        raw
+    };
+    if !folder.is_absolute() {
+        return Err("Choose an absolute client config folder".into());
+    }
+    let folder =
+        std::fs::canonicalize(&folder).map_err(|_| "Choose an existing client config folder")?;
+    if !folder.is_dir() {
+        return Err("Choose a client config folder, not a file".into());
+    }
     let path = folder.join(&kind.config_file);
-    if let Some(def) = defs().into_iter().find(|def| (def.path)().is_some_and(|existing| same_path(&existing, &path))) {
+    if let Some(def) = defs()
+        .into_iter()
+        .find(|def| (def.path)().is_some_and(|existing| same_path(&existing, &path)))
+    {
         return Ok(def.id.into());
     }
     let store = store_path()?;
     let _lock = crate::registry::lock_at(&store)?;
     let mut rows = saved()?;
-    if let Some(row) = all().into_iter().find(|row| same_path(&row.config_path, &path)) { return Ok(row.id); }
+    if let Some(row) = all()
+        .into_iter()
+        .find(|row| same_path(&row.config_path, &path))
+    {
+        return Ok(row.id);
+    }
     use sha2::{Digest, Sha256};
     let key = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
     let id = format!("{client_type}@{}", &key[..16]);
     let label = folder.file_name().unwrap_or_default().to_string_lossy();
-    rows.push(ClientLocation { id: id.clone(), client_type: client_type.into(),
-        name: format!("{} ({})", kind.name, label.trim_start_matches('.')), config_path: path });
-    crate::registry::atomic_write(&store, &serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())?)?;
+    rows.push(ClientLocation {
+        id: id.clone(),
+        client_type: client_type.into(),
+        name: format!("{} ({})", kind.name, label.trim_start_matches('.')),
+        config_path: path,
+    });
+    crate::registry::atomic_write(
+        &store,
+        &serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())?,
+    )?;
     Ok(id)
 }
 
 /// Read-only benchmark helper, excluded from shipped builds.
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub fn measure_scan(home: &Path, iterations: u32) -> (usize, f64, f64) {
     let start = std::time::Instant::now();
     for _ in 0..iterations {
-        let dirs: Vec<String> = std::fs::read_dir(home).unwrap().filter_map(Result::ok)
-            .filter(|entry| entry.path().is_dir()).map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
-        let _ = dirs.iter().filter(|name| *name == ".claude" || name.starts_with(".claude-"))
-            .filter(|name| home.join(name).join(".claude.json").is_file()).count();
+        let dirs: Vec<String> = std::fs::read_dir(home)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        let _ = dirs
+            .iter()
+            .filter(|name| *name == ".claude" || name.starts_with(".claude-"))
+            .filter(|name| home.join(name).join(".claude.json").is_file())
+            .count();
     }
     let before = start.elapsed().as_secs_f64() * 1000.0 / iterations as f64;
     let start = std::time::Instant::now();
-    for _ in 0..iterations { let _ = automatic_with_primary(home, None); }
+    for _ in 0..iterations {
+        let _ = automatic_with_primary(home, None);
+    }
     let after = start.elapsed().as_secs_f64() * 1000.0 / iterations as f64;
     (std::fs::read_dir(home).unwrap().count(), before, after)
 }
@@ -181,27 +276,54 @@ mod tests {
     impl TempFolder {
         fn new() -> Self {
             static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-            let path = std::env::temp_dir().join(format!("toolport-location-{}-{}-{}", std::process::id(), epoch_millis(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+            let path = std::env::temp_dir().join(format!(
+                "toolport-location-{}-{}-{}",
+                std::process::id(),
+                epoch_millis(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
             std::fs::create_dir(&path).unwrap();
             Self(path)
         }
-        fn path(&self) -> &Path { &self.0 }
+        fn path(&self) -> &Path {
+            &self.0
+        }
     }
     impl Drop for TempFolder {
-        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     #[test]
     fn detection_is_shallow_name_filtered_and_does_not_parse_configs() {
         let root = TempFolder::new();
-        for folder in [".claude", ".claude2", ".claude3", ".claude-work", ".claude-empty", "unrelated/.claude4"] {
+        for folder in [
+            ".claude",
+            ".claude2",
+            ".claude3",
+            ".claude-work",
+            ".claude-empty",
+            "unrelated/.claude4",
+        ] {
             std::fs::create_dir_all(root.path().join(folder)).unwrap();
-            if folder != ".claude-empty" { std::fs::write(root.path().join(folder).join(".claude.json"), "not JSON").unwrap(); }
+            if folder != ".claude-empty" {
+                std::fs::write(root.path().join(folder).join(".claude.json"), "not JSON").unwrap();
+            }
         }
         let rows = automatic_with_primary(root.path(), None);
         assert_eq!(rows.len(), 4);
-        assert!(rows.iter().any(|row| row.id == "claude-code@claude2" && row.name == "Claude Code (claude2)"));
-        assert_eq!(automatic_with_primary(root.path(), Some(&root.path().join(".claude2/.claude.json"))).len(), 3);
+        assert!(rows
+            .iter()
+            .any(|row| row.id == "claude-code@claude2" && row.name == "Claude Code (claude2)"));
+        assert_eq!(
+            automatic_with_primary(
+                root.path(),
+                Some(&root.path().join(".claude2/.claude.json"))
+            )
+            .len(),
+            3
+        );
         assert_ne!(folder_key(".claude+a"), folder_key(".claude-a"));
     }
 
@@ -220,11 +342,20 @@ mod tests {
         let _data = crate::registry::DataDirTestEnv::new("client-locations");
         let folder = TempFolder::new();
         let id = add_client_location("codex", folder.path().to_str().unwrap()).unwrap();
-        assert_eq!(add_client_location("codex", folder.path().to_str().unwrap()).unwrap(), id);
+        assert_eq!(
+            add_client_location("codex", folder.path().to_str().unwrap()).unwrap(),
+            id
+        );
         assert_eq!(saved().unwrap().len(), 1);
         let def = find_def(&id).unwrap();
-        assert_eq!(resolved_definition_path(&def).unwrap(), folder.path().join("config.toml"));
-        assert_eq!(discovery_capabilities(&id).auto_mode, discovery_capabilities("codex").auto_mode);
+        assert_eq!(
+            resolved_definition_path(&def).unwrap(),
+            folder.path().join("config.toml")
+        );
+        assert_eq!(
+            discovery_capabilities(&id).auto_mode,
+            discovery_capabilities("codex").auto_mode
+        );
         assert!(!crate::registry::resolved_path().unwrap().exists());
         assert!(add_client_location("codex", "relative").is_err());
         assert!(!valid_id("codex@../escape"));
@@ -239,13 +370,20 @@ mod tests {
         let id = add_client_location("claude-code", folder.path().to_str().unwrap()).unwrap();
         let def = find_def(&id).unwrap();
         let detected = read_client(&def);
-        assert_eq!(resolve_entry_state(&detected.servers, None), GatewayEntryState::Managed);
+        assert_eq!(
+            resolve_entry_state(&detected.servers, None),
+            GatewayEntryState::Managed
+        );
         let mut entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport", "transport":"stdio", "env":[{"key":"TOOLPORT_CLIENT_ID", "value":id, "secret":false}]})).unwrap();
         entry.command = Some("/usr/bin/toolport-gateway".into());
         install_or_remove(&id, Some(&entry)).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(value["mcpServers"].as_object().unwrap().len(), 2);
-        assert_eq!(value["mcpServers"]["toolport"]["env"]["TOOLPORT_CLIENT_ID"], id);
+        assert_eq!(
+            value["mcpServers"]["toolport"]["env"]["TOOLPORT_CLIENT_ID"],
+            id
+        );
         assert!(backup_dir(&id).unwrap().is_dir());
         assert_eq!(known_adapter_name(&id).unwrap(), detected.name);
     }
@@ -260,15 +398,30 @@ mod tests {
         assert_ne!(first, second);
         let mut reg = crate::registry::Registry::default();
         for id in ["first-access", "second-access"] {
-            reg.profiles.push(serde_json::from_value(serde_json::json!({"id":id,"name":id})).unwrap());
+            reg.profiles
+                .push(serde_json::from_value(serde_json::json!({"id":id,"name":id})).unwrap());
         }
-        reg.client_scopes.insert(first.clone(), "first-access".into());
-        reg.client_scopes.insert(second.clone(), "second-access".into());
-        assert_eq!(resolve_launch_profile(&reg, Some(&first), &None), Some("first-access".into()));
-        assert_eq!(resolve_launch_profile(&reg, Some(&second), &None), Some("second-access".into()));
-        let entries = vec![serde_json::json!({"client":format!("adapter:{first}")}), serde_json::json!({"client":format!("adapter:{second}")})];
+        reg.client_scopes
+            .insert(first.clone(), "first-access".into());
+        reg.client_scopes
+            .insert(second.clone(), "second-access".into());
+        assert_eq!(
+            resolve_launch_profile(&reg, Some(&first), &None),
+            Some("first-access".into())
+        );
+        assert_eq!(
+            resolve_launch_profile(&reg, Some(&second), &None),
+            Some("second-access".into())
+        );
+        let entries = vec![
+            serde_json::json!({"client":format!("adapter:{first}")}),
+            serde_json::json!({"client":format!("adapter:{second}")}),
+        ];
         let names = CallerNames::for_entries(&entries);
-        assert_ne!(names.trusted_name(entries[0]["client"].as_str(), None), names.trusted_name(entries[1]["client"].as_str(), None));
+        assert_ne!(
+            names.trusted_name(entries[0]["client"].as_str(), None),
+            names.trusted_name(entries[1]["client"].as_str(), None)
+        );
         assert_ne!(backup_dir(&first), backup_dir(&second));
     }
 
@@ -280,20 +433,39 @@ mod tests {
         let raw = serde_json::json!({"mcpServers":{"toolport":{"command":"/usr/bin/toolport-gateway","args":["--private"],"env":{"TOOLPORT_CLIENT_ID":"claude-code","TOOLPORT_PROFILE":"work","KEEP":"value"},"unknown":42}}});
         std::fs::write(&path, raw.to_string()).unwrap();
         let id = add_client_location("claude-code", folder.path().to_str().unwrap()).unwrap();
-        mutation::run(&id, &path, Format::JsonMcpServers, || backfill_gateway_identity(&find_def(&id).unwrap(), &path, "toolport", &id)).unwrap();
-        let mut after: serde_json::Value = serde_json::from_str(&read_config_file(&path).unwrap()).unwrap();
-        assert_eq!(after["mcpServers"]["toolport"]["env"][crate::brand::CLIENT_ID], id);
-        after["mcpServers"]["toolport"]["env"][crate::brand::CLIENT_ID] = serde_json::json!("claude-code");
-        after["mcpServers"]["toolport"]["env"].as_object_mut().unwrap().remove(crate::brand::ATTRIBUTION_ID);
+        mutation::run(&id, &path, Format::JsonMcpServers, || {
+            backfill_gateway_identity(&find_def(&id).unwrap(), &path, "toolport", &id)
+        })
+        .unwrap();
+        let mut after: serde_json::Value =
+            serde_json::from_str(&read_config_file(&path).unwrap()).unwrap();
+        assert_eq!(
+            after["mcpServers"]["toolport"]["env"][crate::brand::CLIENT_ID],
+            id
+        );
+        after["mcpServers"]["toolport"]["env"][crate::brand::CLIENT_ID] =
+            serde_json::json!("claude-code");
+        after["mcpServers"]["toolport"]["env"]
+            .as_object_mut()
+            .unwrap()
+            .remove(crate::brand::ATTRIBUTION_ID);
         assert_eq!(after, raw);
-        assert!(restore::recorded_paths().iter().any(|(record_id, recorded, _)| record_id == &id && recorded == &path));
+        assert!(restore::recorded_paths()
+            .iter()
+            .any(|(record_id, recorded, _)| record_id == &id && recorded == &path));
+        let outcome = uninstall_gateway(&id).unwrap();
+        assert!(outcome.warnings.is_empty());
+        assert!(!read_client(&find_def(&id).unwrap()).gateway_installed);
+        finish_uninstall(&id, &outcome).unwrap();
     }
 
     #[test]
     #[ignore = "scan benchmark; run explicitly with --ignored --nocapture"]
     fn scan_timings() {
         let root = TempFolder::new();
-        for i in 0..10_000 { std::fs::write(root.path().join(format!("unrelated-{i}")), "").unwrap(); }
+        for i in 0..10_000 {
+            std::fs::write(root.path().join(format!("unrelated-{i}")), "").unwrap();
+        }
         for i in 0..20 {
             let dir = root.path().join(format!(".claude-profile{i}"));
             std::fs::create_dir(&dir).unwrap();
@@ -305,6 +477,8 @@ mod tests {
         }
         measure(root.path());
         // Only directory metadata; no config contents or writes in real home.
-        if let Some(real_home) = home() { measure(&real_home); }
+        if let Some(real_home) = home() {
+            measure(&real_home);
+        }
     }
 }

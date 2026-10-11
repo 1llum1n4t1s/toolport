@@ -323,6 +323,16 @@ fn original_gateways(
     } else {
         gateway_names(format, &mutation::value(format, text)?)
     };
+    // Adopting an existing Toolport binary at a new location establishes its
+    // ownership. Disconnect must remove it rather than restore its old shared ID.
+    if client_id.contains('@') {
+        if let Some(text) = text {
+            for server in parse_client_content(format, text)? {
+                if detected_is_gateway(&server) && command_is_gateway_binary(server.command.as_deref().unwrap_or(""))
+                    && !names.contains(&server.name) { names.push(server.name); }
+            }
+        }
+    }
     let registry = crate::registry_controller::registry_for_disconnect()?;
     if let (Some(record), Some(text)) = (registry.client_managed_entries.get(client_id), text) {
         for server in parse_client_content(format, text)? {

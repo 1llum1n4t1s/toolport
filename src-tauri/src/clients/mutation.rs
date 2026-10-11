@@ -222,7 +222,7 @@ fn run_inner<T>(
                 | Format::YamlMcpServers
                 | Format::YamlMcpServersList
         )
-        && !matches!(client_id, "vscode" | "zed" | "opencode" | "kilo-code");
+        && !matches!(client_id.split('@').next().unwrap_or(client_id), "vscode" | "zed" | "opencode" | "kilo-code");
     for _ in 0..3 {
         if !value(format, original.as_deref())?.is_object() {
             return Err("Client config root must be an object; leaving it untouched".into());
