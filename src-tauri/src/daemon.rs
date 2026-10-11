@@ -378,7 +378,8 @@ fn verified_purge_descriptor(path: &Path) -> Result<Option<DaemonDescriptor>, St
     match attempt_identity_probe(&descriptor) {
         Ok(identity) if identity.pid == descriptor.pid && identity.compat == descriptor.compat
             && identity.protocol == descriptor.protocol => Ok(Some(descriptor)),
-        Ok(_) | Err(ProbeFailure::Answered(_) | ProbeFailure::Unreachable) => Ok(None),
+        Ok(_) => Err("Live daemon identity does not match its descriptor; close it and retry".into()),
+        Err(ProbeFailure::Answered(_) | ProbeFailure::Unreachable) => Err("Live daemon could not prove its authenticated identity; close it and retry".into()),
         Err(ProbeFailure::Silent) => Err("Daemon did not answer its authenticated identity probe; close it and retry".into()),
     }
 }

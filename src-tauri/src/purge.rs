@@ -420,8 +420,10 @@ fn run_with(
         report.notes.push("Startup cleanup failed. Data and credentials were retained for retry.".into());
         return Ok(report);
     }
+    let mut team_token_in_file = false;
     match keyring() {
         Ok(removal) => {
+            team_token_in_file = removal.team_token_in_file;
             if removal.team_token_removed {
                 report.notes.push("Team tokens deleted from this machine were removed locally only; no server-side revoke endpoint is available in the Teams client.".into());
             }
@@ -440,6 +442,9 @@ fn run_with(
     }
     let registry_path = dir.join("registry.json");
     remove_data_contents(&dir, &[owner_path.clone(), registry_path.clone()], &mut report);
+    if team_token_in_file && report.removed.contains(&dir.join("secrets.enc").display().to_string()) {
+        report.notes.push("Team tokens deleted from this machine were removed locally only; no server-side revoke endpoint is available in the Teams client.".into());
+    }
     if report.leftovers.is_empty() {
         remove_path(&registry_path, &mut report);
     } else if registry_path.exists() {
@@ -550,17 +555,35 @@ fn owned_data_file(name: &str) -> bool {
 }
 
 fn remove_data_contents(dir: &Path, keep: &[PathBuf], report: &mut Report) {
-    let mut keep = keep.to_vec();
-    // Inventory once before mutation; unknown entries, including links, stay untouched.
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if !entry.file_name().to_str().is_some_and(owned_data_name) {
-                report.preserved.push(format!("{} (not a Toolport-created entry)", entry.path().display()));
-                keep.push(entry.path());
+    let entries = match std::fs::read_dir(dir).and_then(|entries| entries.collect::<Result<Vec<_>, _>>()) {
+        Ok(entries) => entries,
+        Err(error) => {
+            report.leftovers.push(Leftover { path: dir.display().to_string(), error: error.to_string() });
+            return;
+        }
+    };
+    // Select each root entry by name. A new unrelated file cannot slip into a
+    // later recursive walk, and unknown directories are never traversed.
+    for entry in entries {
+        let path = entry.path();
+        if keep.contains(&path) {
+            continue;
+        }
+        if !entry.file_name().to_str().is_some_and(owned_data_name) {
+            report.preserved.push(format!("{} (not a Toolport-created entry)", path.display()));
+            continue;
+        }
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() && !is_link(&metadata) => {
+                remove_contents(&path, keep, report);
+                if !keep.iter().any(|keep| keep.starts_with(&path)) {
+                    remove_path(&path, report);
+                }
             }
+            Ok(_) => remove_path(&path, report),
+            Err(error) => report.leftovers.push(Leftover { path: path.display().to_string(), error: error.to_string() }),
         }
     }
-    remove_contents(dir, &keep, report);
 }
 
 fn remove_contents(dir: &Path, keep: &[PathBuf], report: &mut Report) {
@@ -1048,15 +1071,15 @@ mod tests {
     #[test]
     fn purge_team_note_requires_a_deleted_team_token() {
         let env = crate::registry::DataDirTestEnv::new("purge_team_note");
-        for team_token_removed in [false, true] {
+        for (team_token_removed, team_token_in_file) in [(false, false), (true, false), (false, true)] {
             std::fs::write(env.dir.join("secrets.enc"), "fixture").unwrap();
             let report = run_with(
                 |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
-                || Ok(crate::secrets::purge::Removal { removed: vec!["fixture credential".into()], team_token_removed, ..Default::default() }),
+                || Ok(crate::secrets::purge::Removal { removed: vec!["fixture credential".into()], team_token_removed, team_token_in_file, ..Default::default() }),
                 |_| Ok(()), |_| Ok(()),
             ).unwrap();
             assert!(report.leftovers.is_empty());
-            assert_eq!(report.notes.iter().any(|note| note.contains("removed locally only")), team_token_removed);
+            assert_eq!(report.notes.iter().any(|note| note.contains("removed locally only")), team_token_removed || team_token_in_file);
         }
     }
 

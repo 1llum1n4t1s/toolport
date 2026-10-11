@@ -5,6 +5,7 @@ use crate::purge::Leftover;
 pub(crate) struct Removal {
     pub removed: Vec<String>,
     pub team_token_removed: bool,
+    pub team_token_in_file: bool,
     pub preserved: Vec<String>,
     pub notes: Vec<String>,
     pub leftovers: Vec<Leftover>,
@@ -98,7 +99,11 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
     // Use the same backend selector as secret reads and writes, including the
     // nonempty-key requirement. Merely having an environment variable is insufficient.
     if super::file::active() {
-        return Ok(no_keyring());
+        return Ok(Removal {
+            team_token_in_file: super::file::get_secret_result(crate::teams::TEAM_TOKEN_SERVER, crate::teams::TEAM_TOKEN_KEY)
+                .ok().flatten().is_some(),
+            ..no_keyring()
+        });
     }
     crate::hostenv::restore_session_bus_env();
     if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none_or(|address| address.is_empty()) {
