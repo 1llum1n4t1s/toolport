@@ -449,7 +449,7 @@ mod tests {
         let id = add_client_location("claude-code", folder.path().to_str().unwrap()).unwrap();
         let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport", "transport":"stdio", "command":"/usr/bin/toolport-gateway", "env":[{"key":"TOOLPORT_CLIENT_ID", "value":id, "secret":false}]})).unwrap();
         install_or_remove(&id, Some(&entry)).unwrap();
-        install_or_remove(&id, None).unwrap();
+        uninstall_gateway(&id).unwrap();
         let after: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(after["mcpServers"]["foreign"], original["mcpServers"]["foreign"]);
         assert!(after["mcpServers"].get("toolport").is_none());

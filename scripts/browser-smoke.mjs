@@ -92,10 +92,13 @@ try {
   await page.getByRole("button", { name: "Help", exact: true }).click();
   await page.getByRole("button", { name: "Run setup again", exact: true }).click();
   await page.getByRole("button", { name: /Set up MCP servers/ }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await expect(page.getByText("Connected clients", { exact: true })).toBeVisible();
-  await expect(page.getByText("Codex", { exact: true })).toBeVisible();
+  await page
+    .getByRole("button", { name: "Review and connect your clients", exact: true })
+    .click();
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Skip for now", exact: true }).click();
+  await expect(page.getByText(/You haven't added a server yet/)).toBeVisible();
+  await expect(page.getByText(/You haven't.*connected a client/)).toHaveCount(0);
   await page.screenshot({ path: path.join(output, "onboarding-connected-client.png") });
   await page.goto(`${baseURL}/fixtures/`);
   await expect(page.getByText("GitHub", { exact: true })).toBeVisible();

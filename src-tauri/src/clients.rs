@@ -624,7 +624,7 @@ fn claude_code_config_paths() -> Vec<PathBuf> {
     let Some(home) = home() else {
         return Vec::new();
     };
-    let dirs = match claude_profile_dirs(&home) {
+    let dirs = match claude_profile_dirs_with_links(&home, true) {
         Ok(dirs) => dirs,
         Err(error) => {
             let msg = format!(
@@ -655,11 +655,16 @@ fn claude_profile_name(name: &str) -> bool {
 }
 
 fn claude_profile_dirs(home: &Path) -> Result<Vec<String>, String> {
+    claude_profile_dirs_with_links(home, false)
+}
+
+fn claude_profile_dirs_with_links(home: &Path, follow_links: bool) -> Result<Vec<String>, String> {
     let entries = std::fs::read_dir(home).map_err(|e| e.to_string())?;
     Ok(entries.filter_map(Result::ok).filter_map(|entry| {
         let name = entry.file_name().into_string().ok()?;
         if !claude_profile_name(&name) { return None; }
-        if !entry.path().is_dir() { return None; }
+        let kind = entry.file_type().ok()?;
+        if !kind.is_dir() && !(follow_links && kind.is_symlink() && entry.path().is_dir()) { return None; }
         Some(name)
     }).collect())
 }
@@ -725,7 +730,7 @@ pub(crate) fn claude_settings_paths() -> Vec<PathBuf> {
     let Some(home) = home() else {
         return Vec::new();
     };
-    let dirs = match claude_profile_dirs(&home) {
+    let dirs = match claude_profile_dirs_with_links(&home, true) {
         Ok(dirs) => dirs,
         Err(error) => {
             let msg = format!(
@@ -1663,6 +1668,9 @@ pub fn trusted_client_name(client: Option<&str>, recorded_name: Option<&str>) ->
 /// Write-time fallback uses only identity already in the request context.
 /// Registered labels are resolved at session setup or when reading Activity.
 pub(crate) fn unresolved_client_name(client: Option<&str>) -> String {
+    if client.and_then(|id| id.strip_prefix("adapter:")).is_some_and(|id| id.contains('@')) {
+        return "Unknown client".into();
+    }
     trusted_client_name_with(client, None, |_| None)
 }
 
@@ -3489,12 +3497,14 @@ fn detect_clients_for_display_in(
         let repoint = repoint_stale_gateways_in(&path.to_string_lossy(), targets, &current.client_managed_entries);
         if !repoint.repointed.is_empty() {
             changed = true;
-            crate::registry::update(|registry| {
+            if let Err(error) = crate::registry::update(|registry| {
                 for (id, entry) in &repoint.repointed {
                     registry.set_client_managed_entry(id, entry.clone());
                 }
                 Ok(())
-            })?;
+            }) {
+                for (id, _) in &repoint.repointed { failures.insert(id.clone(), error.clone()); }
+            }
         }
         failures.extend(repoint.failed);
     }
@@ -7131,7 +7141,7 @@ fn profile_key_from_config_text(content: &str, key: &str) -> Option<String> {
 fn read_gateway_profile(client_id: &str) -> Option<String> {
     let def = find_def(client_id)?;
     let path = resolved_definition_path(&def).ok()?;
-    let content = read_config_file(&path).ok()?;
+    let content = read_config_file(path).ok()?;
     profile_from_config_text(&content)
 }
 
@@ -7177,8 +7187,12 @@ fn read_gateway_profile(client_id: &str) -> Option<String> {
 /// never be re-pointed onto a current binary. Deleting one out from under a plugin
 /// entry leaves a reference nothing will ever repair.
 pub fn referenced_gateway_paths() -> Option<Vec<PathBuf>> {
-    let mut paths = referenced_gateway_paths_in(&detect_clients())?;
-    for path in claude_code_config_paths() {
+    referenced_gateway_paths_for(&detect_clients(), &claude_code_config_paths())
+}
+
+fn referenced_gateway_paths_for(clients: &[DetectedClient], claude_paths: &[PathBuf]) -> Option<Vec<PathBuf>> {
+    let mut paths = referenced_gateway_paths_in(clients)?;
+    for path in claude_paths {
         let text = read_config_file(&path).ok()?;
         let servers = parse_client_content(Format::JsonMcpServers, &text).ok()?;
         for server in servers {
@@ -7577,7 +7591,11 @@ fn repoint_other_claude_configs(current: &str, outcome: &mut RepointOutcome) {
         .into_iter()
         .filter(|path| !maintained.iter().any(|known| locations::same_path(known, path)))
         .collect();
-    for repair in claude_configs_needing_repair(&others, current) {
+    repoint_other_claude_configs_in(current, &others, outcome);
+}
+
+fn repoint_other_claude_configs_in(current: &str, others: &[PathBuf], outcome: &mut RepointOutcome) {
+    for repair in claude_configs_needing_repair(others, current) {
         let ClaudeRepair {
             path,
             stored,
@@ -7850,6 +7868,66 @@ mod tests {
     use crate::registry::EnvVar;
 
     #[test]
+    fn unsaved_secondary_claude_configs_are_repaired_and_keep_gateway_references() {
+        let data = crate::registry::DataDirTestEnv::new("location-startup-upkeep");
+        let home = data.dir.join("home");
+        std::fs::create_dir(&home).unwrap();
+        let old = data.dir.join("toolport-gateway-old");
+        let current = data.dir.join("toolport-gateway");
+        std::fs::write(&old, "old fixture").unwrap();
+        std::fs::write(&current, "current fixture").unwrap();
+        let original = serde_json::json!({"mcpServers":{"toolport":{"command":old.to_str().unwrap(),"env":{"TOOLPORT_CLIENT_ID":"claude-code", "TOOLPORT_PROFILE":"work"}}}}).to_string();
+        for folder in [".claude2", ".claude-backup-2026", ".claude.bak", ".claudesync"] {
+            std::fs::create_dir(home.join(folder)).unwrap();
+            std::fs::write(home.join(folder).join(".claude.json"), &original).unwrap();
+        }
+        let dirs = claude_profile_dirs(&home).unwrap();
+        let paths: Vec<_> = claude_code_config_paths_from(&home, None, &dirs).into_iter().filter(|path| path.is_file()).collect();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(referenced_gateway_paths_for(&[], &paths), Some(vec![old]));
+        let mut outcome = RepointOutcome::default();
+        repoint_other_claude_configs_in(current.to_str().unwrap(), &paths, &mut outcome);
+        assert_eq!(outcome.extra_claude_repointed, paths);
+        assert!(outcome.extra_claude_failed.is_empty());
+        assert_eq!(referenced_gateway_paths_for(&[], &paths), Some(vec![current.clone()]));
+        let after: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&paths[0]).unwrap()).unwrap();
+        assert_eq!(after["mcpServers"]["toolport"]["command"], current.to_str().unwrap());
+        assert_eq!(after["mcpServers"]["toolport"]["env"]["TOOLPORT_PROFILE"], "work");
+        for folder in [".claude-backup-2026", ".claude.bak", ".claudesync"] {
+            assert_eq!(std::fs::read_to_string(home.join(folder).join(".claude.json")).unwrap(), original);
+        }
+        assert!(locations::saved().unwrap().is_empty());
+    }
+
+    #[test]
+    fn one_location_repoint_error_does_not_hide_or_block_a_healthy_location() {
+        let data = crate::registry::DataDirTestEnv::new("location-repoint-row-error");
+        let mut definitions = Vec::new();
+        for name in ["bad", "good"] {
+            let folder = data.dir.join(name);
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(folder.join(".claude.json"), r#"{"mcpServers":{"toolport":{"command":"/old/toolport-gateway","env":{"TOOLPORT_CLIENT_ID":"claude-code"}}}}"#).unwrap();
+            let id = add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
+            let def = find_def(&id).unwrap();
+            if name == "bad" {
+                let record = restore::record_path(&id, &folder.join(".claude.json")).unwrap();
+                std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+                std::fs::write(record, "broken snapshot").unwrap();
+            }
+            definitions.push(def);
+        }
+        let gateway = data.dir.join("toolport-gateway");
+        std::fs::write(&gateway, "fixture").unwrap();
+        let rows = detect_clients_for_display_in(definitions, crate::registry::Registry::default(), Some(gateway)).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].error.is_some());
+        assert!(rows[1].error.is_none());
+        assert!(rows[1].gateway_installed);
+        let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&rows[1].config_path).unwrap()).unwrap();
+        assert_eq!(config["mcpServers"]["toolport"]["env"]["TOOLPORT_CLIENT_ID"], rows[1].id);
+    }
+
+    #[test]
     fn display_scan_keeps_healthy_rows_when_another_location_cannot_be_saved() {
         let data = crate::registry::DataDirTestEnv::new("location-row-error");
         // A directory in place of the location store makes remembering fail.
@@ -7869,15 +7947,18 @@ mod tests {
 
     #[test]
     fn configured_claude_path_keeps_the_main_identity_and_registry_settings() {
-        let _data = crate::registry::DataDirTestEnv::new("location-main-identity");
+        let data = crate::registry::DataDirTestEnv::new("location-main-identity");
         let _env_lock = env_test_lock();
-        let folder = temp_path("claude-main-location");
+        let folder = data.dir.join(".claude-work");
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join(".claude.json"), r#"{"mcpServers":{"toolport":{"command":"/usr/bin/toolport-gateway", "env":{"TOOLPORT_CLIENT_ID":"claude-code"}},"notes":{"command":"notes"}}}"#).unwrap();
         let _override = EnvRestore::set("CLAUDE_CONFIG_DIR", &folder);
         let mut registry = crate::registry::Registry::default();
         registry.client_discovery.insert("claude-code".into(), "full".into());
         crate::registry::save(&registry).unwrap();
+        locations::remember(&locations::ClientLocation { id: "claude-code@claude-work".into(), manual: false,
+            client_type: "claude-code".into(), name: "Claude Code (claude-work)".into(), config_path: folder.join(".claude.json") }).unwrap();
+        assert_eq!(machine_defs(true).iter().filter(|def| resolved_definition_path(def).ok().as_deref() == Some(folder.join(".claude.json").as_path())).count(), 1);
         assert_eq!(add_client_location("claude-code", folder.to_str().unwrap()).unwrap(), "claude-code");
         let rows = detect_clients();
         let main = rows.iter().find(|client| client.id == "claude-code").unwrap();
@@ -7972,8 +8053,7 @@ mod tests {
         let dirs = [
             ".claude-work".to_string(),
             ".claude".to_string(),
-            // The location scan includes every .claude* directory, but only
-            // probes .claude.json files and never installs a missing gateway.
+            // Backup-like folders must not become repair targets.
             ".claude.bak".to_string(),
             ".claudesync".to_string(),
             "Documents".to_string(),
@@ -7987,8 +8067,7 @@ mod tests {
                 // The documented default is a file at the home root.
                 home.join(".claude.json"),
                 home.join(".claude").join(".claude.json"),
-                home.join(".claude.bak").join(".claude.json"),
-                home.join(".claudesync").join(".claude.json"),
+
             ],
             "expected the override first, then the default, then sorted siblings"
         );
@@ -8091,7 +8170,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn automatic_claude_discovery_stays_inside_home() {
+    fn symlinked_claude_profiles_remain_in_hook_and_guard_upkeep() {
         use std::os::unix::fs::symlink;
 
         let root = temp_path("claude-symlink-profile");
@@ -8103,8 +8182,10 @@ mod tests {
         std::fs::write(target.join(".claude.json"), "{}").unwrap();
         symlink(&target, home.join(".claude-work")).unwrap();
 
-        let dirs = claude_profile_dirs(&home).unwrap();
-        assert!(!dirs.iter().any(|name| name == ".claude-work"));
+        let dirs = claude_profile_dirs_with_links(&home, true).unwrap();
+        assert!(dirs.iter().any(|name| name == ".claude-work"));
+        assert!(claude_settings_paths_from(&home, None, &dirs).contains(&home.join(".claude-work/settings.json")));
+        assert!(claude_profile_dirs(&home).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 

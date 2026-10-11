@@ -67,13 +67,17 @@ pub fn telemetry_principal(client: &str) -> Option<&str> {
 
 /// Scope lookup keeps the raw launch ID. Display and diagnostics reject private values.
 pub fn display_client_id(id: &str) -> String {
-    if !id.is_empty() && id.len() <= 1024
-        && id.chars().all(|c| c.is_ascii_alphanumeric()
-            || matches!(c, ' ' | '.' | '_' | '-' | '+' | '(' | ')' | '[' | ']' | '@' | '%'))
-        && crate::registry::redact_secret_text(id) == id
-    {
-        id.into()
-    } else { "[private]".into() }
+    if id.contains(['@', '%']) {
+        if !id.is_empty() && id.len() <= 1024
+            && id.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_.@%".contains(&c))
+            && crate::registry::redact_secret_text(id) == id
+        { return id.into(); }
+        return "[private]".into();
+    }
+    match display_label(id) {
+        Some(safe) if safe == id => safe,
+        _ => "[private]".into(),
+    }
 }
 
 pub struct DispatchTimer {
