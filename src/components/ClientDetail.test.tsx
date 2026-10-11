@@ -614,8 +614,8 @@ it("removes a disconnected manual location through the confirmation flow", async
       onRegistryChange={vi.fn()}
     />,
   );
-  await user.click(screen.getByRole("button", { name: "Remove location", exact: true }));
-  await user.click(screen.getByRole("button", { name: "Remove location", exact: true }));
+  await user.click(screen.getByRole("button", { name: "Remove location" }));
+  await user.click(screen.getByRole("button", { name: "Remove location" }));
   expect(removeClientLocation).toHaveBeenCalledWith("codex@fixture");
   await waitFor(() => expect(onChanged).toHaveBeenCalled());
 });
@@ -633,7 +633,5 @@ it("requires disconnect before forgetting a connected location", () => {
       onRegistryChange={vi.fn()}
     />,
   );
-  expect(
-    screen.getByRole("button", { name: "Remove location", exact: true }),
-  ).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Remove location" })).toBeDisabled();
 });
