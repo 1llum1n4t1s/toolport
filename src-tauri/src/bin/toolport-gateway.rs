@@ -39967,6 +39967,70 @@ mod tests {
     }
 
     #[test]
+    fn watcher_release_retry_keeps_the_quarantine_written_by_its_first_gate() {
+        let data = DataDirTestEnv::new("watcher-release-gate-retry");
+        for profile in [None, Some("work")] {
+            for version in ["v1", "v2", "v3"] {
+                for bulk in [false, true] {
+                    let state = http_state(false);
+                    state.registry.lock().unwrap().set_safety_level(registry::SafetyLevel::Strict);
+                    if version == "v3" {
+                        let original = readonly_router("srv", "Reviewed definition.");
+                        let tools = original.policy_catalog(&original.shared_tools());
+                        integrity::check(profile, &tools).unwrap();
+                        integrity::apply_quarantine(profile, &tools, &[json!({
+                            "server":"srv", "tool":"srv__read", "change":"changed", "severity":"high"
+                        })]).unwrap();
+                    } else {
+                        seed_legacy_review(&data.dir, profile, version);
+                    }
+                    let mut cached = readonly_router("srv", "Changed while quarantined.");
+                    cached.requarantine(set_of(&["srv__read"]));
+                    *state.router.lock().unwrap() = Arc::new(cached);
+                    if bulk {
+                        let outcome = integrity::release_all(profile).unwrap();
+                        assert_eq!(outcome.released, 1);
+                    } else {
+                        conduit_lib::registry_controller::release_quarantine(profile, "srv__read").unwrap();
+                    }
+                    let gates = Arc::new(AtomicUsize::new(0));
+                    let observed = Arc::clone(&gates);
+                    let live = Arc::clone(&state.router);
+                    *INTEGRITY_GATE_OBSERVER.lock().unwrap() = Some((
+                        std::thread::current().id(),
+                        Box::new(move || {
+                            let mut current = live.lock().unwrap();
+                            assert!(!current.aggregated_tools().iter().any(|tool| tool["name"] == "srv__read"));
+                            if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                                // A concurrent copy-on-write edit wins the first swap.
+                                *current = Arc::new((**current).clone());
+                            }
+                        }),
+                    ));
+                    assert!(reconcile_quarantine(
+                        &state.registry, &state.router, &state.stdio_upstream,
+                        profile, None, &AtomicBool::new(false),
+                    ));
+                    *INTEGRITY_GATE_OBSERVER.lock().unwrap() = None;
+                    assert_eq!(gates.load(Ordering::SeqCst), 2, "the swap must have retried");
+                    assert!(integrity::quarantined(profile).unwrap().contains("srv__read"));
+                    assert!(!state.router.lock().unwrap().aggregated_tools().iter()
+                        .any(|tool| tool["name"] == "srv__read"));
+                    let fp = integrity::baselines(profile)["srv__read"].fingerprint.clone();
+                    assert!(fp.starts_with("v3:"));
+                    assert!(integrity::release_definition(profile, "srv__read", &fp).unwrap());
+                    assert!(reconcile_quarantine(
+                        &state.registry, &state.router, &state.stdio_upstream,
+                        profile, None, &AtomicBool::new(false),
+                    ));
+                    assert!(state.router.lock().unwrap().aggregated_tools().iter()
+                        .any(|tool| tool["name"] == "srv__read"));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn legacy_quarantine_release_is_checked_before_watcher_publication() {
         let data = DataDirTestEnv::new("legacy-watcher-publication");
         for profile in [None, Some("work")] {
