@@ -642,6 +642,7 @@ try {
   await page.screenshot({ path: path.join(output, "profile-review-still-blocked.png") });
   await page.goto(`${baseURL}/fixtures/`);
   await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Help and data", exact: true }).click();
   await page.getByRole("button", { name: "Remove Toolport data", exact: true }).click();
   const purgeDialog = page.getByRole("dialog", { name: "Remove Toolport data?" });
   await expect(purgeDialog).toContainText("/fixture/home/.config/Toolport");
