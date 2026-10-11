@@ -1006,6 +1006,7 @@ function App() {
                         registry={registry}
                         loading={loading}
                         onSelectClient={selectClient}
+                        onChanged={load}
                       />
                     )
                   ) : view === "activity" ? (

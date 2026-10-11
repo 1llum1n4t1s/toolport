@@ -21,6 +21,8 @@ mod disconnect;
 pub use disconnect::{all as disconnect_all, ClientResult as DisconnectResult};
 pub(crate) use disconnect::for_purge as disconnect_all_for_purge;
 mod discovery;
+mod locations;
+pub use locations::{add_client_location, client_location_types, ClientLocationType};
 pub use discovery::DiscoveryCapabilities;
 mod moved;
 mod mutation;
@@ -166,6 +168,7 @@ struct CombinedToolNameBudget {
 struct ClientDef {
     id: &'static str,
     name: &'static str,
+    location: Option<locations::ClientLocation>,
     format: Format,
     discovery: DiscoveryCapabilities,
     combined_tool_name_budget: Option<CombinedToolNameBudget>,
@@ -195,7 +198,7 @@ pub fn discovery_capabilities(id: &str) -> DiscoveryCapabilities {
     // Adapter routing wraps legacy client IDs too. Only the capability lookup
     // uses this spelling; authorization and result ownership keep the wire ID.
     let id = id.strip_prefix("adapter:").unwrap_or(id);
-    discovery::capabilities(id.strip_prefix("client:").unwrap_or(id))
+    discovery::capabilities(id.strip_prefix("client:").unwrap_or(id).split('@').next().unwrap_or(id))
 }
 
 /// Client limits apply to the registered server key, profile separator overhead and alias.
@@ -203,6 +206,7 @@ pub fn client_tool_name_limit(id: Option<&str>, registered_key: &str) -> usize {
     let id = id.unwrap_or("");
     let id = id.strip_prefix("adapter:").unwrap_or(id);
     let id = id.strip_prefix("client:").unwrap_or(id);
+    let id = id.split('@').next().unwrap_or(id);
     defs()
         .into_iter()
         .find(|profile| profile.id == id)
@@ -597,16 +601,16 @@ fn claude_code_config_paths() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Directory names directly under home that may hold Claude Code profiles. `Path::is_dir`
-/// deliberately follows symlinks: keeping a work profile on another volume via
-/// `~/.claude-work -> /volume/work-claude` is a supported filesystem shape.
+/// Name-first, shallow discovery. Symlink directories are excluded so automatic
+/// discovery never follows a profile outside home. Config contents are not read.
 fn claude_profile_dirs(home: &Path) -> Result<Vec<String>, String> {
     let entries = std::fs::read_dir(home).map_err(|e| e.to_string())?;
-    Ok(entries
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect())
+    Ok(entries.filter_map(Result::ok).filter_map(|entry| {
+        let name = entry.file_name().into_string().ok()?;
+        if !name.starts_with(".claude") { return None; }
+        if !entry.file_type().ok()?.is_dir() { return None; }
+        Some(name)
+    }).collect())
 }
 
 /// The env- and filesystem-free half of [`claude_code_config_paths`], so ordering and
@@ -633,7 +637,7 @@ fn claude_code_config_paths_from(
     push(home.join(".claude.json"), &mut out);
     let mut siblings: Vec<&String> = home_dirs
         .iter()
-        .filter(|name| *name == ".claude" || name.starts_with(".claude-"))
+        .filter(|name| name.starts_with(".claude"))
         .collect();
     // read_dir order is unspecified; sort so the log and any diagnostics are stable.
     siblings.sort();
@@ -707,7 +711,7 @@ fn claude_settings_paths_from(
     push(claude_settings_path(&home.join(".claude")), &mut out);
     let mut siblings: Vec<&String> = home_dirs
         .iter()
-        .filter(|name| *name == ".claude" || name.starts_with(".claude-"))
+        .filter(|name| name.starts_with(".claude"))
         .collect();
     // read_dir order is unspecified; sort so the log and any diagnostics are stable.
     siblings.sort();
@@ -1341,7 +1345,8 @@ fn resolve_opencode_config_path(json_path: PathBuf) -> Result<PathBuf, String> {
 }
 
 fn resolved_definition_path(def: &ClientDef) -> Result<PathBuf, String> {
-    let path = (def.path)().ok_or("Could not resolve a config path on this OS")?;
+    let path = def.location.as_ref().map(|location| location.config_path.clone())
+        .or_else(|| (def.path)()).ok_or("Could not resolve a config path on this OS")?;
     if def.id == "opencode" {
         resolve_opencode_config_path(path)
     } else {
@@ -1513,6 +1518,9 @@ fn scan_roo_code_plugins() -> Vec<McpServer> {
 /// Resolve display identity from configured names, never clientInfo.
 /// Recorded friendly names remain authoritative for historical Activity rows.
 pub fn known_adapter_name(id: &str) -> Option<String> {
+    if let Some(location) = locations::lookup(id) {
+        return Some(location.name);
+    }
     if id == "claude-code-secondary" {
         return Some("Claude Code (secondary)".into());
     }
@@ -1538,6 +1546,9 @@ impl CallerNames {
             .into_iter()
             .map(|def| (format!("adapter:{}", def.id), def.name.to_string()))
             .collect();
+        for location in locations::all() {
+            names.insert(format!("adapter:{}", location.id), location.name);
+        }
         names.insert(
             "adapter:claude-code-secondary".into(),
             "Claude Code (secondary)".into(),
@@ -1685,6 +1696,7 @@ pub fn resolve_launch_profile(
 fn defs() -> Vec<ClientDef> {
     vec![
         ClientDef {
+            location: None,
             id: "claude-desktop",
             discovery: discovery::capabilities("claude-desktop"),
             combined_tool_name_budget: None,
@@ -1695,6 +1707,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "cursor",
             discovery: discovery::capabilities("cursor"),
             combined_tool_name_budget: Some(CombinedToolNameBudget {
@@ -1708,6 +1721,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: Some(scan_cursor_plugins),
         },
         ClientDef {
+            location: None,
             id: "droid",
             discovery: discovery::capabilities("droid"),
             combined_tool_name_budget: None,
@@ -1718,6 +1732,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "crush",
             discovery: discovery::capabilities("crush"),
             combined_tool_name_budget: None,
@@ -1728,6 +1743,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "anythingllm",
             discovery: discovery::capabilities("anythingllm"),
             combined_tool_name_budget: None,
@@ -1738,6 +1754,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "vscode",
             discovery: discovery::capabilities("vscode"),
             combined_tool_name_budget: None,
@@ -1748,6 +1765,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "amp",
             discovery: discovery::capabilities("amp"),
             combined_tool_name_budget: None,
@@ -1758,6 +1776,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "windsurf",
             discovery: discovery::capabilities("windsurf"),
             combined_tool_name_budget: None,
@@ -1768,6 +1787,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "devin-cli",
             discovery: discovery::capabilities("devin-cli"),
             combined_tool_name_budget: None,
@@ -1778,6 +1798,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "opencode",
             discovery: discovery::capabilities("opencode"),
             combined_tool_name_budget: None,
@@ -1790,6 +1811,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "kilo-code",
             discovery: discovery::capabilities("kilo-code"),
             combined_tool_name_budget: None,
@@ -1802,6 +1824,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             // Grok Build (xAI's terminal coding agent): ~/.grok/config.toml,
             // [mcp_servers.<name>] - same TOML shape as Codex.
             id: "grok",
@@ -1814,6 +1837,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             // The Codex CLI and the Codex desktop app share config.toml under
             // `CODEX_HOME` (default ~/.codex).
             id: "codex",
@@ -1826,6 +1850,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "github-copilot-cli",
             discovery: discovery::capabilities("github-copilot-cli"),
             combined_tool_name_budget: None,
@@ -1836,6 +1861,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "antigravity",
             discovery: discovery::capabilities("antigravity"),
             combined_tool_name_budget: None,
@@ -1846,6 +1872,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "claude-code",
             discovery: discovery::capabilities("claude-code"),
             combined_tool_name_budget: None,
@@ -1856,6 +1883,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "gemini-cli",
             discovery: discovery::capabilities("gemini-cli"),
             combined_tool_name_budget: None,
@@ -1866,6 +1894,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "qwen-code",
             discovery: discovery::capabilities("qwen-code"),
             combined_tool_name_budget: None,
@@ -1876,6 +1905,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "junie",
             discovery: discovery::capabilities("junie"),
             combined_tool_name_budget: None,
@@ -1888,6 +1918,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "cline",
             discovery: discovery::capabilities("cline"),
             combined_tool_name_budget: None,
@@ -1898,6 +1929,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "roo-code",
             discovery: discovery::capabilities("roo-code"),
             combined_tool_name_budget: None,
@@ -1908,6 +1940,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: Some(scan_roo_code_plugins),
         },
         ClientDef {
+            location: None,
             id: "warp",
             discovery: discovery::capabilities("warp"),
             combined_tool_name_budget: None,
@@ -1920,6 +1953,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "amazon-q",
             discovery: discovery::capabilities("amazon-q"),
             combined_tool_name_budget: None,
@@ -1933,6 +1967,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "kiro",
             discovery: discovery::capabilities("kiro"),
             combined_tool_name_budget: None,
@@ -1945,6 +1980,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "kimi-code",
             discovery: discovery::capabilities("kimi-code"),
             combined_tool_name_budget: None,
@@ -1955,6 +1991,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "zcode",
             discovery: discovery::capabilities("zcode"),
             combined_tool_name_budget: None,
@@ -1965,6 +2002,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "command-code",
             discovery: discovery::capabilities("command-code"),
             combined_tool_name_budget: None,
@@ -1979,6 +2017,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "zed",
             discovery: discovery::capabilities("zed"),
             combined_tool_name_budget: None,
@@ -1992,6 +2031,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "lm-studio",
             discovery: discovery::capabilities("lm-studio"),
             combined_tool_name_budget: None,
@@ -2004,6 +2044,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "jan",
             discovery: discovery::capabilities("jan"),
             combined_tool_name_budget: None,
@@ -2018,6 +2059,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "boltai",
             discovery: discovery::capabilities("boltai"),
             combined_tool_name_budget: None,
@@ -2028,6 +2070,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "pi",
             discovery: discovery::capabilities("pi"),
             combined_tool_name_budget: None,
@@ -2041,6 +2084,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "omp",
             discovery: discovery::capabilities("omp"),
             combined_tool_name_budget: None,
@@ -2053,6 +2097,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "goose",
             discovery: discovery::capabilities("goose"),
             combined_tool_name_budget: None,
@@ -2063,6 +2108,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "hermes",
             discovery: discovery::capabilities("hermes"),
             combined_tool_name_budget: None,
@@ -2073,6 +2119,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "continue",
             discovery: discovery::capabilities("continue"),
             combined_tool_name_budget: None,
@@ -2083,6 +2130,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "witsy",
             discovery: discovery::capabilities("witsy"),
             combined_tool_name_budget: None,
@@ -3243,7 +3291,7 @@ fn install_override(id: &str) -> Option<PathBuf> {
 }
 
 fn read_client(def: &ClientDef) -> DetectedClient {
-    let plugin_servers = def.plugin_scan.map(|scan| scan()).unwrap_or_default();
+    let plugin_servers = if def.location.is_none() { def.plugin_scan.map(|scan| scan()).unwrap_or_default() } else { Vec::new() };
 
     let build = |config_path: String,
                  config_exists: bool,
@@ -3270,8 +3318,8 @@ fn read_client(def: &ClientDef) -> DetectedClient {
         let app_present =
             app_present_with_override(&config_path, config_exists, install_marker.as_deref());
         DetectedClient {
-            id: def.id.to_string(),
-            name: def.name.to_string(),
+            id: def.location.as_ref().map(|location| location.id.clone()).unwrap_or_else(|| def.id.to_string()),
+            name: def.location.as_ref().map(|location| location.name.clone()).unwrap_or_else(|| def.name.to_string()),
             uses_connectors: def.uses_connectors,
             discovery: def.discovery,
             config_path,
@@ -3348,7 +3396,14 @@ fn read_client(def: &ClientDef) -> DetectedClient {
 
 /// Probe every supported client and return what each currently has configured.
 pub fn detect_clients() -> Vec<DetectedClient> {
-    defs().iter().map(read_client).collect()
+    let mut definitions = defs();
+    for location in locations::all() {
+        if let Some(mut def) = defs().into_iter().find(|def| def.id == location.client_type) {
+            def.location = Some(location);
+            definitions.push(def);
+        }
+    }
+    definitions.iter().map(read_client).collect()
 }
 
 /// Validate behavior the redacted inventory cannot carry before a ZCode import.
@@ -3573,7 +3628,11 @@ pub struct RepointOutcome {
 }
 
 fn find_def(client_id: &str) -> Option<ClientDef> {
-    defs().into_iter().find(|d| d.id == client_id)
+    if let Some(def) = defs().into_iter().find(|d| d.id == client_id) { return Some(def); }
+    let location = locations::lookup(client_id)?;
+    let mut def = defs().into_iter().find(|d| d.id == location.client_type)?;
+    def.location = Some(location);
+    Some(def)
 }
 
 /// Only client ids from the same definitions that create backup folders.
@@ -6275,11 +6334,12 @@ fn repair_gateway_entry(
         _ => "env",
     };
     let mut entry = gateway_entry(None, id)?;
-    entry.env.retain(|env| env.key != crate::brand::CLIENT_ID);
+    if !id.contains('@') { entry.env.retain(|env| env.key != crate::brand::CLIENT_ID); }
     for (key, legacy) in [
         (crate::brand::CLIENT_ID, crate::brand::CLIENT_ID_LEGACY),
         (crate::brand::PROFILE, crate::brand::PROFILE_LEGACY),
     ] {
+        if id.contains('@') && key == crate::brand::CLIENT_ID { continue; }
         for candidate in [key, legacy] {
             if prior[env_key]
                 .get(candidate)
@@ -6603,7 +6663,7 @@ fn backfill_gateway_identity(
     entry_name: &str,
     id: &str,
 ) -> Result<(), String> {
-    backup_file(def.id, path)?;
+    backup_file(id, path)?;
     moved::backfill_identity(def.format, path, entry_name, id)
 }
 
@@ -7265,7 +7325,10 @@ fn repoint_stale_gateways_in(
         let config_text = find_def(&client.id)
             .and_then(|def| resolved_definition_path(&def).ok())
             .and_then(|path| read_config_file(&path).ok());
-        if !gateway_entry_needs_rewrite(entry_name, stored, current, config_text.as_deref())
+        let location_identity_changed = client.id.contains('@') && config_text.as_deref()
+            .and_then(|text| profile_key_from_config_text(text, crate::brand::CLIENT_ID))
+            .as_deref() != Some(client.id.as_str());
+        if !location_identity_changed && !gateway_entry_needs_rewrite(entry_name, stored, current, config_text.as_deref())
             && entry
                 .env_keys
                 .iter()
@@ -7286,7 +7349,7 @@ fn repoint_stale_gateways_in(
                             "Client gateway changed during repoint; leaving it untouched".into(),
                         );
                     }
-                    if !gateway_entry_needs_rewrite(
+                    if !location_identity_changed && !gateway_entry_needs_rewrite(
                         entry_name,
                         stored,
                         current,
@@ -7374,9 +7437,10 @@ fn repoint_stale_gateways_in(
 /// Customized - i.e. we would stop maintaining the config we actually manage.
 fn repoint_other_claude_configs(current: &str, outcome: &mut RepointOutcome) {
     let primary = client_config_path("claude-code");
+    let location_paths: Vec<PathBuf> = locations::all().into_iter().map(|location| location.config_path).collect();
     let others: Vec<PathBuf> = claude_code_config_paths()
         .into_iter()
-        .filter(|path| primary.as_deref() != Some(path.as_path()))
+        .filter(|path| primary.as_deref() != Some(path.as_path()) && !location_paths.contains(path))
         .collect();
     for repair in claude_configs_needing_repair(&others, current) {
         let ClaudeRepair {
@@ -10427,7 +10491,7 @@ command = "npx"
                 let path = data.dir.join("adapter-config");
                 std::fs::remove_file(&path).ok();
                 let mut entry = sample_gateway(profile, def.id);
-                entry.env.retain(|env| env.key != crate::brand::CLIENT_ID);
+                if !id.contains('@') { entry.env.retain(|env| env.key != crate::brand::CLIENT_ID); }
                 if let Some(id) = scope_id {
                     entry.env.push(EnvVar {
                         key: scope_key.into(),

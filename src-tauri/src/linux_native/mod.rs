@@ -2120,6 +2120,8 @@ impl ClientPage {
             .tooltip_text("Scan clients again")
             .build();
         header.pack_end(&refresh_button);
+        let add_location = gtk::Button::with_label("Add client location");
+        header.pack_start(&add_location);
         let import_button = gtk::Button::with_label("Import");
         import_button.set_tooltip_text(Some("Review servers found in client configurations"));
         import_button.add_css_class("toolport-secondary-action");
@@ -2201,6 +2203,8 @@ impl ClientPage {
             pending_confirmation: std::rc::Rc::new(std::cell::RefCell::new(None)),
             feedback_timer: std::rc::Rc::new(std::cell::RefCell::new(None)),
         };
+        let page_for_add = client_page.clone();
+        add_location.connect_clicked(move |_| page_for_add.add_location());
         let page_for_refresh = client_page.clone();
         client_page
             .refresh_button
@@ -2210,6 +2214,55 @@ impl ClientPage {
             .import_button
             .connect_clicked(move |_| page_for_import.preview_imports());
         client_page
+    }
+
+    fn add_location(&self) {
+        let Some(parent) = self.root.root().and_downcast::<gtk::Window>() else { return; };
+        let page = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            let types = match gtk::gio::spawn_blocking(crate::clients::client_location_types).await {
+                Ok(types) => types,
+                Err(_) => { page.show_error("Could not load client types."); return; }
+            };
+            #[allow(deprecated)]
+            let dialog = adw::MessageDialog::new(Some(&parent), Some("Add client location"),
+                Some("Choose this client's config folder. Locations stay on this machine. Connecting is a separate step."));
+            let fields = gtk::Box::new(gtk::Orientation::Vertical, 8);
+            let kind_label = gtk::Label::builder().label("Client type").xalign(0.0).build();
+            fields.append(&kind_label);
+            let names: Vec<&str> = types.iter().map(|kind| kind.name.as_str()).collect();
+            let kind = gtk::DropDown::from_strings(&names);
+            kind.set_selected(types.iter().position(|kind| kind.id == "claude-code").unwrap_or(0) as u32);
+            fields.append(&kind);
+            fields.append(&gtk::Label::builder().label("Config folder").xalign(0.0).build());
+            let folder = gtk::Entry::builder().placeholder_text("~/.claude2").build();
+            fields.append(&folder);
+            let hint = gtk::Label::builder().label("For Codex, choose its CODEX_HOME folder.").wrap(true).xalign(0.0).build();
+            fields.append(&hint);
+            dialog.set_extra_child(Some(&fields));
+            dialog.add_response("cancel", "Cancel");
+            dialog.add_response("add", "Add location");
+            dialog.set_response_enabled("add", false);
+            dialog.set_close_response("cancel");
+            let dialog_for_input = dialog.clone();
+            folder.connect_changed(move |entry| dialog_for_input.set_response_enabled("add", !entry.text().trim().is_empty()));
+            dialog.connect_response(None, move |_, response| {
+                if response != "add" { return; }
+                let Some(selected) = types.get(kind.selected() as usize) else { return; };
+                let client_type = selected.id.clone();
+                let folder = folder.text().to_string();
+                let page = page.clone();
+                gtk::glib::spawn_future_local(async move {
+                    let result = gtk::gio::spawn_blocking(move || crate::clients::add_client_location(&client_type, &folder)).await;
+                    match result {
+                        Ok(Ok(_)) => page.refresh_with_confirmation("Client location added. Select Connect to configure it.".into()),
+                        Ok(Err(error)) => page.show_error(&error),
+                        Err(_) => page.show_error("Could not add client location."),
+                    }
+                });
+            });
+            dialog.present();
+        });
     }
 
     fn preview_imports(&self) {

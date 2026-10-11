@@ -145,6 +145,17 @@ async fn detect_clients(
 }
 
 #[tauri::command]
+async fn client_location_types() -> Result<Vec<clients::ClientLocationType>, String> {
+    tauri::async_runtime::spawn_blocking(clients::client_location_types).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn add_client_location(client_type: String, folder: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || clients::add_client_location(&client_type, &folder))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 fn get_registry(state: State<RegistryState>) -> Registry {
     let mut reg = state
         .lock()
@@ -4204,6 +4215,8 @@ pub fn run() {
         .manage(RestartAdvice::default())
         .invoke_handler(tauri::generate_handler![
             detect_clients,
+            client_location_types,
+            add_client_location,
             get_registry,
             take_registry_recovery_notice,
             import_servers,

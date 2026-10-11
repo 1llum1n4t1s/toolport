@@ -620,6 +620,20 @@ export function detectClients(): Promise<DetectedClient[]> {
   return invoke<DetectedClient[]>("detect_clients");
 }
 
+export interface ClientLocationType {
+  id: string;
+  name: string;
+  configFile: string;
+}
+
+export function getClientLocationTypes(): Promise<ClientLocationType[]> {
+  return invoke<ClientLocationType[]>("client_location_types");
+}
+
+export function addClientLocation(clientType: string, folder: string): Promise<string> {
+  return invoke<string>("add_client_location", { clientType, folder });
+}
+
 /** Install the Toolport gateway into a client's config, optionally scoped to a
  * profile (by name). Omit profile to expose all enabled servers.
  * Pass `force: true` after the user confirms overwriting a custom entry (SOU-406).

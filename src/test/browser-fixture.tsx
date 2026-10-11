@@ -1,4 +1,5 @@
 import { securityFixture } from "./security-fixture";
+const fixtureLocations: import("@/lib/types").DetectedClient[] = [];
 // Separate development entry. Never imported by the shipping application.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { useState } from "react";
@@ -671,8 +672,24 @@ mockIPC(
         return { ...registry, clientDiscovery: { ...registry.clientDiscovery } };
       case "get_registry":
         return registry;
+      case "client_location_types":
+        return [
+          { id: "claude-code", name: "Claude Code", configFile: ".claude.json" },
+          { id: "codex", name: "Codex", configFile: "config.toml" },
+        ];
+      case "add_client_location":
+        fixtureLocations.push({
+          id: `${String(args.clientType)}@fixture-${fixtureLocations.length}`,
+          name: `${args.clientType === "codex" ? "Codex" : "Claude Code"} (${String(args.folder).split("/").pop()})`,
+          usesConnectors: false,
+          configPath: `${String(args.folder)}/${args.clientType === "codex" ? "config.toml" : ".claude.json"}`,
+          configExists: true, appPresent: true, servers: [], pluginServers: [],
+          gatewayInstalled: false, entryState: "absent", error: null,
+        });
+        return fixtureLocations.at(-1)!.id;
       case "detect_clients":
         return [
+          ...fixtureLocations,
           {
             id: "codex",
             name: "Codex",
