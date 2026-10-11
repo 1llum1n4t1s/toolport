@@ -160,9 +160,23 @@ pub fn add_client_location(client_type: &str, folder: &str) -> Result<String, St
 mod tests {
     use super::*;
 
+    struct TempFolder(PathBuf);
+    impl TempFolder {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!("toolport-location-{}-{}-{}", std::process::id(), epoch_millis(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+        fn path(&self) -> &Path { &self.0 }
+    }
+    impl Drop for TempFolder {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
     #[test]
     fn detection_is_shallow_name_filtered_and_does_not_parse_configs() {
-        let root = tempfile::tempdir().unwrap();
+        let root = TempFolder::new();
         for folder in [".claude", ".claude2", ".claude3", ".claude-work", ".claude-empty", "unrelated/.claude4"] {
             std::fs::create_dir_all(root.path().join(folder)).unwrap();
             if folder != ".claude-empty" { std::fs::write(root.path().join(folder).join(".claude.json"), "not JSON").unwrap(); }
@@ -177,8 +191,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn discovery_does_not_follow_symlinks_outside_home() {
-        let home = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
+        let home = TempFolder::new();
+        let outside = TempFolder::new();
         std::fs::write(outside.path().join(".claude.json"), "{}").unwrap();
         std::os::unix::fs::symlink(outside.path(), home.path().join(".claude-outside")).unwrap();
         assert!(automatic_with_primary(home.path(), None).is_empty());
@@ -187,7 +201,7 @@ mod tests {
     #[test]
     fn manual_locations_are_stable_deduplicated_and_separate_from_registry() {
         let _data = crate::registry::DataDirTestEnv::new("client-locations");
-        let folder = tempfile::tempdir().unwrap();
+        let folder = TempFolder::new();
         let id = add_client_location("codex", folder.path().to_str().unwrap()).unwrap();
         assert_eq!(add_client_location("codex", folder.path().to_str().unwrap()).unwrap(), id);
         assert_eq!(saved().unwrap().len(), 1);
@@ -202,7 +216,7 @@ mod tests {
     #[test]
     fn existing_manual_gateway_is_adopted_without_duplicate_entries() {
         let _data = crate::registry::DataDirTestEnv::new("client-location-adoption");
-        let folder = tempfile::tempdir().unwrap();
+        let folder = TempFolder::new();
         let path = folder.path().join(".claude.json");
         std::fs::write(&path, r#"{"mcpServers":{"toolport":{"command":"/usr/bin/toolport-gateway","env":{"TOOLPORT_CLIENT_ID":"claude-code"}},"other":{"command":"other"}}}"#).unwrap();
         let id = add_client_location("claude-code", folder.path().to_str().unwrap()).unwrap();
@@ -222,7 +236,7 @@ mod tests {
     #[test]
     #[ignore = "scan benchmark; run explicitly with --ignored --nocapture"]
     fn scan_timings() {
-        let root = tempfile::tempdir().unwrap();
+        let root = TempFolder::new();
         for i in 0..10_000 { std::fs::write(root.path().join(format!("unrelated-{i}")), "").unwrap(); }
         for i in 0..20 {
             let dir = root.path().join(format!(".claude{i}"));

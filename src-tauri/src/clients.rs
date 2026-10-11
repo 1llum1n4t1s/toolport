@@ -3691,7 +3691,6 @@ pub struct RepointOutcome {
     pub failed: Vec<(String, String)>,
     /// Legacy secondary-repair reporting fields, retained for callers. Locations
     /// now report their own IDs in `repointed` and `failed`.
-    /// overwrite the resolved config's snapshot.
     pub extra_claude_repointed: Vec<PathBuf>,
     /// Sibling Claude configs that needed a repair and could not be written.
     pub extra_claude_failed: Vec<(PathBuf, String)>,
