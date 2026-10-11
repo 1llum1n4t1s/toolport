@@ -35,7 +35,12 @@ describe("server tool changes", () => {
   });
   it("retains simultaneous profile findings with different severities", async () => {
     release.mockClear();
-    const event = { ...securityFixture()[0], blocked: true, new_fp: "v3:same", profile: undefined };
+    const event = {
+      ...securityFixture()[0],
+      blocked: true,
+      new_fp: "v3:same",
+      profile: undefined,
+    };
     const events = [
       { ...event, severity: "high" as const, blocked_profiles: ["a"], profiles: ["a"] },
       { ...event, severity: "warn" as const, blocked_profiles: ["b"], profiles: ["b"] },
