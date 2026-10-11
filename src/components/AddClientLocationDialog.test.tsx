@@ -3,7 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { addClientLocation, getClientLocationTypes } from "@/lib/api";
 import { AddClientLocationDialog } from "./AddClientLocationDialog";
-vi.mock("@/lib/api", () => ({ addClientLocation: vi.fn(), getClientLocationTypes: vi.fn() }));
+vi.mock("@/lib/api", () => ({
+  addClientLocation: vi.fn(),
+  getClientLocationTypes: vi.fn(),
+}));
 beforeEach(() => {
   vi.mocked(getClientLocationTypes).mockResolvedValue([
     { id: "claude-code", name: "Claude Code", configFile: ".claude.json" },
@@ -24,11 +27,15 @@ it("adds a movable Codex home and selects its distinct identity", async () => {
   expect(onOpenChange).toHaveBeenCalledWith(false);
 });
 it("keeps the folder for correction after a validation failure", async () => {
-  vi.mocked(addClientLocation).mockRejectedValue(new Error("Choose an existing client config folder"));
+  vi.mocked(addClientLocation).mockRejectedValue(
+    new Error("Choose an existing client config folder"),
+  );
   render(<AddClientLocationDialog open onOpenChange={vi.fn()} onAdded={vi.fn()} />);
   await screen.findByRole("option", { name: "Claude Code" });
   await userEvent.type(screen.getByLabelText("Config folder"), "/missing");
   await userEvent.click(screen.getByRole("button", { name: "Add location" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("Choose an existing client config folder");
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Choose an existing client config folder",
+  );
   expect(screen.getByLabelText("Config folder")).toHaveValue("/missing");
 });

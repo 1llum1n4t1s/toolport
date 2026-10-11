@@ -511,12 +511,6 @@ fn unreadable_session_history_is_optional_to_client_detection() {
 }
 
 pub(super) fn detect_client_views() -> Result<ClientSnapshot, String> {
-    let path = registry::resolved_path().ok_or_else(|| "registry path unavailable".to_string())?;
-    let registry = match std::fs::read_to_string(&path) {
-        Ok(contents) => registry::parse_registry_contents(&contents)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Registry::default(),
-        Err(error) => return Err(format!("could not read registry: {error}")),
-    };
     let mut clients = crate::clients::detect_clients_for_display()?;
     let registry = crate::registry::load()?;
     crate::clients::apply_entry_states(&mut clients, &registry.client_managed_entries);

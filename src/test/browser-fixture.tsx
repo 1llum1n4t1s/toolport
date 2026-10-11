@@ -683,8 +683,13 @@ mockIPC(
           name: `${args.clientType === "codex" ? "Codex" : "Claude Code"} (${String(args.folder).split("/").pop()})`,
           usesConnectors: false,
           configPath: `${String(args.folder)}/${args.clientType === "codex" ? "config.toml" : ".claude.json"}`,
-          configExists: true, appPresent: true, servers: [], pluginServers: [],
-          gatewayInstalled: false, entryState: "absent", error: null,
+          configExists: true,
+          appPresent: true,
+          servers: [],
+          pluginServers: [],
+          gatewayInstalled: false,
+          entryState: "absent",
+          error: null,
         });
         return fixtureLocations.at(-1)!.id;
       case "detect_clients":

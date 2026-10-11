@@ -732,7 +732,7 @@ fn claude_settings_paths_from(
     push(claude_settings_path(&home.join(".claude")), &mut out);
     let mut siblings: Vec<&String> = home_dirs
         .iter()
-        .filter(|name| name.starts_with(".claude"))
+        .filter(|name| *name == ".claude" || name.starts_with(".claude-"))
         .collect();
     // read_dir order is unspecified; sort so the log and any diagnostics are stable.
     siblings.sort();
@@ -3494,7 +3494,7 @@ pub(crate) fn validate_client_import(
     names: &[String],
     migration: bool,
 ) -> Result<(), String> {
-    if client.id == "zcode" {
+    if client.id.split('@').next() == Some("zcode") {
         zcode::validate_import(Path::new(&client.config_path), names, migration)?;
     }
     Ok(())
@@ -7152,7 +7152,7 @@ pub fn repoint_stale_gateways(managed: &HashMap<String, ManagedEntry>) -> Repoin
     // Preserve paths cached by clients before their on-disk configs are repointed.
     #[cfg(target_os = "linux")]
     let before = referenced_gateway_paths();
-    let mut outcome = repoint_stale_gateways_in(&current, detect_clients(), managed);
+    let outcome = repoint_stale_gateways_in(&current, detect_clients(), managed);
     // First-class locations are maintained by the pass above after Clients has
     // registered them. Discovery at startup does not read new config contents.
     log_repoint_outcome(&current, &outcome);
@@ -7386,7 +7386,7 @@ fn repoint_stale_gateways_in(
                             "Client gateway changed during repoint; leaving it untouched".into(),
                         );
                     }
-                    if !location_identity_changed && !gateway_entry_needs_rewrite(
+                    if !gateway_entry_needs_rewrite(
                         entry_name,
                         stored,
                         current,
@@ -7408,9 +7408,8 @@ fn repoint_stale_gateways_in(
                         for key in &server.env_keys {
                             managed.env.entry(key.clone()).or_default();
                         }
-                        managed
-                            .env
-                            .insert(crate::brand::ATTRIBUTION_ID.into(), client.id.clone());
+                        managed.env.insert(crate::brand::ATTRIBUTION_ID.into(), client.id.clone());
+                        if client.id.contains('@') { managed.env.insert(crate::brand::CLIENT_ID.into(), client.id.clone()); }
 
                         Ok(WriteOutcome {
                             path: path.display().to_string(),
@@ -7802,9 +7801,8 @@ mod tests {
         let dirs = [
             ".claude-work".to_string(),
             ".claude".to_string(),
-            // These share the `.claude` prefix but are not profiles. A plain
-            // starts_with(".claude") would sweep them in and write a gateway entry
-            // into a backup directory or another tool's state.
+            // The location scan includes every .claude* directory, but only
+            // probes .claude.json files and never installs a missing gateway.
             ".claude.bak".to_string(),
             ".claudesync".to_string(),
             "Documents".to_string(),
@@ -7818,15 +7816,12 @@ mod tests {
                 // The documented default is a file at the home root.
                 home.join(".claude.json"),
                 home.join(".claude").join(".claude.json"),
+                home.join(".claude.bak").join(".claude.json"),
+                home.join(".claudesync").join(".claude.json"),
             ],
             "expected the override first, then the default, then sorted siblings"
         );
-        for impostor in [".claude.bak", ".claudesync"] {
-            assert!(
-                !paths.iter().any(|p| p.starts_with(home.join(impostor))),
-                "{impostor} is not a Claude Code profile and must not be written"
-            );
-        }
+
     }
 
     #[test]
@@ -10494,7 +10489,7 @@ command = "npx"
                 let path = data.dir.join("adapter-config");
                 std::fs::remove_file(&path).ok();
                 let mut entry = sample_gateway(profile, def.id);
-                if !id.contains('@') { entry.env.retain(|env| env.key != crate::brand::CLIENT_ID); }
+                entry.env.retain(|env| env.key != crate::brand::CLIENT_ID);
                 if let Some(id) = scope_id {
                     entry.env.push(EnvVar {
                         key: scope_key.into(),

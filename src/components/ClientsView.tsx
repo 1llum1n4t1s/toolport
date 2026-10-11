@@ -171,10 +171,25 @@ export function ClientsView({
 
   return (
     <div className="flex flex-col gap-5">
-      {onChanged && <>
-        <Button variant="outline" className="self-start" onClick={() => setAddingLocation(true)}>Add client location</Button>
-        <AddClientLocationDialog open={addingLocation} onOpenChange={setAddingLocation} onAdded={async (id) => { await onChanged(); onSelectClient(id); }} />
-      </>}
+      {onChanged && (
+        <>
+          <Button
+            variant="outline"
+            className="self-start"
+            onClick={() => setAddingLocation(true)}
+          >
+            Add client location
+          </Button>
+          <AddClientLocationDialog
+            open={addingLocation}
+            onOpenChange={setAddingLocation}
+            onAdded={async (id) => {
+              await onChanged();
+              onSelectClient(id);
+            }}
+          />
+        </>
+      )}
       {sessionError && (
         <p role="status" className="text-xs text-muted-foreground">
           Client session history could not be read.

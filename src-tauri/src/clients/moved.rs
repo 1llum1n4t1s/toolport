@@ -295,7 +295,7 @@ pub(super) fn backfill_identity(
     name: &str,
     id: &str,
 ) -> Result<(), String> {
-    let key = crate::brand::ATTRIBUTION_ID;
+    let keys = if id.contains('@') { vec![crate::brand::ATTRIBUTION_ID, crate::brand::CLIENT_ID] } else { vec![crate::brand::ATTRIBUTION_ID] };
     match container(format) {
         Container::Json {
             key: container_key,
@@ -318,11 +318,10 @@ pub(super) fn backfill_identity(
             if entry.get(env_key).is_none() {
                 entry[env_key] = serde_json::json!({});
             }
-            entry
-                .get_mut(env_key)
-                .and_then(serde_json::Value::as_object_mut)
-                .ok_or("Invalid gateway environment")?
-                .insert(key.into(), serde_json::json!(id));
+            for key in &keys {
+                entry.get_mut(env_key).and_then(serde_json::Value::as_object_mut)
+                    .ok_or("Invalid gateway environment")?.insert((*key).into(), serde_json::json!(id));
+            }
             atomic_write_json_config(path, Some(&original), &root, container_key)
         }
         Container::Toml => {
@@ -331,7 +330,9 @@ pub(super) fn backfill_identity(
             if entry.get("env").is_none() {
                 entry["env"] = toml_edit::Item::Table(toml_edit::Table::new());
             }
-            entry["env"].as_table_like_mut().ok_or("Invalid gateway environment")?.insert(key, toml_edit::value(id));
+            for key in &keys {
+                entry["env"].as_table_like_mut().ok_or("Invalid gateway environment")?.insert(key, toml_edit::value(id));
+            }
             atomic_write(path, &doc.to_string())
         }
         Container::YamlMap(container_key) | Container::YamlList(container_key) => {
@@ -357,14 +358,11 @@ pub(super) fn backfill_identity(
             if entry.get(env_key).is_none() {
                 entry[env_key] = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
             }
-            entry
-                .get_mut(env_key)
-                .and_then(serde_yaml::Value::as_mapping_mut)
-                .ok_or("Invalid gateway environment")?
-                .insert(
-                    serde_yaml::Value::String(key.into()),
-                    serde_yaml::Value::String(id.into()),
-                );
+            for key in &keys {
+                entry.get_mut(env_key).and_then(serde_yaml::Value::as_mapping_mut)
+                    .ok_or("Invalid gateway environment")?.insert(
+                        serde_yaml::Value::String((*key).into()), serde_yaml::Value::String(id.into()));
+            }
             atomic_write_yaml_config(path, original.as_deref(), &root, container_key)
         }
     }
