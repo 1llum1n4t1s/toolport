@@ -54,14 +54,14 @@ pub fn remove_client_location(id: &str) -> Result<(), String> {
     let store = store_path()?;
     let _lock = crate::registry::lock_at(&store)?;
     let mut rows = saved()?;
-    let row = rows.iter().find(|row| row.id == id && row.manual)
-        .ok_or("This is not a manually added client location")?;
+    if !rows.iter().any(|row| row.id == id && row.manual) {
+        return Err("This is not a manually added client location".into());
+    }
     // Forgetting is separate from disconnect and never edits the client's config.
     let client = read_client(&find_def(id).ok_or("Unknown client location")?);
     if client.error.is_some() || client.gateway_installed {
         return Err("Disconnect this client location before removing it".into());
     }
-    let _ = row;
     rows.retain(|row| row.id != id);
     crate::registry::atomic_write(&store, &serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())?)?;
     Ok(())
@@ -236,12 +236,10 @@ pub(super) fn remember(row: &ClientLocation) -> Result<(), String> {
     } else {
         rows.push(row.clone());
     }
-    {
-        crate::registry::atomic_write(
-            &store,
-            &serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())?,
-        )?;
-    }
+    crate::registry::atomic_write(
+        &store,
+        &serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())?,
+    )?;
     Ok(())
 }
 
@@ -548,8 +546,7 @@ mod tests {
         assert_eq!(id, "claude-code@claude4");
         assert!(automatic(root.path()).is_empty());
         let saved = ClientLocation {
-            id: id.clone(),
-        manual: true, client_type: "claude-code".into(),
+            id: id.clone(), manual: true, client_type: "claude-code".into(),
             name: "Claude Code (claude4)".into(), config_path: folder.join(".claude.json"),
         };
         std::fs::write(&saved.config_path, "{}").unwrap();

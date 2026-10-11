@@ -133,8 +133,7 @@ async fn detect_clients(
 ) -> Result<Vec<clients::DetectedClient>, String> {
     // Reads several config files and scans plugin dirs - off the UI thread.
     let mut list = tauri::async_runtime::spawn_blocking(move || {
-        if inspect_configs.unwrap_or(true) { clients::detect_clients_for_display() }
-        else { Ok(clients::detect_clients()) }
+        clients::detect_clients_with_inspection(inspect_configs.unwrap_or(true))
     })
         .await
         .map_err(|e| e.to_string())??;

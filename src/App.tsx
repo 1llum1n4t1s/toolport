@@ -132,6 +132,10 @@ function App() {
   const [settingsPage, setSettingsPage] = useState<SettingsSubpage>("general");
   const [pendingCount, setPendingCount] = useState(0);
   const [view, setView] = useState<View>("servers");
+  const viewRef = useRef(view);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
   const [activityKey, setActivityKey] = useState(0);
   const [health, setHealth] = useState<Record<string, ProbeResult>>({});
   const [probing, setProbing] = useState(false);
@@ -282,7 +286,7 @@ function App() {
       setError(null);
       try {
         const [dc, recovery] = await Promise.all([
-          detectClients(false),
+          detectClients(viewRef.current === "clients"),
           takeRegistryRecoveryNotice(),
         ]);
         // Inspecting locations can adopt an existing gateway and its access.

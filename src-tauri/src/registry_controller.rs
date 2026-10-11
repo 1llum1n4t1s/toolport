@@ -3284,7 +3284,7 @@ mod tests {
                     id: "zcode".into(),
                     name: "ZCode".into(),
                     uses_connectors: false,
-            location_removable: false,
+                    location_removable: false,
                     config_path: path.display().to_string(),
                     config_exists: true,
                     app_present: true,

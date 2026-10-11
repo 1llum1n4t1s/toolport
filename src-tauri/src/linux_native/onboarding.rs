@@ -972,7 +972,7 @@ mod tests {
                 discovery_mode: None,
                 inherited_discovery: None,
                 config_error: false,
-            location_removable: false,
+                location_removable: false,
             }],
             profiles: Vec::new(),
             sessions: Vec::new(),

@@ -206,16 +206,16 @@ fn machine_defs(include_detected: bool) -> Vec<ClientDef> {
 fn unique_config_definitions(mut definitions: Vec<ClientDef>) -> Vec<ClientDef> {
     let main_paths: Vec<_> = definitions.iter()
         .filter(|def| def.location.is_none())
-        .filter_map(|def| resolved_definition_path(def).ok())
-        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+        .filter_map(|def| resolved_definition_path(def).ok().map(|path| (def.id, std::fs::canonicalize(&path).unwrap_or(path))))
         .collect();
     let mut seen = Vec::new();
     definitions.retain(|def| {
         let Ok(path) = resolved_definition_path(def) else { return true; };
         let path = std::fs::canonicalize(&path).unwrap_or(path);
-        if def.location.is_some() && main_paths.contains(&path) { return false; }
-        if seen.contains(&path) { return false; }
-        seen.push(path);
+        let identity = (def.id, path);
+        if def.location.is_some() && main_paths.contains(&identity) { return false; }
+        if def.location.is_some() && seen.contains(&identity) { return false; }
+        seen.push(identity);
         true
     });
     definitions
@@ -3477,7 +3477,11 @@ fn read_client(def: &ClientDef) -> DetectedClient {
 pub fn detect_clients() -> Vec<DetectedClient> {
     // Background upkeep handles saved locations. Newly discovered config files
     // are read only when the user opens Clients.
-    unique_config_definitions(machine_defs(false)).iter().map(read_client).collect()
+    machine_defs(false).iter().map(read_client).collect()
+}
+
+pub fn detect_clients_with_inspection(inspect_configs: bool) -> Result<Vec<DetectedClient>, String> {
+    if inspect_configs { detect_clients_for_display() } else { Ok(detect_clients()) }
 }
 
 pub fn detect_clients_for_display() -> Result<Vec<DetectedClient>, String> {
@@ -7141,7 +7145,7 @@ fn profile_key_from_config_text(content: &str, key: &str) -> Option<String> {
 fn read_gateway_profile(client_id: &str) -> Option<String> {
     let def = find_def(client_id)?;
     let path = resolved_definition_path(&def).ok()?;
-    let content = read_config_file(path).ok()?;
+    let content = read_config_file(&path).ok()?;
     profile_from_config_text(&content)
 }
 
@@ -7960,7 +7964,7 @@ mod tests {
             client_type: "claude-code".into(), name: "Claude Code (claude-work)".into(), config_path: folder.join(".claude.json") }).unwrap();
         assert_eq!(machine_defs(true).iter().filter(|def| resolved_definition_path(def).ok().as_deref() == Some(folder.join(".claude.json").as_path())).count(), 1);
         assert_eq!(add_client_location("claude-code", folder.to_str().unwrap()).unwrap(), "claude-code");
-        let rows = detect_clients();
+        let rows = detect_clients_with_inspection(false).unwrap();
         let main = rows.iter().find(|client| client.id == "claude-code").unwrap();
         assert!(main.gateway_installed);
         assert!(main.servers.iter().any(|server| server.name == "notes"));
@@ -8067,11 +8071,12 @@ mod tests {
                 // The documented default is a file at the home root.
                 home.join(".claude.json"),
                 home.join(".claude").join(".claude.json"),
-
             ],
             "expected the override first, then the default, then sorted siblings"
         );
-
+        for impostor in [".claude.bak", ".claudesync"] {
+            assert!(!paths.iter().any(|path| path.starts_with(home.join(impostor))));
+        }
     }
 
     #[test]
