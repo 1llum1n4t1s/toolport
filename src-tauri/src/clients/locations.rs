@@ -750,6 +750,47 @@ mod tests {
     }
 
     #[test]
+    fn long_profile_names_connect_with_stable_ids_and_recoverable_backups() {
+        let _data = crate::registry::DataDirTestEnv::new("location-long-backup-r2");
+        let root = TempFolder::new();
+        let _home = TestHome::set(root.path());
+        let mut dirs = Vec::new();
+        for folder in [format!(".claude-{}", "x".repeat(237)), format!(".claude-{}", "é".repeat(100))] {
+            let profile = root.path().join(&folder);
+            std::fs::create_dir(&profile).unwrap();
+            let path = profile.join(".claude.json");
+            let original = r#"{"mcpServers":{"notes":{"command":"notes"}},"session":42}"#;
+            std::fs::write(&path, original).unwrap();
+            let location = automatic(root.path()).into_iter().find(|row| row.config_path == path).unwrap();
+            assert_eq!(location.id, format!("claude-code@{}", folder_key(&folder)));
+            assert!(location.id.len() > 255);
+            remember(&location).unwrap();
+            let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport", "transport":"stdio", "command":"toolport-gateway"})).unwrap();
+            let write = install_or_remove(&location.id, Some(&entry)).unwrap();
+            assert!(Path::new(write.backup.as_ref().unwrap()).is_file());
+            let dir = backup_dir(&location.id).unwrap();
+            assert!(dir.file_name().unwrap().as_encoded_bytes().len() <= 255);
+            assert!(restore::record_path(&location.id, &resolved_definition_path(&find_def(&location.id).unwrap()).unwrap()).unwrap().is_file());
+            assert!(!dirs.contains(&dir));
+            dirs.push(dir);
+            uninstall_gateway(&location.id).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+            assert_eq!(lookup(&location.id).unwrap().id, location.id);
+        }
+    }
+
+    #[test]
+    fn existing_long_location_backups_remain_findable() {
+        let data = crate::registry::DataDirTestEnv::new("location-legacy-backup-r2");
+        let id = format!("claude-code@claude-{}", "x".repeat(210));
+        let legacy = data.dir.join("backups").join(&id);
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("old-backup.json"), "original").unwrap();
+        assert_eq!(backup_dir(&id).unwrap(), legacy);
+        assert_eq!(std::fs::read_to_string(backup_dir(&id).unwrap().join("old-backup.json")).unwrap(), "original");
+    }
+
+    #[test]
     fn access_and_caller_names_remain_independent_per_location() {
         let _data = crate::registry::DataDirTestEnv::new("location-access");
         let a = TempFolder::new();
