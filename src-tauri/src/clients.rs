@@ -7877,7 +7877,8 @@ mod tests {
         let home = data.dir.join("home");
         std::fs::create_dir(&home).unwrap();
         let old = data.dir.join("toolport-gateway-1.19.0");
-        let current = data.dir.join("toolport-gateway");
+        let current = data.dir.join("Toolport/bin/toolport-gateway-2.0.0-preview.9");
+        std::fs::create_dir_all(current.parent().unwrap()).unwrap();
         std::fs::write(&old, "old fixture").unwrap();
         std::fs::write(&current, "current fixture").unwrap();
         let original = serde_json::json!({"mcpServers":{"toolport":{"command":old.to_str().unwrap(),"env":{"TOOLPORT_CLIENT_ID":"claude-code", "TOOLPORT_PROFILE":"work"}}}}).to_string();
