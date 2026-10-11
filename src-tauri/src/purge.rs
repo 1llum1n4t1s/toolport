@@ -842,7 +842,9 @@ mod tests {
         std::fs::write(dev.join("registry.json"), r#"{"servers":[{"id":"shared"},{"id":"dev-only"}],"team":{}}"#).unwrap();
         std::fs::write(main.join("registry.json"), r#"{"servers":[{"id":"shared"}]}"#).unwrap();
         std::fs::write(legacy.join("registry.json"), r#"{"servers":[]}"#).unwrap();
-        let others = other_installs(&dev, install_candidates(&dev));
+        let others = other_installs(&dev, vec![dev.clone(), main.clone(), legacy.clone()]);
+        let candidates = install_candidates(&dev);
+        assert!(candidates.contains(&main) && candidates.contains(&legacy));
         assert!(others.contains(&main) && others.contains(&legacy));
         let scope = credential_scope(&dev, &others, false).unwrap();
         assert_eq!(scope.server_ids, std::collections::HashSet::from(["dev-only".into()]));
