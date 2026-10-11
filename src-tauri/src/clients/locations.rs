@@ -151,6 +151,9 @@ pub(super) fn lookup(id: &str) -> Option<ClientLocation> {
         });
     }
     let label = String::from_utf8(bytes).ok()?;
+    if label.contains(['/', '\\']) || label.chars().any(char::is_control) {
+        return None;
+    }
     let folder = format!(".{label}");
     if !folder.starts_with(".claude") || folder_key(&folder) != key {
         return None;
@@ -209,12 +212,14 @@ pub fn add_client_location(client_type: &str, folder: &str) -> Result<String, St
         .into_iter()
         .find(|row| same_path(&row.config_path, &path))
     {
+        if row.client_type != client_type {
+            return Err("This config file is already registered for another client type".into());
+        }
         return Ok(row.id);
     }
-    if let Some(def) = defs()
-        .into_iter()
-        .find(|def| (def.path)().is_some_and(|existing| same_path(&existing, &path)))
-    {
+    if let Some(def) = defs().into_iter().find(|def| {
+        def.id == client_type && (def.path)().is_some_and(|existing| same_path(&existing, &path))
+    }) {
         return Ok(def.id.into());
     }
     let store = store_path()?;
@@ -224,6 +229,9 @@ pub fn add_client_location(client_type: &str, folder: &str) -> Result<String, St
         .into_iter()
         .find(|row| same_path(&row.config_path, &path))
     {
+        if row.client_type != client_type {
+            return Err("This config file is already registered for another client type".into());
+        }
         return Ok(row.id);
     }
     use sha2::{Digest, Sha256};
