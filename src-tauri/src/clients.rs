@@ -207,9 +207,13 @@ fn unique_config_definitions(mut definitions: Vec<ClientDef>) -> Vec<ClientDef> 
     let location_paths: Vec<_> = definitions.iter()
         .filter(|def| def.location.is_some())
         .filter_map(|def| resolved_definition_path(def).ok())
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
         .collect();
     definitions.retain(|def| def.location.is_some()
-        || resolved_definition_path(def).map_or(true, |path| !location_paths.iter().any(|known| locations::same_path(known, &path))));
+        || resolved_definition_path(def).map_or(true, |path| {
+            let path = std::fs::canonicalize(&path).unwrap_or(path);
+            !location_paths.contains(&path)
+        }));
     definitions
 }
 

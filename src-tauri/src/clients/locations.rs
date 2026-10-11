@@ -102,7 +102,7 @@ fn automatic(home: &Path) -> Vec<ClientLocation> {
     rows
 }
 
-pub(super) fn same_path(a: &Path, b: &Path) -> bool {
+fn same_path(a: &Path, b: &Path) -> bool {
     a == b
         || std::fs::canonicalize(a)
             .ok()
