@@ -368,7 +368,7 @@ test("PR package fixtures exercise the pacman archive checker", () => {
     rmSync(join(payload, "usr/share/toolport/surprise.txt"));
     rmSync(join(payload, "usr/bin/toolport-gateway"));
     pack();
-    assert.throws(check, /Missing intended shell or gateway/);
+    assert.throws(check, /Gateway missing/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

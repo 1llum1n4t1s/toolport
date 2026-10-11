@@ -760,7 +760,6 @@ mod tests {
                     warnings: vec!["kept your edited toolport entry".into()],
                 }])
             },
-            |_| Ok(()),
             |_| panic!("connection remains"),
             || panic!("connection remains"),
             |_| Ok(()),

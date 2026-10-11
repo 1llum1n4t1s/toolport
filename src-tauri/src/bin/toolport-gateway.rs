@@ -21723,6 +21723,23 @@ mod tests {
     }
 
     #[test]
+    fn purge_topology_status_is_read_only_and_checks_live_listeners_and_leases() {
+        let _env = conduit_lib::registry::DataDirTestEnv::new("purge_topology");
+        let state = http_state(false);
+        assert_eq!(serde_json::from_str::<Value>(&daemon_topology_json(&state)).unwrap()["purgeIdle"], true);
+        let session = Arc::new(SessionState::new_http(None));
+        session.listener_active.store(true, Ordering::Release);
+        state.mcp_sessions.lock().unwrap().insert("fixture".into(), session.clone());
+        assert_eq!(serde_json::from_str::<Value>(&daemon_topology_json(&state)).unwrap()["purgeIdle"], false);
+        session.listener_active.store(false, Ordering::Release);
+        *state.http_service_lease.lock().unwrap() = Some(HttpServiceLease {
+            token_sha256: "fixture".into(), bind_host: "127.0.0.1".into(), expires_at: Instant::now() + Duration::from_secs(60),
+        });
+        assert_eq!(serde_json::from_str::<Value>(&daemon_topology_json(&state)).unwrap()["purgeIdle"], false);
+        assert!(!state.shutdown_if_idle.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn disconnect_all_is_a_standalone_role_and_dry_run_cannot_start_gateway() {
         assert_eq!(parse_args(&["--disconnect-all".into()]), ArgAction::DisconnectAll { dry_run: false });
         assert_eq!(parse_args(&["--disconnect-all".into(), "--dry-run".into()]), ArgAction::DisconnectAll { dry_run: true });

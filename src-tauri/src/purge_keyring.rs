@@ -275,13 +275,14 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
             if accounts.is_none() {
                 report.leftovers.push(Leftover { path: "keychain:conduit-mcp/data-protection".into(), error: "Missing account attribute; no credentials removed".into() });
             }
+            let inventory_failed = !report.leftovers.is_empty();
             for account in accounts.unwrap_or_default() {
                 let path = format!("keychain:conduit-mcp/data-protection/{account}");
                 if !scope.owns(&account) {
                     report.preserved.push(path);
                     continue;
                 }
-                if !report.leftovers.is_empty() { continue; }
+                if inventory_failed { continue; }
                 let mut delete = base.clone();
                 delete.push((
                     k(kSecAttrAccount.cast()),
@@ -311,6 +312,8 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
             if status == 0 { report.removed.push(path); }
             else { report.leftovers.push(Leftover { path, error: format!("SecKeychainItemDelete: {status}") }); }
         }
+    } else {
+        report.preserved.extend(legacy.into_iter().map(|(_, path)| format!("{path} (retained after keychain cleanup failure)")));
     }
     Ok(report)
 }
