@@ -88,7 +88,7 @@ fn automatic(home: &Path) -> Vec<ClientLocation> {
     let mut rows = Vec::new();
     for folder in claude_profile_dirs(home).unwrap_or_default() {
         let config_path = home.join(&folder).join(".claude.json");
-        if !config_path.is_file() {
+        if !std::fs::symlink_metadata(&config_path).is_ok_and(|metadata| metadata.is_file()) {
             continue;
         }
         rows.push(ClientLocation {
@@ -332,6 +332,12 @@ mod tests {
         let outside = TempFolder::new();
         std::fs::write(outside.path().join(".claude.json"), "{}").unwrap();
         std::os::unix::fs::symlink(outside.path(), home.path().join(".claude-outside")).unwrap();
+        std::fs::create_dir(home.path().join(".claude-linked-file")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join(".claude.json"),
+            home.path().join(".claude-linked-file/.claude.json"),
+        )
+        .unwrap();
         assert!(automatic(home.path()).is_empty());
     }
 

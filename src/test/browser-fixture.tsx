@@ -689,6 +689,12 @@ mockIPC(
           pluginServers: [],
           gatewayInstalled: false,
           entryState: "absent",
+          discovery: {
+            autoMode: args.clientType === "codex" ? "full" : "lazy",
+            nativeToolSearch: true,
+            toolsListChanged: null,
+            evidence: "fixture",
+          },
           error: null,
         });
         return fixtureLocations.at(-1)!.id;
