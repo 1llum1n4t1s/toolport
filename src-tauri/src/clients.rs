@@ -670,7 +670,8 @@ fn claude_code_config_paths() -> Vec<PathBuf> {
     let configured = client_config_path("claude-code");
     claude_code_config_paths_from(&home, claude_config_dir_override().as_deref(), &dirs)
         .into_iter()
-        .filter(|path| configured.as_ref() == Some(path) || locations::automatic_path_is_safe(&home, path))
+        .filter(|path| configured.as_ref() == Some(path) || path == &home.join(".claude.json")
+            || locations::automatic_path_is_safe(&home, path))
         .filter(|p| p.is_file())
         .collect()
 }
@@ -8008,10 +8009,16 @@ mod tests {
     fn configured_claude_path_keeps_the_main_identity_and_registry_settings() {
         let data = crate::registry::DataDirTestEnv::new("location-main-identity");
         let _env_lock = env_test_lock();
+        let _home = TestHome::set(&data.dir);
+        let default = data.dir.join(".claude.json");
+        std::fs::write(&default, "{}").unwrap();
         let folder = data.dir.join(".claude-work");
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join(".claude.json"), r#"{"mcpServers":{"toolport":{"command":"/usr/bin/toolport-gateway", "env":{"TOOLPORT_CLIENT_ID":"claude-code"}},"notes":{"command":"notes"}}}"#).unwrap();
         let _override = EnvRestore::set("CLAUDE_CONFIG_DIR", &folder);
+        let paths = claude_code_config_paths();
+        assert!(paths.contains(&default));
+        assert!(paths.contains(&folder.join(".claude.json")));
         let mut registry = crate::registry::Registry::default();
         registry.client_discovery.insert("claude-code".into(), "full".into());
         crate::registry::save(&registry).unwrap();
