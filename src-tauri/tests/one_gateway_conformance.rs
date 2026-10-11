@@ -2400,6 +2400,30 @@ fn matrix_pooling_quarantine_reaches_every_cached_root_view() {
     }
 }
 
+fn approve_displayed_quarantine(record: &Value) -> Result<(), String> {
+    let scope = record["profile"].as_str().unwrap();
+    conduit_lib::integrity::release_record(
+        (!scope.is_empty()).then_some(scope),
+        record["tool"].as_str().unwrap(),
+        record["record_id"].as_str().unwrap(),
+    ).map(|_| ())
+}
+
+#[test]
+fn matrix_first_quarantine_approval_rejects_a_replaced_record() {
+    let _guard = CASE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _data_lock = registry::data_dir_test_lock();
+    let (_fixture, dir) = Fixture::new("first-approval-bound");
+    let _data_dir = registry::DataDirOverride::set(&dir);
+    write_registry(&dir, vec![], vec![]);
+    let path = dir.join("quarantine.json");
+    std::fs::write(&path, json!({"srv__wipe":{"tool":"srv__wipe", "change":"changed", "ts":1}}).to_string()).unwrap();
+    let displayed = conduit_lib::integrity::all_quarantined().unwrap().remove(0);
+    std::fs::write(&path, json!({"srv__wipe":{"tool":"srv__wipe", "change":"poison", "ts":2}}).to_string()).unwrap();
+    assert!(approve_displayed_quarantine(&displayed).is_err(), "first UI approval must reject a replaced finding");
+    assert!(conduit_lib::integrity::quarantined(None).unwrap().contains("srv__wipe"));
+}
+
 fn quarantine_release_restores_calls(reserved_alias: bool, product_release: bool) {
     let _guard = CASE_LOCK
         .lock()
@@ -2446,7 +2470,7 @@ fn quarantine_release_restores_calls(reserved_alias: bool, product_release: bool
     for store in &stores {
         std::fs::write(
             store,
-            json!({(policy_name): {"server": "files", "tool": "echo", "change": "changed"}})
+            json!({(policy_name): {"server": "files", "tool": policy_name, "change": "changed"}})
                 .to_string(),
         )
         .unwrap();
@@ -2473,8 +2497,10 @@ fn quarantine_release_restores_calls(reserved_alias: bool, product_release: bool
         // The first product approval has no saved definition or pin to trust.
         // It must capture the live definition for one additional bound review,
         // then publish on that approval without a registry edit or reconnect.
-        for scope in [None, Some(profile)] {
-            conduit_lib::registry_controller::release_quarantine(scope, policy_name).unwrap();
+        let displayed = conduit_lib::integrity::all_quarantined().unwrap();
+        assert_eq!(displayed.len(), 2);
+        for record in displayed {
+            approve_displayed_quarantine(&record).unwrap();
         }
         let deadline = Instant::now() + Duration::from_secs(10);
         let captured = loop {
