@@ -460,7 +460,16 @@ fn is_link(metadata: &std::fs::Metadata) -> bool {
 
 fn remove_path(path: &Path, report: &mut Report) {
     let result = std::fs::symlink_metadata(path).and_then(|metadata| {
-        if metadata.is_dir() && (!is_link(&metadata) || cfg!(windows)) {
+        // Windows reports directory junctions as links, so is_dir() is false.
+        // RemoveDirectory unlinks them without traversing their target.
+        #[cfg(windows)]
+        let directory = {
+            use std::os::windows::fs::MetadataExt;
+            metadata.file_attributes() & 0x10 != 0
+        };
+        #[cfg(not(windows))]
+        let directory = metadata.is_dir() && !is_link(&metadata);
+        if directory {
             std::fs::remove_dir(path)
         } else {
             std::fs::remove_file(path)
