@@ -180,6 +180,27 @@ struct ClientDef {
     plugin_scan: Option<fn() -> Vec<McpServer>>,
 }
 
+impl ClientDef {
+    fn client_id(&self) -> &str {
+        self.location.as_ref().map(|row| row.id.as_str()).unwrap_or(self.id)
+    }
+}
+
+fn machine_defs(include_detected: bool) -> Vec<ClientDef> {
+    let mut definitions = defs();
+    let locations = if include_detected { locations::all() } else { locations::saved().unwrap_or_default() };
+    for location in locations {
+        if let Some(mut def) = defs().into_iter().find(|def| def.id == location.client_type) {
+            // The base adapter may already resolve to this saved location after
+            // an environment override changes. Keep one identity for the path.
+            if definitions.iter().any(|base| base.location.is_none() && (base.path)().as_ref() == Some(&location.config_path)) { continue; }
+            def.location = Some(location);
+            definitions.push(def);
+        }
+    }
+    definitions
+}
+
 /// Resolve Auto without changing serialized per-client overrides. The global default
 /// remains for anonymous connections; identified clients use their capability table.
 pub fn client_discovery_mode(registry: &crate::registry::Registry, id: &str) -> &'static str {
@@ -1095,6 +1116,21 @@ pub fn client_rules_target(
     client_id: &str,
     scope: crate::instructions::Scope,
 ) -> Option<crate::instructions::Target> {
+    if let Some(location) = locations::lookup(client_id) {
+        let folder = location.config_path.parent()?;
+        return match location.client_type.as_str() {
+            "claude-code" => Some(crate::instructions::Target {
+                path: folder.join("rules").join(scope.owned_file_name()),
+                strategy: crate::instructions::Strategy::OwnedFile, scope,
+                char_cap: None, blocked_if_present: None,
+            }),
+            "codex" => Some(codex_rules_target(folder, scope)),
+            "gemini-cli" => Some(gemini_cli_rules_target(folder, scope)),
+            "goose" => Some(rules_sentinel_block(folder.join(".goosehints"), scope)),
+            "zed" | "devin-cli" | "pi" | "omp" | "command-code" => Some(rules_sentinel_block(folder.join("AGENTS.md"), scope)),
+            _ => None,
+        };
+    }
     // Honor relocate envs even when `$HOME` is unset: the live file is under
     // the override, not the default home table (SBS-885, SBS-899).
     if client_id == "goose" {
@@ -1546,8 +1582,12 @@ impl CallerNames {
             .into_iter()
             .map(|def| (format!("adapter:{}", def.id), def.name.to_string()))
             .collect();
-        for location in locations::all() {
-            names.insert(format!("adapter:{}", location.id), location.name);
+        for id in entries.iter().filter_map(|entry| entry["client"].as_str()) {
+            if let Some(adapter) = id.strip_prefix("adapter:").filter(|id| id.contains('@')) {
+                if !names.contains_key(id) {
+                    if let Some(name) = known_adapter_name(adapter) { names.insert(id.into(), name); }
+                }
+            }
         }
         names.insert(
             "adapter:claude-code-secondary".into(),
@@ -3396,14 +3436,46 @@ fn read_client(def: &ClientDef) -> DetectedClient {
 
 /// Probe every supported client and return what each currently has configured.
 pub fn detect_clients() -> Vec<DetectedClient> {
-    let mut definitions = defs();
-    for location in locations::all() {
-        if let Some(mut def) = defs().into_iter().find(|def| def.id == location.client_type) {
-            def.location = Some(location);
-            definitions.push(def);
+    // Background upkeep handles saved locations. Newly discovered config files
+    // are read only when the user opens Clients.
+    machine_defs(false).iter().map(read_client).collect()
+}
+
+pub fn detect_clients_for_display() -> Result<Vec<DetectedClient>, String> {
+    let definitions = machine_defs(true);
+    let current = crate::registry::load()?;
+    let detected: Vec<_> = definitions.iter().map(read_client).collect();
+    let targets: Vec<_> = detected.iter().filter(|client| client.id.contains('@')).cloned().collect();
+    if let Some(path) = resolve_gateway_path()?.filter(|path| path.is_file()) {
+        let repoint = repoint_stale_gateways_in(&path.to_string_lossy(), targets, &current.client_managed_entries);
+        if !repoint.repointed.is_empty() {
+            crate::registry::update(|registry| {
+                for (id, entry) in &repoint.repointed { registry.set_client_managed_entry(id, entry.clone()); }
+                Ok(())
+            })?;
         }
+        if let Some((_, error)) = repoint.failed.first() { return Err(error.clone()); }
     }
-    definitions.iter().map(read_client).collect()
+    for def in &definitions {
+        if let Some(location) = &def.location { locations::remember(location)?; }
+    }
+    Ok(definitions.iter().map(read_client).collect())
+}
+
+/// A lightweight initial inventory: metadata only, no config or plugin reads.
+pub fn client_metadata() -> Vec<DetectedClient> {
+    machine_defs(true).iter().map(|def| {
+        let path = resolved_definition_path(def).ok();
+        let config_path = path.as_ref().map(|path| path.display().to_string()).unwrap_or_default();
+        let config_exists = path.is_some_and(|path| path.is_file());
+        DetectedClient {
+            id: def.client_id().into(), name: def.location.as_ref().map(|row| row.name.clone()).unwrap_or_else(|| def.name.into()),
+            uses_connectors: def.uses_connectors, discovery: def.discovery,
+            app_present: app_present_for(&config_path, config_exists), config_path, config_exists,
+            servers: Vec::new(), plugin_servers: Vec::new(), gateway_installed: false,
+            entry_state: GatewayEntryState::Absent, error: None,
+        }
+    }).collect()
 }
 
 /// Validate behavior the redacted inventory cannot carry before a ZCode import.
@@ -3617,10 +3689,8 @@ pub struct RepointOutcome {
     /// UI. Six clients on this developer's machine sat on a superseded gateway
     /// for days with nothing anywhere recording why.
     pub failed: Vec<(String, String)>,
-    /// Claude Code configs other than the one Toolport resolves, repaired by
-    /// [`repoint_other_claude_configs`]. Paths rather than client ids, because they
-    /// all belong to the same `claude-code` client and carry no ownership record of
-    /// their own - the registry keys ownership by client id, and a sibling must not
+    /// Legacy secondary-repair reporting fields, retained for callers. Locations
+    /// now report their own IDs in `repointed` and `failed`.
     /// overwrite the resolved config's snapshot.
     pub extra_claude_repointed: Vec<PathBuf>,
     /// Sibling Claude configs that needed a repair and could not be written.
@@ -5922,6 +5992,7 @@ fn edit_hermes_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<
 pub fn write_servers(client_id: &str, servers: &[ServerEntry]) -> Result<WriteOutcome, String> {
     let def = find_def(client_id).ok_or_else(|| format!("Unknown client '{client_id}'"))?;
     let path = resolved_definition_path(&def)?;
+    if let Some(location) = &def.location { locations::remember(location)?; }
     mutation::run(client_id, &path, def.format, || {
         revision_outcome(client_id, write_servers_inner(client_id, servers))
     })
@@ -6593,6 +6664,7 @@ fn edit_toml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(), Str
 /// harmless start-fresh behavior. (Zed's whole-editor `settings.json` is already
 /// lenient via its JsonContextServers format.)
 fn config_is_whole_app_state(client_id: &str) -> bool {
+    let client_id = client_id.split('@').next().unwrap_or(client_id);
     matches!(
         client_id,
         "claude-code" | "crush" | "gemini-cli" | "qwen-code" | "opencode" | "kilo-code" | "amp"
@@ -6602,6 +6674,7 @@ fn config_is_whole_app_state(client_id: &str) -> bool {
 fn install_or_remove(client_id: &str, entry: Option<&ServerEntry>) -> Result<WriteOutcome, String> {
     let def = find_def(client_id).ok_or_else(|| format!("Unknown client '{client_id}'"))?;
     let path = resolved_definition_path(&def)?;
+    if let Some(location) = &def.location { locations::remember(location)?; }
     mutation::run(client_id, &path, def.format, || {
         revision_outcome(client_id, install_or_remove_inner(client_id, entry))
     })
@@ -6680,6 +6753,7 @@ pub fn install_gateway(client_id: &str, profile: Option<&str>) -> Result<WriteOu
 pub fn uninstall_gateway(client_id: &str) -> Result<WriteOutcome, String> {
     let def = find_def(client_id).ok_or_else(|| format!("Unknown client '{client_id}'"))?;
     let path = resolved_definition_path(&def)?;
+    if let Some(location) = &def.location { locations::remember(location)?; }
     mutation::run(client_id, &path, def.format, || {
         let mut outcome = revision_outcome(client_id, uninstall_gateway_inner(client_id))?;
         outcome.warnings.extend(disconnect_warnings(def.format, &path)?);
@@ -6794,6 +6868,7 @@ pub(crate) fn migrate_reviewed(
 ) -> Result<WriteOutcome, String> {
     let def = find_def(client_id).ok_or("Unknown client")?;
     let path = resolved_definition_path(&def)?;
+    if let Some(location) = &def.location { locations::remember(location)?; }
     mutation::run(client_id, &path, def.format, || {
         if setup_revision(client_id)? != revision {
             return Err(
@@ -7021,45 +7096,7 @@ fn read_gateway_profile(client_id: &str) -> Option<String> {
 /// never be re-pointed onto a current binary. Deleting one out from under a plugin
 /// entry leaves a reference nothing will ever repair.
 pub fn referenced_gateway_paths() -> Option<Vec<PathBuf>> {
-    let mut out = referenced_gateway_paths_in(&detect_clients())?;
-    // Secondary Claude Code configs are invisible to detect_clients(), which probes
-    // one path per client. Their gateway commands are still live references: pruning
-    // a binary one of them names is what strands that profile on a missing gateway.
-    // Keep-paths must be a superset of what any config can spawn, not of what we
-    // happen to resolve today.
-    for path in extra_claude_gateway_references() {
-        if !out.contains(&path) {
-            out.push(path);
-        }
-    }
-    Some(out)
-}
-
-/// Gateway binaries named by Claude Code configs other than the resolved one.
-///
-/// Unreadable or unparseable files yield nothing rather than failing the whole scan:
-/// [`referenced_gateway_paths`] already fails closed on a client it could not probe,
-/// and these are best-effort extras discovered by directory scan, so one unreadable
-/// sibling must not suppress pruning across the machine forever.
-fn extra_claude_gateway_references() -> Vec<PathBuf> {
-    let primary = client_config_path("claude-code");
-    let mut out = Vec::new();
-    for path in claude_code_config_paths() {
-        if primary.as_deref() == Some(path.as_path()) {
-            continue;
-        }
-        let Ok(text) = read_config_file(&path) else {
-            continue;
-        };
-        let Some((_, command)) = claude_gateway_entry_in(&text) else {
-            continue;
-        };
-        let command = command.trim();
-        if !command.is_empty() {
-            out.push(PathBuf::from(command));
-        }
-    }
-    out
+    referenced_gateway_paths_in(&detect_clients())
 }
 
 /// The pure half of [`referenced_gateway_paths`], over an already-probed client list so
@@ -7117,7 +7154,8 @@ pub fn repoint_stale_gateways(managed: &HashMap<String, ManagedEntry>) -> Repoin
     #[cfg(target_os = "linux")]
     let before = referenced_gateway_paths();
     let mut outcome = repoint_stale_gateways_in(&current, detect_clients(), managed);
-    repoint_other_claude_configs(&current, &mut outcome);
+    // First-class locations are maintained by the pass above after Clients has
+    // registered them. Discovery at startup does not read new config contents.
     log_repoint_outcome(&current, &outcome);
     #[cfg(target_os = "linux")]
     if let Some(dir) = crate::registry::conduit_dir().map(|d| d.join("bin")) {
@@ -7435,43 +7473,7 @@ fn repoint_stale_gateways_in(
 /// client id, and all of these files are `claude-code`, so recording a sibling would
 /// overwrite the resolved config's snapshot and make the next pass read that one as
 /// Customized - i.e. we would stop maintaining the config we actually manage.
-fn repoint_other_claude_configs(current: &str, outcome: &mut RepointOutcome) {
-    let primary = client_config_path("claude-code");
-    let location_paths: Vec<PathBuf> = locations::all().into_iter().map(|location| location.config_path).collect();
-    let others: Vec<PathBuf> = claude_code_config_paths()
-        .into_iter()
-        .filter(|path| primary.as_deref() != Some(path.as_path()) && !location_paths.contains(path))
-        .collect();
-    for repair in claude_configs_needing_repair(&others, current) {
-        let ClaudeRepair {
-            path,
-            stored,
-            ..
-        } = repair;
-        let write = repair_secondary_claude_config(&path, current);
-        match write {
-            Ok(()) => {
-                let msg = format!(
-                    "toolport: re-pointed a secondary Claude Code config at {} from {stored} to {current}",
-                    path.display(),
-                );
-                eprintln!("{msg}");
-                crate::gatewaylog::append(&msg);
-                outcome.extra_claude_repointed.push(path);
-            }
-            Err(error) => {
-                let msg = format!(
-                    "toolport: could not re-point the secondary Claude Code config at {}: {error}",
-                    path.display(),
-                );
-                eprintln!("{msg}");
-                crate::gatewaylog::append(&msg);
-                outcome.extra_claude_failed.push((path, error));
-            }
-        }
-    }
-}
-
+#[cfg(test)]
 fn repair_secondary_claude_config(path: &Path, current: &str) -> Result<(), String> {
     mutation::run("claude-code", path, Format::JsonMcpServers, || {
         // Selection happened before the mutation lock. Respect a subsequent edit.
@@ -7500,6 +7502,7 @@ fn repair_secondary_claude_config(path: &Path, current: &str) -> Result<(), Stri
 
 /// One secondary Claude config that needs its gateway entry repaired.
 #[derive(Debug, PartialEq, Eq)]
+#[cfg(test)]
 struct ClaudeRepair {
     path: PathBuf,
     /// This file's own `TOOLPORT_PROFILE`. These configs are scoped independently, so
@@ -7512,9 +7515,10 @@ struct ClaudeRepair {
 
 /// Decide which of `paths` need repair, reading but never writing.
 ///
-/// Split out from [`repoint_other_claude_configs`] so the rules are testable against
+/// Legacy secondary repair selection, retained for regression tests against
 /// real files without a home directory, a `CLAUDE_CONFIG_DIR`, or an installed gateway
 /// binary to resolve. The caller does the writing.
+#[cfg(test)]
 fn claude_configs_needing_repair(paths: &[PathBuf], current: &str) -> Vec<ClaudeRepair> {
     let mut out = Vec::new();
     for path in paths {

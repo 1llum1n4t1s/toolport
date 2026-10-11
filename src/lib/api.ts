@@ -616,8 +616,8 @@ export function teamPairCancel(): Promise<void> {
 }
 
 /** Probe every supported MCP client and read its current server configuration. */
-export function detectClients(): Promise<DetectedClient[]> {
-  return invoke<DetectedClient[]>("detect_clients");
+export function detectClients(inspectConfigs = true): Promise<DetectedClient[]> {
+  return invoke<DetectedClient[]>("detect_clients", { inspectConfigs });
 }
 
 export interface ClientLocationType {

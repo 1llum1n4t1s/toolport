@@ -120,27 +120,27 @@ pub(super) fn matches_path(client_id: &str, path: &Path) -> Result<bool, String>
 
 pub(super) fn recorded_paths() -> Vec<(String, PathBuf, Result<Format, String>)> {
     let mut paths = Vec::new();
-    for def in defs() {
-        if !has_record(def.id) {
+    for def in machine_defs(false) {
+        if !has_record(def.client_id()) {
             continue;
         }
-        match load(def.id) {
+        match load(def.client_id()) {
             Ok(Some(record)) => {
                 let path = PathBuf::from(record.config_path);
                 if path.is_absolute() {
-                    paths.push((def.id.into(), path, Ok(def.format)));
+                    paths.push((def.client_id().into(), path, Ok(def.format)));
                 } else {
                     paths.push((
-                        def.id.into(),
-                        record_path(def.id).unwrap_or_default(),
+                        def.client_id().into(),
+                        record_path(def.client_id()).unwrap_or_default(),
                         Err("Legacy move record has no absolute config path".into()),
                     ));
                 }
             }
             Ok(None) => {}
             Err(error) => paths.push((
-                def.id.into(),
-                record_path(def.id).unwrap_or_default(),
+                def.client_id().into(),
+                record_path(def.client_id()).unwrap_or_default(),
                 Err(error),
             )),
         }

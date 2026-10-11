@@ -129,11 +129,20 @@ async fn test_server(entry: ServerEntry) -> Result<ProbeResult, String> {
 #[tauri::command]
 async fn detect_clients(
     state: State<'_, RegistryState>,
+    inspect_configs: Option<bool>,
 ) -> Result<Vec<clients::DetectedClient>, String> {
     // Reads several config files and scans plugin dirs - off the UI thread.
-    let mut list = tauri::async_runtime::spawn_blocking(clients::detect_clients)
+    let mut list = tauri::async_runtime::spawn_blocking(move || {
+        if inspect_configs.unwrap_or(true) { clients::detect_clients_for_display() }
+        else { Ok(clients::client_metadata()) }
+    })
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())??;
+    // Adoption may have updated ownership on disk.
+    if inspect_configs.unwrap_or(true) {
+        let fresh = crate::registry::load()?;
+        *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = fresh;
+    }
     // Ownership record lives on the registry (SOU-406).
     let managed = state
         .lock()

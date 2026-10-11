@@ -768,15 +768,15 @@ pub(crate) fn after_rollback(
 
 pub(super) fn recorded_paths() -> Vec<(String, PathBuf, Result<Format, String>)> {
     let mut paths = Vec::new();
-    for def in defs() {
-        let Some(dir) = backup_dir(def.id) else {
+    for def in machine_defs(false) {
+        let Some(dir) = backup_dir(def.client_id()) else {
             continue;
         };
         let files = match std::fs::read_dir(&dir) {
             Ok(files) => files,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => {
-                paths.push((def.id.into(), dir, Err(e.to_string())));
+                paths.push((def.client_id().into(), dir, Err(e.to_string())));
                 continue;
             }
         };
@@ -784,7 +784,7 @@ pub(super) fn recorded_paths() -> Vec<(String, PathBuf, Result<Format, String>)>
             let file = match file {
                 Ok(file) => file.path(),
                 Err(e) => {
-                    paths.push((def.id.into(), dir.clone(), Err(e.to_string())));
+                    paths.push((def.client_id().into(), dir.clone(), Err(e.to_string())));
                     continue;
                 }
             };
@@ -804,13 +804,13 @@ pub(super) fn recorded_paths() -> Vec<(String, PathBuf, Result<Format, String>)>
             match parsed {
                 Ok(record) => {
                     let path = PathBuf::from(record.config_path);
-                    match released(def.id, &path) {
+                    match released(def.client_id(), &path) {
                         Ok(true) => {}
-                        Ok(false) => paths.push((def.id.into(), path, Ok(record.format))),
-                        Err(error) => paths.push((def.id.into(), file, Err(error))),
+                        Ok(false) => paths.push((def.client_id().into(), path, Ok(record.format))),
+                        Err(error) => paths.push((def.client_id().into(), file, Err(error))),
                     }
                 }
-                Err(error) => paths.push((def.id.into(), file, Err(error))),
+                Err(error) => paths.push((def.client_id().into(), file, Err(error))),
             }
         }
     }

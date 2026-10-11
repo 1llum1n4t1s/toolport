@@ -283,7 +283,7 @@ function App() {
       try {
         const [reg, dc, recovery] = await Promise.all([
           getRegistry(),
-          detectClients(),
+          detectClients(view === "clients"),
           takeRegistryRecoveryNotice(),
         ]);
         registryRef.current = reg;
@@ -333,7 +333,7 @@ function App() {
         setLoading(false);
       }
     },
-    [reprobe, reprobeAfterMutation],
+    [reprobe, reprobeAfterMutation, view],
   );
 
   useEffect(() => {

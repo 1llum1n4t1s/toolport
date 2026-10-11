@@ -31,7 +31,7 @@ fn store_path() -> Result<PathBuf, String> {
     Ok(crate::registry::conduit_dir().ok_or("Could not resolve local data folder")?.join("client-locations.json"))
 }
 
-fn saved() -> Result<Vec<ClientLocation>, String> {
+pub(super) fn saved() -> Result<Vec<ClientLocation>, String> {
     match std::fs::read(store_path()?) {
         Ok(bytes) => {
             let rows: Vec<ClientLocation> = serde_json::from_slice(&bytes)
@@ -48,7 +48,7 @@ fn saved() -> Result<Vec<ClientLocation>, String> {
 }
 
 fn valid_id(id: &str) -> bool {
-    id.contains('@') && id.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_.@%".contains(&c))
+    id.split_once('@').is_some_and(|(kind, key)| !kind.is_empty() && !key.is_empty() && key != "." && key != "..") && id.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_.@%".contains(&c))
 }
 
 fn folder_key(folder: &str) -> String {
@@ -67,7 +67,7 @@ fn automatic_with_primary(home: &Path, primary: Option<&Path>) -> Vec<ClientLoca
     let mut rows = Vec::new();
     for folder in claude_profile_dirs(home).unwrap_or_default() {
         let config_path = home.join(&folder).join(".claude.json");
-        if !config_path.is_file() || primary.is_some_and(|path| same_path(path, &config_path)) { continue; }
+        if !config_path.is_file() || primary == Some(config_path.as_path()) { continue; }
         rows.push(ClientLocation {
             id: format!("claude-code@{}", folder_key(&folder)),
             client_type: "claude-code".into(),
@@ -99,14 +99,33 @@ pub(super) fn lookup(id: &str) -> Option<ClientLocation> {
     if !valid_id(id) { return None; }
     if let Some(row) = saved().ok()?.into_iter().find(|row| row.id == id) { return Some(row); }
     let key = id.strip_prefix("claude-code@")?;
-    let folder = format!(".{key}");
+    let mut bytes = Vec::new();
+    let mut chars = key.as_bytes().iter().copied();
+    while let Some(byte) = chars.next() {
+        bytes.push(if byte == b'%' {
+            u8::from_str_radix(std::str::from_utf8(&[chars.next()?, chars.next()?]).ok()?, 16).ok()?
+        } else { byte });
+    }
+    let label = String::from_utf8(bytes).ok()?;
+    let folder = format!(".{label}");
     if !folder.starts_with(".claude") || folder_key(&folder) != key { return None; }
     let root = home()?;
     let path = root.join(&folder);
     // Do not follow an automatically discovered directory outside home later.
     if !std::fs::symlink_metadata(&path).ok()?.is_dir() { return None; }
     Some(ClientLocation { id: id.into(), client_type: "claude-code".into(),
-        name: format!("Claude Code ({key})"), config_path: path.join(".claude.json") })
+        name: format!("Claude Code ({label})"), config_path: path.join(".claude.json") })
+}
+
+pub(super) fn remember(row: &ClientLocation) -> Result<(), String> {
+    let store = store_path()?;
+    let _lock = crate::registry::lock_at(&store)?;
+    let mut rows = saved()?;
+    if !rows.iter().any(|saved| saved.id == row.id) {
+        rows.push(row.clone());
+        crate::registry::atomic_write(&store, &serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())?)?;
+    }
+    Ok(())
 }
 
 pub fn add_client_location(client_type: &str, folder: &str) -> Result<String, String> {

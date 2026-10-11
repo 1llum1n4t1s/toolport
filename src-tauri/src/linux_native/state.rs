@@ -517,7 +517,8 @@ pub(super) fn detect_client_views() -> Result<ClientSnapshot, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Registry::default(),
         Err(error) => return Err(format!("could not read registry: {error}")),
     };
-    let mut clients = crate::clients::detect_clients();
+    let mut clients = crate::clients::detect_clients_for_display()?;
+    let registry = crate::registry::load()?;
     crate::clients::apply_entry_states(&mut clients, &registry.client_managed_entries);
     let shared_http_clients = registry
         .http_clients
