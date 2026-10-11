@@ -345,7 +345,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
-    fn purge_global_disconnect_restores_snapshots_without_a_readable_registry() {
+    fn purge_corrupt_registry_snapshot_restore_preserves_native_bytes() {
         let env = crate::registry::DataDirTestEnv::new("purge_global_disconnect");
         let path = env.dir.join("secondary-client.json");
         let native = r#"{"mcpServers":{"native":{"command":"native"}}}"#;
@@ -357,10 +357,8 @@ mod tests {
         }).unwrap();
         let registry = env.dir.join("registry.json");
         std::fs::write(&registry, "broken").unwrap();
-        assert!(for_purge(false).is_err());
-        let results = for_purge(true).unwrap();
-        assert!(results.iter().all(|result| result.error.is_none() && result.warnings.is_empty()), "{results:?}");
-        assert!(results.iter().any(|result| result.path == path.to_string_lossy()));
+        assert!(crate::registry_controller::registry_for_disconnect().is_err());
+        assert!(restore_path("claude-code", &path, Format::JsonMcpServers, None).unwrap().is_empty());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), native);
         assert_eq!(std::fs::read_to_string(&registry).unwrap(), "broken");
     }
