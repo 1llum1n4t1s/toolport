@@ -366,6 +366,21 @@ mod tests {
     }
 
     #[test]
+    fn environment_selected_location_has_one_identity_for_upkeep() {
+        let base = defs().into_iter().find(|def| def.id == "codex").unwrap();
+        let mut location = base.clone();
+        location.location = Some(ClientLocation {
+            id: "codex@selected".into(),
+            client_type: "codex".into(),
+            name: "Codex (selected)".into(),
+            config_path: resolved_definition_path(&base).unwrap(),
+        });
+        let rows = unique_config_definitions(vec![base, location]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].client_id(), "codex@selected");
+    }
+
+    #[test]
     fn existing_manual_gateway_is_adopted_without_duplicate_entries() {
         let _data = crate::registry::DataDirTestEnv::new("client-location-adoption");
         let folder = TempFolder::new();

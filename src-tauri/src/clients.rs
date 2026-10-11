@@ -167,6 +167,7 @@ struct CombinedToolNameBudget {
     separator: usize,
 }
 
+#[derive(Clone)]
 struct ClientDef {
     id: &'static str,
     name: &'static str,
@@ -193,15 +194,23 @@ fn machine_defs(include_detected: bool) -> Vec<ClientDef> {
     let locations = if include_detected { locations::all() } else { locations::saved().unwrap_or_default() };
     for location in locations {
         if let Some(mut def) = defs().into_iter().find(|def| def.id == location.client_type) {
-            // Prefer the stable location identity when the app environment also
-            // selects this folder. Never show two rows writing the same file.
-            if include_detected {
-                definitions.retain(|base| base.location.is_some() || (base.path)().as_ref() != Some(&location.config_path));
-            }
             def.location = Some(location);
             definitions.push(def);
         }
     }
+    if include_detected { unique_config_definitions(definitions) } else { definitions }
+}
+
+// Prefer the stable location identity if an environment override also selects
+// that config. Keep legacy definitions in recovery inventories, but never let
+// display or background upkeep write one file through two different client IDs.
+fn unique_config_definitions(mut definitions: Vec<ClientDef>) -> Vec<ClientDef> {
+    let location_paths: Vec<_> = definitions.iter()
+        .filter(|def| def.location.is_some())
+        .filter_map(|def| resolved_definition_path(def).ok())
+        .collect();
+    definitions.retain(|def| def.location.is_some()
+        || resolved_definition_path(def).is_ok_and(|path| !location_paths.contains(&path)));
     definitions
 }
 
@@ -3442,7 +3451,7 @@ fn read_client(def: &ClientDef) -> DetectedClient {
 pub fn detect_clients() -> Vec<DetectedClient> {
     // Background upkeep handles saved locations. Newly discovered config files
     // are read only when the user opens Clients.
-    machine_defs(false).iter().map(read_client).collect()
+    unique_config_definitions(machine_defs(false)).iter().map(read_client).collect()
 }
 
 pub fn detect_clients_for_display() -> Result<Vec<DetectedClient>, String> {
