@@ -294,6 +294,16 @@ describe("QuarantineAlert", () => {
     ).toBeInTheDocument();
   });
 
+  it("explains that missing definitions always need a captured review", async () => {
+    listQuarantined.mockResolvedValue([tool()]);
+    render(<QuarantineAlert />);
+    expect(
+      await screen.findByText(
+        "No saved definition. Approving captures the current definition for one more review.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("shows the captured definition and explains the extra legacy review", async () => {
     listQuarantined.mockResolvedValue([
       tool({

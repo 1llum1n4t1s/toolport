@@ -283,8 +283,8 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
               <div className="space-y-2">
                 <p>
                   Approve {reviewMany ? "these blocked findings" : "this blocked finding"}
-                  . Older findings may need one more review of the current definition
-                  before the tool becomes callable.
+                  . Findings without a saved definition require one more review of the
+                  current definition before the tool becomes callable.
                 </p>
                 <p>
                   Only do this if you expected the change. If a definition was altered by

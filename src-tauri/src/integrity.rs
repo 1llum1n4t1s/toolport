@@ -2002,7 +2002,9 @@ fn release_inner(
                 }
             };
             let mut updated = pins.clone();
-            apply_release_pin(&mut updated, tool, pending, epoch_millis());
+            apply_release_pin(
+                &mut updated, tool, pending, record["definition"].is_object(), epoch_millis(),
+            );
             if updated != pins {
                 save_pin(profile, &updated)?;
             }
@@ -2032,7 +2034,7 @@ fn release_pending_pin(tool: &str, record: &Value) -> Result<Option<Pin>, String
     }
 }
 
-fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, stamp: u64) {
+fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, reviewed: bool, stamp: u64) {
     if let Some(pending) = pending {
         let pin = merge_pending_pin(pins.get(tool), pending, stamp);
         pins.insert(tool.to_string(), pin);
@@ -2050,7 +2052,7 @@ fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, stamp: u
         first_seen: stamp,
         last_changed: stamp,
     });
-    if fp_version(&pin.fp) != PIN_FP_VERSION {
+    if !reviewed || fp_version(&pin.fp) != PIN_FP_VERSION {
         pin.review_on_upgrade = true;
     }
 }
@@ -2150,7 +2152,9 @@ fn release_all_inner_with_records(
             let mut updated = pins.clone();
             let stamp = epoch_millis();
             for (tool, pin) in &accepted {
-                apply_release_pin(&mut updated, tool, pin.clone(), stamp);
+                apply_release_pin(
+                    &mut updated, tool, pin.clone(), q[tool]["definition"].is_object(), stamp,
+                );
             }
             if updated != pins {
                 save_pin(profile, &updated)?;
@@ -5364,6 +5368,41 @@ mod tests {
                     release_record(profile, "srv__wipe", &quarantine_record_id(&captured)).unwrap()
                 );
                 assert!(check_staged(profile, &tools).unwrap().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn preview_v3_release_captures_unseen_definition_before_publication() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("preview-v3-release");
+        for profile in [None, Some("work")] {
+            for bulk in [false, true] {
+                for change in ["changed", "tamper"] {
+                    let tool = destructive_tool("srv__wipe", "Unseen preview definition.");
+                    let pin = pin_of(&tool);
+                    save_pins(profile, &BTreeMap::from([("srv__wipe".into(), pin.clone())])).unwrap();
+                    let mut old = json!({"tool":"srv__wipe", "change":change, "definition_fp":pin.fp});
+                    if change == "tamper" {
+                        old["pending_pin"] = json!(pin);
+                    }
+                    save_quarantine(profile, &BTreeMap::from([("srv__wipe".into(), old.clone())])).unwrap();
+                    let id = quarantine_record_id(&old);
+                    if bulk {
+                        assert_eq!(release_all_records(profile, &BTreeMap::from([("srv__wipe".into(), id)])).unwrap().released, 1);
+                    } else {
+                        assert!(release_record(profile, "srv__wipe", &id).unwrap());
+                    }
+                    let current = vec![tool.clone()];
+                    let events = check_staged(profile, &current).unwrap();
+                    assert!(events.iter().any(|e| e["review_required"] == true), "{change} preview approval published an unseen v3 definition");
+                    apply_quarantine(profile, &current, &events).unwrap();
+                    accept_quarantined_pins(profile).unwrap();
+                    let captured = load_quarantine(profile).unwrap()["srv__wipe"].clone();
+                    assert_eq!(captured["definition"], tool);
+                    assert!(release_record(profile, "srv__wipe", &quarantine_record_id(&captured)).unwrap());
+                    assert!(check_staged(profile, &current).unwrap().is_empty(), "bound approval must end the review cycle");
+                }
             }
         }
     }

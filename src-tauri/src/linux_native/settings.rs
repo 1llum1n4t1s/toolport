@@ -2292,7 +2292,7 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
             Some(&format!("Re-approve all {count} blocked tools?")),
             Some(
                 "Toolport approves the displayed findings and repairs their baselines in one pass. \
-                 Older findings may need one more review of the current definition. \
+                 Findings without a saved definition require one more review of the current definition. \
                  A tool whose captured definition cannot be read stays blocked and remains listed.",
             ),
         );
@@ -2389,7 +2389,7 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
     } else {
         copy.append(
             &gtk::Label::builder()
-                .label("No saved definition. Approving may require one more review of the current definition.")
+                .label("No saved definition. Approving captures the current definition for one more review.")
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["toolport-muted"])
@@ -2409,7 +2409,7 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
             Some(&parent),
             Some(&format!("Re-approve {}?", entry.tool)),
             Some(&format!(
-                "Toolport will approve this blocked finding. Older findings may need one more review of the current definition.\n\n{}",
+                "Toolport will approve this blocked finding. Findings without a saved definition require one more review of the current definition.\n\n{}",
                 entry.detail
             )),
         );

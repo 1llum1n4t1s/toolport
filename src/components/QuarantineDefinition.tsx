@@ -4,8 +4,8 @@ export function QuarantineDefinition({ tool }: { tool: QuarantinedTool }) {
   if (!tool.definition) {
     return (
       <p className="mt-1 text-xs text-muted-foreground">
-        No saved definition. Approving may require one more review of the current
-        definition.
+        No saved definition. Approving captures the current definition for one more
+        review.
       </p>
     );
   }
