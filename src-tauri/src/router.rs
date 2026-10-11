@@ -7108,6 +7108,15 @@ for line in sys.stdin:
 
     #[test]
     fn legacy_quarantine_release_requires_review_through_filtered_catalog() {
+        legacy_release_through_filtered_catalog(false);
+    }
+
+    #[test]
+    fn legacy_bulk_release_requires_review_through_filtered_catalog() {
+        legacy_release_through_filtered_catalog(true);
+    }
+
+    fn legacy_release_through_filtered_catalog(bulk: bool) {
         let data = crate::registry::DataDirTestEnv::new("legacy-release-filtered");
         let mut reg = crate::registry::Registry::default();
         reg.profiles.push(crate::registry::Profile {
@@ -7167,7 +7176,16 @@ for line in sys.stdin:
                     .fingerprint
                     .starts_with(version));
                 assert_eq!(std::fs::read_to_string(&quarantine).unwrap(), old_record);
-                crate::registry_controller::release_quarantine(profile, "srv__echo").unwrap();
+                if bulk {
+                    let summary = crate::registry_controller::release_all_quarantine(&[
+                        profile.unwrap_or("").to_string(),
+                    ]);
+                    assert_eq!(summary.released, 1);
+                    assert!(summary.skipped.is_empty());
+                    assert!(summary.failed.is_empty());
+                } else {
+                    crate::registry_controller::release_quarantine(profile, "srv__echo").unwrap();
+                }
                 router.requarantine(crate::integrity::quarantined(profile).unwrap());
                 let catalog = router.policy_catalog(&router.shared_tools());
                 let events = crate::integrity::check_staged(profile, &catalog).unwrap();

@@ -5228,6 +5228,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn release_all_requires_review_for_legacy_pending_pins() {
+        let _data_dir_lock = crate::registry::data_dir_test_lock();
+        let _data_dir = TestDataDir::new("release-all-legacy-pending");
+        for profile in [None, Some("work")] {
+            for version in ["v1", "v2"] {
+                let mut pending = pin_of(&destructive_tool("srv__wipe", "Old definition."));
+                pending.fp = format!("{version}:captured-definition");
+                save_quarantine(profile, &BTreeMap::from([(
+                    "srv__wipe".to_string(),
+                    json!({"tool": "srv__wipe", "change": "changed", "pending_pin": pending}),
+                )])).unwrap();
+                let outcome = release_all(profile).unwrap();
+                assert_eq!(outcome.released, 1);
+                assert!(outcome.skipped.is_empty());
+                let pins = match load_pins(profile) {
+                    PinsLoad::Loaded(pins) => pins,
+                    _ => panic!("released pending pin must be durable"),
+                };
+                assert!(pins["srv__wipe"].review_on_upgrade);
+                let current = vec![destructive_tool("srv__wipe", "Unseen definition.")];
+                let events = check_staged(profile, &current).unwrap();
+                assert!(events.iter().any(|event| {
+                    event["tool"] == "srv__wipe" && event["severity"] == "high"
+                }));
+            }
+        }
+    }
+
     /// One unrepairable record must not fail the whole batch, and must not be
     /// unblocked without a baseline either.
     #[test]
