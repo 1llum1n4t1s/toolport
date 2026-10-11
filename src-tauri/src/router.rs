@@ -7141,11 +7141,16 @@ for line in sys.stdin:
                         })
                         .unwrap_or_else(|| "quarantine.json".into()),
                 );
-                std::fs::write(
-                    &pins,
-                    format!("{{\"srv__echo\":\"{version}:old-baseline\"}}"),
-                )
-                .unwrap();
+                let mut baseline_router = Router::new();
+                baseline_router.add(mock_server("srv"));
+                crate::integrity::check(
+                    profile,
+                    &baseline_router.policy_catalog(&baseline_router.shared_tools()),
+                ).unwrap();
+                let mut baseline: Value =
+                    serde_json::from_str(&std::fs::read_to_string(&pins).unwrap()).unwrap();
+                baseline["srv__echo"] = json!(format!("{version}:old-baseline"));
+                std::fs::write(&pins, baseline.to_string()).unwrap();
                 let old_record = r#"{"srv__echo":{"tool":"srv__echo","server":"srv","change":"changed","reason":"Review this change","ts":1}}"#;
                 std::fs::write(&quarantine, old_record).unwrap();
                 let mut router = Router::with_policy(

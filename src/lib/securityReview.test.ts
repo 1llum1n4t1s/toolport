@@ -39,8 +39,8 @@ function previousSelector(events: SecurityEvent[], dismissed: Set<string>) {
       return false;
     if (event.type !== "tool_drift" && eventSeverity(event) !== "high")
       return !dismissed.has(identity);
+    const prefix = `${identity}@`;
     for (const marker of dismissed) {
-      const prefix = `${identity}@`;
       if (marker.startsWith(prefix) && Number(marker.slice(prefix.length)) >= event.ts)
         return false;
     }
