@@ -3584,7 +3584,12 @@ pub(crate) fn purge_backup_client_id(client_id: &str) -> bool {
 /// Match the basenames used by backup_file and the two named Claude writers.
 pub(crate) fn purge_backup_name(client_id: &str, basename: &str) -> bool {
     let Some(def) = find_def(client_id) else { return false; };
-    if client_id == "claude-code" && ["claude-", "claude-settings-"].iter().any(|prefix| {
+    let named_prefixes: &[&str] = match client_id {
+        "claude-code" => &["claude-", "claude-settings-"],
+        "cursor" => &["claude-settings-"], // write_settings_key_for uses the same writer.
+        _ => &[],
+    };
+    if named_prefixes.iter().any(|prefix| {
         basename.strip_prefix(prefix).and_then(|name| name.strip_suffix(".json"))
             .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
     }) { return true; }
