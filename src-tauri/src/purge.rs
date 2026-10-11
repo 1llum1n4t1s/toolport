@@ -1228,7 +1228,8 @@ mod tests {
             assert_eq!(std::fs::read_to_string(env.dir.join(name)).unwrap(), "user bytes", "{name}");
             // Unknown directories are reported as a whole and never traversed.
             let reported = if name == "broker/nested/broker/notes" { "broker/nested" } else { name };
-            assert!(report.preserved.iter().any(|path| path.contains(reported)), "{name}");
+            let reported_path = env.dir.join(reported).display().to_string();
+            assert!(report.preserved.iter().any(|path| path.starts_with(&reported_path)), "{name}");
         }
         assert!(!env.dir.join("bin/toolport-gateway").exists());
         assert!(!env.dir.join("registry.json").exists());
