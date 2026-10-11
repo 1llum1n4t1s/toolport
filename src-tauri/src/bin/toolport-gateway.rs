@@ -10550,10 +10550,52 @@ fn reconcile_quarantine(
     read_failed: &AtomicBool,
 ) -> bool {
     match effective_quarantine(registry, profile, read_failed) {
-        Some(want) => reconcile_to(router, stdio, mcp_sessions, want),
+        Some(want) => reconcile_to_checked(registry, router, stdio, mcp_sessions, profile, want),
         // Store unreadable: keep enforcing the current set rather than weakening it.
         None => false,
     }
+}
+
+/// Restore released definitions only after checking the candidate catalog. A legacy
+/// release can require a new review, and a server can change while it was quarantined.
+fn reconcile_to_checked(
+    registry: &Arc<Mutex<Registry>>,
+    router: &Arc<Mutex<Arc<Router>>>,
+    stdio: &SessionState,
+    mcp_sessions: Option<&Arc<Mutex<HashMap<String, Arc<SessionState>>>>>,
+    profile: Option<&str>,
+    want: BTreeSet<String>,
+) -> bool {
+    for _ in 0..LIVE_ROUTER_EDIT_ATTEMPTS {
+        let current = router
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if current.quarantined() == &want && !current.catalog_fail_closed() {
+            return false;
+        }
+        let restored = !current.quarantined().is_subset(&want) || current.catalog_fail_closed();
+        let mut next = (*current).clone();
+        next.requarantine_from_store(want.clone());
+        if restored {
+            let tools = next.shared_tools();
+            requarantine_if_needed(registry, &mut next, tools, profile);
+        }
+        let mut live = router
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !Arc::ptr_eq(&live, &current) {
+            continue;
+        }
+        *live = Arc::new(next);
+        drop(live);
+        glog("quarantine set changed on disk; checked restored definitions before re-filtering exposed tools");
+        notify_tools_changed(stdio, mcp_sessions);
+        return true;
+    }
+    // A racing writer wins. Keep its live router and retry on the next watcher tick;
+    // never run the integrity gate while holding the live-router mutex.
+    false
 }
 
 /// Install a registry-derived policy on the live router copy-on-write, the same
@@ -10618,6 +10660,7 @@ fn edit_live_router(
 /// This is THE lift point for a fail-closed catalog (SBS-871): its only caller,
 /// `reconcile_quarantine`, gets here solely on a successful store read. Every other
 /// `requarantine` call sits on an error path and leaves the hide up.
+#[cfg(test)]
 fn reconcile_to(
     router: &Arc<Mutex<Arc<Router>>>,
     stdio: &SessionState,
@@ -12555,7 +12598,9 @@ impl HostState {
                 }
                 return cached;
             }
-            let wanted = scope.and_then(|scope| self.rooted_quarantine(&scope));
+            let wanted = scope
+                .as_ref()
+                .and_then(|scope| self.rooted_quarantine(scope));
             if wanted
                 .as_ref()
                 .is_some_and(|set| set == cached.quarantined() && !cached.catalog_fail_closed())
@@ -12565,7 +12610,14 @@ impl HostState {
             }
             let mut updated = (*cached).clone();
             if let Some(set) = wanted {
+                let restored =
+                    !cached.quarantined().is_subset(&set) || cached.catalog_fail_closed();
                 updated.requarantine_from_store(set);
+                if restored {
+                    if let Some(scope) = &scope {
+                        self.check_rooted_integrity(&mut updated, scope, keys);
+                    }
+                }
             } else {
                 updated.fail_closed_catalog();
             }
@@ -39894,6 +39946,153 @@ mod tests {
         Router::with_policy(
             registry_policy(reg, None, false, false).with_quarantine(BTreeSet::new(), false),
         )
+    }
+
+    fn seed_legacy_review(dir: &Path, profile: Option<&str>, version: &str) {
+        let pins = profile
+            .map(|id| format!("tool-pins-v2-{}.json", registry::profile_store_key(id)))
+            .unwrap_or_else(|| "tool-pins.json".into());
+        let quarantine = profile
+            .map(|id| format!("quarantine-v2-{}.json", registry::profile_store_key(id)))
+            .unwrap_or_else(|| "quarantine.json".into());
+        std::fs::write(
+            dir.join(pins),
+            format!("{{\"srv__read\":\"{version}:old-definition\"}}"),
+        )
+        .unwrap();
+        std::fs::write(dir.join(quarantine), r#"{"srv__read":{"tool":"srv__read","server":"srv","change":"changed","reason":"Review this change","ts":1}}"#).unwrap();
+    }
+
+    #[test]
+    fn legacy_quarantine_release_is_checked_before_watcher_publication() {
+        let data = DataDirTestEnv::new("legacy-watcher-publication");
+        for profile in [None, Some("work")] {
+            for version in ["v1", "v2"] {
+                let state = http_state(false);
+                state
+                    .registry
+                    .lock()
+                    .unwrap()
+                    .set_safety_level(registry::SafetyLevel::Strict);
+                seed_legacy_review(&data.dir, profile, version);
+                let mut cached = readonly_router("srv", "Changed while quarantined.");
+                cached.requarantine(set_of(&["srv__read"]));
+                assert!(integrity::check_staged(
+                    profile,
+                    &cached.policy_catalog(&cached.shared_tools())
+                )
+                .unwrap()
+                .is_empty());
+                *state.router.lock().unwrap() = Arc::new(cached);
+                conduit_lib::registry_controller::release_quarantine(profile, "srv__read").unwrap();
+                let seen = Arc::new(Mutex::new(None));
+                let observed = Arc::clone(&seen);
+                let live = Arc::clone(&state.router);
+                *INTEGRITY_GATE_OBSERVER.lock().unwrap() = Some((
+                    std::thread::current().id(),
+                    Box::new(move || {
+                        *observed.lock().unwrap() = Some(
+                            live.lock()
+                                .unwrap()
+                                .aggregated_tools()
+                                .iter()
+                                .any(|tool| tool["name"] == "srv__read"),
+                        );
+                    }),
+                ));
+                assert!(reconcile_quarantine(
+                    &state.registry,
+                    &state.router,
+                    &state.stdio_upstream,
+                    profile,
+                    None,
+                    &AtomicBool::new(false)
+                ));
+                *INTEGRITY_GATE_OBSERVER.lock().unwrap() = None;
+                assert_eq!(
+                    *seen.lock().unwrap(),
+                    Some(false),
+                    "the legacy definition must stay hidden during the gate"
+                );
+                assert!(!state
+                    .router
+                    .lock()
+                    .unwrap()
+                    .aggregated_tools()
+                    .iter()
+                    .any(|tool| tool["name"] == "srv__read"));
+                assert!(integrity::quarantined(profile)
+                    .unwrap()
+                    .contains("srv__read"));
+                let fp = integrity::baselines(profile)["srv__read"]
+                    .fingerprint
+                    .clone();
+                assert!(integrity::release_definition(profile, "srv__read", &fp).unwrap());
+                assert!(reconcile_quarantine(
+                    &state.registry,
+                    &state.router,
+                    &state.stdio_upstream,
+                    profile,
+                    None,
+                    &AtomicBool::new(false)
+                ));
+                assert!(state
+                    .router
+                    .lock()
+                    .unwrap()
+                    .aggregated_tools()
+                    .iter()
+                    .any(|tool| tool["name"] == "srv__read"));
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_quarantine_release_is_checked_before_rooted_publication() {
+        let data = DataDirTestEnv::new("legacy-rooted-publication");
+        let scope = format!("root:{}", registry::sha256_hex("/fixture/project"));
+        integrity::register_root_scope(&scope).unwrap();
+        let state = http_state(false);
+        state
+            .registry
+            .lock()
+            .unwrap()
+            .set_safety_level(registry::SafetyLevel::Strict);
+        let keys = vec![LaunchKey {
+            server: "srv".into(),
+            kind: "stdio",
+            digest: "fixture".into(),
+        }];
+        for version in ["v1", "v2"] {
+            seed_legacy_review(&data.dir, Some(&scope), version);
+            let mut cached = readonly_router("srv", "Changed while quarantined.");
+            cached.requarantine(set_of(&["srv__read"]));
+            let cached = Arc::new(cached);
+            {
+                let mut pool = state.root_launch_pool.lock().unwrap();
+                pool.views.insert(keys.clone(), Arc::clone(&cached));
+                pool.root_scopes.insert(keys.clone(), scope.clone());
+            }
+            conduit_lib::registry_controller::release_quarantine(Some(&scope), "srv__read")
+                .unwrap();
+            let checked = state.reconcile_rooted_view(&keys, cached);
+            assert!(!checked
+                .aggregated_tools()
+                .iter()
+                .any(|tool| tool["name"] == "srv__read"));
+            assert!(state.root_launch_pool.lock().unwrap().views[&keys]
+                .quarantined()
+                .contains("srv__read"));
+            let fp = integrity::baselines(Some(&scope))["srv__read"]
+                .fingerprint
+                .clone();
+            assert!(integrity::release_definition(Some(&scope), "srv__read", &fp).unwrap());
+            let accepted = state.reconcile_rooted_view(&keys, checked);
+            assert!(accepted
+                .aggregated_tools()
+                .iter()
+                .any(|tool| tool["name"] == "srv__read"));
+        }
     }
 
     #[test]
