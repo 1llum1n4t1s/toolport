@@ -128,6 +128,7 @@ struct Config {
     wire_trace: Option<String>,
     call_delay: Option<std::time::Duration>,
     start_delay: Option<std::time::Duration>,
+    start_release: Option<std::path::PathBuf>,
     garbage_stdout: Option<std::time::Duration>,
     stderr_flood: bool,
     concurrent: bool,
@@ -158,6 +159,8 @@ impl Config {
                 })
                 .and_then(|raw| raw.trim().parse().ok())
                 .map(std::time::Duration::from_millis),
+            start_release: std::env::var_os("MOCK_MCP_START_RELEASE_FILE")
+                .map(std::path::PathBuf::from),
             garbage_stdout: std::env::var("MOCK_MCP_GARBAGE_STDOUT_MS")
                 .ok()
                 .and_then(|raw| raw.trim().parse().ok())
@@ -1044,6 +1047,15 @@ fn serve_stdio() {
     fail_start_if_configured();
     let cfg = Config::from_env();
     if let Some(delay) = cfg.start_delay {
+        // Separate OS process loading from the catalog delay measured by a test.
+        if let Some(release) = &cfg.start_release {
+            std::fs::write(release.with_extension("ready"), "ready").unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !release.exists() {
+                assert!(std::time::Instant::now() < deadline, "startup gate was not released");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
         std::thread::sleep(delay);
     }
     // A server that logs to stdout breaks MCP framing; the gateway must skip the
