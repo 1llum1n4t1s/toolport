@@ -195,7 +195,9 @@ fn machine_defs(include_detected: bool) -> Vec<ClientDef> {
         if let Some(mut def) = defs().into_iter().find(|def| def.id == location.client_type) {
             // Prefer the stable location identity when the app environment also
             // selects this folder. Never show two rows writing the same file.
-            definitions.retain(|base| base.location.is_some() || (base.path)().as_ref() != Some(&location.config_path));
+            if include_detected {
+                definitions.retain(|base| base.location.is_some() || (base.path)().as_ref() != Some(&location.config_path));
+            }
             def.location = Some(location);
             definitions.push(def);
         }
@@ -7121,6 +7123,10 @@ fn read_gateway_profile(client_id: &str) -> Option<String> {
 /// never be re-pointed onto a current binary. Deleting one out from under a plugin
 /// entry leaves a reference nothing will ever repair.
 pub fn referenced_gateway_paths() -> Option<Vec<PathBuf>> {
+    // Newly found profiles may still name an older gateway. Do not prune its
+    // binary before Clients has inspected and registered their launch references.
+    let saved = locations::saved().ok()?;
+    if locations::all().iter().any(|row| !saved.iter().any(|known| known.id == row.id)) { return None; }
     referenced_gateway_paths_in(&detect_clients())
 }
 
