@@ -291,6 +291,8 @@ export interface QuarantinedTool {
   detail?: string | null;
   /** Definition captured with this blocked record, including schemas and annotations. */
   definition?: Record<string, unknown> | null;
+  /** The list omits schemas; fetch a captured definition only when expanded. */
+  has_definition?: boolean;
   prev_ro?: boolean | null;
   new_ro?: boolean | null;
   prev_dh?: boolean | null;
@@ -301,6 +303,18 @@ export interface QuarantinedTool {
  * across profiles. */
 export function listQuarantined(): Promise<QuarantinedTool[]> {
   return invoke<QuarantinedTool[]>("list_quarantined");
+}
+
+export function getQuarantineDefinition(
+  profile: string,
+  tool: string,
+  expectedRecordId: string,
+): Promise<Record<string, unknown>> {
+  return invoke<Record<string, unknown>>("get_quarantine_definition", {
+    profile,
+    tool,
+    expectedRecordId,
+  });
 }
 
 /** Re-approve a quarantined tool so the gateway re-exposes it on its next rebuild. */

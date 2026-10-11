@@ -82,7 +82,9 @@ describe("QuarantineAlert bulk re-approval", () => {
     );
     expect(releaseQuarantine).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole("region")).not.toBeInTheDocument());
-    expect(toastSuccess).toHaveBeenCalledWith("Re-approved 40 tools");
+    expect(toastSuccess).toHaveBeenCalledWith(
+      "Saved 40 approvals. Current definitions need one more review.",
+    );
   });
 
   it("clears every profile the card covers", async () => {
@@ -139,7 +141,7 @@ describe("QuarantineAlert bulk re-approval", () => {
 
     await waitFor(() => expect(toastError).toHaveBeenCalled());
     expect(toastError.mock.calls[0][0]).toMatch(
-      /Re-approved 1\. 2 could not be repaired/,
+      /Saved 1 approval\. 2 could not be repaired/,
     );
     expect(toastSuccess).not.toHaveBeenCalled();
     // Still blocked, so the card must stay up.
@@ -190,7 +192,7 @@ describe("QuarantineAlert bulk re-approval", () => {
     await confirmReapproveAll();
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith(
-        "Re-approved 1. 2 new or changed findings remain blocked. Refresh and review them.",
+        "Saved 1 approval. 2 new or changed findings remain blocked. Refresh and review them.",
       ),
     );
     expect(toastSuccess).not.toHaveBeenCalled();
@@ -209,7 +211,7 @@ describe("QuarantineAlert bulk re-approval", () => {
     await confirmReapproveAll();
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith(
-        "Re-approved 2. 1 new or changed findings remain blocked. Refresh and review them.",
+        "Saved 2 approvals. 1 new or changed findings remain blocked. Refresh and review them.",
       ),
     );
     expect(releaseAllQuarantine).toHaveBeenCalledTimes(1);
@@ -249,7 +251,7 @@ describe("QuarantineAlert bulk re-approval", () => {
 
     await waitFor(() => expect(toastError).toHaveBeenCalled());
     // The successful profile is reported, not silently dropped.
-    expect(toastError.mock.calls[0][0]).toMatch(/Re-approved 2\./);
+    expect(toastError.mock.calls[0][0]).toMatch(/Saved 2 approvals\./);
     expect(toastError.mock.calls[0][0]).toMatch(/1 profile could not be re-approved/);
     expect(toastSuccess).not.toHaveBeenCalled();
     // The refresh still ran, so the card drops the tools that did come free.

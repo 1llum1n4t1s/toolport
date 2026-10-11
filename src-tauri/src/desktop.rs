@@ -1576,12 +1576,23 @@ fn set_pii_redaction(state: State<RegistryState>, on: bool) -> Result<Registry, 
 #[tauri::command]
 async fn list_quarantined(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let list = integrity::all_quarantined()?;
+        let list = integrity::all_quarantined_summaries()?;
         notify_new_quarantines(&app, &list);
         Ok(list)
     })
     .await
     .map_err(|e| format!("quarantine read task join failed: {e}"))?
+}
+
+#[tauri::command]
+async fn get_quarantine_definition(
+    profile: String, tool: String, expected_record_id: String,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        integrity::quarantine_definition(
+            (!profile.is_empty()).then_some(profile.as_str()), &tool, &expected_record_id,
+        )
+    }).await.map_err(|e| format!("definition read task join failed: {e}"))?
 }
 
 /// Keys of quarantine entries we have already observed this process. `None` = not
@@ -4263,6 +4274,7 @@ pub fn run() {
             list_tool_identities,
             set_pii_redaction,
             list_quarantined,
+            get_quarantine_definition,
             release_quarantine,
             release_all_quarantine,
             set_lazy_discovery,

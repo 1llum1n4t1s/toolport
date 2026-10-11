@@ -170,27 +170,33 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
           changed.add(entryKey(q));
         }
       }
+      const saved = `Saved ${released} approval${released === 1 ? "" : "s"}.`;
       if (failed.length > 0) {
         // Say what did get through, so the number still on the card adds up.
         toastError(
-          `Re-approved ${released}. ${failed.length} profile${
+          `${saved} ${failed.length} profile${
             failed.length === 1 ? "" : "s"
           } could not be re-approved: ${failed[0]}`,
         );
       } else if (changed.size > 0) {
         toastError(
-          `Re-approved ${released}. ${changed.size} new or changed findings remain blocked. Refresh and review them.`,
+          `${saved} ${changed.size} new or changed findings remain blocked. Refresh and review them.`,
         );
       } else if (skipped.length > 0) {
         // Not a success: these are still blocked, and saying otherwise would send the
         // user away believing the catalog is whole.
         toastError(
-          `Re-approved ${released}. ${skipped.length} could not be repaired and ${
+          `${saved} ${skipped.length} could not be repaired and ${
             skipped.length === 1 ? "is" : "are"
           } still blocked.`,
         );
       } else {
-        toast.success(`Re-approved ${released} tool${released === 1 ? "" : "s"}`);
+        const needsCapture = reviewed.some(
+          (q) => !(q.has_definition ?? Boolean(q.definition)),
+        );
+        toast.success(
+          needsCapture ? `${saved} Current definitions need one more review.` : saved,
+        );
       }
     } catch (e) {
       toastError(`Couldn't re-approve the blocked tools: ${e}`);

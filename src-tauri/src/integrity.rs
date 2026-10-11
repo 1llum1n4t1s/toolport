@@ -1867,6 +1867,10 @@ pub fn quarantine_notification(newcomers: &[&Value]) -> (String, String) {
 /// Same contract as [`all_quarantined_names`]: only a fresh profile's missing
 /// store contributes nothing; a damaged one is an `Err` rather than a shorter list.
 pub fn all_quarantined() -> Result<Vec<Value>, String> {
+    all_quarantined_inner(false)
+}
+
+fn all_quarantined_inner(summary: bool) -> Result<Vec<Value>, String> {
     if crate::registry::conduit_dir().is_none() {
         return Ok(Vec::new());
     }
@@ -1875,16 +1879,67 @@ pub fn all_quarantined() -> Result<Vec<Value>, String> {
         let Some(store) = read_quarantine_for_scan(&profile, &path)? else {
             continue;
         };
-        for mut record in store.into_values() {
+        for (name, mut record) in store {
             if is_legacy_added(&record) {
                 continue;
             }
-            record["record_id"] = json!(quarantine_record_id(&record));
+            let id = quarantine_record_id(&record);
+            if summary {
+                let has_definition = record["definition"].is_object();
+                if let Some(object) = record.as_object_mut() {
+                    object.retain(|key, _| matches!(key.as_str(),
+                        "server" | "tool" | "reason" | "ts" | "detail" | "change" |
+                        "severity" | "prev_ro" | "new_ro" | "prev_dh" | "new_dh"
+                    ));
+                }
+                record["has_definition"] = json!(has_definition);
+                // Release operates on the store key, including older unqualified records.
+                record["tool"] = json!(name);
+            }
+            record["record_id"] = json!(id);
             record["profile"] = json!(profile);
             out.push(record);
         }
     }
     Ok(out)
+}
+
+/// Bounded list payload for the app; definitions are loaded per displayed record.
+pub fn all_quarantined_summaries() -> Result<Vec<Value>, String> {
+    // Use the same metadata stamp as Activity: registry/scope changes, file
+    // replacement, same-length edits and permission changes invalidate it.
+    let stamp = review_stamp();
+    let mut cache = QUARANTINE_SUMMARY_CACHE.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let (Some(stamp), Some(cached)) = (stamp.as_ref(), cache.as_ref()) {
+        if stamp == &cached.stamp {
+            return Ok(cached.records.clone());
+        }
+    }
+    let records = all_quarantined_inner(true)?;
+    if let Some(stamp) = stamp.filter(|stamp| Some(stamp) == review_stamp().as_ref()) {
+        *cache = Some(QuarantineSummaryCache { stamp, records: records.clone() });
+    } else {
+        *cache = None;
+    }
+    Ok(records)
+}
+
+/// Fetch only the definition belonging to the displayed finding. A changed or
+/// removed record cannot substitute a different definition in an open review.
+pub fn quarantine_definition(
+    profile: Option<&str>, tool: &str, expected_id: &str,
+) -> Result<Value, String> {
+    let path = quarantine_path(profile).ok_or("Could not resolve the quarantine store")?;
+    with_store_lock(&path, || {
+        let store = load_quarantine(profile)?;
+        let record = store.get(tool).ok_or("This finding is no longer blocked. Refresh the list.")?;
+        if quarantine_record_id(record) != expected_id {
+            return Err("The blocked finding changed. Refresh and review the latest definition.".into());
+        }
+        record.get("definition").filter(|definition| definition.is_object()).cloned()
+            .ok_or_else(|| "This finding has no saved definition. Approving captures it for one more review.".into())
+    })
 }
 
 /// Re-approve a quarantined tool: drop it so the gateway re-exposes it on the next
@@ -1931,12 +1986,26 @@ pub fn release_all_records(
 
 /// Content identity for a quarantine record, independent of its presentation scope.
 pub fn quarantine_record_id(record: &Value) -> String {
-    let mut stored = record.clone();
-    if let Some(object) = stored.as_object_mut() {
-        object.remove("profile");
-        object.remove("record_id");
+    // Stream into the digest so listing a large catalog neither clones each
+    // captured schema nor allocates its full serialized JSON a second time.
+    struct HashWriter(Sha256);
+    impl std::io::Write for HashWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
     }
-    format!("{:x}", Sha256::digest(stored.to_string().as_bytes()))
+    let mut writer = HashWriter(Sha256::new());
+    if let Some(object) = record.as_object() {
+        let stored: BTreeMap<_, _> = object.iter()
+            .filter(|(key, _)| !matches!(key.as_str(), "profile" | "record_id"))
+            .collect();
+        serde_json::to_writer(&mut writer, &stored).expect("JSON values serialize");
+    } else {
+        serde_json::to_writer(&mut writer, record).expect("JSON values serialize");
+    }
+    format!("{:x}", writer.0.finalize())
 }
 
 /// Accept only the definition displayed in a review. A newer quarantine written
@@ -3919,6 +3988,13 @@ struct ReviewFileStamp {
     created: Option<SystemTime>,
 }
 
+struct QuarantineSummaryCache {
+    stamp: ReviewStamp,
+    records: Vec<Value>,
+}
+
+static QUARANTINE_SUMMARY_CACHE: Mutex<Option<QuarantineSummaryCache>> = Mutex::new(None);
+
 struct ReviewCache {
     stamp: ReviewStamp,
     limit: usize,
@@ -5392,6 +5468,65 @@ mod tests {
                 assert!(check_staged(profile, &tools).unwrap().is_empty());
             }
         }
+    }
+
+    #[test]
+    fn quarantine_summaries_omit_definitions_but_keep_the_bound_identity() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("quarantine-summary");
+        let tools = vec![destructive_tool("srv__wipe", "Captured text.")];
+        let events = vec![json!({"tool":"srv__wipe", "change":"changed", "severity":"high"})];
+        apply_quarantine(None, &tools, &events).unwrap();
+        let full = all_quarantined().unwrap();
+        let summaries = all_quarantined_summaries().unwrap();
+        assert_eq!(full.len(), summaries.len());
+        for (record, summary) in full.iter().zip(&summaries) {
+            assert!(summary.get("definition").is_none(), "list IPC must not include full schemas per row");
+            assert!(summary.get("pending_pin").is_none());
+            assert_eq!(summary["has_definition"], true);
+            assert_eq!(summary["record_id"], record["record_id"]);
+            let mut stored = record.clone();
+            stored.as_object_mut().unwrap().remove("record_id");
+            stored.as_object_mut().unwrap().remove("profile");
+            assert_eq!(record["record_id"], format!("{:x}", Sha256::digest(stored.to_string().as_bytes())));
+            let profile = summary["profile"].as_str().unwrap();
+            assert_eq!(quarantine_definition((!profile.is_empty()).then_some(profile), "srv__wipe", summary["record_id"].as_str().unwrap()).unwrap(), tools[0]);
+        }
+    }
+
+    #[test]
+    fn quarantine_summary_cache_detects_same_length_edits_and_store_damage() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("quarantine-summary-cache");
+        let path = quarantine_path(None).unwrap();
+        let old = json!({"srv__wipe":{"tool":"srv__wipe", "change":"changed", "ts":1}}).to_string();
+        std::fs::write(&path, &old).unwrap();
+        let first = all_quarantined_summaries().unwrap();
+        assert_eq!(all_quarantined_summaries().unwrap(), first);
+        let new = old.replace("\"ts\":1", "\"ts\":2");
+        assert_eq!(new.len(), old.len());
+        std::fs::write(&path, new).unwrap();
+        let changed = all_quarantined_summaries().unwrap();
+        assert_ne!(first[0]["record_id"], changed[0]["record_id"]);
+        std::fs::write(&path, "corrupt").unwrap();
+        assert!(all_quarantined_summaries().is_err());
+        std::fs::write(&path, "").unwrap();
+        assert!(all_quarantined_summaries().is_err());
+        std::fs::write(&path, "{}").unwrap();
+        assert!(!all_quarantined_summaries().unwrap().iter().any(|record| record["profile"] == ""));
+    }
+
+    #[test]
+    fn quarantine_definition_fetch_rejects_a_replaced_record() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("quarantine-definition-bound");
+        let old = json!({"tool":"srv__wipe", "change":"changed", "definition":{"name":"old"}});
+        let id = quarantine_record_id(&old);
+        save_quarantine(None, &BTreeMap::from([("srv__wipe".into(), old)])).unwrap();
+        assert_eq!(quarantine_definition(None, "srv__wipe", &id).unwrap()["name"], "old");
+        save_quarantine(None, &BTreeMap::from([("srv__wipe".into(), json!({"tool":"srv__wipe", "change":"poison", "definition":{"name":"new"}}))])).unwrap();
+        assert!(quarantine_definition(None, "srv__wipe", &id).unwrap_err().contains("changed"));
+        assert!(quarantined(None).unwrap().contains("srv__wipe"));
     }
 
     #[test]

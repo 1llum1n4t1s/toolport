@@ -181,3 +181,7 @@ debug = "line-tables-only"
 [[example]]
 name = "audit-performance"
 required-features = ["test-support"]
+
+[[example]]
+name = "quarantine-performance"
+required-features = ["test-support"]
