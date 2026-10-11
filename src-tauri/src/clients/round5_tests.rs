@@ -153,3 +153,27 @@ fn round5_windows_bulk_disconnect_matches_native_recovery_paths() {
     assert_eq!(results.iter().filter(|result| result.client_id == id).count(), 1);
     assert_eq!(std::fs::read_to_string(&native).unwrap(), original);
 }
+
+#[cfg(unix)]
+#[test]
+fn round5_bulk_disconnect_deduplicates_equivalent_recovery_paths() {
+    let data = crate::registry::DataDirTestEnv::new("round5-recovery-alias");
+    let _home = TestHome::set(&data.dir);
+    let folder = data.dir.join("work-profile");
+    std::fs::create_dir(&folder).unwrap();
+    let alias = data.dir.join("profile-alias");
+    std::os::unix::fs::symlink(&folder, &alias).unwrap();
+    let id = add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
+    let path = folder.join(".claude.json");
+    std::fs::write(&path, r#"{"mcpServers":{"native":{"command":"native"}}}"#).unwrap();
+    crate::registry::save(&crate::registry::Registry::default()).unwrap();
+    let store = data.dir.join("client-locations.json");
+    let mut saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+    saved[0]["configPath"] = serde_json::json!(alias.join(".claude.json"));
+    std::fs::write(&store, saved.to_string()).unwrap();
+    let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport",
+        "transport":"stdio", "command":"/new/toolport-gateway", "env":{"TOOLPORT_CLIENT_ID":id}})).unwrap();
+    mutation::run(&id, &path, Format::JsonMcpServers, || edit_format(Format::JsonMcpServers, &path, Some(&entry), false)).unwrap();
+    let results = disconnect_all(true).unwrap();
+    assert_eq!(results.iter().filter(|result| result.client_id == id).count(), 1);
+}
