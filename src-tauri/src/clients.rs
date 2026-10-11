@@ -811,7 +811,7 @@ pub(crate) fn claude_settings_paths() -> Vec<PathBuf> {
     let Some(home) = home() else {
         return Vec::new();
     };
-    let dirs = match claude_profile_dirs_with_links(&home, true) {
+    let dirs = match legacy_claude_profile_dirs(&home) {
         Ok(dirs) => dirs,
         Err(error) => {
             let msg = format!(
@@ -848,7 +848,7 @@ fn claude_settings_paths_from(
     push(claude_settings_path(&home.join(".claude")), &mut out);
     let mut siblings: Vec<&String> = home_dirs
         .iter()
-        .filter(|name| claude_profile_name(name))
+        .filter(|name| legacy_claude_profile_name(name) || claude_profile_name(name))
         .collect();
     // read_dir order is unspecified; sort so the log and any diagnostics are stable.
     siblings.sort();
