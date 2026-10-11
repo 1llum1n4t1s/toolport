@@ -1495,4 +1495,17 @@ mod tests {
         assert_eq!(others, [dev], "compare and inventory every candidate in the selected UNC view");
     }
 
+    #[test]
+    fn purge_r4_cursor_settings_backup_matches_shared_writer() {
+        let env = crate::registry::DataDirTestEnv::new("purge_r4_cursor_backup");
+        let config = env.dir.join("hooks.json");
+        let original = r#"{"hooks":{}}"#;
+        std::fs::write(&config, original).unwrap();
+        crate::clients::write_settings_key_for("cursor", &config, Some(original),
+            &serde_json::json!({"hooks":{"fixture":[]}}), "hooks").unwrap();
+        let backup = std::fs::read_dir(env.dir.join("backups/cursor")).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+        assert!(owned_data_entry(backup.strip_prefix(&env.dir).unwrap()).is_some(), "{}", backup.display());
+    }
+
 }
