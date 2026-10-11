@@ -75,3 +75,58 @@ fn round4_backup_named_profiles_receive_startup_hook_and_guard_cleanup() {
         assert_eq!(value["permissions"], original["permissions"]);
     }
 }
+
+#[test]
+fn round4_gateway_publication_failure_still_returns_client_rows() {
+    let data = crate::registry::DataDirTestEnv::new("round4-publication");
+    let _home = TestHome::set(&data.dir);
+    let folder = data.dir.join(".claude-work");
+    std::fs::create_dir(&folder).unwrap();
+    let path = folder.join(".claude.json");
+    let raw = r#"{"mcpServers":{"my-toolport":{"command":"/usr/bin/toolport-gateway"}}}"#;
+    std::fs::write(&path, raw).unwrap();
+    crate::registry::save(&crate::registry::Registry::default()).unwrap();
+    let rows = detect_clients_for_display_with_gateway(|| Err("Cannot publish gateway fixture".into())).unwrap();
+    assert!(rows.iter().any(|row| row.id == "claude-code@claude-work" && row.config_exists && row.error.is_none()));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), raw);
+    assert!(crate::registry::load().unwrap().client_managed_entries.is_empty());
+}
+
+#[test]
+fn round4_activity_resolves_each_missing_location_once_per_pass() {
+    let entries = vec![serde_json::json!({"client":"adapter:claude-code@removed"}); 10_000];
+    let mut calls = 0;
+    let names = CallerNames::for_entries_with_adapter(&entries, || None, |_| {
+        calls += 1;
+        None
+    });
+    assert_eq!(calls, 1);
+    assert_eq!(names.trusted_name(Some("adapter:claude-code@removed"), None), "Claude Code (other config)");
+}
+
+#[cfg(windows)]
+#[test]
+fn round4_windows_missing_main_codex_config_does_not_create_location() {
+    let data = crate::registry::DataDirTestEnv::new("round4-codex-main");
+    let _env = env_test_lock();
+    let _home = TestHome::set(&data.dir);
+    let folder = data.dir.join(".codex");
+    std::fs::create_dir(&folder).unwrap();
+    let _override = EnvRestore::set("CODEX_HOME", &folder);
+    assert!(!folder.join("config.toml").exists());
+    assert_eq!(add_client_location("codex", folder.to_str().unwrap()).unwrap(), "codex");
+    assert!(locations::saved().unwrap().is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn round4_windows_manual_location_displays_ordinary_path() {
+    let data = crate::registry::DataDirTestEnv::new("round4-windows-display");
+    let _home = TestHome::set(&data.dir);
+    let folder = data.dir.join("work-profile");
+    std::fs::create_dir(&folder).unwrap();
+    let id = add_client_location("codex", folder.to_str().unwrap()).unwrap();
+    let row = read_client(&find_def(&id).unwrap());
+    assert!(!row.config_path.starts_with(r"\\?\"), "{}", row.config_path);
+    assert_eq!(add_client_location("codex", folder.to_str().unwrap()).unwrap(), id);
+}

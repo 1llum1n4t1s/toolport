@@ -1696,6 +1696,14 @@ impl CallerNames {
         entries: &[serde_json::Value],
         load: impl FnOnce() -> Option<crate::registry::Registry>,
     ) -> Self {
+        Self::for_entries_with_adapter(entries, load, known_adapter_name)
+    }
+
+    fn for_entries_with_adapter(
+        entries: &[serde_json::Value],
+        load: impl FnOnce() -> Option<crate::registry::Registry>,
+        mut adapter_name: impl FnMut(&str) -> Option<String>,
+    ) -> Self {
         let mut names: HashMap<String, String> = defs()
             .into_iter()
             .map(|def| (format!("adapter:{}", def.id), def.name.to_string()))
@@ -1703,7 +1711,7 @@ impl CallerNames {
         for id in entries.iter().filter_map(|entry| entry["client"].as_str()) {
             if let Some(adapter) = id.strip_prefix("adapter:").filter(|id| id.contains('@')) {
                 if !names.contains_key(id) {
-                    if let Some(name) = known_adapter_name(adapter) { names.insert(id.into(), name); }
+                    if let Some(name) = adapter_name(adapter) { names.insert(id.into(), name); }
                 }
             }
         }
@@ -3607,9 +3615,15 @@ pub fn detect_clients_with_inspection(inspect_configs: bool) -> Result<Vec<Detec
 }
 
 pub fn detect_clients_for_display() -> Result<Vec<DetectedClient>, String> {
+    detect_clients_for_display_with_gateway(resolve_gateway_path)
+}
+
+fn detect_clients_for_display_with_gateway(
+    resolve: impl FnOnce() -> Result<Option<PathBuf>, String>,
+) -> Result<Vec<DetectedClient>, String> {
     let definitions = machine_defs(true);
     let current = crate::registry::load()?;
-    let mut clients = detect_clients_for_display_in(definitions, current, resolve_gateway_path()?)?;
+    let mut clients = detect_clients_for_display_in(definitions, current, resolve()?)?;
     append_client_scan_errors(&mut clients);
     Ok(clients)
 }
