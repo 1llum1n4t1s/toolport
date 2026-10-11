@@ -101,7 +101,7 @@ fn round4_activity_resolves_each_missing_location_once_per_pass() {
         None
     });
     assert_eq!(calls, 1);
-    assert_eq!(names.trusted_name(Some("adapter:claude-code@removed"), None), "Unknown client");
+    assert_eq!(names.trusted_name(Some("adapter:claude-code@removed"), None), "[private]");
 }
 
 #[cfg(windows)]

@@ -328,7 +328,7 @@ fn original_gateways(
     // from the initial snapshot after repair renamed or deduplicated it.
     let registry = crate::registry_controller::registry_for_disconnect()?;
     let servers = text.map(|text| parse_client_content(format, text)).transpose()?.unwrap_or_default();
-    let main_adapter = locations::legacy_gateway_ownership(client_id)
+    let main_adapter = find_def(client_id).is_some() && locations::legacy_gateway_ownership(client_id)
         && entry_state_for(gateway_entry_for_client(client_id, &servers), registry.client_managed_entries.get(client_id)) == GatewayEntryState::Managed;
     if client_id.contains('@') || main_adapter {
         if let Some(text) = text {
