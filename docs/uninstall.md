@@ -81,13 +81,15 @@ preserved and listed in the report, including unrelated entries inside Toolport'
 folders. Generated files are matched by their exact names or naming patterns;
 a folder is removed only when empty. The data directory may remain.
 Settings and the default CLI action remove only the selected registry's server
-accounts, excluding ids owned by detected other installs. Shared master keys,
-internal keys, Team tokens and unknown accounts are always preserved because they
-may belong to another Toolport install. Settings stays scoped; the CLI option
+accounts, excluding ids owned by detected other installs. Toolport's shared master key,
+internal keys, HTTP bridge/client keys and Team tokens are preserved, along with
+unknown accounts that may belong to another Toolport install. Settings stays scoped; the CLI option
 below provides explicit consent to remove shared credentials. Accounts have no
 install id, so an undiscovered install using the same server id shares that token.
 Unreadable ownership in another detected install blocks credential cleanup and
-keeps the selected registry for retry. The report names the unreadable path.
+keeps the selected registry for retry. The Settings plan and CLI report name the unreadable path before cleanup.
+Folders without a registry or registry recovery files are not treated as installs;
+preserved user files from an earlier removal do not block a later removal.
 Removed Team tokens are deleted locally only; the Teams client has no server-side
 revoke endpoint.
 

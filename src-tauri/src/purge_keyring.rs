@@ -21,7 +21,8 @@ impl Scope {
     fn owns(&self, account: &str) -> bool {
         self.all_installs || account.split_once("::")
             .is_some_and(|(id, _)| id != "__toolport_internal__" && id != "__conduit_master_key__"
-                && id != crate::teams::TEAM_TOKEN_SERVER && self.server_ids.contains(id))
+                && id != crate::teams::TEAM_TOKEN_SERVER && id != "__toolport_http_bridge__"
+                && id != "__toolport_http_clients__" && self.server_ids.contains(id))
     }
 }
 
@@ -54,7 +55,7 @@ fn remove_owned<T>(
         }
         let path = path(&entry);
         if !scope.owns(&account) {
-            report.preserved.push(path);
+            report.preserved.push(account);
         } else if let Err(error) = delete(&entry) {
             report.leftovers.push(Leftover { path, error });
         } else {
@@ -262,7 +263,7 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
                 };
                 let path = format!("keychain:conduit-mcp/legacy/{account}");
                 if !scope.owns(&account) {
-                    report.preserved.push(path);
+                    report.preserved.push(account);
                     continue;
                 }
                 let reference = attributes.find(unsafe { kSecValueRef.cast::<std::ffi::c_void>() });
@@ -319,7 +320,7 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
             for account in accounts.unwrap_or_default() {
                 let path = format!("keychain:conduit-mcp/data-protection/{account}");
                 if !scope.owns(&account) {
-                    report.preserved.push(path);
+                    report.preserved.push(account);
                     continue;
                 }
                 if inventory_failed { continue; }
@@ -452,9 +453,11 @@ mod tests {
     #[test]
     fn purge_default_scope_preserves_shared_and_unknown_accounts_even_without_detected_installs() {
         let items = ["mine::TOKEN", "mine::TOKEN::toolport-chunk::generation::0", "work::TOKEN",
-            "__conduit_master_key__", "__toolport_internal__::task_key", "__conduit_team__::member_token", "unknown"];
+            "__conduit_master_key__", "__toolport_internal__::task_key", "__conduit_team__::member_token",
+            "__toolport_http_bridge__::TOKEN", "__toolport_http_clients__::fixture", "unknown"];
         let scope = Scope { all_installs: false, server_ids: std::collections::HashSet::from([
-            "mine".into(), "__toolport_internal__".into(), "__conduit_team__".into()]) };
+            "mine".into(), "__toolport_internal__".into(), "__conduit_team__".into(),
+            "__toolport_http_bridge__".into(), "__toolport_http_clients__".into()]) };
         let report = remove_owned(items, &scope, |account| Ok(("conduit-mcp".into(), (*account).into())),
             |account| (*account).into(), |_| Ok(()));
         assert_eq!(report.removed, items[..2]);

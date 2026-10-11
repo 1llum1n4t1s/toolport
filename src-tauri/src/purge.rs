@@ -265,7 +265,7 @@ pub fn plan_with_scope(all_installs: bool) -> Result<Plan, String> {
     let mut resources = vec![
         format!("Toolport-created entries in {}: registry, settings, logs, caches, migration exports, client backups, encrypted secrets and published gateways in bin/. Other entries are preserved.", dir.display()),
         if all_installs { "ALL credentials in the shared conduit-mcp service for every Toolport install, including master keys and Team tokens. Other installations will lose access to these credentials.".into() }
-        else { format!("Only accounts owned by this registry, excluding server ids used by detected other installs. Shared and unknown credentials are preserved because they may belong to another Toolport install. {}", credential_removal_guidance(custom_data_dir(&dir))) },
+        else { format!("Only accounts owned by this registry, excluding server ids used by detected other installs. Toolport's shared master key, internal keys, HTTP bridge/client keys and Team tokens are preserved, along with unknown credentials that may belong to another Toolport install. {}", credential_removal_guidance(custom_data_dir(&dir))) },
         "Toolport's daemon for this data directory, after all active sessions have closed".into(),
     ];
     #[cfg(target_os = "windows")]
@@ -460,7 +460,7 @@ fn run_with(
             }
             report.removed.extend(removal.removed);
             if !removal.preserved.is_empty() {
-                report.notes.push(format!("Preserved credentials may belong to another Toolport install. {}", credential_removal_guidance(custom_data_dir(&dir))));
+                report.notes.push(format!("Preserved credentials may belong to another Toolport install. Toolport's own shared master key, internal keys, HTTP bridge/client keys and Team tokens remain too. {}", credential_removal_guidance(custom_data_dir(&dir))));
             }
             report.preserved.extend(removal.preserved);
             report.notes.extend(removal.notes);
