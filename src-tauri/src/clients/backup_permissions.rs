@@ -15,7 +15,7 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken}
 pub(super) fn secure(dir: &Path) -> Result<(), String> {
     // The directory already exists. Canonicalization supplies the extended
     // Win32 path so a long backup path keeps its private ACL too.
-    let dir = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
+    let dir = crate::registry::client_file::canonicalize_native(dir).map_err(|e| e.to_string())?;
     let mut token = std::ptr::null_mut();
     // SAFETY: valid output handles/buffers; every owned allocation/handle is
     // released below. The SID remains in the aligned buffer until ACL creation.

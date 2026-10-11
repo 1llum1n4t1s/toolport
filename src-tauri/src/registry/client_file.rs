@@ -182,6 +182,30 @@ fn rename_no_clobber(source: &Path, dest: &Path) -> std::io::Result<()> {
     }
 }
 
+#[cfg(windows)]
+pub(crate) fn canonicalize_native(path: &Path) -> std::io::Result<PathBuf> {
+    #[cfg(test)]
+    if FAIL_NATIVE_CANONICALIZE.with(|slot| slot.get()) {
+        return Err(std::io::Error::from_raw_os_error(1));
+    }
+    fs::canonicalize(path)
+}
+
+#[cfg(all(windows, test))]
+thread_local! {
+    static FAIL_NATIVE_CANONICALIZE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(all(windows, test))]
+pub(crate) fn with_native_canonicalize_failure<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) { FAIL_NATIVE_CANONICALIZE.with(|slot| slot.set(self.0)); }
+    }
+    let _reset = Reset(FAIL_NATIVE_CANONICALIZE.with(|slot| slot.replace(true)));
+    run()
+}
+
 // Rust's filesystem functions accept long paths, but our direct Win32 calls
 // need the extended path returned by canonicalize. Only resolve the existing
 // parent: a no-clobber destination or displaced backup does not exist yet.
@@ -192,7 +216,7 @@ fn native_path(path: &Path) -> std::io::Result<Vec<u16>> {
         .unwrap_or(Path::new("."));
     let name = path.file_name().ok_or_else(|| std::io::Error::new(
         std::io::ErrorKind::InvalidInput, "Client file path has no filename"))?;
-    Ok(fs::canonicalize(parent)?.join(name).as_os_str().encode_wide()
+    Ok(canonicalize_native(parent)?.join(name).as_os_str().encode_wide()
         .chain(Some(0)).collect())
 }
 

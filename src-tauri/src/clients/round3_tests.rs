@@ -160,3 +160,29 @@ fn round3_configured_connected_location_reclaims_main_identity() {
     assert_eq!(value["mcpServers"]["toolport"]["env"][crate::brand::ATTRIBUTION_ID], "claude-code");
     assert!(!rows.iter().any(|row| row.id == "claude-code@claude2"));
 }
+
+#[cfg(windows)]
+#[test]
+fn round3_windows_config_write_survives_native_canonicalization_failure() {
+    let data = crate::registry::DataDirTestEnv::new("round3-windows-config");
+    let path = data.dir.join("config.json");
+    std::fs::write(&path, "{}").unwrap();
+    crate::registry::client_file::with_native_canonicalize_failure(|| {
+        let revision = crate::registry::client_file::read(&path).unwrap();
+        crate::registry::client_file::commit(&path, &revision, Some("{\"saved\":true}")).unwrap();
+        let missing = data.dir.join("new.json");
+        let revision = crate::registry::client_file::read(&missing).unwrap();
+        crate::registry::client_file::commit(&missing, &revision, Some("{}")).unwrap();
+        assert_eq!(std::fs::read_to_string(&missing).unwrap(), "{}");
+    });
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"saved\":true}");
+}
+
+#[cfg(windows)]
+#[test]
+fn round3_windows_backup_acl_survives_native_canonicalization_failure() {
+    let data = crate::registry::DataDirTestEnv::new("round3-windows-acl");
+    crate::registry::client_file::with_native_canonicalize_failure(|| {
+        backup_permissions::secure(&data.dir).unwrap();
+    });
+}
