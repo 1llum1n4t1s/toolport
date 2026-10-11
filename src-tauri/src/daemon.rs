@@ -378,7 +378,7 @@ fn probe_purge_idle(descriptor: &DaemonDescriptor) -> Result<(), String> {
         return Err("Daemon topology does not match its descriptor".into());
     }
     if topology["purgeIdle"].as_bool() != Some(true) {
-        return Err("Daemon has active listeners or a service lease, or cannot prove it is idle. Close sessions and retry using the current gateway.".into());
+        return Err("Daemon has active requests, listeners or a service lease, or cannot prove it is idle. Close sessions and retry using the current gateway.".into());
     }
     Ok(())
 }

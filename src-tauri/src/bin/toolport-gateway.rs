@@ -12057,6 +12057,8 @@ struct HostState {
     /// Millis of the last request a listener accepted. The daemon's idle watchdog
     /// compares it against its grace period to decide the host is unused.
     last_activity_ms: AtomicU64,
+    /// The daemon listener's existing request counter, also read by purge preflight.
+    http_inflight: Arc<AtomicUsize>,
 }
 
 impl HostState {
@@ -19244,7 +19246,9 @@ fn daemon_topology_json(state: &GatewayState) -> String {
         "compat": daemon_compat_fingerprint(),
         "pid": std::process::id(),
         "sessions": sessions,
-        "purgeIdle": !state.http_service_lease_active() && !state.mcp_sessions.lock()
+        // This status request owns one permit; every other permit is live work.
+        "purgeIdle": state.http_inflight.load(Ordering::Acquire) <= 1
+            && !state.http_service_lease_active() && !state.mcp_sessions.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner).values()
             .any(|session| session.listener_active.load(Ordering::Acquire)),
         "ordinaryLaunches": ordinary_launches,
@@ -19458,7 +19462,7 @@ fn serve_daemon(state: GatewayState, private: bool) -> ! {
     ));
     let search = Arc::new(SearchGuard::default());
     state.touch_activity();
-    let inflight = Arc::new(AtomicUsize::new(0));
+    let inflight = Arc::clone(&state.http_inflight);
     spawn_daemon_idle_watchdog(
         Arc::clone(&state.host),
         Arc::clone(&inflight),
@@ -21302,6 +21306,7 @@ fn main() {
         http_service_lease: Mutex::new(None),
         shutdown_if_idle: AtomicBool::new(false),
         last_activity_ms: AtomicU64::new(0),
+        http_inflight: Arc::new(AtomicUsize::new(0)),
         rebuild_shrink_streaks: Mutex::new(HashMap::new()),
         reconnect_tracked: Mutex::new(Vec::new()),
         quarantine_read_failed: AtomicBool::new(false),
@@ -21735,6 +21740,9 @@ mod tests {
         *state.http_service_lease.lock().unwrap() = Some(HttpServiceLease {
             token_sha256: "fixture".into(), bind_host: "127.0.0.1".into(), expires_at: Instant::now() + Duration::from_secs(60),
         });
+        assert_eq!(serde_json::from_str::<Value>(&daemon_topology_json(&state)).unwrap()["purgeIdle"], false);
+        *state.http_service_lease.lock().unwrap() = None;
+        state.http_inflight.store(2, Ordering::Release);
         assert_eq!(serde_json::from_str::<Value>(&daemon_topology_json(&state)).unwrap()["purgeIdle"], false);
         assert!(!state.shutdown_if_idle.load(Ordering::Acquire));
     }
@@ -28383,6 +28391,7 @@ mod tests {
             http_service_lease: Mutex::new(None),
             shutdown_if_idle: AtomicBool::new(false),
             last_activity_ms: AtomicU64::new(0),
+            http_inflight: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -28427,6 +28436,7 @@ mod tests {
                 http_service_lease: Mutex::new(None),
                 shutdown_if_idle: AtomicBool::new(false),
                 last_activity_ms: AtomicU64::new(0),
+                http_inflight: Arc::new(AtomicUsize::new(0)),
                 rebuild_shrink_streaks: Mutex::new(HashMap::new()),
                 reconnect_tracked: Mutex::new(Vec::new()),
                 quarantine_read_failed: AtomicBool::new(false),
