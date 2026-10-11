@@ -1185,6 +1185,7 @@ pub fn client_rules_target(
     scope: crate::instructions::Scope,
 ) -> Option<crate::instructions::Target> {
     if let Some(location) = locations::lookup(client_id) {
+        locations::validate(&location).ok()?;
         let folder = location.config_path.parent()?;
         return match location.client_type.as_str() {
             "claude-code" => Some(crate::instructions::Target {

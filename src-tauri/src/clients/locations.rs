@@ -150,7 +150,16 @@ pub(super) fn validate(row: &ClientLocation) -> Result<(), String> {
 }
 
 pub(super) fn validate_mutation(client_id: &str, path: &Path) -> Result<(), String> {
-    if !client_id.contains('@') { return Ok(()); }
+    if !client_id.contains('@') {
+        // Legacy secondary upkeep shares the main client ID. A saved automatic
+        // path must not become writable through that compatibility route.
+        if client_id == "claude-code" {
+            if let Some(row) = saved().unwrap_or_default().into_iter().find(|row| !row.manual && row.config_path == path) {
+                validate(&row)?;
+            }
+        }
+        return Ok(());
+    }
     let row = lookup(client_id).ok_or("Unknown client location")?;
     validate(&row)?;
     if !row.manual && path != row.config_path {
@@ -562,6 +571,7 @@ mod tests {
             let read = read_client(&stale_def);
             assert!(read.error.is_some(), "directory_link={directory_link}");
             assert!(read.servers.is_empty());
+            assert!(client_rules_target("claude-code@claude2", crate::instructions::Scope::Team).is_none());
             let rows = detect_clients_for_display_in(vec![def()], crate::registry::Registry::default(), Some(gateway)).unwrap();
             assert!(rows[0].error.is_some());
             assert_eq!(rows[0].config_path, path.to_string_lossy());
@@ -750,12 +760,21 @@ mod tests {
     }
 
     #[test]
-    fn long_profile_names_connect_with_stable_ids_and_recoverable_backups() {
+    fn long_ascii_profile_connects_with_stable_id_and_recoverable_backups() {
+        long_profile_connects_with_stable_id_and_recoverable_backups(format!(".claude-{}", "x".repeat(237)));
+    }
+
+    #[test]
+    fn long_unicode_profile_connects_with_stable_id_and_recoverable_backups() {
+        long_profile_connects_with_stable_id_and_recoverable_backups(format!(".claude-{}", "é".repeat(100)));
+    }
+
+    fn long_profile_connects_with_stable_id_and_recoverable_backups(folder: String) {
         let _data = crate::registry::DataDirTestEnv::new("location-long-backup-r2");
         let root = TempFolder::new();
         let _home = TestHome::set(root.path());
         let mut dirs = Vec::new();
-        for folder in [format!(".claude-{}", "x".repeat(237)), format!(".claude-{}", "é".repeat(100))] {
+        {
             let profile = root.path().join(&folder);
             std::fs::create_dir(&profile).unwrap();
             let path = profile.join(".claude.json");
