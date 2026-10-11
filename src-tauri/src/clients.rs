@@ -7645,12 +7645,13 @@ fn repair_secondary_claude_config(path: &Path, current: &str) -> Result<(), Stri
                 "claude-code-secondary",
             );
         }
-        let entry = repair_gateway_entry(
+        let mut entry = repair_gateway_entry(
             Format::JsonMcpServers,
             path,
             &entry_name,
             "claude-code-secondary",
         )?;
+        entry.command = Some(current.to_string());
         edit_json_gateway(path, "mcpServers", Some(&entry), true)
     })
 }
