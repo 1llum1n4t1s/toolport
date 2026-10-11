@@ -40107,14 +40107,26 @@ mod tests {
     }
 
     #[test]
-    fn rooted_publication_paths_check_released_global_tools() {
-        let data = DataDirTestEnv::new("rooted-global-publication-paths");
-        for publication in ["cold", "reconnect", "refresh"] {
-            for legacy in [Some("v1"), Some("v2"), None] {
-                rooted_client_checks_released_global_tool(
-                    &data.dir, legacy, "default", "list", publication,
-                );
-            }
+    fn rooted_cold_publication_checks_released_global_tools() {
+        check_released_global_tools_on_rooted_publication_path("cold");
+    }
+
+    #[test]
+    fn rooted_reconnect_publication_checks_released_global_tools() {
+        check_released_global_tools_on_rooted_publication_path("reconnect");
+    }
+
+    #[test]
+    fn rooted_refresh_publication_checks_released_global_tools() {
+        check_released_global_tools_on_rooted_publication_path("refresh");
+    }
+
+    fn check_released_global_tools_on_rooted_publication_path(publication: &str) {
+        let data = DataDirTestEnv::new(&format!("rooted-global-publication-{publication}"));
+        for legacy in [Some("v1"), Some("v2"), None] {
+            rooted_client_checks_released_global_tool(
+                &data.dir, legacy, "default", "list", publication,
+            );
         }
     }
 
