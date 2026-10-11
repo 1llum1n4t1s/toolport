@@ -102,7 +102,7 @@ fn automatic(home: &Path) -> Vec<ClientLocation> {
     rows
 }
 
-fn same_path(a: &Path, b: &Path) -> bool {
+pub(super) fn same_path(a: &Path, b: &Path) -> bool {
     a == b
         || std::fs::canonicalize(a)
             .ok()
@@ -414,6 +414,26 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "claude-code@registered");
         assert!(claude_folder_id(root.path(), &folder.join("nested")).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_environment_path_alias_does_not_duplicate_a_registered_location() {
+        let data = crate::registry::DataDirTestEnv::new("location-path-alias");
+        let folder = data.dir.join("real");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("config.toml"), "").unwrap();
+        std::os::unix::fs::symlink(&folder, data.dir.join("alias")).unwrap();
+        fn alias_path() -> Option<PathBuf> {
+            Some(crate::registry::conduit_dir()?.join("alias/config.toml"))
+        }
+        let mut base = defs().into_iter().find(|def| def.id == "codex").unwrap();
+        base.path = alias_path;
+        let id = add_client_location("codex", folder.to_str().unwrap()).unwrap();
+        let location = find_def(&id).unwrap();
+        let rows = unique_config_definitions(vec![base, location]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].client_id(), id);
     }
 
     #[test]
