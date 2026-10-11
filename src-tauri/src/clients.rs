@@ -5723,7 +5723,7 @@ fn edit_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(), Str
     let exts = yaml_extensions_mut(&mut root);
     let key = serde_yaml::Value::String(GATEWAY_ENTRY_NAME.into());
     let owned = owned_gateway_name(exts.keys().filter_map(|name| name.as_str())).map(str::to_string);
-    exts.retain(|name, _| name.as_str() != owned.as_deref());
+    exts.retain(|name, _| owned.is_none() || name.as_str() != owned.as_deref());
     if let Some(entry) = entry {
         exts.insert(key, entry_to_goose_yaml(entry));
     }
@@ -5920,7 +5920,7 @@ fn edit_continue_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Resul
     let servers = continue_servers_mut(&mut root);
 
     let owned = owned_gateway_name(servers.iter().filter_map(|server| server.get("name").and_then(|name| name.as_str()))).map(str::to_string);
-    servers.retain(|server| server.get("name").and_then(|name| name.as_str()) != owned.as_deref());
+    servers.retain(|server| owned.is_none() || server.get("name").and_then(|name| name.as_str()) != owned.as_deref());
 
     if let Some(entry) = entry {
         servers.push(entry_to_continue_yaml(entry));
@@ -6091,7 +6091,7 @@ fn edit_hermes_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<
     let mcp_servers = hermes_mcp_servers_mut(&mut root);
     let key = serde_yaml::Value::String(GATEWAY_ENTRY_NAME.into());
     let owned = owned_gateway_name(mcp_servers.keys().filter_map(|name| name.as_str())).map(str::to_string);
-    mcp_servers.retain(|name, _| name.as_str() != owned.as_deref());
+    mcp_servers.retain(|name, _| owned.is_none() || name.as_str() != owned.as_deref());
     if let Some(entry) = entry {
         mcp_servers.insert(key, entry_to_hermes_yaml(entry));
     }
