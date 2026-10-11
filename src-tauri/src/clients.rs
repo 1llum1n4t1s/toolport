@@ -10455,7 +10455,7 @@ bad = "not-a-table"
     }
 
     #[test]
-    fn gateway_edits_replace_all_legacy_entries_across_formats() {
+    fn gateway_edits_preserve_foreign_binary_entries_across_formats() {
         assert!(is_gateway_server(&stdio("toolport")));
 
         let json_path = temp_path("dedupe-json");
@@ -10479,7 +10479,7 @@ bad = "not-a-table"
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
         let json_servers = json["mcpServers"].as_object().unwrap();
-        assert_eq!(json_servers.len(), 2);
+        assert_eq!(json_servers.len(), 3);
         assert!(json_servers.contains_key(GATEWAY_ENTRY_NAME));
         assert!(json_servers.contains_key("existing"));
         assert_eq!(
@@ -10490,7 +10490,7 @@ bad = "not-a-table"
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
         let json_servers = json["mcpServers"].as_object().unwrap();
-        assert_eq!(json_servers.keys().collect::<Vec<_>>(), vec!["existing"]);
+        assert_eq!(json_servers.keys().collect::<Vec<_>>(), vec!["existing", "stale"]);
 
         let toml_path = temp_path("dedupe-toml");
         std::fs::write(
@@ -10516,14 +10516,14 @@ command = "npx"
         let toml: toml::Value =
             toml::from_str(&std::fs::read_to_string(&toml_path).unwrap()).unwrap();
         let toml_servers = toml["mcp_servers"].as_table().unwrap();
-        assert_eq!(toml_servers.len(), 2);
+        assert_eq!(toml_servers.len(), 3);
         assert!(toml_servers.contains_key(GATEWAY_ENTRY_NAME));
         assert!(toml_servers.contains_key("existing"));
         edit_toml_gateway(&toml_path, None).unwrap();
         let toml: toml::Value =
             toml::from_str(&std::fs::read_to_string(&toml_path).unwrap()).unwrap();
         let toml_servers = toml["mcp_servers"].as_table().unwrap();
-        assert_eq!(toml_servers.keys().collect::<Vec<_>>(), vec!["existing"]);
+        assert_eq!(toml_servers.keys().collect::<Vec<_>>(), vec!["existing", "stale"]);
 
         let goose_path = temp_path("dedupe-goose-yaml");
         std::fs::write(
@@ -10539,14 +10539,15 @@ command = "npx"
         let goose: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&goose_path).unwrap()).unwrap();
         let goose_servers = goose["extensions"].as_mapping().unwrap();
-        assert_eq!(goose_servers.len(), 2);
+        assert_eq!(goose_servers.len(), 3);
         assert!(goose_servers.contains_key(GATEWAY_ENTRY_NAME));
         assert!(goose_servers.contains_key("fetch"));
         edit_yaml_gateway(&goose_path, None).unwrap();
         let goose: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&goose_path).unwrap()).unwrap();
         let goose_servers = goose["extensions"].as_mapping().unwrap();
-        assert_eq!(goose_servers.len(), 1);
+        assert_eq!(goose_servers.len(), 2);
+        assert!(goose_servers.contains_key("stale"));
         assert!(goose_servers.contains_key("fetch"));
 
         let hermes_path = temp_path("dedupe-hermes-yaml");
@@ -10563,14 +10564,15 @@ command = "npx"
         let hermes: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&hermes_path).unwrap()).unwrap();
         let hermes_servers = hermes["mcp_servers"].as_mapping().unwrap();
-        assert_eq!(hermes_servers.len(), 2);
+        assert_eq!(hermes_servers.len(), 3);
         assert!(hermes_servers.contains_key(GATEWAY_ENTRY_NAME));
         assert!(hermes_servers.contains_key("fetch"));
         edit_hermes_yaml_gateway(&hermes_path, None).unwrap();
         let hermes: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&hermes_path).unwrap()).unwrap();
         let hermes_servers = hermes["mcp_servers"].as_mapping().unwrap();
-        assert_eq!(hermes_servers.len(), 1);
+        assert_eq!(hermes_servers.len(), 2);
+        assert!(hermes_servers.contains_key("stale"));
         assert!(hermes_servers.contains_key("fetch"));
 
         let continue_path = temp_path("dedupe-continue-yaml");
@@ -10587,7 +10589,7 @@ command = "npx"
         let continue_yaml: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&continue_path).unwrap()).unwrap();
         let continue_servers = continue_yaml["mcpServers"].as_sequence().unwrap();
-        assert_eq!(continue_servers.len(), 2);
+        assert_eq!(continue_servers.len(), 3);
         assert!(continue_servers
             .iter()
             .any(|server| server["name"].as_str() == Some(GATEWAY_ENTRY_NAME)));
@@ -10598,8 +10600,9 @@ command = "npx"
         let continue_yaml: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&continue_path).unwrap()).unwrap();
         let continue_servers = continue_yaml["mcpServers"].as_sequence().unwrap();
-        assert_eq!(continue_servers.len(), 1);
-        assert_eq!(continue_servers[0]["name"].as_str(), Some("fetch"));
+        assert_eq!(continue_servers.len(), 2);
+        assert_eq!(continue_servers[0]["name"].as_str(), Some("stale"));
+        assert_eq!(continue_servers[1]["name"].as_str(), Some("fetch"));
 
         for path in [json_path, toml_path, goose_path, hermes_path, continue_path] {
             std::fs::remove_file(path).ok();
