@@ -13,8 +13,28 @@ pub struct ClientResult {
 }
 
 pub fn all(dry_run: bool) -> Result<Vec<ClientResult>, String> {
-    let current = crate::registry_controller::registry_for_disconnect()?;
-    let mut clients = detect_clients();
+    all_with_registry(dry_run, false)
+}
+
+pub(crate) fn for_purge(all_installs: bool) -> Result<Vec<ClientResult>, String> {
+    all_with_registry(false, all_installs)
+}
+
+fn all_with_registry(dry_run: bool, allow_unreadable: bool) -> Result<Vec<ClientResult>, String> {
+    all_with_clients(dry_run, allow_unreadable, detect_clients)
+}
+
+fn all_with_clients(
+    dry_run: bool,
+    allow_unreadable: bool,
+    detect: impl FnOnce() -> Vec<DetectedClient>,
+) -> Result<Vec<ClientResult>, String> {
+    let (current, recovery_only) = match crate::registry_controller::registry_for_disconnect() {
+        Ok(registry) => (registry, false),
+        Err(_) if allow_unreadable => (crate::registry::Registry::default(), true),
+        Err(error) => return Err(error),
+    };
+    let mut clients = detect();
     apply_entry_states(&mut clients, &current.client_managed_entries);
     let targets = clients.into_iter().filter(|client| {
         (client.gateway_installed
@@ -25,8 +45,15 @@ pub fn all(dry_run: bool) -> Result<Vec<ClientResult>, String> {
     let mut results = run(
         targets.map(|client| (client.id, client.config_path)),
         dry_run,
-        |id| {
-            crate::registry_controller::disconnect_client(id).map(|result| result.outcome.warnings)
+        |id, path| {
+            if recovery_only {
+                // Global removal can use the independent client snapshots without
+                // loading, migrating or overwriting a corrupt registry.
+                let def = find_def(id).ok_or("Unknown client")?;
+                restore_path(id, Path::new(path), def.format, None)
+            } else {
+                crate::registry_controller::disconnect_client(id).map(|result| result.outcome.warnings)
+            }
         },
     );
     // Secondary Claude profiles and settings have path-specific recovery records
@@ -124,7 +151,7 @@ fn restore_path(
 fn run(
     targets: impl IntoIterator<Item = (String, String)>,
     dry_run: bool,
-    mut disconnect: impl FnMut(&str) -> Result<Vec<String>, String>,
+    mut disconnect: impl FnMut(&str, &str) -> Result<Vec<String>, String>,
 ) -> Vec<ClientResult> {
     targets
         .into_iter()
@@ -132,7 +159,7 @@ fn run(
             let result = if dry_run {
                 Ok(Vec::new())
             } else {
-                disconnect(&client_id)
+                disconnect(&client_id, &path)
             };
             ClientResult {
                 client_id,
@@ -161,7 +188,7 @@ mod tests {
             ("last".into(), "/last".into()),
         ];
         let mut called = Vec::new();
-        let results = run(targets.clone(), false, |id| {
+        let results = run(targets.clone(), false, |id, _| {
             called.push(id.to_string());
             if id == "broken" {
                 Err("read-only config".into())
@@ -173,11 +200,11 @@ mod tests {
         assert!(results[0].error.is_none());
         assert_eq!(results[1].error.as_deref(), Some("read-only config"));
         assert!(results[2].error.is_none());
-        run(targets, true, |_| panic!("dry run must not mutate"));
+        run(targets, true, |_, _| panic!("dry run must not mutate"));
     }
     #[test]
     fn bulk_disconnect_serializes_warnings_without_errors() {
-        let result = run(vec![("client".into(), "/config".into())], false, |_| {
+        let result = run(vec![("client".into(), "/config".into())], false, |_, _| {
             Ok(vec!["keychain unreachable".into()])
         });
         assert!(result.iter().all(|client| client.error.is_none()));
@@ -221,7 +248,7 @@ mod tests {
             .iter()
             .map(|(_, path)| std::fs::read(path).unwrap())
             .collect();
-        run(targets.clone(), true, |_| {
+        run(targets.clone(), true, |_, _| {
             panic!("dry run mutated a client")
         });
         assert_eq!(
@@ -231,7 +258,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             before
         );
-        let results = run(targets, false, |id| {
+        let results = run(targets, false, |id, _| {
             let (_, format, _) = fixtures
                 .iter()
                 .find(|(client, _, _)| *client == id)
@@ -324,4 +351,59 @@ mod tests {
         assert_eq!(read_config_file(&path).unwrap(), restored);
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn purge_r5_corrupt_registry_restores_selected_nondefault_client_path() {
+        let env = crate::registry::DataDirTestEnv::new("purge_r5_selected_client");
+        let _env_lock = env_test_lock();
+        let fallback_dir = env.dir.join("fallback-claude");
+        std::fs::create_dir(&fallback_dir).unwrap();
+        let _config_dir = EnvRestore::set("CLAUDE_CONFIG_DIR", &fallback_dir);
+        let fallback = resolved_definition_path(&find_def("claude-code").unwrap()).unwrap();
+        assert!(fallback.starts_with(&fallback_dir));
+        let selected = env.dir.join("selected-profile.json");
+        let native = r#"{"session":1,"mcpServers":{"native":{"command":"native"}}}"#;
+        std::fs::write(&selected, native).unwrap();
+        std::fs::write(&fallback, "{\"mcpServers\":{},\"fallback\":true}").unwrap();
+        let fallback_bytes = std::fs::read(&fallback).unwrap();
+        let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport", "transport":"stdio", "command":"/fixture/toolport-gateway"})).unwrap();
+        mutation::run("claude-code", &selected, Format::JsonMcpServers, || {
+            edit_format(Format::JsonMcpServers, &selected, Some(&entry), true)
+        }).unwrap();
+        let servers = parse_client_content(Format::JsonMcpServers, &std::fs::read_to_string(&selected).unwrap()).unwrap();
+        let registry = env.dir.join("registry.json");
+        std::fs::write(&registry, "broken").unwrap();
+        let client = DetectedClient {
+            id: "claude-code".into(), name: "Claude Code".into(), uses_connectors: false,
+            discovery: discovery::capabilities("claude-code"), config_path: selected.to_string_lossy().into_owned(),
+            config_exists: true, app_present: true, servers, plugin_servers: Vec::new(),
+            gateway_installed: true, entry_state: GatewayEntryState::Managed, error: None,
+        };
+        let results = all_with_clients(false, true, || vec![client]).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, selected.to_string_lossy());
+        assert!(results[0].error.is_none(), "{:?}", results[0]);
+        assert_eq!(std::fs::read_to_string(&selected).unwrap(), native);
+        assert_eq!(std::fs::read(&fallback).unwrap(), fallback_bytes);
+        assert_eq!(std::fs::read_to_string(&registry).unwrap(), "broken");
+    }
+
+    #[test]
+    fn purge_corrupt_registry_snapshot_restore_preserves_native_bytes() {
+        let env = crate::registry::DataDirTestEnv::new("purge_global_disconnect");
+        let path = env.dir.join("secondary-client.json");
+        let native = r#"{"mcpServers":{"native":{"command":"native"}}}"#;
+        std::fs::write(&path, native).unwrap();
+        let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport", "transport":"stdio", "command":"/fixture/toolport-gateway"})).unwrap();
+        mutation::run("claude-code", &path, Format::JsonMcpServers, || {
+            moved::record("claude-code", Format::JsonMcpServers, &path)?;
+            write_format(Format::JsonMcpServers, &path, &[entry.clone()], true)
+        }).unwrap();
+        let registry = env.dir.join("registry.json");
+        std::fs::write(&registry, "broken").unwrap();
+        assert!(crate::registry_controller::registry_for_disconnect().is_err());
+        assert!(restore_path("claude-code", &path, Format::JsonMcpServers, None).unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), native);
+        assert_eq!(std::fs::read_to_string(&registry).unwrap(), "broken");
+    }
+
 }

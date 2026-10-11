@@ -12057,6 +12057,8 @@ struct HostState {
     /// Millis of the last request a listener accepted. The daemon's idle watchdog
     /// compares it against its grace period to decide the host is unused.
     last_activity_ms: AtomicU64,
+    /// The daemon listener's existing request counter, also read by purge preflight.
+    http_inflight: Arc<AtomicUsize>,
 }
 
 impl HostState {
@@ -19244,6 +19246,11 @@ fn daemon_topology_json(state: &GatewayState) -> String {
         "compat": daemon_compat_fingerprint(),
         "pid": std::process::id(),
         "sessions": sessions,
+        // This status request owns one permit; every other permit is live work.
+        "purgeIdle": state.http_inflight.load(Ordering::Acquire) <= 1
+            && !state.http_service_lease_active() && !state.mcp_sessions.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner).values()
+            .any(|session| session.listener_active.load(Ordering::Acquire)),
         "ordinaryLaunches": ordinary_launches,
         "rootedLaunches": rooted_launches,
         "launches": ordinary_launches + rooted_launches,
@@ -19455,7 +19462,7 @@ fn serve_daemon(state: GatewayState, private: bool) -> ! {
     ));
     let search = Arc::new(SearchGuard::default());
     state.touch_activity();
-    let inflight = Arc::new(AtomicUsize::new(0));
+    let inflight = Arc::clone(&state.http_inflight);
     spawn_daemon_idle_watchdog(
         Arc::clone(&state.host),
         Arc::clone(&inflight),
@@ -20643,6 +20650,12 @@ enum ArgAction {
     Guard(String),
     /// Standalone manual installer session check.
     InstallerPreflight(std::path::PathBuf),
+    RemoveData {
+        confirmed: bool,
+        dry_run: bool,
+        after_exit: bool,
+        all_installs: bool,
+    },
     DisconnectAll {
         dry_run: bool,
     },
@@ -20673,6 +20686,30 @@ fn parse_args(args: &[String]) -> ArgAction {
             _ => ArgAction::Unknown(
                 "--installer-preflight requires one absolute install directory".into(),
             ),
+        };
+    }
+    if args.iter().any(|arg| arg == "--remove-data") {
+        if let Some(arg) = args.iter().find(|arg| {
+            !matches!(
+                arg.as_str(),
+                "--remove-data" | "--confirm" | "--dry-run" | "--after-desktop-exit" | "--all-installs"
+            )
+        }) {
+            return ArgAction::Unknown(arg.clone());
+        }
+        let confirmed = args.iter().any(|arg| arg == "--confirm");
+        let dry_run = args.iter().any(|arg| arg == "--dry-run");
+        let after_exit = args.iter().any(|arg| arg == "--after-desktop-exit");
+        if after_exit && (!confirmed || dry_run) {
+            return ArgAction::Unknown(
+                "--after-desktop-exit requires --remove-data --confirm".into(),
+            );
+        }
+        return ArgAction::RemoveData {
+            confirmed,
+            dry_run,
+            after_exit,
+            all_installs: args.iter().any(|arg| arg == "--all-installs"),
         };
     }
     if args.iter().any(|arg| arg == "--disconnect-all") {
@@ -20756,6 +20793,7 @@ fn usage() -> String {
          \x20   --private-gateway    One adapter's own gateway while the host daemon is\n\
          \x20                        unresponsive (internal)\n\
          \x20   --installer-preflight <absolute-install-dir> Defer installation while client gateways are open\n\
+         \x20   --remove-data [--dry-run | --confirm] Remove this install's data; --all-installs also clears shared credentials\n\
          \x20   --disconnect-all [--dry-run] Restore all client configs and exit; JSON per-client results\n\
          \x20   --setup-review       Private setup verification with a 30-second catalog wait\n\
          \x20   --selftest-secrets    Diagnostic: read every vaulted secret and report\n\
@@ -20855,6 +20893,54 @@ fn main() {
             // answer allow, then exit 0. No gateway startup, no registry read, no policy.
             println!("{}", conduit_lib::guard_cleanup::run_no_op_hook());
             conduit_lib::telemetry::exit_with(0);
+        }
+        ArgAction::RemoveData {
+            confirmed,
+            dry_run,
+            after_exit,
+            all_installs,
+        } => {
+            if after_exit {
+                if let Err(error) = conduit_lib::purge::wait_for_desktop_exit() {
+                    println!(
+                        "{}",
+                        json!({"leftovers":[{"path":"desktop-exit pipe", "error":error.to_string()}]})
+                    );
+                    conduit_lib::purge::exit_after_removal(1);
+                }
+            }
+            if dry_run || !confirmed {
+                match conduit_lib::purge::plan_with_scope(all_installs) {
+                    Ok(plan) => println!(
+                        "{}",
+                        serde_json::to_string_pretty(&plan).expect("serializable removal plan")
+                    ),
+                    Err(error) => {
+                        eprintln!("{error}");
+                        conduit_lib::purge::exit_after_removal(1);
+                    }
+                }
+                if !dry_run {
+                    eprintln!("Nothing was removed. Close Toolport, then repeat with --confirm to remove the listed data.");
+                }
+                conduit_lib::purge::exit_after_removal(if dry_run { 0 } else { 2 });
+            }
+            match conduit_lib::purge::run_with_scope(all_installs) {
+                Ok(report) => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).expect("serializable removal report")
+                    );
+                    conduit_lib::purge::exit_after_removal(if report.leftovers.is_empty() { 0 } else { 1 });
+                }
+                Err(error) => {
+                    println!(
+                        "{}",
+                        json!({"removed":[], "leftovers":[{"path":conduit_lib::registry::conduit_dir().map(|path| path.display().to_string()), "error":error}]})
+                    );
+                    conduit_lib::purge::exit_after_removal(1);
+                }
+            }
         }
         ArgAction::DisconnectAll { dry_run } => {
             if conduit_lib::registry::conduit_dir().is_none_or(|dir| !dir.exists()) {
@@ -21220,6 +21306,7 @@ fn main() {
         http_service_lease: Mutex::new(None),
         shutdown_if_idle: AtomicBool::new(false),
         last_activity_ms: AtomicU64::new(0),
+        http_inflight: Arc::new(AtomicUsize::new(0)),
         rebuild_shrink_streaks: Mutex::new(HashMap::new()),
         reconnect_tracked: Mutex::new(Vec::new()),
         quarantine_read_failed: AtomicBool::new(false),
@@ -21599,6 +21686,65 @@ mod tests {
         ] {
             assert!(matches!(parse_args(&args), ArgAction::Unknown(_)));
         }
+    }
+
+    #[test]
+    fn removal_requires_explicit_confirmation_and_cannot_start_gateway() {
+        assert_eq!(
+            parse_args(&["--remove-data".into()]),
+            ArgAction::RemoveData {
+                confirmed: false,
+                dry_run: false,
+                after_exit: false,
+                all_installs: false
+            }
+        );
+        assert_eq!(
+            parse_args(&["--remove-data".into(), "--dry-run".into()]),
+            ArgAction::RemoveData {
+                confirmed: false,
+                dry_run: true,
+                after_exit: false,
+                all_installs: false
+            }
+        );
+        assert_eq!(
+            parse_args(&["--remove-data".into(), "--confirm".into()]),
+            ArgAction::RemoveData {
+                confirmed: true,
+                dry_run: false,
+                after_exit: false,
+                all_installs: false
+            }
+        );
+        assert_eq!(parse_args(&["--remove-data".into(), "--all-installs".into()]),
+            ArgAction::RemoveData { confirmed: false, dry_run: false, after_exit: false, all_installs: true });
+        assert_eq!(parse_args(&["--remove-data".into(), "--all-installs".into(), "--confirm".into()]),
+            ArgAction::RemoveData { confirmed: true, dry_run: false, after_exit: false, all_installs: true });
+        assert!(matches!(
+            parse_args(&["--remove-data".into(), "--daemon".into()]),
+            ArgAction::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn purge_topology_status_is_read_only_and_checks_live_listeners_and_leases() {
+        let _env = conduit_lib::registry::DataDirTestEnv::new("purge_topology");
+        let state = http_state(false);
+        assert_eq!(serde_json::from_str::<Value>(&daemon_topology_json(&state)).unwrap()["purgeIdle"], true);
+        let session = Arc::new(SessionState::new_http(None));
+        session.listener_active.store(true, Ordering::Release);
+        state.mcp_sessions.lock().unwrap().insert("fixture".into(), session.clone());
+        assert_eq!(serde_json::from_str::<Value>(&daemon_topology_json(&state)).unwrap()["purgeIdle"], false);
+        session.listener_active.store(false, Ordering::Release);
+        *state.http_service_lease.lock().unwrap() = Some(HttpServiceLease {
+            token_sha256: "fixture".into(), bind_host: "127.0.0.1".into(), expires_at: Instant::now() + Duration::from_secs(60),
+        });
+        assert_eq!(serde_json::from_str::<Value>(&daemon_topology_json(&state)).unwrap()["purgeIdle"], false);
+        *state.http_service_lease.lock().unwrap() = None;
+        state.http_inflight.store(2, Ordering::Release);
+        assert_eq!(serde_json::from_str::<Value>(&daemon_topology_json(&state)).unwrap()["purgeIdle"], false);
+        assert!(!state.shutdown_if_idle.load(Ordering::Acquire));
     }
 
     #[test]
@@ -28245,6 +28391,7 @@ mod tests {
             http_service_lease: Mutex::new(None),
             shutdown_if_idle: AtomicBool::new(false),
             last_activity_ms: AtomicU64::new(0),
+            http_inflight: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -28289,6 +28436,7 @@ mod tests {
                 http_service_lease: Mutex::new(None),
                 shutdown_if_idle: AtomicBool::new(false),
                 last_activity_ms: AtomicU64::new(0),
+                http_inflight: Arc::new(AtomicUsize::new(0)),
                 rebuild_shrink_streaks: Mutex::new(HashMap::new()),
                 reconnect_tracked: Mutex::new(Vec::new()),
                 quarantine_read_failed: AtomicBool::new(false),

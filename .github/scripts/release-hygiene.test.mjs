@@ -1,7 +1,14 @@
 import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import {
+  readFileSync,
+  readdirSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +28,17 @@ const release = {
   assets: [{ name: "Toolport_2.0.0_x64-setup.exe", browser_download_url: url, digest }],
 };
 const installer = releaseInstaller(release, tag, "btsouth/toolport");
+test("Tauri's directory scan sees only shipping entry points", () => {
+  assert.deepEqual(readdirSync("src-tauri/src/bin"), ["toolport-gateway.rs"]);
+  const cargo = readFileSync("src-tauri/Cargo.toml", "utf8");
+  assert.match(cargo, /autobins = false/);
+  const mock = cargo
+    .split("[[bin]]")
+    .find((target) => target.includes('name = "mock-mcp-server"'));
+  assert.match(mock, /path = "src\/test_support\/mock-mcp-server.rs"/);
+  assert.match(mock, /required-features = \["test-support"\]/);
+  assert.doesNotMatch(cargo.match(/^default = .*$/m)[0], /test-support/);
+});
 const templates = [
   "Toolport.Toolport.yaml",
   "Toolport.Toolport.installer.yaml",
@@ -166,4 +184,210 @@ test("AppImage offset skips runtime magic and rejects truncated filesystems", ()
   assert.equal(appImageOffset(bytes), offset);
   bytes.writeBigUInt64LE(1024n, offset + 40);
   assert.equal(appImageOffset(bytes), -1);
+});
+
+test("complete payload manifests reject extra resources and require both binaries", async () => {
+  const { assertManifest } = await import("./package-manifest.mjs");
+  for (const [kind, files] of [
+    ["native", ["./usr/bin/toolport-gtk", "./usr/bin/toolport-gateway"]],
+    ["pacman", ["usr/bin/toolport-gtk", "usr/bin/toolport-gateway", ".PKGINFO"]],
+    [
+      "mac",
+      [
+        "Toolport.app/Contents/MacOS/conduit",
+        "Toolport.app/Contents/MacOS/toolport-gateway",
+      ],
+    ],
+    ["nsis", ["conduit.exe", "toolport-gateway.exe"]],
+    [
+      "msi",
+      [
+        "ProgramFiles64Folder/Toolport/conduit.exe",
+        "ProgramFiles64Folder/Toolport/toolport-gateway.exe",
+      ],
+    ],
+    [
+      "appimage",
+      ["squashfs-root/usr/bin/conduit", "squashfs-root/usr/bin/toolport-gateway"],
+    ],
+  ]) {
+    assertManifest(files, kind);
+    assert.throws(() => assertManifest(files.slice(0, 1), kind), /Missing intended/);
+    const prefix = kind === "msi" ? "ProgramFiles64Folder/Toolport/" : "";
+    assert.throws(
+      () => assertManifest([...files, `${prefix}unexpected-notes.txt`], kind),
+      /Unexpected/,
+    );
+    assert.throws(
+      () => assertManifest([...files, `${prefix}mock-mcp-server`], kind),
+      /Test artifact/,
+    );
+  }
+});
+
+test("MSI validates full installation paths before normalizing its app directory", async () => {
+  const { assertManifest } = await import("./package-manifest.mjs");
+  assert.throws(
+    () => assertManifest(["conduit.exe", "toolport-gateway.exe"], "msi"),
+    /Unexpected msi installation path/,
+  );
+  assertManifest(
+    [
+      "ProgramFiles64Folder/Toolport/conduit.exe",
+      "ProgramFiles64Folder/Toolport/toolport-gateway.exe",
+    ],
+    "msi",
+  );
+  assert.throws(
+    () =>
+      assertManifest(
+        [
+          "ProgramFiles64Folder/Toolport/conduit.exe",
+          "ProgramFiles64Folder/Toolport/toolport-gateway.exe",
+          "ProgramFiles64Folder/OtherApp/conduit.exe",
+        ],
+        "msi",
+      ),
+    /Unexpected/,
+  );
+});
+
+test("macOS manifest includes the signed gateway helper and provisioning profiles", async () => {
+  const { assertManifest } = await import("./package-manifest.mjs");
+  const files = [
+    "Toolport.app/Contents/MacOS/conduit",
+    "Toolport.app/Contents/MacOS/toolport-gateway",
+    "Toolport.app/Contents/MacOS/conduit-gateway",
+    "Toolport.app/Contents/embedded.provisionprofile",
+    "Toolport.app/Contents/Helpers/ToolportGateway.app/",
+    "Toolport.app/Contents/Helpers/ToolportGateway.app/Contents/",
+    "Toolport.app/Contents/Helpers/ToolportGateway.app/Contents/MacOS/toolport-gateway",
+    "Toolport.app/Contents/Helpers/ToolportGateway.app/Contents/embedded.provisionprofile",
+  ];
+  assertManifest(files, "mac");
+  assert.throws(
+    () =>
+      assertManifest(
+        [
+          ...files,
+          "Toolport.app/Contents/Helpers/Unknown.app/Contents/MacOS/toolport-gateway",
+        ],
+        "mac",
+      ),
+    /Unexpected/,
+  );
+});
+
+test("AppImage permits its declared deep-link and GTK runtime resources", async () => {
+  const { assertManifest } = await import("./package-manifest.mjs");
+  const paths = [
+    "squashfs-root/AppRun.wrapped",
+    "squashfs-root/usr/bin/conduit",
+    "squashfs-root/usr/bin/toolport-gateway",
+    "squashfs-root/usr/bin/xdg-mime",
+    "squashfs-root/apprun-hooks/linuxdeploy-plugin-gtk.sh",
+    "squashfs-root/usr/lib/girepository-1.0/Gtk-3.0.typelib",
+    "squashfs-root/usr/lib/girepository-1.0/Adw-1.typelib",
+    "squashfs-root/usr/lib/im-xim.so",
+    "squashfs-root/usr/share/doc/libglib2.0-0/copyright",
+  ];
+  assertContents(paths, { appImage: true });
+  assertManifest(paths, "appimage");
+  assert.throws(() => assertContents(paths), /Unexpected packaged binary/);
+  assert.throws(
+    () => assertManifest([...paths, "squashfs-root/usr/bin/other-helper"], "appimage"),
+    /Unexpected/,
+  );
+  assert.throws(
+    () =>
+      assertManifest([...paths, "squashfs-root/apprun-hooks/test-helper.sh"], "appimage"),
+    /Unexpected/,
+  );
+  assert.throws(
+    () => assertManifest([...paths, "squashfs-root/usr/lib/im-unknown.so"], "appimage"),
+    /Unexpected/,
+  );
+});
+
+// The CI-only overlay must not replace the product version or signing settings.
+test("MSI CI preview config keeps the product version and signing intact", async () => {
+  const { ciMsiConfig } = await import("./ci-msi-config.mjs");
+  for (const version of ["2.0.0-preview.9", "2.0.0"]) {
+    assert.deepEqual(ciMsiConfig(version), {
+      bundle: { windows: { wix: { version: "2.0.0" } } },
+    });
+  }
+  for (const version of ["256.0.0", "2.256.0", "2.0.65536", "bad"]) {
+    assert.throws(() => ciMsiConfig(version), /Invalid MSI version/);
+  }
+});
+
+test("NSIS manifest scopes standard wizard and dialog assets to the plugin directory", async () => {
+  const { assertManifest } = await import("./package-manifest.mjs");
+  const product = ["conduit.exe", "toolport-gateway.exe", "uninstall.exe"];
+  const assets = ["modern-wizard.bmp", "nsDialogs.dll", "NSISdl.dll"];
+  assertManifest([...product, ...assets.map((name) => `$PLUGINSDIR/${name}`)], "nsis");
+  for (const name of assets) {
+    assert.throws(() => assertManifest([...product, name], "nsis"), /Unexpected/);
+  }
+  assert.throws(
+    () => assertManifest([...product, "$PLUGINSDIR/surprise.dll"], "nsis"),
+    /Unexpected/,
+  );
+});
+
+test("PR package fixtures exercise the pacman archive checker", () => {
+  const root = mkdtempSync(join(tmpdir(), "toolport-pacman-payload-"));
+  const payload = join(root, "payload");
+  const archive = join(root, "fixture.pkg.tar.zst");
+  const files = [
+    ".PKGINFO",
+    "usr/bin/toolport-gtk",
+    "usr/bin/toolport-gateway",
+    "usr/bin/toolport",
+    "usr/bin/conduit",
+    "usr/share/applications/com.tsout.Toolport.desktop",
+    "usr/share/metainfo/com.tsout.Toolport.metainfo.xml",
+    "usr/share/toolport/agent-plugin/toolport-agent-plugin.zip",
+    "usr/share/toolport/toolport-preview-rollback.sh",
+    "usr/share/licenses/toolport/LICENSE",
+    "usr/share/licenses/toolport-bin/LICENSE",
+  ];
+  const pack = () => execFileSync("tar", ["-cf", archive, "-C", payload, "."]);
+  const check = () =>
+    execFileSync("node", [".github/scripts/package-contents.mjs", archive], {
+      stdio: "pipe",
+    });
+  try {
+    for (const file of files) {
+      mkdirSync(join(payload, file, ".."), { recursive: true });
+      writeFileSync(join(payload, file), "fixture");
+    }
+    pack();
+    check();
+    writeFileSync(join(payload, "usr/share/toolport/surprise.txt"), "unexpected");
+    pack();
+    assert.throws(check, /Unexpected pacman payload/);
+    rmSync(join(payload, "usr/share/toolport/surprise.txt"));
+    rmSync(join(payload, "usr/bin/toolport-gateway"));
+    pack();
+    assert.throws(check, /Gateway missing/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Homebrew zap removes bundle storage but retains client recovery data", () => {
+  const cask = readFileSync("packaging/homebrew/toolport.rb", "utf8");
+  const zap = cask.slice(cask.indexOf("  zap trash:"));
+  for (const resource of [
+    "Caches/com.tsout.conduit",
+    "HTTPStorages/com.tsout.conduit",
+    "Preferences/com.tsout.conduit.plist",
+    "Saved Application State/com.tsout.conduit.savedState",
+    "WebKit/com.tsout.conduit",
+  ]) {
+    assert.ok(zap.includes(resource));
+  }
+  assert.doesNotMatch(zap, /Application Support|registry|conduit-mcp/);
 });

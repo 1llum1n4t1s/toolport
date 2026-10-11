@@ -32,13 +32,21 @@ describe("homebrew cask snapshot (packaging/homebrew/toolport.rb)", () => {
     expect(armSha?.[1]).not.toBe(intelSha?.[1]);
   });
 
-  it("zaps both the current Toolport data dir and the legacy Conduit leaf", () => {
-    // brand.rs data_dir_leaf_name is Toolport; legacy_data_dir_leaf_name is
-    // Conduit. Bundle id stays com.tsout.conduit, so cache/pref zap paths
-    // keep that id.
-    expect(cask).toContain("~/Library/Application Support/Toolport");
-    expect(cask).toContain("~/Library/Application Support/Conduit");
-    expect(cask).toContain("~/Library/Caches/com.tsout.conduit");
+  it("keeps recovery data and directs users to explicit removal before uninstall", () => {
+    const zap = cask.match(/zap trash: \[([\s\S]*?)\n {2}\]/)?.[1];
+    expect(zap).toBeDefined();
+    expect([...zap!.matchAll(/"([^"\n]+)"/g)].map((match) => match[1])).toEqual([
+      "~/Library/Caches/com.tsout.conduit",
+      "~/Library/HTTPStorages/com.tsout.conduit",
+      "~/Library/Preferences/com.tsout.conduit.plist",
+      "~/Library/Saved Application State/com.tsout.conduit.savedState",
+      "~/Library/WebKit/com.tsout.conduit",
+    ]);
+    expect(zap).not.toMatch(/Application Support|registry|conduit-mcp/);
+    expect(cask).toContain("Uninstall keeps data and credentials");
+    expect(cask).toContain("but keeps the registry, recovery data and credentials");
+    expect(cask).toContain('"Remove Toolport data" in Settings before uninstalling');
+    expect(cask).toContain("--disconnect-all");
   });
 
   it("points at the published darwin dmgs for this version", () => {

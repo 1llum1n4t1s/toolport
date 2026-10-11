@@ -1805,7 +1805,7 @@ pub fn unmigrated_legacy_profile_store(profile: &str, pins: bool) -> bool {
 }
 
 /// The lossy filename mapping used before profile stores were keyed by stable ids.
-fn legacy_profile_store_slug(profile_ref: &str) -> String {
+pub(crate) fn legacy_profile_store_slug(profile_ref: &str) -> String {
     profile_ref
         .chars()
         .map(|c| {
@@ -3258,6 +3258,19 @@ pub fn invalidate_data_dir_cache() {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
+/// Use the same real filesystem view as the selected data directory under MSIX.
+pub(crate) fn devirtualized_dir(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if msix::has_package_identity() {
+        if dirs::home_dir().and_then(|home| msix::unc_twin(&home))
+            .is_some_and(|home| std::fs::metadata(home).is_ok())
+        {
+            return msix::unc_twin(path).unwrap_or_else(|| path.to_path_buf());
+        }
+    }
+    path.to_path_buf()
+}
+
 fn compute_conduit_dir() -> (Option<PathBuf>, DirResolution) {
     if let Some(dir) = crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR") {
         return (Some(PathBuf::from(dir)), DirResolution::Direct);
@@ -3273,16 +3286,11 @@ fn compute_conduit_dir() -> (Option<PathBuf>, DirResolution) {
         if !msix::has_package_identity() {
             return (Some(under_roaming(&home)), DirResolution::Direct);
         }
-        match msix::unc_twin(&home) {
-            // The profile dir always exists, so a metadata success proves the
-            // UNC view actually works before we commit every file to it.
-            Some(unc_home) if std::fs::metadata(&unc_home).is_ok() => {
-                (Some(under_roaming(&unc_home)), DirResolution::Devirtualized)
-            }
-            _ => (
-                Some(under_roaming(&home)),
-                DirResolution::VirtualizedFallback,
-            ),
+        let real_home = devirtualized_dir(&home);
+        if real_home != home {
+            (Some(under_roaming(&real_home)), DirResolution::Devirtualized)
+        } else {
+            (Some(under_roaming(&home)), DirResolution::VirtualizedFallback)
         }
     }
     #[cfg(not(windows))]

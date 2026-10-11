@@ -19,6 +19,7 @@ use crate::registry::{ManagedEntry, ServerEntry};
 mod backup_permissions;
 mod disconnect;
 pub use disconnect::{all as disconnect_all, ClientResult as DisconnectResult};
+pub(crate) use disconnect::for_purge as disconnect_all_for_purge;
 mod discovery;
 pub use discovery::DiscoveryCapabilities;
 mod moved;
@@ -3573,6 +3574,31 @@ pub struct RepointOutcome {
 
 fn find_def(client_id: &str) -> Option<ClientDef> {
     defs().into_iter().find(|d| d.id == client_id)
+}
+
+/// Only client ids from the same definitions that create backup folders.
+pub(crate) fn purge_backup_client_id(client_id: &str) -> bool {
+    defs().iter().any(|client| client.id == client_id)
+}
+
+/// Match the basenames used by backup_file and the two named Claude writers.
+pub(crate) fn purge_backup_name(client_id: &str, basename: &str) -> bool {
+    let Some(def) = find_def(client_id) else { return false; };
+    let named_prefixes: &[&str] = match client_id {
+        "claude-code" => &["claude-", "claude-settings-"],
+        "cursor" => &["claude-settings-"], // write_settings_key_for uses the same writer.
+        _ => &[],
+    };
+    if named_prefixes.iter().any(|prefix| {
+        basename.strip_prefix(prefix).and_then(|name| name.strip_suffix(".json"))
+            .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    }) { return true; }
+    let matches = |path: PathBuf| path.file_name().and_then(|name| name.to_str()) == Some(basename);
+    if resolved_definition_path(&def).is_ok_and(matches) { return true; }
+    // Also recognize copies from the client's standard config on another OS.
+    [Platform::Windows, Platform::MacOs, Platform::Linux].into_iter().any(|platform| {
+        resolve_client_config_path(client_id, Path::new("/"), platform).is_some_and(matches)
+    }) || client_id == "opencode" && basename == "opencode.jsonc"
 }
 
 pub(crate) fn backup_dir(client_id: &str) -> Option<PathBuf> {

@@ -99,3 +99,95 @@ mod tests {
         );
     }
 }
+
+/// Inventory first, then remove only Toolport commands or an orphan approval keyed by our name.
+pub(crate) fn purge_entries(names: &[&str], remove: bool, report: &mut crate::purge::Report) {
+    purge_entries_under(&RegKey::predef(HKEY_CURRENT_USER), names, remove, report);
+}
+
+fn purge_entries_under(user: &RegKey, names: &[&str], remove: bool, report: &mut crate::purge::Report) {
+    use winreg::enums::KEY_WRITE;
+    for name in names {
+        let run_path = format!("HKCU\\{RUN_KEY}\\{name}");
+        let approval_path = format!("HKCU\\{STARTUP_APPROVED_KEY}\\{name}");
+        let result: Result<(), crate::purge::Leftover> = (|| {
+            let run = match user.open_subkey_with_flags(RUN_KEY, KEY_READ) {
+                Ok(run) => Some(run),
+                Err(error) if error.kind() == ErrorKind::NotFound => None,
+                Err(error) => return Err(crate::purge::Leftover { path: run_path.clone(), error: error.to_string() }),
+            };
+            let command = match run.as_ref().map(|run| run.get_value::<String, _>(*name)) {
+                Some(Ok(command)) => Some(command),
+                None => None,
+                Some(Err(error)) if error.kind() == ErrorKind::NotFound => None,
+                Some(Err(error)) => return Err(crate::purge::Leftover { path: run_path.clone(), error: error.to_string() }),
+            };
+            if let Some(command) = &command {
+                let binary = if let Some(rest) = command.strip_prefix('"') {
+                    rest.split('"').next().unwrap_or("")
+                } else { command.split_whitespace().next().unwrap_or("") };
+                let basename = std::path::Path::new(binary).file_name().and_then(|name| name.to_str()).unwrap_or("");
+                if !matches!(basename.to_ascii_lowercase().as_str(), "conduit.exe" | "toolport.exe") || !command.split_whitespace().any(|arg| arg == "--hidden") {
+                    let preserved = format!("{run_path} (foreign startup entry preserved)");
+                    if !report.preserved.contains(&preserved) { report.preserved.push(preserved); }
+                    return Ok(());
+                }
+            }
+            // auto-launch disable removes Run but leaves StartupApproved. Our exact
+            // reserved value name is sufficient ownership for that orphan.
+            match user.open_subkey_with_flags(STARTUP_APPROVED_KEY, KEY_READ) {
+                Ok(key) => match key.get_raw_value(name) {
+                    Ok(_) if remove => {
+                        user.open_subkey_with_flags(STARTUP_APPROVED_KEY, KEY_WRITE)
+                            .and_then(|key| key.delete_value(name))
+                            .map_err(|error| crate::purge::Leftover { path: approval_path.clone(), error: error.to_string() })?;
+                        report.removed.push(approval_path.clone());
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(error) => return Err(crate::purge::Leftover { path: approval_path.clone(), error: error.to_string() }),
+                },
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(crate::purge::Leftover { path: approval_path.clone(), error: error.to_string() }),
+            }
+            if remove && command.is_some() {
+                user.open_subkey_with_flags(RUN_KEY, KEY_WRITE).and_then(|key| key.delete_value(name))
+                    .map_err(|error| crate::purge::Leftover { path: run_path.clone(), error: error.to_string() })?;
+                report.removed.push(run_path);
+            }
+            Ok(())
+        })();
+        if let Err(leftover) = result { report.leftovers.push(leftover); }
+    }
+}
+
+#[cfg(test)]
+mod purge_tests {
+    use super::*;
+    #[test]
+    fn purge_orphan_approval_converges_and_foreign_run_is_preserved() {
+        let user = RegKey::predef(HKEY_CURRENT_USER);
+        let fixture = format!("Software\\ToolportPurgeTest-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+        let (root, _) = user.create_subkey(&fixture).unwrap();
+        let (approved, _) = root.create_subkey(STARTUP_APPROVED_KEY).unwrap();
+        approved.set_raw_value("Toolport", &winreg::RegValue { vtype: RegType::REG_BINARY, bytes: vec![2; 12] }).unwrap();
+        let mut report = crate::purge::Report::default();
+        purge_entries_under(&root, &["Toolport"], false, &mut report);
+        assert!(report.removed.is_empty() && report.leftovers.is_empty());
+        assert!(approved.get_raw_value("Toolport").is_ok());
+        purge_entries_under(&root, &["Toolport"], true, &mut report);
+        assert!(report.leftovers.is_empty());
+        assert!(approved.get_raw_value("Toolport").is_err());
+        purge_entries_under(&root, &["Toolport"], true, &mut report);
+        assert!(report.leftovers.is_empty());
+        let (run, _) = root.create_subkey(RUN_KEY).unwrap();
+        run.set_value("Toolport", &"native.exe --hidden").unwrap();
+        approved.set_raw_value("Toolport", &winreg::RegValue { vtype: RegType::REG_BINARY, bytes: vec![2; 12] }).unwrap();
+        purge_entries_under(&root, &["Toolport"], true, &mut report);
+        assert_eq!(report.preserved.len(), 1);
+        assert!(run.get_value::<String, _>("Toolport").is_ok());
+        assert!(approved.get_raw_value("Toolport").is_ok());
+        drop(run); drop(approved); drop(root);
+        user.delete_subkey_all(fixture).unwrap();
+    }
+}
