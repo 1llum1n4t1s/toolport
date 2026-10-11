@@ -297,7 +297,8 @@ describe("QuarantineAlert", () => {
   it("shows the captured definition and explains the extra legacy review", async () => {
     listQuarantined.mockResolvedValue([
       tool({
-        reason: "This older block had no saved definition. Review the captured current definition before approving.",
+        reason:
+          "This older block had no saved definition. Review the captured current definition before approving.",
         definition: {
           name: "linear__save_issue",
           description: "Update the selected issue",
@@ -308,7 +309,9 @@ describe("QuarantineAlert", () => {
       }),
     ]);
     render(<QuarantineAlert />);
-    expect(await screen.findByText(/This older block had no saved definition/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/This older block had no saved definition/),
+    ).toBeInTheDocument();
     await userEvent.click(screen.getByText("Captured definition"));
     const definition = screen.getByText(/Update the selected issue/);
     for (const field of ["inputSchema", "outputSchema", "readOnlyHint", "title"]) {
