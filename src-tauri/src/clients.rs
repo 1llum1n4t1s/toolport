@@ -7876,7 +7876,7 @@ mod tests {
         let data = crate::registry::DataDirTestEnv::new("location-startup-upkeep");
         let home = data.dir.join("home");
         std::fs::create_dir(&home).unwrap();
-        let old = data.dir.join("toolport-gateway-old");
+        let old = data.dir.join("toolport-gateway-1.19.0");
         let current = data.dir.join("toolport-gateway");
         std::fs::write(&old, "old fixture").unwrap();
         std::fs::write(&current, "current fixture").unwrap();
