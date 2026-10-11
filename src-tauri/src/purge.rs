@@ -145,7 +145,7 @@ fn install_candidates(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn other_installs(dir: &Path, candidates: Vec<PathBuf>) -> Vec<PathBuf> {
-    other_installs_with(dir, candidates, |path| path.to_path_buf())
+    other_installs_with(dir, candidates, crate::registry::devirtualized_dir)
 }
 
 fn other_installs_with(dir: &Path, candidates: Vec<PathBuf>, normalize: impl Fn(&Path) -> PathBuf) -> Vec<PathBuf> {
@@ -153,6 +153,7 @@ fn other_installs_with(dir: &Path, candidates: Vec<PathBuf>, normalize: impl Fn(
     let canonical = std::fs::canonicalize(&dir).unwrap_or(dir);
     let mut others = Vec::new();
     for path in candidates {
+        let path = normalize(&path);
         if path.is_dir() && std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()) != canonical
             && has_registry_evidence(&path)
             && !others.contains(&path)
