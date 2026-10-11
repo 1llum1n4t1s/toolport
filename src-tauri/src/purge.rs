@@ -159,15 +159,14 @@ fn credential_scope(dir: &Path, others: &[PathBuf], all_installs: bool) -> Resul
         ids.extend(servers.iter().filter_map(|server| server["id"].as_str().map(str::to_owned)));
     }
     for other in others {
-        let registry = std::fs::read(other.join("registry.json")).ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-        let Some(servers) = registry.as_ref().and_then(|registry| registry["servers"].as_array()) else {
-            // Unknown ownership in another install must not destroy its accounts.
-            ids.clear();
-            break;
-        };
+        let registry_path = other.join("registry.json");
+        let error = |error| format!("Credential ownership inventory for {}: {error}. Credentials were not removed; the selected registry was retained. Repair this registry and retry.", registry_path.display());
+        let registry: serde_json::Value = serde_json::from_slice(&std::fs::read(&registry_path).map_err(|e| error(e.to_string()))?)
+            .map_err(|e| error(e.to_string()))?;
+        let servers = registry["servers"].as_array().ok_or_else(|| error("missing servers array".into()))?;
         for server in servers {
-            if let Some(id) = server["id"].as_str() { ids.remove(id); }
+            let id = server["id"].as_str().ok_or_else(|| error("missing server id".into()))?;
+            ids.remove(id);
         }
     }
     Ok(crate::secrets::purge::Scope { all_installs, server_ids: ids })
@@ -989,7 +988,7 @@ mod tests {
         assert_eq!(scope.server_ids, std::collections::HashSet::from(["shared".into(), "dev-only".into()]));
         assert!(credential_scope(&dev, &others, true).unwrap().all_installs);
         std::fs::remove_file(main.join("registry.json")).unwrap();
-        assert!(credential_scope(&dev, &others, false).unwrap().server_ids.is_empty());
+        assert!(credential_scope(&dev, &others, false).is_err());
     }
 
     #[test]
@@ -1065,8 +1064,7 @@ mod tests {
         assert!(credential_scope(&env.dir, &[], true).unwrap().all_installs);
         let other = env.dir.join("other");
         std::fs::create_dir(&other).unwrap();
-        let scope = credential_scope(&env.dir, &[other], false).unwrap();
-        assert!(!scope.all_installs && scope.server_ids.is_empty());
+        assert!(credential_scope(&env.dir, &[other], false).is_err());
     }
 
     #[test]
