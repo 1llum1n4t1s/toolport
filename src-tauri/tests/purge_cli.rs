@@ -68,6 +68,11 @@ fn purge_override_with_registry_preserves_user_files_for_both_brand_overrides() 
         let data = env.dir.join(if legacy { "Conduit" } else { "Toolport" });
         std::fs::create_dir(&data).unwrap();
         std::fs::write(data.join("registry.json"), serde_json::to_vec(&conduit_lib::registry::Registry::default()).unwrap()).unwrap();
+        for name in ["backups/tax.zip", "bin/personal-script", "logs/other-app.log", "daemon-notes.json"] {
+            let path = data.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "user bytes").unwrap();
+        }
         std::fs::write(data.join("personal.txt"), "keep").unwrap();
         std::fs::write(data.join("secrets.enc"), "fixture").unwrap();
         let mut command = isolated_command(&env.dir, &data);
@@ -77,6 +82,10 @@ fn purge_override_with_registry_preserves_user_files_for_both_brand_overrides() 
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert!(report["preserved"].as_array().unwrap().iter().any(|entry| entry.as_str().unwrap().contains("personal.txt")));
         assert_eq!(std::fs::read_to_string(data.join("personal.txt")).unwrap(), "keep");
+        for name in ["backups/tax.zip", "bin/personal-script", "logs/other-app.log", "daemon-notes.json"] {
+            assert_eq!(std::fs::read_to_string(data.join(name)).unwrap(), "user bytes", "{name}");
+            assert!(report["preserved"].as_array().unwrap().iter().any(|entry| entry.as_str().unwrap().contains(name)), "{name}");
+        }
         assert!(!data.join("registry.json").exists() && !data.join("secrets.enc").exists());
     }
 }

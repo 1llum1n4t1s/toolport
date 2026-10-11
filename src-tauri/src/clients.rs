@@ -3576,6 +3576,11 @@ fn find_def(client_id: &str) -> Option<ClientDef> {
     defs().into_iter().find(|d| d.id == client_id)
 }
 
+/// Only client ids from the same definitions that create backup folders.
+pub(crate) fn purge_backup_client_id(client_id: &str) -> bool {
+    defs().iter().any(|client| client.id == client_id)
+}
+
 pub(crate) fn backup_dir(client_id: &str) -> Option<PathBuf> {
     // Anchor to the same home-based dir as the registry (see registry::conduit_dir)
     // so config backups land in one place regardless of whether a packaged or

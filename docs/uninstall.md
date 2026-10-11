@@ -77,7 +77,9 @@ only from authenticated daemons for this data directory.
 The action removes Toolport-created entries from the selected data directory,
 including registry, logs, caches, migration exports, client backups, encrypted
 secrets and published gateway copies in `bin/`. Other files and folders are
-preserved and listed in the report. The empty directory may remain.
+preserved and listed in the report, including unrelated entries inside Toolport's
+folders. Generated files are matched by their exact names or naming patterns;
+a folder is removed only when empty. The data directory may remain.
 Settings and the default CLI action remove only the selected registry's server
 accounts, excluding ids owned by detected other installs. Shared master keys,
 internal keys, Team tokens and unknown accounts are always preserved because they
