@@ -39990,6 +39990,55 @@ mod tests {
     }
 
     #[test]
+    fn base_publication_defers_a_second_release_racing_a_new_block() {
+        let data = DataDirTestEnv::new("base-racing-release-new-block");
+        let state = http_state(false);
+        state.registry.lock().unwrap().set_safety_level(registry::SafetyLevel::Strict);
+        std::fs::write(data.dir.join("tool-pins.json"), json!({
+            "srv__read":"v1:old-definition", "other__read":"v1:old-definition"
+        }).to_string()).unwrap();
+        std::fs::write(data.dir.join("quarantine.json"), json!({
+            "srv__read":{"tool":"srv__read", "change":"changed"},
+            "other__read":{"tool":"other__read", "change":"changed"}
+        }).to_string()).unwrap();
+        let other = readonly_router("other", "Changed while quarantined.");
+        let mut candidate = readonly_router("srv", "Changed while quarantined.")
+            .with_shared_server_slot(&other.server_slot("other").unwrap());
+        candidate.requarantine(set_of(&["srv__read", "other__read"]));
+        *state.router.lock().unwrap() = Arc::new(candidate.clone());
+        conduit_lib::registry_controller::release_quarantine(None, "srv__read").unwrap();
+        candidate.requarantine_from_store(integrity::quarantined(None).unwrap());
+        *INTEGRITY_GATE_OBSERVER.lock().unwrap() = Some((
+            std::thread::current().id(),
+            Box::new(|| {
+                conduit_lib::registry_controller::release_quarantine(None, "other__read").unwrap();
+            }),
+        ));
+        let published = publish_built_router(&state.registry, &state.router, candidate, None);
+        *INTEGRITY_GATE_OBSERVER.lock().unwrap() = None;
+        assert!(integrity::quarantined(None).unwrap().contains("srv__read"));
+        assert!(!integrity::quarantined(None).unwrap().contains("other__read"));
+        assert!(!published.iter().any(|tool| tool["name"] == "srv__read"));
+        assert!(!published.iter().any(|tool| tool["name"] == "other__read"));
+        assert!(reconcile_quarantine(
+            &state.registry, &state.router, &state.stdio_upstream,
+            None, None, &AtomicBool::new(false),
+        ));
+        assert!(integrity::quarantined(None).unwrap().contains("other__read"));
+        assert!(!state.router.lock().unwrap().aggregated_tools().iter()
+            .any(|tool| tool["name"] == "other__read"));
+        let fp = integrity::baselines(None)["other__read"].fingerprint.clone();
+        assert!(integrity::release_definition(None, "other__read", &fp).unwrap());
+        assert!(reconcile_quarantine(
+            &state.registry, &state.router, &state.stdio_upstream,
+            None, None, &AtomicBool::new(false),
+        ));
+        let live = state.router.lock().unwrap();
+        assert!(live.aggregated_tools().iter().any(|tool| tool["name"] == "other__read"));
+        assert!(!live.aggregated_tools().iter().any(|tool| tool["name"] == "srv__read"));
+    }
+
+    #[test]
     fn watcher_release_retry_keeps_the_quarantine_written_by_its_first_gate() {
         let data = DataDirTestEnv::new("watcher-release-gate-retry");
         for profile in [None, Some("work")] {
