@@ -85,15 +85,10 @@ fn folder_key(folder: &str) -> String {
 }
 
 fn automatic(home: &Path) -> Vec<ClientLocation> {
-    let primary = client_config_path_with_home("claude-code", Some(home.to_path_buf()));
-    automatic_with_primary(home, primary.as_deref())
-}
-
-fn automatic_with_primary(home: &Path, primary: Option<&Path>) -> Vec<ClientLocation> {
     let mut rows = Vec::new();
     for folder in claude_profile_dirs(home).unwrap_or_default() {
         let config_path = home.join(&folder).join(".claude.json");
-        if !config_path.is_file() || primary == Some(config_path.as_path()) {
+        if !config_path.is_file() {
             continue;
         }
         rows.push(ClientLocation {
@@ -210,6 +205,12 @@ pub fn add_client_location(client_type: &str, folder: &str) -> Result<String, St
         return Err("Choose a client config folder, not a file".into());
     }
     let path = folder.join(&kind.config_file);
+    if let Some(row) = all()
+        .into_iter()
+        .find(|row| same_path(&row.config_path, &path))
+    {
+        return Ok(row.id);
+    }
     if let Some(def) = defs()
         .into_iter()
         .find(|def| (def.path)().is_some_and(|existing| same_path(&existing, &path)))
@@ -262,7 +263,7 @@ pub fn measure_scan(home: &Path, iterations: u32) -> (usize, f64, f64) {
     let before = start.elapsed().as_secs_f64() * 1000.0 / iterations as f64;
     let start = std::time::Instant::now();
     for _ in 0..iterations {
-        let _ = automatic_with_primary(home, None);
+        let _ = automatic(home);
     }
     let after = start.elapsed().as_secs_f64() * 1000.0 / iterations as f64;
     (std::fs::read_dir(home).unwrap().count(), before, after)
@@ -311,19 +312,11 @@ mod tests {
                 std::fs::write(root.path().join(folder).join(".claude.json"), "not JSON").unwrap();
             }
         }
-        let rows = automatic_with_primary(root.path(), None);
+        let rows = automatic(root.path());
         assert_eq!(rows.len(), 4);
         assert!(rows
             .iter()
             .any(|row| row.id == "claude-code@claude2" && row.name == "Claude Code (claude2)"));
-        assert_eq!(
-            automatic_with_primary(
-                root.path(),
-                Some(&root.path().join(".claude2/.claude.json"))
-            )
-            .len(),
-            3
-        );
         assert_ne!(folder_key(".claude+a"), folder_key(".claude-a"));
     }
 
@@ -334,7 +327,7 @@ mod tests {
         let outside = TempFolder::new();
         std::fs::write(outside.path().join(".claude.json"), "{}").unwrap();
         std::os::unix::fs::symlink(outside.path(), home.path().join(".claude-outside")).unwrap();
-        assert!(automatic_with_primary(home.path(), None).is_empty());
+        assert!(automatic(home.path()).is_empty());
     }
 
     #[test]

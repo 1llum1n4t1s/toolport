@@ -95,6 +95,15 @@ try {
   await expect(page.getByText(/Older estimated records/)).not.toBeVisible();
   await page.screenshot({ path: path.join(output, "activity.png") });
   await page.getByRole("button", { name: "Clients", exact: true }).click();
+  await page.getByRole("button", { name: "Add client location", exact: true }).click();
+  await page.getByLabel("Client type", { exact: true }).selectOption("claude-code");
+  await page.getByLabel("Config folder", { exact: true }).fill("/fixture/.claude2");
+  await page.screenshot({ path: path.join(output, "client-location-add.png") });
+  await page.getByRole("button", { name: "Add location", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Add client location", exact: true })).toHaveCount(0);
+  await expect(page.getByText("Claude Code (.claude2)", { exact: true })).toBeVisible();
+  await page.screenshot({ path: path.join(output, "client-location-detail.png") });
+  await page.getByRole("button", { name: "Clients", exact: true }).click();
   await page.getByRole("button", { name: /Codex/ }).click();
   await expect(page.getByRole("combobox", { name: "Access", exact: true })).toBeVisible();
   await page.getByRole("combobox", { name: "Access", exact: true }).click();

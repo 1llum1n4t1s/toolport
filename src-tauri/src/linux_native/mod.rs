@@ -2149,7 +2149,7 @@ impl ClientPage {
         );
         page.append(
             &gtk::Label::builder()
-                .label("Toolport reads each supported client's local MCP configuration and shows whether its gateway is connected. This scan never changes client files.")
+                .label("Toolport reads each client's local MCP configuration. Existing Toolport entries in extra locations are adopted with a backup.")
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)

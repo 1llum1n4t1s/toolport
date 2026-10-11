@@ -193,9 +193,9 @@ fn machine_defs(include_detected: bool) -> Vec<ClientDef> {
     let locations = if include_detected { locations::all() } else { locations::saved().unwrap_or_default() };
     for location in locations {
         if let Some(mut def) = defs().into_iter().find(|def| def.id == location.client_type) {
-            // The base adapter may already resolve to this saved location after
-            // an environment override changes. Keep one identity for the path.
-            if definitions.iter().any(|base| base.location.is_none() && (base.path)().as_ref() == Some(&location.config_path)) { continue; }
+            // Prefer the stable location identity when the app environment also
+            // selects this folder. Never show two rows writing the same file.
+            definitions.retain(|base| base.location.is_some() || (base.path)().as_ref() != Some(&location.config_path));
             def.location = Some(location);
             definitions.push(def);
         }
