@@ -531,18 +531,14 @@ fn normalize_node(schema: &mut Value, aliases: &BTreeMap<String, String>) -> Arg
             }
         }
     }
-    for keyword in ["contentSchema"] {
-        if let Some(child) = object.get_mut(keyword) {
-            let child = normalize_node(child, aliases);
-            if !child.is_empty() {
-                plan.branches.push(child);
-            }
+    if let Some(child) = object.get_mut("contentSchema") {
+        let child = normalize_node(child, aliases);
+        if !child.is_empty() {
+            plan.branches.push(child);
         }
     }
-    for keyword in ["propertyNames"] {
-        if let Some(child) = object.get_mut(keyword) {
-            normalize_node(child, aliases);
-        }
+    if let Some(child) = object.get_mut("propertyNames") {
+        normalize_node(child, aliases);
     }
     if plan.extra.is_empty() && plan.fallback_patterns.is_empty() {
         plan.known.clear();

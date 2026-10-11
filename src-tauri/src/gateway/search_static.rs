@@ -39,8 +39,8 @@ impl Model {
         {
             return Err("invalid static search model length".into());
         }
-        for bytes in weights[20..20 + rows * 4].chunks_exact(4) {
-            let scale = f32::from_le_bytes(bytes.try_into().unwrap());
+        for bytes in weights[20..20 + rows * 4].as_chunks::<4>().0 {
+            let scale = f32::from_le_bytes(*bytes);
             if !scale.is_finite() || scale <= 0.0 {
                 return Err("invalid static search model scale".into());
             }
@@ -82,7 +82,7 @@ impl Model {
                     *value += *byte as i8 as f32 * scale;
                 }
             } else {
-                for (values, byte) in out.chunks_exact_mut(2).zip(row) {
+                for (values, byte) in out.as_chunks_mut::<2>().0.iter_mut().zip(row) {
                     values[0] += ((*byte & 15) as f32 - 8.0) * scale;
                     values[1] += ((*byte >> 4) as f32 - 8.0) * scale;
                 }

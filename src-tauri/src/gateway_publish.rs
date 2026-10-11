@@ -1881,7 +1881,7 @@ pub fn pid_is_running(pid: u32) -> bool {
         // Linux exposes a definitive answer without spawning anything.
         #[cfg(not(target_os = "macos"))]
         {
-            return Path::new(&format!("/proc/{pid}")).exists();
+            Path::new(&format!("/proc/{pid}")).exists()
         }
         // macOS has no /proc, so `kill -0` it is: the existence/permission check
         // without delivering a signal. Shelled out rather than via libc to match

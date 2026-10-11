@@ -54,7 +54,7 @@ fn require_secure_team_url(server_url: &str) -> Result<(), String> {
         || host
             .parse::<std::net::IpAddr>()
             .ok()
-            .map_or(false, |ip| match ip {
+            .is_some_and(|ip| match ip {
                 std::net::IpAddr::V4(v4) => v4.is_loopback(),
                 std::net::IpAddr::V6(v6) => {
                     v6.is_loopback()
@@ -76,7 +76,7 @@ fn require_secure_team_url(server_url: &str) -> Result<(), String> {
 
 /// Public team hosts must not rebind onto the LAN; loopback/LAN team URLs (local
 /// `conduit-teams`) still connect. Link-local / cloud-metadata is always refused
-/// inside [`crate::oauth::screened_resolve`].
+/// inside [`crate::http_client::screened_agent`].
 ///
 /// Switching the rebind guard OFF is granting LAN trust, so it needs
 /// [`crate::oauth::host_is_definitely_private`], not the negation of
@@ -2041,16 +2041,16 @@ fn apply_instructions_to(
 ) -> Result<(), String> {
     use crate::instructions::{self, ApplyState};
     // Prior state: only act if still connected to THIS team.
-    let (prev_content, prev_version, prev_targets) = match crate::registry::load() {
-        Ok(reg) => match reg.team.as_ref() {
+    let (prev_content, prev_version, prev_targets) = {
+        let reg = crate::registry::load()?;
+        match reg.team.as_ref() {
             Some(t) if t.team_id == team_id => (
                 t.team_instructions_content.clone(),
                 t.team_instructions_version,
                 t.team_instructions_targets.clone(),
             ),
             _ => return Ok(()),
-        },
-        Err(error) => return Err(error),
+        }
     };
     // Skip only when the content is unchanged and every target already holds it. A moved target
     // or a refusal that has since cleared leaves the org text identical but its current state
@@ -2321,10 +2321,7 @@ fn receipt_fresh(reported: Option<&str>, reported_at: Option<i64>, fingerprint: 
     if reported != Some(fingerprint) {
         return false;
     }
-    match reported_at {
-        Some(at) if now_ms().saturating_sub(at) < RECEIPT_HEARTBEAT_MS => true,
-        _ => false,
-    }
+    matches!(reported_at, Some(at) if now_ms().saturating_sub(at) < RECEIPT_HEARTBEAT_MS)
 }
 
 /// Report this member's instructions coverage to the team server, once per sync cycle. Sends
@@ -2358,7 +2355,8 @@ fn report_instructions_status(conn: &TeamConnection, token: &str) -> Result<(), 
         return Ok(());
     }
     let day = usage_report::utc_day_back(0);
-    match post_usage_day(
+    // Old servers and transient failures leave `reported` unset for a later retry.
+    if let Ok(true) = post_usage_day(
         &conn.server_url,
         &conn.team_id,
         token,
@@ -2367,21 +2365,16 @@ fn report_instructions_status(conn: &TeamConnection, token: &str) -> Result<(), 
         Some(&receipt_json),
         None,
     ) {
-        Ok(true) => {
-            let at = now_ms();
-            crate::registry::update(|reg| {
-                if let Some(t) = reg.team.as_mut() {
-                    if t.team_id == conn.team_id {
-                        t.team_instructions_reported = Some(fingerprint.clone());
-                        t.team_instructions_reported_at = Some(at);
-                    }
+        let at = now_ms();
+        crate::registry::update(|reg| {
+            if let Some(t) = reg.team.as_mut() {
+                if t.team_id == conn.team_id {
+                    t.team_instructions_reported = Some(fingerprint.clone());
+                    t.team_instructions_reported_at = Some(at);
                 }
-                Ok(())
-            })?;
-        }
-        // Old server without the endpoint, or a transient failure: leave `reported` unset so we
-        // retry on a later cycle.
-        _ => {}
+            }
+            Ok(())
+        })?;
     }
     Ok(())
 }
@@ -2480,18 +2473,15 @@ fn report_call_events(conn: &TeamConnection, token: &str) -> Result<(), String> 
     if batch.is_empty() {
         return Ok(());
     }
-    match post_call_events(&conn.server_url, &conn.team_id, token, &batch) {
-        Ok(true) => {
-            crate::registry::update(|reg| {
-                if let Some(t) = reg.team.as_mut() {
-                    if t.team_id == conn.team_id {
-                        t.call_audit_export_cursor = Some(max_ts);
-                    }
+    if let Ok(true) = post_call_events(&conn.server_url, &conn.team_id, token, &batch) {
+        crate::registry::update(|reg| {
+            if let Some(t) = reg.team.as_mut() {
+                if t.team_id == conn.team_id {
+                    t.call_audit_export_cursor = Some(max_ts);
                 }
-                Ok(())
-            })?;
-        }
-        _ => {}
+            }
+            Ok(())
+        })?;
     }
     Ok(())
 }
@@ -2546,7 +2536,7 @@ fn report_policy_status(conn: &TeamConnection, token: &str) -> Result<(), String
         return Ok(());
     }
     let day = usage_report::utc_day_back(0);
-    match post_usage_day(
+    if let Ok(true) = post_usage_day(
         &conn.server_url,
         &conn.team_id,
         token,
@@ -2555,19 +2545,16 @@ fn report_policy_status(conn: &TeamConnection, token: &str) -> Result<(), String
         None,
         Some(&receipt_json),
     ) {
-        Ok(true) => {
-            let at = now_ms();
-            crate::registry::update(|reg| {
-                if let Some(t) = reg.team.as_mut() {
-                    if t.team_id == conn.team_id {
-                        t.team_policy_reported = Some(fingerprint.clone());
-                        t.team_policy_reported_at = Some(at);
-                    }
+        let at = now_ms();
+        crate::registry::update(|reg| {
+            if let Some(t) = reg.team.as_mut() {
+                if t.team_id == conn.team_id {
+                    t.team_policy_reported = Some(fingerprint.clone());
+                    t.team_policy_reported_at = Some(at);
                 }
-                Ok(())
-            })?;
-        }
-        _ => {}
+            }
+            Ok(())
+        })?;
     }
     Ok(())
 }
@@ -3896,13 +3883,13 @@ pub fn stage_team_config(
         }) {
             continue;
         }
-        let title = if key.starts_with("server:") {
+        let title = if let Some(server_id) = key.strip_prefix("server:") {
             format!(
                 "Server: {}",
                 after["name"]
                     .as_str()
                     .or(before["name"].as_str())
-                    .unwrap_or(&key[7..])
+                    .unwrap_or(server_id)
             )
         } else {
             match key.as_str() {
@@ -4809,18 +4796,15 @@ pub fn apply_team_config(reg: &mut Registry, team_id: &str, team_cfg: &Value) ->
 /// `allowedTools` on a team-config server JSON: `None` = key absent (unrestricted),
 /// `Some(list)` = allow-list (empty list = block every tool on that server).
 fn parse_allowed_tools(s: &Value) -> Option<Vec<String>> {
-    match s.get("allowedTools") {
-        None => None,
-        Some(v) => Some(
-            v.as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(String::from))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default(),
-        ),
-    }
+    s.get("allowedTools").map(|v| {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    })
 }
 
 /// Apply or clear per-server allow-lists onto every profile's `tool_scope`.

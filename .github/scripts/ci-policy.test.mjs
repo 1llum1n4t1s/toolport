@@ -55,6 +55,7 @@ function results(selected, packages = "true") {
       "installer-script",
       "installer-script-bash",
       "pinned-install-urls",
+      "clippy",
       "build-test",
       "cross-platform-rust",
       "linux-native",
@@ -66,9 +67,13 @@ function results(selected, packages = "true") {
           job === "linux-packages" && packages === "false"
             ? "skipped"
             : selected === "false" &&
-                ["build-test", "cross-platform-rust", "linux-native", "chaos"].includes(
-                  job,
-                )
+                [
+                  "clippy",
+                  "build-test",
+                  "cross-platform-rust",
+                  "linux-native",
+                  "chaos",
+                ].includes(job)
               ? "skipped"
               : "success",
         outputs: job === "changes" ? { rust: selected, linux_packages: packages } : {},

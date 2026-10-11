@@ -620,7 +620,7 @@ pub fn try_decide_once_with_cancel(
     req.token = desc.token.clone();
     // Connect refused, no answer to the challenge, or a wrong proof: in every case the
     // request was never written, so no human was asked and a re-dial is safe.
-    let Ok(mut stream) = dial_broker(&desc) else {
+    let Ok(stream) = dial_broker(&desc) else {
         return BrokerAttempt::Unreachable;
     };
     let withdrawal = match stream.try_clone() {

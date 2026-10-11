@@ -496,24 +496,6 @@ pub(crate) fn screen_addrs(
     Ok(())
 }
 
-/// A DNS resolver that screens every resolved address (see [`screen_addrs`]). Installed on
-/// the OAuth agents so the check runs INSIDE ureq's resolver - covering the initial connect
-/// AND any redirect target, and closing the resolve-then-connect (DNS-rebind) window that a
-/// separate pre-check has. `block_private` is a STABLE, provenance-derived flag (whether the
-/// user's configured server is public), not a per-connect re-resolution, so a hostile host
-/// that rebinds public->private between the pre-check and the connect is still refused here.
-/// The OAuth endpoints come from an attacker-influenceable metadata document, so this is the
-/// load-bearing SSRF guard.
-pub(crate) fn screened_resolve(
-    netloc: &str,
-    block_private: bool,
-) -> std::io::Result<Vec<std::net::SocketAddr>> {
-    use std::net::ToSocketAddrs;
-    let addrs: Vec<std::net::SocketAddr> = netloc.to_socket_addrs()?.collect();
-    screen_addrs(&addrs, block_private)?;
-    Ok(addrs)
-}
-
 fn agent(block_private: bool) -> ureq::Agent {
     let config = crate::http_client::config_builder!()
         .timeout_global(Some(std::time::Duration::from_secs(30)))

@@ -249,6 +249,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          toolchain: 1.99.0
           components: clippy
 
       # Same headless dependency set as build-test: no GTK/WebKit, because the
@@ -266,8 +267,10 @@ jobs:
           cache-bin: "false"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Bump this job's toolchain only after reviewing new lints and running
+      # headless Clippy with -D warnings locally; other build jobs stay on stable.
       - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features search-static --lib --bins
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features search-static --lib --bins -- -D warnings
 
   build-test:
     needs: changes
@@ -552,8 +555,7 @@ jobs:
   # install.ps1 Pester job could not block merge. This job keeps the required
   # name and requires all selected checks. Only unchanged native jobs on a
   # frontend-only PR may skip; failures, cancellations and unexpected skips
-  # block the gate. Clippy stays out of this gate (non-blocking
-  # until existing warnings are cleared). Adding the individual job names as
+  # block the gate. Headless Clippy is also required. Adding job names as
   # separate required contexts still needs a GitHub settings click; this file
   # cannot do that.
   merge-gate:
@@ -562,6 +564,7 @@ jobs:
     needs:
       - changes
       - frontend
+      - clippy
       - build-test
       - cross-platform-rust
       - linux-native

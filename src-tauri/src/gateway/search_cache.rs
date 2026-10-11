@@ -42,8 +42,10 @@ fn read(path: &Path, dimensions: usize) -> Option<Vec<f32>> {
         return None;
     }
     let vector: Vec<f32> = bytes
-        .chunks_exact(4)
-        .map(|v| f32::from_le_bytes(v.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|v| f32::from_le_bytes(*v))
         .collect();
     let norm: f32 = vector.iter().map(|v| v * v).sum();
     (vector.iter().all(|v| v.is_finite()) && (norm == 0.0 || (norm - 1.0).abs() < 0.001))

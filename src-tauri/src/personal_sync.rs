@@ -1871,12 +1871,11 @@ pub fn apply(
         for profile in &mut reg.profiles {
             if !entry.enabled {
                 profile.enabled_server_ids.retain(|s| s != &entry.id);
-            } else if (old.is_none() && profile.id == active)
-                || restore_profiles.contains(&json!(profile.id))
+            } else if ((old.is_none() && profile.id == active)
+                || restore_profiles.contains(&json!(profile.id)))
+                && !profile.enabled_server_ids.contains(&entry.id)
             {
-                if !profile.enabled_server_ids.contains(&entry.id) {
-                    profile.enabled_server_ids.push(entry.id.clone());
-                }
+                profile.enabled_server_ids.push(entry.id.clone());
             }
         }
         if entry.enabled {
@@ -1902,16 +1901,17 @@ pub(crate) fn check_review(
     reviewed: Option<&ServerEntry>,
 ) -> Result<(), String> {
     crate::secret_refs::check_reviewed_definition(current, reviewed)?;
-    if is_personal(reg) && current.needs_team_enable_review() {
-        if reviewed.is_none_or(|s| {
+    if is_personal(reg)
+        && current.needs_team_enable_review()
+        && reviewed.is_none_or(|s| {
             s.id != current.id
                 || command_identity(&json!(s)) != command_identity(&json!(current))
                 || execution_review_fields(s) != execution_review_fields(current)
-        }) {
-            return Err(
-                "The command, reference or destination changed. Review this server again.".into(),
-            );
-        }
+        })
+    {
+        return Err(
+            "The command, reference or destination changed. Review this server again.".into(),
+        );
     }
     Ok(())
 }

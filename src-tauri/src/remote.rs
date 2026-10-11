@@ -101,6 +101,8 @@ fn refresh_decision(state: &OAuthState, now: u64) -> RefreshDecision {
 }
 
 /// Persist what's needed to refresh this server's token later.
+// OAuth refresh metadata is persisted as one operation, matching the protocol fields.
+#[allow(clippy::too_many_arguments)]
 pub fn store_oauth_state(
     server_id: &str,
     issuer: Option<String>,

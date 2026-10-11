@@ -146,7 +146,7 @@ pub fn bind_data_dir(dir: &Path) {
     let path = dir.join("rate_limit_counters.json");
     let mut guard = state_lock().lock().unwrap_or_else(|e| e.into_inner());
     match guard.as_mut() {
-        Some(st) if st.path.is_some() => return,
+        Some(st) if st.path.is_some() => (),
         Some(st) => {
             st.path = Some(path);
             st.pending_merge = !st.file.counts.is_empty();

@@ -67,17 +67,6 @@ fn supports_mcp_app_html(extensions: &serde_json::Map<String, Value>) -> bool {
         .is_some_and(|mime_types| mime_types.iter().any(|mime| mime == MCP_APP_HTML_MIME))
 }
 
-/// MCP Apps resources are primarily discovered through tool metadata and MAY be
-/// omitted from `resources/list`. Keep both the current nested field and the
-/// pre-GA flat spelling so a transparent gateway can still route the host's
-/// subsequent `resources/read` to the tool's owning server.
-fn mcp_app_resource_uri(tool: &Value) -> Option<&str> {
-    tool.pointer("/_meta/ui/resourceUri")
-        .or_else(|| tool.pointer("/_meta/ui~1resourceUri"))
-        .and_then(Value::as_str)
-        .filter(|uri| uri.starts_with("ui://"))
-}
-
 /// Seal the owner and native task id into one opaque, unguessable handle. The
 /// installation-local key survives restarts; authenticated encryption prevents
 /// a client from changing either component to reach another task (SOU-453).
@@ -1262,7 +1251,7 @@ impl ReplayPolicy {
         }
     }
 
-    fn uncertain_failure<'a>(self, error: &'a TransportError) -> Option<&'a TransportError> {
+    fn uncertain_failure(self, error: &TransportError) -> Option<&TransportError> {
         match (self, error) {
             (Self::NoAmbiguousReplay, TransportError::Unavailable(_)) => Some(error),
             (_, TransportError::Classified(kind, _)) if kind.uncertain() => Some(error),
@@ -2236,6 +2225,8 @@ impl Router {
     /// `_2` collision suffixes are allocated by raw name rather than list
     /// position, so neither the call order nor a downstream reordering its own
     /// catalog can move them (see [`allocate_exposed_names`](Self::allocate_exposed_names)).
+    // Keep the complete catalog and its policy together at this indexing boundary.
+    #[allow(clippy::too_many_arguments)]
     fn index_server(
         &mut self,
         server_id: &str,
