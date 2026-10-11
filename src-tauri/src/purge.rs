@@ -1470,8 +1470,11 @@ mod tests {
         assert!(report.leftovers.is_empty());
         for name in collisions {
             assert_eq!(std::fs::read_to_string(env.dir.join(name)).unwrap(), "user bytes", "{name}");
-            let expected = env.dir.join(name).display().to_string();
-            assert!(report.preserved.iter().any(|entry| entry.starts_with(&expected)), "{name}");
+            let expected = env.dir.join(name);
+            assert!(report.preserved.iter().any(|entry| {
+                entry.strip_suffix(" (not a Toolport-created entry)")
+                    .is_some_and(|entry| Path::new(entry).components().eq(expected.components()))
+            }), "{name}: {:?}", report.preserved);
         }
         for name in generated { assert!(!env.dir.join(name).exists(), "{name}"); }
     }
