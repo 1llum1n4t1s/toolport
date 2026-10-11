@@ -111,18 +111,26 @@ fn same_path(a: &Path, b: &Path) -> bool {
 }
 
 pub(super) fn all() -> Vec<ClientLocation> {
-    let mut rows = home().map(|home| automatic(&home)).unwrap_or_default();
-    match saved() {
-        Ok(saved) => {
-            for row in saved {
-                if !rows.iter().any(|auto| auto.config_path == row.config_path) {
-                    rows.push(row);
-                }
-            }
+    let known = saved().unwrap_or_else(|error| {
+        eprintln!("toolport: {error}");
+        Vec::new()
+    });
+    merge_locations(known, home().map(|home| automatic(&home)).unwrap_or_default())
+}
+
+fn merge_locations(mut known: Vec<ClientLocation>, detected: Vec<ClientLocation>) -> Vec<ClientLocation> {
+    for row in detected {
+        if !known.iter().any(|saved| saved.id == row.id || saved.config_path == row.config_path) {
+            known.push(row);
         }
-        Err(error) => eprintln!("toolport: {error}"),
     }
-    rows
+    known
+}
+
+fn claude_folder_id(home: &Path, folder: &Path) -> Option<String> {
+    let name = folder.file_name()?.to_str()?;
+    (folder.parent() == Some(home) && name.starts_with(".claude"))
+        .then(|| format!("claude-code@{}", folder_key(name)))
 }
 
 /// A known automatic ID resolves without enumerating home or reading a config.
@@ -233,7 +241,11 @@ pub fn add_client_location(client_type: &str, folder: &str) -> Result<String, St
     }
     use sha2::{Digest, Sha256};
     let key = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
-    let id = format!("{client_type}@{}", &key[..16]);
+    let automatic_id = if client_type == "claude-code" {
+        home().and_then(|root| std::fs::canonicalize(root).ok())
+            .and_then(|root| claude_folder_id(&root, &folder))
+    } else { None };
+    let id = automatic_id.unwrap_or_else(|| format!("{client_type}@{}", &key[..16]));
     let label = folder.file_name().unwrap_or_default().to_string_lossy();
     rows.push(ClientLocation {
         id: id.clone(),
@@ -378,6 +390,30 @@ mod tests {
         let rows = unique_config_definitions(vec![base, location]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].client_id(), "codex@selected");
+    }
+
+    #[test]
+    fn a_manual_claude_folder_keeps_its_identity_when_the_config_appears() {
+        let root = TempFolder::new();
+        let folder = root.path().join(".claude4");
+        std::fs::create_dir(&folder).unwrap();
+        let id = claude_folder_id(root.path(), &folder).unwrap();
+        assert_eq!(id, "claude-code@claude4");
+        assert!(automatic(root.path()).is_empty());
+        let saved = ClientLocation {
+            id: id.clone(), client_type: "claude-code".into(),
+            name: "Claude Code (claude4)".into(), config_path: folder.join(".claude.json"),
+        };
+        std::fs::write(&saved.config_path, "{}").unwrap();
+        let rows = merge_locations(vec![saved.clone()], automatic(root.path()));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, id);
+        // A previously registered ID also wins over newly discovered metadata.
+        let old_id = ClientLocation { id: "claude-code@registered".into(), ..saved };
+        let rows = merge_locations(vec![old_id], automatic(root.path()));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "claude-code@registered");
+        assert!(claude_folder_id(root.path(), &folder.join("nested")).is_none());
     }
 
     #[test]
