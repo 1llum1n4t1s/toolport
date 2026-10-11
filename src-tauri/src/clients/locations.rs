@@ -177,7 +177,8 @@ pub(super) fn validate_mutation(client_id: &str, path: &Path) -> Result<(), Stri
     if !client_id.contains('@') {
         // Legacy secondary upkeep shares the main client ID. A saved automatic
         // path must not become writable through that compatibility route.
-        if client_id == "claude-code" {
+        if client_id == "claude-code" && !client_config_path("claude-code")
+            .is_some_and(|main| same_path(&main, path)) {
             if let Some(row) = saved()?.into_iter().find(|row| !row.manual && row.config_path == path) {
                 validate(&row)?;
             }

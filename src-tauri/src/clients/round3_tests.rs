@@ -84,6 +84,7 @@ fn round3_missing_automatic_config_and_folder_are_absent_not_errors() {
         let row = read_client(&def);
         assert!(row.error.is_none(), "{:?}", row.error);
         assert!(!row.config_exists);
+        assert!(row.location_removable);
         assert!(referenced_gateway_paths().is_some());
         remove_client_location("claude-code@claude2").unwrap();
         assert!(locations::saved().unwrap().is_empty());
@@ -114,6 +115,7 @@ fn round3_reserved_duplicates_removed_in_all_formats_and_foreign_slots_preserved
     let gateway = entry(&data.dir.join("toolport-gateway"));
     for (format, raw) in [
         (Format::JsonMcpServers, r#"{"mcpServers":{"toolport":{"command":"toolport-gateway"},"conduit":{"command":"conduit-gateway"},"foreign":{"command":"toolport-gateway"}}}"#),
+        (Format::JsonZCodeMcp, r#"{"mcp":{"servers":{"toolport":{"type":"stdio","command":"toolport-gateway"},"conduit":{"type":"stdio","command":"conduit-gateway"},"foreign":{"type":"stdio","command":"toolport-gateway"}}}}"#),
         (Format::JsonOpenCodeMcp, r#"{"mcp":{"toolport":{"type":"local","command":["toolport-gateway"]},"conduit":{"type":"local","command":["conduit-gateway"]},"foreign":{"type":"local","command":["toolport-gateway"]}}}"#),
         (Format::TomlMcpServers, "[mcp_servers.toolport]\ncommand='toolport-gateway'\n[mcp_servers.conduit]\ncommand='conduit-gateway'\n[mcp_servers.foreign]\ncommand='toolport-gateway'\n"),
         (Format::YamlExtensions, "extensions:\n  toolport: {type: stdio, cmd: toolport-gateway, enabled: true}\n  conduit: {type: stdio, cmd: conduit-gateway, enabled: true}\n  foreign: {type: stdio, cmd: toolport-gateway, enabled: true}\n"),
@@ -131,6 +133,11 @@ fn round3_reserved_duplicates_removed_in_all_formats_and_foreign_slots_preserved
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "foreign");
         assert!(owned_gateway_entry(&rows).is_none());
+        std::fs::write(&path, raw).unwrap();
+        mutation::run("fixture", &path, format, || edit_format(format, &path, Some(&gateway), true)).unwrap();
+        let rows = parse_client_content(format, &read_config_file(&path).unwrap()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "toolport");
     }
 }
 
@@ -185,4 +192,21 @@ fn round3_windows_backup_acl_survives_native_canonicalization_failure() {
     crate::registry::client_file::with_native_canonicalize_failure(|| {
         backup_permissions::secure(&data.dir).unwrap();
     });
+}
+
+#[test]
+fn round3_unreadable_config_and_home_scan_fail_closed() {
+    let data = crate::registry::DataDirTestEnv::new("round3-unreadable");
+    let root = data.dir.join("home");
+    std::fs::create_dir(&root).unwrap();
+    let _home = TestHome::set(&root);
+    let config = root.join(".claude.json");
+    std::fs::create_dir(&config).unwrap();
+    let row = read_client(&find_def("claude-code").unwrap());
+    assert!(row.error.is_some());
+    assert!(referenced_gateway_paths().is_none());
+    std::fs::remove_dir(&config).unwrap();
+    std::fs::remove_dir(&root).unwrap();
+    std::fs::write(&root, "not a directory").unwrap();
+    assert!(referenced_gateway_paths().is_none());
 }

@@ -666,28 +666,29 @@ fn rules_sentinel_block(
 /// Discovery is deliberately narrow: the documented default, the override, and
 /// `.claude*` siblings directly under home. No recursion, nothing outside home.
 fn claude_code_config_paths() -> Vec<PathBuf> {
-    let Some(home) = home() else {
-        return Vec::new();
-    };
-    let dirs = match legacy_claude_profile_dirs(&home) {
-        Ok(dirs) => dirs,
-        Err(error) => {
-            let msg = format!(
-                "toolport: could not scan {} for secondary Claude Code configs: {error}",
-                home.display()
-            );
-            eprintln!("{msg}");
-            crate::gatewaylog::append(&msg);
-            Vec::new()
-        }
-    };
-    claude_code_config_paths_from(&home, claude_config_dir_override().as_deref(), &dirs)
+    try_claude_code_config_paths().unwrap_or_else(|error| {
+        let msg = format!("toolport: could not scan secondary Claude Code configs: {error}");
+        eprintln!("{msg}");
+        crate::gatewaylog::append(&msg);
+        Vec::new()
+    })
+}
+
+fn try_claude_code_config_paths() -> Result<Vec<PathBuf>, String> {
+    let home = home().ok_or("Could not resolve home for Claude Code configs")?;
+    let dirs = legacy_claude_profile_dirs(&home)?;
+    Ok(claude_code_config_paths_from(&home, claude_config_dir_override().as_deref(), &dirs)
         .into_iter()
-        .filter(|p| match std::fs::metadata(p) {
+        .filter(|path| {
+            let legacy = path == &home.join(".claude.json")
+                || client_config_path("claude-code").as_ref() == Some(path)
+                || path.parent().and_then(|folder| folder.file_name()).and_then(|name| name.to_str()).is_some_and(legacy_claude_profile_name);
+            legacy || locations::automatic_path_is_safe(&home, path)
+        })
+        .filter(|path| match std::fs::metadata(path) {
             Ok(meta) => meta.is_file(),
             Err(error) => error.kind() != std::io::ErrorKind::NotFound,
-        })
-        .collect()
+        }).collect())
 }
 
 /// Name-first, shallow discovery. Symlink directories are excluded so automatic
@@ -3508,7 +3509,14 @@ fn read_client(def: &ClientDef) -> DetectedClient {
         };
     }
 
-    if !mutation::exists(&path) {
+    if mutation::read(&path).is_none() {
+        match std::fs::metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
+                return build(config_path, false, Vec::new(), None),
+            Err(error) => return build(config_path, true, Vec::new(), Some(format!("Could not inspect config: {error}"))),
+            Ok(_) => {},
+        }
+    } else if !mutation::exists(&path) {
         return build(config_path, false, Vec::new(), None);
     }
 
@@ -7245,8 +7253,7 @@ fn read_gateway_profile(client_id: &str) -> Option<String> {
 /// entry leaves a reference nothing will ever repair.
 pub fn referenced_gateway_paths() -> Option<Vec<PathBuf>> {
     locations::saved().ok()?;
-    legacy_claude_profile_dirs(&home()?).ok()?;
-    referenced_gateway_paths_for(&detect_clients(), &claude_code_config_paths())
+    referenced_gateway_paths_for(&detect_clients(), &try_claude_code_config_paths().ok()?)
 }
 
 fn referenced_gateway_paths_for(clients: &[DetectedClient], claude_paths: &[PathBuf]) -> Option<Vec<PathBuf>> {
