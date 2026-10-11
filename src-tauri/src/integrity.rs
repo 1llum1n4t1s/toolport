@@ -1944,17 +1944,7 @@ fn release_inner(
         return Ok(false);
     };
     let tamper = record.get("change").and_then(Value::as_str) == Some("tamper");
-    let pending = match record.get("pending_pin").cloned() {
-        Some(value) => Some(serde_json::from_value::<Pin>(value).map_err(|_| {
-            format!("Refusing to release {tool}; the quarantine has no valid captured pin")
-        })?),
-        None if tamper => {
-            return Err(format!(
-                "Refusing to release {tool}; the tamper quarantine has no valid captured pin"
-            ));
-        }
-        None => None,
-    };
+    let pending = release_pending_pin(tool, &record)?;
     {
         // Establish the exact definition captured when this tool was quarantined before
         // removing the router block. For ordinary drift this is the recovery path when the
@@ -1976,17 +1966,7 @@ fn release_inner(
                 }
             };
             let mut updated = pins.clone();
-            if let Some(pending) = pending {
-                updated.insert(
-                    tool.to_string(),
-                    merge_pending_pin(pins.get(tool), pending, epoch_millis()),
-                );
-            }
-            if let Some(pin) = updated.get_mut(tool) {
-                if fp_version(&pin.fp) != PIN_FP_VERSION {
-                    pin.review_on_upgrade = true;
-                }
-            }
+            apply_release_pin(&mut updated, tool, pending, epoch_millis());
             if updated != pins {
                 save_pin(profile, &updated)?;
             }
@@ -2001,6 +1981,31 @@ fn release_inner(
         return Ok(true);
     }
     Ok(false)
+}
+
+/// Both release paths must repair captured definitions and retain legacy review.
+fn release_pending_pin(tool: &str, record: &Value) -> Result<Option<Pin>, String> {
+    match record.get("pending_pin").cloned() {
+        Some(value) => serde_json::from_value::<Pin>(value).map(Some).map_err(|_| {
+            format!("Refusing to release {tool}; the quarantine has no valid captured pin")
+        }),
+        None if record["change"] == "tamper" => Err(format!(
+            "Refusing to release {tool}; the tamper quarantine has no valid captured pin"
+        )),
+        None => Ok(None),
+    }
+}
+
+fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, stamp: u64) {
+    if let Some(pending) = pending {
+        let pin = merge_pending_pin(pins.get(tool), pending, stamp);
+        pins.insert(tool.to_string(), pin);
+    }
+    if let Some(pin) = pins.get_mut(tool) {
+        if fp_version(&pin.fp) != PIN_FP_VERSION {
+            pin.review_on_upgrade = true;
+        }
+    }
 }
 
 /// How a bulk re-approval went: how many blocks were lifted, and the tools that
@@ -2045,25 +2050,18 @@ fn release_all_inner(
         return Ok(ReleaseAllOutcome::default());
     }
 
-    let mut accepted: Vec<(String, Pin)> = Vec::new();
+    let mut accepted: Vec<(String, Option<Pin>)> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     let mut tamper_seen = false;
     for (tool, record) in q.iter() {
         let tamper = record.get("change").and_then(Value::as_str) == Some("tamper");
-        match record.get("pending_pin").cloned() {
-            Some(value) => match serde_json::from_value::<Pin>(value) {
-                Ok(pin) => {
-                    tamper_seen |= tamper;
-                    accepted.push((tool.clone(), pin));
-                }
-                // No usable captured definition: releasing would expose the tool with
-                // no baseline to compare against later.
-                Err(_) => skipped.push(tool.clone()),
-            },
-            // A tamper record without a captured pin has no trust root to repair.
-            None if tamper => skipped.push(tool.clone()),
-            // Ordinary drift with nothing staged: the block can simply be lifted.
-            None => {}
+        match release_pending_pin(tool, record) {
+            Ok(pin) => {
+                tamper_seen |= tamper;
+                accepted.push((tool.clone(), pin));
+            }
+            // A malformed pending pin or tamper without a trust root stays blocked.
+            Err(_) => skipped.push(tool.clone()),
         }
     }
 
@@ -2087,10 +2085,7 @@ fn release_all_inner(
             let mut updated = pins.clone();
             let stamp = epoch_millis();
             for (tool, pin) in &accepted {
-                updated.insert(
-                    tool.clone(),
-                    merge_pending_pin(pins.get(tool), pin.clone(), stamp),
-                );
+                apply_release_pin(&mut updated, tool, pin.clone(), stamp);
             }
             if updated != pins {
                 save_pin(profile, &updated)?;
@@ -5255,6 +5250,29 @@ mod tests {
                 }));
             }
         }
+    }
+
+    #[test]
+    fn bulk_legacy_release_keeps_block_when_review_pin_cannot_be_saved() {
+        let _data_dir_lock = crate::registry::data_dir_test_lock();
+        let _data_dir = TestDataDir::new("bulk-legacy-release-save-failure");
+        let tool = "srv__wipe";
+        let mut pin = pin_of(&destructive_tool(tool, "Old definition."));
+        pin.fp = "v1:old-definition".into();
+        save_pins(None, &BTreeMap::from([(tool.to_string(), pin)])).unwrap();
+        save_quarantine(None, &BTreeMap::from([(
+            tool.to_string(), json!({"tool": tool, "change": "changed"}),
+        )])).unwrap();
+        let error = release_all_inner(
+            None,
+            |_, _| Err("injected review-pin save failure".to_string()),
+            save_quarantine,
+        ).unwrap_err();
+        assert!(error.contains("injected review-pin save failure"));
+        assert!(quarantined(None).unwrap().contains(tool));
+        let outcome = release_all(None).unwrap();
+        assert_eq!(outcome.released, 1);
+        assert!(quarantined(None).unwrap().is_empty());
     }
 
     /// One unrepairable record must not fail the whole batch, and must not be
