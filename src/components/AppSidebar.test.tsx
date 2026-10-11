@@ -462,6 +462,7 @@ describe("AppSidebar quarantine badge", () => {
 
   function quarantinedTool(over: Partial<import("@/lib/api").QuarantinedTool> = {}) {
     return {
+      record_id: "displayed-record",
       server: "linear",
       tool: "linear__save_issue",
       reason: "a destructive tool's definition changed",

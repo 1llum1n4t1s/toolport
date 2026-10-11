@@ -1481,6 +1481,8 @@ pub struct ReleaseAllSummary {
     pub released: usize,
     /// Tools whose captured definition could not be read; they stay blocked.
     pub skipped: Vec<String>,
+    /// Records replaced or added since the displayed list was loaded.
+    pub changed: Vec<String>,
     /// Profile scopes whose store could not be updated at all.
     pub failed: Vec<String>,
 }
@@ -1492,13 +1494,35 @@ pub struct ReleaseAllSummary {
 /// away the outcome of the scopes that succeeded, so errors are collected instead
 /// of returned early. An empty profile string means the global scope.
 pub fn release_all_quarantine(profiles: &[String]) -> ReleaseAllSummary {
+    release_all_quarantine_inner(profiles, None)
+}
+
+pub fn release_all_quarantine_records(
+    profiles: &[String],
+    expected: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+) -> ReleaseAllSummary {
+    release_all_quarantine_inner(profiles, Some(expected))
+}
+
+fn release_all_quarantine_inner(
+    profiles: &[String],
+    expected: Option<&std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>>,
+) -> ReleaseAllSummary {
     let mut summary = ReleaseAllSummary::default();
+    let empty = std::collections::BTreeMap::new();
     for profile in profiles {
         let scope = (!profile.is_empty()).then_some(profile.as_str());
-        match crate::integrity::release_all(scope) {
+        let result = match expected {
+            Some(expected) => crate::integrity::release_all_records(
+                scope, expected.get(profile).unwrap_or(&empty),
+            ),
+            None => crate::integrity::release_all(scope),
+        };
+        match result {
             Ok(outcome) => {
                 summary.released += outcome.released;
                 summary.skipped.extend(outcome.skipped);
+                summary.changed.extend(outcome.changed);
             }
             Err(error) => summary.failed.push(error),
         }

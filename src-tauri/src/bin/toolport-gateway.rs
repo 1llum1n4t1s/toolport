@@ -10492,8 +10492,13 @@ fn fail_closed_integrity_catalog(
     // If the quarantine write succeeded but the subsequent pin write failed, the durable
     // store contains the new block. If the store itself is unreadable, retain the current set
     // plus the candidates above rather than weakening either one.
-    if let Ok(persisted) = integrity::quarantined(profile) {
-        fail_closed.extend(persisted);
+    match integrity::quarantined(profile) {
+        Ok(persisted) => fail_closed.extend(persisted),
+        // A prior gate can persist a block and advance its pin, then lose the
+        // swap. The retry has no drift candidates, so its old blocked set cannot
+        // identify the saved block. Hide the catalog until a readable store and
+        // checked reconciliation establish what may be published.
+        Err(_) => router.fail_closed_catalog(),
     }
     // Never `requarantine_from_store` here: this is the integrity-store FAILURE path,
     // so a fail-closed catalog stays hidden. `reconcile_quarantine` lifts it on the
@@ -40202,7 +40207,7 @@ mod tests {
             conduit_lib::registry_controller::release_quarantine(profile, "srv__read").unwrap();
             let path = data.dir.join(match profile {
                 None => "quarantine.json".to_string(),
-                Some(id) => format!("quarantine-{id}.json"),
+                Some(id) => format!("quarantine-v2-{}.json", registry::profile_store_key(id)),
             });
             let saved = Arc::new(Mutex::new(String::new()));
             let observed_store = Arc::clone(&saved);

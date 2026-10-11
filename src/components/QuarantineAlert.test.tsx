@@ -31,6 +31,7 @@ async function confirmReapproveAll() {
 
 function tool(over: Partial<QuarantinedTool> = {}): QuarantinedTool {
   return {
+    record_id: "displayed-record",
     server: "linear",
     tool: "linear__save_issue",
     reason: "a destructive tool's definition changed",
@@ -75,7 +76,10 @@ describe("QuarantineAlert bulk re-approval", () => {
 
     // One call for the one profile, not one per tool.
     await waitFor(() => expect(releaseAllQuarantine).toHaveBeenCalledTimes(1));
-    expect(releaseAllQuarantine).toHaveBeenCalledWith("default");
+    expect(releaseAllQuarantine).toHaveBeenCalledWith(
+      "default",
+      Object.fromEntries(catalog(40).map((q) => [q.tool, q.record_id])),
+    );
     expect(releaseQuarantine).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole("region")).not.toBeInTheDocument());
     expect(toastSuccess).toHaveBeenCalledWith("Re-approved 40 tools");
@@ -96,8 +100,14 @@ describe("QuarantineAlert bulk re-approval", () => {
     await confirmReapproveAll();
 
     await waitFor(() => expect(releaseAllQuarantine).toHaveBeenCalledTimes(2));
-    expect(releaseAllQuarantine).toHaveBeenCalledWith("default");
-    expect(releaseAllQuarantine).toHaveBeenCalledWith("work");
+    expect(releaseAllQuarantine).toHaveBeenCalledWith(
+      "default",
+      Object.fromEntries(catalog(2).map((q) => [q.tool, q.record_id])),
+    );
+    expect(releaseAllQuarantine).toHaveBeenCalledWith(
+      "work",
+      Object.fromEntries(catalog(2, "work").map((q) => [q.tool, q.record_id])),
+    );
   });
 
   it("does not release anything until the confirm is accepted", async () => {
@@ -133,6 +143,21 @@ describe("QuarantineAlert bulk re-approval", () => {
     );
     expect(toastSuccess).not.toHaveBeenCalled();
     // Still blocked, so the card must stay up.
+    expect(screen.getByRole("region")).toBeInTheDocument();
+  });
+
+  it("reports findings that appeared or changed after review as still blocked", async () => {
+    listQuarantined.mockResolvedValue(catalog(3));
+    releaseAllQuarantine.mockResolvedValue({
+      released: 1, skipped: [], changed: ["clerk__call_api_key_1", "new_tool"],
+    });
+    render(<QuarantineAlert />);
+    await screen.findByRole("region");
+    await confirmReapproveAll();
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(
+      "Re-approved 1. 2 new or changed findings remain blocked. Refresh and review them.",
+    ));
+    expect(toastSuccess).not.toHaveBeenCalled();
     expect(screen.getByRole("region")).toBeInTheDocument();
   });
 
@@ -225,7 +250,9 @@ describe("QuarantineAlert", () => {
     // Exact match: the footer also offers a bulk "Re-approve all" button.
     await userEvent.click(await screen.findByRole("button", { name: /^re-approve$/i }));
 
-    expect(releaseQuarantine).toHaveBeenCalledWith("work", "linear__save_issue");
+    expect(releaseQuarantine).toHaveBeenCalledWith(
+      "work", "linear__save_issue", undefined, "displayed-record",
+    );
     await waitFor(() => expect(screen.queryByRole("region")).not.toBeInTheDocument());
   });
 

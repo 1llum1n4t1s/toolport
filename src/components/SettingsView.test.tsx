@@ -14,6 +14,8 @@ import {
   getRegistry,
   isAutostartEnabled,
   listServerTools,
+  listQuarantined,
+  releaseQuarantine,
   setCodeMode,
   setDefaultAccess,
   setPiiRedaction,
@@ -36,6 +38,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
     removeToolportData: vi.fn(),
     getRegistry: vi.fn(),
     listServerTools: vi.fn(),
+    listQuarantined: vi.fn().mockResolvedValue([]),
+    releaseQuarantine: vi.fn(),
     isAutostartEnabled: vi.fn(),
     enableAutostart: vi.fn().mockResolvedValue(undefined),
     disableAutostart: vi.fn().mockResolvedValue(undefined),
@@ -116,6 +120,19 @@ function deferred<T>() {
 }
 
 describe("SettingsView tool loading", () => {
+  it("releases only the blocked record displayed in Settings", async () => {
+    vi.mocked(listQuarantined).mockResolvedValueOnce([{
+      record_id: "settings-displayed-record", profile: "work", tool: "srv__read",
+      server: "srv", reason: "Definition changed", ts: 1,
+    }]);
+    vi.mocked(releaseQuarantine).mockResolvedValue(undefined);
+    renderSettings("safety");
+    await userEvent.click(await screen.findByRole("button", { name: /^re-approve$/i }));
+    await waitFor(() => expect(releaseQuarantine).toHaveBeenCalledWith(
+      "work", "srv__read", undefined, "settings-displayed-record",
+    ));
+  });
+
   it("keeps loading state scoped to each server", async () => {
     const user = userEvent.setup();
 

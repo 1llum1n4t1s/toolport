@@ -798,7 +798,7 @@ export function SettingsView({
 
   const reapprove = async (q: QuarantinedTool) => {
     try {
-      await releaseQuarantine(q.profile, q.tool);
+      await releaseQuarantine(q.profile, q.tool, undefined, q.record_id);
       setQuarantined(await listQuarantined());
     } catch (e) {
       toastError(`Couldn't re-approve: ${e}`);

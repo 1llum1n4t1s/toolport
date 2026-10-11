@@ -1984,6 +1984,7 @@ impl SettingsPage {
 
 #[derive(Clone)]
 struct QuarantinedTool {
+    record_id: String,
     profile: String,
     tool: String,
     detail: String,
@@ -1993,6 +1994,7 @@ fn read_quarantined_tools() -> Result<Vec<QuarantinedTool>, String> {
     Ok(crate::integrity::all_quarantined()?
         .into_iter()
         .map(|value| QuarantinedTool {
+            record_id: value["record_id"].as_str().unwrap_or_default().to_string(),
             profile: value
                 .get("profile")
                 .and_then(serde_json::Value::as_str)
@@ -2208,6 +2210,13 @@ fn release_all_feedback(summary: &crate::registry_controller::ReleaseAllSummary)
             true,
         );
     }
+    if !summary.changed.is_empty() {
+        let changed = summary.changed.len();
+        return (
+            format!("Re-approved {released}. {changed} new or changed findings remain blocked. Refresh and review them."),
+            true,
+        );
+    }
     if !summary.skipped.is_empty() {
         let skipped = summary.skipped.len();
         return (
@@ -2259,6 +2268,11 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
         "Repair every baseline in one pass. A tool whose captured definition cannot be read stays blocked.",
     ));
     let profiles = distinct_profiles(entries);
+    let mut expected = std::collections::BTreeMap::<String, std::collections::BTreeMap<String, String>>::new();
+    for entry in entries {
+        expected.entry(entry.profile.clone()).or_default()
+            .insert(entry.tool.clone(), entry.record_id.clone());
+    }
     let release_for_click = release_all.clone();
     release_all.connect_clicked(move |_| {
         let Some(parent) = page.root.root().and_downcast::<gtk::Window>() else {
@@ -2280,15 +2294,17 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
         dialog.set_response_appearance("approve", adw::ResponseAppearance::Suggested);
         let page = page.clone();
         let profiles = profiles.clone();
+        let expected = expected.clone();
         let button = release_for_click.clone();
         dialog.connect_response(None, move |dialog, response| {
             if response == "approve" {
                 button.set_sensitive(false);
                 let page = page.clone();
                 let profiles = profiles.clone();
+                let expected = expected.clone();
                 gtk::glib::spawn_future_local(async move {
                     let result = gtk::gio::spawn_blocking(move || {
-                        crate::registry_controller::release_all_quarantine(&profiles)
+                        crate::registry_controller::release_all_quarantine_records(&profiles, &expected)
                     })
                     .await;
                     match result {
@@ -2381,7 +2397,7 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
                     let profile = entry.profile.clone();
                     let result = gtk::gio::spawn_blocking(move || {
                         let profile = (!profile.is_empty()).then_some(profile.as_str());
-                        crate::registry_controller::release_quarantine(profile, &tool)
+                        crate::integrity::release_record(profile, &tool, &entry.record_id).map(|_| ())
                     })
                     .await;
                     match result {
@@ -2735,6 +2751,7 @@ mod tests {
 
     fn blocked(profile: &str, tool: &str) -> QuarantinedTool {
         QuarantinedTool {
+            record_id: "displayed-record".to_string(),
             profile: profile.to_string(),
             tool: tool.to_string(),
             detail: "definition changed".to_string(),
@@ -2792,6 +2809,7 @@ mod tests {
     fn skipped_tools_keep_the_outcome_an_error_because_they_are_still_blocked() {
         let (message, is_error) = release_all_feedback(&ReleaseAllSummary {
             released: 2,
+            changed: vec![],
             skipped: vec!["tool".to_string()],
             failed: Vec::new(),
         });
@@ -2803,9 +2821,21 @@ mod tests {
     }
 
     #[test]
+    fn new_or_changed_records_are_reported_as_still_blocked() {
+        let (message, is_error) = release_all_feedback(&ReleaseAllSummary {
+            released: 1,
+            changed: vec!["new-tool".into(), "changed-tool".into()],
+            ..ReleaseAllSummary::default()
+        });
+        assert_eq!(message, "Re-approved 1. 2 new or changed findings remain blocked. Refresh and review them.");
+        assert!(is_error);
+    }
+
+    #[test]
     fn a_failed_scope_outranks_skips_and_reports_what_did_get_through() {
         let (message, is_error) = release_all_feedback(&ReleaseAllSummary {
             released: 1,
+            changed: vec![],
             skipped: vec!["tool".to_string()],
             failed: vec!["store locked".to_string()],
         });

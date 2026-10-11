@@ -94,7 +94,7 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
     const k = entryKey(q);
     setReleasing((s) => new Set(s).add(k));
     try {
-      await releaseQuarantine(q.profile, q.tool);
+      await releaseQuarantine(q.profile, q.tool, undefined, q.record_id);
       // Re-read rather than removing optimistically: the gateway reconciles the store
       // on its own tick, and the list is the authority on what is still blocked.
       await refresh();
@@ -129,7 +129,14 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
       // their tools off the card. With Promise.all the card kept listing tools that
       // were already released, and the count never came down.
       const settled = await Promise.allSettled(
-        profiles.map((p) => releaseAllQuarantine(p)),
+        profiles.map((p) =>
+          releaseAllQuarantine(
+            p,
+            Object.fromEntries(
+              items.filter((q) => q.profile === p).map((q) => [q.tool, q.record_id]),
+            ),
+          ),
+        ),
       );
       const outcomes = settled.flatMap((r) =>
         r.status === "fulfilled" ? [r.value] : [],
@@ -137,6 +144,7 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
       const failed = settled.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
       const released = outcomes.reduce((n, o) => n + o.released, 0);
       const skipped = outcomes.flatMap((o) => o.skipped);
+      const changed = outcomes.flatMap((o) => o.changed ?? []);
       await refresh();
       if (failed.length > 0) {
         // Say what did get through, so the number still on the card adds up.
@@ -144,6 +152,10 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
           `Re-approved ${released}. ${failed.length} profile${
             failed.length === 1 ? "" : "s"
           } could not be re-approved: ${failed[0]}`,
+        );
+      } else if (changed.length > 0) {
+        toastError(
+          `Re-approved ${released}. ${changed.length} new or changed findings remain blocked. Refresh and review them.`,
         );
       } else if (skipped.length > 0) {
         // Not a success: these are still blocked, and saying otherwise would send the

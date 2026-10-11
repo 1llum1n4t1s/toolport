@@ -1879,6 +1879,7 @@ pub fn all_quarantined() -> Result<Vec<Value>, String> {
             if is_legacy_added(&record) {
                 continue;
             }
+            record["record_id"] = json!(quarantine_record_id(&record));
             record["profile"] = json!(profile);
             out.push(record);
         }
@@ -1904,16 +1905,28 @@ pub fn release(profile: Option<&str>, tool: &str) -> Result<bool, String> {
 }
 
 /// Release only the record displayed by the caller.
-pub fn release_record(profile: Option<&str>, tool: &str, _expected_id: &str) -> Result<bool, String> {
-    release(profile, tool)
+pub fn release_record(profile: Option<&str>, tool: &str, expected_id: &str) -> Result<bool, String> {
+    let path = quarantine_path(profile).ok_or("Could not resolve the quarantine store")?;
+    with_store_lock(&path, || {
+        let quarantine = load_quarantine(profile)?;
+        if let Some(record) = quarantine.get(tool) {
+            if quarantine_record_id(record) != expected_id {
+                return Err("The blocked finding changed since you reviewed it. It remains blocked. Refresh and review the latest finding.".to_string());
+            }
+        }
+        release_inner(profile, tool, save_pins, save_quarantine)
+    })
 }
 
 /// Release only the records displayed by the caller, keyed by tool name.
 pub fn release_all_records(
     profile: Option<&str>,
-    _expected: &BTreeMap<String, String>,
+    expected: &BTreeMap<String, String>,
 ) -> Result<ReleaseAllOutcome, String> {
-    release_all(profile)
+    let path = quarantine_path(profile).ok_or("Could not resolve the quarantine store")?;
+    with_store_lock(&path, || {
+        release_all_inner_with_records(profile, Some(expected), save_pins, save_quarantine)
+    })
 }
 
 /// Content identity for a quarantine record, independent of its presentation scope.
@@ -2024,10 +2037,21 @@ fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, stamp: u
         let pin = merge_pending_pin(pins.get(tool), pending, stamp);
         pins.insert(tool.to_string(), pin);
     }
-    if let Some(pin) = pins.get_mut(tool) {
-        if fp_version(&pin.fp) != PIN_FP_VERSION {
-            pin.review_on_upgrade = true;
-        }
+    // A legacy record may have neither a captured definition nor an existing pin.
+    // Persist a review marker before lifting that block so first sight cannot be
+    // mistaken for an ordinary added tool (which never blocks).
+    let pin = pins.entry(tool.to_string()).or_insert_with(|| Pin {
+        fp: "released-without-baseline".to_string(),
+        review_on_upgrade: true,
+        parameters: None,
+        ro: None,
+        dh: None,
+        parts: None,
+        first_seen: stamp,
+        last_changed: stamp,
+    });
+    if fp_version(&pin.fp) != PIN_FP_VERSION {
+        pin.review_on_upgrade = true;
     }
 }
 
@@ -2038,6 +2062,8 @@ fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, stamp: u
 pub struct ReleaseAllOutcome {
     pub released: usize,
     pub skipped: Vec<String>,
+    /// Records replaced or added since the displayed list was loaded.
+    pub changed: Vec<String>,
 }
 
 /// Re-approve every quarantined tool for a profile in one pass.
@@ -2065,6 +2091,15 @@ fn release_all_inner(
     save_pin: impl FnOnce(Option<&str>, &Pins) -> Result<(), String>,
     save_quarantine: impl FnOnce(Option<&str>, &Quarantine) -> Result<(), String>,
 ) -> Result<ReleaseAllOutcome, String> {
+    release_all_inner_with_records(profile, None, save_pin, save_quarantine)
+}
+
+fn release_all_inner_with_records(
+    profile: Option<&str>,
+    expected: Option<&BTreeMap<String, String>>,
+    save_pin: impl FnOnce(Option<&str>, &Pins) -> Result<(), String>,
+    save_quarantine: impl FnOnce(Option<&str>, &Quarantine) -> Result<(), String>,
+) -> Result<ReleaseAllOutcome, String> {
     // Fail closed on a corrupt store, exactly as `release_inner` does: never treat it
     // as empty and save `{}`, which would drop every block without repairing anything.
     let q = load_quarantine(profile)
@@ -2075,8 +2110,15 @@ fn release_all_inner(
 
     let mut accepted: Vec<(String, Option<Pin>)> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    let mut changed: Vec<String> = Vec::new();
     let mut tamper_seen = false;
     for (tool, record) in q.iter() {
+        if let Some(expected) = expected {
+            if expected.get(tool) != Some(&quarantine_record_id(record)) {
+                changed.push(tool.clone());
+                continue;
+            }
+        }
         let tamper = record.get("change").and_then(Value::as_str) == Some("tamper");
         match release_pending_pin(tool, record) {
             Ok(pin) => {
@@ -2121,7 +2163,7 @@ fn release_all_inner(
     // Everything repaired (or needing no repair) is unblocked in one write. Anything
     // skipped stays in the store so it is still blocked and still visible in the UI.
     let mut remaining = Quarantine::new();
-    for tool in &skipped {
+    for tool in skipped.iter().chain(&changed) {
         if let Some(record) = q.get(tool) {
             remaining.insert(tool.clone(), record.clone());
         }
@@ -2130,7 +2172,7 @@ fn release_all_inner(
     if released > 0 {
         save_quarantine(profile, &remaining)?;
     }
-    Ok(ReleaseAllOutcome { released, skipped })
+    Ok(ReleaseAllOutcome { released, skipped, changed })
 }
 
 /// From `check`'s drift `events` and the `current` tool list, quarantine the HIGH-RISK
@@ -5266,7 +5308,8 @@ mod tests {
             assert!(release_record(profile, "srv__old", &expected["srv__old"]).is_err());
             let outcome = release_all_records(profile, &expected).unwrap();
             assert_eq!(outcome.released, 1);
-            assert_eq!(outcome.skipped, vec!["srv__new", "srv__old"]);
+            assert_eq!(outcome.changed, vec!["srv__new", "srv__old"]);
+            assert!(outcome.skipped.is_empty());
             assert_eq!(load_quarantine(profile).unwrap()["srv__old"], replaced);
             assert_eq!(quarantined(profile).unwrap(), BTreeSet::from([
                 "srv__new".into(), "srv__old".into(),

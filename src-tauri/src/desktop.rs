@@ -1625,13 +1625,16 @@ fn release_quarantine(
     profile: String,
     tool: String,
     expected_fingerprint: Option<String>,
+    expected_record_id: Option<String>,
 ) -> Result<(), String> {
     let prof = if profile.is_empty() {
         None
     } else {
         Some(profile.as_str())
     };
-    if let Some(expected) = expected_fingerprint {
+    if let Some(expected) = expected_record_id {
+        integrity::release_record(prof, &tool, &expected)?;
+    } else if let Some(expected) = expected_fingerprint {
         integrity::release_definition(prof, &tool, &expected)?;
     } else {
         crate::registry_controller::release_quarantine(prof, &tool)?;
@@ -1657,6 +1660,7 @@ fn release_quarantine(
 async fn release_all_quarantine(
     app: AppHandle,
     profile: String,
+    expected_records: Option<std::collections::BTreeMap<String, String>>,
 ) -> Result<integrity::ReleaseAllOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<RegistryState>();
@@ -1665,7 +1669,10 @@ async fn release_all_quarantine(
         } else {
             Some(profile.as_str())
         };
-        let outcome = integrity::release_all(prof)
+        let outcome = match expected_records {
+            Some(expected) => integrity::release_all_records(prof, &expected),
+            None => integrity::release_all(prof),
+        }
             .map_err(|e| format!("Could not re-approve the blocked tools: {e}"))?;
         // Same reasoning as `release_quarantine`: refresh the cache rather than
         // blind-writing a possibly stale snapshot over a concurrent gateway write.
