@@ -2470,13 +2470,60 @@ fn quarantine_release_restores_calls(reserved_alias: bool, product_release: bool
     }
 
     if product_release {
-        // Both React IPC and GTK re-approve call this controller. The daemon
-        // must observe its store write without a registry edit or reconnect.
+        // The first product approval has no saved definition or pin to trust.
+        // It must capture the live definition for one additional bound review,
+        // then publish on that approval without a registry edit or reconnect.
         for scope in [None, Some(profile)] {
             conduit_lib::registry_controller::release_quarantine(scope, policy_name).unwrap();
-            assert!(conduit_lib::integrity::quarantined(scope)
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let captured = loop {
+            let records: Vec<_> = conduit_lib::integrity::all_quarantined()
                 .unwrap()
-                .is_empty());
+                .into_iter()
+                .filter(|record| record["tool"] == policy_name)
+                .collect();
+            if !records.is_empty()
+                && records
+                    .iter()
+                    .all(|record| record["definition_fp"].is_string())
+            {
+                break records;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "legacy release never captured a reviewable definition\n{}",
+                client.diagnostics()
+            );
+            assert!(!client.tool_names().contains(&exposed.to_string()));
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        assert!(!client.tool_names().contains(&exposed.to_string()));
+        assert_eq!(
+            client.call_tool(exposed, json!({"text": "unreviewed"}))["isError"],
+            true
+        );
+        assert_eq!(
+            client.call_tool(
+                "toolport_call_tool",
+                json!({"name": exposed, "arguments": {"text": "unreviewed"}}),
+            )["isError"],
+            true
+        );
+        for record in captured {
+            assert_eq!(record["definition"]["name"], policy_name);
+            assert!(record["definition"]["inputSchema"].is_object());
+            assert!(record["reason"]
+                .as_str()
+                .unwrap()
+                .contains("no saved definition"));
+            let scope = record["profile"].as_str().unwrap();
+            conduit_lib::integrity::release_record(
+                (!scope.is_empty()).then_some(scope),
+                policy_name,
+                record["record_id"].as_str().unwrap(),
+            )
+            .unwrap();
         }
     } else {
         // The watcher explicitly supports hand edits as well as product release.

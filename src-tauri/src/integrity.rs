@@ -2305,6 +2305,7 @@ fn apply_quarantine_inner_with(
                     "reason": "the integrity baseline was corrupt or tampered with",
                     "change": "tamper",
                     "pending_pin": pending,
+                    "definition": tool,
                 }),
             );
             added = true;
@@ -2332,6 +2333,9 @@ fn apply_quarantine_inner_with(
             continue;
         }
         let reason = match change {
+            "changed" if e["review_required"] == true => {
+                "This older block had no saved definition. Review the captured current definition before approving."
+            }
             "poison" => "a poisoned definition was detected",
             "changed" if is_destructive_named(current, tool) => {
                 "a destructive tool's definition changed"
@@ -2350,15 +2354,15 @@ fn apply_quarantine_inner_with(
         };
         if !q.contains_key(tool) {
             let server = e.get("server").and_then(Value::as_str).unwrap_or("?");
-            let pending = current
+            let (definition, source) = current
                 .pin_values()
                 .find(|(candidate, _)| candidate.get("name").and_then(Value::as_str) == Some(tool))
-                .map(|(definition, source)| pin_with_source(definition, source))
                 .ok_or_else(|| {
                     format!(
                         "Refusing to quarantine {tool}; its current definition could not be captured"
                     )
                 })?;
+            let pending = pin_with_source(definition, source);
             let mut rec = json!({
                 "ts": epoch_millis(),
                 "server": server,
@@ -2366,6 +2370,7 @@ fn apply_quarantine_inner_with(
                 "reason": reason,
                 "change": change,
                 "pending_pin": pending,
+                "definition": definition,
             });
             // Concrete annotation prior→new (SOU-305). Optional: older events / poison
             // rows omit these; the UI falls back to `reason` alone.
@@ -2374,7 +2379,9 @@ fn apply_quarantine_inner_with(
                     rec[key] = v.clone();
                 }
             }
-            if let Some(detail) = annotation_change_detail(e) {
+            if let Some(detail) =
+                annotation_change_detail(e).filter(|_| e["review_required"] != true)
+            {
                 rec["detail"] = json!(detail);
             }
             q.insert(tool.to_string(), rec);
@@ -3584,6 +3591,9 @@ fn event(server: &str, tool: &str, change: &str, severity: &str) -> Value {
 /// `changed` drift with prior/new safety annotations for the quarantine card (SOU-305).
 fn changed_event(server: &str, tool: &str, severity: &str, old: &Pin, new: &Pin) -> Value {
     let mut e = event(server, tool, "changed", severity);
+    if old.review_on_upgrade {
+        e["review_required"] = json!(true);
+    }
     e["new_fp"] = json!(new.fp);
     e["prev_ro"] = json!(old.ro);
     e["new_ro"] = json!(new.ro);

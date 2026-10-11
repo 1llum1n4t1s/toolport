@@ -1988,12 +1988,17 @@ struct QuarantinedTool {
     profile: String,
     tool: String,
     detail: String,
+    definition: Option<String>,
 }
 
 fn read_quarantined_tools() -> Result<Vec<QuarantinedTool>, String> {
     Ok(crate::integrity::all_quarantined()?
         .into_iter()
         .map(|value| QuarantinedTool {
+            definition: value
+                .get("definition")
+                .filter(|definition| definition.is_object())
+                .and_then(|definition| serde_json::to_string_pretty(definition).ok()),
             record_id: value["record_id"].as_str().unwrap_or_default().to_string(),
             profile: value
                 .get("profile")
@@ -2367,6 +2372,29 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
             .css_classes(["toolport-muted"])
             .build(),
     );
+    if let Some(definition) = &entry.definition {
+        let expander = gtk::Expander::builder().label("Captured definition").build();
+        expander.set_child(Some(
+            &gtk::Label::builder()
+                .label(definition)
+                .xalign(0.0)
+                .wrap(true)
+                .wrap_mode(gtk::pango::WrapMode::WordChar)
+                .selectable(true)
+                .css_classes(["monospace"])
+                .build(),
+        ));
+        copy.append(&expander);
+    } else {
+        copy.append(
+            &gtk::Label::builder()
+            .label("No saved definition. Approving may require one more review of the current definition.")
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["toolport-muted"])
+            .build(),
+        );
+    }
     row.append(&copy);
     let release = gtk::Button::with_label("Review and approve");
     release.add_css_class("toolport-secondary-action");
@@ -2380,8 +2408,9 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
             Some(&parent),
             Some(&format!("Re-approve {}?", entry.tool)),
             Some(&format!(
-                "Toolport will trust the changed definition and expose this tool again.\n\n{}",
-                entry.detail
+                "Toolport will approve this blocked finding. Older findings may need one more review of the current definition.\n\n{}\n\n{}",
+                entry.detail,
+                entry.definition.as_deref().unwrap_or("No saved definition.")
             )),
         );
         dialog.add_response("cancel", "Keep blocked");
@@ -2761,6 +2790,7 @@ mod tests {
             profile: profile.to_string(),
             tool: tool.to_string(),
             detail: "definition changed".to_string(),
+            definition: None,
         }
     }
 

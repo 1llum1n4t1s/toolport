@@ -10,6 +10,7 @@ import {
 import { toastError } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { QuarantineDefinition } from "@/components/QuarantineDefinition";
 import { fmtTs } from "@/lib/utils";
 
 /** Matches the PendingApprovals cadence so the two attention surfaces feel equally live. */
@@ -250,6 +251,7 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
                   {q.detail ? (
                     <p className="mt-0.5 text-[11px] text-muted-foreground">{q.reason}</p>
                   ) : null}
+                  <QuarantineDefinition tool={q} />
                   <p className="mt-0.5 text-[11px] text-muted-foreground">
                     {q.server}
                     {q.profile ? ` · ${q.profile}` : ""} · {whenLabel(q.ts)}

@@ -289,6 +289,8 @@ export interface QuarantinedTool {
   profile: string;
   /** Concrete annotation delta when known, e.g. `readOnlyHint: true → false` (SOU-305). */
   detail?: string | null;
+  /** Definition captured with this blocked record, including schemas and annotations. */
+  definition?: Record<string, unknown> | null;
   prev_ro?: boolean | null;
   new_ro?: boolean | null;
   prev_dh?: boolean | null;
