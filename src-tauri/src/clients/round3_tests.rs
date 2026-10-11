@@ -1,0 +1,162 @@
+use super::*;
+
+fn entry(command: &Path) -> ServerEntry {
+    serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport",
+        "transport":"stdio", "command":command.to_str().unwrap()})).unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn round3_legacy_linked_and_backup_profiles_keep_references_and_repair() {
+    let data = crate::registry::DataDirTestEnv::new("round3-legacy-profiles");
+    let root = data.dir.join("home");
+    std::fs::create_dir(&root).unwrap();
+    let _home = TestHome::set(&root);
+    let outside = data.dir.join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join(".claude-work")).unwrap();
+    std::fs::create_dir(root.join(".claude-old")).unwrap();
+    std::fs::create_dir(root.join(".claude-backup-2026")).unwrap();
+    let old = data.dir.join("bin/toolport-gateway-1.24.0");
+    let current = data.dir.join("Toolport/bin/toolport-gateway-2.0.0");
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+    std::fs::write(&old, "old").unwrap();
+    std::fs::write(&current, "new").unwrap();
+    let raw = serde_json::json!({"mcpServers":{"my-toolport":{"command":old,"env":{"TOOLPORT_PROFILE":"work"}}}}).to_string();
+    let paths: Vec<_> = [".claude-work", ".claude-old", ".claude-backup-2026"].iter()
+        .map(|folder| root.join(folder).join(".claude.json")).collect();
+    for path in &paths { std::fs::write(path, &raw).unwrap(); }
+    assert!(locations::all().is_empty());
+    let references = referenced_gateway_paths().unwrap();
+    assert!(references.contains(&old));
+    cleanup_legacy_gateway_copies(&current, old.parent().unwrap(), Some(&references));
+    assert!(old.exists());
+    let mut outcome = RepointOutcome::default();
+    repoint_other_claude_configs(current.to_str().unwrap(), &mut outcome);
+    assert_eq!(outcome.extra_claude_repointed.len(), 3);
+    for path in &paths {
+        let value: serde_json::Value = serde_json::from_str(&read_config_file(path).unwrap()).unwrap();
+        assert_eq!(value["mcpServers"]["toolport"]["command"], current.to_str().unwrap());
+        assert_eq!(value["mcpServers"]["toolport"]["env"]["TOOLPORT_PROFILE"], "work");
+        assert!(value["mcpServers"].get("my-toolport").is_none());
+    }
+    std::fs::write(&paths[0], "{broken").unwrap();
+    assert!(referenced_gateway_paths().is_none());
+}
+
+#[test]
+fn round3_main_client_recognizes_repoints_and_deduplicates_custom_gateway_names() {
+    let data = crate::registry::DataDirTestEnv::new("round3-main-dedupe");
+    let _home = TestHome::set(&data.dir);
+    let def = find_def("cursor").unwrap();
+    let path = resolved_definition_path(&def).unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, r#"{"mcpServers":{"my-toolport":{"command":"/missing/toolport-gateway-1.24.0"},"another":{"command":"conduit-gateway"},"notes":{"command":"notes"}}}"#).unwrap();
+    let mut rows = vec![read_client(&def)];
+    apply_entry_states(&mut rows, &HashMap::new());
+    assert!(rows[0].gateway_installed);
+    assert_eq!(rows[0].entry_state, GatewayEntryState::Managed);
+    let current = data.dir.join("toolport-gateway");
+    std::fs::write(&current, "fixture").unwrap();
+    let outcome = repoint_stale_gateways_in(current.to_str().unwrap(), rows, &HashMap::new());
+    assert_eq!(outcome.repointed.len(), 1);
+    let value: serde_json::Value = serde_json::from_str(&read_config_file(&path).unwrap()).unwrap();
+    assert_eq!(value["mcpServers"].as_object().unwrap().len(), 2);
+    assert_eq!(value["mcpServers"]["toolport"]["command"], current.to_str().unwrap());
+    install_or_remove("cursor", None).unwrap();
+    assert!(!read_client(&def).gateway_installed);
+}
+
+#[test]
+fn round3_missing_automatic_config_and_folder_are_absent_not_errors() {
+    for remove_folder in [false, true] {
+        let data = crate::registry::DataDirTestEnv::new("round3-missing-auto");
+        let _home = TestHome::set(&data.dir);
+        let folder = data.dir.join(".claude2");
+        std::fs::create_dir(&folder).unwrap();
+        let path = folder.join(".claude.json");
+        std::fs::write(&path, "{}").unwrap();
+        detect_clients_for_display_in(machine_defs(true), crate::registry::Registry::default(), None).unwrap();
+        let def = find_def("claude-code@claude2").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        if remove_folder { std::fs::remove_dir(&folder).unwrap(); }
+        let row = read_client(&def);
+        assert!(row.error.is_none(), "{:?}", row.error);
+        assert!(!row.config_exists);
+        assert!(referenced_gateway_paths().is_some());
+        remove_client_location("claude-code@claude2").unwrap();
+        assert!(locations::saved().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn round3_unreadable_store_blocks_pruning_and_bulk_disconnect_reports_error() {
+    let data = crate::registry::DataDirTestEnv::new("round3-bad-store");
+    let _home = TestHome::set(&data.dir);
+    crate::registry::save(&crate::registry::Registry::default()).unwrap();
+    let folder = data.dir.join("external");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join(".claude.json"), r#"{"mcpServers":{"toolport":{"command":"/old/toolport-gateway"}}}"#).unwrap();
+    add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
+    std::fs::write(data.dir.join("client-locations.json"), "{broken").unwrap();
+    assert!(referenced_gateway_paths().is_none());
+    assert!(detect_clients().iter().any(|row| row.error.is_some()));
+    for dry_run in [true, false] {
+        let rows = disconnect_all(dry_run).unwrap();
+        assert!(rows.iter().any(|row| row.error.is_some()));
+    }
+}
+
+#[test]
+fn round3_reserved_duplicates_removed_in_all_formats_and_foreign_slots_preserved() {
+    let data = crate::registry::DataDirTestEnv::new("round3-duplicates");
+    let gateway = entry(&data.dir.join("toolport-gateway"));
+    for (format, raw) in [
+        (Format::JsonMcpServers, r#"{"mcpServers":{"toolport":{"command":"toolport-gateway"},"conduit":{"command":"conduit-gateway"},"foreign":{"command":"toolport-gateway"}}}"#),
+        (Format::JsonOpenCodeMcp, r#"{"mcp":{"toolport":{"type":"local","command":["toolport-gateway"]},"conduit":{"type":"local","command":["conduit-gateway"]},"foreign":{"type":"local","command":["toolport-gateway"]}}}"#),
+        (Format::TomlMcpServers, "[mcp_servers.toolport]\ncommand='toolport-gateway'\n[mcp_servers.conduit]\ncommand='conduit-gateway'\n[mcp_servers.foreign]\ncommand='toolport-gateway'\n"),
+        (Format::YamlExtensions, "extensions:\n  toolport: {type: stdio, cmd: toolport-gateway, enabled: true}\n  conduit: {type: stdio, cmd: conduit-gateway, enabled: true}\n  foreign: {type: stdio, cmd: toolport-gateway, enabled: true}\n"),
+        (Format::YamlMcpServers, "mcp_servers:\n  toolport: {command: toolport-gateway}\n  conduit: {command: conduit-gateway}\n  foreign: {command: toolport-gateway}\n"),
+        (Format::YamlMcpServersList, "mcpServers:\n  - {name: toolport, command: toolport-gateway}\n  - {name: conduit, command: conduit-gateway}\n  - {name: foreign, command: toolport-gateway}\n"),
+    ] {
+        let path = data.dir.join("fixture");
+        std::fs::write(&path, raw).unwrap();
+        edit_format(format, &path, Some(&gateway), true).unwrap();
+        let rows = parse_client_content(format, &read_config_file(&path).unwrap()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| row.name == "foreign"));
+        edit_format(format, &path, None, true).unwrap();
+        let rows = parse_client_content(format, &read_config_file(&path).unwrap()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "foreign");
+        assert!(owned_gateway_entry(&rows).is_none());
+    }
+}
+
+#[test]
+fn round3_configured_connected_location_reclaims_main_identity() {
+    let data = crate::registry::DataDirTestEnv::new("round3-main-adoption");
+    let _env = env_test_lock();
+    let _home = TestHome::set(&data.dir);
+    let folder = data.dir.join(".claude2");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join(".claude.json"), "{}").unwrap();
+    let location = machine_defs(true).into_iter().find(|def| def.client_id() == "claude-code@claude2").unwrap();
+    locations::remember(location.location.as_ref().unwrap()).unwrap();
+    let current = data.dir.join("toolport-gateway");
+    std::fs::write(&current, "fixture").unwrap();
+    let mut gateway = entry(&current);
+    gateway.env.push(crate::registry::EnvVar { key: crate::brand::CLIENT_ID.into(), value: Some("claude-code@claude2".into()), secret:false, unknown_fields:Default::default() });
+    install_or_remove("claude-code@claude2", Some(&gateway)).unwrap();
+    let _override = EnvRestore::set("CLAUDE_CONFIG_DIR", &folder);
+    let rows = detect_clients_for_display_in(machine_defs(true), crate::registry::Registry::default(), Some(current.clone())).unwrap();
+    let main = rows.iter().find(|row| row.id == "claude-code").unwrap();
+    assert!(main.error.is_none());
+    let outcome = repoint_stale_gateways_in(current.to_str().unwrap(), vec![main.clone()], &HashMap::new());
+    assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+    let value: serde_json::Value = serde_json::from_str(&read_config_file(&folder.join(".claude.json")).unwrap()).unwrap();
+    assert_eq!(value["mcpServers"]["toolport"]["env"][crate::brand::CLIENT_ID], "claude-code");
+    assert_eq!(value["mcpServers"]["toolport"]["env"][crate::brand::ATTRIBUTION_ID], "claude-code");
+    assert!(!rows.iter().any(|row| row.id == "claude-code@claude2"));
+}

@@ -32,6 +32,8 @@ mod restore;
 pub(crate) use restore::after_capture_conflict as record_config_capture_conflict;
 pub(crate) use restore::after_rollback as record_config_rollback;
 mod zcode;
+#[cfg(test)]
+mod round3_tests;
 
 /// One MCP server, normalized across every client format.
 #[derive(Debug, Clone, Serialize)]
