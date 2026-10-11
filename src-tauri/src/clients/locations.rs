@@ -54,8 +54,8 @@ pub fn remove_client_location(id: &str) -> Result<(), String> {
     let store = store_path()?;
     let _lock = crate::registry::lock_at(&store)?;
     let mut rows = saved()?;
-    if !rows.iter().any(|row| row.id == id && row.manual) {
-        return Err("This is not a manually added client location".into());
+    if !rows.iter().any(|row| row.id == id && (row.manual || automatic_path_is_missing(row))) {
+        return Err("Only manually added or missing automatic client locations can be removed".into());
     }
     // Forgetting is separate from disconnect and never edits the client's config.
     let client = read_client(&find_def(id).ok_or("Unknown client location")?);
@@ -106,6 +106,12 @@ pub(super) fn saved() -> Result<Vec<ClientLocation>, String> {
     }
 }
 
+pub(super) fn store_error() -> Option<String> { saved().err() }
+
+pub(super) fn store_display_path() -> String {
+    store_path().map(|path| path.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 fn valid_id(id: &str) -> bool {
     id.split_once('@')
         .is_some_and(|(kind, key)| !kind.is_empty() && !key.is_empty() && key != "." && key != "..")
@@ -141,8 +147,26 @@ pub(super) fn automatic_path_is_safe(home: &Path, config: &Path) -> bool {
     folder.parent() == Some(root.as_path()) && config.parent() == Some(folder.as_path())
 }
 
+pub(super) fn automatic_path_is_missing(row: &ClientLocation) -> bool {
+    if row.manual || row.client_type != "claude-code" { return false; }
+    let Some(root) = home() else { return false; };
+    let Some(folder) = row.config_path.parent() else { return false; };
+    if folder.parent() != Some(root.as_path())
+        || row.config_path.file_name().is_none_or(|name| name != ".claude.json")
+        || !folder.file_name().and_then(|name| name.to_str()).is_some_and(claude_profile_name)
+    { return false; }
+    match std::fs::symlink_metadata(folder) {
+        Err(error) => return error.kind() == std::io::ErrorKind::NotFound && root.is_dir(),
+        Ok(meta) if !meta.is_dir() => return false,
+        Ok(_) => {},
+    }
+    if !std::fs::canonicalize(&root).ok().zip(std::fs::canonicalize(folder).ok())
+        .is_some_and(|(root, folder)| folder.parent() == Some(root.as_path())) { return false; }
+    std::fs::symlink_metadata(&row.config_path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+}
+
 pub(super) fn validate(row: &ClientLocation) -> Result<(), String> {
-    if row.manual || (row.client_type == "claude-code" && home().is_some_and(|root| automatic_path_is_safe(&root, &row.config_path))) {
+    if row.manual || automatic_path_is_missing(row) || (row.client_type == "claude-code" && home().is_some_and(|root| automatic_path_is_safe(&root, &row.config_path))) {
         Ok(())
     } else {
         Err("This automatic client location needs attention. Choose an ordinary config file inside home, or add the location manually to use a linked or external folder.".into())
@@ -154,7 +178,7 @@ pub(super) fn validate_mutation(client_id: &str, path: &Path) -> Result<(), Stri
         // Legacy secondary upkeep shares the main client ID. A saved automatic
         // path must not become writable through that compatibility route.
         if client_id == "claude-code" {
-            if let Some(row) = saved().unwrap_or_default().into_iter().find(|row| !row.manual && row.config_path == path) {
+            if let Some(row) = saved()?.into_iter().find(|row| !row.manual && row.config_path == path) {
                 validate(&row)?;
             }
         }
@@ -578,7 +602,7 @@ mod tests {
             let id = "claude-code@claude2";
             assert!(install_gateway(id, None).is_err());
             assert!(uninstall_gateway(id).is_err());
-            assert!(claude_code_config_paths().iter().all(|candidate| candidate != &path));
+            assert!(claude_code_config_paths().contains(&path));
             let mut outcome = RepointOutcome::default();
             repoint_other_claude_configs("/new/toolport-gateway", &mut outcome);
             assert!(outcome.extra_claude_repointed.is_empty());

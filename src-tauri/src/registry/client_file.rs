@@ -206,9 +206,8 @@ pub(crate) fn with_native_canonicalize_failure<T>(run: impl FnOnce() -> T) -> T 
     run()
 }
 
-// Rust's filesystem functions accept long paths, but our direct Win32 calls
-// need the extended path returned by canonicalize. Only resolve the existing
-// parent: a no-clobber destination or displaced backup does not exist yet.
+// Direct Win32 calls need extended paths for long names. Virtual filesystems
+// may not support canonicalization; keep v1's ordinary path in that case.
 #[cfg(windows)]
 fn native_path(path: &Path) -> std::io::Result<Vec<u16>> {
     use std::os::windows::ffi::OsStrExt;
@@ -216,8 +215,10 @@ fn native_path(path: &Path) -> std::io::Result<Vec<u16>> {
         .unwrap_or(Path::new("."));
     let name = path.file_name().ok_or_else(|| std::io::Error::new(
         std::io::ErrorKind::InvalidInput, "Client file path has no filename"))?;
-    Ok(canonicalize_native(parent)?.join(name).as_os_str().encode_wide()
-        .chain(Some(0)).collect())
+    let resolved = if path.as_os_str().encode_wide().count() >= 248 {
+        canonicalize_native(parent).map(|parent| parent.join(name)).unwrap_or_else(|_| path.to_path_buf())
+    } else { path.to_path_buf() };
+    Ok(resolved.as_os_str().encode_wide().chain(Some(0)).collect())
 }
 
 #[cfg(windows)]

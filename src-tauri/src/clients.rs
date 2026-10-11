@@ -302,6 +302,18 @@ fn owned_gateway_entry(servers: &[McpServer]) -> Option<&McpServer> {
     servers.iter().find(|server| server.name == name)
 }
 
+// Main clients retain v1 binary-based ownership and deduplication. Added
+// locations only own the reserved names, even if other entries use our binary.
+fn gateway_entry_for_client<'a>(id: &str, servers: &'a [McpServer]) -> Option<&'a McpServer> {
+    owned_gateway_entry(servers).or_else(|| (!id.contains('@')).then(||
+        servers.iter().find(|server| detected_is_gateway(server))).flatten())
+}
+
+fn gateway_edit_matches(name: &str, command: Option<&str>) -> bool {
+    gateway_identity_matches(name, name,
+        if mutation::legacy_gateway_ownership() { command } else { None })
+}
+
 /// Whether a registry entry refers to Toolport's own gateway. The gateway must
 /// never proxy itself (that recurses), and import must never pull it in.
 pub fn is_gateway_server(server: &ServerEntry) -> bool {
@@ -657,7 +669,7 @@ fn claude_code_config_paths() -> Vec<PathBuf> {
     let Some(home) = home() else {
         return Vec::new();
     };
-    let dirs = match claude_profile_dirs(&home) {
+    let dirs = match legacy_claude_profile_dirs(&home) {
         Ok(dirs) => dirs,
         Err(error) => {
             let msg = format!(
@@ -669,12 +681,12 @@ fn claude_code_config_paths() -> Vec<PathBuf> {
             Vec::new()
         }
     };
-    let configured = client_config_path("claude-code");
     claude_code_config_paths_from(&home, claude_config_dir_override().as_deref(), &dirs)
         .into_iter()
-        .filter(|path| configured.as_ref() == Some(path) || path == &home.join(".claude.json")
-            || locations::automatic_path_is_safe(&home, path))
-        .filter(|p| p.is_file())
+        .filter(|p| match std::fs::metadata(p) {
+            Ok(meta) => meta.is_file(),
+            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        })
         .collect()
 }
 
@@ -688,6 +700,26 @@ fn claude_profile_name(name: &str) -> bool {
     let lower = label.to_ascii_lowercase();
     !["backup", "bak", "old", "orig", "save", "saved", "tmp", "temp"]
         .iter().any(|word| lower.split(['-', '.', '_']).any(|part| part == *word))
+}
+
+fn legacy_claude_profile_name(name: &str) -> bool {
+    name == ".claude" || name.starts_with(".claude-")
+}
+
+fn legacy_claude_profile_dirs(home: &Path) -> Result<Vec<String>, String> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(home).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !legacy_claude_profile_name(&name) && !claude_profile_name(&name) { continue; }
+        match std::fs::metadata(entry.path()) {
+            Ok(meta) if meta.is_dir() => names.push(name),
+            Ok(_) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(names)
 }
 
 fn claude_profile_dirs(home: &Path) -> Result<Vec<String>, String> {
@@ -729,7 +761,7 @@ fn claude_code_config_paths_from(
     push(home.join(".claude.json"), &mut out);
     let mut siblings: Vec<&String> = home_dirs
         .iter()
-        .filter(|name| claude_profile_name(name))
+        .filter(|name| legacy_claude_profile_name(name) || claude_profile_name(name))
         .collect();
     // read_dir order is unspecified; sort so the log and any diagnostics are stable.
     siblings.sort();
@@ -3413,7 +3445,7 @@ fn read_client(def: &ClientDef) -> DetectedClient {
                  config_exists: bool,
                  servers: Vec<McpServer>,
                  error: Option<String>| {
-        let gateway_installed = owned_gateway_entry(&servers).is_some();
+        let gateway_installed = gateway_entry_for_client(def.client_id(), &servers).is_some();
         // Ownership is filled in later via [`apply_entry_states`] once the registry
         // record is available. Until then: identity match → Managed (legacy), none → Absent.
         let entry_state = if gateway_installed {
@@ -3435,7 +3467,7 @@ fn read_client(def: &ClientDef) -> DetectedClient {
             id: def.location.as_ref().map(|location| location.id.clone()).unwrap_or_else(|| def.id.to_string()),
             name: def.location.as_ref().map(|location| location.name.clone()).unwrap_or_else(|| def.name.to_string()),
             uses_connectors: def.uses_connectors,
-            location_removable: def.location.as_ref().is_some_and(|row| row.manual),
+            location_removable: def.location.as_ref().is_some_and(|row| row.manual || locations::automatic_path_is_missing(row)),
             discovery: def.discovery,
             config_path,
             config_exists,
@@ -3513,7 +3545,21 @@ fn read_client(def: &ClientDef) -> DetectedClient {
 pub fn detect_clients() -> Vec<DetectedClient> {
     // Background upkeep handles saved locations. Newly discovered config files
     // are read only when the user opens Clients.
-    machine_defs(false).iter().map(read_client).collect()
+    let mut clients: Vec<_> = machine_defs(false).iter().map(read_client).collect();
+    append_location_store_error(&mut clients);
+    clients
+}
+
+fn append_location_store_error(clients: &mut Vec<DetectedClient>) {
+    let Some(error) = locations::store_error() else { return; };
+    clients.push(DetectedClient {
+        id: "client-locations".into(), name: "Saved client locations".into(),
+        uses_connectors: false, location_removable: false,
+        discovery: discovery::capabilities("claude-code"),
+        config_path: locations::store_display_path(), config_exists: true,
+        app_present: true, servers: Vec::new(), plugin_servers: Vec::new(),
+        gateway_installed: false, entry_state: GatewayEntryState::Absent, error: Some(error),
+    });
 }
 
 pub fn detect_clients_with_inspection(inspect_configs: bool) -> Result<Vec<DetectedClient>, String> {
@@ -3523,7 +3569,9 @@ pub fn detect_clients_with_inspection(inspect_configs: bool) -> Result<Vec<Detec
 pub fn detect_clients_for_display() -> Result<Vec<DetectedClient>, String> {
     let definitions = machine_defs(true);
     let current = crate::registry::load()?;
-    detect_clients_for_display_in(definitions, current, resolve_gateway_path()?)
+    let mut clients = detect_clients_for_display_in(definitions, current, resolve_gateway_path()?)?;
+    append_location_store_error(&mut clients);
+    Ok(clients)
 }
 
 fn detect_clients_for_display_in(
@@ -3715,7 +3763,10 @@ pub fn resolve_entry_state(
     servers: &[McpServer],
     record: Option<&ManagedEntry>,
 ) -> GatewayEntryState {
-    let entry = owned_gateway_entry(servers);
+    entry_state_for(owned_gateway_entry(servers), record)
+}
+
+fn entry_state_for(entry: Option<&McpServer>, record: Option<&ManagedEntry>) -> GatewayEntryState {
     let Some(entry) = entry else {
         return GatewayEntryState::Absent;
     };
@@ -3735,7 +3786,7 @@ pub fn resolve_entry_state(
 /// Fill [`DetectedClient::entry_state`] from the registry ownership map.
 pub fn apply_entry_states(clients: &mut [DetectedClient], managed: &HashMap<String, ManagedEntry>) {
     for client in clients.iter_mut() {
-        client.entry_state = resolve_entry_state(&client.servers, managed.get(&client.id));
+        client.entry_state = entry_state_for(gateway_entry_for_client(&client.id, &client.servers), managed.get(&client.id));
         // Keep gateway_installed aligned with identity presence (not ownership).
         client.gateway_installed = client.entry_state != GatewayEntryState::Absent;
     }
@@ -5725,8 +5776,7 @@ fn edit_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(), Str
     let (original, mut root) = read_existing_yaml_with_source(path)?;
     let exts = yaml_extensions_mut(&mut root);
     let key = serde_yaml::Value::String(GATEWAY_ENTRY_NAME.into());
-    let owned = owned_gateway_name(exts.keys().filter_map(|name| name.as_str())).map(str::to_string);
-    exts.retain(|name, _| owned.is_none() || name.as_str() != owned.as_deref());
+    exts.retain(|name, value| !name.as_str().is_some_and(|name| gateway_edit_matches(name, value.get("cmd").and_then(|value| value.as_str()))));
     if let Some(entry) = entry {
         exts.insert(key, entry_to_goose_yaml(entry));
     }
@@ -5922,8 +5972,7 @@ fn edit_continue_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Resul
 
     let servers = continue_servers_mut(&mut root);
 
-    let owned = owned_gateway_name(servers.iter().filter_map(|server| server.get("name").and_then(|name| name.as_str()))).map(str::to_string);
-    servers.retain(|server| owned.is_none() || server.get("name").and_then(|name| name.as_str()) != owned.as_deref());
+    servers.retain(|server| !server.get("name").and_then(|name| name.as_str()).is_some_and(|name| gateway_edit_matches(name, server.get("command").and_then(|value| value.as_str()))));
 
     if let Some(entry) = entry {
         servers.push(entry_to_continue_yaml(entry));
@@ -6093,8 +6142,7 @@ fn edit_hermes_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<
     let (original, mut root) = read_existing_yaml_with_source(path)?;
     let mcp_servers = hermes_mcp_servers_mut(&mut root);
     let key = serde_yaml::Value::String(GATEWAY_ENTRY_NAME.into());
-    let owned = owned_gateway_name(mcp_servers.keys().filter_map(|name| name.as_str())).map(str::to_string);
-    mcp_servers.retain(|name, _| owned.is_none() || name.as_str() != owned.as_deref());
+    mcp_servers.retain(|name, value| !name.as_str().is_some_and(|name| gateway_edit_matches(name, value.get("command").and_then(|value| value.as_str()))));
     if let Some(entry) = entry {
         mcp_servers.insert(key, entry_to_hermes_yaml(entry));
     }
@@ -6495,6 +6543,10 @@ fn gateway_entry(profile: Option<&str>, client_id: &str) -> Result<ServerEntry, 
     })
 }
 
+fn main_location_identity_changed(id: &str, prior: Option<&str>) -> bool {
+    !id.contains('@') && prior.is_some_and(|prior| prior.starts_with(&format!("{id}@")))
+}
+
 /// Preserve the launch's scope identity when replacing a stale command.
 fn repair_gateway_entry(
     format: Format,
@@ -6518,13 +6570,14 @@ fn repair_gateway_entry(
         Format::YamlExtensions => "envs",
         _ => "env",
     };
+    let reclaim_main = main_location_identity_changed(id, location_launch_id(format, name, &text)?.as_deref());
     let mut entry = gateway_entry(None, id)?;
-    if !id.contains('@') { entry.env.retain(|env| env.key != crate::brand::CLIENT_ID); }
+    if !reclaim_main && !id.contains('@') { entry.env.retain(|env| env.key != crate::brand::CLIENT_ID); }
     for (key, legacy) in [
         (crate::brand::CLIENT_ID, crate::brand::CLIENT_ID_LEGACY),
         (crate::brand::PROFILE, crate::brand::PROFILE_LEGACY),
     ] {
-        if id.contains('@') && key == crate::brand::CLIENT_ID { continue; }
+        if (id.contains('@') || reclaim_main) && key == crate::brand::CLIENT_ID { continue; }
         for candidate in [key, legacy] {
             if prior[env_key]
                 .get(candidate)
@@ -6681,8 +6734,7 @@ fn edit_json_gateway_body(
         );
     }
     let servers = obj.get_mut(key).unwrap().as_object_mut().unwrap();
-    let owned = owned_gateway_name(servers.keys().map(String::as_str)).map(str::to_string);
-    servers.retain(|name, _| Some(name.as_str()) != owned.as_deref());
+    servers.retain(|name, value| !gateway_edit_matches(name, value["command"].as_str()));
     if let Some(entry) = entry {
         // Default is the standard `url`/`command` shape. Qwen's `httpUrl` remap
         // used to fire for every remote whose map key was not VS Code `"servers"`,
@@ -6716,8 +6768,7 @@ fn edit_opencode_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(),
         None => serde_json::Value::Object(serde_json::Map::new()),
     };
     let mcp = opencode_mcp_mut(&mut root)?;
-    let owned = owned_gateway_name(mcp.keys().map(String::as_str)).map(str::to_string);
-    mcp.retain(|name, _| Some(name.as_str()) != owned.as_deref());
+    mcp.retain(|name, value| !gateway_edit_matches(name, value["command"].as_array().and_then(|argv| argv.first()).and_then(|value| value.as_str())));
     if let Some(entry) = entry {
         mcp.insert(GATEWAY_ENTRY_NAME.into(), entry_to_opencode_json(entry));
     }
@@ -6728,9 +6779,8 @@ fn edit_toml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(), Str
     let mut doc = load_toml_document(path)?;
     let keep_header = toml_keeps_servers_header(&doc);
     let servers = toml_mcp_servers_mut(&mut doc);
-    if let Some(name) = owned_gateway_name(servers.iter().map(|(name, _)| name)).map(str::to_string) {
-        servers.remove(&name);
-    }
+    let remove: Vec<_> = servers.iter().filter(|(name, value)| gateway_edit_matches(name, value.get("command").and_then(|value| value.as_str()))).map(|(name, _)| name.to_string()).collect();
+    for name in remove { servers.remove(&name); }
     if let Some(entry) = entry {
         servers.insert(
             GATEWAY_ENTRY_NAME,
@@ -7194,6 +7244,8 @@ fn read_gateway_profile(client_id: &str) -> Option<String> {
 /// never be re-pointed onto a current binary. Deleting one out from under a plugin
 /// entry leaves a reference nothing will ever repair.
 pub fn referenced_gateway_paths() -> Option<Vec<PathBuf>> {
+    locations::saved().ok()?;
+    legacy_claude_profile_dirs(&home()?).ok()?;
     referenced_gateway_paths_for(&detect_clients(), &claude_code_config_paths())
 }
 
@@ -7452,13 +7504,13 @@ fn repoint_stale_gateways_in(
         }
         // Find our entry by identity (recognizes the legacy `conduit` name too), so
         // a pre-rename entry is migrated rather than missed.
-        let entry = owned_gateway_entry(&client.servers);
+        let entry = gateway_entry_for_client(&client.id, &client.servers);
         let Some(entry) = entry else {
             continue;
         };
         let stored = entry.command.as_deref().unwrap_or("");
         let entry_name = entry.name.as_str();
-        let state = resolve_entry_state(&client.servers, managed.get(&client.id));
+        let state = entry_state_for(gateway_entry_for_client(&client.id, &client.servers), managed.get(&client.id));
         if state == GatewayEntryState::Customized {
             eprintln!(
                 "toolport: leaving {}'s '{}' entry alone - custom configuration (not managed \
@@ -7474,10 +7526,14 @@ fn repoint_stale_gateways_in(
         let config_text = find_def(&client.id)
             .and_then(|def| resolved_definition_path(&def).ok())
             .and_then(|path| read_config_file(&path).ok());
-        let location_identity_changed = client.id.contains('@') && find_def(&client.id)
-            .and_then(|def| config_text.as_deref().and_then(|text| location_launch_id(def.format, entry_name, text).ok().flatten()))
-            .as_deref() != Some(client.id.as_str());
-        if !location_identity_changed && !gateway_entry_needs_rewrite(entry_name, stored, current, config_text.as_deref())
+        let prior_id = find_def(&client.id).and_then(|def| config_text.as_deref()
+            .and_then(|text| location_launch_id(def.format, entry_name, text).ok().flatten()));
+        let reclaim_main = main_location_identity_changed(&client.id, prior_id.as_deref());
+        let location_identity_changed = (client.id.contains('@') && prior_id.as_deref() != Some(client.id.as_str())) || reclaim_main;
+        let duplicate_gateways = client.servers.iter().filter(|server|
+            if client.id.contains('@') { gateway_identity_matches(&server.name, &server.name, None) }
+            else { detected_is_gateway(server) }).count() > 1;
+        if !duplicate_gateways && !location_identity_changed && !gateway_entry_needs_rewrite(entry_name, stored, current, config_text.as_deref())
             && entry
                 .env_keys
                 .iter()
@@ -7491,7 +7547,7 @@ fn repoint_stale_gateways_in(
                 let path = resolved_definition_path(&def)?;
                 mutation::run(&client.id, &path, def.format, || {
                     let fresh = read_client(&def);
-                    if resolve_entry_state(&fresh.servers, managed.get(&client.id))
+                    if entry_state_for(gateway_entry_for_client(&client.id, &fresh.servers), managed.get(&client.id))
                         != GatewayEntryState::Managed
                     {
                         return Err(
@@ -7503,7 +7559,7 @@ fn repoint_stale_gateways_in(
                     if def.location.is_some() {
                         inherit_location_access(&client.id, def.format, entry_name, &read_config_file(&path)?)?;
                     }
-                    if !gateway_entry_needs_rewrite(
+                    if !duplicate_gateways && !gateway_entry_needs_rewrite(
                         entry_name,
                         stored,
                         current,
@@ -7526,7 +7582,9 @@ fn repoint_stale_gateways_in(
                             managed.env.entry(key.clone()).or_default();
                         }
                         managed.env.insert(crate::brand::ATTRIBUTION_ID.into(), client.id.clone());
-                        if client.id.contains('@') { managed.env.insert(crate::brand::CLIENT_ID.into(), client.id.clone()); }
+                        if client.id.contains('@') || reclaim_main {
+                            managed.env.insert(crate::brand::CLIENT_ID.into(), client.id.clone());
+                        }
 
                         Ok(WriteOutcome {
                             path: path.display().to_string(),
@@ -7590,8 +7648,10 @@ fn repoint_stale_gateways_in(
 /// overwrite the resolved config's snapshot and make the next pass read that one as
 /// Customized - i.e. we would stop maintaining the config we actually manage.
 fn repoint_other_claude_configs(current: &str, outcome: &mut RepointOutcome) {
-    let maintained: Vec<_> = machine_defs(false).iter()
+    let Ok(saved) = locations::saved() else { return; };
+    let mut maintained: Vec<_> = machine_defs(false).iter()
         .filter_map(|def| resolved_definition_path(def).ok()).collect();
+    maintained.extend(saved.into_iter().map(|row| row.config_path));
     let others: Vec<PathBuf> = claude_code_config_paths()
         .into_iter()
         .filter(|path| !maintained.iter().any(|known| locations::same_path(known, path)))
@@ -7720,7 +7780,8 @@ fn claude_configs_needing_repair(paths: &[PathBuf], current: &str) -> Vec<Claude
 fn claude_gateway_entry_in(text: &str) -> Option<(String, String)> {
     let value: serde_json::Value = serde_json::from_str(text).ok()?;
     let servers = value.get("mcpServers")?.as_object()?;
-    let name = owned_gateway_name(servers.keys().map(String::as_str))?;
+    let name = owned_gateway_name(servers.keys().map(String::as_str)).or_else(||
+        servers.iter().find(|(_, value)| value["command"].as_str().is_some_and(command_is_gateway_binary)).map(|(name, _)| name.as_str()))?;
     Some((name.to_string(), servers[name].get("command").and_then(|c| c.as_str()).unwrap_or_default().to_string()))
 }
 
@@ -7942,9 +8003,9 @@ mod tests {
             std::fs::create_dir(home.join(folder)).unwrap();
             std::fs::write(home.join(folder).join(".claude.json"), &original).unwrap();
         }
-        let dirs = claude_profile_dirs(&home).unwrap();
+        let dirs = legacy_claude_profile_dirs(&home).unwrap();
         let paths: Vec<_> = claude_code_config_paths_from(&home, None, &dirs).into_iter().filter(|path| path.is_file()).collect();
-        assert_eq!(paths.len(), 1);
+        assert_eq!(paths.len(), 2);
         assert_eq!(referenced_gateway_paths_for(&[], &paths), Some(vec![old]));
         let mut outcome = RepointOutcome::default();
         repoint_other_claude_configs_in(current.to_str().unwrap(), &paths, &mut outcome);
@@ -7954,7 +8015,7 @@ mod tests {
         let after: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&paths[0]).unwrap()).unwrap();
         assert_eq!(after["mcpServers"]["toolport"]["command"], current.to_str().unwrap());
         assert_eq!(after["mcpServers"]["toolport"]["env"]["TOOLPORT_PROFILE"], "work");
-        for folder in [".claude-backup-2026", ".claude.bak", ".claudesync"] {
+        for folder in [".claude.bak", ".claudesync"] {
             assert_eq!(std::fs::read_to_string(home.join(folder).join(".claude.json")).unwrap(), original);
         }
         assert!(locations::saved().unwrap().is_empty());

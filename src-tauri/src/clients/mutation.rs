@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 #[derive(Default)]
 struct Pending {
+    client_id: String,
     path: PathBuf,
     original: Option<String>,
     output: Option<String>,
@@ -26,6 +27,10 @@ impl Drop for Clear {
     fn drop(&mut self) {
         PENDING.with(|slot| *slot.borrow_mut() = None);
     }
+}
+
+pub(super) fn legacy_gateway_ownership() -> bool {
+    PENDING.with(|slot| slot.borrow().as_ref().is_some_and(|pending| !pending.client_id.contains('@')))
 }
 
 pub(super) fn read(path: &Path) -> Option<Option<String>> {
@@ -236,6 +241,7 @@ fn run_inner<T>(
         }
         PENDING.with(|slot| {
             *slot.borrow_mut() = Some(Pending {
+                client_id: client_id.into(),
                 path: path.into(),
                 original: original.clone(),
                 strict_json,

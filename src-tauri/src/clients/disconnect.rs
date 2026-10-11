@@ -37,13 +37,20 @@ fn all_with_clients(
     let mut clients = detect();
     apply_entry_states(&mut clients, &current.client_managed_entries);
     let targets = clients.into_iter().filter(|client| {
-        (client.gateway_installed
+        client.error.is_some() || (client.gateway_installed
             && !restore::released(&client.id, Path::new(&client.config_path)).unwrap_or(false))
             || current.client_managed_entries.contains_key(&client.id)
             || moved::has_record(&client.id)
     });
+    let mut errors = Vec::new();
+    let targets = targets.filter_map(|client| {
+        if let Some(error) = client.error {
+            errors.push(ClientResult { client_id: client.id, path: client.config_path, dry_run, error: Some(error), warnings: Vec::new() });
+            None
+        } else { Some((client.id, client.config_path)) }
+    });
     let mut results = run(
-        targets.map(|client| (client.id, client.config_path)),
+        targets,
         dry_run,
         |id, path| {
             if recovery_only {
@@ -56,6 +63,7 @@ fn all_with_clients(
             }
         },
     );
+    results.extend(errors);
     // Secondary Claude profiles and settings have path-specific recovery records
     // too. They are restored even if the profile's config override has changed.
     let mut recorded = restore::recorded_paths();

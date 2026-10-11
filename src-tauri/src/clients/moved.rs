@@ -295,7 +295,8 @@ pub(super) fn backfill_identity(
     name: &str,
     id: &str,
 ) -> Result<(), String> {
-    let keys = if id.contains('@') { vec![crate::brand::ATTRIBUTION_ID, crate::brand::CLIENT_ID] } else { vec![crate::brand::ATTRIBUTION_ID] };
+    let reclaim_main = main_location_identity_changed(id, location_launch_id(format, name, &read_config_file(path)?)?.as_deref());
+    let keys = if id.contains('@') || reclaim_main { vec![crate::brand::ATTRIBUTION_ID, crate::brand::CLIENT_ID] } else { vec![crate::brand::ATTRIBUTION_ID] };
     match container(format) {
         Container::Json {
             key: container_key,
