@@ -303,10 +303,10 @@ fn owned_gateway_entry(servers: &[McpServer]) -> Option<&McpServer> {
     servers.iter().find(|server| server.name == name)
 }
 
-// Main clients retain v1 binary-based ownership and deduplication. Added
-// locations only own the reserved names, even if other entries use our binary.
+// Main clients and saved automatic v1 Claude profiles keep binary ownership.
+// New locations only own reserved names, even if other entries use our binary.
 fn gateway_entry_for_client<'a>(id: &str, servers: &'a [McpServer]) -> Option<&'a McpServer> {
-    owned_gateway_entry(servers).or_else(|| (!id.contains('@')).then(||
+    owned_gateway_entry(servers).or_else(|| locations::legacy_gateway_ownership(id).then(||
         servers.iter().find(|server| detected_is_gateway(server))).flatten())
 }
 
@@ -7569,9 +7569,10 @@ fn repoint_stale_gateways_in(
             .and_then(|text| location_launch_id(def.format, entry_name, text).ok().flatten()));
         let reclaim_main = main_location_identity_changed(&client.id, prior_id.as_deref());
         let location_identity_changed = (client.id.contains('@') && prior_id.as_deref() != Some(client.id.as_str())) || reclaim_main;
+        let legacy_ownership = locations::legacy_gateway_ownership(&client.id);
         let duplicate_gateways = client.servers.iter().filter(|server|
-            if client.id.contains('@') { gateway_identity_matches(&server.name, &server.name, None) }
-            else { detected_is_gateway(server) }).count() > 1;
+            if legacy_ownership { detected_is_gateway(server) }
+            else { gateway_identity_matches(&server.name, &server.name, None) }).count() > 1;
         if !duplicate_gateways && !location_identity_changed && !gateway_entry_needs_rewrite(entry_name, stored, current, config_text.as_deref())
             && entry
                 .env_keys

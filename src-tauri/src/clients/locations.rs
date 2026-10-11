@@ -108,6 +108,15 @@ pub(super) fn saved() -> Result<Vec<ClientLocation>, String> {
 
 pub(super) fn store_error() -> Option<String> { saved().err() }
 
+/// Saving a v1 Claude profile must not narrow its existing gateway ownership.
+pub(super) fn legacy_gateway_ownership(id: &str) -> bool {
+    if !id.contains('@') { return true; }
+    lookup(id).is_some_and(|row| !row.manual && row.client_type == "claude-code"
+        && home().is_some_and(|root| row.config_path.parent().is_some_and(|folder|
+            folder.parent() == Some(root.as_path())
+                && folder.file_name().and_then(|name| name.to_str()).is_some_and(legacy_claude_profile_name))))
+}
+
 pub(super) fn store_display_path() -> String {
     store_path().map(|path| path.to_string_lossy().into_owned()).unwrap_or_default()
 }

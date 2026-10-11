@@ -323,12 +323,12 @@ fn original_gateways(
     } else {
         gateway_names(format, &mutation::value(format, text)?)
     };
-    // Main adapters retain v1 binary ownership under any name. Added locations
-    // only adopt reserved names. Disconnect must not resurrect an old gateway
+    // Main adapters and automatic v1 profiles retain binary ownership. New
+    // locations only adopt reserved names. Disconnect must not resurrect a gateway
     // from the initial snapshot after repair renamed or deduplicated it.
     let registry = crate::registry_controller::registry_for_disconnect()?;
     let servers = text.map(|text| parse_client_content(format, text)).transpose()?.unwrap_or_default();
-    let main_adapter = find_def(client_id).is_some_and(|def| def.location.is_none())
+    let main_adapter = locations::legacy_gateway_ownership(client_id)
         && entry_state_for(gateway_entry_for_client(client_id, &servers), registry.client_managed_entries.get(client_id)) == GatewayEntryState::Managed;
     if client_id.contains('@') || main_adapter {
         if let Some(text) = text {
@@ -340,7 +340,7 @@ fn original_gateways(
     }
     if let (Some(record), Some(text)) = (registry.client_managed_entries.get(client_id), text) {
         for server in parse_client_content(format, text)? {
-            if (!client_id.contains('@') || gateway_identity_matches(&server.name, &server.name, None))
+            if (locations::legacy_gateway_ownership(client_id) || gateway_identity_matches(&server.name, &server.name, None))
                 && detected_is_gateway(&server)
                 && managed_matches_detected(&server, record)
                 && !names.contains(&server.name)
