@@ -33,8 +33,18 @@ describe("homebrew cask snapshot (packaging/homebrew/toolport.rb)", () => {
   });
 
   it("keeps recovery data and directs users to explicit removal before uninstall", () => {
-    expect(cask).not.toMatch(/^\s*zap\s/m);
-    expect(cask).toContain("Uninstall and zap keep your data and credentials");
+    const zap = cask.match(/zap trash: \[([\s\S]*?)\n  \]/)?.[1];
+    expect(zap).toBeDefined();
+    expect([...zap!.matchAll(/"([^"\n]+)"/g)].map((match) => match[1])).toEqual([
+      "~/Library/Caches/com.tsout.conduit",
+      "~/Library/HTTPStorages/com.tsout.conduit",
+      "~/Library/Preferences/com.tsout.conduit.plist",
+      "~/Library/Saved Application State/com.tsout.conduit.savedState",
+      "~/Library/WebKit/com.tsout.conduit",
+    ]);
+    expect(zap).not.toMatch(/Application Support|registry|conduit-mcp/);
+    expect(cask).toContain("Uninstall keeps data and credentials");
+    expect(cask).toContain("but keeps the registry, recovery data and credentials");
     expect(cask).toContain('"Remove Toolport data" in Settings before uninstalling');
     expect(cask).toContain("--disconnect-all");
   });
