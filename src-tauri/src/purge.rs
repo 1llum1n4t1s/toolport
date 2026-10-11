@@ -83,6 +83,15 @@ fn verify_data_ownership(dir: &Path) -> Result<(), String> {
     verify_ownership(dir, crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR").is_some())
 }
 
+fn verify_removal_ownership(dir: &Path, all_installs: bool) -> Result<(), String> {
+    // Explicit global recovery permits a corrupt registry, but still requires it
+    // to exist before bypassing the custom-directory ownership check.
+    if !all_installs || !dir.join("registry.json").is_file() {
+        verify_data_ownership(dir)?;
+    }
+    Ok(())
+}
+
 fn verify_ownership(dir: &Path, overridden: bool) -> Result<(), String> {
     if !overridden && dir.file_name().is_some_and(|name| {
         matches!(
@@ -257,6 +266,7 @@ pub fn plan() -> Result<Plan, String> { plan_with_scope(false) }
 pub fn plan_with_scope(all_installs: bool) -> Result<Plan, String> {
 
     let dir = data_dir()?;
+    verify_removal_ownership(&dir, all_installs)?;
     let others = other_installs(&dir, install_candidates(&dir));
     credential_scope(&dir, &others, all_installs)?;
     let home = dirs::home_dir().ok_or("Could not resolve your home directory")?;
@@ -343,11 +353,7 @@ pub fn run_with_scope(all_installs: bool) -> Result<Report, String> {
     let dir = data_dir()?;
     let others = other_installs(&dir, install_candidates(&dir));
     let scope = credential_scope(&dir, &others, all_installs)?;
-    // The explicit global option needs no account inventory from a corrupt registry.
-    // Cleanup still selects only Toolport-created names in this folder.
-    if !all_installs || !dir.join("registry.json").is_file() {
-        verify_data_ownership(&dir)?;
-    }
+    verify_removal_ownership(&dir, all_installs)?;
     let mut report = run_with(
         |dir| {
             let mut blockers = crate::gateway_publish::purge_blockers(dir);
@@ -1436,6 +1442,26 @@ mod tests {
         assert_eq!(std::fs::read(selected.join("registry.json")).unwrap(), bytes);
         assert_eq!(std::fs::read_to_string(selected.join("secrets.enc")).unwrap(), "encrypted fixture");
         assert!(!selected.join("broker").exists(), "planning must not start cleanup");
+    }
+
+    #[test]
+    fn purge_r5_planning_checks_custom_directory_ownership_before_confirmation() {
+        let env = crate::registry::DataDirTestEnv::new("purge_r5_plan_ownership");
+        let registry = env.dir.join("registry.json");
+        let bytes = br#"{"servers":[]}"#;
+        std::fs::write(&registry, bytes).unwrap();
+        std::fs::write(env.dir.join("secrets.enc"), "encrypted bytes").unwrap();
+        let error = plan().err().expect("planning must reject a foreign registry");
+        assert!(error.contains("ownership") && error.contains(&env.dir.display().to_string()), "{error}");
+        assert_eq!(std::fs::read(&registry).unwrap(), bytes);
+        assert_eq!(std::fs::read(env.dir.join("secrets.enc")).unwrap(), b"encrypted bytes");
+        std::fs::remove_file(&registry).unwrap();
+        for all_installs in [false, true] {
+            assert!(plan_with_scope(all_installs).err().unwrap().contains("ownership"));
+        }
+        // Explicit global recovery keeps the execution path's corrupt-file exception.
+        std::fs::write(&registry, "{broken").unwrap();
+        assert!(plan_with_scope(true).is_ok());
     }
 
     #[test]

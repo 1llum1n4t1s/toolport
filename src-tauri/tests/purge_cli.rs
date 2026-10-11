@@ -48,6 +48,27 @@ fn purge_headless_without_keyring_and_with_file_backend_removes_data() {
 }
 
 #[test]
+fn purge_r5_unconfirmed_cli_rejects_unowned_directory() {
+    let env = conduit_lib::registry::DataDirTestEnv::new("purge_r5_cli_plan");
+    let data = env.dir.join("Toolport");
+    std::fs::create_dir(&data).unwrap();
+    for all_installs in [false, true] {
+        let mut command = isolated_command(&env.dir, &data);
+        command.arg("--remove-data");
+        if all_installs { command.arg("--all-installs"); }
+        let output = command.output().unwrap();
+        assert!(!output.status.success(), "planning must refuse before confirmation");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("ownership"));
+    }
+    let bytes = br#"{"servers":[]}"#;
+    std::fs::write(data.join("registry.json"), bytes).unwrap();
+    let output = isolated_command(&env.dir, &data).arg("--remove-data").output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ownership"));
+    assert_eq!(std::fs::read(data.join("registry.json")).unwrap(), bytes);
+}
+
+#[test]
 fn purge_named_override_without_registry_never_deletes_user_files() {
     let env = conduit_lib::registry::DataDirTestEnv::new("purge_cli_named_override");
     let data = env.dir.join("Toolport");
