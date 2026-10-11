@@ -145,7 +145,12 @@ fn install_candidates(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn other_installs(dir: &Path, candidates: Vec<PathBuf>) -> Vec<PathBuf> {
-    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    other_installs_with(dir, candidates, |path| path.to_path_buf())
+}
+
+fn other_installs_with(dir: &Path, candidates: Vec<PathBuf>, normalize: impl Fn(&Path) -> PathBuf) -> Vec<PathBuf> {
+    let dir = normalize(dir);
+    let canonical = std::fs::canonicalize(&dir).unwrap_or(dir);
     let mut others = Vec::new();
     for path in candidates {
         if path.is_dir() && std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()) != canonical
@@ -1463,6 +1468,25 @@ mod tests {
             assert!(report.preserved.iter().any(|entry| entry.starts_with(&expected)), "{name}");
         }
         for name in generated { assert!(!env.dir.join(name).exists(), "{name}"); }
+    }
+
+    #[test]
+    fn purge_r4_candidate_comparison_uses_the_selected_msix_view() {
+        let env = crate::registry::DataDirTestEnv::new("purge_r4_msix");
+        let real = env.dir.join("real/Toolport");
+        let shadow = env.dir.join("virtualized/Toolport");
+        let dev = env.dir.join("real/Toolport-dev");
+        let dev_shadow = env.dir.join("virtualized/Toolport-dev");
+        for dir in [&real, &shadow, &dev] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("registry.json"), r#"{"servers":[]}"#).unwrap();
+        }
+        let others = other_installs_with(&real, vec![shadow.clone(), dev_shadow, dev.clone()], |path| {
+            if let Ok(relative) = path.strip_prefix(env.dir.join("virtualized")) {
+                env.dir.join("real").join(relative)
+            } else { path.to_path_buf() }
+        });
+        assert_eq!(others, [dev], "compare and inventory every candidate in the selected UNC view");
     }
 
 }
