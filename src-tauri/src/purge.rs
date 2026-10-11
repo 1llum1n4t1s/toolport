@@ -192,6 +192,54 @@ fn has_registry_evidence(dir: &Path) -> bool {
     }))
 }
 
+fn inventory_server_ids(path: &Path) -> Result<Vec<String>, String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let registry: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    registry["servers"].as_array().ok_or("missing servers array")?.iter().map(|server| {
+        server["id"].as_str().map(str::to_owned).ok_or_else(|| "missing server id".into())
+    }).collect()
+}
+
+fn other_install_server_ids(dir: &Path) -> Result<Vec<String>, String> {
+    let registry = dir.join("registry.json");
+    let error = |path: &Path, error: String, recovery: bool| format!(
+        "Credential ownership inventory for {}: {error}. Credentials were not removed; the selected registry was retained. {}",
+        path.display(),
+        if recovery { "Restore a readable registry.json in this folder, or delete or rename the named recovery leftover and retry." }
+        else { "Repair this registry and retry." }
+    );
+    match std::fs::symlink_metadata(&registry) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+        _ => return inventory_server_ids(&registry).map_err(|e| error(&registry, e, false)),
+    }
+    let entries = std::fs::read_dir(dir).map_err(|e| error(dir, e.to_string(), true))?;
+    let mut recovery = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| error(dir, e.to_string(), true))?;
+        if entry.file_name().to_str().is_some_and(|name| generated_file_name(name, |name| {
+            name == "registry.json" || name.starts_with("registry.json.") && owned_data_file(name)
+        })) {
+            let path = entry.path();
+            let modified = std::fs::symlink_metadata(&path).ok().and_then(|meta| meta.modified().ok());
+            recovery.push((modified, path));
+        }
+    }
+    recovery.sort_by(|a, b| b.cmp(a));
+    let mut failure = None;
+    for (_, path) in recovery {
+        // Inventory is read-only and never follows a recovery link or migrates it.
+        let result = std::fs::symlink_metadata(&path).map_err(|e| e.to_string()).and_then(|meta| {
+            if !meta.is_file() || is_link(&meta) { return Err("not a regular recovery file".into()); }
+            inventory_server_ids(&path)
+        });
+        match result {
+            Ok(ids) => return Ok(ids),
+            Err(e) => { failure.get_or_insert_with(|| error(&path, e, true)); },
+        }
+    }
+    Err(failure.unwrap_or_else(|| error(&registry, "no registry or recovery file found".into(), false)))
+}
+
 fn credential_scope(dir: &Path, others: &[PathBuf], all_installs: bool) -> Result<crate::secrets::purge::Scope, String> {
     if all_installs {
         return Ok(crate::secrets::purge::Scope { all_installs: true, server_ids: Default::default() });
@@ -207,14 +255,8 @@ fn credential_scope(dir: &Path, others: &[PathBuf], all_installs: bool) -> Resul
         ids.extend(servers.iter().filter_map(|server| server["id"].as_str().map(str::to_owned)));
     }
     for other in others {
-        let registry_path = other.join("registry.json");
-        let error = |error| format!("Credential ownership inventory for {}: {error}. Credentials were not removed; the selected registry was retained. Repair this registry and retry.", registry_path.display());
-        let registry: serde_json::Value = serde_json::from_slice(&std::fs::read(&registry_path).map_err(|e| error(e.to_string()))?)
-            .map_err(|e| error(e.to_string()))?;
-        let servers = registry["servers"].as_array().ok_or_else(|| error("missing servers array".into()))?;
-        for server in servers {
-            let id = server["id"].as_str().ok_or_else(|| error("missing server id".into()))?;
-            ids.remove(id);
+        for id in other_install_server_ids(other)? {
+            ids.remove(&id);
         }
     }
     Ok(crate::secrets::purge::Scope { all_installs, server_ids: ids })
@@ -1462,6 +1504,55 @@ mod tests {
         // Explicit global recovery keeps the execution path's corrupt-file exception.
         std::fs::write(&registry, "{broken").unwrap();
         assert!(plan_with_scope(true).is_ok());
+    }
+
+    #[test]
+    fn purge_r5_recovery_only_inventory_uses_newest_readable_registry_without_writes() {
+        let env = crate::registry::DataDirTestEnv::new("purge_r5_recovery_inventory");
+        std::fs::write(env.dir.join("registry.json"), r#"{"servers":[{"id":"mine"},{"id":"shared"}]}"#).unwrap();
+        let other = env.dir.join("Toolport-dev");
+        std::fs::create_dir(&other).unwrap();
+        let old = other.join("registry.json.bak");
+        let newest = other.join("registry.json.123.1.conduit-tmp");
+        let corrupt = other.join("registry.json.unreadable-123");
+        for (path, bytes, seconds) in [
+            (&old, r#"{"servers":[{"id":"mine"}]}"#, 1),
+            (&newest, r#"{"servers":[{"id":"shared"}]}"#, 2),
+            (&corrupt, "broken", 3),
+        ] {
+            std::fs::write(path, bytes).unwrap();
+            std::fs::File::options().write(true).open(path).unwrap().set_times(
+                std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+            ).unwrap();
+        }
+        for _ in 0..2 {
+            let others = other_installs(&env.dir, vec![other.clone()]);
+            let scope = credential_scope(&env.dir, &others, false).expect("readable recovery ownership must converge");
+            assert!(scope.server_ids.contains("mine") && !scope.server_ids.contains("shared"));
+            assert!(!scope.all_installs);
+            assert!(!other.join("registry.json").exists());
+            assert_eq!(std::fs::read_to_string(&old).unwrap(), r#"{"servers":[{"id":"mine"}]}"#);
+            assert_eq!(std::fs::read_to_string(&newest).unwrap(), r#"{"servers":[{"id":"shared"}]}"#);
+            assert_eq!(std::fs::read_to_string(&corrupt).unwrap(), "broken");
+        }
+    }
+
+    #[test]
+    fn purge_r5_unreadable_recovery_names_existing_file_and_rename_allows_retry() {
+        let env = crate::registry::DataDirTestEnv::new("purge_r5_recovery_retry");
+        std::fs::write(env.dir.join("registry.json"), r#"{"servers":[{"id":"mine"}]}"#).unwrap();
+        let other = env.dir.join("Toolport-dev");
+        std::fs::create_dir(&other).unwrap();
+        let leftover = other.join("registry.json.unreadable-123");
+        std::fs::write(&leftover, "broken").unwrap();
+        let others = other_installs(&env.dir, vec![other.clone()]);
+        let error = credential_scope(&env.dir, &others, false).err().unwrap();
+        assert!(error.contains(&leftover.display().to_string()) && error.contains("rename") && !error.contains("--all-installs"), "{error}");
+        std::fs::rename(&leftover, other.join("saved-recovery.json")).unwrap();
+        let others = other_installs(&env.dir, vec![other.clone()]);
+        assert!(others.is_empty());
+        assert!(credential_scope(&env.dir, &others, false).unwrap().server_ids.contains("mine"));
+        assert_eq!(std::fs::read_to_string(other.join("saved-recovery.json")).unwrap(), "broken");
     }
 
     #[test]

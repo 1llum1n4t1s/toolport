@@ -219,6 +219,37 @@ fn purge_other_registry_failure_exits_nonzero_and_retry_converges() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn purge_r5_recovery_only_other_install_converges_after_rename() {
+    let env = conduit_lib::registry::DataDirTestEnv::new("purge_r5_cli_recovery");
+    let data = env.dir.join("Toolport");
+    let other = env.dir.join("Toolport-dev");
+    for dir in [&data, &other] { std::fs::create_dir(dir).unwrap(); }
+    let registry = serde_json::to_vec(&conduit_lib::registry::Registry::default()).unwrap();
+    std::fs::write(data.join("registry.json"), &registry).unwrap();
+    std::fs::write(data.join("secrets.enc"), "encrypted bytes").unwrap();
+    let leftover = other.join("registry.json.unreadable-123");
+    std::fs::write(&leftover, "broken").unwrap();
+    let output = isolated_command(&env.dir, &data).args(["--remove-data", "--confirm"]).output().unwrap();
+    assert!(!output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains(&leftover.display().to_string()) && text.contains("rename"), "{text}");
+    assert_eq!(std::fs::read(data.join("registry.json")).unwrap(), registry);
+    assert_eq!(std::fs::read_to_string(data.join("secrets.enc")).unwrap(), "encrypted bytes");
+    std::fs::rename(leftover, other.join("saved-recovery.json")).unwrap();
+    std::fs::write(other.join("registry.json.bak"), &registry).unwrap();
+    for _ in 0..2 {
+        let output = isolated_command(&env.dir, &data).args(["--remove-data", "--dry-run"]).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+    let output = isolated_command(&env.dir, &data).args(["--remove-data", "--confirm"]).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    assert!(!data.join("registry.json").exists() && !data.join("secrets.enc").exists());
+    assert_eq!(std::fs::read(other.join("registry.json.bak")).unwrap(), registry);
+    assert_eq!(std::fs::read_to_string(other.join("saved-recovery.json")).unwrap(), "broken");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn purge_r4_dev_leftovers_do_not_block_later_main_install_removal() {
     let env = conduit_lib::registry::DataDirTestEnv::new("purge_cli_r4_leftovers");
     let dev = env.dir.join("Toolport-dev");
