@@ -737,6 +737,18 @@ fn legacy_claude_profile_dirs(home: &Path) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
+/// Settings upkeep is best-effort per profile. A broken sibling must not hide
+/// healthy settings before startup cleanup writes its run-once markers.
+fn legacy_claude_settings_dirs(home: &Path) -> Result<Vec<String>, String> {
+    let entries = std::fs::read_dir(home).map_err(|error| error.to_string())?;
+    Ok(entries.filter_map(Result::ok).filter_map(|entry| {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !legacy_claude_profile_name(&name) && !claude_profile_name(&name) { return None; }
+        if !legacy_claude_profile_name(&name) && entry.file_type().ok()?.is_symlink() { return None; }
+        entry.path().is_dir().then_some(name)
+    }).collect())
+}
+
 fn claude_profile_dirs(home: &Path) -> Result<Vec<String>, String> {
     claude_profile_dirs_with_links(home, false)
 }
@@ -813,7 +825,7 @@ pub(crate) fn claude_settings_paths() -> Vec<PathBuf> {
     let Some(home) = home() else {
         return Vec::new();
     };
-    let dirs = match legacy_claude_profile_dirs(&home) {
+    let dirs = match legacy_claude_settings_dirs(&home) {
         Ok(dirs) => dirs,
         Err(error) => {
             let msg = format!(
