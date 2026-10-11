@@ -134,8 +134,7 @@ fn round5_windows_bulk_disconnect_matches_native_recovery_paths() {
     let mut saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
     saved[0]["configPath"] = serde_json::json!(native);
     std::fs::write(&store, saved.to_string()).unwrap();
-    let original = serde_json::json!({"mcpServers":{"toolport":{"command":"/old/toolport-gateway",
-        "env":{"TOOLPORT_CLIENT_ID":id}}, "native":{"command":"native"}}}).to_string();
+    let original = serde_json::json!({"mcpServers":{"native":{"command":"native"}}}).to_string();
     std::fs::write(&native, &original).unwrap();
     crate::registry::save(&crate::registry::Registry::default()).unwrap();
     let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport",
@@ -146,12 +145,17 @@ fn round5_windows_bulk_disconnect_matches_native_recovery_paths() {
     assert_eq!(results.iter().filter(|result| result.client_id == id).count(), 1);
     uninstall_gateway(&id).unwrap();
     assert!(restore::released(&id, &native).unwrap());
-    // Released gateway originals are reported only by the recovery pass.
+    assert_eq!(std::fs::read_to_string(&native).unwrap(), original);
+    // A native edit after release must not cause another client restoration.
+    let edited = serde_json::json!({"mcpServers":{"toolport":{"command":"/old/toolport-gateway",
+        "env":{"TOOLPORT_CLIENT_ID":id}}, "native":{"command":"native"}}}).to_string();
+    std::fs::write(&native, &edited).unwrap();
+    assert!(read_client(&find_def(&id).unwrap()).gateway_installed);
     let results = disconnect_all(true).unwrap();
     let result = results.iter().find(|result| result.client_id == id).unwrap();
     assert_eq!(result.path, native.to_string_lossy());
     assert_eq!(results.iter().filter(|result| result.client_id == id).count(), 1);
-    assert_eq!(std::fs::read_to_string(&native).unwrap(), original);
+    assert_eq!(std::fs::read_to_string(&native).unwrap(), edited);
 }
 
 #[cfg(unix)]

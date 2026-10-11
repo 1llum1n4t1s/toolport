@@ -36,9 +36,17 @@ fn all_with_clients(
     };
     let mut clients = detect();
     apply_entry_states(&mut clients, &current.client_managed_entries);
+    // Keep the stored recovery path beside the display path before restoration
+    // can remove a newly created file or directory.
+    let recovery_paths: HashMap<_, _> = clients.iter().map(|client| {
+        let native = locations::lookup(&client.id).map(|row| row.config_path)
+            .unwrap_or_else(|| PathBuf::from(&client.config_path));
+        (client.id.clone(), (client.config_path.clone(), native))
+    }).collect();
     let targets = clients.into_iter().filter(|client| {
+        let recovery_path = &recovery_paths[&client.id].1;
         client.error.is_some() || (client.gateway_installed
-            && !restore::released(&client.id, Path::new(&client.config_path)).unwrap_or(false))
+            && !restore::released(&client.id, recovery_path).unwrap_or(false))
             || current.client_managed_entries.contains_key(&client.id)
             || moved::has_record(&client.id)
     });
@@ -84,7 +92,13 @@ fn all_with_clients(
         };
         if results
             .iter()
-            .any(|result| result.client_id == id && result.path == path.to_string_lossy())
+            .any(|result| result.client_id == id && {
+                let recovery_path = recovery_paths.get(&id)
+                    .filter(|(display, _)| display == &result.path)
+                    .map(|(_, native)| native.as_path())
+                    .unwrap_or_else(|| Path::new(&result.path));
+                locations::same_path(recovery_path, &path)
+            })
         {
             continue;
         }
