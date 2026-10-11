@@ -3506,7 +3506,7 @@ fn inherit_location_access(id: &str, format: Format, name: &str, text: &str) -> 
             registry.client_scopes.entry(id.into()).or_insert(scope);
         }
         Ok(())
-    })
+    }).map(|_| ())
 }
 
 /// A lightweight initial inventory: metadata only, no config or plugin reads.
