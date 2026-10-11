@@ -139,7 +139,7 @@ fn round5_windows_bulk_disconnect_matches_native_recovery_paths() {
     std::fs::write(&native, &original).unwrap();
     crate::registry::save(&crate::registry::Registry::default()).unwrap();
     let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport",
-        "transport":"stdio", "command":"/new/toolport-gateway", "env":{"TOOLPORT_CLIENT_ID":id}})).unwrap();
+        "transport":"stdio", "command":"/new/toolport-gateway", "env":[{"key":"TOOLPORT_CLIENT_ID", "value":id}]})).unwrap();
     install_or_remove(&id, Some(&entry)).unwrap();
     assert!(!read_client(&find_def(&id).unwrap()).config_path.starts_with(r"\\?\"));
     let results = disconnect_all(true).unwrap();
@@ -172,7 +172,7 @@ fn round5_bulk_disconnect_deduplicates_equivalent_recovery_paths() {
     saved[0]["configPath"] = serde_json::json!(alias.join(".claude.json"));
     std::fs::write(&store, saved.to_string()).unwrap();
     let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport",
-        "transport":"stdio", "command":"/new/toolport-gateway", "env":{"TOOLPORT_CLIENT_ID":id}})).unwrap();
+        "transport":"stdio", "command":"/new/toolport-gateway", "env":[{"key":"TOOLPORT_CLIENT_ID", "value":id}]})).unwrap();
     mutation::run(&id, &path, Format::JsonMcpServers, || edit_format(Format::JsonMcpServers, &path, Some(&entry), false)).unwrap();
     let results = disconnect_all(true).unwrap();
     assert_eq!(results.iter().filter(|result| result.client_id == id).count(), 1);
