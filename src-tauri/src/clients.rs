@@ -3856,14 +3856,20 @@ pub(crate) fn purge_backup_name(client_id: &str, basename: &str) -> bool {
 }
 
 pub(crate) fn backup_dir(client_id: &str) -> Option<PathBuf> {
-    // Anchor to the same home-based dir as the registry (see registry::conduit_dir)
-    // so config backups land in one place regardless of whether a packaged or
-    // unpackaged process wrote them.
-    Some(
-        crate::registry::conduit_dir()?
-            .join("backups")
-            .join(client_id),
-    )
+    // Keep the public location ID stable without making a long encoded profile
+    // name a filesystem component. Existing legal legacy directories stay in use
+    // so move records and original snapshots remain findable.
+    let root = crate::registry::conduit_dir()?.join("backups");
+    if client_id.len() <= 200 { return Some(root.join(client_id)); }
+    let digest = crate::registry::sha256_hex(client_id);
+    let prefix: String = client_id.chars().take(120).collect();
+    let bounded = root.join(format!("{prefix}-{digest}"));
+    let legacy = root.join(client_id);
+    if !bounded.exists() && client_id.len() <= 255 && legacy.is_dir() {
+        Some(legacy)
+    } else {
+        Some(bounded)
+    }
 }
 
 fn epoch_millis() -> u128 {
