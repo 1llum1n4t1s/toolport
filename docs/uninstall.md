@@ -52,6 +52,8 @@ CLI is `"/Applications/Toolport.app/Contents/MacOS/toolport-gateway" --disconnec
 While Toolport is installed, choose **Remove Toolport data** in Settings. The
 confirmation lists the data directory, credentials and startup entries affected,
 and the report file in your home directory. Toolport closes before removal.
+Retrying the same confirmation keeps earlier reports beside that file with a
+`.previous-` suffix and writes the new result to the listed report path.
 This is permanent and never runs during an upgrade or normal uninstall.
 
 For the CLI, close Toolport and run as your normal user, without sudo:

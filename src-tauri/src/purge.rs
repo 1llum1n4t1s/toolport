@@ -342,6 +342,39 @@ pub fn plan_with_scope(all_installs: bool) -> Result<Plan, String> {
     })
 }
 
+#[cfg(any(feature = "desktop", feature = "gtk-desktop", test))]
+fn open_removal_report(report_path: &Path) -> Result<std::fs::File, String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(report_path) {
+        Ok(file) => return Ok(file),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+        Err(error) => return Err(error.to_string()),
+    }
+    let metadata = std::fs::symlink_metadata(report_path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || is_link(&metadata) {
+        return Err(format!("Refusing non-file removal report: {}", report_path.display()));
+    }
+    let mut nonce = [0u8; 16];
+    getrandom::getrandom(&mut nonce).map_err(|error| error.to_string())?;
+    let suffix: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+    let previous = report_path.with_extension(format!("previous-{suffix}.json"));
+    // A new hard link preserves exact bytes without overwriting an older archive.
+    // An earlier child still holding stdout can finish writing to this archive.
+    std::fs::hard_link(report_path, &previous).map_err(|error| format!(
+        "Could not preserve previous removal report {}: {error}. Rename it and retry.", report_path.display()
+    ))?;
+    std::fs::remove_file(report_path).map_err(|error| error.to_string())?;
+    options.open(report_path).map_err(|error| format!(
+        "Could not create removal report: {error}. Previous report saved at {}.", previous.display()
+    ))
+}
+
 /// The pipe stays open until the entire desktop process exits, including workers.
 /// No timing assumption about desktop shutdown is needed by the child.
 #[cfg(any(feature = "desktop", feature = "gtk-desktop"))]
@@ -359,16 +392,7 @@ pub fn launch_after_exit(report_path: &Path) -> Result<(), String> {
     let binary = crate::gateway_publish::bundled_gateway_source().ok_or(
         "Could not find the bundled gateway. Use toolport-gateway --remove-data --confirm instead.",
     )?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let report = options
-        .open(report_path)
-        .map_err(|error| error.to_string())?;
+    let report = open_removal_report(report_path)?;
     let mut command = Command::new(binary);
     #[cfg(target_os = "windows")]
     {
@@ -1553,6 +1577,48 @@ mod tests {
         assert!(others.is_empty());
         assert!(credential_scope(&env.dir, &others, false).unwrap().server_ids.contains("mine"));
         assert_eq!(std::fs::read_to_string(other.join("saved-recovery.json")).unwrap(), "broken");
+    }
+
+    #[test]
+    fn purge_r5_same_plan_report_retry_preserves_spawn_failure_and_timeout_reports() {
+        use std::io::Write;
+        let env = crate::registry::DataDirTestEnv::new("purge_r5_report_retry");
+        let path = env.dir.join("Toolport-removal-report-fixture.json");
+        let report = open_removal_report(&path).unwrap();
+        assert!(std::process::Command::new(env.dir.join("absent-gateway"))
+            .stdout(report).spawn().is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+        let timeout_report = b"{\"leftovers\":[{\"error\":\"Toolport did not close\"}]}";
+        let mut retry = open_removal_report(&path).expect("same-plan retry after spawn failure");
+        retry.write_all(timeout_report).unwrap();
+        let mut earlier_child = retry.try_clone().unwrap();
+        drop(retry);
+        let mut retry = open_removal_report(&path).expect("same-plan retry after child timeout");
+        earlier_child.write_all(b"\n").unwrap();
+        drop(earlier_child);
+        retry.write_all(b"{\"removed\":[]}").unwrap();
+        drop(retry);
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"removed\":[]}");
+        let mut archived: Vec<_> = std::fs::read_dir(&env.dir).unwrap().filter_map(|entry| {
+            let path = entry.unwrap().path();
+            path.file_name().unwrap().to_string_lossy().contains(".previous-")
+                .then(|| std::fs::read(path).unwrap())
+        }).collect();
+        archived.sort();
+        assert_eq!(archived, [b"".to_vec(), [timeout_report.as_slice(), b"\n"].concat()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn purge_r5_report_retry_refuses_symlink_without_changing_its_target() {
+        let env = crate::registry::DataDirTestEnv::new("purge_r5_report_link");
+        let target = env.dir.join("user.json");
+        let report = env.dir.join("Toolport-removal-report-fixture.json");
+        std::fs::write(&target, "user bytes").unwrap();
+        std::os::unix::fs::symlink(&target, &report).unwrap();
+        assert!(open_removal_report(&report).is_err());
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "user bytes");
+        assert!(std::fs::symlink_metadata(report).unwrap().file_type().is_symlink());
     }
 
     #[test]
