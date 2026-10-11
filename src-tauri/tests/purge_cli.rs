@@ -194,3 +194,26 @@ fn purge_other_registry_failure_exits_nonzero_and_retry_converges() {
     assert!(!data.join("registry.json").exists() && !data.join("secrets.enc").exists());
     assert_eq!(std::fs::read(other_registry).unwrap(), registry);
 }
+
+
+#[cfg(target_os = "linux")]
+#[test]
+fn purge_r4_dev_leftovers_do_not_block_later_main_install_removal() {
+    let env = conduit_lib::registry::DataDirTestEnv::new("purge_cli_r4_leftovers");
+    let dev = env.dir.join("Toolport-dev");
+    let main = env.dir.join("Toolport");
+    let registry = serde_json::to_vec(&conduit_lib::registry::Registry::default()).unwrap();
+    for dir in [&dev, &main] {
+        std::fs::create_dir(dir).unwrap();
+        std::fs::write(dir.join("registry.json"), &registry).unwrap();
+    }
+    std::fs::create_dir(dev.join("logs")).unwrap();
+    std::fs::write(dev.join("logs/other-app.log"), "user bytes").unwrap();
+    let output = isolated_command(&env.dir, &dev).args(["--remove-data", "--confirm"]).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    assert!(!dev.join("registry.json").exists());
+    let output = isolated_command(&env.dir, &main).args(["--remove-data", "--confirm"]).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    assert!(!main.join("registry.json").exists());
+    assert_eq!(std::fs::read_to_string(dev.join("logs/other-app.log")).unwrap(), "user bytes");
+}

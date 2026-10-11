@@ -462,4 +462,14 @@ mod tests {
         assert!(!report.team_token_removed);
     }
 
+    #[test]
+    fn purge_r4_preserved_credentials_report_accounts_instead_of_object_paths() {
+        let report = remove_owned([("/org/freedesktop/secrets/item/1", "__conduit_master_key__"),
+            ("/org/freedesktop/secrets/item/2", "__toolport_http_bridge__::TOKEN")],
+            &Scope { all_installs: false, server_ids: Default::default() },
+            |item| Ok(("conduit-mcp".into(), item.1.into())), |item| item.0.into(),
+            |_| panic!("shared keys must stay"));
+        assert_eq!(report.preserved, ["__conduit_master_key__", "__toolport_http_bridge__::TOKEN"]);
+    }
+
 }

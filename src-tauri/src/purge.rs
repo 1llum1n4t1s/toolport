@@ -1323,4 +1323,87 @@ mod tests {
         }
     }
 
+    #[test]
+    fn purge_r4_leftover_folder_and_case_insensitive_checkout_are_not_installs() {
+        let env = crate::registry::DataDirTestEnv::new("purge_r4_candidates");
+        let selected = env.dir.join("toolport-data");
+        let dev = env.dir.join("Toolport-dev");
+        let checkout = env.dir.join("toolport");
+        for dir in [&selected, &dev, &checkout] { std::fs::create_dir(dir).unwrap(); }
+        std::fs::write(selected.join("registry.json"), r#"{"servers":[{"id":"mine"}]}"#).unwrap();
+        std::fs::create_dir(dev.join("logs")).unwrap();
+        std::fs::write(dev.join("logs/other-app.log"), "user bytes").unwrap();
+        std::fs::write(checkout.join("Cargo.toml"), "git checkout").unwrap();
+        // Supplying the lowercase candidate models case-insensitive discovery.
+        let others = other_installs(&selected, vec![dev.clone(), checkout]);
+        assert!(others.is_empty(), "leftovers and a checkout have no registry: {others:?}");
+        assert!(credential_scope(&selected, &others, false).unwrap().server_ids.contains("mine"));
+        for evidence in ["registry.json.bak", "registry.json.123.1.conduit-tmp", "registry.json.unreadable-123"] {
+            std::fs::write(dev.join(evidence), "recovery bytes").unwrap();
+            let others = other_installs(&selected, vec![dev.clone()]);
+            assert_eq!(others, [dev.clone()]);
+            assert!(credential_scope(&selected, &others, false).is_err());
+            std::fs::remove_file(dev.join(evidence)).unwrap();
+        }
+        std::fs::create_dir(dev.join("registry.json")).unwrap();
+        assert_eq!(other_installs(&selected, vec![dev.clone()]), [dev]);
+    }
+
+    #[test]
+    fn purge_r4_settings_plan_rejects_unreadable_ownership_without_changes() {
+        let env = crate::registry::DataDirTestEnv::new("purge_r4_plan");
+        let selected = env.dir.join("Toolport");
+        let other = env.dir.join("Toolport-dev");
+        for dir in [&selected, &other] { std::fs::create_dir(dir).unwrap(); }
+        let bytes = br#"{"version":1,"servers":[{"id":"mine"}],"profiles":[]}"#;
+        std::fs::write(selected.join("registry.json"), bytes).unwrap();
+        std::fs::write(selected.join("secrets.enc"), "encrypted fixture").unwrap();
+        let broken = other.join("registry.json");
+        std::fs::write(&broken, "unreadable registry").unwrap();
+        let _selected = crate::registry::DataDirOverride::set(&selected);
+        let error = plan().expect_err("both Settings shells must reject the plan before exit");
+        assert!(error.contains(broken.to_str().unwrap()), "{error}");
+        assert_eq!(std::fs::read(selected.join("registry.json")).unwrap(), bytes);
+        assert_eq!(std::fs::read_to_string(selected.join("secrets.enc")).unwrap(), "encrypted fixture");
+        assert!(!selected.join("broker").exists(), "planning must not start cleanup");
+    }
+
+    #[test]
+    fn purge_r4_custom_directory_guidance_explains_post_removal_limit() {
+        let env = crate::registry::DataDirTestEnv::new("purge_r4_guidance");
+        let report = run_with(
+            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
+            || Ok(crate::secrets::purge::Removal { preserved: vec!["__conduit_master_key__".into()], ..Default::default() }),
+            |_| Ok(()), |_| Ok(()),
+        ).unwrap();
+        assert!(report.notes.iter().any(|note| note.contains("custom data directory") && note.contains("before") && note.contains("credential manager")), "{:?}", report.notes);
+        assert!(report.notes.iter().any(|note| note.contains("Toolport's") && note.contains("master key") && note.contains("HTTP")), "{:?}", report.notes);
+        assert!(env.dir.exists());
+    }
+
+    #[test]
+    fn purge_r4_timestamped_backups_and_legacy_store_collisions_preserve_bytes() {
+        let env = crate::registry::DataDirTestEnv::new("purge_r4_patterns");
+        crate::registry::save(&crate::registry::Registry::default()).unwrap();
+        let collisions = ["backups/claude-code/2024-taxes.pdf", "backups/claude-code/1791750000000-taxes.pdf", "quarantine-notes.json", "tool-cache-notes.json"];
+        for name in collisions {
+            let path = env.dir.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "user bytes").unwrap();
+        }
+        let generated = ["backups/claude-code/1791750000000-.claude.json", "backups/claude-code/1791750000000-claude-0123456789abcdef.json", "backups/claude-code/1791750000000-claude-settings-0123456789abcdef.json", "quarantine-default.json", "tool-cache-default.json", "tool-pins-default.json"];
+        for name in generated { std::fs::write(env.dir.join(name), "generated fixture").unwrap(); }
+        let report = run_with(
+            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
+            || Ok(crate::secrets::purge::Removal::default()), |_| Ok(()), |_| Ok(()),
+        ).unwrap();
+        assert!(report.leftovers.is_empty());
+        for name in collisions {
+            assert_eq!(std::fs::read_to_string(env.dir.join(name)).unwrap(), "user bytes", "{name}");
+            let expected = env.dir.join(name).display().to_string();
+            assert!(report.preserved.iter().any(|entry| entry.starts_with(&expected)), "{name}");
+        }
+        for name in generated { assert!(!env.dir.join(name).exists(), "{name}"); }
+    }
+
 }
