@@ -115,10 +115,7 @@ pub(super) fn all() -> Vec<ClientLocation> {
     match saved() {
         Ok(saved) => {
             for row in saved {
-                if !rows
-                    .iter()
-                    .any(|auto| same_path(&auto.config_path, &row.config_path))
-                {
+                if !rows.iter().any(|auto| auto.config_path == row.config_path) {
                     rows.push(row);
                 }
             }

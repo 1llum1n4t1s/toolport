@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   addClientLocation,
   getClientLocationTypes,
@@ -23,6 +23,8 @@ export function AddClientLocationDialog({
   onOpenChange: (open: boolean) => void;
   onAdded: (id: string) => Promise<void>;
 }) {
+  const typeId = useId();
+  const folderId = useId();
   const [types, setTypes] = useState<ClientLocationType[]>([]);
   const [clientType, setClientType] = useState("claude-code");
   const [folder, setFolder] = useState("");
@@ -78,9 +80,10 @@ export function AddClientLocationDialog({
             }
           }}
         >
-          <label className="flex flex-col gap-2 text-sm">
-            Client type
+          <div className="flex flex-col gap-2 text-sm">
+            <label htmlFor={typeId}>Client type</label>
             <select
+              id={typeId}
               className="h-9 rounded-md border border-input bg-background px-3"
               value={clientType}
               onChange={(event) => setClientType(event.target.value)}
@@ -92,17 +95,18 @@ export function AddClientLocationDialog({
                 </option>
               ))}
             </select>
-          </label>
-          <label className="flex flex-col gap-2 text-sm">
-            Config folder
+          </div>
+          <div className="flex flex-col gap-2 text-sm">
+            <label htmlFor={folderId}>Config folder</label>
             <Input
+              id={folderId}
               value={folder}
               onChange={(event) => setFolder(event.target.value)}
               placeholder="~/.claude2"
               disabled={saving}
               autoFocus
             />
-          </label>
+          </div>
           {selected && (
             <p className="text-xs text-muted-foreground">
               Toolport will use {selected.configFile} in this folder. For Codex, choose
