@@ -1673,7 +1673,7 @@ async fn release_all_quarantine(
             Some(expected) => integrity::release_all_records(prof, &expected),
             None => integrity::release_all(prof),
         }
-            .map_err(|e| format!("Could not re-approve the blocked tools: {e}"))?;
+        .map_err(|e| format!("Could not re-approve the blocked tools: {e}"))?;
         // Same reasoning as `release_quarantine`: refresh the cache rather than
         // blind-writing a possibly stale snapshot over a concurrent gateway write.
         reload_into_state(state.inner())?;

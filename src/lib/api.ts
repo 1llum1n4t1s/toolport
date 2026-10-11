@@ -333,7 +333,10 @@ export function releaseAllQuarantine(
   profile: string,
   expectedRecords?: Record<string, string>,
 ): Promise<ReleaseAllOutcome> {
-  return invoke<ReleaseAllOutcome>("release_all_quarantine", { profile, expectedRecords });
+  return invoke<ReleaseAllOutcome>("release_all_quarantine", {
+    profile,
+    expectedRecords,
+  });
 }
 
 /** Toggle global lazy discovery (meta-tools vs full catalog) for all clients. */

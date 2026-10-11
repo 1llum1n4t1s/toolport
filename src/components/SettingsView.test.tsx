@@ -121,16 +121,27 @@ function deferred<T>() {
 
 describe("SettingsView tool loading", () => {
   it("releases only the blocked record displayed in Settings", async () => {
-    vi.mocked(listQuarantined).mockResolvedValueOnce([{
-      record_id: "settings-displayed-record", profile: "work", tool: "srv__read",
-      server: "srv", reason: "Definition changed", ts: 1,
-    }]);
+    vi.mocked(listQuarantined).mockResolvedValueOnce([
+      {
+        record_id: "settings-displayed-record",
+        profile: "work",
+        tool: "srv__read",
+        server: "srv",
+        reason: "Definition changed",
+        ts: 1,
+      },
+    ]);
     vi.mocked(releaseQuarantine).mockResolvedValue(undefined);
     renderSettings("safety");
     await userEvent.click(await screen.findByRole("button", { name: /^re-approve$/i }));
-    await waitFor(() => expect(releaseQuarantine).toHaveBeenCalledWith(
-      "work", "srv__read", undefined, "settings-displayed-record",
-    ));
+    await waitFor(() =>
+      expect(releaseQuarantine).toHaveBeenCalledWith(
+        "work",
+        "srv__read",
+        undefined,
+        "settings-displayed-record",
+      ),
+    );
   });
 
   it("keeps loading state scoped to each server", async () => {

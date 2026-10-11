@@ -146,17 +146,53 @@ describe("QuarantineAlert bulk re-approval", () => {
     expect(screen.getByRole("region")).toBeInTheDocument();
   });
 
+  it("keeps confirmation bound to its displayed list while polling finds another block", async () => {
+    const displayed = catalog(2);
+    listQuarantined.mockResolvedValueOnce(displayed);
+    listQuarantined.mockResolvedValue([
+      ...displayed,
+      tool({ tool: "unseen", record_id: "new-record" }),
+    ]);
+    releaseAllQuarantine.mockResolvedValue({
+      released: 2,
+      skipped: [],
+      changed: ["unseen"],
+    });
+    render(<QuarantineAlert />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: /re-approve all \(2\)/i }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => expect(listQuarantined.mock.calls.length).toBeGreaterThan(1), {
+      timeout: 4000,
+    });
+    expect(dialog).toHaveAccessibleName("Re-approve 2 blocked tools?");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: /^re-approve all$/i }),
+    );
+    await waitFor(() =>
+      expect(releaseAllQuarantine).toHaveBeenCalledWith(
+        "default",
+        Object.fromEntries(displayed.map((q) => [q.tool, q.record_id])),
+      ),
+    );
+  });
+
   it("reports findings that appeared or changed after review as still blocked", async () => {
     listQuarantined.mockResolvedValue(catalog(3));
     releaseAllQuarantine.mockResolvedValue({
-      released: 1, skipped: [], changed: ["clerk__call_api_key_1", "new_tool"],
+      released: 1,
+      skipped: [],
+      changed: ["clerk__call_api_key_1", "new_tool"],
     });
     render(<QuarantineAlert />);
     await screen.findByRole("region");
     await confirmReapproveAll();
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith(
-      "Re-approved 1. 2 new or changed findings remain blocked. Refresh and review them.",
-    ));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        "Re-approved 1. 2 new or changed findings remain blocked. Refresh and review them.",
+      ),
+    );
     expect(toastSuccess).not.toHaveBeenCalled();
     expect(screen.getByRole("region")).toBeInTheDocument();
   });
@@ -251,7 +287,10 @@ describe("QuarantineAlert", () => {
     await userEvent.click(await screen.findByRole("button", { name: /^re-approve$/i }));
 
     expect(releaseQuarantine).toHaveBeenCalledWith(
-      "work", "linear__save_issue", undefined, "displayed-record",
+      "work",
+      "linear__save_issue",
+      undefined,
+      "displayed-record",
     );
     await waitFor(() => expect(screen.queryByRole("region")).not.toBeInTheDocument());
   });

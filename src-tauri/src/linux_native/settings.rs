@@ -2268,9 +2268,12 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
         "Repair every baseline in one pass. A tool whose captured definition cannot be read stays blocked.",
     ));
     let profiles = distinct_profiles(entries);
-    let mut expected = std::collections::BTreeMap::<String, std::collections::BTreeMap<String, String>>::new();
+    let mut expected =
+        std::collections::BTreeMap::<String, std::collections::BTreeMap<String, String>>::new();
     for entry in entries {
-        expected.entry(entry.profile.clone()).or_default()
+        expected
+            .entry(entry.profile.clone())
+            .or_default()
             .insert(entry.tool.clone(), entry.record_id.clone());
     }
     let release_for_click = release_all.clone();
@@ -2304,7 +2307,9 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
                 let expected = expected.clone();
                 gtk::glib::spawn_future_local(async move {
                     let result = gtk::gio::spawn_blocking(move || {
-                        crate::registry_controller::release_all_quarantine_records(&profiles, &expected)
+                        crate::registry_controller::release_all_quarantine_records(
+                            &profiles, &expected,
+                        )
                     })
                     .await;
                     match result {
@@ -2397,7 +2402,8 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
                     let profile = entry.profile.clone();
                     let result = gtk::gio::spawn_blocking(move || {
                         let profile = (!profile.is_empty()).then_some(profile.as_str());
-                        crate::integrity::release_record(profile, &tool, &entry.record_id).map(|_| ())
+                        crate::integrity::release_record(profile, &tool, &entry.record_id)
+                            .map(|_| ())
                     })
                     .await;
                     match result {
