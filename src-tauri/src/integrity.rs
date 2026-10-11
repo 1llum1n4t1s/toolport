@@ -5341,8 +5341,12 @@ mod tests {
                 apply_quarantine(profile, &tools, &events).unwrap();
                 accept_quarantined_pins(profile).unwrap();
                 assert!(quarantined(profile).unwrap().contains("srv__wipe"));
-                let fp = pin_of(&tools[0]).fp;
-                assert!(release_definition(profile, "srv__wipe", &fp).unwrap());
+                let captured = load_quarantine(profile).unwrap()["srv__wipe"].clone();
+                assert_eq!(captured["definition"], tools[0]);
+                assert_eq!(captured["definition_fp"], pin_of(&tools[0]).fp);
+                assert!(captured["reason"].as_str().unwrap().contains("no saved definition"));
+                // The UI approves the captured record, not an unbound retry of the old block.
+                assert!(release_record(profile, "srv__wipe", &quarantine_record_id(&captured)).unwrap());
                 assert!(check_staged(profile, &tools).unwrap().is_empty());
             }
         }

@@ -294,6 +294,28 @@ describe("QuarantineAlert", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows the captured definition and explains the extra legacy review", async () => {
+    listQuarantined.mockResolvedValue([
+      tool({
+        reason: "This older block had no saved definition. Review the captured current definition before approving.",
+        definition: {
+          name: "linear__save_issue",
+          description: "Update the selected issue",
+          inputSchema: { type: "object", properties: { title: { type: "string" } } },
+          outputSchema: { type: "object" },
+          annotations: { readOnlyHint: false },
+        },
+      }),
+    ]);
+    render(<QuarantineAlert />);
+    expect(await screen.findByText(/This older block had no saved definition/)).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Captured definition"));
+    const definition = screen.getByText(/Update the selected issue/);
+    for (const field of ["inputSchema", "outputSchema", "readOnlyHint", "title"]) {
+      expect(definition).toHaveTextContent(field);
+    }
+  });
+
   it("re-approves through the profile-scoped API and re-reads the list", async () => {
     // Empty profile is the no-profile store; the backend maps it to None. Passing the
     // wrong profile would silently release nothing.
