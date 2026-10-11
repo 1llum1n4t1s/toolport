@@ -287,6 +287,19 @@ fn gateway_identity_matches(id: &str, name: &str, command: Option<&str>) -> bool
     has_gateway_name(id) || has_gateway_name(name) || command.is_some_and(command_is_gateway_binary)
 }
 
+// Binary identity prevents recursive imports, but does not establish ownership
+// of an arbitrary config slot. Prefer the current slot, then its legacy name.
+fn owned_gateway_name<'a>(names: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    let names: Vec<_> = names.collect();
+    [GATEWAY_ENTRY_NAME, LEGACY_GATEWAY_ENTRY_NAME].into_iter()
+        .find_map(|owned| names.iter().copied().find(|name| name.eq_ignore_ascii_case(owned)))
+}
+
+fn owned_gateway_entry(servers: &[McpServer]) -> Option<&McpServer> {
+    let name = owned_gateway_name(servers.iter().map(|server| server.name.as_str()))?;
+    servers.iter().find(|server| server.name == name)
+}
+
 /// Whether a registry entry refers to Toolport's own gateway. The gateway must
 /// never proxy itself (that recurses), and import must never pull it in.
 pub fn is_gateway_server(server: &ServerEntry) -> bool {
@@ -3375,9 +3388,7 @@ fn read_client(def: &ClientDef) -> DetectedClient {
                  config_exists: bool,
                  servers: Vec<McpServer>,
                  error: Option<String>| {
-        let gateway_installed = servers.iter().any(|server| {
-            gateway_identity_matches(&server.name, &server.name, server.command.as_deref())
-        });
+        let gateway_installed = owned_gateway_entry(&servers).is_some();
         // Ownership is filled in later via [`apply_entry_states`] once the registry
         // record is available. Until then: identity match → Managed (legacy), none → Absent.
         let entry_state = if gateway_installed {
@@ -3679,9 +3690,7 @@ pub fn resolve_entry_state(
     servers: &[McpServer],
     record: Option<&ManagedEntry>,
 ) -> GatewayEntryState {
-    let entry = servers
-        .iter()
-        .find(|s| gateway_identity_matches(&s.name, &s.name, s.command.as_deref()));
+    let entry = owned_gateway_entry(servers);
     let Some(entry) = entry else {
         return GatewayEntryState::Absent;
     };
@@ -5685,14 +5694,8 @@ fn edit_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(), Str
     let (original, mut root) = read_existing_yaml_with_source(path)?;
     let exts = yaml_extensions_mut(&mut root);
     let key = serde_yaml::Value::String(GATEWAY_ENTRY_NAME.into());
-    exts.retain(|name, definition| {
-        let name = name.as_str().unwrap_or_default();
-        let command = definition
-            .as_mapping()
-            .and_then(|mapping| mapping.get("cmd"))
-            .and_then(|value| value.as_str());
-        !gateway_identity_matches(name, name, command)
-    });
+    let owned = owned_gateway_name(exts.keys().filter_map(|name| name.as_str())).map(str::to_string);
+    exts.retain(|name, _| name.as_str() != owned.as_deref());
     if let Some(entry) = entry {
         exts.insert(key, entry_to_goose_yaml(entry));
     }
@@ -5888,17 +5891,8 @@ fn edit_continue_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Resul
 
     let servers = continue_servers_mut(&mut root);
 
-    servers.retain(|server| {
-        let Some(mapping) = server.as_mapping() else {
-            return true;
-        };
-        let name = mapping
-            .get("name")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let command = mapping.get("command").and_then(|value| value.as_str());
-        !gateway_identity_matches(name, name, command)
-    });
+    let owned = owned_gateway_name(servers.iter().filter_map(|server| server.get("name").and_then(|name| name.as_str()))).map(str::to_string);
+    servers.retain(|server| server.get("name").and_then(|name| name.as_str()) != owned.as_deref());
 
     if let Some(entry) = entry {
         servers.push(entry_to_continue_yaml(entry));
@@ -6068,14 +6062,8 @@ fn edit_hermes_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<
     let (original, mut root) = read_existing_yaml_with_source(path)?;
     let mcp_servers = hermes_mcp_servers_mut(&mut root);
     let key = serde_yaml::Value::String(GATEWAY_ENTRY_NAME.into());
-    mcp_servers.retain(|name, definition| {
-        let name = name.as_str().unwrap_or_default();
-        let command = definition
-            .as_mapping()
-            .and_then(|mapping| mapping.get("command"))
-            .and_then(|value| value.as_str());
-        !gateway_identity_matches(name, name, command)
-    });
+    let owned = owned_gateway_name(mcp_servers.keys().filter_map(|name| name.as_str())).map(str::to_string);
+    mcp_servers.retain(|name, _| name.as_str() != owned.as_deref());
     if let Some(entry) = entry {
         mcp_servers.insert(key, entry_to_hermes_yaml(entry));
     }
@@ -6662,10 +6650,8 @@ fn edit_json_gateway_body(
         );
     }
     let servers = obj.get_mut(key).unwrap().as_object_mut().unwrap();
-    servers.retain(|name, definition| {
-        let command = definition.get("command").and_then(|value| value.as_str());
-        !gateway_identity_matches(name, name, command)
-    });
+    let owned = owned_gateway_name(servers.keys().map(String::as_str)).map(str::to_string);
+    servers.retain(|name, _| Some(name.as_str()) != owned.as_deref());
     if let Some(entry) = entry {
         // Default is the standard `url`/`command` shape. Qwen's `httpUrl` remap
         // used to fire for every remote whose map key was not VS Code `"servers"`,
@@ -6699,14 +6685,8 @@ fn edit_opencode_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(),
         None => serde_json::Value::Object(serde_json::Map::new()),
     };
     let mcp = opencode_mcp_mut(&mut root)?;
-    mcp.retain(|name, definition| {
-        let command = definition
-            .get("command")
-            .and_then(|value| value.as_array())
-            .and_then(|parts| parts.first())
-            .and_then(|value| value.as_str());
-        !gateway_identity_matches(name, name, command)
-    });
+    let owned = owned_gateway_name(mcp.keys().map(String::as_str)).map(str::to_string);
+    mcp.retain(|name, _| Some(name.as_str()) != owned.as_deref());
     if let Some(entry) = entry {
         mcp.insert(GATEWAY_ENTRY_NAME.into(), entry_to_opencode_json(entry));
     }
@@ -6717,15 +6697,7 @@ fn edit_toml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(), Str
     let mut doc = load_toml_document(path)?;
     let keep_header = toml_keeps_servers_header(&doc);
     let servers = toml_mcp_servers_mut(&mut doc);
-    let doomed: Vec<String> = servers
-        .iter()
-        .filter(|(name, definition)| {
-            let command = definition.get("command").and_then(|value| value.as_str());
-            gateway_identity_matches(name, name, command)
-        })
-        .map(|(name, _)| name.to_string())
-        .collect();
-    for name in doomed {
+    if let Some(name) = owned_gateway_name(servers.iter().map(|(name, _)| name)).map(str::to_string) {
         servers.remove(&name);
     }
     if let Some(entry) = entry {
@@ -7449,10 +7421,7 @@ fn repoint_stale_gateways_in(
         }
         // Find our entry by identity (recognizes the legacy `conduit` name too), so
         // a pre-rename entry is migrated rather than missed.
-        let entry = client
-            .servers
-            .iter()
-            .find(|s| gateway_identity_matches(&s.name, &s.name, s.command.as_deref()));
+        let entry = owned_gateway_entry(&client.servers);
         let Some(entry) = entry else {
             continue;
         };
@@ -7517,7 +7486,7 @@ fn repoint_stale_gateways_in(
                         let server = detected
                             .servers
                             .iter()
-                            .find(|s| detected_is_gateway(s))
+                            .find(|s| s.name == entry_name)
                             .ok_or("Gateway disappeared during identity repair")?;
                         let mut managed = managed.get(&client.id).cloned().unwrap_or_else(|| ManagedEntry::from_gateway_entry(&updated));
                         managed.command = current.to_string();
@@ -7539,8 +7508,9 @@ fn repoint_stale_gateways_in(
                             recovery_path: None,
                         })
                     } else {
-                        let entry =
+                        let mut entry =
                             repair_gateway_entry(def.format, &path, entry_name, &client.id)?;
+                        entry.command = Some(current.to_string());
                         install_or_remove(&client.id, Some(&entry))
                     }
                 })
@@ -7719,11 +7689,8 @@ fn claude_configs_needing_repair(paths: &[PathBuf], current: &str) -> Vec<Claude
 fn claude_gateway_entry_in(text: &str) -> Option<(String, String)> {
     let value: serde_json::Value = serde_json::from_str(text).ok()?;
     let servers = value.get("mcpServers")?.as_object()?;
-    servers.iter().find_map(|(name, entry)| {
-        let command = entry.get("command").and_then(|c| c.as_str());
-        gateway_identity_matches(name, name, command)
-            .then(|| (name.clone(), command.unwrap_or_default().to_string()))
-    })
+    let name = owned_gateway_name(servers.keys().map(String::as_str))?;
+    Some((name.to_string(), servers[name].get("command").and_then(|c| c.as_str()).unwrap_or_default().to_string()))
 }
 
 /// Record a re-point pass in the gateway log.
@@ -7871,6 +7838,63 @@ mod tests {
 
     use super::*;
     use crate::registry::EnvVar;
+
+    #[test]
+    fn location_display_adoption_preserves_foreign_gateway_and_inherits_owned_access() {
+        let data = crate::registry::DataDirTestEnv::new("location-adoption-foreign-r2");
+        for (mode, stale, recorded) in [("identity", false, false), ("stale", true, false), ("recorded", true, true)] {
+            let folder = data.dir.join(mode);
+            std::fs::create_dir(&folder).unwrap();
+            let gateway = data.dir.join("toolport-gateway");
+            std::fs::write(&gateway, "fixture").unwrap();
+            let stored = if stale { "/missing/toolport-gateway" } else { gateway.to_str().unwrap() };
+            let original = serde_json::json!({"mcpServers": {
+                "foreign": {"command": stored, "args": ["--http", "9999"], "env": {"TOOLPORT_CLIENT_ID": "foreign-client", "KEEP": "foreign"}},
+                "toolport": {"command": stored, "env": {"TOOLPORT_CLIENT_ID": "claude-code"}},
+                "notes": {"command": "notes"}
+            }});
+            std::fs::write(folder.join(".claude.json"), original.to_string()).unwrap();
+            let id = add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
+            let mut registry = crate::registry::Registry::default();
+            for scope in ["work", "foreign-access"] {
+                registry.profiles.push(serde_json::from_value(serde_json::json!({"id":scope,"name":scope})).unwrap());
+            }
+            registry.client_scopes.insert("claude-code".into(), "work".into());
+            registry.client_scopes.insert("foreign-client".into(), "foreign-access".into());
+            if recorded {
+                let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport", "transport":"stdio", "command":stored,
+                    "env":[{"key":"TOOLPORT_CLIENT_ID", "value":"claude-code", "secret":false}]})).unwrap();
+                registry.set_client_managed_entry(&id, ManagedEntry::from_gateway_entry(&entry));
+            }
+            crate::registry::save(&registry).unwrap();
+            let rows = detect_clients_for_display_in(vec![find_def(&id).unwrap()], registry, Some(gateway.clone())).unwrap();
+            assert!(rows[0].error.is_none(), "{mode}: {:?}", rows[0].error);
+            let after = mutation::value(Format::JsonMcpServers, Some(&std::fs::read_to_string(&rows[0].config_path).unwrap())).unwrap();
+            assert_eq!(after["mcpServers"]["foreign"], original["mcpServers"]["foreign"], "{mode}");
+            assert_eq!(after["mcpServers"]["notes"], original["mcpServers"]["notes"]);
+            assert_eq!(after["mcpServers"]["toolport"]["env"]["TOOLPORT_CLIENT_ID"], id, "{mode}");
+            assert_eq!(after["mcpServers"]["toolport"]["command"], gateway.to_str().unwrap());
+            let registry = crate::registry::load().unwrap();
+            assert_eq!(registry.client_scopes.get(&id).map(String::as_str), Some("work"), "{mode}");
+            assert_eq!(resolve_entry_state(&rows[0].servers, registry.client_managed_entries.get(&id)), GatewayEntryState::Managed);
+        }
+    }
+
+    #[test]
+    fn location_display_does_not_adopt_a_foreign_only_gateway() {
+        let data = crate::registry::DataDirTestEnv::new("location-foreign-only-r2");
+        let folder = data.dir.join("foreign-only");
+        std::fs::create_dir(&folder).unwrap();
+        let original = r#"{"mcpServers":{"foreign":{"command":"/old/toolport-gateway","env":{"TOOLPORT_CLIENT_ID":"claude-code"}}}}"#;
+        std::fs::write(folder.join(".claude.json"), original).unwrap();
+        let id = add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
+        let gateway = data.dir.join("toolport-gateway");
+        std::fs::write(&gateway, "fixture").unwrap();
+        let rows = detect_clients_for_display_in(vec![find_def(&id).unwrap()], crate::registry::Registry::default(), Some(gateway)).unwrap();
+        assert!(rows[0].error.is_none());
+        assert_eq!(std::fs::read_to_string(&rows[0].config_path).unwrap(), original);
+        assert_eq!(resolve_entry_state(&rows[0].servers, None), GatewayEntryState::Absent);
+    }
 
     #[test]
     fn unsaved_secondary_claude_configs_are_repaired_and_keep_gateway_references() {
