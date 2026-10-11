@@ -109,6 +109,12 @@ fn verify_ownership(dir: &Path, overridden: bool) -> Result<(), String> {
         });
     if owned {
         Ok(())
+    } else if dir.join("registry.json").is_file() {
+        Err(format!(
+            "Could not verify Toolport ownership of custom data directory {}: {} is not a readable Toolport registry. Nothing was removed. Repair it, or run toolport-gateway --remove-data --all-installs --confirm.",
+            dir.display(),
+            dir.join("registry.json").display()
+        ))
     } else {
         Err(format!(
             "Could not verify Toolport ownership of custom data directory {}. Nothing was removed.",
@@ -417,9 +423,10 @@ pub fn run() -> Result<Report, String> { run_with_scope(false) }
 
 pub fn run_with_scope(all_installs: bool) -> Result<Report, String> {
     let dir = data_dir()?;
+    // Same order as planning, so a dry run and a confirmed run report the same error.
+    verify_removal_ownership(&dir, all_installs)?;
     let others = other_installs(&dir, install_candidates(&dir));
     let scope = credential_scope(&dir, &others, all_installs)?;
-    verify_removal_ownership(&dir, all_installs)?;
     let mut report = run_with(
         |dir| {
             let mut blockers = crate::gateway_publish::purge_blockers(dir);

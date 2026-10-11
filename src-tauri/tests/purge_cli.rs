@@ -145,7 +145,8 @@ fn purge_global_option_proceeds_with_corrupt_registry() {
     std::fs::write(data.join("personal.txt"), "keep").unwrap();
     let output = isolated_command(&env.dir, &data).args(["--remove-data", "--confirm"]).output().unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains(path.to_str().unwrap()));
+    let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(text.contains(path.to_str().unwrap()), "{text}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "broken");
     let output = isolated_command(&env.dir, &data).args(["--remove-data", "--all-installs", "--confirm"]).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
