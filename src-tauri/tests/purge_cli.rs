@@ -159,3 +159,28 @@ fn purge_recovers_runtime_bus_but_keeps_registry_when_secret_service_is_closed()
         assert!(report["removed"].as_array().unwrap().iter().all(|p| !p.as_str().unwrap().contains("registry.json")));
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn purge_other_registry_failure_exits_nonzero_and_retry_converges() {
+    let env = conduit_lib::registry::DataDirTestEnv::new("purge_cli_other_retry");
+    let data = env.dir.join("Toolport");
+    let other = env.dir.join("Toolport-dev");
+    for dir in [&data, &other] { std::fs::create_dir(dir).unwrap(); }
+    let registry = serde_json::to_vec(&conduit_lib::registry::Registry::default()).unwrap();
+    std::fs::write(data.join("registry.json"), &registry).unwrap();
+    std::fs::write(data.join("secrets.enc"), "selected encrypted tokens").unwrap();
+    let other_registry = other.join("registry.json");
+    std::fs::write(&other_registry, "broken").unwrap();
+    let output = isolated_command(&env.dir, &data).args(["--remove-data", "--confirm"]).output().unwrap();
+    assert!(!output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains(other_registry.to_str().unwrap()) && text.contains("Credentials were not removed"), "{text}");
+    assert_eq!(std::fs::read(data.join("registry.json")).unwrap(), registry);
+    assert!(data.join("secrets.enc").exists());
+    std::fs::write(&other_registry, &registry).unwrap();
+    let output = isolated_command(&env.dir, &data).args(["--remove-data", "--confirm"]).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    assert!(!data.join("registry.json").exists() && !data.join("secrets.enc").exists());
+    assert_eq!(std::fs::read(other_registry).unwrap(), registry);
+}

@@ -1083,4 +1083,76 @@ mod tests {
         }
     }
 
+    #[test]
+    fn purge_undiscovered_custom_install_never_enables_global_credentials() {
+        let env = crate::registry::DataDirTestEnv::new("purge_undiscovered");
+        let selected = env.dir.join("config/Toolport");
+        let custom = env.dir.join("data/toolport-work");
+        for dir in [&selected, &custom] { std::fs::create_dir_all(dir).unwrap(); }
+        std::fs::write(selected.join("registry.json"), r#"{"servers":[{"id":"mine"}]}"#).unwrap();
+        std::fs::write(custom.join("registry.json"), r#"{"servers":[{"id":"work"}]}"#).unwrap();
+        let candidates = install_candidates(&selected).into_iter().filter(|path| path.starts_with(&env.dir)).collect();
+        let others = other_installs(&selected, candidates);
+        assert!(!others.contains(&custom));
+        let scope = credential_scope(&selected, &others, false).unwrap();
+        assert!(!scope.all_installs, "discovery cannot prove sole ownership");
+        assert_eq!(scope.server_ids, std::collections::HashSet::from(["mine".into()]));
+    }
+
+    #[test]
+    fn purge_generated_path_collisions_preserve_user_bytes() {
+        let env = crate::registry::DataDirTestEnv::new("purge_collisions");
+        crate::registry::save(&crate::registry::Registry::default()).unwrap();
+        let collisions = ["backups/tax.zip", "bin/personal-script", "logs/other-app.log", "daemon-notes.json",
+            "broker/notes", "broker/nested/broker/notes", "children/notes.json", "exports/rules-notes.md",
+            "oauth-locks/notes.lock", "search-vectors/notes", "daemon-runs/notes.json"];
+        for name in collisions {
+            let path = env.dir.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "user bytes").unwrap();
+        }
+        std::fs::write(env.dir.join("bin/toolport-gateway"), "gateway").unwrap();
+        let report = run_with(
+            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
+            || Ok(crate::secrets::purge::Removal::default()), |_| Ok(()), |_| Ok(()),
+        ).unwrap();
+        assert!(report.leftovers.is_empty(), "{:?}", report.leftovers);
+        for name in collisions {
+            assert_eq!(std::fs::read_to_string(env.dir.join(name)).unwrap(), "user bytes", "{name}");
+            assert!(report.preserved.iter().any(|path| path.contains(name)), "{name}");
+        }
+        assert!(!env.dir.join("bin/toolport-gateway").exists());
+        assert!(!env.dir.join("registry.json").exists());
+    }
+
+    #[test]
+    fn purge_unreadable_other_registry_retains_ownership_then_retry_removes_tokens() {
+        let env = crate::registry::DataDirTestEnv::new("purge_other_retry");
+        crate::registry::save(&crate::registry::Registry::default()).unwrap();
+        let selected = env.dir.join("registry.json");
+        let original = br#"{"version":1,"servers":[{"id":"mine"}],"profiles":[]}"#;
+        std::fs::write(&selected, original).unwrap();
+        let other = env.dir.join("Toolport-dev");
+        std::fs::create_dir(&other).unwrap();
+        let other_registry = other.join("registry.json");
+        std::fs::write(&other_registry, "broken").unwrap();
+        let error = credential_scope(&env.dir, &[other.clone()], false).err().expect("ownership failure must block cleanup");
+        assert!(error.contains(other_registry.to_str().unwrap()), "{error}");
+        assert!(error.contains("Credentials were not removed"), "{error}");
+        assert_eq!(std::fs::read(&selected).unwrap(), original);
+        std::fs::write(&other_registry, r#"{"servers":[{"id":"theirs"}]}"#).unwrap();
+        let scope = credential_scope(&env.dir, &[other], false).unwrap();
+        let report = run_with(
+            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
+            || {
+                assert!(!scope.all_installs);
+                assert!(scope.server_ids.contains("mine") && !scope.server_ids.contains("theirs"));
+                Ok(crate::secrets::purge::Removal { removed: vec!["mine::TOKEN".into()], ..Default::default() })
+            }, |_| Ok(()), |_| Ok(()),
+        ).unwrap();
+        assert!(report.removed.contains(&"mine::TOKEN".into()));
+        assert!(report.leftovers.is_empty());
+        assert!(!selected.exists());
+    }
+
 }
