@@ -335,3 +335,50 @@ test("NSIS manifest scopes standard wizard and dialog assets to the plugin direc
     /Unexpected/,
   );
 });
+
+test("PR package fixtures exercise the pacman archive checker", () => {
+  const root = mkdtempSync(join(tmpdir(), "toolport-pacman-payload-"));
+  const payload = join(root, "payload");
+  const archive = join(root, "fixture.pkg.tar.zst");
+  const files = [
+    ".PKGINFO",
+    "usr/bin/toolport-gtk",
+    "usr/bin/toolport-gateway",
+    "usr/bin/toolport",
+    "usr/bin/conduit",
+    "usr/share/applications/com.tsout.Toolport.desktop",
+    "usr/share/metainfo/com.tsout.Toolport.metainfo.xml",
+    "usr/share/toolport/agent-plugin/toolport-agent-plugin.zip",
+    "usr/share/toolport/toolport-preview-rollback.sh",
+    "usr/share/licenses/toolport/LICENSE",
+    "usr/share/licenses/toolport-bin/LICENSE",
+  ];
+  const pack = () => execFileSync("tar", ["-cf", archive, "-C", payload, "."]);
+  const check = () => execFileSync("node", [".github/scripts/package-contents.mjs", archive], { stdio: "pipe" });
+  try {
+    for (const file of files) {
+      mkdirSync(join(payload, file, ".."), { recursive: true });
+      writeFileSync(join(payload, file), "fixture");
+    }
+    pack();
+    check();
+    writeFileSync(join(payload, "usr/share/toolport/surprise.txt"), "unexpected");
+    pack();
+    assert.throws(check, /Unexpected pacman payload/);
+    rmSync(join(payload, "usr/share/toolport/surprise.txt"));
+    rmSync(join(payload, "usr/bin/toolport-gateway"));
+    pack();
+    assert.throws(check, /Missing intended shell or gateway/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Homebrew zap removes bundle storage but retains client recovery data", () => {
+  const cask = readFileSync("packaging/homebrew/toolport.rb", "utf8");
+  const zap = cask.slice(cask.indexOf("  zap trash:"));
+  for (const resource of ["Caches/com.tsout.conduit", "HTTPStorages/com.tsout.conduit", "Preferences/com.tsout.conduit.plist", "Saved Application State/com.tsout.conduit.savedState", "WebKit/com.tsout.conduit"]) {
+    assert.ok(zap.includes(resource));
+  }
+  assert.doesNotMatch(zap, /Application Support|registry|conduit-mcp/);
+});

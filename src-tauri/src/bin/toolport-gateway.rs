@@ -19244,6 +19244,9 @@ fn daemon_topology_json(state: &GatewayState) -> String {
         "compat": daemon_compat_fingerprint(),
         "pid": std::process::id(),
         "sessions": sessions,
+        "purgeIdle": !state.http_service_lease_active() && !state.mcp_sessions.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner).values()
+            .any(|session| session.listener_active.load(Ordering::Acquire)),
         "ordinaryLaunches": ordinary_launches,
         "rootedLaunches": rooted_launches,
         "launches": ordinary_launches + rooted_launches,
@@ -20647,6 +20650,7 @@ enum ArgAction {
         confirmed: bool,
         dry_run: bool,
         after_exit: bool,
+        all_installs: bool,
     },
     DisconnectAll {
         dry_run: bool,
@@ -20684,7 +20688,7 @@ fn parse_args(args: &[String]) -> ArgAction {
         if let Some(arg) = args.iter().find(|arg| {
             !matches!(
                 arg.as_str(),
-                "--remove-data" | "--confirm" | "--dry-run" | "--after-desktop-exit"
+                "--remove-data" | "--confirm" | "--dry-run" | "--after-desktop-exit" | "--all-installs"
             )
         }) {
             return ArgAction::Unknown(arg.clone());
@@ -20701,6 +20705,7 @@ fn parse_args(args: &[String]) -> ArgAction {
             confirmed,
             dry_run,
             after_exit,
+            all_installs: args.iter().any(|arg| arg == "--all-installs"),
         };
     }
     if args.iter().any(|arg| arg == "--disconnect-all") {
@@ -20784,7 +20789,7 @@ fn usage() -> String {
          \x20   --private-gateway    One adapter's own gateway while the host daemon is\n\
          \x20                        unresponsive (internal)\n\
          \x20   --installer-preflight <absolute-install-dir> Defer installation while client gateways are open\n\
-         \x20   --remove-data [--dry-run | --confirm] Remove Toolport data after restoring clients; close desktop first\n\
+         \x20   --remove-data [--dry-run | --confirm] Remove this install's data; --all-installs also clears shared credentials\n\
          \x20   --disconnect-all [--dry-run] Restore all client configs and exit; JSON per-client results\n\
          \x20   --setup-review       Private setup verification with a 30-second catalog wait\n\
          \x20   --selftest-secrets    Diagnostic: read every vaulted secret and report\n\
@@ -20889,6 +20894,7 @@ fn main() {
             confirmed,
             dry_run,
             after_exit,
+            all_installs,
         } => {
             if after_exit {
                 if let Err(error) = conduit_lib::purge::wait_for_desktop_exit() {
@@ -20900,7 +20906,7 @@ fn main() {
                 }
             }
             if dry_run || !confirmed {
-                match conduit_lib::purge::plan() {
+                match conduit_lib::purge::plan_with_scope(all_installs) {
                     Ok(plan) => println!(
                         "{}",
                         serde_json::to_string_pretty(&plan).expect("serializable removal plan")
@@ -20915,7 +20921,7 @@ fn main() {
                 }
                 conduit_lib::purge::exit_after_removal(if dry_run { 0 } else { 2 });
             }
-            match conduit_lib::purge::run() {
+            match conduit_lib::purge::run_with_scope(all_installs) {
                 Ok(report) => {
                     println!(
                         "{}",
@@ -21684,7 +21690,8 @@ mod tests {
             ArgAction::RemoveData {
                 confirmed: false,
                 dry_run: false,
-                after_exit: false
+                after_exit: false,
+                all_installs: false
             }
         );
         assert_eq!(
@@ -21692,7 +21699,8 @@ mod tests {
             ArgAction::RemoveData {
                 confirmed: false,
                 dry_run: true,
-                after_exit: false
+                after_exit: false,
+                all_installs: false
             }
         );
         assert_eq!(
@@ -21700,9 +21708,14 @@ mod tests {
             ArgAction::RemoveData {
                 confirmed: true,
                 dry_run: false,
-                after_exit: false
+                after_exit: false,
+                all_installs: false
             }
         );
+        assert_eq!(parse_args(&["--remove-data".into(), "--all-installs".into()]),
+            ArgAction::RemoveData { confirmed: false, dry_run: false, after_exit: false, all_installs: true });
+        assert_eq!(parse_args(&["--remove-data".into(), "--all-installs".into(), "--confirm".into()]),
+            ArgAction::RemoveData { confirmed: true, dry_run: false, after_exit: false, all_installs: true });
         assert!(matches!(
             parse_args(&["--remove-data".into(), "--daemon".into()]),
             ArgAction::Unknown(_)

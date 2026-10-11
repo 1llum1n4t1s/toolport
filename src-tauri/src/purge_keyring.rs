@@ -1,37 +1,93 @@
-//! Removal is scoped to Toolport's reserved service, including orphaned entries.
+//! Read-only credential inventory followed by explicit account-scoped removal.
 use crate::purge::Leftover;
+
+#[derive(Default)]
+pub(crate) struct Removal {
+    pub removed: Vec<String>,
+    pub preserved: Vec<String>,
+    pub notes: Vec<String>,
+    pub leftovers: Vec<Leftover>,
+}
+
+/// Accounts have no install id. Never infer ownership from the service alone.
+pub(crate) struct Scope {
+    pub all_installs: bool,
+    pub server_ids: std::collections::HashSet<String>,
+}
+
+impl Scope {
+    fn owns(&self, account: &str) -> bool {
+        self.all_installs || account.split_once("::")
+            .is_some_and(|(id, _)| self.server_ids.contains(id))
+    }
+}
 
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 fn remove_owned<T>(
     entries: impl IntoIterator<Item = T>,
-    mut service: impl FnMut(&T) -> Result<String, String>,
+    scope: &Scope,
+    mut attributes: impl FnMut(&T) -> Result<(String, String), String>,
     mut path: impl FnMut(&T) -> String,
     mut delete: impl FnMut(&T) -> Result<(), String>,
-) -> Vec<Leftover> {
-    let mut leftovers = Vec::new();
-    for entry in entries {
-        let result = service(&entry).and_then(|service| {
-            if service == super::SERVICE {
-                delete(&entry)
-            } else {
-                Ok(())
-            }
-        });
-        if let Err(error) = result {
-            leftovers.push(Leftover {
-                path: path(&entry),
-                error,
-            });
+) -> Removal {
+    let mut report = Removal::default();
+    // Finish the read-only inventory before deleting even one credential.
+    let inventory: Vec<_> = entries.into_iter().map(|entry| {
+        let attrs = attributes(&entry);
+        (entry, attrs)
+    }).collect();
+    for (entry, attrs) in &inventory {
+        if let Err(error) = attrs {
+            report.leftovers.push(Leftover { path: path(entry), error: error.clone() });
         }
     }
-    leftovers
+    if !report.leftovers.is_empty() {
+        return report;
+    }
+    for (entry, attrs) in inventory {
+        let (service, account) = attrs.expect("inventory checked");
+        if service != super::SERVICE {
+            continue;
+        }
+        let path = path(&entry);
+        if !scope.owns(&account) {
+            report.preserved.push(path);
+        } else if let Err(error) = delete(&entry) {
+            report.leftovers.push(Leftover { path, error });
+        } else {
+            report.removed.push(path);
+        }
+    }
+    report
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn remove() -> Result<Vec<Leftover>, String> {
+fn no_keyring_in_use() -> bool {
+    super::file::active()
+        || (cfg!(target_os = "linux") && std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none())
+}
+
+#[cfg(target_os = "linux")]
+fn unavailable(error: &dbus_secret_service::Error) -> bool {
+    match error {
+        dbus_secret_service::Error::Unavailable => true,
+        dbus_secret_service::Error::Dbus(error) => matches!(error.name(),
+            Some("org.freedesktop.DBus.Error.ServiceUnknown" | "org.freedesktop.DBus.Error.NameHasNoOwner" | "org.freedesktop.DBus.Error.NoServer" | "org.freedesktop.DBus.Error.FileNotFound")),
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
     use dbus_secret_service::{EncryptionType, SecretService};
-    let service = SecretService::connect_with_max_prompt_timeout(EncryptionType::Dh, 5)
-        .map_err(|error| error.to_string())?;
+    if no_keyring_in_use() {
+        return Ok(Removal { notes: vec!["No keyring in use; encrypted file secrets are removed with the data folder.".into()], ..Removal::default() });
+    }
+    let service = match SecretService::connect_with_max_prompt_timeout(EncryptionType::Dh, 5) {
+        Ok(service) => service,
+        Err(error) if unavailable(&error) => return Ok(Removal { notes: vec!["No keyring in use: no session bus or Secret Service provider.".into()], ..Removal::default() }),
+        Err(error) => return Err(error.to_string()),
+    };
     let entries = service
         .search_items(std::collections::HashMap::from([(
             "service",
@@ -40,14 +96,13 @@ pub(crate) fn remove() -> Result<Vec<Leftover>, String> {
         .map_err(|error| error.to_string())?;
     Ok(remove_owned(
         entries.unlocked.into_iter().chain(entries.locked),
+        scope,
         |item| {
             item.get_attributes()
                 .map_err(|error| error.to_string())
                 .and_then(|attrs| {
-                    attrs
-                        .get("service")
-                        .cloned()
-                        .ok_or("Missing service attribute".into())
+                    Ok((attrs.get("service").cloned().ok_or("Missing service attribute")?,
+                        attrs.get("username").cloned().or_else(|| attrs.get("account").cloned()).ok_or("Missing account attribute")?))
                 })
         },
         |item| format!("secret-service:{}", item.path),
@@ -56,7 +111,7 @@ pub(crate) fn remove() -> Result<Vec<Leftover>, String> {
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn remove() -> Result<Vec<Leftover>, String> {
+pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
     use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND};
     use windows_sys::Win32::Security::Credentials::{
         CredDeleteW, CredEnumerateW, CredFree, CREDENTIALW, CRED_TYPE_GENERIC,
@@ -76,7 +131,7 @@ pub(crate) fn remove() -> Result<Vec<Leftover>, String> {
     if unsafe { CredEnumerateW(std::ptr::null(), 0, &mut count, &mut entries) } == 0 {
         let error = unsafe { GetLastError() };
         return if error == ERROR_NOT_FOUND {
-            Ok(Vec::new())
+            Ok(Removal::default())
         } else {
             Err(format!("CredEnumerateW: {error}"))
         };
@@ -85,17 +140,19 @@ pub(crate) fn remove() -> Result<Vec<Leftover>, String> {
         unsafe { std::slice::from_raw_parts(entries, count as usize) }
             .iter()
             .copied(),
+        scope,
         |entry| {
             let entry = unsafe { &**entry };
             let target = unsafe { string(entry.TargetName) };
-            Ok(if entry.Type == CRED_TYPE_GENERIC
+            let service = if entry.Type == CRED_TYPE_GENERIC
                 && target.ends_with(&format!(".{}", super::SERVICE))
             {
                 super::SERVICE
             } else {
                 ""
-            }
-            .into())
+            };
+            let account = target.strip_suffix(&format!(".{}", super::SERVICE)).unwrap_or("");
+            Ok((service.into(), account.into()))
         },
         |entry| {
             format!("credential-manager:{}", unsafe {
@@ -115,7 +172,7 @@ pub(crate) fn remove() -> Result<Vec<Leftover>, String> {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn remove() -> Result<Vec<Leftover>, String> {
+pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
     use core_foundation::{
         array::CFArray,
         base::{CFType, CFTypeRef, TCFType},
@@ -138,7 +195,8 @@ pub(crate) fn remove() -> Result<Vec<Leftover>, String> {
         let value = attributes.find(unsafe { kSecAttrAccount.cast::<std::ffi::c_void>() })?;
         Some(unsafe { CFString::wrap_under_get_rule((*value).cast()) }.to_string())
     }
-    let mut leftovers = Vec::new();
+    let mut report = Removal::default();
+    let mut legacy = Vec::new();
     // Legacy ACL-bearing entries require reference deletion. No secret data is read.
     let entries = ItemSearchOptions::new()
         .class(ItemClass::generic_password())
@@ -152,39 +210,34 @@ pub(crate) fn remove() -> Result<Vec<Leftover>, String> {
         Ok(entries) => {
             for entry in entries {
                 let SearchResult::Dict(attributes) = entry else {
-                    leftovers.push(Leftover {
+                    report.leftovers.push(Leftover {
                         path: "keychain:conduit-mcp/legacy (unreadable item)".into(),
                         error: "Keychain did not return item attributes".into(),
                     });
                     continue;
                 };
-                let path = format!(
-                    "keychain:conduit-mcp/legacy/{}",
-                    account(&attributes).unwrap_or_else(|| "(unknown account)".into())
-                );
+                let Some(account) = account(&attributes) else {
+                    report.leftovers.push(Leftover { path: "keychain:conduit-mcp/legacy".into(), error: "Missing account attribute".into() });
+                    continue;
+                };
+                let path = format!("keychain:conduit-mcp/legacy/{account}");
+                if !scope.owns(&account) {
+                    report.preserved.push(path);
+                    continue;
+                }
                 let reference = attributes.find(unsafe { kSecValueRef.cast::<std::ffi::c_void>() });
                 let Some(reference) = reference else {
-                    leftovers.push(Leftover {
+                    report.leftovers.push(Leftover {
                         path,
                         error: "Keychain did not return an item reference".into(),
                     });
                     continue;
                 };
-                let status = unsafe {
-                    security_framework_sys::keychain_item::SecKeychainItemDelete(
-                        (*reference).cast_mut().cast(),
-                    )
-                };
-                if status != 0 {
-                    leftovers.push(Leftover {
-                        path,
-                        error: format!("SecKeychainItemDelete: {status}"),
-                    });
-                }
+                legacy.push((unsafe { k((*reference).cast()) }, path));
             }
         }
         Err(error) if error.code() == -25300 => {}
-        Err(error) => leftovers.push(Leftover {
+        Err(error) => report.leftovers.push(Leftover {
             path: "keychain:conduit-mcp/legacy (inventory unavailable)".into(),
             error: error.to_string(),
         }),
@@ -218,14 +271,17 @@ pub(crate) fn remove() -> Result<Vec<Leftover>, String> {
         let status = SecItemCopyMatching(query.as_concrete_TypeRef().cast(), &mut result);
         if status == 0 && !result.is_null() {
             let entries = CFArray::<CFDictionary>::wrap_under_create_rule(result.cast());
-            for attributes in entries.iter() {
-                let Some(account) = account(&attributes) else {
-                    leftovers.push(Leftover {
-                        path: "keychain:conduit-mcp/data-protection (unknown account)".into(),
-                        error: "Keychain did not return an account".into(),
-                    });
+            let accounts: Option<Vec<_>> = entries.iter().map(|attributes| account(&attributes)).collect();
+            if accounts.is_none() {
+                report.leftovers.push(Leftover { path: "keychain:conduit-mcp/data-protection".into(), error: "Missing account attribute; no credentials removed".into() });
+            }
+            for account in accounts.unwrap_or_default() {
+                let path = format!("keychain:conduit-mcp/data-protection/{account}");
+                if !scope.owns(&account) {
+                    report.preserved.push(path);
                     continue;
-                };
+                }
+                if !report.leftovers.is_empty() { continue; }
                 let mut delete = base.clone();
                 delete.push((
                     k(kSecAttrAccount.cast()),
@@ -233,21 +289,30 @@ pub(crate) fn remove() -> Result<Vec<Leftover>, String> {
                 ));
                 let query = CFDictionary::from_CFType_pairs(&delete);
                 let status = SecItemDelete(query.as_concrete_TypeRef().cast());
-                if status != 0 && status != -25300 {
-                    leftovers.push(Leftover {
+                if status == 0 || status == -25300 {
+                    report.removed.push(path);
+                } else {
+                    report.leftovers.push(Leftover {
                         path: format!("keychain:conduit-mcp/data-protection/{account}"),
                         error: format!("SecItemDelete: {status}"),
                     });
                 }
             }
         } else if status != -25300 {
-            leftovers.push(Leftover {
+            report.leftovers.push(Leftover {
                 path: "keychain:conduit-mcp/data-protection (inventory unavailable)".into(),
                 error: format!("SecItemCopyMatching: {status}"),
             });
         }
     }
-    Ok(leftovers)
+    if report.leftovers.is_empty() {
+        for (reference, path) in legacy {
+            let status = unsafe { security_framework_sys::keychain_item::SecKeychainItemDelete(reference.as_CFTypeRef().cast_mut().cast()) };
+            if status == 0 { report.removed.push(path); }
+            else { report.leftovers.push(Leftover { path, error: format!("SecKeychainItemDelete: {status}") }); }
+        }
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -263,7 +328,8 @@ mod tests {
         let mut deleted = Vec::new();
         let leftovers = remove_owned(
             items,
-            |item| Ok(item.0.into()),
+            &Scope { all_installs: true, server_ids: Default::default() },
+            |item| Ok((item.0.into(), item.1.into())),
             |item| item.1.into(),
             |item| {
                 deleted.push(item.1);
@@ -275,7 +341,35 @@ mod tests {
             },
         );
         assert_eq!(deleted, ["/vault/server", "/vault/orphan-chunk"]);
-        assert_eq!(leftovers[0].path, "/vault/orphan-chunk");
-        assert_eq!(leftovers[0].error, "locked");
+        assert_eq!(leftovers.leftovers[0].path, "/vault/orphan-chunk");
+        assert_eq!(leftovers.leftovers[0].error, "locked");
     }
+    #[test]
+    fn purge_scoped_keyring_preserves_other_install_master_and_chunks() {
+        let items = ["mine::TOKEN", "mine::TOKEN::toolport-chunk::generation::0", "main::TOKEN", "__conduit_master_key__", "__conduit_team__::member_token"];
+        let scope = Scope { all_installs: false, server_ids: std::collections::HashSet::from(["mine".into()]) };
+        let report = remove_owned(items, &scope, |account| Ok(("conduit-mcp".into(), (*account).into())), |account| (*account).into(), |_| Ok(()));
+        assert_eq!(report.removed, items[..2]);
+        assert_eq!(report.preserved, items[2..]);
+        assert!(report.leftovers.is_empty());
+    }
+
+    #[test]
+    fn purge_keyring_inventory_failure_never_deletes_an_earlier_item() {
+        let scope = Scope { all_installs: true, server_ids: Default::default() };
+        let report = remove_owned(["readable", "unreadable"], &scope,
+            |account| if *account == "unreadable" { Err("denied".into()) } else { Ok(("conduit-mcp".into(), (*account).into())) },
+            |account| (*account).into(), |_| panic!("inventory must finish before deletion"));
+        assert!(report.removed.is_empty());
+        assert_eq!(report.leftovers[0].path, "unreadable");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn purge_missing_secret_service_is_distinct_from_locked_credentials() {
+        assert!(unavailable(&dbus_secret_service::Error::Unavailable));
+        assert!(!unavailable(&dbus_secret_service::Error::Locked));
+        assert!(!unavailable(&dbus_secret_service::Error::Prompt));
+    }
+
 }

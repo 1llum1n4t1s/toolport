@@ -22,6 +22,8 @@ pub struct Report {
     pub clients: Vec<crate::clients::DisconnectResult>,
     pub removed: Vec<String>,
     pub leftovers: Vec<Leftover>,
+    pub preserved: Vec<String>,
+    pub notes: Vec<String>,
 }
 
 const AUTOSTART_NAMES: &[&str] = &["Toolport", "Conduit", "conduit", "ToolportNativePreview"];
@@ -70,7 +72,7 @@ fn data_dir() -> Result<PathBuf, String> {
             .into_iter()
             .flatten()
             .any(|path| canonical == std::fs::canonicalize(&path).unwrap_or(path))
-        || std::fs::symlink_metadata(&dir).is_ok_and(|metadata| metadata.file_type().is_symlink())
+        || std::fs::symlink_metadata(&dir).is_ok_and(|metadata| is_link(&metadata))
     {
         return Err(format!("Refusing unsafe data directory: {}", dir.display()));
     }
@@ -78,7 +80,11 @@ fn data_dir() -> Result<PathBuf, String> {
 }
 
 fn verify_data_ownership(dir: &Path) -> Result<(), String> {
-    if dir.file_name().is_some_and(|name| {
+    verify_ownership(dir, crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR").is_some())
+}
+
+fn verify_ownership(dir: &Path, overridden: bool) -> Result<(), String> {
+    if !overridden && dir.file_name().is_some_and(|name| {
         matches!(
             name.to_str(),
             Some("Toolport" | "Conduit" | "Toolport-dev" | "Conduit-dev")
@@ -113,7 +119,94 @@ fn autostart_files(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-pub fn plan() -> Result<Plan, String> {
+fn install_candidates(dir: &Path) -> Vec<PathBuf> {
+    let mut bases = vec![dir.parent().map(Path::to_path_buf), dirs::config_dir()];
+    #[cfg(windows)]
+    bases.push(dirs::home_dir().map(|home| crate::brand::windows_roaming_base(&home)));
+    #[cfg(not(windows))]
+    let _ = &mut bases;
+    bases.into_iter().flatten().flat_map(|base| {
+        ["Toolport", "Conduit", "Toolport-dev", "Conduit-dev"].map(|name| base.join(name))
+    }).collect()
+}
+
+fn other_installs(dir: &Path, candidates: Vec<PathBuf>) -> Vec<PathBuf> {
+    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let mut others = Vec::new();
+    for path in candidates {
+        if path.is_dir() && std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()) != canonical
+            && std::fs::read_dir(&path).map_or(true, |mut entries| entries.next().is_some())
+            && !others.contains(&path)
+        {
+            others.push(path);
+        }
+    }
+    others
+}
+
+fn credential_scope(dir: &Path, others: &[PathBuf], all_installs: bool) -> Result<crate::secrets::purge::Scope, String> {
+    let registry_path = dir.join("registry.json");
+    let mut ids = std::collections::HashSet::new();
+    if registry_path.exists() {
+        // Raw read: loading a registry can migrate it or create recovery files.
+        let registry: serde_json::Value = serde_json::from_slice(&std::fs::read(&registry_path).map_err(|error| error.to_string())?)
+            .map_err(|error| format!("Credential ownership inventory: {error}"))?;
+        if let Some(servers) = registry["servers"].as_array() {
+            ids.extend(servers.iter().filter_map(|server| server["id"].as_str().map(str::to_owned)));
+        }
+        if others.is_empty() && registry["team"].is_object() {
+            ids.insert(crate::teams::TEAM_TOKEN_SERVER.into());
+        }
+    }
+    for other in others {
+        let registry = std::fs::read(other.join("registry.json")).ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        let Some(servers) = registry.as_ref().and_then(|registry| registry["servers"].as_array()) else {
+            // Unknown ownership in another install must not destroy its accounts.
+            ids.clear();
+            break;
+        };
+        for server in servers {
+            if let Some(id) = server["id"].as_str() { ids.remove(id); }
+        }
+    }
+    Ok(crate::secrets::purge::Scope { all_installs, server_ids: ids })
+}
+
+fn app_resources(home: &Path) -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    return ["Library/Caches/com.tsout.conduit", "Library/HTTPStorages/com.tsout.conduit",
+        "Library/Preferences/com.tsout.conduit.plist", "Library/Saved Application State/com.tsout.conduit.savedState",
+        "Library/WebKit/com.tsout.conduit"].map(|path| home.join(path)).into();
+    #[cfg(target_os = "windows")]
+    return vec![home.join("AppData/Local/com.tsout.conduit")];
+    #[cfg(target_os = "linux")]
+    {
+        let _ = home;
+        [dirs::cache_dir(), dirs::data_local_dir()].into_iter().flatten()
+            .flat_map(|base| [base.join("com.tsout.conduit")]).collect()
+    }
+}
+
+fn remove_app_resources(report: &mut Report, shared: bool) {
+    let Some(home) = dirs::home_dir() else { return; };
+    for path in app_resources(&home) {
+        if std::fs::symlink_metadata(&path).is_err() { continue; }
+        if shared {
+            report.preserved.push(format!("{} (shared app storage; another install or custom data directory is in use)", path.display()));
+        } else {
+            if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata)) {
+                remove_contents(&path, &[], report);
+            }
+            remove_path(&path, report);
+        }
+    }
+}
+
+pub fn plan() -> Result<Plan, String> { plan_with_scope(false) }
+
+pub fn plan_with_scope(all_installs: bool) -> Result<Plan, String> {
+
     let dir = data_dir()?;
     let home = dirs::home_dir().ok_or("Could not resolve your home directory")?;
     let report = home.join(format!(
@@ -125,7 +218,8 @@ pub fn plan() -> Result<Plan, String> {
     ));
     let mut resources = vec![
         format!("All contents of {}: registry, settings, logs, caches, migration exports, client backups, encrypted secrets and published gateways in bin/", dir.display()),
-        "All credentials in Toolport's reserved conduit-mcp service, including Team tokens, OAuth state, master keys and orphaned Windows chunks. This service is shared by Toolport installs for this user.".into(),
+        if all_installs { "ALL credentials in the shared conduit-mcp service for every Toolport install, including master keys and Team tokens. Other installations will lose access to these credentials.".into() }
+        else { "Only credentials owned by this registry. Shared master keys, unknown accounts and accounts needed by other detected installs are preserved. Use --all-installs in the CLI only to explicitly clear the entire shared service.".into() },
         "Toolport's daemon for this data directory, after all active sessions have closed".into(),
     ];
     #[cfg(target_os = "windows")]
@@ -136,6 +230,8 @@ pub fn plan() -> Result<Plan, String> {
             .iter()
             .map(|path| format!("{} (only Toolport's startup entry)", path.display())),
     );
+    resources.extend(app_resources(&home).iter().map(|path| format!("{} (app cache/preferences/WebView storage; preserved when shared)", path.display())));
+    resources.extend(other_installs(&dir, install_candidates(&dir)).iter().map(|path| format!("{} (other install detected; its data is preserved)", path.display())));
     Ok(Plan {
         data_dir: dir.display().to_string(),
         resources,
@@ -190,24 +286,44 @@ pub fn launch_after_exit(report_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn run() -> Result<Report, String> {
-    verify_data_ownership(&data_dir()?)?;
-    run_with(
+pub fn run() -> Result<Report, String> { run_with_scope(false) }
+
+pub fn run_with_scope(all_installs: bool) -> Result<Report, String> {
+    let dir = data_dir()?;
+    verify_data_ownership(&dir)?;
+    let others = other_installs(&dir, install_candidates(&dir));
+    let scope = credential_scope(&dir, &others, all_installs)?;
+    let mut report = run_with(
+        |dir| {
+            let mut blockers = crate::gateway_publish::purge_blockers(dir);
+            blockers.extend(crate::daemon::purge_idle_blockers(dir));
+            blockers
+        },
         || crate::clients::disconnect_all(false),
         |dir| {
             let mut blockers = crate::daemon::stop_for_purge(dir);
             blockers.extend(crate::gateway_publish::purge_blockers(dir));
             blockers
         },
-        crate::secrets::purge::remove,
+        || crate::secrets::purge::remove(&scope),
+        |report| startup_entries(false, report),
         remove_autostart,
-    )
+    )?;
+    if !report.removed.is_empty() {
+        report.notes.push("Team tokens deleted from this machine were removed locally only; no server-side revoke endpoint is available in the Teams client.".into());
+    }
+    if report.leftovers.is_empty() {
+        remove_app_resources(&mut report, !others.is_empty() || crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR").is_some());
+    }
+    Ok(report)
 }
 
 fn run_with(
+    preflight: impl FnOnce(&Path) -> Vec<Leftover>,
     disconnect: impl FnOnce() -> Result<Vec<crate::clients::DisconnectResult>, String>,
     stop: impl FnOnce(&Path) -> Vec<Leftover>,
-    keyring: impl FnOnce() -> Result<Vec<Leftover>, String>,
+    keyring: impl FnOnce() -> Result<crate::secrets::purge::Removal, String>,
+    inventory_startup: impl FnOnce(&mut Report) -> Result<(), String>,
     autostart: impl FnOnce(&mut Report) -> Result<(), String>,
 ) -> Result<Report, String> {
     use fs2::FileExt;
@@ -221,9 +337,9 @@ fn run_with(
     }
     let owner_path = dir.join("broker/owner.lock");
     if std::fs::symlink_metadata(dir.join("broker"))
-        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        .is_ok_and(|metadata| is_link(&metadata))
         || std::fs::symlink_metadata(&owner_path)
-            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            .is_ok_and(|metadata| is_link(&metadata))
     {
         return Err(format!(
             "Refusing symlinked broker ownership path: {}",
@@ -244,6 +360,12 @@ fn run_with(
             owner_path.display()
         )
     })?;
+    report.leftovers.extend(preflight(&dir));
+    inventory_startup(&mut report)?;
+    if !report.leftovers.is_empty() {
+        report.notes.push("Preflight failed. Clients, data, credentials and startup entries are unchanged.".into());
+        return Ok(report);
+    }
     report.clients = disconnect()?;
     if report
         .clients
@@ -276,25 +398,25 @@ fn run_with(
         });
         return Ok(report);
     }
+    // Finish startup cleanup before touching credentials. Foreign entries are informational.
+    autostart(&mut report)?;
+    if !report.leftovers.is_empty() {
+        report.notes.push("Startup cleanup failed. Data and credentials were retained for retry.".into());
+        return Ok(report);
+    }
     match keyring() {
-        Ok(leftovers) => {
-            if leftovers.is_empty() {
-                report.removed.push("keychain:conduit-mcp".into());
-            }
-            report.leftovers.extend(leftovers);
+        Ok(removal) => {
+            report.removed.extend(removal.removed);
+            report.preserved.extend(removal.preserved);
+            report.notes.extend(removal.notes);
+            report.leftovers.extend(removal.leftovers);
         }
         Err(error) => report.leftovers.push(Leftover {
-            path: "keychain:conduit-mcp (inventory unavailable)".into(),
-            error,
+            path: "keychain:conduit-mcp (inventory unavailable)".into(), error,
         }),
     }
-    autostart(&mut report)?;
-    // Keep the recovery data if an external resource could not be removed.
     if !report.leftovers.is_empty() {
-        report.leftovers.push(Leftover {
-            path: dir.display().to_string(),
-            error: "Retained for retry because credentials or startup entries remain.".into(),
-        });
+        report.notes.push("Credential cleanup failed. Successfully removed items are listed under removed; failed items remain. Data and the registry were retained so retry uses the same ownership inventory.".into());
         return Ok(report);
     }
     let registry_path = dir.join("registry.json");
@@ -318,9 +440,16 @@ fn run_with(
     Ok(report)
 }
 
+fn is_link(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    { use std::os::windows::fs::MetadataExt; metadata.file_attributes() & 0x400 != 0 }
+    #[cfg(not(windows))]
+    { metadata.file_type().is_symlink() }
+}
+
 fn remove_path(path: &Path, report: &mut Report) {
     let result = std::fs::symlink_metadata(path).and_then(|metadata| {
-        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        if metadata.is_dir() && (!is_link(&metadata) || cfg!(windows)) {
             std::fs::remove_dir(path)
         } else {
             std::fs::remove_file(path)
@@ -355,7 +484,7 @@ fn remove_contents(dir: &Path, keep: &[PathBuf], report: &mut Report) {
                     continue;
                 }
                 match entry.file_type() {
-                    Ok(kind) if kind.is_dir() => {
+                    Ok(kind) if kind.is_dir() && std::fs::symlink_metadata(&path).is_ok_and(|metadata| !is_link(&metadata)) => {
                         remove_contents(&path, keep, report);
                         // A directory holding the owner lock stays until it is released.
                         if !keep.iter().any(|keep| keep.starts_with(&path)) {
@@ -380,7 +509,8 @@ fn remove_contents(dir: &Path, keep: &[PathBuf], report: &mut Report) {
 fn remove_empty_dirs(dir: &Path, report: &mut Report) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
-            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir())
+                && std::fs::symlink_metadata(entry.path()).is_ok_and(|metadata| !is_link(&metadata)) {
                 remove_empty_dirs(&entry.path(), report);
             }
         }
@@ -406,25 +536,23 @@ fn owned_autostart(contents: &str, name: &str) -> bool {
     }
 }
 
-fn remove_autostart(report: &mut Report) -> Result<(), String> {
+fn remove_autostart(report: &mut Report) -> Result<(), String> { startup_entries(true, report) }
+
+fn startup_entries(remove: bool, report: &mut Report) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        report
-            .leftovers
-            .extend(crate::windows_autostart::remove_toolport_entries(
-                AUTOSTART_NAMES,
-            ));
+        crate::windows_autostart::purge_entries(AUTOSTART_NAMES, remove, report);
     }
     #[cfg(not(target_os = "windows"))]
     {
         let home = dirs::home_dir().ok_or("Could not resolve your home directory")?;
         for (path, name) in autostart_files(&home).iter().zip(AUTOSTART_NAMES) {
             match std::fs::read_to_string(path) {
-                Ok(contents) if owned_autostart(&contents, name) => remove_path(path, report),
-                Ok(_) => report.leftovers.push(Leftover {
-                    path: path.display().to_string(),
-                    error: "Startup entry has different ownership. It was preserved.".into(),
-                }),
+                Ok(contents) if owned_autostart(&contents, name) => { if remove { remove_path(path, report); } },
+                Ok(_) => {
+                    let preserved = format!("{} (foreign startup entry preserved)", path.display());
+                    if !report.preserved.contains(&preserved) { report.preserved.push(preserved); }
+                },
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => report.leftovers.push(Leftover {
                     path: path.display().to_string(),
@@ -472,6 +600,12 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&native, dir.join("link")).unwrap();
         let mut report = Report::default();
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd").args(["/C", "mklink", "/J"])
+                .arg(dir.join("junction")).arg(&native).status().unwrap();
+            assert!(status.success(), "Windows junction fixture could not be created");
+        }
         remove_contents(&dir, &[], &mut report);
         assert!(report.leftovers.is_empty(), "{:?}", report.leftovers);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
@@ -504,6 +638,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("registry.json"), "recovery bytes").unwrap();
         let report = run_with(
+            |_| Vec::new(),
             || {
                 Ok(vec![crate::clients::DisconnectResult {
                     client_id: "fixture".into(),
@@ -515,6 +650,7 @@ mod tests {
             },
             |_| panic!("must not stop before restoration"),
             || panic!("must not remove secrets"),
+            |_| Ok(()),
             |_| panic!("must not remove startup entries"),
         )
         .unwrap();
@@ -533,14 +669,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("secrets.enc"), "recovery bytes").unwrap();
         let report = run_with(
+            |_| Vec::new(),
             || Ok(Vec::new()),
             |_| Vec::new(),
             || {
-                Ok(vec![Leftover {
-                    path: "secret-service:/fixture/locked-item".into(),
-                    error: "locked".into(),
-                }])
+                Ok(crate::secrets::purge::Removal { leftovers: vec![Leftover {
+                    path: "secret-service:/fixture/locked-item".into(), error: "locked".into(),
+                }], ..Default::default() })
             },
+            |_| Ok(()),
             |_| Ok(()),
         )
         .unwrap();
@@ -550,9 +687,11 @@ mod tests {
         );
         assert!(dir.join("secrets.enc").exists());
         let report = run_with(
-            || Ok(Vec::new()),
             |_| Vec::new(),
             || Ok(Vec::new()),
+            |_| Vec::new(),
+            || Ok(crate::secrets::purge::Removal::default()),
+            |_| Ok(()),
             |_| Ok(()),
         )
         .unwrap();
@@ -567,6 +706,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("registry.json"), "keep").unwrap();
         let report = run_with(
+            |_| Vec::new(),
             || Ok(Vec::new()),
             |_| {
                 vec![Leftover {
@@ -575,6 +715,7 @@ mod tests {
                 }]
             },
             || panic!("busy session"),
+            |_| Ok(()),
             |_| panic!("busy session"),
         )
         .unwrap();
@@ -609,6 +750,7 @@ mod tests {
     fn retained_edited_gateway_blocks_purge_even_without_a_disconnect_error() {
         let _env = crate::registry::DataDirTestEnv::new("purge_retained_gateway");
         let report = run_with(
+            |_| Vec::new(),
             || {
                 Ok(vec![crate::clients::DisconnectResult {
                     client_id: "fixture".into(),
@@ -618,12 +760,109 @@ mod tests {
                     warnings: vec!["kept your edited toolport entry".into()],
                 }])
             },
+            |_| Ok(()),
             |_| panic!("connection remains"),
             || panic!("connection remains"),
+            |_| Ok(()),
             |_| panic!("connection remains"),
         )
         .unwrap();
         assert!(report.removed.is_empty());
         assert_eq!(report.leftovers[0].path, "/fixture/edited-client.json");
     }
+    #[test]
+    fn purge_named_override_requires_registry_evidence() {
+        let env = crate::registry::DataDirTestEnv::new("purge_named_override");
+        let dir = env.dir.join("Toolport");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("personal.txt"), "keep").unwrap();
+        assert!(verify_ownership(&dir, true).is_err());
+        std::fs::write(dir.join("registry.json"), r#"{"version":1,"servers":[],"profiles":[]}"#).unwrap();
+        assert!(verify_ownership(&dir, true).is_ok());
+    }
+
+    #[test]
+    fn purge_preflight_blocks_before_disconnect_or_any_deletion() {
+        let env = crate::registry::DataDirTestEnv::new("purge_read_only_preflight");
+        let report = run_with(
+            |_| vec![Leftover { path: "busy daemon".into(), error: "active listener".into() }],
+            || panic!("must not disconnect"), |_| panic!("must not stop"),
+            || panic!("must not delete credentials"), |_| Ok(()), |_| panic!("must not delete startup"),
+        ).unwrap();
+        assert!(report.clients.is_empty() && report.removed.is_empty());
+        assert_eq!(report.leftovers[0].path, "busy daemon");
+        assert!(env.dir.exists());
+    }
+
+    #[test]
+    fn purge_startup_inventory_failure_keeps_clients_and_credentials() {
+        let _env = crate::registry::DataDirTestEnv::new("purge_startup_inventory");
+        let report = run_with(
+            |_| Vec::new(), || panic!("must not disconnect"), |_| panic!("must not stop"),
+            || panic!("must not delete credentials"),
+            |report| { report.leftovers.push(Leftover { path: "startup".into(), error: "unreadable".into() }); Ok(()) },
+            |_| panic!("must not delete startup"),
+        ).unwrap();
+        assert!(report.removed.is_empty() && report.clients.is_empty());
+    }
+
+    #[test]
+    fn purge_foreign_startup_does_not_block_data_removal() {
+        let env = crate::registry::DataDirTestEnv::new("purge_foreign_startup");
+        std::fs::write(env.dir.join("secrets.enc"), "fixture").unwrap();
+        let report = run_with(
+            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
+            || Ok(crate::secrets::purge::Removal::default()),
+            |report| { report.preserved.push("foreign startup".into()); Ok(()) }, |_| Ok(()),
+        ).unwrap();
+        assert!(report.leftovers.is_empty());
+        assert_eq!(report.preserved, ["foreign startup"]);
+        assert!(!env.dir.join("secrets.enc").exists());
+    }
+
+    #[test]
+    fn purge_startup_deletion_failure_precedes_credentials() {
+        let env = crate::registry::DataDirTestEnv::new("purge_startup_delete");
+        std::fs::write(env.dir.join("registry.json"), "keep").unwrap();
+        let report = run_with(
+            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
+            || panic!("must not delete credentials"), |_| Ok(()),
+            |report| { report.leftovers.push(Leftover { path: "startup".into(), error: "denied".into() }); Ok(()) },
+        ).unwrap();
+        assert!(report.removed.is_empty());
+        assert!(env.dir.join("registry.json").exists());
+    }
+
+    #[test]
+    fn purge_install_inventory_protects_main_shared_ids_and_team_token() {
+        let env = crate::registry::DataDirTestEnv::new("purge_installs");
+        let dev = env.dir.join("Toolport-dev");
+        let main = env.dir.join("Toolport");
+        let legacy = env.dir.join("Conduit");
+        for dir in [&dev, &main, &legacy] { std::fs::create_dir(dir).unwrap(); }
+        std::fs::write(dev.join("registry.json"), r#"{"servers":[{"id":"shared"},{"id":"dev-only"}],"team":{}}"#).unwrap();
+        std::fs::write(main.join("registry.json"), r#"{"servers":[{"id":"shared"}]}"#).unwrap();
+        std::fs::write(legacy.join("registry.json"), r#"{"servers":[]}"#).unwrap();
+        let others = other_installs(&dev, install_candidates(&dev));
+        assert!(others.contains(&main) && others.contains(&legacy));
+        let scope = credential_scope(&dev, &others, false).unwrap();
+        assert_eq!(scope.server_ids, std::collections::HashSet::from(["dev-only".into()]));
+        assert!(!scope.all_installs);
+        let scope = credential_scope(&dev, &[], false).unwrap();
+        assert!(scope.server_ids.contains(crate::teams::TEAM_TOKEN_SERVER));
+        assert!(credential_scope(&dev, &others, true).unwrap().all_installs);
+        std::fs::remove_file(main.join("registry.json")).unwrap();
+        assert!(credential_scope(&dev, &others, false).unwrap().server_ids.is_empty());
+    }
+
+    #[test]
+    fn purge_app_storage_inventory_uses_bundle_id() {
+        let home = Path::new("/fixture/home");
+        let paths = app_resources(home);
+        assert!(!paths.is_empty());
+        assert!(paths.iter().all(|path| path.to_string_lossy().contains("com.tsout.conduit")));
+        #[cfg(target_os = "macos")]
+        assert_eq!(paths.len(), 5);
+    }
+
 }
