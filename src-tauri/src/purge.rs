@@ -1503,8 +1503,12 @@ mod tests {
         std::fs::write(&config, original).unwrap();
         crate::clients::write_settings_key_for("cursor", &config, Some(original),
             &serde_json::json!({"hooks":{"fixture":[]}}), "hooks").unwrap();
-        let backup = std::fs::read_dir(env.dir.join("backups/cursor")).unwrap().next().unwrap().unwrap().path();
-        assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+        let backups: Vec<_> = std::fs::read_dir(env.dir.join("backups/cursor")).unwrap()
+            .map(|entry| entry.unwrap().path()).filter(|path| path.file_name().and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains("-claude-settings-") && name.ends_with(".json"))).collect();
+        assert_eq!(backups.len(), 1, "select the settings copy, not the original recovery snapshot");
+        let backup = &backups[0];
+        assert_eq!(std::fs::read_to_string(backup).unwrap(), original);
         assert!(owned_data_entry(backup.strip_prefix(&env.dir).unwrap()).is_some(), "{}", backup.display());
     }
 
