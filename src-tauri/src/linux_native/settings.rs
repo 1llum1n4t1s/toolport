@@ -1839,6 +1839,43 @@ impl SettingsPage {
         });
     }
 
+    fn finish_quarantine_release(&self, needed: Vec<(String, String)>, preserve_error: bool) {
+        self.begin_mutation();
+        let generation = self.mutation_generation.get();
+        let page = self.clone();
+        if !preserve_error {
+            page.feedback.set_label(if needed.is_empty() {
+                "Approval saved. The gateway will publish it on its next refresh."
+            } else {
+                "Waiting for the current definition. One more review is needed."
+            });
+            page.feedback.remove_css_class("success");
+            page.feedback.remove_css_class("error");
+        }
+        gtk::glib::spawn_future_local(async move {
+            let expected = needed.clone();
+            let result = gtk::gio::spawn_blocking(move || wait_for_captured_quarantines(
+                &expected, read_quarantined_tools, std::time::Duration::from_secs(10),
+            )).await;
+            if page.mutation_generation.get() != generation {
+                return;
+            }
+            match result {
+                Ok(Ok(entries)) => {
+                    let captured = needed.iter().all(|(profile, tool)| entries.iter().any(|entry| {
+                        &entry.profile == profile && &entry.tool == tool && entry.definition.is_some()
+                    }));
+                    page.render_quarantine(Ok(entries));
+                    if !preserve_error && !needed.is_empty() && captured {
+                        page.feedback.set_label("Current definition captured. One more review is needed.");
+                    }
+                }
+                Ok(Err(error)) => page.show_error(&error),
+                Err(_) => page.show_error("the captured review could not be loaded"),
+            }
+        });
+    }
+
     fn render_settings(&self, settings: crate::registry_controller::EssentialSettings) {
         let (line, guarded) = posture_summary(&settings);
         self.posture.set_label(&line);
@@ -1989,6 +2026,27 @@ struct QuarantinedTool {
     tool: String,
     detail: String,
     definition: Option<String>,
+}
+
+// Read off the GTK main thread after a release; a gateway capture can arrive later.
+fn wait_for_captured_quarantines(
+    needed: &[(String, String)],
+    mut read: impl FnMut() -> Result<Vec<QuarantinedTool>, String>,
+    timeout: std::time::Duration,
+) -> Result<Vec<QuarantinedTool>, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let entries = read()?;
+        let captured = needed.iter().all(|(profile, tool)| entries.iter().any(|entry| {
+            &entry.profile == profile && &entry.tool == tool && entry.definition.is_some()
+        }));
+        if captured || std::time::Instant::now() >= deadline {
+            return Ok(entries);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100).min(
+            deadline.saturating_duration_since(std::time::Instant::now()),
+        ));
+    }
 }
 
 fn read_quarantined_tools() -> Result<Vec<QuarantinedTool>, String> {
@@ -2258,6 +2316,8 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     row.add_css_class("toolport-setting-row");
     let count = entries.len();
+    let needed: Vec<_> = entries.iter().filter(|entry| entry.definition.is_none())
+        .map(|entry| (entry.profile.clone(), entry.tool.clone())).collect();
     let copy = gtk::Label::builder()
         .label(format!("{count} tools are blocked."))
         .halign(gtk::Align::Fill)
@@ -2304,6 +2364,7 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
         let page = page.clone();
         let profiles = profiles.clone();
         let expected = expected.clone();
+        let needed = needed.clone();
         let button = release_for_click.clone();
         dialog.connect_response(None, move |dialog, response| {
             if response == "approve" {
@@ -2311,6 +2372,7 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
                 let page = page.clone();
                 let profiles = profiles.clone();
                 let expected = expected.clone();
+                let needed = needed.clone();
                 gtk::glib::spawn_future_local(async move {
                     let result = gtk::gio::spawn_blocking(move || {
                         crate::registry_controller::release_all_quarantine_records(
@@ -2329,7 +2391,7 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
                                 page.feedback.remove_css_class("error");
                                 page.feedback.add_css_class("success");
                             }
-                            page.refresh();
+                            page.finish_quarantine_release(needed, is_error);
                         }
                         Err(_) => page.show_error("the bulk re-approval stopped unexpectedly"),
                     }
@@ -2444,6 +2506,11 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
                 let page = page.clone();
                 let entry = entry.clone();
                 gtk::glib::spawn_future_local(async move {
+                    let needed = if entry.definition.is_none() {
+                        vec![(entry.profile.clone(), entry.tool.clone())]
+                    } else {
+                        Vec::new()
+                    };
                     let tool = entry.tool.clone();
                     let profile = entry.profile.clone();
                     let result = gtk::gio::spawn_blocking(move || {
@@ -2454,10 +2521,7 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
                     .await;
                     match result {
                         Ok(Ok(())) => {
-                            page.feedback.set_label("Tool re-approved.");
-                            page.feedback.remove_css_class("error");
-                            page.feedback.add_css_class("success");
-                            page.refresh();
+                            page.finish_quarantine_release(needed, false);
                         }
                         Ok(Err(error)) => page.show_error(&error),
                         Err(_) => page.show_error("the re-approval stopped unexpectedly"),
@@ -2809,6 +2873,33 @@ mod tests {
             detail: "definition changed".to_string(),
             definition: None,
         }
+    }
+
+    #[test]
+    fn release_refresh_waits_for_delayed_capture_and_stays_bounded() {
+        let mut reads = 0;
+        let records = wait_for_captured_quarantines(
+            &[("work".into(), "srv__wipe".into())],
+            || {
+                reads += 1;
+                if reads == 1 {
+                    Ok(Vec::new())
+                } else {
+                    let mut record = blocked("work", "srv__wipe");
+                    record.definition = Some("captured current definition".into());
+                    Ok(vec![record])
+                }
+            },
+            std::time::Duration::from_secs(1),
+        ).unwrap();
+        assert_eq!(records.len(), 1, "the delayed block must appear without manual Refresh");
+        let started = std::time::Instant::now();
+        assert!(wait_for_captured_quarantines(
+            &[("work".into(), "srv__wipe".into())],
+            || Ok(Vec::new()),
+            std::time::Duration::from_millis(20),
+        ).unwrap().is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[test]
