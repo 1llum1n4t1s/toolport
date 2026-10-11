@@ -3564,20 +3564,40 @@ pub fn detect_clients() -> Vec<DetectedClient> {
     // Background upkeep handles saved locations. Newly discovered config files
     // are read only when the user opens Clients.
     let mut clients: Vec<_> = machine_defs(false).iter().map(read_client).collect();
-    append_location_store_error(&mut clients);
+    append_client_scan_errors(&mut clients);
     clients
 }
 
-fn append_location_store_error(clients: &mut Vec<DetectedClient>) {
-    let Some(error) = locations::store_error() else { return; };
-    clients.push(DetectedClient {
-        id: "client-locations".into(), name: "Saved client locations".into(),
-        uses_connectors: false, location_removable: false,
-        discovery: discovery::capabilities("claude-code"),
-        config_path: locations::store_display_path(), config_exists: true,
+fn config_error_row(id: &str, name: &str, path: String, error: String) -> DetectedClient {
+    DetectedClient {
+        id: id.into(), name: name.into(), uses_connectors: false, location_removable: false,
+        discovery: discovery::capabilities("claude-code"), config_path: path, config_exists: true,
         app_present: true, servers: Vec::new(), plugin_servers: Vec::new(),
         gateway_installed: false, entry_state: GatewayEntryState::Absent, error: Some(error),
-    });
+    }
+}
+
+fn append_client_scan_errors(clients: &mut Vec<DetectedClient>) {
+    if let Some(error) = locations::store_error() {
+        clients.push(config_error_row("client-locations", "Saved client locations", locations::store_display_path(), error));
+    }
+    let paths = match try_claude_code_config_paths() {
+        Ok(paths) => paths,
+        Err(error) => {
+            clients.push(config_error_row("claude-code-profiles", "Claude Code profiles", home().map(|path| path.display().to_string()).unwrap_or_default(), error));
+            return;
+        }
+    };
+    for path in paths {
+        // New unsaved locations are inspected only on Clients. Legacy profiles
+        // were already maintained by v1 and must expose unreadable configs too.
+        if !path.parent().and_then(|folder| folder.file_name()).and_then(|name| name.to_str()).is_some_and(legacy_claude_profile_name)
+            || clients.iter().any(|client| locations::same_path(Path::new(&client.config_path), &path)) { continue; }
+        if let Err(error) = read_config_file(&path).and_then(|text| parse_client_content(Format::JsonMcpServers, &text)) {
+            let key = crate::registry::sha256_hex(&path.to_string_lossy());
+            clients.push(config_error_row(&format!("claude-code@legacy-{}", &key[..16]), "Claude Code profile", path.display().to_string(), error));
+        }
+    }
 }
 
 pub fn detect_clients_with_inspection(inspect_configs: bool) -> Result<Vec<DetectedClient>, String> {
@@ -3588,7 +3608,7 @@ pub fn detect_clients_for_display() -> Result<Vec<DetectedClient>, String> {
     let definitions = machine_defs(true);
     let current = crate::registry::load()?;
     let mut clients = detect_clients_for_display_in(definitions, current, resolve_gateway_path()?)?;
-    append_location_store_error(&mut clients);
+    append_client_scan_errors(&mut clients);
     Ok(clients)
 }
 

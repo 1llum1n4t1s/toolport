@@ -209,7 +209,7 @@ pub(crate) fn with_native_canonicalize_failure<T>(run: impl FnOnce() -> T) -> T 
 // Direct Win32 calls need extended paths for long names. Virtual filesystems
 // may not support canonicalization; keep v1's ordinary path in that case.
 #[cfg(windows)]
-fn native_path(path: &Path) -> std::io::Result<Vec<u16>> {
+pub(crate) fn native_path(path: &Path) -> std::io::Result<Vec<u16>> {
     use std::os::windows::ffi::OsStrExt;
     let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));

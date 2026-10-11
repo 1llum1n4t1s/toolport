@@ -43,6 +43,7 @@ fn round3_legacy_linked_and_backup_profiles_keep_references_and_repair() {
     }
     std::fs::write(&paths[0], "{broken").unwrap();
     assert!(referenced_gateway_paths().is_none());
+    assert!(detect_clients().iter().any(|row| row.config_path == paths[0].to_string_lossy() && row.error.is_some()));
 }
 
 #[test]
@@ -210,4 +211,16 @@ fn round3_unreadable_config_and_home_scan_fail_closed() {
     std::fs::remove_dir(&root).unwrap();
     std::fs::write(&root, "not a directory").unwrap();
     assert!(referenced_gateway_paths().is_none());
+}
+
+#[cfg(windows)]
+#[test]
+fn round3_windows_long_native_path_falls_back_when_canonicalization_fails() {
+    use std::os::windows::ffi::OsStrExt;
+    let data = crate::registry::DataDirTestEnv::new("round3-windows-long-fallback");
+    let path = data.dir.join("x".repeat(200)).join("y".repeat(100)).join("config.json");
+    crate::registry::client_file::with_native_canonicalize_failure(|| {
+        let native = crate::registry::client_file::native_path(&path).unwrap();
+        assert_eq!(native, path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>());
+    });
 }
