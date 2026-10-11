@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn environment_selected_location_has_one_identity_for_upkeep() {
         let base = defs().into_iter().find(|def| def.id == "codex").unwrap();
-        let mut location = base.clone();
+        let mut location = defs().into_iter().find(|def| def.id == "codex").unwrap();
         location.location = Some(ClientLocation {
             id: "codex@selected".into(),
             client_type: "codex".into(),
