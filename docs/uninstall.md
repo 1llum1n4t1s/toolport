@@ -99,6 +99,11 @@ toolport-gateway --remove-data --all-installs --dry-run
 toolport-gateway --remove-data --all-installs --confirm
 ```
 
+For a custom `TOOLPORT_DATA_DIR` or `CONDUIT_DATA_DIR`, choose `--all-installs`
+before removing its registry. Afterward, the command cannot verify ownership of
+that directory. Remove the preserved `conduit-mcp` accounts in your OS credential
+manager instead.
+
 This clears credentials used by other installs too, while deleting only
 Toolport-created entries in the selected data folder. It can proceed with a
 corrupt registry, using independent client recovery snapshots. Client restoration

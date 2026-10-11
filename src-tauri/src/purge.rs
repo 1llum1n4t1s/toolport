@@ -108,6 +108,20 @@ fn verify_ownership(dir: &Path, overridden: bool) -> Result<(), String> {
     }
 }
 
+fn custom_data_dir(dir: &Path) -> bool {
+    crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR").is_some()
+        || !dir.file_name().is_some_and(|name| matches!(name.to_str(),
+            Some("Toolport" | "Conduit" | "Toolport-dev" | "Conduit-dev")))
+}
+
+fn credential_removal_guidance(custom: bool) -> &'static str {
+    if custom {
+        "With a custom data directory, use toolport-gateway --remove-data --all-installs --confirm before removing its registry. After the registry is removed, this command cannot verify the directory's ownership; remove preserved conduit-mcp accounts in your OS credential manager."
+    } else {
+        "To remove all shared credentials, use toolport-gateway --remove-data --all-installs --confirm."
+    }
+}
+
 fn autostart_files(home: &Path) -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     let (base, ext) = (home.join("Library/LaunchAgents"), "plist");
@@ -245,7 +259,7 @@ pub fn plan_with_scope(all_installs: bool) -> Result<Plan, String> {
     let mut resources = vec![
         format!("Toolport-created entries in {}: registry, settings, logs, caches, migration exports, client backups, encrypted secrets and published gateways in bin/. Other entries are preserved.", dir.display()),
         if all_installs { "ALL credentials in the shared conduit-mcp service for every Toolport install, including master keys and Team tokens. Other installations will lose access to these credentials.".into() }
-        else { "Only accounts owned by this registry, excluding server ids used by detected other installs. Shared and unknown credentials are preserved because they may belong to another Toolport install. To remove them too, use toolport-gateway --remove-data --all-installs --confirm in the CLI.".into() },
+        else { format!("Only accounts owned by this registry, excluding server ids used by detected other installs. Shared and unknown credentials are preserved because they may belong to another Toolport install. {}", credential_removal_guidance(custom_data_dir(&dir))) },
         "Toolport's daemon for this data directory, after all active sessions have closed".into(),
     ];
     #[cfg(target_os = "windows")]
@@ -440,7 +454,7 @@ fn run_with(
             }
             report.removed.extend(removal.removed);
             if !removal.preserved.is_empty() {
-                report.notes.push("Preserved credentials may belong to another Toolport install. To remove all shared credentials, use toolport-gateway --remove-data --all-installs --confirm.".into());
+                report.notes.push(format!("Preserved credentials may belong to another Toolport install. {}", credential_removal_guidance(custom_data_dir(&dir))));
             }
             report.preserved.extend(removal.preserved);
             report.notes.extend(removal.notes);
