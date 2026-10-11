@@ -1732,6 +1732,19 @@ fn matrix_rollout_default_selects_the_shared_daemon() {
     assert_eq!(topology["compat"], descriptor["compat"]);
     assert_eq!(topology["pid"], descriptor["pid"]);
     assert_eq!(topology["sessions"], 2);
+    assert_eq!(topology["purgeIdle"], false);
+    let registry_before = std::fs::read(dir.join("registry.json")).unwrap();
+    let removal = Command::new(env!("CARGO_BIN_EXE_toolport-gateway"))
+        .args(["--remove-data", "--confirm"])
+        .env("TOOLPORT_DATA_DIR", &dir).env("HOME", dir.join("purge-home"))
+        .env_remove("DBUS_SESSION_BUS_ADDRESS").output().unwrap();
+    assert!(!removal.status.success());
+    let report: Value = serde_json::from_slice(&removal.stdout).unwrap();
+    assert!(report["clients"].as_array().unwrap().is_empty());
+    assert!(report["removed"].as_array().unwrap().is_empty());
+    assert_eq!(std::fs::read(dir.join("registry.json")).unwrap(), registry_before);
+    assert_eq!(text_of(&a.call_tool(&tool_a, json!({ "text": "still connected" }))), "still connected");
+
     assert_eq!(topology["ordinaryLaunches"], 1);
     assert_eq!(topology["rootedLaunches"], 0);
     assert_eq!(topology["launches"], 1);

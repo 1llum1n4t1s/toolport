@@ -15,7 +15,10 @@ fn purge_headless_without_keyring_and_with_file_backend_removes_data() {
             .env("TOOLPORT_DATA_DIR", &data).env("HOME", env.dir.join("home"))
             .env_remove("DBUS_SESSION_BUS_ADDRESS").env_remove("CONDUIT_SECRET_KEY")
             .env_remove("TOOLPORT_SECRET_KEY");
-        if file_backend { command.env("TOOLPORT_SECRET_KEY", "purge-fixture-key"); }
+        if file_backend {
+            command.env("TOOLPORT_SECRET_KEY", "purge-fixture-key")
+                .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/purge-fixture-bus");
+        }
         let output = command.output().unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
