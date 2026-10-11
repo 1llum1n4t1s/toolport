@@ -448,6 +448,11 @@ mod tests {
     fn later_background_adoption_keeps_existing_access_and_location_override() {
         let _data = crate::registry::DataDirTestEnv::new("later-location-access");
         let mut registry = crate::registry::Registry::default();
+        for id in ["work", "personal"] {
+            registry.profiles.push(serde_json::from_value(
+                serde_json::json!({"id": id, "name": id}),
+            ).unwrap());
+        }
         registry.client_scopes.insert("claude-code".into(), "work".into());
         crate::registry::save(&registry).unwrap();
         let text = r#"{"mcpServers":{"other":{"env":{"TOOLPORT_CLIENT_ID":"unrelated"}},"toolport":{"command":"toolport-gateway","env":{"TOOLPORT_CLIENT_ID":"claude-code"}}}}"#;
