@@ -3518,7 +3518,7 @@ fn read_client(def: &ClientDef) -> DetectedClient {
             return build(config_path, config_exists, Vec::new(), Some(error));
         }
     };
-    let config_path = path.display().to_string();
+    let config_path = locations::display_path(&path).display().to_string();
 
     if matches!(def.format, Format::JsonZCodeMcp) {
         return match zcode::detect(&path) {

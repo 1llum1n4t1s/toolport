@@ -229,6 +229,29 @@ pub(super) fn same_path(a: &Path, b: &Path) -> bool {
             .ok()
             .zip(std::fs::canonicalize(b).ok())
             .is_some_and(|(a, b)| a == b)
+        // A config may not exist yet. Its existing canonical parent still
+        // identifies the same location, including Windows extended prefixes.
+        || (a.file_name() == b.file_name() && a.parent().zip(b.parent()).is_some_and(|(a, b)|
+            std::fs::canonicalize(a).ok().zip(std::fs::canonicalize(b).ok()).is_some_and(|(a, b)| a == b)))
+}
+
+/// Prefer ordinary Windows paths only when they resolve to the same directory.
+/// Device paths and names requiring extended semantics keep their native form.
+pub(super) fn display_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(text) = path.to_str() {
+        let ordinary = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            Some(PathBuf::from(format!(r"\\{rest}")))
+        } else {
+            text.strip_prefix(r"\\?\").filter(|rest|
+                rest.as_bytes().get(1..3) == Some(b":\\") && rest.as_bytes()[0].is_ascii_alphabetic())
+                .map(PathBuf::from)
+        };
+        if let Some(ordinary) = ordinary.filter(|ordinary| same_path(path, ordinary)) {
+            return ordinary;
+        }
+    }
+    path.to_path_buf()
 }
 
 pub(super) fn all() -> Vec<ClientLocation> {
@@ -329,8 +352,8 @@ pub fn add_client_location(client_type: &str, folder: &str) -> Result<String, St
     if !folder.is_absolute() {
         return Err("Choose an absolute client config folder".into());
     }
-    let folder =
-        std::fs::canonicalize(&folder).map_err(|_| "Choose an existing client config folder")?;
+    let folder = display_path(&std::fs::canonicalize(&folder)
+        .map_err(|_| "Choose an existing client config folder")?);
     if !folder.is_dir() {
         return Err("Choose a client config folder, not a file".into());
     }
