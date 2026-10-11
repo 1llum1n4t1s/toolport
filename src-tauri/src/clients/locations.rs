@@ -156,6 +156,23 @@ pub fn add_client_location(client_type: &str, folder: &str) -> Result<String, St
     Ok(id)
 }
 
+/// Read-only benchmark helper, excluded from shipped builds.
+#[cfg(feature = "test-support")]
+pub fn measure_scan(home: &Path, iterations: u32) -> (usize, f64, f64) {
+    let start = std::time::Instant::now();
+    for _ in 0..iterations {
+        let dirs: Vec<String> = std::fs::read_dir(home).unwrap().filter_map(Result::ok)
+            .filter(|entry| entry.path().is_dir()).map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
+        let _ = dirs.iter().filter(|name| *name == ".claude" || name.starts_with(".claude-"))
+            .filter(|name| home.join(name).join(".claude.json").is_file()).count();
+    }
+    let before = start.elapsed().as_secs_f64() * 1000.0 / iterations as f64;
+    let start = std::time::Instant::now();
+    for _ in 0..iterations { let _ = automatic_with_primary(home, None); }
+    let after = start.elapsed().as_secs_f64() * 1000.0 / iterations as f64;
+    (std::fs::read_dir(home).unwrap().count(), before, after)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,10 +259,13 @@ mod tests {
         let second = add_client_location("codex", b.path().to_str().unwrap()).unwrap();
         assert_ne!(first, second);
         let mut reg = crate::registry::Registry::default();
+        for id in ["first-access", "second-access"] {
+            reg.profiles.push(serde_json::from_value(serde_json::json!({"id":id,"name":id})).unwrap());
+        }
         reg.client_scopes.insert(first.clone(), "first-access".into());
         reg.client_scopes.insert(second.clone(), "second-access".into());
-        assert_eq!(resolve_launch_profile(&reg, Some(&first), &None), Some(reg.resolve_profile_id("first-access")));
-        assert_eq!(resolve_launch_profile(&reg, Some(&second), &None), Some(reg.resolve_profile_id("second-access")));
+        assert_eq!(resolve_launch_profile(&reg, Some(&first), &None), Some("first-access".into()));
+        assert_eq!(resolve_launch_profile(&reg, Some(&second), &None), Some("second-access".into()));
         let entries = vec![serde_json::json!({"client":format!("adapter:{first}")}), serde_json::json!({"client":format!("adapter:{second}")})];
         let names = CallerNames::for_entries(&entries);
         assert_ne!(names.trusted_name(entries[0]["client"].as_str(), None), names.trusted_name(entries[1]["client"].as_str(), None));
@@ -280,16 +300,8 @@ mod tests {
             std::fs::write(dir.join(".claude.json"), "{}").unwrap();
         }
         fn measure(home: &Path) {
-            let start = std::time::Instant::now();
-            for _ in 0..20 {
-                let dirs: Vec<String> = std::fs::read_dir(home).unwrap().filter_map(Result::ok)
-                    .filter(|entry| entry.path().is_dir()).map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
-                let _ = claude_code_config_paths_from(home, None, &dirs).into_iter().filter(|path| path.is_file()).count();
-            }
-            let before = start.elapsed().as_secs_f64() * 1000.0 / 20.0;
-            let start = std::time::Instant::now();
-            for _ in 0..20 { let _ = automatic_with_primary(home, None); }
-            println!("entries={} before_ms={before:.3} after_ms={:.3}", std::fs::read_dir(home).unwrap().count(), start.elapsed().as_secs_f64() * 1000.0 / 20.0);
+            let (entries, before, after) = measure_scan(home, 20);
+            println!("entries={entries} before_ms={before:.3} after_ms={after:.3}");
         }
         measure(root.path());
         // Only directory metadata; no config contents or writes in real home.

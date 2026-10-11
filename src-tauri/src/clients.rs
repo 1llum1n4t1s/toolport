@@ -23,6 +23,8 @@ pub(crate) use disconnect::for_purge as disconnect_all_for_purge;
 mod discovery;
 mod locations;
 pub use locations::{add_client_location, client_location_types, ClientLocationType};
+#[cfg(feature = "test-support")]
+pub use locations::measure_scan as measure_client_location_scan;
 pub use discovery::DiscoveryCapabilities;
 mod moved;
 mod mutation;
