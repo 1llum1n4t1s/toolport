@@ -10386,7 +10386,20 @@ fn requarantine_if_needed(
         Ok(Some(pending)) => {
             requarantine_after_integrity_change(built, pending, integrity::quarantined(profile))
         }
-        Ok(None) => tools,
+        Ok(None) => {
+            // An earlier gate can have saved a block and advanced its pin before
+            // losing a router swap. Matching pins do not mean the tool is released.
+            match effective_quarantine(registry, profile, &AtomicBool::new(false)) {
+                Some(mut stored) => {
+                    // A release racing this gate waits for a candidate that includes
+                    // its definition. Preserve any hide whose catalog was not checked.
+                    stored.extend(built.quarantined().iter().cloned());
+                    built.requarantine(stored);
+                }
+                None => built.fail_closed_catalog(),
+            }
+            built.shared_tools()
+        }
         Err((e, pending)) => {
             glog(&format!(
                 "SECURITY: integrity store update failed: {e}; keeping the live blocked set"
@@ -39973,14 +39986,18 @@ mod tests {
             for version in ["v1", "v2", "v3"] {
                 for bulk in [false, true] {
                     let state = http_state(false);
-                    state.registry.lock().unwrap().set_safety_level(registry::SafetyLevel::Strict);
+                    state.registry.lock().unwrap()
+                        .set_safety_level(registry::SafetyLevel::Strict);
                     if version == "v3" {
                         let original = readonly_router("srv", "Reviewed definition.");
                         let tools = original.policy_catalog(&original.shared_tools());
                         integrity::check(profile, &tools).unwrap();
-                        integrity::apply_quarantine(profile, &tools, &[json!({
-                            "server":"srv", "tool":"srv__read", "change":"changed", "severity":"high"
-                        })]).unwrap();
+                        integrity::apply_quarantine(
+                            profile, &tools, &[json!({
+                                "server":"srv", "tool":"srv__read", "change":"changed", "severity":"high"
+                            })],
+                        )
+                        .unwrap();
                     } else {
                         seed_legacy_review(&data.dir, profile, version);
                     }
@@ -39991,7 +40008,8 @@ mod tests {
                         let outcome = integrity::release_all(profile).unwrap();
                         assert_eq!(outcome.released, 1);
                     } else {
-                        conduit_lib::registry_controller::release_quarantine(profile, "srv__read").unwrap();
+                        conduit_lib::registry_controller::release_quarantine(profile, "srv__read")
+                            .unwrap();
                     }
                     let gates = Arc::new(AtomicUsize::new(0));
                     let observed = Arc::clone(&gates);
@@ -40000,7 +40018,8 @@ mod tests {
                         std::thread::current().id(),
                         Box::new(move || {
                             let mut current = live.lock().unwrap();
-                            assert!(!current.aggregated_tools().iter().any(|tool| tool["name"] == "srv__read"));
+                            assert!(!current.aggregated_tools().iter()
+                                .any(|tool| tool["name"] == "srv__read"));
                             if observed.fetch_add(1, Ordering::SeqCst) == 0 {
                                 // A concurrent copy-on-write edit wins the first swap.
                                 *current = Arc::new((**current).clone());
