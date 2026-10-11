@@ -10383,7 +10383,10 @@ fn requarantine_if_needed(
     let tools = tools.into();
     let policy_tools = built.policy_catalog(&tools);
     match maybe_check_integrity(registry, &policy_tools, profile) {
-        Ok(Some(pending)) => {
+        Ok(Some(mut pending)) => {
+            // Definitions still filtered during the gate cannot be released by
+            // a racing store update, even when another tool just changed.
+            pending.extend(built.quarantined().iter().cloned());
             requarantine_after_integrity_change(built, pending, integrity::quarantined(profile))
         }
         Ok(None) => {
