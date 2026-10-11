@@ -282,11 +282,9 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
             description={
               <div className="space-y-2">
                 <p>
-                  This trusts{" "}
-                  {reviewMany
-                    ? "these tools' displayed definitions"
-                    : "this tool's displayed definition"}{" "}
-                  and makes {reviewMany ? "them" : "it"} callable by every client again.
+                  Approve {reviewMany ? "these blocked findings" : "this blocked finding"}
+                  . Older findings may need one more review of the current definition
+                  before the tool becomes callable.
                 </p>
                 <p>
                   Only do this if you expected the change. If a definition was altered by

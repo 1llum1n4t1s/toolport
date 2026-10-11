@@ -2291,7 +2291,8 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
             Some(&parent),
             Some(&format!("Re-approve all {count} blocked tools?")),
             Some(
-                "Toolport trusts each changed definition again and repairs its baseline in one pass. \
+                "Toolport approves the displayed findings and repairs their baselines in one pass. \
+                 Older findings may need one more review of the current definition. \
                  A tool whose captured definition cannot be read stays blocked and remains listed.",
             ),
         );
@@ -2388,11 +2389,11 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
     } else {
         copy.append(
             &gtk::Label::builder()
-            .label("No saved definition. Approving may require one more review of the current definition.")
-            .xalign(0.0)
-            .wrap(true)
-            .css_classes(["toolport-muted"])
-            .build(),
+                .label("No saved definition. Approving may require one more review of the current definition.")
+                .xalign(0.0)
+                .wrap(true)
+                .css_classes(["toolport-muted"])
+                .build(),
         );
     }
     row.append(&copy);
@@ -2408,11 +2409,27 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
             Some(&parent),
             Some(&format!("Re-approve {}?", entry.tool)),
             Some(&format!(
-                "Toolport will approve this blocked finding. Older findings may need one more review of the current definition.\n\n{}\n\n{}",
-                entry.detail,
-                entry.definition.as_deref().unwrap_or("No saved definition.")
+                "Toolport will approve this blocked finding. Older findings may need one more review of the current definition.\n\n{}",
+                entry.detail
             )),
         );
+        if let Some(definition) = &entry.definition {
+            let label = gtk::Label::builder()
+                .label(definition)
+                .xalign(0.0)
+                .wrap(true)
+                .wrap_mode(gtk::pango::WrapMode::WordChar)
+                .selectable(true)
+                .css_classes(["monospace"])
+                .build();
+            let scroll = gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .max_content_height(260)
+                .propagate_natural_height(true)
+                .child(&label)
+                .build();
+            dialog.set_extra_child(Some(&scroll));
+        }
         dialog.add_response("cancel", "Keep blocked");
         dialog.add_response("approve", "Re-approve");
         dialog.set_close_response("cancel");

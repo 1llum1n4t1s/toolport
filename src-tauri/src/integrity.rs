@@ -5354,9 +5354,15 @@ mod tests {
                 let captured = load_quarantine(profile).unwrap()["srv__wipe"].clone();
                 assert_eq!(captured["definition"], tools[0]);
                 assert_eq!(captured["definition_fp"], pin_of(&tools[0]).fp);
-                assert!(captured["reason"].as_str().unwrap().contains("no saved definition"));
+                assert!(captured["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("no saved definition"));
+                assert!(captured.get("detail").is_none());
                 // The UI approves the captured record, not an unbound retry of the old block.
-                assert!(release_record(profile, "srv__wipe", &quarantine_record_id(&captured)).unwrap());
+                assert!(
+                    release_record(profile, "srv__wipe", &quarantine_record_id(&captured)).unwrap()
+                );
                 assert!(check_staged(profile, &tools).unwrap().is_empty());
             }
         }
