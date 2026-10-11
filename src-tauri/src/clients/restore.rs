@@ -318,7 +318,7 @@ fn original_gateways(
     // An existing legacy move record proves the first captured gateway was
     // already installed by Toolport. Unowned customized gateway definitions
     // are part of the original and must round-trip just like other entries.
-    let mut names = if moved::missing_names(client_id, format, path)?.is_empty() {
+    let mut names = if client_id.contains('@') || moved::missing_names(client_id, format, path)?.is_empty() {
         Vec::new()
     } else {
         gateway_names(format, &mutation::value(format, text)?)

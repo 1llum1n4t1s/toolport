@@ -426,8 +426,10 @@ mod tests {
                 name: location_name("Claude Code", &label), config_path: path.join(".claude.json") }).unwrap();
             let principal = format!("adapter:{id}");
             crate::audit::record_internal("search", 1, false, Some(&principal), true);
-            let rows = crate::audit::read_all().unwrap();
-            let row = rows.last().unwrap();
+            let stored = crate::audit::read_all().unwrap();
+            assert_eq!(stored[0]["client"], principal);
+            let rows = crate::audit::read_activity(1).unwrap();
+            let row = &rows[0];
             assert_eq!(row["client"], principal);
             assert_ne!(row["clientName"], "[private]");
             assert!(row["clientName"].as_str().unwrap().starts_with("Claude Code ("));
@@ -442,15 +444,21 @@ mod tests {
         let path = folder.path().join(".claude.json");
         let original = serde_json::json!({"mcpServers":{
             "toolport":{"command":"/usr/bin/toolport-gateway", "env":{"TOOLPORT_CLIENT_ID":"claude-code"}},
-            "foreign":{"command":"/usr/bin/toolport-gateway", "args":["--http","9999"]}}});
+            "foreign":{"command":"/usr/bin/toolport-gateway", "args":["--http","9999"]},
+            "notes":{"command":"notes"}}});
         std::fs::write(&path, original.to_string()).unwrap();
         let id = add_client_location("claude-code", folder.path().to_str().unwrap()).unwrap();
+        moved::record_selected(&id, Format::JsonMcpServers, &path, &["notes".into()]).unwrap();
+        let mut moved_config = original.clone();
+        moved_config["mcpServers"].as_object_mut().unwrap().remove("notes");
+        std::fs::write(&path, moved_config.to_string()).unwrap();
         let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport", "transport":"stdio", "command":"/usr/bin/toolport-gateway", "env":[{"key":"TOOLPORT_CLIENT_ID", "value":id, "secret":false}]})).unwrap();
         install_or_remove(&id, Some(&entry)).unwrap();
         uninstall_gateway(&id).unwrap();
         let after: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(after["mcpServers"]["foreign"], original["mcpServers"]["foreign"]);
         assert!(after["mcpServers"].get("toolport").is_none());
+        assert_eq!(after["mcpServers"]["notes"], original["mcpServers"]["notes"]);
     }
 
     #[test]

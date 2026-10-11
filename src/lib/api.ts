@@ -615,11 +615,12 @@ export function teamPairCancel(): Promise<void> {
   return invoke<void>("team_pair_cancel");
 }
 
-/** Probe every supported MCP client and read its current server configuration. */
+/** Forget a disconnected manually added location while retaining its files. */
 export function removeClientLocation(clientId: string): Promise<void> {
   return invoke("remove_client_location", { clientId });
 }
 
+/** Probe clients; inspection also adopts newly discovered locations. */
 export function detectClients(inspectConfigs = true): Promise<DetectedClient[]> {
   return invoke<DetectedClient[]>("detect_clients", { inspectConfigs });
 }
