@@ -354,7 +354,10 @@ test("PR package fixtures exercise the pacman archive checker", () => {
     "usr/share/licenses/toolport-bin/LICENSE",
   ];
   const pack = () => execFileSync("tar", ["-cf", archive, "-C", payload, "."]);
-  const check = () => execFileSync("node", [".github/scripts/package-contents.mjs", archive], { stdio: "pipe" });
+  const check = () =>
+    execFileSync("node", [".github/scripts/package-contents.mjs", archive], {
+      stdio: "pipe",
+    });
   try {
     for (const file of files) {
       mkdirSync(join(payload, file, ".."), { recursive: true });
@@ -377,7 +380,13 @@ test("PR package fixtures exercise the pacman archive checker", () => {
 test("Homebrew zap removes bundle storage but retains client recovery data", () => {
   const cask = readFileSync("packaging/homebrew/toolport.rb", "utf8");
   const zap = cask.slice(cask.indexOf("  zap trash:"));
-  for (const resource of ["Caches/com.tsout.conduit", "HTTPStorages/com.tsout.conduit", "Preferences/com.tsout.conduit.plist", "Saved Application State/com.tsout.conduit.savedState", "WebKit/com.tsout.conduit"]) {
+  for (const resource of [
+    "Caches/com.tsout.conduit",
+    "HTTPStorages/com.tsout.conduit",
+    "Preferences/com.tsout.conduit.plist",
+    "Saved Application State/com.tsout.conduit.savedState",
+    "WebKit/com.tsout.conduit",
+  ]) {
     assert.ok(zap.includes(resource));
   }
   assert.doesNotMatch(zap, /Application Support|registry|conduit-mcp/);
