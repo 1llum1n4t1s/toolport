@@ -603,7 +603,7 @@ mod tests {
             let id = "claude-code@claude2";
             assert!(install_gateway(id, None).is_err());
             assert!(uninstall_gateway(id).is_err());
-            assert!(claude_code_config_paths().contains(&path));
+            assert!(claude_code_config_paths().iter().all(|candidate| candidate != &path));
             let mut outcome = RepointOutcome::default();
             repoint_other_claude_configs("/new/toolport-gateway", &mut outcome);
             assert!(outcome.extra_claude_repointed.is_empty());

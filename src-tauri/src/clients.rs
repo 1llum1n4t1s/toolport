@@ -289,8 +289,7 @@ fn gateway_identity_matches(id: &str, name: &str, command: Option<&str>) -> bool
     has_gateway_name(id) || has_gateway_name(name) || command.is_some_and(command_is_gateway_binary)
 }
 
-// Binary identity prevents recursive imports, but does not establish ownership
-// of an arbitrary config slot. Prefer the current slot, then its legacy name.
+// Added locations do not establish ownership from binary identity alone. Prefer the current slot, then its legacy name.
 fn owned_gateway_name<'a>(names: impl Iterator<Item = &'a str>) -> Option<&'a str> {
     let names: Vec<_> = names.collect();
     [GATEWAY_ENTRY_NAME, LEGACY_GATEWAY_ENTRY_NAME].into_iter()
@@ -664,7 +663,7 @@ fn rules_sentinel_block(
 /// updated starts it again. That is the failure this list exists to close.
 ///
 /// Discovery is deliberately narrow: the documented default, the override, and
-/// `.claude*` siblings directly under home. No recursion, nothing outside home.
+/// `.claude*` siblings directly under home. Legacy profiles retain v1 symlink support.
 fn claude_code_config_paths() -> Vec<PathBuf> {
     try_claude_code_config_paths().unwrap_or_else(|error| {
         let msg = format!("toolport: could not scan secondary Claude Code configs: {error}");
@@ -676,19 +675,29 @@ fn claude_code_config_paths() -> Vec<PathBuf> {
 
 fn try_claude_code_config_paths() -> Result<Vec<PathBuf>, String> {
     let home = home().ok_or("Could not resolve home for Claude Code configs")?;
+    let configured = client_config_path("claude-code");
     let dirs = legacy_claude_profile_dirs(&home)?;
-    Ok(claude_code_config_paths_from(&home, claude_config_dir_override().as_deref(), &dirs)
-        .into_iter()
-        .filter(|path| {
-            let legacy = path == &home.join(".claude.json")
-                || client_config_path("claude-code").as_ref() == Some(path)
-                || path.parent().and_then(|folder| folder.file_name()).and_then(|name| name.to_str()).is_some_and(legacy_claude_profile_name);
-            legacy || locations::automatic_path_is_safe(&home, path)
-        })
-        .filter(|path| match std::fs::metadata(path) {
-            Ok(meta) => meta.is_file(),
-            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
-        }).collect())
+    let mut paths = Vec::new();
+    for path in claude_code_config_paths_from(&home, claude_config_dir_override().as_deref(), &dirs) {
+        let legacy = path == home.join(".claude.json") || configured.as_ref() == Some(&path)
+            || path.parent().and_then(|folder| folder.file_name()).and_then(|name| name.to_str()).is_some_and(legacy_claude_profile_name);
+        if !legacy {
+            match std::fs::symlink_metadata(&path) {
+                Ok(meta) if meta.file_type().is_symlink() => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.to_string()),
+                Ok(_) if !locations::automatic_path_is_safe(&home, &path) => return Err("Could not validate automatic Claude Code config".into()),
+                Ok(_) => {},
+            }
+        }
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.is_file() => paths.push(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Ok(_) => return Err("Claude Code config is not an ordinary file".into()),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(paths)
 }
 
 /// Name-first, shallow discovery. Symlink directories are excluded so automatic
@@ -713,6 +722,7 @@ fn legacy_claude_profile_dirs(home: &Path) -> Result<Vec<String>, String> {
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if !legacy_claude_profile_name(&name) && !claude_profile_name(&name) { continue; }
+        if !legacy_claude_profile_name(&name) && entry.file_type().map_err(|error| error.to_string())?.is_symlink() { continue; }
         match std::fs::metadata(entry.path()) {
             Ok(meta) if meta.is_dir() => names.push(name),
             Ok(_) => {},

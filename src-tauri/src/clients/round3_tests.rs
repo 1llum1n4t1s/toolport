@@ -113,7 +113,7 @@ fn round3_unreadable_store_blocks_pruning_and_bulk_disconnect_reports_error() {
 fn round3_reserved_duplicates_removed_in_all_formats_and_foreign_slots_preserved() {
     let data = crate::registry::DataDirTestEnv::new("round3-duplicates");
     let gateway = entry(&data.dir.join("toolport-gateway"));
-    for (format, raw) in [
+    for (index, (format, raw)) in [
         (Format::JsonMcpServers, r#"{"mcpServers":{"toolport":{"command":"toolport-gateway"},"conduit":{"command":"conduit-gateway"},"foreign":{"command":"toolport-gateway"}}}"#),
         (Format::JsonZCodeMcp, r#"{"mcp":{"servers":{"toolport":{"type":"stdio","command":"toolport-gateway"},"conduit":{"type":"stdio","command":"conduit-gateway"},"foreign":{"type":"stdio","command":"toolport-gateway"}}}}"#),
         (Format::JsonOpenCodeMcp, r#"{"mcp":{"toolport":{"type":"local","command":["toolport-gateway"]},"conduit":{"type":"local","command":["conduit-gateway"]},"foreign":{"type":"local","command":["toolport-gateway"]}}}"#),
@@ -121,8 +121,9 @@ fn round3_reserved_duplicates_removed_in_all_formats_and_foreign_slots_preserved
         (Format::YamlExtensions, "extensions:\n  toolport: {type: stdio, cmd: toolport-gateway, enabled: true}\n  conduit: {type: stdio, cmd: conduit-gateway, enabled: true}\n  foreign: {type: stdio, cmd: toolport-gateway, enabled: true}\n"),
         (Format::YamlMcpServers, "mcp_servers:\n  toolport: {command: toolport-gateway}\n  conduit: {command: conduit-gateway}\n  foreign: {command: toolport-gateway}\n"),
         (Format::YamlMcpServersList, "mcpServers:\n  - {name: toolport, command: toolport-gateway}\n  - {name: conduit, command: conduit-gateway}\n  - {name: foreign, command: toolport-gateway}\n"),
-    ] {
-        let path = data.dir.join("fixture");
+    ].into_iter().enumerate() {
+        let path = data.dir.join(format!("format-{index}/config/native.json"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, raw).unwrap();
         edit_format(format, &path, Some(&gateway), true).unwrap();
         let rows = parse_client_content(format, &read_config_file(&path).unwrap()).unwrap();
