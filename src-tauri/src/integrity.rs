@@ -5231,10 +5231,14 @@ mod tests {
             for version in ["v1", "v2"] {
                 let mut pending = pin_of(&destructive_tool("srv__wipe", "Old definition."));
                 pending.fp = format!("{version}:captured-definition");
-                save_quarantine(profile, &BTreeMap::from([(
-                    "srv__wipe".to_string(),
-                    json!({"tool": "srv__wipe", "change": "changed", "pending_pin": pending}),
-                )])).unwrap();
+                save_quarantine(
+                    profile,
+                    &BTreeMap::from([(
+                        "srv__wipe".to_string(),
+                        json!({"tool": "srv__wipe", "change": "changed", "pending_pin": pending}),
+                    )]),
+                )
+                .unwrap();
                 let outcome = release_all(profile).unwrap();
                 assert_eq!(outcome.released, 1);
                 assert!(outcome.skipped.is_empty());
@@ -5260,14 +5264,20 @@ mod tests {
         let mut pin = pin_of(&destructive_tool(tool, "Old definition."));
         pin.fp = "v1:old-definition".into();
         save_pins(None, &BTreeMap::from([(tool.to_string(), pin)])).unwrap();
-        save_quarantine(None, &BTreeMap::from([(
-            tool.to_string(), json!({"tool": tool, "change": "changed"}),
-        )])).unwrap();
+        save_quarantine(
+            None,
+            &BTreeMap::from([(
+                tool.to_string(),
+                json!({"tool": tool, "change": "changed"}),
+            )]),
+        )
+        .unwrap();
         let error = release_all_inner(
             None,
             |_, _| Err("injected review-pin save failure".to_string()),
             save_quarantine,
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert!(error.contains("injected review-pin save failure"));
         assert!(quarantined(None).unwrap().contains(tool));
         let outcome = release_all(None).unwrap();
