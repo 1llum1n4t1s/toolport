@@ -707,6 +707,12 @@ it.each([
 });
 
 describe("SettingsView explicit data removal", () => {
+  beforeEach(() => {
+    vi.mocked(dataRemovalPlan).mockReset();
+    vi.mocked(removeToolportData).mockReset();
+    vi.mocked(disconnectAllClients).mockClear();
+  });
+
   it("shows an ownership error before confirmation or removal", async () => {
     const error =
       "Credential ownership inventory for /fixture/Toolport-dev/registry.json: unreadable";
