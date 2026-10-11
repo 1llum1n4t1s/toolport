@@ -100,7 +100,9 @@ try {
   await page.getByLabel("Config folder", { exact: true }).fill("/fixture/.claude2");
   await page.screenshot({ path: path.join(output, "client-location-add.png") });
   await page.getByRole("button", { name: "Add location", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "Add client location", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("dialog", { name: "Add client location", exact: true }),
+  ).toHaveCount(0);
   await expect(page.getByText("Claude Code (.claude2)", { exact: true })).toBeVisible();
   await page.screenshot({ path: path.join(output, "client-location-detail.png") });
   await page.getByRole("button", { name: "Clients", exact: true }).click();
