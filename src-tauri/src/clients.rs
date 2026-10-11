@@ -7961,7 +7961,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn symlinked_claude_profile_directories_are_discovered() {
+    fn automatic_claude_discovery_stays_inside_home() {
         use std::os::unix::fs::symlink;
 
         let root = temp_path("claude-symlink-profile");
@@ -7974,7 +7974,7 @@ mod tests {
         symlink(&target, home.join(".claude-work")).unwrap();
 
         let dirs = claude_profile_dirs(&home).unwrap();
-        assert!(dirs.iter().any(|name| name == ".claude-work"));
+        assert!(!dirs.iter().any(|name| name == ".claude-work"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

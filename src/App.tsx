@@ -281,11 +281,12 @@ function App() {
       setLoading(true);
       setError(null);
       try {
-        const [reg, dc, recovery] = await Promise.all([
-          getRegistry(),
+        const [dc, recovery] = await Promise.all([
           detectClients(view === "clients"),
           takeRegistryRecoveryNotice(),
         ]);
+        // Inspecting locations can adopt an existing gateway and its access.
+        const reg = await getRegistry();
         registryRef.current = reg;
         setRegistry(reg);
         setClients(dc);
