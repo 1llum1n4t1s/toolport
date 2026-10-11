@@ -135,13 +135,27 @@ fn other_installs(dir: &Path, candidates: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut others = Vec::new();
     for path in candidates {
         if path.is_dir() && std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()) != canonical
-            && std::fs::read_dir(&path).map_or(true, |mut entries| entries.next().is_some())
+            && has_registry_evidence(&path)
             && !others.contains(&path)
         {
             others.push(path);
         }
     }
     others
+}
+
+fn has_registry_evidence(dir: &Path) -> bool {
+    match std::fs::symlink_metadata(dir.join("registry.json")) {
+        Ok(_) => return true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(_) => return true, // Unreadable ownership must still block cleanup.
+    }
+    std::fs::read_dir(dir).map_or(true, |entries| entries.into_iter().any(|entry| {
+        entry.map_or(true, |entry| entry.file_name().to_str().is_some_and(|name| {
+            generated_file_name(name, |name| name == "registry.json"
+                || name.starts_with("registry.json.") && owned_data_file(name))
+        }))
+    }))
 }
 
 fn credential_scope(dir: &Path, others: &[PathBuf], all_installs: bool) -> Result<crate::secrets::purge::Scope, String> {
@@ -218,6 +232,8 @@ pub fn plan() -> Result<Plan, String> { plan_with_scope(false) }
 pub fn plan_with_scope(all_installs: bool) -> Result<Plan, String> {
 
     let dir = data_dir()?;
+    let others = other_installs(&dir, install_candidates(&dir));
+    credential_scope(&dir, &others, all_installs)?;
     let home = dirs::home_dir().ok_or("Could not resolve your home directory")?;
     let report = home.join(format!(
         "Toolport-removal-report-{}.json",
@@ -241,7 +257,7 @@ pub fn plan_with_scope(all_installs: bool) -> Result<Plan, String> {
             .map(|path| format!("{} (only Toolport's startup entry)", path.display())),
     );
     resources.extend(app_resources(&home).iter().map(|path| format!("{} (app cache/preferences/WebView storage; preserved when shared)", path.display())));
-    resources.extend(other_installs(&dir, install_candidates(&dir)).iter().map(|path| format!("{} (other install detected; its data is preserved)", path.display())));
+    resources.extend(others.iter().map(|path| format!("{} (other install detected; its data is preserved)", path.display())));
     Ok(Plan {
         data_dir: dir.display().to_string(),
         resources,
@@ -519,7 +535,7 @@ fn decimal(value: &str) -> bool {
 
 // registry::atomic_write and lock_at generate siblings of a known file, never
 // siblings of a directory. Apply the same rule at every selected depth.
-fn generated_file_name(name: &str, owned: fn(&str) -> bool) -> bool {
+fn generated_file_name(name: &str, owned: impl Fn(&str) -> bool) -> bool {
     if owned(name) { return true; }
     if let Some(base) = name.strip_suffix(".conduit-tmp") {
         return base.rsplit_once('.').is_some_and(|(base, seq)| {
