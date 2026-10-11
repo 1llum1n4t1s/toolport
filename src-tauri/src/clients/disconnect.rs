@@ -65,7 +65,9 @@ fn all_with_clients(
                 // Global removal can use the independent client snapshots without
                 // loading, migrating or overwriting a corrupt registry.
                 let def = find_def(id).ok_or("Unknown client")?;
-                restore_path(id, Path::new(path), def.format, None)
+                let native = recovery_paths.get(id).map(|(_, native)| native.as_path())
+                    .unwrap_or_else(|| Path::new(path));
+                restore_path(id, native, def.format, None)
             } else {
                 crate::registry_controller::disconnect_client(id).map(|result| result.outcome.warnings)
             }
@@ -399,6 +401,7 @@ mod tests {
             discovery: discovery::capabilities("claude-code"), config_path: selected.to_string_lossy().into_owned(),
             config_exists: true, app_present: true, servers, plugin_servers: Vec::new(),
             gateway_installed: true, entry_state: GatewayEntryState::Managed, error: None,
+            location_removable: false,
         };
         let results = all_with_clients(false, true, || vec![client]).unwrap();
         assert_eq!(results.len(), 1);

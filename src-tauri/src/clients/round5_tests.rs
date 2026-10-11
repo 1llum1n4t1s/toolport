@@ -143,6 +143,17 @@ fn round5_bulk_disconnect_matches_native_recovery_paths() {
     assert!(!read_client(&find_def(&id).unwrap()).config_path.starts_with(r"\\?\"));
     let results = disconnect_all(true).unwrap();
     assert_eq!(results.iter().filter(|result| result.client_id == id).count(), 1);
+    // The newly integrated global purge path must use the same native snapshot
+    // even when it cannot load the registry.
+    let registry_path = data.dir.join("registry.json");
+    std::fs::write(&registry_path, "broken").unwrap();
+    let results = disconnect::for_purge(true).unwrap();
+    assert_eq!(results.iter().filter(|result| result.client_id == id).count(), 1);
+    assert!(results.iter().all(|result| result.error.is_none()));
+    assert_eq!(std::fs::read_to_string(&registry_path).unwrap(), "broken");
+    assert_eq!(std::fs::read_to_string(&native).unwrap(), original);
+    crate::registry::save(&crate::registry::Registry::default()).unwrap();
+    install_or_remove(&id, Some(&entry)).unwrap();
     let results = disconnect_all(false).unwrap();
     assert_eq!(results.iter().filter(|result| result.client_id == id).count(), 1);
     assert!(results.iter().all(|result| result.error.is_none()));
