@@ -323,20 +323,25 @@ fn original_gateways(
     } else {
         gateway_names(format, &mutation::value(format, text)?)
     };
-    // Adopting an existing Toolport binary at a new location establishes its
-    // ownership. Disconnect must remove it rather than restore its old shared ID.
-    if client_id.contains('@') {
+    // Main adapters retain v1 binary ownership under any name. Added locations
+    // only adopt reserved names. Disconnect must not resurrect an old gateway
+    // from the initial snapshot after repair renamed or deduplicated it.
+    let registry = crate::registry_controller::registry_for_disconnect()?;
+    let servers = text.map(|text| parse_client_content(format, text)).transpose()?.unwrap_or_default();
+    let main_adapter = find_def(client_id).is_some_and(|def| def.location.is_none())
+        && entry_state_for(gateway_entry_for_client(client_id, &servers), registry.client_managed_entries.get(client_id)) == GatewayEntryState::Managed;
+    if client_id.contains('@') || main_adapter {
         if let Some(text) = text {
             for server in parse_client_content(format, text)? {
-                if matches!(server.name.as_str(), GATEWAY_ENTRY_NAME | LEGACY_GATEWAY_ENTRY_NAME) && command_is_gateway_binary(server.command.as_deref().unwrap_or(""))
+                if (main_adapter || gateway_identity_matches(&server.name, &server.name, None)) && command_is_gateway_binary(server.command.as_deref().unwrap_or(""))
                     && !names.contains(&server.name) { names.push(server.name); }
             }
         }
     }
-    let registry = crate::registry_controller::registry_for_disconnect()?;
     if let (Some(record), Some(text)) = (registry.client_managed_entries.get(client_id), text) {
         for server in parse_client_content(format, text)? {
-            if detected_is_gateway(&server)
+            if (!client_id.contains('@') || gateway_identity_matches(&server.name, &server.name, None))
+                && detected_is_gateway(&server)
                 && managed_matches_detected(&server, record)
                 && !names.contains(&server.name)
             {
