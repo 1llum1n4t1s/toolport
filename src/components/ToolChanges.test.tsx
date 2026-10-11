@@ -33,6 +33,20 @@ describe("server tool changes", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0].tools).toHaveLength(2);
   });
+  it("retains simultaneous profile findings with different severities", async () => {
+    release.mockClear();
+    const event = { ...securityFixture()[0], blocked: true, new_fp: "v3:same", profile: undefined };
+    const events = [
+      { ...event, severity: "high" as const, blocked_profiles: ["a"], profiles: ["a"] },
+      { ...event, severity: "warn" as const, blocked_profiles: ["b"], profiles: ["b"] },
+    ];
+    expect(groupToolChanges(events)[0].tools).toHaveLength(2);
+    render(<ToolChanges events={events} registry={registry} onAccept={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Accept all for this server" }));
+    await waitFor(() => expect(release).toHaveBeenCalledTimes(2));
+    expect(release).toHaveBeenCalledWith("a", event.tool, "v3:same");
+    expect(release).toHaveBeenCalledWith("b", event.tool, "v3:same");
+  });
   it("matches Rust sanitization for ASCII and Unicode scalar values", () => {
     expect(sanitizeSegment("file-system")).toBe("file_system");
     expect(sanitizeSegment("file.🛠️é_01")).toBe("file_____01");

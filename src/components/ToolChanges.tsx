@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { ChevronRight, ShieldCheck } from "lucide-react";
 import { releaseQuarantine, type SecurityEvent } from "@/lib/api";
+import { securityKey } from "@/lib/securityReview";
 import type { Registry } from "@/lib/types";
 import { toastError } from "@/lib/toast";
 
@@ -32,6 +33,8 @@ export function groupToolChanges(events: SecurityEvent[]) {
         !group.tools.some(
           (tool) =>
             tool.tool === event.tool &&
+            tool.severity === event.severity &&
+            tool.change === event.change &&
             tool.new_fp === event.new_fp &&
             tool.ts === event.ts,
         )
@@ -174,7 +177,7 @@ export function ToolChanges({
                 <div className="mt-3 space-y-2">
                   {group.tools.map((event) => (
                     <details
-                      key={`${event.tool}:${event.new_fp}:${event.ts}`}
+                      key={`${securityKey(event)}:${event.new_fp}:${event.ts}`}
                       className="rounded border border-border p-2 text-xs"
                     >
                       <summary className="cursor-pointer font-medium">

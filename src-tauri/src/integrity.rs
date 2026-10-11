@@ -4092,6 +4092,8 @@ pub fn group_tool_changes(events: &[Value]) -> Vec<ToolChangeGroup> {
         }) {
             if !group.tools.iter().any(|tool| {
                 tool["tool"] == event["tool"]
+                    && tool["severity"] == event["severity"]
+                    && tool["change"] == event["change"]
                     && tool["new_fp"] == event["new_fp"]
                     && tool["ts"] == event["ts"]
             }) {
@@ -4633,6 +4635,11 @@ mod tests {
         let groups = group_tool_changes(&events);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].tools.len(), 2);
+        let simultaneous = [
+            json!({"type":"tool_drift", "server":"srv", "tool":"srv__read", "new_fp":"v3:same", "ts":2, "severity":"high", "profiles":["a"]}),
+            json!({"type":"tool_drift", "server":"srv", "tool":"srv__read", "new_fp":"v3:same", "ts":2, "severity":"warn", "profiles":["b"]}),
+        ];
+        assert_eq!(group_tool_changes(&simultaneous)[0].tools.len(), 2, "distinct profile findings must not collapse even at the same timestamp");
         assert_eq!(
             tool_change_summary(&[json!({"change":"added"})]),
             "1 new tool"
