@@ -217,3 +217,27 @@ fn purge_r4_dev_leftovers_do_not_block_later_main_install_removal() {
     assert!(!main.join("registry.json").exists());
     assert_eq!(std::fs::read_to_string(dev.join("logs/other-app.log")).unwrap(), "user bytes");
 }
+
+
+#[cfg(target_os = "linux")]
+#[test]
+fn purge_r4_custom_plan_guidance_matches_post_removal_ownership_check() {
+    let env = conduit_lib::registry::DataDirTestEnv::new("purge_cli_r4_guidance");
+    let data = env.dir.join("custom-data");
+    std::fs::create_dir(&data).unwrap();
+    std::fs::write(data.join("registry.json"), serde_json::to_vec(&conduit_lib::registry::Registry::default()).unwrap()).unwrap();
+    let output = isolated_command(&env.dir, &data).args(["--remove-data", "--dry-run"]).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let plan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(plan["resources"].as_array().unwrap().iter().any(|entry| {
+        let text = entry.as_str().unwrap();
+        text.contains("custom data directory") && text.contains("before removing its registry")
+            && text.contains("OS credential manager")
+    }), "{plan}");
+    let output = isolated_command(&env.dir, &data).args(["--remove-data", "--confirm"]).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    assert!(!data.join("registry.json").exists());
+    let output = isolated_command(&env.dir, &data).args(["--remove-data", "--all-installs", "--confirm"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Could not verify Toolport ownership"));
+}

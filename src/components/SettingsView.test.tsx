@@ -708,15 +708,20 @@ it.each([
 
 describe("SettingsView explicit data removal", () => {
   it("shows an ownership error before confirmation or removal", async () => {
-    const error = "Credential ownership inventory for /fixture/Toolport-dev/registry.json: unreadable";
+    const error =
+      "Credential ownership inventory for /fixture/Toolport-dev/registry.json: unreadable";
     vi.mocked(dataRemovalPlan).mockRejectedValue(error);
     const user = userEvent.setup();
     renderSettings("help");
     await user.click(screen.getByRole("button", { name: "Remove Toolport data" }));
-    await waitFor(() => expect(mockedToastError).toHaveBeenCalledWith(
-      `Could not prepare data removal: ${error}`,
-    ));
-    expect(screen.queryByRole("dialog", { name: "Remove Toolport data?" })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(mockedToastError).toHaveBeenCalledWith(
+        `Could not prepare data removal: ${error}`,
+      ),
+    );
+    expect(
+      screen.queryByRole("dialog", { name: "Remove Toolport data?" }),
+    ).not.toBeInTheDocument();
     expect(removeToolportData).not.toHaveBeenCalled();
     expect(disconnectAllClients).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Remove Toolport data" })).toBeVisible();

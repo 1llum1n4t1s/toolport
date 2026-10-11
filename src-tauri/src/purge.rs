@@ -145,7 +145,12 @@ fn install_candidates(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn other_installs(dir: &Path, candidates: Vec<PathBuf>) -> Vec<PathBuf> {
-    other_installs_with(dir, candidates, crate::registry::devirtualized_dir)
+    other_installs_with(dir, candidates, |path| {
+        // Explicit overrides use the direct view in registry::compute_conduit_dir.
+        if crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR").is_some() {
+            path.to_path_buf()
+        } else { crate::registry::devirtualized_dir(path) }
+    })
 }
 
 fn other_installs_with(dir: &Path, candidates: Vec<PathBuf>, normalize: impl Fn(&Path) -> PathBuf) -> Vec<PathBuf> {
