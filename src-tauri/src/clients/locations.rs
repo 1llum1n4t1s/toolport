@@ -128,16 +128,46 @@ fn folder_key(folder: &str) -> String {
         .collect()
 }
 
+/// Automatic locations remain shallow, ordinary files inside home. Manual
+/// registration is the explicit opt-in to linked or external config paths.
+pub(super) fn automatic_path_is_safe(home: &Path, config: &Path) -> bool {
+    let Some(folder) = config.parent() else { return false; };
+    if folder.parent() != Some(home) || config.file_name().is_none_or(|name| name != ".claude.json")
+        || !folder.file_name().and_then(|name| name.to_str()).is_some_and(claude_profile_name)
+        || !std::fs::symlink_metadata(folder).is_ok_and(|meta| meta.is_dir())
+        || !std::fs::symlink_metadata(config).is_ok_and(|meta| meta.is_file())
+    { return false; }
+    let (Ok(root), Ok(folder), Ok(config)) = (std::fs::canonicalize(home), std::fs::canonicalize(folder), std::fs::canonicalize(config)) else { return false; };
+    folder.parent() == Some(root.as_path()) && config.parent() == Some(folder.as_path())
+}
+
+pub(super) fn validate(row: &ClientLocation) -> Result<(), String> {
+    if row.manual || (row.client_type == "claude-code" && home().is_some_and(|root| automatic_path_is_safe(&root, &row.config_path))) {
+        Ok(())
+    } else {
+        Err("This automatic client location needs attention. Choose an ordinary config file inside home, or add the location manually to use a linked or external folder.".into())
+    }
+}
+
+pub(super) fn validate_mutation(client_id: &str, path: &Path) -> Result<(), String> {
+    if !client_id.contains('@') { return Ok(()); }
+    let row = lookup(client_id).ok_or("Unknown client location")?;
+    validate(&row)?;
+    if !row.manual && path != row.config_path {
+        // Team instructions/settings in an automatic profile follow the same
+        // boundary, while an absent ordinary settings file may be created.
+        if path.parent() != row.config_path.parent()
+            || std::fs::symlink_metadata(path).is_ok_and(|meta| !meta.is_file())
+        { return Err("Automatic client settings must be ordinary files in their config folder".into()); }
+    }
+    Ok(())
+}
+
 fn automatic(home: &Path) -> Vec<ClientLocation> {
     let mut rows = Vec::new();
     for folder in claude_profile_dirs(home).unwrap_or_default() {
         let config_path = home.join(&folder).join(".claude.json");
-        if !std::fs::symlink_metadata(home.join(&folder)).is_ok_and(|metadata| metadata.is_dir()) {
-            continue;
-        }
-        if !std::fs::symlink_metadata(&config_path).is_ok_and(|metadata| metadata.is_file()) {
-            continue;
-        }
+        if !automatic_path_is_safe(home, &config_path) { continue; }
         rows.push(ClientLocation {
             id: format!("claude-code@{}", folder_key(&folder)),
             manual: false,
@@ -213,10 +243,7 @@ pub(super) fn lookup(id: &str) -> Option<ClientLocation> {
     }
     let root = home()?;
     let path = root.join(&folder);
-    // Do not follow an automatically discovered directory outside home later.
-    if !std::fs::symlink_metadata(&path).ok()?.is_dir() {
-        return None;
-    }
+    if !automatic_path_is_safe(&root, &path.join(".claude.json")) { return None; }
     Some(ClientLocation {
         id: id.into(),
         manual: false,
@@ -484,6 +511,111 @@ mod tests {
             .iter()
             .any(|row| row.id == "claude-code@claude2" && row.name == "Claude Code (claude2)"));
         assert_ne!(folder_key(".claude+a"), folder_key(".claude-a"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_automatic_file_link_never_reads_or_writes_outside() {
+        saved_automatic_link_never_reads_or_writes_outside(false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_automatic_folder_link_never_reads_or_writes_outside() {
+        saved_automatic_link_never_reads_or_writes_outside(true);
+    }
+
+    #[cfg(unix)]
+    fn saved_automatic_link_never_reads_or_writes_outside(directory_link: bool) {
+        {
+            let data = crate::registry::DataDirTestEnv::new("location-saved-link-r2");
+            let root = TempFolder::new();
+            let outside = TempFolder::new();
+            let _home = TestHome::set(root.path());
+            let folder = root.path().join(".claude2");
+            std::fs::create_dir(&folder).unwrap();
+            let path = folder.join(".claude.json");
+            std::fs::write(&path, "{}").unwrap();
+            let gateway = data.dir.join("toolport-gateway");
+            std::fs::write(&gateway, "fixture").unwrap();
+            let def = || {
+                let location = all().into_iter().find(|row| row.id == "claude-code@claude2").unwrap();
+                let mut def = defs().into_iter().find(|def| def.id == "claude-code").unwrap();
+                def.location = Some(location);
+                def
+            };
+            let rows = detect_clients_for_display_in(vec![def()], crate::registry::Registry::default(), Some(gateway.clone())).unwrap();
+            assert!(rows[0].error.is_none());
+            assert!(!saved().unwrap()[0].manual);
+            let stale_def = def();
+            let original = r#"{"mcpServers":{"conduit":{"command":"/old/conduit-gateway","env":{"CONDUIT_CLIENT_ID":"claude-code"}}}}"#;
+            let external = outside.path().join(".claude.json");
+            std::fs::write(&external, original).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            if directory_link {
+                std::fs::remove_dir(&folder).unwrap();
+                std::os::unix::fs::symlink(outside.path(), &folder).unwrap();
+            } else {
+                std::os::unix::fs::symlink(&external, &path).unwrap();
+            }
+            // A definition captured before the replacement must also be safe.
+            let read = read_client(&stale_def);
+            assert!(read.error.is_some(), "directory_link={directory_link}");
+            assert!(read.servers.is_empty());
+            let rows = detect_clients_for_display_in(vec![def()], crate::registry::Registry::default(), Some(gateway)).unwrap();
+            assert!(rows[0].error.is_some());
+            assert_eq!(rows[0].config_path, path.to_string_lossy());
+            let id = "claude-code@claude2";
+            assert!(install_gateway(id, None).is_err());
+            assert!(uninstall_gateway(id).is_err());
+            assert!(claude_code_config_paths().iter().all(|candidate| candidate != &path));
+            let mut outcome = RepointOutcome::default();
+            repoint_other_claude_configs("/new/toolport-gateway", &mut outcome);
+            assert!(outcome.extra_claude_repointed.is_empty());
+            assert_eq!(std::fs::read_to_string(&external).unwrap(), original);
+            // Registering the linked folder is the explicit opt-in to that target.
+            let manual = add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
+            assert!(find_def(&manual).unwrap().location.unwrap().manual);
+            let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport", "transport":"stdio", "command":"/new/toolport-gateway"})).unwrap();
+            install_or_remove(&manual, Some(&entry)).unwrap();
+            assert!(std::fs::read_to_string(&external).unwrap().contains("/new/toolport-gateway"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn automatic_location_link_swap_before_commit_is_refused() {
+        for directory_link in [false, true] {
+            let _data = crate::registry::DataDirTestEnv::new("location-link-swap-r2");
+            let root = TempFolder::new();
+            let outside = TempFolder::new();
+            let _home = TestHome::set(root.path());
+            let folder = root.path().join(".claude2");
+            std::fs::create_dir(&folder).unwrap();
+            let path = folder.join(".claude.json");
+            std::fs::write(&path, "{}").unwrap();
+            remember(&automatic(root.path()).remove(0)).unwrap();
+            let external = outside.path().join(".claude.json");
+            // Matching contents also exercise the boundary independently of
+            // optimistic content conflicts.
+            std::fs::write(&external, "{}").unwrap();
+            let target = external.clone();
+            mutation::BEFORE_COMMIT.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move |path| {
+                    std::fs::remove_file(path).unwrap();
+                    if directory_link {
+                        std::fs::remove_dir(path.parent().unwrap()).unwrap();
+                        std::os::unix::fs::symlink(target.parent().unwrap(), path.parent().unwrap()).unwrap();
+                    } else {
+                        std::os::unix::fs::symlink(&target, path).unwrap();
+                    }
+                }));
+            });
+            let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport", "transport":"stdio", "command":"toolport-gateway"})).unwrap();
+            let error = install_or_remove("claude-code@claude2", Some(&entry)).unwrap_err();
+            assert!(error.contains("needs attention"), "{error}");
+            assert_eq!(std::fs::read_to_string(external).unwrap(), "{}");
+        }
     }
 
     #[cfg(unix)]

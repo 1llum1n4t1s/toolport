@@ -205,6 +205,7 @@ fn run_inner<T>(
     jsonc_settings: bool,
     mut edit: impl FnMut() -> Result<T, String>,
 ) -> Result<T, String> {
+    super::locations::validate_mutation(client_id, path)?;
     // Nested calls (move -> write_servers, disconnect -> install_or_remove) share
     // the outer operation. No writer can commit half of a migration.
     if PENDING.with(|slot| slot.borrow().is_some()) {
@@ -212,6 +213,7 @@ fn run_inner<T>(
     }
     let dir = crate::registry::conduit_dir().ok_or("Could not resolve data dir")?;
     let _lock = crate::registry::lock_at(&dir.join("client-config-mutation"))?;
+    super::locations::validate_mutation(client_id, path)?;
     let mut revision = crate::registry::client_file::read(path)?;
     let mut original = revision.text.clone();
     let strict_json = !jsonc_settings
@@ -259,6 +261,7 @@ fn run_inner<T>(
         let output = pending.output;
         #[cfg(test)]
         before_commit(path);
+        super::locations::validate_mutation(client_id, path)?;
         let current_revision = crate::registry::client_file::read(path)?;
         let current = current_revision.text.clone();
         if current != original {
@@ -291,7 +294,8 @@ fn run_inner<T>(
                 pending.disconnecting,
                 jsonc_settings,
             )?;
-            let commit = crate::registry::client_file::commit(path, &revision, output.as_deref());
+            let commit = super::locations::validate_mutation(client_id, path)
+                .and_then(|()| crate::registry::client_file::commit(path, &revision, output.as_deref()));
             if commit.is_err() {
                 recovery.rollback()?;
             }
@@ -305,6 +309,7 @@ fn run_inner<T>(
         match commit {
             Ok(()) => return Ok(result),
             Err(e) if e == "Client config revision changed before rename" => {
+                super::locations::validate_mutation(client_id, path)?;
                 let current_revision = crate::registry::client_file::read(path)?;
                 let current = current_revision.text.clone();
                 if !unrelated(

@@ -340,7 +340,25 @@ pub fn detected_is_gateway(server: &McpServer) -> bool {
 }
 
 fn home() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_HOME.with(|slot| slot.borrow().clone()) { return Some(path); }
     dirs::home_dir()
+}
+
+#[cfg(test)]
+thread_local! { static TEST_HOME: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) }; }
+
+#[cfg(test)]
+struct TestHome(Option<PathBuf>);
+#[cfg(test)]
+impl TestHome {
+    fn set(path: &Path) -> Self {
+        Self(TEST_HOME.with(|slot| slot.replace(Some(path.to_path_buf()))))
+    }
+}
+#[cfg(test)]
+impl Drop for TestHome {
+    fn drop(&mut self) { TEST_HOME.with(|slot| { slot.replace(self.0.take()); }); }
 }
 
 /// OS family for cross-platform path expectations. Production code uses
@@ -637,7 +655,7 @@ fn claude_code_config_paths() -> Vec<PathBuf> {
     let Some(home) = home() else {
         return Vec::new();
     };
-    let dirs = match claude_profile_dirs_with_links(&home, true) {
+    let dirs = match claude_profile_dirs(&home) {
         Ok(dirs) => dirs,
         Err(error) => {
             let msg = format!(
@@ -649,8 +667,10 @@ fn claude_code_config_paths() -> Vec<PathBuf> {
             Vec::new()
         }
     };
+    let configured = client_config_path("claude-code");
     claude_code_config_paths_from(&home, claude_config_dir_override().as_deref(), &dirs)
         .into_iter()
+        .filter(|path| configured.as_ref() == Some(path) || locations::automatic_path_is_safe(&home, path))
         .filter(|p| p.is_file())
         .collect()
 }
@@ -1429,6 +1449,7 @@ fn resolve_opencode_config_path(json_path: PathBuf) -> Result<PathBuf, String> {
 }
 
 fn resolved_definition_path(def: &ClientDef) -> Result<PathBuf, String> {
+    if let Some(location) = &def.location { locations::validate(location)?; }
     let path = def.location.as_ref().map(|location| location.config_path.clone())
         .or_else(|| (def.path)()).ok_or("Could not resolve a config path on this OS")?;
     if def.id == "opencode" {
@@ -3426,12 +3447,12 @@ fn read_client(def: &ClientDef) -> DetectedClient {
     let path = match resolved_definition_path(def) {
         Ok(path) => path,
         Err(error) => {
-            let fallback = (def.path)();
+            let fallback = def.location.as_ref().map(|row| row.config_path.clone()).or_else(|| (def.path)());
             let config_path = fallback
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_default();
-            let config_exists = fallback
+            let config_exists = def.location.is_none() && fallback
                 .as_ref()
                 .is_some_and(|path| mutation::exists(&path));
             return build(config_path, config_exists, Vec::new(), Some(error));
@@ -7966,7 +7987,7 @@ mod tests {
         let config = data.dir.join(".claude.json");
         std::fs::write(&config, r#"{"mcpServers":{"notes":{"command":"notes"}}}"#).unwrap();
         let mut bad = defs().into_iter().find(|def| def.id == "claude-code").unwrap();
-        bad.location = Some(locations::ClientLocation { id: "claude-code@fixture".into(), manual: false,
+        bad.location = Some(locations::ClientLocation { id: "claude-code@fixture".into(), manual: true,
             client_type: "claude-code".into(), name: "Claude Code (fixture)".into(), config_path: config });
         let good = defs().into_iter().find(|def| def.id == "codex").unwrap();
         let rows = detect_clients_for_display_in(vec![bad, good], crate::registry::Registry::default(), None).unwrap();
