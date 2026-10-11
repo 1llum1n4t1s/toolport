@@ -7916,7 +7916,8 @@ mod tests {
             let id = add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
             let def = find_def(&id).unwrap();
             if name == "bad" {
-                let record = restore::record_path(&id, &folder.join(".claude.json")).unwrap();
+                let config_path = resolved_definition_path(&def).unwrap();
+                let record = restore::record_path(&id, &config_path).unwrap();
                 std::fs::create_dir_all(record.parent().unwrap()).unwrap();
                 std::fs::write(record, "broken snapshot").unwrap();
             }

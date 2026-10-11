@@ -448,6 +448,7 @@ mod tests {
             "notes":{"command":"notes"}}});
         std::fs::write(&path, original.to_string()).unwrap();
         let id = add_client_location("claude-code", folder.path().to_str().unwrap()).unwrap();
+        let path = resolved_definition_path(&find_def(&id).unwrap()).unwrap();
         moved::record_selected(&id, Format::JsonMcpServers, &path, &["notes".into()]).unwrap();
         let mut moved_config = original.clone();
         moved_config["mcpServers"].as_object_mut().unwrap().remove("notes");
