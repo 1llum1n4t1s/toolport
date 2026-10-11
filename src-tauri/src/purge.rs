@@ -156,10 +156,6 @@ fn credential_scope(dir: &Path, others: &[PathBuf], all_installs: bool) -> Resul
         let registry: serde_json::Value = serde_json::from_slice(&std::fs::read(&registry_path).map_err(|e| error(e.to_string()))?)
             .map_err(|e| error(e.to_string()))?;
         let servers = registry["servers"].as_array().ok_or_else(|| error("missing servers array".into()))?;
-        // A sole install owns the whole service, including accounts for deleted servers.
-        if others.is_empty() {
-            return Ok(crate::secrets::purge::Scope { all_installs: true, server_ids: ids });
-        }
         ids.extend(servers.iter().filter_map(|server| server["id"].as_str().map(str::to_owned)));
     }
     for other in others {
@@ -234,7 +230,7 @@ pub fn plan_with_scope(all_installs: bool) -> Result<Plan, String> {
     let mut resources = vec![
         format!("Toolport-created entries in {}: registry, settings, logs, caches, migration exports, client backups, encrypted secrets and published gateways in bin/. Other entries are preserved.", dir.display()),
         if all_installs { "ALL credentials in the shared conduit-mcp service for every Toolport install, including master keys and Team tokens. Other installations will lose access to these credentials.".into() }
-        else { "All Toolport credentials when this is the sole detected install with readable ownership. Otherwise, only this registry's accounts; shared and unknown accounts are preserved. Use --all-installs in the CLI to explicitly clear the entire shared service.".into() },
+        else { "Only accounts owned by this registry, excluding server ids used by detected other installs. Shared and unknown credentials are preserved because they may belong to another Toolport install. To remove them too, use toolport-gateway --remove-data --all-installs --confirm in the CLI.".into() },
         "Toolport's daemon for this data directory, after all active sessions have closed".into(),
     ];
     #[cfg(target_os = "windows")]
@@ -428,6 +424,9 @@ fn run_with(
                 report.notes.push("Team tokens deleted from this machine were removed locally only; no server-side revoke endpoint is available in the Teams client.".into());
             }
             report.removed.extend(removal.removed);
+            if !removal.preserved.is_empty() {
+                report.notes.push("Preserved credentials may belong to another Toolport install. To remove all shared credentials, use toolport-gateway --remove-data --all-installs --confirm.".into());
+            }
             report.preserved.extend(removal.preserved);
             report.notes.extend(removal.notes);
             report.leftovers.extend(removal.leftovers);
@@ -986,7 +985,8 @@ mod tests {
         assert_eq!(scope.server_ids, std::collections::HashSet::from(["dev-only".into()]));
         assert!(!scope.all_installs);
         let scope = credential_scope(&dev, &[], false).unwrap();
-        assert!(scope.all_installs);
+        assert!(!scope.all_installs);
+        assert_eq!(scope.server_ids, std::collections::HashSet::from(["shared".into(), "dev-only".into()]));
         assert!(credential_scope(&dev, &others, true).unwrap().all_installs);
         std::fs::remove_file(main.join("registry.json")).unwrap();
         assert!(credential_scope(&dev, &others, false).unwrap().server_ids.is_empty());
@@ -1057,11 +1057,12 @@ mod tests {
     }
 
     #[test]
-    fn purge_sole_install_clears_service_only_with_readable_ownership() {
+    fn purge_global_credentials_require_explicit_consent() {
         let env = crate::registry::DataDirTestEnv::new("purge_sole_install");
         assert!(!credential_scope(&env.dir, &[], false).unwrap().all_installs);
         std::fs::write(env.dir.join("registry.json"), r#"{"servers":[]}"#).unwrap();
-        assert!(credential_scope(&env.dir, &[], false).unwrap().all_installs);
+        assert!(!credential_scope(&env.dir, &[], false).unwrap().all_installs);
+        assert!(credential_scope(&env.dir, &[], true).unwrap().all_installs);
         let other = env.dir.join("other");
         std::fs::create_dir(&other).unwrap();
         let scope = credential_scope(&env.dir, &[other], false).unwrap();

@@ -20,7 +20,8 @@ pub(crate) struct Scope {
 impl Scope {
     fn owns(&self, account: &str) -> bool {
         self.all_installs || account.split_once("::")
-            .is_some_and(|(id, _)| self.server_ids.contains(id))
+            .is_some_and(|(id, _)| id != "__toolport_internal__" && id != "__conduit_master_key__"
+                && id != crate::teams::TEAM_TOKEN_SERVER && self.server_ids.contains(id))
     }
 }
 
@@ -417,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn purge_sole_install_removes_master_internal_and_deleted_server_accounts() {
+    fn purge_explicit_global_scope_removes_master_internal_and_deleted_server_accounts() {
         let items = ["__conduit_master_key__", "__toolport_internal__::task_key", "deleted-server::TOKEN", "mine::TOKEN::toolport-chunk::generation::0"];
         let scope = Scope { all_installs: true, server_ids: Default::default() };
         let report = remove_owned(items, &scope, |account| Ok(("conduit-mcp".into(), (*account).into())), |account| (*account).into(), |_| Ok(()));
@@ -438,6 +439,19 @@ mod tests {
         }
         let report = remove_owned([team], &Scope { all_installs: false, server_ids: Default::default() },
             |account| Ok(("conduit-mcp".into(), (*account).into())), |account| (*account).into(), |_| panic!("shared token must stay"));
+        assert!(!report.team_token_removed);
+    }
+
+    #[test]
+    fn purge_default_scope_preserves_shared_and_unknown_accounts_even_without_detected_installs() {
+        let items = ["mine::TOKEN", "mine::TOKEN::toolport-chunk::generation::0", "work::TOKEN",
+            "__conduit_master_key__", "__toolport_internal__::task_key", "__conduit_team__::member_token", "unknown"];
+        let scope = Scope { all_installs: false, server_ids: std::collections::HashSet::from([
+            "mine".into(), "__toolport_internal__".into(), "__conduit_team__".into()]) };
+        let report = remove_owned(items, &scope, |account| Ok(("conduit-mcp".into(), (*account).into())),
+            |account| (*account).into(), |_| Ok(()));
+        assert_eq!(report.removed, items[..2]);
+        assert_eq!(report.preserved, items[2..]);
         assert!(!report.team_token_removed);
     }
 

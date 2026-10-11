@@ -78,13 +78,14 @@ The action removes Toolport-created entries from the selected data directory,
 including registry, logs, caches, migration exports, client backups, encrypted
 secrets and published gateway copies in `bin/`. Other files and folders are
 preserved and listed in the report. The empty directory may remain.
-For a sole detected install with readable ownership, credential removal clears
-all Toolport accounts, including shared master keys and accounts for servers
-removed earlier. With another detected Toolport, Conduit or development install,
-cleanup is limited to the current registry's server accounts. Accounts also used
-by that install, shared master keys and unknown accounts are preserved. Unreadable
-ownership keeps credentials for retry. A custom data directory also checks the
-default location. Shared Team tokens are preserved when another install exists.
+Settings and the default CLI action remove only the selected registry's server
+accounts, excluding ids owned by detected other installs. Shared master keys,
+internal keys, Team tokens and unknown accounts are always preserved because they
+may belong to another Toolport install. Settings stays scoped; the CLI option
+below provides explicit consent to remove shared credentials. Accounts have no
+install id, so an undiscovered install using the same server id shares that token.
+Unreadable ownership in another detected install blocks credential cleanup and
+keeps the selected registry for retry. The report names the unreadable path.
 Removed Team tokens are deleted locally only; the Teams client has no server-side
 revoke endpoint.
 
