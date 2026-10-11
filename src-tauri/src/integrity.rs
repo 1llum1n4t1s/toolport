@@ -2243,6 +2243,18 @@ fn apply_quarantine_inner(
     apply_quarantine_inner_with(profile, current, events, save_quarantine)
 }
 
+// Poison wins ties with other high findings. Older records without an explicit
+// severity retain their historical high tier rather than being downgraded.
+fn quarantine_priority(record: &Value) -> u8 {
+    if record["change"] == "poison" {
+        3
+    } else if record["severity"] == "warn" {
+        1
+    } else {
+        2
+    }
+}
+
 fn apply_quarantine_inner_with(
     profile: Option<&str>,
     current: &(impl ToolCatalog + ?Sized),
@@ -2320,7 +2332,16 @@ fn apply_quarantine_inner_with(
         return Ok(added);
     }
 
-    for e in events {
+    let mut strongest: BTreeMap<&str, &Value> = BTreeMap::new();
+    for event in events.iter().filter(|event| is_high_risk_drift(event)) {
+        if let Some(tool) = event["tool"].as_str() {
+            let selected = strongest.entry(tool).or_insert(event);
+            if quarantine_priority(event) > quarantine_priority(selected) {
+                *selected = event;
+            }
+        }
+    }
+    for e in strongest.into_values() {
         let (Some(tool), Some(change)) = (
             e.get("tool").and_then(Value::as_str),
             e.get("change").and_then(Value::as_str),
@@ -2356,7 +2377,7 @@ fn apply_quarantine_inner_with(
             // time by Block/Confirm/Require-approval if those are on.
             _ => continue,
         };
-        if !q.contains_key(tool) {
+        if q.get(tool).is_none_or(|record| quarantine_priority(e) > quarantine_priority(record)) {
             let server = e.get("server").and_then(Value::as_str).unwrap_or("?");
             let (definition, source) = current
                 .pin_values()
@@ -2372,6 +2393,7 @@ fn apply_quarantine_inner_with(
                 "server": server,
                 "tool": tool,
                 "reason": reason,
+                "severity": e["severity"],
                 "change": change,
                 "pending_pin": pending,
                 "definition": definition,
@@ -5370,6 +5392,33 @@ mod tests {
                 assert!(check_staged(profile, &tools).unwrap().is_empty());
             }
         }
+    }
+
+    #[test]
+    fn quarantine_reason_keeps_the_most_severe_finding() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("quarantine-reason-severity");
+        let current = vec![destructive_tool("srv__wipe", "Changed definition.")];
+        let poison = json!({"tool":"srv__wipe", "server":"srv", "change":"poison", "severity":"high"});
+        for review in [false, true] {
+            for reverse in [false, true] {
+                save_quarantine(None, &Quarantine::new()).unwrap();
+                let changed = json!({"tool":"srv__wipe", "server":"srv", "change":"changed", "severity":"high", "review_required":review});
+                let events = if reverse { vec![poison.clone(), changed.clone()] } else { vec![changed.clone(), poison.clone()] };
+                apply_quarantine(None, &current, &events).unwrap();
+                let record = load_quarantine(None).unwrap()["srv__wipe"].clone();
+                assert_eq!(record["reason"], "a poisoned definition was detected");
+                assert_eq!(record["change"], "poison");
+                // A later softer event cannot replace the warning either.
+                apply_quarantine(None, &current, &[changed]).unwrap();
+                assert_eq!(load_quarantine(None).unwrap()["srv__wipe"]["reason"], record["reason"]);
+            }
+        }
+        save_quarantine(None, &Quarantine::new()).unwrap();
+        let warn = json!({"tool":"srv__wipe", "server":"srv", "change":"changed", "severity":"warn"});
+        apply_quarantine(None, &current, &[warn]).unwrap();
+        apply_quarantine(None, &current, &[poison]).unwrap();
+        assert_eq!(load_quarantine(None).unwrap()["srv__wipe"]["change"], "poison", "upgrade an already blocked softer finding");
     }
 
     #[test]
