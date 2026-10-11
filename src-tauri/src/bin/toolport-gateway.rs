@@ -10394,11 +10394,21 @@ fn requarantine_if_needed(
                     // A release racing this gate waits for a candidate that includes
                     // its definition. Preserve any hide whose catalog was not checked.
                     stored.extend(built.quarantined().iter().cloned());
-                    built.requarantine(stored);
+                    let changed = &stored != built.quarantined();
+                    if changed {
+                        built.requarantine(stored);
+                    }
+                    if changed || built.catalog_fail_closed() {
+                        built.shared_tools()
+                    } else {
+                        tools
+                    }
                 }
-                None => built.fail_closed_catalog(),
+                None => {
+                    built.fail_closed_catalog();
+                    built.shared_tools()
+                }
             }
-            built.shared_tools()
         }
         Err((e, pending)) => {
             glog(&format!(
