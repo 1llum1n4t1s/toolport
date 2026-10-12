@@ -12214,7 +12214,7 @@ mod tests {
         settle();
         assert_eq!(
             page.last_snapshot.borrow().as_ref().unwrap().recent[0].tool,
-            "first"
+            "server__first"
         );
         let before = page.revision.borrow().clone();
         std::fs::write(&path, second).unwrap();
@@ -12229,7 +12229,7 @@ mod tests {
         assert_ne!(*page.revision.borrow(), before);
         assert_eq!(
             page.last_snapshot.borrow().as_ref().unwrap().recent[0].tool,
-            "other"
+            "server__other"
         );
         // Begin another worker then hide before its UI completion is delivered.
         page.check_revision();
