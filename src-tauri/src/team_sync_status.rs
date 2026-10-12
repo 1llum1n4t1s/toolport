@@ -69,10 +69,17 @@ fn for_connection(conn: &TeamConnection) -> SyncStatus {
 }
 
 pub fn current() -> SyncStatus {
-    let mut status = registry::load()
-        .ok()
-        .and_then(|r| r.team)
-        .map(|conn| for_connection(&conn))
+    registry::load()
+        .map(|registry| for_registry(&registry))
+        .unwrap_or_else(|_| for_registry(&registry::Registry::default()))
+}
+
+/// Read the receipt for an already loaded connection, keeping native snapshots coherent.
+pub fn for_registry(registry: &registry::Registry) -> SyncStatus {
+    let mut status = registry
+        .team
+        .as_ref()
+        .map(for_connection)
         .unwrap_or_default();
     // A retained receipt describes the last check, never an indefinitely live connection.
     if now_ms().saturating_sub(status.checked_at_ms) > 90_000 {

@@ -7,16 +7,27 @@ use adw::prelude::*;
 use image::GenericImageView;
 use ksni::blocking::TrayMethods;
 
-/// Written by the approval page on every poll, read by the tray timer. The
+/// Written by the approval page when its queue changes. The
 /// count must be visible with the window hidden - that is the whole point of a
 /// tray - so it lives here rather than in any page state.
 static PENDING_APPROVALS: AtomicUsize = AtomicUsize::new(0);
 
 pub(super) fn set_pending(count: usize) {
-    PENDING_APPROVALS.store(count, Ordering::Relaxed);
+    if PENDING_APPROVALS.swap(count, Ordering::Relaxed) != count {
+        TRAY_COMMANDS.with(|commands| {
+            if let Some(commands) = commands.borrow().as_ref() {
+                let _ = commands.send(Command::Pending(count));
+            }
+        });
+    }
+}
+
+thread_local! {
+    static TRAY_COMMANDS: std::cell::RefCell<Option<mpsc::Sender<Command>>> = const { std::cell::RefCell::new(None) };
 }
 
 enum Command {
+    Pending(usize),
     Show,
     ShowApprovals,
     Quit,
@@ -105,34 +116,6 @@ impl ksni::Tray for ToolportTray {
     }
 }
 
-/// Whether a StatusNotifierWatcher actually owns its bus name right now. The
-/// tray itself is spawned with `assume_sni_available` so the icon appears when
-/// a host shows up later, but hidden launches must not trust that assumption:
-/// on a desktop with no SNI host (stock GNOME) a hidden window with no tray
-/// icon is unreachable.
-pub(super) fn sni_watcher_present() -> bool {
-    let Ok(connection) =
-        gtk::gio::bus_get_sync(gtk::gio::BusType::Session, gtk::gio::Cancellable::NONE)
-    else {
-        return false;
-    };
-    connection
-        .call_sync(
-            Some("org.freedesktop.DBus"),
-            "/org/freedesktop/DBus",
-            "org.freedesktop.DBus",
-            "NameHasOwner",
-            Some(&("org.kde.StatusNotifierWatcher",).into()),
-            Some(gtk::glib::VariantTy::new("(b)").expect("static variant type")),
-            gtk::gio::DBusCallFlags::NONE,
-            1000,
-            gtk::gio::Cancellable::NONE,
-        )
-        .ok()
-        .and_then(|reply| reply.child_value(0).get::<bool>())
-        .unwrap_or(false)
-}
-
 /// How long a hidden launch waits for a tray host before showing the window.
 /// At login the host (the Omarchy shell, Waybar) often starts in the same
 /// second as Toolport and registers its watcher a moment later.
@@ -142,55 +125,65 @@ pub(super) const HOST_GRACE: Duration = Duration::from_secs(15);
 /// may still be starting, and present it if none appears within `grace` so the
 /// app never sits running with no way to reach it.
 pub(super) fn present_unless_host_appears(app: &adw::Application, grace: Duration) {
-    let poll = Duration::from_millis(500);
-    let mut remaining = grace.as_millis() / poll.as_millis();
+    let appeared = std::rc::Rc::new(std::cell::Cell::new(false));
+    let present = appeared.clone();
+    let watcher = gtk::gio::bus_watch_name(
+        gtk::gio::BusType::Session,
+        "org.kde.StatusNotifierWatcher",
+        gtk::gio::BusNameWatcherFlags::NONE,
+        move |_, _, _| present.set(true),
+        |_, _| {},
+    );
     let app = app.clone();
-    gtk::glib::timeout_add_local(poll, move || {
-        if sni_watcher_present() {
-            return gtk::glib::ControlFlow::Break;
+    gtk::glib::timeout_add_local_once(grace, move || {
+        gtk::gio::bus_unwatch_name(watcher);
+        if !appeared.get() {
+            if let Some(window) = app.windows().into_iter().next() {
+                window.present();
+            }
         }
-        remaining = remaining.saturating_sub(1);
-        if remaining > 0 {
-            return gtk::glib::ControlFlow::Continue;
-        }
-        if let Some(window) = app.windows().into_iter().next() {
-            window.present();
-        }
-        gtk::glib::ControlFlow::Break
     });
 }
 
 pub(super) fn start(app: &adw::Application) -> Option<ksni::blocking::Handle<ToolportTray>> {
     let (sender, receiver) = mpsc::channel();
     let handle = ToolportTray {
-        commands: sender,
+        commands: sender.clone(),
         pending: 0,
     }
     .assume_sni_available(true)
     .spawn()
     .ok()?;
-    let app = app.clone();
+    PENDING_APPROVALS.store(0, Ordering::Relaxed);
+    TRAY_COMMANDS.with(|commands| *commands.borrow_mut() = Some(sender));
+    let app: gtk::glib::SendWeakRef<adw::Application> = app.downgrade().into();
     let handle_for_updates = handle.clone();
-    let mut shown_pending = 0usize;
-    gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
-        for command in receiver.try_iter() {
-            match command {
-                Command::Show => app.activate(),
-                Command::ShowApprovals => {
-                    app.activate();
-                    if let Some(action) = app.lookup_action("show-servers") {
-                        action.activate(None);
-                    }
-                }
-                Command::Quit => app.quit(),
+    // Block on commands on one worker. GTK wakes only for an actual tray action;
+    // pending-count updates go straight to the SNI worker even while hidden.
+    std::thread::spawn(move || {
+        while let Ok(command) = receiver.recv() {
+            if let Command::Pending(pending) = command {
+                let _ = handle_for_updates.update(move |tray| tray.pending = pending);
+                continue;
             }
+            let app = app.clone();
+            gtk::glib::idle_add_once(move || {
+                let Some(app) = app.upgrade() else {
+                    return;
+                };
+                match command {
+                    Command::Show => app.activate(),
+                    Command::ShowApprovals => {
+                        app.activate();
+                        if let Some(action) = app.lookup_action("show-servers") {
+                            action.activate(None);
+                        }
+                    }
+                    Command::Quit => app.quit(),
+                    Command::Pending(_) => {}
+                }
+            });
         }
-        let pending = PENDING_APPROVALS.load(Ordering::Relaxed);
-        if pending != shown_pending {
-            shown_pending = pending;
-            let _ = handle_for_updates.update(move |tray| tray.pending = pending);
-        }
-        gtk::glib::ControlFlow::Continue
     });
     Some(handle)
 }

@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
@@ -625,6 +625,15 @@ pub(super) enum RegistryState {
 impl RegistrySnapshot {
     pub(super) fn from_registry(registry: Registry) -> Self {
         let active_profile_id = registry.active_profile_id();
+        // Origin labels need only the registry's conflict map, not the disk
+        // receipt timestamp. This conversion also runs after UI mutations.
+        let sync_state = registry
+            .team
+            .as_ref()
+            .and_then(|team| team.unknown_fields.get("personalSyncState"))
+            .and_then(|value| {
+                serde_json::from_value::<crate::personal_sync::SyncState>(value.clone()).ok()
+            });
         let servers = registry
             .servers
             .iter()
@@ -634,7 +643,7 @@ impl RegistrySnapshot {
                     origin_label: if crate::personal_sync::is_personal(&registry) {
                         if crate::personal_sync::keep_local(server) {
                             "This machine only".into()
-                        } else if crate::personal_sync::state(&registry).is_ok_and(|st| {
+                        } else if sync_state.as_ref().is_some_and(|st| {
                             st.conflicts.contains_key(
                                 server
                                     .unknown_fields
@@ -817,74 +826,49 @@ fn load_read_only(path: Option<&Path>) -> RegistryState {
 
 pub(super) struct RegistryController {
     path: Option<PathBuf>,
-    render: Box<dyn Fn(RegistryState)>,
+    reader: Rc<super::io::SnapshotReader<RegistryState>>,
     monitors: RefCell<Vec<gio::FileMonitor>>,
-    reload_pending: Cell<bool>,
-    /// Bumped per background read so an older read that lands late never
-    /// replaces a newer one.
-    reload_generation: Cell<u64>,
 }
 
 impl RegistryController {
     pub(super) fn new(render: impl Fn(RegistryState) + 'static) -> Rc<Self> {
+        let path = registry::resolved_path();
+        let read_path = path.clone();
         Rc::new(Self {
-            path: registry::resolved_path(),
-            render: Box::new(render),
+            path,
+            reader: super::io::SnapshotReader::new(
+                move || load_read_only(read_path.as_deref()),
+                render,
+            ),
             monitors: RefCell::new(Vec::new()),
-            reload_pending: Cell::new(false),
-            reload_generation: Cell::new(0),
         })
     }
 
     pub(super) fn attach(self: &Rc<Self>, window: &adw::ApplicationWindow) {
-        self.reload();
         self.start_monitors();
+        Self::reload_in_background(self);
 
         let controller = Rc::clone(self);
-        window.connect_destroy(move |_| {
-            controller.monitors.borrow_mut().clear();
+        super::io::on_window_closed(window, move || {
+            controller.reader.stop();
+            for monitor in controller.monitors.borrow_mut().drain(..) {
+                monitor.cancel();
+            }
         });
-    }
-
-    fn reload(&self) {
-        (self.render)(load_read_only(self.path.as_deref()));
     }
 
     fn schedule_reload(controller: Weak<Self>) {
         let Some(controller) = controller.upgrade() else {
             return;
         };
-        if controller.reload_pending.replace(true) {
-            return;
-        }
-        let controller = Rc::downgrade(&controller);
-        gtk::glib::idle_add_local_once(move || {
-            if let Some(controller) = controller.upgrade() {
-                controller.reload_pending.set(false);
-                Self::reload_in_background(&controller);
-            }
-        });
+        Self::reload_in_background(&controller);
     }
 
     /// Read and parse the registry off the GTK main thread. Registry file
     /// events arrive in bursts while other processes write, and a large
     /// registry must not stall the window.
     fn reload_in_background(controller: &Rc<Self>) {
-        let generation = controller.reload_generation.get().wrapping_add(1);
-        controller.reload_generation.set(generation);
-        let path = controller.path.clone();
-        let controller = Rc::downgrade(controller);
-        gtk::glib::spawn_future_local(async move {
-            let Ok(state) = gio::spawn_blocking(move || load_read_only(path.as_deref())).await
-            else {
-                return;
-            };
-            if let Some(controller) = controller.upgrade() {
-                if controller.reload_generation.get() == generation {
-                    (controller.render)(state);
-                }
-            }
-        });
+        controller.reader.refresh();
     }
 
     fn start_monitors(self: &Rc<Self>) {
@@ -931,6 +915,43 @@ fn connect_reload(monitor: &gio::FileMonitor, controller: Weak<RegistryControlle
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn snapshot_conversion_does_not_open_the_sync_receipt() {
+        let data = crate::registry::DataDirTestEnv::new("gtk-snapshot-no-io");
+        let fifo = data.dir.join("registry.personal-sync-status.json");
+        let path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: the NUL-terminated path is a fixture-owned path and lives
+        // throughout the call. A FIFO with no writer would block a disk read.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let mut registry = crate::registry::Registry {
+            team: Some(
+                serde_json::from_value(serde_json::json!({
+                    "teamId":"fixture", "role":"admin", "serverUrl":"http://127.0.0.1:1",
+                    "accountStatus":{"personalSync":true},
+                    "personalSyncState":{"conflicts":{"one":{"name":"Remote"}}}
+                }))
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        registry.servers.push(
+            serde_json::from_value(serde_json::json!({
+                "id":"one", "name":"One", "transport":"http", "url":"https://example.invalid/mcp",
+                "env":[], "enabled":false, "source":"team:fixture", "personalSyncEntry":true
+            }))
+            .unwrap(),
+        );
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            send.send(super::RegistrySnapshot::from_registry(registry))
+                .unwrap()
+        });
+        let snapshot = receive
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("snapshot conversion must not wait for the receipt FIFO");
+        assert_eq!(snapshot.servers[0].origin_label, "Sync conflict");
+    }
+
     #[test]
     fn historical_caller_paths_do_not_reach_native_rows_or_tooltips() {
         let snapshot = super::ActivitySnapshot::from_entries(

@@ -22,6 +22,12 @@ pub(super) struct TeamsPage {
     intro: gtk::Label,
     feedback: gtk::Label,
     busy: Rc<Cell<bool>>,
+    refresh_generation: Rc<Cell<u64>>,
+    refresh_running: Rc<Cell<bool>>,
+    personal: Rc<Cell<bool>>,
+    sync_status: Rc<RefCell<crate::team_sync_status::SyncStatus>>,
+    sync_state: Rc<RefCell<crate::personal_sync::SyncState>>,
+    server_snapshot: Rc<RefCell<Option<super::state::RegistrySnapshot>>>,
     pending: Rc<RefCell<Option<PendingJoin>>>,
     polling: Rc<Cell<bool>>,
     poll_timer: Rc<RefCell<Option<gtk::glib::SourceId>>>,
@@ -98,6 +104,12 @@ impl TeamsPage {
             intro,
             feedback,
             busy: Rc::new(Cell::new(false)),
+            refresh_generation: Rc::new(Cell::new(0)),
+            refresh_running: Rc::new(Cell::new(false)),
+            personal: Rc::new(Cell::new(true)),
+            sync_status: Default::default(),
+            sync_state: Default::default(),
+            server_snapshot: Default::default(),
             pending: Rc::new(RefCell::new(None)),
             polling: Rc::new(Cell::new(false)),
             poll_timer: Rc::new(RefCell::new(None)),
@@ -109,108 +121,76 @@ impl TeamsPage {
     }
 
     pub(super) fn refresh(&self) {
-        if self.busy.replace(true) {
+        self.refresh_generation
+            .set(self.refresh_generation.get().wrapping_add(1));
+        if self.refresh_running.replace(true) {
             return;
         }
         self.feedback.set_label("Loading sync status…");
         self.server_page.reprobe_if_stale();
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
-            let result = gtk::gio::spawn_blocking(crate::registry::load).await;
-            page.busy.set(false);
-            match result {
-                Ok(Ok(registry)) => page.render(registry),
-                Ok(Err(error)) => page.show_error(&error),
-                Err(_) => page.show_error("the team status read stopped unexpectedly"),
+            loop {
+                let generation = page.refresh_generation.get();
+                let result = gtk::gio::spawn_blocking(|| {
+                    crate::registry::load().map(TeamsSnapshot::from_registry)
+                })
+                .await;
+                if generation != page.refresh_generation.get() {
+                    continue;
+                }
+                match result {
+                    Ok(Ok(snapshot)) => page.render_snapshot(snapshot),
+                    Ok(Err(error)) => page.show_error(&error),
+                    Err(_) => page.show_error("the team status read stopped unexpectedly"),
+                }
+                break;
             }
+            page.refresh_running.set(false);
         });
     }
 
     pub(super) fn attach_background_sync(&self, window: &adw::ApplicationWindow) {
-        let running = Rc::new(Cell::new(false));
-        let next_allowed = Rc::new(RefCell::new(std::time::Instant::now()));
+        let runtime = Rc::new(SyncLoop::default());
+        sync_background_step(self.clone(), runtime.clone());
         let page = self.clone();
-        let failures = Rc::new(Cell::new(0u32));
-        let running_for_timer = running.clone();
-        let next_for_timer = next_allowed.clone();
-        let source = gtk::glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
-            if running_for_timer.get() || std::time::Instant::now() < *next_for_timer.borrow() {
-                return gtk::glib::ControlFlow::Continue;
-            }
-            running_for_timer.set(true);
-            let page = page.clone();
-            let running = running_for_timer.clone();
-            let next_allowed = next_for_timer.clone();
-            let failures = failures.clone();
-            gtk::glib::spawn_future_local(async move {
-                let result = gtk::gio::spawn_blocking(|| {
-                    if crate::registry::load()?.team.is_none() {
-                        return Ok::<_, String>(None);
-                    }
-                    crate::teams::sync_wait(25).map(Some)
-                })
-                .await;
-                running.set(false);
-                match result {
-                    Ok(Ok(Some(outcome))) => {
-                        failures.set(0);
-                        *next_allowed.borrow_mut() =
-                            std::time::Instant::now() + std::time::Duration::from_secs(3);
-                        page.absorb_sync_result(outcome);
-                    }
-                    Ok(Ok(None)) => {
-                        failures.set(0);
-                        *next_allowed.borrow_mut() =
-                            std::time::Instant::now() + std::time::Duration::from_secs(10);
-                    }
-                    Ok(Err(_error)) => {
-                        failures.set(failures.get().saturating_add(1));
-                        *next_allowed.borrow_mut() = std::time::Instant::now()
-                            + std::time::Duration::from_secs(
-                                crate::registry::load()
-                                    .map(|r| crate::teams::sync_retry_seconds(&r, failures.get()))
-                                    .unwrap_or_else(|_| {
-                                        crate::teams::retry_delay_seconds(failures.get())
-                                    }),
-                            );
-                        if page.root.is_mapped() {
-                            page.refresh();
-                        }
-                    }
-                    Err(_) => {
-                        failures.set(failures.get().saturating_add(1));
-                        *next_allowed.borrow_mut() = std::time::Instant::now()
-                            + std::time::Duration::from_secs(
-                                crate::registry::load()
-                                    .map(|r| crate::teams::sync_retry_seconds(&r, failures.get()))
-                                    .unwrap_or_else(|_| {
-                                        crate::teams::retry_delay_seconds(failures.get())
-                                    }),
-                            );
-                        if page.root.is_mapped() {
-                            page.show_error("Sync stopped unexpectedly; retrying automatically");
-                        }
-                    }
+        let runtime_for_events = runtime.clone();
+        super::io::watch_data(
+            window,
+            15,
+            false,
+            |name| name == "registry.json",
+            move || {
+                if page.root.is_mapped() {
+                    page.refresh();
                 }
-            });
-            gtk::glib::ControlFlow::Continue
-        });
-        let source = Rc::new(RefCell::new(Some(source)));
-        window.connect_destroy(move |_| {
-            if let Some(source) = source.borrow_mut().take() {
-                source.remove();
+                // Wake an unpaired worker promptly after pairing. A sync's own
+                // registry writes must not defeat the server's retry/backoff.
+                if runtime_for_events.unpaired.get() {
+                    if let Some(timer) = runtime_for_events.timer.borrow_mut().take() {
+                        timer.remove();
+                    }
+                    sync_background_step(page.clone(), runtime_for_events.clone());
+                }
+            },
+        );
+        super::io::on_window_closed(window, move || {
+            runtime.stopped.set(true);
+            if let Some(timer) = runtime.timer.borrow_mut().take() {
+                timer.remove();
             }
         });
     }
 
     #[cfg(test)]
     fn render_sync_failure(&self, error: &str) {
+        *self.sync_status.borrow_mut() = crate::team_sync_status::current();
         self.render_sync_status();
         self.set_status(&format!("{} {error}", self.feedback.label()), true);
     }
 
     fn render_sync_status(&self) {
-        let status = crate::team_sync_status::current();
+        let status = self.sync_status.borrow();
         let last = status
             .last_success_ms
             .and_then(|ms| gtk::glib::DateTime::from_unix_local(ms as i64 / 1000).ok())
@@ -227,8 +207,18 @@ impl TeamsPage {
         self.feedback.remove_css_class("success");
     }
 
+    #[cfg(test)]
     fn render(&self, registry: crate::registry::Registry) {
+        self.render_snapshot(TeamsSnapshot::from_registry(registry));
+    }
+
+    fn render_snapshot(&self, snapshot: TeamsSnapshot) {
+        let registry = snapshot.registry;
+        *self.sync_status.borrow_mut() = snapshot.sync_status;
+        *self.sync_state.borrow_mut() = snapshot.sync_state;
+        *self.server_snapshot.borrow_mut() = Some(snapshot.servers);
         let personal = registry.team.is_none() || crate::personal_sync::is_personal(&registry);
+        self.personal.set(personal);
         self.header_title
             .set_label(if personal { "Sync" } else { "Teams" });
         self.heading
@@ -254,9 +244,7 @@ impl TeamsPage {
                     .as_ref()
                     .map(|t| crate::personal_sync::status_lines(
                         &t.unknown_fields["accountStatus"],
-                        crate::personal_sync::state(&registry)
-                            .ok()
-                            .and_then(|s| s.last_synced_at)
+                        self.sync_state.borrow().last_synced_at
                     ))
             ),
             self.pending.borrow().is_some(),
@@ -507,9 +495,17 @@ impl TeamsPage {
                     .css_classes(["heading"])
                     .build(),
             );
+            let snapshot = self.server_snapshot.borrow();
+            let snapshot = snapshot
+                .as_ref()
+                .expect("the worker supplied the team snapshot");
             for server in review {
-                self.content
-                    .append(&review_server_row(server, self.clone()));
+                self.content.append(&review_server_row(
+                    server,
+                    &registry,
+                    snapshot,
+                    self.clone(),
+                ));
             }
         }
 
@@ -535,7 +531,7 @@ impl TeamsPage {
         registry: crate::registry::Registry,
         team: crate::registry::TeamConnection,
     ) {
-        let sync = crate::personal_sync::state(&registry).unwrap_or_default();
+        let sync = self.sync_state.borrow().clone();
         // One status line and one primary action, like the rest of the app.
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         let line = gtk::Label::builder()
@@ -772,7 +768,7 @@ impl TeamsPage {
         let (message, healthy) = crate::personal_sync::banner(registry);
         let last = crate::personal_sync::status_lines(
             &serde_json::Value::Null,
-            crate::personal_sync::state(registry).ok().and_then(|s| s.last_synced_at),
+            self.sync_state.borrow().last_synced_at,
         )
         .pop()
         .unwrap_or_default();
@@ -996,15 +992,19 @@ impl TeamsPage {
     }
 
     fn select_servers(&self, button: gtk::Button) {
+        let page = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            match gtk::gio::spawn_blocking(crate::registry::load).await {
+                Ok(Ok(registry)) => page.show_server_selection(button, registry),
+                Ok(Err(error)) => page.show_error(&error),
+                Err(_) => page.show_error("The server read stopped unexpectedly"),
+            }
+        });
+    }
+
+    fn show_server_selection(&self, button: gtk::Button, reg: crate::registry::Registry) {
         let Some(parent) = self.app.active_window() else {
             return;
-        };
-        let reg = match crate::registry::load() {
-            Ok(r) => r,
-            Err(e) => {
-                self.show_error(&e);
-                return;
-            }
         };
         #[allow(deprecated)]
         let dialog = adw::MessageDialog::new(Some(&parent), Some("Share with your team"), Some("Choose one working server to begin. Other team servers and your personal originals stay in place. Each member supplies credentials locally. The preview shows how each choice relates to the team before anything is uploaded."));
@@ -1142,7 +1142,7 @@ impl TeamsPage {
         let Some(parent) = self.app.active_window() else {
             return;
         };
-        let personal = crate::registry::load().is_ok_and(|r| crate::personal_sync::is_personal(&r));
+        let personal = self.personal.get();
         #[allow(deprecated)]
         let dialog = adw::MessageDialog::new(
             Some(&parent),
@@ -1208,6 +1208,97 @@ impl TeamsPage {
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
     }
+}
+
+struct TeamsSnapshot {
+    registry: crate::registry::Registry,
+    servers: super::state::RegistrySnapshot,
+    sync_status: crate::team_sync_status::SyncStatus,
+    sync_state: crate::personal_sync::SyncState,
+}
+
+impl TeamsSnapshot {
+    fn from_registry(registry: crate::registry::Registry) -> Self {
+        Self {
+            servers: super::state::RegistrySnapshot::from_registry(registry.clone()),
+            sync_status: crate::team_sync_status::for_registry(&registry),
+            sync_state: crate::personal_sync::state(&registry).unwrap_or_default(),
+            registry,
+        }
+    }
+}
+
+#[derive(Default)]
+struct SyncLoop {
+    running: Cell<bool>,
+    stopped: Cell<bool>,
+    unpaired: Cell<bool>,
+    failures: Cell<u32>,
+    timer: RefCell<Option<gtk::glib::SourceId>>,
+}
+
+fn sync_background_step(page: TeamsPage, runtime: Rc<SyncLoop>) {
+    if runtime.stopped.get() || runtime.running.replace(true) {
+        return;
+    }
+    gtk::glib::spawn_future_local(async move {
+        let failures = runtime.failures.get();
+        let result = gtk::gio::spawn_blocking(move || {
+            let registry = crate::registry::load()?;
+            if registry.team.is_none() {
+                // This slow unpaired poll also stays alive while hidden on
+                // filesystems without a registry monitor. Paired installs use
+                // only the sync retry schedule, never a second fallback poll.
+                return Ok((None, 60));
+            }
+            let result = crate::teams::sync_wait(25);
+            let retry = crate::registry::load()
+                .map(|r| crate::teams::sync_retry_seconds(&r, failures.saturating_add(1)))
+                .unwrap_or_else(|_| crate::teams::retry_delay_seconds(failures.saturating_add(1)));
+            Ok::<_, String>((Some(result), retry))
+        })
+        .await;
+        runtime.running.set(false);
+        if runtime.stopped.get() {
+            return;
+        }
+        let unpaired = matches!(&result, Ok(Ok((None, _))));
+        if !unpaired {
+            page.app.activate_action("hidden-sync-finished", None);
+        }
+        let delay = match result {
+            Ok(Ok((None, delay))) => {
+                runtime.unpaired.set(true);
+                runtime.failures.set(0);
+                delay
+            }
+            Ok(Ok((Some(Ok(outcome)), _))) => {
+                runtime.unpaired.set(false);
+                runtime.failures.set(0);
+                page.absorb_sync_result(outcome);
+                3
+            }
+            error => {
+                runtime.unpaired.set(false);
+                runtime.failures.set(failures.saturating_add(1));
+                if page.root.is_mapped() {
+                    page.refresh();
+                }
+                match error {
+                    Ok(Ok((Some(Err(_)), retry))) => retry,
+                    _ => crate::teams::retry_delay_seconds(runtime.failures.get()),
+                }
+            }
+        };
+        let next = runtime.clone();
+        *runtime.timer.borrow_mut() = Some(gtk::glib::timeout_add_local_once(
+            std::time::Duration::from_secs(delay),
+            move || {
+                next.timer.borrow_mut().take();
+                sync_background_step(page, next);
+            },
+        ));
+    });
 }
 
 fn render_instructions_status(container: &gtk::Box, status: crate::teams::InstructionsStatusView) {
@@ -1525,17 +1616,15 @@ pub(super) fn execution_review_scroll(server: &crate::registry::ServerEntry) -> 
         .hscrollbar_policy(gtk::PolicyType::Never).vscrollbar_policy(gtk::PolicyType::Automatic)
         .propagate_natural_height(true).child(&execution_review_content(server)).build()
 }
-fn review_server_row(server: crate::registry::ServerEntry, page: TeamsPage) -> gtk::Box {
-    if let Ok(registry) = crate::registry::load() {
-        if registry.enabled_here(&server.id) {
-            let snapshot = super::state::RegistrySnapshot::from_registry(registry);
-            if let Some(view) = snapshot.servers.iter().find(|s| s.id == server.id) {
-                return super::server_card(
-                    view,
-                    &snapshot.active_profile_id,
-                    page.server_page.clone(),
-                );
-            }
+fn review_server_row(
+    server: crate::registry::ServerEntry,
+    registry: &crate::registry::Registry,
+    snapshot: &super::state::RegistrySnapshot,
+    page: TeamsPage,
+) -> gtk::Box {
+    if registry.enabled_here(&server.id) {
+        if let Some(view) = snapshot.servers.iter().find(|s| s.id == server.id) {
+            return super::server_card(view, &snapshot.active_profile_id, page.server_page.clone());
         }
     }
 
@@ -1558,7 +1647,7 @@ fn review_server_row(server: crate::registry::ServerEntry, page: TeamsPage) -> g
         copy.append(&execution_review_content(&server));
     }
     row.append(&copy);
-    let original = crate::registry::load().ok().and_then(|r| {
+    let original = Some(registry).and_then(|r| {
         let id = r.team.as_ref()?.managed_server_ids.get(&server.id)?;
         r.servers
             .iter()
@@ -1593,8 +1682,7 @@ fn review_server_row(server: crate::registry::ServerEntry, page: TeamsPage) -> g
         });
         row.append(&use_managed);
     }
-    let already_enabled =
-        crate::registry::load().is_ok_and(|r| r.enabled_here(&server.id));
+    let already_enabled = registry.enabled_here(&server.id);
     if already_enabled || !server.needs_team_enable_review() {
         row.append(
             &gtk::Label::builder()
@@ -2002,6 +2090,38 @@ fn connect_member_decisions(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn review_rows_use_the_supplied_snapshot_even_when_disk_is_unreadable() {
+        adw::init().unwrap();
+        let data = crate::registry::DataDirTestEnv::new("gtk-review-snapshot");
+        let app = adw::Application::builder()
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let (_, servers, _) =
+            super::super::build_content(&app, crate::approval_broker::start_native());
+        let page = super::TeamsPage::new(&app, servers);
+        let registry: crate::registry::Registry = serde_json::from_value(serde_json::json!({
+            "version": 3, "profiles": [], "activeProfileId": "default",
+            "servers": [
+                {"id":"enabled", "name":"Enabled team server", "source":"team:fixture", "transport":"http", "url":"https://example.invalid/mcp", "env":[], "enabled":true},
+                {"id":"review", "name":"Review team server", "source":"team:fixture", "transport":"http", "url":"https://example.invalid/mcp", "env":[], "enabled":false}
+            ],
+            "team": {"teamId":"fixture", "role":"member", "serverUrl":"http://127.0.0.1:1"}
+        })).unwrap();
+        let snapshot = super::super::state::RegistrySnapshot::from_registry(registry.clone());
+        std::fs::write(data.dir.join("registry.json"), "{broken").unwrap();
+        for server in &registry.servers {
+            let row = super::review_server_row(server.clone(), &registry, &snapshot, page.clone());
+            assert!(row.first_child().is_some());
+        }
+        assert_eq!(
+            std::fs::read_to_string(data.dir.join("registry.json")).unwrap(),
+            "{broken"
+        );
+    }
+
     #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn personal_review_widgets_have_plain_fields_full_definition_and_scroll() {
