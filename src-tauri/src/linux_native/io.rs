@@ -17,6 +17,9 @@ pub(super) fn track_hidden_memory(window: &adw::ApplicationWindow) {
             let epoch = epoch.clone();
             let source = source.clone();
             move |window: &adw::ApplicationWindow| {
+                if source.borrow().is_some() {
+                    return;
+                }
                 let generation = epoch.fetch_add(1, Ordering::SeqCst) + 1;
                 if let Some(timer) = source.borrow_mut().take() {
                     timer.remove();
@@ -40,10 +43,9 @@ pub(super) fn track_hidden_memory(window: &adw::ApplicationWindow) {
                                 }
                                 // A show can arrive while glibc is trimming. Do
                                 // not carry stale hidden work back to the UI.
-                                if epoch.load(Ordering::SeqCst) != generation {
-                                    return;
-                                }
+                                return epoch.load(Ordering::SeqCst) == generation;
                             }
+                            false
                         }));
                     },
                 ));
