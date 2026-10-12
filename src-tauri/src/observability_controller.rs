@@ -70,7 +70,9 @@ pub fn activity_revision_for(generation: u64) -> Result<String, String> {
     // lock before any path resolution, metadata, watch setup or digest IO.
     let _reading = ACTIVITY_READING.lock().map_err(|error| error.to_string())?;
     let mut cache = {
-        let mut state = ACTIVITY_REVISION.lock().map_err(|error| error.to_string())?;
+        let mut state = ACTIVITY_REVISION
+            .lock()
+            .map_err(|error| error.to_string())?;
         if generation != activity_revision_generation() {
             return Err("Activity change check cancelled".into());
         }
@@ -83,7 +85,9 @@ pub fn activity_revision_for(generation: u64) -> Result<String, String> {
         }
         cache.as_mut().unwrap().revision()
     })();
-    let mut state = ACTIVITY_REVISION.lock().map_err(|error| error.to_string())?;
+    let mut state = ACTIVITY_REVISION
+        .lock()
+        .map_err(|error| error.to_string())?;
     if generation != activity_revision_generation() {
         // The worker owns the only in-flight watch. Drop it here, rather than
         // publishing cancelled state or scheduling cleanup on the UI thread.
@@ -97,7 +101,9 @@ pub fn activity_revision_for(generation: u64) -> Result<String, String> {
 /// An in-flight owner drops its watch when IO returns; queued old generations
 /// cannot create one. No watcher thread or deferred UI-thread wait is needed.
 pub fn release_activity_revision() {
-    let mut state = ACTIVITY_REVISION.lock().unwrap_or_else(|error| error.into_inner());
+    let mut state = ACTIVITY_REVISION
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     ACTIVITY_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     *state = None;
 }
@@ -525,7 +531,10 @@ mod tests {
         drop(reading);
         assert!(worker.join().unwrap().unwrap_err().contains("cancelled"));
         assert!(ACTIVITY_REVISION.lock().unwrap().is_none());
-        assert!(activity_revision().is_ok(), "new visible generation can read");
+        assert!(
+            activity_revision().is_ok(),
+            "new visible generation can read"
+        );
         release_activity_revision();
     }
 

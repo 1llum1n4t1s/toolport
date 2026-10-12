@@ -414,7 +414,10 @@ describe("ActivityView trust-state loading", () => {
   });
 
   it("does not turn a last-known empty audit log into a current all-clear", async () => {
-    getAuditLog.mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockRejectedValueOnce(new Error("locked"));
+    getAuditLog
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error("locked"));
 
     render(<ActivityView refreshKey={0} registry={null} />);
     await act(async () => {});
@@ -461,7 +464,10 @@ describe("ActivityView trust-state loading", () => {
     const user = userEvent.setup({
       advanceTimers: (ms) => vi.advanceTimersByTime(ms),
     });
-    getAuditLog.mockRejectedValueOnce(new Error("offline")).mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
+    getAuditLog
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce([]);
 
     render(<ActivityView refreshKey={0} registry={null} />);
     await act(async () => {});
@@ -607,7 +613,10 @@ describe("ActivityView discovery", () => {
     const user = userEvent.setup({
       advanceTimers: (ms) => vi.advanceTimersByTime(ms),
     });
-    getSearchTraces.mockRejectedValueOnce(new Error("offline")).mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
+    getSearchTraces
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce([]);
 
     render(<ActivityView refreshKey={0} registry={null} />);
     await act(async () => {});
@@ -793,7 +802,13 @@ it("keeps last-loaded catalog telemetry visibly stale after a failed refresh", a
       peakCatalog: 3,
       sinceTs: 1700000000000,
     })
-    .mockResolvedValueOnce({ tokensSaved: 100, listLoads: 1, tokenizedLoads: 1, peakCatalog: 3, sinceTs: 1700000000000 })
+    .mockResolvedValueOnce({
+      tokensSaved: 100,
+      listLoads: 1,
+      tokenizedLoads: 1,
+      peakCatalog: 3,
+      sinceTs: 1700000000000,
+    })
     .mockRejectedValueOnce(new Error("unreadable"));
   const view = render(<ActivityView refreshKey={0} registry={null} />);
   await act(async () => {});
@@ -1061,7 +1076,10 @@ describe("ActivityView live inspector", () => {
     const user = userEvent.setup({
       advanceTimers: (ms) => vi.advanceTimersByTime(ms),
     });
-    getInspectLog.mockRejectedValueOnce(new Error("offline")).mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
+    getInspectLog
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce([]);
 
     // LiveInspector only mounts while live inspection is on (ActivityView.tsx:1772).
     render(<ActivityView refreshKey={0} registry={{ liveInspect: true } as never} />);
@@ -1233,7 +1251,12 @@ it("discards a late revision without evicting a newer visibility session", async
 
 it("reconciles a write between initial panel snapshot and first revision baseline", async () => {
   let finish!: (revision: string) => void;
-  getActivityRevision.mockImplementationOnce(() => new Promise<string>((resolve) => { finish = resolve; }));
+  getActivityRevision.mockImplementationOnce(
+    () =>
+      new Promise<string>((resolve) => {
+        finish = resolve;
+      }),
+  );
   getActivityRevision.mockResolvedValue("new-content");
   const view = render(<ActivityView refreshKey={0} registry={null} />);
   await act(async () => {});
@@ -1243,7 +1266,9 @@ it("reconciles a write between initial panel snapshot and first revision baselin
   // A real new append is now available to panel readers. The queued initial
   // digest observes it, after the first panel reader has returned older bytes.
   getAuditLog.mockResolvedValue(refreshedLog);
-  await act(async () => { finish("new-content"); });
+  await act(async () => {
+    finish("new-content");
+  });
   await act(() => vi.advanceTimersByTimeAsync(60_000));
   expect(getAuditLog).toHaveBeenCalledTimes(calls + 1);
   expect(screen.queryByText("list_issues")).toBeInTheDocument();
@@ -1254,9 +1279,12 @@ it("reconciles after an initial revision error and rejects obsolete panel comple
   let finishOld!: (rows: AuditEntry[]) => void;
   getActivityRevision.mockRejectedValueOnce("unreadable");
   getActivityRevision.mockResolvedValue("same");
-  getAuditLog.mockImplementationOnce(() => new Promise<AuditEntry[]>((resolve) => {
-    finishOld = resolve;
-  }));
+  getAuditLog.mockImplementationOnce(
+    () =>
+      new Promise<AuditEntry[]>((resolve) => {
+        finishOld = resolve;
+      }),
+  );
   getAuditLog.mockResolvedValue(refreshedLog);
   render(<ActivityView refreshKey={0} registry={null} />);
   await act(async () => {});
@@ -1273,9 +1301,12 @@ it("reconciles after an initial revision error and rejects obsolete panel comple
 
 it("reconciles hide/show with a delayed first revision and no overlapping checks", async () => {
   let finish!: (revision: string) => void;
-  getActivityRevision.mockImplementationOnce(() => new Promise<string>((resolve) => {
-    finish = resolve;
-  }));
+  getActivityRevision.mockImplementationOnce(
+    () =>
+      new Promise<string>((resolve) => {
+        finish = resolve;
+      }),
+  );
   getActivityRevision.mockResolvedValue("same");
   const view = render(<ActivityView refreshKey={0} registry={null} />);
   await act(async () => {});
