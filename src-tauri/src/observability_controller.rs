@@ -165,15 +165,28 @@ fn activity_digest(paths: &[std::path::PathBuf]) -> Result<String, String> {
         let name = path.file_name().unwrap().to_string_lossy();
         digest.update((name.len() as u64).to_le_bytes());
         digest.update(name.as_bytes());
-        let mut file = std::fs::File::open(path).map_err(|error| {
+        let mut options = std::fs::File::options();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // A concurrent replacement with a FIFO must not block a shell worker.
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        let file = options.open(path).map_err(|error| {
             format!("Could not read Activity store {}: {error}", path.display())
         })?;
-        digest.update(
-            file.metadata()
-                .map_err(|error| error.to_string())?
-                .len()
-                .to_le_bytes(),
-        );
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        if !metadata.is_file() {
+            return Err(format!(
+                "Activity store {} is not a regular file",
+                path.display()
+            ));
+        }
+        digest.update(metadata.len().to_le_bytes());
+        // Digest one finite snapshot, even if another process keeps appending.
+        // Notifications during this read prevent caching it over newer bytes.
+        let mut file = file.take(metadata.len());
         loop {
             let count = file.read(&mut buffer).map_err(|error| {
                 format!("Could not read Activity store {}: {error}", path.display())
@@ -201,7 +214,7 @@ fn activity_metadata(dir: &std::path::Path) -> Result<(String, Vec<std::path::Pa
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if activity_file(&name) {
-            let metadata = entry.metadata().map_err(|error| error.to_string())?;
+            let metadata = std::fs::metadata(entry.path()).map_err(|error| error.to_string())?;
             stores.push((name, metadata));
         }
     }
@@ -437,6 +450,37 @@ mod tests {
         assert_eq!(
             cache.digest_reads, 2,
             "full periodic audit catches missed notifications"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn activity_revision_audits_symlink_targets_outside_the_watched_directory() {
+        let data = crate::registry::DataDirTestEnv::new("activity-revision-symlink");
+        let watched = data.dir.join("watched");
+        std::fs::create_dir(&watched).unwrap();
+        let target = data.dir.join("target");
+        std::fs::write(&target, "before").unwrap();
+        std::os::unix::fs::symlink(&target, watched.join("audit.jsonl")).unwrap();
+        let mut cache = RevisionCache::new(watched.clone());
+        let before = cache.revision().unwrap();
+        let modified = std::fs::metadata(&target).unwrap().modified().unwrap();
+        std::fs::write(&target, "after!").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&target)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        if let Some(cached) = &mut cache.cached {
+            cached.0 = activity_metadata(&watched).unwrap().0;
+            cached.2 = std::time::Instant::now() - CONTENT_RECHECK;
+        }
+        assert_ne!(cache.revision().unwrap(), before);
+        std::fs::remove_file(target).unwrap();
+        assert!(
+            cache.revision().is_err(),
+            "broken targets must not reuse cached success"
         );
     }
 
