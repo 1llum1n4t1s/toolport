@@ -1717,6 +1717,24 @@ pub fn definition_review_names(profile: Option<&str>) -> BTreeSet<String> {
     }
 }
 
+/// Retry capture after a store failure even when the watcher's enforced set is
+/// unchanged. Otherwise a returning review can remain hidden without a Settings row.
+pub fn definition_reviews_need_capture(profile: Option<&str>, present: &BTreeSet<String>) -> bool {
+    let reviews = definition_review_names(profile);
+    let present_reviews: Vec<_> = reviews.intersection(present).collect();
+    if present_reviews.is_empty() {
+        return false;
+    }
+    let Ok(records) = load_quarantine(profile) else {
+        return true;
+    };
+    present_reviews.into_iter().any(|name| {
+        !records.get(name).is_some_and(|record| {
+            record["review_required"] == true && record["definition"].is_object()
+        })
+    })
+}
+
 fn active_definition_review_names(profile: Option<&str>) -> BTreeSet<String> {
     match load_pins(profile) {
         PinsLoad::Loaded(pins) => pins.into_iter()

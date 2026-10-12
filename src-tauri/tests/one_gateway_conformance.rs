@@ -2598,6 +2598,18 @@ fn retired_review_off_store_failure(failed_store: &str) {
         std::thread::sleep(Duration::from_millis(1200));
     }
     for lock in failed_locks { std::fs::remove_dir(lock).unwrap(); }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let captured = loop {
+        assert!(!client.tool_names().contains(&name.to_string()));
+        let records: Vec<_> = conduit_lib::integrity::all_quarantined_summaries().unwrap().into_iter()
+            .filter(|record| record["tool"] == name && record["review_required"] == true).collect();
+        if !records.is_empty() && records.iter().all(|record| record["has_definition"] == true) { break records; }
+        assert!(Instant::now() < deadline, "store recovery did not recapture the review\n{}", client.diagnostics());
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    for record in captured { approve_displayed_quarantine(&record).unwrap(); }
+    client.wait_for_tool(name, Duration::from_secs(10));
+    assert_eq!(client.call_tool(name, json!({"text":"approved"}))["isError"], false);
 }
 
 #[test]

@@ -10640,7 +10640,9 @@ fn reconcile_to_checked(
     profile: Option<&str>,
     want: BTreeSet<String>,
 ) -> bool {
-    reconcile_to_with(router, stdio, mcp_sessions, want, |next| {
+    let current = router.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let retry_capture = integrity::definition_reviews_need_capture(profile, &current.indexed_policy_names());
+    reconcile_to_with(router, stdio, mcp_sessions, want, retry_capture, |next| {
         let tools = next.shared_tools();
         requarantine_if_needed(registry, next, tools, profile);
     })
@@ -10651,6 +10653,7 @@ fn reconcile_to_with(
     stdio: &SessionState,
     mcp_sessions: Option<&McpSessions>,
     want: BTreeSet<String>,
+    retry_capture: bool,
     gate: impl Fn(&mut Router),
 ) -> bool {
     for _ in 0..LIVE_ROUTER_EDIT_ATTEMPTS {
@@ -10658,13 +10661,13 @@ fn reconcile_to_with(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        if current.quarantined() == &want && !current.catalog_fail_closed() {
+        if current.quarantined() == &want && !current.catalog_fail_closed() && !retry_capture {
             return false;
         }
         let restored = !current.quarantined().is_subset(&want) || current.catalog_fail_closed();
         let mut next = (*current).clone();
         next.requarantine_from_store(want.clone());
-        if restored {
+        if restored || retry_capture {
             gate(&mut next);
         }
         let mut live = router
@@ -10746,7 +10749,7 @@ fn reconcile_to(
     mcp_sessions: Option<&McpSessions>,
     want: BTreeSet<String>,
 ) -> bool {
-    reconcile_to_with(router, stdio, mcp_sessions, want, |_| {})
+    reconcile_to_with(router, stdio, mcp_sessions, want, false, |_| {})
 }
 
 /// A fail-closed catalog serves nothing, so the last-good cache must go too
@@ -12686,10 +12689,13 @@ impl HostState {
             let wanted = scope
                 .as_ref()
                 .and_then(|scope| self.rooted_quarantine(scope));
-            if wanted
+            let present = cached.indexed_policy_names();
+            let retry_capture = integrity::definition_reviews_need_capture(None, &present)
+                || scope.as_ref().is_some_and(|scope| integrity::definition_reviews_need_capture(Some(scope), &present));
+            if !retry_capture && (wanted
                 .as_ref()
                 .is_some_and(|set| set == cached.quarantined() && !cached.catalog_fail_closed())
-                || wanted.is_none() && cached.catalog_fail_closed()
+                || wanted.is_none() && cached.catalog_fail_closed())
             {
                 return cached;
             }
@@ -12698,7 +12704,7 @@ impl HostState {
                 let restored =
                     !cached.quarantined().is_subset(&set) || cached.catalog_fail_closed();
                 updated.requarantine_from_store(set);
-                if restored {
+                if restored || retry_capture {
                     if let Some(scope) = &scope {
                         self.check_rooted_integrity(&mut updated, scope, keys);
                     }
