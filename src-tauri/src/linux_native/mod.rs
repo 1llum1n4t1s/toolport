@@ -1454,7 +1454,7 @@ fn read_security_watch_snapshot() -> Result<
         .map_err(|error| format!("could not read security events: {error}"))?;
     // Keep the error distinct from a known-empty quarantine. The badge displays
     // unknown, while this watcher still announces new security findings.
-    let quarantined = crate::integrity::all_quarantined();
+    let quarantined = crate::integrity::all_quarantined_summaries();
     Ok((events, quarantined))
 }
 
@@ -1554,7 +1554,7 @@ fn start_quarantine_watch(app: &adw::Application, badge: gtk::Label, alert: Quar
         let seen = seen.clone();
         let running = running.clone();
         gtk::glib::spawn_future_local(async move {
-            let result = gtk::gio::spawn_blocking(crate::integrity::all_quarantined).await;
+            let result = gtk::gio::spawn_blocking(crate::integrity::all_quarantined_summaries).await;
             running.set(false);
             let list = match result {
                 Ok(Ok(list)) => list,

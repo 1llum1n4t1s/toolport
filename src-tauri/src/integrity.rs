@@ -1932,23 +1932,31 @@ fn all_quarantined_inner(summary: bool) -> Result<Vec<Value>, String> {
 
 /// Bounded list payload for the app; definitions are loaded per displayed record.
 pub fn all_quarantined_summaries() -> Result<Vec<Value>, String> {
-    // Use the same metadata stamp as Activity: registry/scope changes, file
-    // replacement, same-length edits and permission changes invalidate it.
-    let stamp = review_stamp();
+    with_quarantined_summaries(|records| records.to_vec())
+}
+
+/// Count the same validated summaries without cloning rows for a metrics scrape.
+pub fn all_quarantined_count() -> Result<usize, String> {
+    with_quarantined_summaries(<[Value]>::len)
+}
+
+fn with_quarantined_summaries<T>(read: impl FnOnce(&[Value]) -> T) -> Result<T, String> {
+    let stamp = quarantine_summary_stamp();
     let mut cache = QUARANTINE_SUMMARY_CACHE.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let (Some(stamp), Some(cached)) = (stamp.as_ref(), cache.as_ref()) {
         if stamp == &cached.stamp {
-            return Ok(cached.records.clone());
+            return Ok(read(&cached.records));
         }
     }
     let records = all_quarantined_inner(true)?;
-    if let Some(stamp) = stamp.filter(|stamp| Some(stamp) == review_stamp().as_ref()) {
-        *cache = Some(QuarantineSummaryCache { stamp, records: records.clone() });
+    let result = read(&records);
+    if let Some(stamp) = stamp.filter(|stamp| Some(stamp) == quarantine_summary_stamp().as_ref()) {
+        *cache = Some(QuarantineSummaryCache { stamp, records });
     } else {
         *cache = None;
     }
-    Ok(records)
+    Ok(result)
 }
 
 /// Fetch only the definition belonging to the displayed finding. A changed or
@@ -4045,6 +4053,56 @@ fn review_input_name(name: &std::ffi::OsStr) -> bool {
     })
 }
 
+/// Cache summaries by quarantine stores while validating scope discovery and missing stores.
+fn quarantine_summary_stamp() -> Option<ReviewStamp> {
+    let dir = crate::registry::conduit_dir()?;
+    let mut files = BTreeMap::new();
+    // Discover and validate scopes on each read, but only quarantine files feed
+    // the summary payload. Security log appends and pin updates are independent.
+    for (profile, path) in quarantine_scan_stores().ok()? {
+        match std::fs::metadata(&path) {
+            Ok(metadata) => {
+                files.insert(path.clone(), review_file_stamp(&path, &metadata)?);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing_quarantine_store((!profile.is_empty()).then_some(profile.as_str()), &path).ok()?;
+            }
+            Err(_) => return None,
+        }
+    }
+    Some(ReviewStamp { dir, files })
+}
+
+fn review_file_stamp(path: &Path, metadata: &std::fs::Metadata) -> Option<ReviewFileStamp> {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    #[cfg(windows)]
+    let identity = {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+        let file = std::fs::File::open(path).ok()?;
+        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+        // The file handle and writable output buffer remain live for the call.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+            return None;
+        }
+        let info = unsafe { info.assume_init() };
+        (info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow)
+    };
+    #[cfg(not(windows))]
+    let _ = path;
+    Some(ReviewFileStamp {
+        modified: metadata.modified().ok()?,
+        len: metadata.len(),
+        #[cfg(unix)]
+        identity: (metadata.dev(), metadata.ino(), metadata.ctime(), metadata.ctime_nsec()),
+        #[cfg(windows)]
+        identity,
+        #[cfg(not(any(unix, windows)))]
+        created: metadata.created().ok(),
+    })
+}
+
 /// Metadata only: do not reload the registry or parse every profile store on an
 /// unchanged Activity tick. Include pins because missing quarantine is fail closed
 /// for established profiles, plus the scope index and registry for store discovery.
@@ -4056,45 +4114,9 @@ fn review_stamp() -> Option<ReviewStamp> {
         if !review_input_name(&entry.file_name()) {
             continue;
         }
-        let metadata = entry.metadata().ok()?;
-        #[cfg(unix)]
-        use std::os::unix::fs::MetadataExt;
-        #[cfg(windows)]
-        let identity = {
-            use std::os::windows::io::AsRawHandle;
-            use windows_sys::Win32::Storage::FileSystem::{
-                GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-            };
-            let file = std::fs::File::open(entry.path()).ok()?;
-            let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
-            // A live file handle and a writable output buffer, retained for the call.
-            if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
-                return None;
-            }
-            let info = unsafe { info.assume_init() };
-            (
-                info.dwVolumeSerialNumber,
-                info.nFileIndexHigh,
-                info.nFileIndexLow,
-            )
-        };
         files.insert(
             entry.path(),
-            ReviewFileStamp {
-                modified: metadata.modified().ok()?,
-                len: metadata.len(),
-                #[cfg(unix)]
-                identity: (
-                    metadata.dev(),
-                    metadata.ino(),
-                    metadata.ctime(),
-                    metadata.ctime_nsec(),
-                ),
-                #[cfg(windows)]
-                identity,
-                #[cfg(not(any(unix, windows)))]
-                created: metadata.created().ok(),
-            },
+            review_file_stamp(&entry.path(), &entry.metadata().ok()?)?,
         );
     }
     Some(ReviewStamp { dir, files })
@@ -5534,6 +5556,7 @@ mod tests {
         std::fs::write(&path, &old).unwrap();
         let first = all_quarantined_summaries().unwrap();
         assert_eq!(all_quarantined_summaries().unwrap(), first);
+        assert_eq!(all_quarantined_count().unwrap(), first.len());
         let new = old.replace("\"ts\":1", "\"ts\":2");
         assert_eq!(new.len(), old.len());
         std::fs::write(&path, new).unwrap();
@@ -5541,10 +5564,30 @@ mod tests {
         assert_ne!(first[0]["record_id"], changed[0]["record_id"]);
         std::fs::write(&path, "corrupt").unwrap();
         assert!(all_quarantined_summaries().is_err());
+        assert!(all_quarantined_count().is_err());
         std::fs::write(&path, "").unwrap();
         assert!(all_quarantined_summaries().is_err());
         std::fs::write(&path, "{}").unwrap();
         assert!(!all_quarantined_summaries().unwrap().iter().any(|record| record["profile"] == ""));
+    }
+
+    #[test]
+    fn quarantine_summary_cache_ignores_security_appends() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let data = TestDataDir::new("quarantine-summary-security-append");
+        save_quarantine(None, &BTreeMap::from([("srv__read".into(), json!({"tool":"srv__read", "change":"changed", "ts":1}))])).unwrap();
+        let first = all_quarantined_summaries().unwrap();
+        std::fs::write(data.path.join("security.jsonl"), "{}\n").unwrap();
+        let stamp = quarantine_summary_stamp().unwrap();
+        assert!(QUARANTINE_SUMMARY_CACHE.lock().unwrap().as_ref().is_some_and(|cache| cache.stamp == stamp), "security append invalidated the quarantine summary cache");
+        assert_eq!(all_quarantined_summaries().unwrap(), first);
+        assert_eq!(all_quarantined_count().unwrap(), first.len());
+        // Scope discovery and missing-store guards still run on a warm cache.
+        let path = quarantine_path(None).unwrap();
+        let tools = vec![destructive_tool("srv__read", "Read records.")];
+        check(None, &tools).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(all_quarantined_count().is_err());
     }
 
     #[test]
