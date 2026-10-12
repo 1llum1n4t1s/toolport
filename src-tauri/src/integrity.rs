@@ -592,10 +592,10 @@ fn cached_review_pins(profile: Option<&str>) -> std::sync::Arc<ReviewPins> {
     };
     let stamp = review_pins_stamp(&path);
     {
-        let cache = REVIEW_PINS_CACHE
+        let mut cache = REVIEW_PINS_CACHE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(entry) = cache.get(&path) {
+        if let Some(entry) = cache.get_mut(&path) {
             if entry.stamp == stamp
                 && ((!entry.state.unreadable && stamp.is_some())
                     || (entry.state.unreadable
@@ -604,6 +604,11 @@ fn cached_review_pins(profile: Option<&str>) -> std::sync::Arc<ReviewPins> {
                             .is_some_and(|at| at.elapsed() < UNREADABLE_PINS_RETRY)))
             {
                 return entry.state.clone();
+            }
+            if entry.state.unreadable && entry.stamp == stamp {
+                // Reserve this retry while holding the cache lock. Concurrent
+                // callers keep the failed state instead of repeating its sleeps.
+                entry.unreadable_read_at = Some(std::time::Instant::now());
             }
         }
     }
