@@ -1223,3 +1223,22 @@ it("releases a revision watch again when an in-flight check finishes after unmou
   await act(async () => complete("late"));
   expect(releaseActivityRevision).toHaveBeenCalledTimes(releases + 2);
 });
+
+it("reconciles a write between initial panel snapshot and first revision baseline", async () => {
+  let finish!: (revision: string) => void;
+  getActivityRevision.mockImplementationOnce(() => new Promise<string>((resolve) => { finish = resolve; }));
+  getActivityRevision.mockResolvedValue("new-content");
+  const view = render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  const calls = getAuditLog.mock.calls.length;
+  expect(calls).toBe(1);
+  fireEvent.click(screen.getByRole("button", { name: /recent calls/i }));
+  // A real new append is now available to panel readers. The queued initial
+  // digest observes it, after the first panel reader has returned older bytes.
+  getAuditLog.mockResolvedValue(refreshedLog);
+  await act(async () => { finish("new-content"); });
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(getAuditLog).toHaveBeenCalledTimes(calls + 1);
+  expect(screen.queryByText("list_issues")).toBeInTheDocument();
+  view.unmount();
+});
