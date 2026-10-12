@@ -1124,7 +1124,11 @@ fn build_sidebar(
             }
             for (index, child) in subbuttons.iter().enumerate() {
                 let page = settings_page.clone();
-                child.connect_clicked(move |_| page.select_page(index));
+                let split = split.clone();
+                child.connect_clicked(move |_| {
+                    page.select_page(index);
+                    split.set_show_content(true);
+                });
             }
             subbuttons[0].add_css_class("selected");
             stack.connect_visible_child_name_notify(move |stack| {
