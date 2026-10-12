@@ -3971,7 +3971,12 @@ impl ActivityPage {
             },
         );
         let page = self.clone();
-        io::while_mapped(&self.root, 15, move || page.refresh_health());
+        io::while_mapped(&self.root, 15, move || {
+            // Also audit the content revision when the GIO monitor is active:
+            // remote/symlink writes and missed events still need the fallback.
+            page.check_revision();
+            page.refresh_health();
+        });
         let page = self.clone();
         self.root.connect_map(move |_| page.refresh_quietly());
         let page = self.clone();
@@ -12168,6 +12173,83 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     use super::*;
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn activity_revision_worker_refreshes_rewrites_and_releases_hidden_state() {
+        adw::init().unwrap();
+        let data = crate::registry::DataDirTestEnv::new("activity-revision-worker");
+        let path = data.dir.join("audit.jsonl");
+        let first = "{\"ts\":1,\"tool\":\"server__first\",\"server\":\"server\",\"ok\":true}\n";
+        let second = first.replace("first", "other");
+        assert_eq!(first.len(), second.len());
+        std::fs::write(&path, first).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.tsout.ActivityRevisionTest")
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let page = ActivityPage::new(&app);
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .content(&page.root)
+            .build();
+        page.attach(&window);
+        window.present();
+        let settle = || {
+            gtk::glib::MainContext::default().block_on(async {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    gtk::glib::timeout_future(std::time::Duration::from_millis(10)).await;
+                    if !page.loading.get() && !page.revision_loading.get() && !page.dirty.get() {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "Activity worker did not settle"
+                    );
+                }
+            });
+        };
+        settle();
+        assert_eq!(
+            page.last_snapshot.borrow().as_ref().unwrap().recent[0].tool,
+            "first"
+        );
+        let before = page.revision.borrow().clone();
+        std::fs::write(&path, second).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        page.check_revision();
+        settle();
+        assert_ne!(*page.revision.borrow(), before);
+        assert_eq!(
+            page.last_snapshot.borrow().as_ref().unwrap().recent[0].tool,
+            "other"
+        );
+        // Begin another worker then hide before its UI completion is delivered.
+        page.check_revision();
+        window.set_visible(false);
+        gtk::glib::MainContext::default().block_on(async {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while page.revision_loading.get() || page.loading.get() || page.health_loading.get() {
+                gtk::glib::timeout_future(std::time::Duration::from_millis(10)).await;
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "Hidden workers did not finish"
+                );
+            }
+        });
+        assert!(page.revision.borrow().is_none());
+        assert!(page.last_snapshot.borrow().is_none());
+        assert!(page.list.first_child().is_none());
+        window.close();
+        crate::observability_controller::release_activity_revision();
+    }
 
     #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
