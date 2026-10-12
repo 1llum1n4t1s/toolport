@@ -101,14 +101,15 @@ impl Fixture {
         for key in overrides {
             fixture.set(&key, None);
         }
-        // The linked library uses production resolvers. Redirect every OS root
-        // and clear client overrides before detection or Disconnect can run.
+        // The linked test-support library redirects OS-known roots too; profile
+        // environment alone cannot isolate Windows known folders.
         for key in ["GOOSE_PATH_ROOT", "CODEX_HOME", "GEMINI_CLI_HOME", "CRUSH_GLOBAL_CONFIG",
             "AMP_SETTINGS_FILE", "COPILOT_HOME", "GROK_HOME", "QWEN_HOME", "KIMI_CODE_HOME"] {
             fixture.set(key, None);
         }
         let home = fixture.dir.join("home");
         std::fs::create_dir_all(&home).unwrap();
+        fixture.set("TOOLPORT_TEST_ROOT", Some(home.clone().into_os_string()));
         for (key, path) in [
             ("HOME", home.clone()), ("USERPROFILE", home.clone()),
             ("XDG_CONFIG_HOME", home.join(".config")), ("XDG_DATA_HOME", home.join(".local/share")),

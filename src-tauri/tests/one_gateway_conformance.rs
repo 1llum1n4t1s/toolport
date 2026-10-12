@@ -1740,6 +1740,7 @@ fn matrix_rollout_default_selects_the_shared_daemon() {
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("SystemRoot", std::env::var_os("SystemRoot").unwrap_or_default())
         .env("WINDIR", std::env::var_os("WINDIR").unwrap_or_default())
+        .env("TOOLPORT_TEST_ROOT", dir.join("purge-home"))
         .env("USERPROFILE", dir.join("purge-home"))
         .env("APPDATA", dir.join("purge-home/AppData/Roaming"))
         .env("LOCALAPPDATA", dir.join("purge-home/AppData/Local"))

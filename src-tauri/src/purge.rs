@@ -26,6 +26,28 @@ pub struct Report {
     pub notes: Vec<String>,
 }
 
+// Unit tests always use scratch roots. test-support subprocesses opt in with
+// TOOLPORT_TEST_ROOT because Windows known folders ignore profile environment.
+macro_rules! root_resolver {
+    ($name:ident, $kind:literal, $dirs:ident) => {
+        fn $name() -> Option<PathBuf> {
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(path) = crate::fixture_paths::dir($kind) { return Some(path); }
+            #[cfg(not(test))]
+            { return dirs::$dirs(); }
+            #[cfg(test)]
+            None
+        }
+    };
+}
+root_resolver!(home_dir, "home", home_dir);
+root_resolver!(config_dir, "config", config_dir);
+root_resolver!(data_dir_root, "data", data_dir);
+#[cfg(target_os = "linux")]
+root_resolver!(cache_dir, "cache", cache_dir);
+#[cfg(target_os = "linux")]
+root_resolver!(data_local_dir, "local-data", data_local_dir);
+
 const AUTOSTART_NAMES: &[&str] = &["Toolport", "Conduit", "conduit", "ToolportNativePreview"];
 
 /// Removal never flushes telemetry: doing so could recreate the deleted logs.
@@ -61,9 +83,9 @@ fn data_dir() -> Result<PathBuf, String> {
         crate::registry::conduit_dir().ok_or("Could not resolve Toolport's data directory")?;
     let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
     let shared = [
-        dirs::home_dir(),
-        dirs::config_dir(),
-        dirs::data_dir(),
+        home_dir(),
+        config_dir(),
+        data_dir_root(),
         Some(std::env::temp_dir()),
     ];
     if !dir.is_absolute()
@@ -149,9 +171,9 @@ fn autostart_files(home: &Path) -> Vec<PathBuf> {
 }
 
 fn install_candidates(dir: &Path) -> Vec<PathBuf> {
-    let mut bases = vec![dir.parent().map(Path::to_path_buf), dirs::config_dir()];
+    let mut bases = vec![dir.parent().map(Path::to_path_buf), config_dir()];
     #[cfg(windows)]
-    bases.push(dirs::home_dir().map(|home| crate::brand::windows_roaming_base(&home)));
+    bases.push(home_dir().map(|home| crate::brand::windows_roaming_base(&home)));
     #[cfg(not(windows))]
     let _ = &mut bases;
     bases.into_iter().flatten().flat_map(|base| {
@@ -278,13 +300,13 @@ fn app_resources(home: &Path) -> Vec<PathBuf> {
     #[cfg(target_os = "linux")]
     {
         let _ = home;
-        [dirs::cache_dir(), dirs::data_local_dir()].into_iter().flatten()
+        [cache_dir(), data_local_dir()].into_iter().flatten()
             .flat_map(|base| [base.join("com.tsout.conduit")]).collect()
     }
 }
 
 fn remove_app_resources(report: &mut Report, shared: bool) {
-    let Some(home) = dirs::home_dir() else { return; };
+    let Some(home) = home_dir() else { return; };
     remove_resources(app_resources(&home), shared, report);
 }
 
@@ -317,7 +339,7 @@ pub fn plan_with_scope(all_installs: bool) -> Result<Plan, String> {
     verify_removal_ownership(&dir, all_installs)?;
     let others = other_installs(&dir, install_candidates(&dir));
     credential_scope(&dir, &others, all_installs)?;
-    let home = dirs::home_dir().ok_or("Could not resolve your home directory")?;
+    let home = home_dir().ok_or("Could not resolve your home directory")?;
     let report = home.join(format!(
         "Toolport-removal-report-{}.json",
         std::time::SystemTime::now()
@@ -386,7 +408,7 @@ fn open_removal_report(report_path: &Path) -> Result<std::fs::File, String> {
 #[cfg(any(feature = "desktop", feature = "gtk-desktop"))]
 pub fn launch_after_exit(report_path: &Path) -> Result<(), String> {
     use std::process::{Command, Stdio};
-    let home = dirs::home_dir().ok_or("Could not resolve your home directory")?;
+    let home = home_dir().ok_or("Could not resolve your home directory")?;
     if report_path.parent() != Some(home.as_path())
         || !report_path.file_name().is_some_and(|name| {
             name.to_string_lossy()
@@ -919,7 +941,7 @@ fn startup_entries(remove: bool, report: &mut Report) -> Result<(), String> {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let home = dirs::home_dir().ok_or("Could not resolve your home directory")?;
+        let home = home_dir().ok_or("Could not resolve your home directory")?;
         startup_files(autostart_files(&home), remove, report);
     }
     Ok(())
@@ -1009,6 +1031,21 @@ mod tests {
         assert_eq!(std::fs::read(wrong_hash.join("123-.claude.json")).unwrap(), b"user bytes");
         assert_eq!(std::fs::read(lookalike).unwrap(), b"user bytes");
         for (config, bytes) in configs { assert_eq!(std::fs::read(config).unwrap(), bytes); }
+    }
+
+    #[test]
+    fn purge_r7_roots_are_injectable_without_os_profile_reads() {
+        let env = crate::registry::DataDirTestEnv::new("purge_r7_roots");
+        crate::registry::save(&crate::registry::Registry::default()).unwrap();
+        let root = env.dir.join("scratch");
+        let _roots = crate::fixture_paths::RootGuard::set(root.clone());
+        assert_eq!(home_dir(), Some(root.clone()));
+        assert!(config_dir().unwrap().starts_with(&root));
+        assert!(data_dir_root().unwrap().starts_with(&root));
+        assert!(install_candidates(&env.dir.join("data/Toolport")).into_iter().all(|path| path.starts_with(&env.dir)));
+        assert!(app_resources(&root).into_iter().all(|path| path.starts_with(&root)));
+        let plan = plan().unwrap();
+        assert!(Path::new(&plan.report_path).starts_with(&root));
     }
 
     #[test]

@@ -10,7 +10,7 @@ fn isolated_command(root: &std::path::Path, data: &std::path::Path) -> Command {
         if let Some(value) = std::env::var_os(key) { command.env(key, value); }
     }
     let home = root.join("home");
-    command.env("TOOLPORT_DATA_DIR", data).env("HOME", &home).env("USERPROFILE", &home)
+    command.env("TOOLPORT_TEST_ROOT", &home).env("TOOLPORT_DATA_DIR", data).env("HOME", &home).env("USERPROFILE", &home)
         .env("APPDATA", home.join("AppData/Roaming"))
         .env("LOCALAPPDATA", home.join("AppData/Local"))
         .env("XDG_CONFIG_HOME", home.join(".config"))
@@ -398,4 +398,18 @@ fn purge_r7_cli_removes_location_store_and_exact_backup_names() {
     assert!(!data.join("backups/codex@0123456789abcdef").exists());
     assert!(data.join("backups/claude-code@claude2").is_dir(), "foreign files keep their folder");
     for row in rows { assert!(std::path::Path::new(row["configPath"].as_str().unwrap()).exists()); }
+}
+
+#[test]
+fn purge_r7_cli_test_root_redirects_os_known_folders() {
+    let env = conduit_lib::registry::DataDirTestEnv::new("purge_r7_cli_roots");
+    let data = env.dir.join("data");
+    std::fs::create_dir(&data).unwrap();
+    std::fs::write(data.join("registry.json"), serde_json::to_vec(&conduit_lib::registry::Registry::default()).unwrap()).unwrap();
+    let output = isolated_command(&env.dir, &data).arg("--remove-data").output().unwrap();
+    assert!(!output.status.success(), "unconfirmed removal only prints its plan");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("repeat with --confirm"));
+    let plan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(std::path::Path::new(plan["reportPath"].as_str().unwrap()).starts_with(env.dir.join("home")));
+    assert!(data.join("registry.json").exists(), "planning stays read-only");
 }

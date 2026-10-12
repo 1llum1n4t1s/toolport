@@ -361,6 +361,8 @@ pub(crate) fn home() -> Option<PathBuf> {
     if let Some(path) = TEST_HOME.with(|slot| slot.borrow().clone()) { return Some(path); }
     #[cfg(test)]
     { return Some(test_paths::home()); }
+    #[cfg(all(not(test), feature = "test-support"))]
+    if let Some(path) = crate::fixture_paths::dir("home") { return Some(path); }
     #[cfg(not(test))]
     dirs::home_dir()
 }
@@ -391,9 +393,12 @@ fn client_path_env(key: &str) -> Option<std::ffi::OsString> {
     std::env::var_os(key)
 }
 
+#[cfg(all(unix, not(target_os = "macos")))]
 fn client_config_dir() -> Option<PathBuf> {
     #[cfg(test)]
     { return test_paths::dir("XDG_CONFIG_HOME", || home().unwrap().join(".config")); }
+    #[cfg(all(not(test), feature = "test-support"))]
+    if let Some(path) = crate::fixture_paths::dir("config") { return Some(path); }
     #[cfg(not(test))]
     dirs::config_dir()
 }
@@ -401,6 +406,8 @@ fn client_config_dir() -> Option<PathBuf> {
 fn client_data_dir() -> Option<PathBuf> {
     #[cfg(test)]
     { return test_paths::dir("XDG_DATA_HOME", || home().unwrap().join(".local/share")); }
+    #[cfg(all(not(test), feature = "test-support"))]
+    if let Some(path) = crate::fixture_paths::dir("data") { return Some(path); }
     #[cfg(not(test))]
     dirs::data_dir()
 }
@@ -408,6 +415,8 @@ fn client_data_dir() -> Option<PathBuf> {
 fn client_local_data_dir() -> Option<PathBuf> {
     #[cfg(test)]
     { return test_paths::dir("LOCALAPPDATA", || home().unwrap().join("AppData/Local")); }
+    #[cfg(all(not(test), feature = "test-support"))]
+    if let Some(path) = crate::fixture_paths::dir("local-data") { return Some(path); }
     #[cfg(not(test))]
     dirs::data_local_dir()
 }
