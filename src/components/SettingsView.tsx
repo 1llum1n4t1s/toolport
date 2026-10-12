@@ -663,7 +663,16 @@ export function SettingsView({
   }
   const [quarantined, setQuarantined] = useState<QuarantinedTool[]>([]);
   const [quarantineError, setQuarantineError] = useState(false);
-  const [baselineNotice, setBaselineNotice] = useState<string | null>(null);
+  const baselineContext = JSON.stringify([
+    registry?.activeProfileId,
+    effectiveLevel,
+    registry?.quarantineOnDrift,
+    registry?.teamForcedQuarantineOnDrift,
+  ]);
+  const [baselineNotice, setBaselineNotice] = useState<{
+    context: string;
+    text: string;
+  } | null>(null);
   const [allowedTools, setAllowedTools] = useState<AllowedTool[]>([]);
   const [allowedError, setAllowedError] = useState(false);
   const [bridge, setBridge] = useState<HttpBridgeStatus | null>(null);
@@ -792,7 +801,12 @@ export function SettingsView({
         .then((notice) => {
           if (!current) return;
           setBaselineNotice(
-            notice ? `${new Date(notice.ts).toLocaleString()}: ${notice.detail}` : null,
+            notice
+              ? {
+                  context: baselineContext,
+                  text: `${new Date(notice.ts).toLocaleString()}: ${notice.detail}`,
+                }
+              : null,
           );
         })
         .catch(() => {});
@@ -814,12 +828,7 @@ export function SettingsView({
       current = false;
       clearInterval(id);
     };
-  }, [
-    registry?.activeProfileId,
-    effectiveLevel,
-    registry?.quarantineOnDrift,
-    registry?.teamForcedQuarantineOnDrift,
-  ]);
+  }, [baselineContext]);
 
   const reapprove = async (q: QuarantinedTool) => {
     try {
@@ -1178,12 +1187,12 @@ export function SettingsView({
               . These protections do not raise your safety level.
             </p>
           )}
-          {baselineNotice && (
+          {baselineNotice && baselineNotice.context === baselineContext && (
             <p
               role="status"
               className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
             >
-              Last baseline warning: {baselineNotice}
+              Last baseline warning: {baselineNotice.text}
             </p>
           )}
           {quarantined.length === 0 && quarantineError && (
