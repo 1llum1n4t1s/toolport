@@ -42,9 +42,13 @@ impl CatalogSession {
     /// A client that would reject its initial full catalog has no usable baseline.
     /// Once credited, later growth must still subtract every response.
     pub fn exclude_unloadable_baseline(&self) {
-        let loaded = self.loaded.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let loaded = self
+            .loaded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !*loaded {
-            self.measurable.store(false, std::sync::atomic::Ordering::Relaxed);
+            self.measurable
+                .store(false, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -349,7 +353,10 @@ pub fn record_catalog_surfaces(
         .loaded
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !session.measurable.load(std::sync::atomic::Ordering::Relaxed) {
+    if !session
+        .measurable
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
         return;
     }
     let first = !*loaded;
@@ -388,7 +395,10 @@ pub fn record_catalog_surfaces(
 
 /// Search content is measured after composing the text returned by tools/call.
 pub fn record_discovery(session: &CatalogSession, text: &str, matched_schema_bytes: u64) {
-    if !session.measurable.load(std::sync::atomic::Ordering::Relaxed) {
+    if !session
+        .measurable
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
         return;
     }
     append_line(&json!({

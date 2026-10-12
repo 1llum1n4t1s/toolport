@@ -7568,7 +7568,11 @@ fn handle_request_with_cancel(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if let Err(message) = validate_search_query(query) {
-                    savings::record_discovery(&guard.catalog, &message, savings::surface_bytes(&[]));
+                    savings::record_discovery(
+                        &guard.catalog,
+                        &message,
+                        savings::surface_bytes(&[]),
+                    );
                     return Some(success(
                         id,
                         json!({
@@ -19672,7 +19676,9 @@ fn serve_http(state: GatewayState, port: u16) {
     // is the fallback for requests that have no session record: a modern
     // (self-contained) request, an OpenAPI tool call, and the pre-session
     // `initialize`.
-    let search = Arc::new(SearchGuard { catalog: savings::CatalogSession::unmeasured() });
+    let search = Arc::new(SearchGuard {
+        catalog: savings::CatalogSession::unmeasured(),
+    });
 
     // When binding the default IPv4 loopback, ALSO listen on the IPv6 loopback
     // (best-effort). Many systems resolve "localhost" to ::1 first, and clients
