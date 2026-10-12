@@ -3550,7 +3550,7 @@ fn savings_line() -> String {
         let sign = if saved < 0 { "-" } else { "" };
         line.push_str(&format!(
             "{sign}{} tokens saved. cl100k_base, net of discovery responses and extra catalog exposure; \
-             counted once per session and scoped catalog hash. Historical estimates excluded; \
+             one baseline per session minus every catalog and search response. Historical estimates excluded; \
              client transformations and caching affect actual model usage.\n",
             fmt_tokens(saved.unsigned_abs())
         ));
@@ -7461,15 +7461,18 @@ fn handle_request_with_cancel(
             } else {
                 mode
             };
-            if mode != DiscoveryMode::Full {
-                let full = tool_surface(host, reg, router, &catalog, allowed, DiscoveryMode::Full);
+            {
+                let mut full =
+                    tool_surface(host, reg, router, &catalog, allowed, DiscoveryMode::Full);
+                if full_discovery_fallback(client) {
+                    full.splice(2..2, [search_tool_def(), call_tool_def()]);
+                }
+                guard
+                    .catalog
+                    .resolve_baseline_eligibility(|| !over_client_tool_limit(client, full.len()));
                 savings::record_catalog(
                     &guard.catalog,
-                    if mode == DiscoveryMode::Lazy {
-                        "lazy"
-                    } else {
-                        "grouped"
-                    },
+                    mode.as_str(),
                     client,
                     &full,
                     &tools,
@@ -7564,14 +7567,32 @@ fn handle_request_with_cancel(
             }
 
             if name == "toolport_search_tools" {
+                // Search can precede tools/list. Check the same policy/client full
+                // catalog before either a successful or rejected response is queued.
+                // Cached dispatch also reaches this path with its request snapshot.
+                guard.catalog.resolve_baseline_eligibility(|| {
+                    let catalog = if cached.is_empty() {
+                        router.shared_tools()
+                    } else {
+                        drop_blocked_from_cache(cached.shared(), router, reg)
+                    };
+                    let mut full =
+                        tool_surface(host, reg, router, &catalog, allowed, DiscoveryMode::Full);
+                    if full_discovery_fallback(client) {
+                        full.splice(2..2, [search_tool_def(), call_tool_def()]);
+                    }
+                    !over_client_tool_limit(client, full.len())
+                });
                 let query = arguments
                     .get("query")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if let Err(message) = validate_search_query(query) {
-                    if mode != DiscoveryMode::Full {
-                        savings::record_discovery(&message, savings::surface_bytes(&[]));
-                    }
+                    savings::record_discovery(
+                        &guard.catalog,
+                        &message,
+                        savings::surface_bytes(&[]),
+                    );
                     return Some(success(
                         id,
                         json!({
@@ -7826,12 +7847,11 @@ fn handle_request_with_cancel(
                                 }
                             },
                         );
-                if mode != DiscoveryMode::Full {
-                    savings::record_discovery(
-                        search_result["content"][0]["text"].as_str().unwrap_or(""),
-                        matched_schema_bytes,
-                    );
-                }
+                savings::record_discovery(
+                    &guard.catalog,
+                    search_result["content"][0]["text"].as_str().unwrap_or(""),
+                    matched_schema_bytes,
+                );
                 // Record exact UTF-8 returned text and serialized menu bytes. Legacy
                 // token fields remain reference estimates for existing readers.
                 let returned_names: Vec<String> = matches
@@ -16584,14 +16604,13 @@ fn process_request_wire_inner(
         } else {
             discovery
         };
-        if discovery != DiscoveryMode::Full {
+        {
+            guard.catalog.resolve_baseline_eligibility(|| {
+                !over_client_tool_limit(client, full.summary.tool_count())
+            });
             savings::record_catalog_surfaces(
                 &guard.catalog,
-                if discovery == DiscoveryMode::Lazy {
-                    "lazy"
-                } else {
-                    "grouped"
-                },
+                discovery.as_str(),
                 client,
                 &full,
                 &exposed,
@@ -19588,7 +19607,9 @@ fn serve_daemon(state: GatewayState, private: bool) -> ! {
         "daemon: host runtime on http://127.0.0.1:{port} for {}",
         compat.fingerprint()
     ));
-    let search = Arc::new(SearchGuard::default());
+    let search = Arc::new(SearchGuard {
+        catalog: savings::CatalogSession::unmeasured(),
+    });
     state.touch_activity();
     let inflight = Arc::clone(&state.http_inflight);
     spawn_daemon_idle_watchdog(
@@ -19675,7 +19696,9 @@ fn serve_http(state: GatewayState, port: u16) {
     // is the fallback for requests that have no session record: a modern
     // (self-contained) request, an OpenAPI tool call, and the pre-session
     // `initialize`.
-    let search = Arc::new(SearchGuard::default());
+    let search = Arc::new(SearchGuard {
+        catalog: savings::CatalogSession::unmeasured(),
+    });
 
     // When binding the default IPv4 loopback, ALSO listen on the IPv6 loopback
     // (best-effort). Many systems resolve "localhost" to ::1 first, and clients
@@ -35075,6 +35098,8 @@ mod tests {
 
     #[test]
     fn server_discover_aggregates_only_relayable_extensions_in_scope() {
+        let _data =
+            DataDirTestEnv::new("server_discover_aggregates_only_relayable_extensions_in_scope");
         let host = dispatch_host(false);
         struct ExtensionServer;
 
@@ -35769,6 +35794,9 @@ mod tests {
 
     #[test]
     fn modern_cacheable_results_preserve_hints_and_scoping_fails_private() {
+        let _data = DataDirTestEnv::new(
+            "modern_cacheable_results_preserve_hints_and_scoping_fails_private",
+        );
         let host = dispatch_host(false);
         let reg = Registry::default();
         let router = cache_router();
@@ -36648,6 +36676,7 @@ mod tests {
 
     #[test]
     fn tools_list_always_includes_status() {
+        let _data = DataDirTestEnv::new("tools_list_always_includes_status");
         let host = dispatch_host(false);
         let reg = Registry::default();
         let req = json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/list" });
@@ -37032,7 +37061,6 @@ mod tests {
             version: 1,
             ..Registry::default()
         };
-        let guard = SearchGuard::default();
         let req = json!({"jsonrpc":"2.0", "id":1, "method":"tools/list"});
         let allowed = std::collections::HashSet::from(["alpha".to_string()]);
         let scoped_client = format!("scoped-{}", new_correlation_id());
@@ -37047,7 +37075,7 @@ mod tests {
                 &cached,
                 false,
                 None,
-                &guard,
+                &SearchGuard::default(),
                 Some(&allowed),
                 Some(&scoped_client),
             )
@@ -37077,7 +37105,7 @@ mod tests {
                     &cached,
                     mode == DiscoveryMode::Lazy,
                     None,
-                    &guard,
+                    &SearchGuard::default(),
                     Some(&allowed),
                     Some(&scoped_client),
                 )
@@ -37127,7 +37155,7 @@ mod tests {
             &cached,
             false,
             None,
-            &guard,
+            &SearchGuard::default(),
             Some(&allowed),
             Some(&scoped_client),
         )
@@ -37146,7 +37174,7 @@ mod tests {
             &cached,
             true,
             None,
-            &guard,
+            &SearchGuard::default(),
             Some(&allowed),
             Some(&scoped_client),
         )
@@ -37161,6 +37189,170 @@ mod tests {
             savings::surface_bytes(filtered["result"]["tools"].as_array().unwrap())
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn uncached_full_baseline_includes_the_clients_fallback_tools() {
+        let _data = DataDirTestEnv::new("savings-full-fallback-baseline");
+        let host = dispatch_host(false);
+        host.set_discovery_mode(DiscoveryMode::Full);
+        let reply = handle_request(
+            &host,
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+            &Registry::default(),
+            &router(),
+            &catalog(),
+            false,
+            None,
+            &SearchGuard::default(),
+            None,
+            Some("codex"),
+        )
+        .unwrap();
+        let row = savings::entries().pop().unwrap();
+        assert_eq!(row["fullTokens"], row["exposedTokens"]);
+        assert_eq!(
+            row["fullSurfaceBytes"],
+            savings::surface_bytes(reply["result"]["tools"].as_array().unwrap())
+        );
+        assert_eq!(savings::summary()["tokensSaved"], 0);
+    }
+
+    // Exercise the real dispatch and durable writer, including both list paths.
+    fn savings_prelist_limit_fixture(wire: bool, concurrent: bool) {
+        let _data = DataDirTestEnv::new("savings-prelist-limit");
+        let state = http_state(true);
+        let tools: Vec<_> = (0..2049)
+            .map(|i| json!({"name":format!("fixture__work_{i}"), "inputSchema":{}}))
+            .collect();
+        let snapshot = Arc::new(CatalogSnapshot::new(tools.clone()));
+        *state.cached_tools.lock().unwrap() = Arc::clone(&snapshot);
+        let reg = Registry::default();
+        let router = Router::new();
+        let guard = SearchGuard::default();
+        let search = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"toolport_search_tools","arguments":{"query":"work"}}});
+        let invalid = json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"toolport_search_tools","arguments":{"query":"x".repeat(MAX_SEARCH_QUERY_CHARS + 1)}}});
+        let list = json!({"jsonrpc":"2.0","id":3,"method":"tools/list"});
+        let run = |req: &Value| {
+            if wire {
+                process_request_wire(
+                    &state,
+                    req,
+                    &guard,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("codex"),
+                    None,
+                    DiscoveryMode::Lazy,
+                )
+                .unwrap()
+                .envelope
+            } else {
+                handle_request(
+                    &state,
+                    req,
+                    &reg,
+                    &router,
+                    &tools,
+                    true,
+                    None,
+                    &guard,
+                    None,
+                    Some("codex"),
+                )
+                .unwrap()
+            }
+        };
+        if concurrent {
+            let barrier = std::sync::Barrier::new(3);
+            std::thread::scope(|scope| {
+                let search = scope.spawn(|| {
+                    barrier.wait();
+                    run(&search)
+                });
+                let list = scope.spawn(|| {
+                    barrier.wait();
+                    run(&list)
+                });
+                barrier.wait();
+                assert!(search.join().unwrap()["result"]["content"].is_array());
+                assert!(list.join().unwrap()["result"]["tools"].is_array());
+            });
+        } else {
+            assert!(run(&search)["result"]["content"].is_array());
+            assert_eq!(run(&invalid)["result"]["isError"], true);
+            assert!(run(&list)["result"]["tools"].is_array());
+        }
+        let rows = savings::entries();
+        let summary = savings::summary();
+        assert!(
+            rows.is_empty(),
+            "wire={wire}, concurrent={concurrent}: rows={}, sessions={}, discoveries={}, net={}",
+            rows.len(),
+            summary["tokenizedLoads"],
+            summary["discoveryCount"],
+            summary["tokensSaved"]
+        );
+        assert_eq!(summary["tokenizedLoads"], 0);
+        assert_eq!(summary["discoveryCount"], 0);
+        assert_eq!(summary["tokensSaved"], 0);
+    }
+
+    #[test]
+    fn savings_search_before_first_list_excludes_unloadable_baseline() {
+        for wire in [false, true] {
+            savings_prelist_limit_fixture(wire, false);
+        }
+    }
+
+    #[test]
+    fn savings_concurrent_search_and_first_list_exclude_unloadable_baseline() {
+        for wire in [false, true] {
+            savings_prelist_limit_fixture(wire, true);
+        }
+    }
+
+    #[test]
+    fn changing_discovery_modes_subtracts_responses_without_a_new_baseline() {
+        let _data = DataDirTestEnv::new("savings-mode-changes");
+        let host = dispatch_host(false);
+        let reg = Registry::default();
+        let guard = SearchGuard::default();
+        let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
+        let mut transmitted = 0;
+        for mode in [
+            DiscoveryMode::Lazy,
+            DiscoveryMode::Lazy,
+            DiscoveryMode::Full,
+        ] {
+            host.set_discovery_mode(mode);
+            let response = handle_request(
+                &host,
+                &req,
+                &reg,
+                &router(),
+                &catalog(),
+                mode == DiscoveryMode::Lazy,
+                None,
+                &guard,
+                None,
+                None,
+            )
+            .unwrap();
+            transmitted += savings::count_tokens(
+                &serde_json::to_string(&response["result"]["tools"]).unwrap(),
+            );
+        }
+        let summary = savings::summary();
+        assert_eq!(summary["tokenizedLoads"], 1);
+        assert_eq!(summary["listLoads"], 3);
+        assert_eq!(summary["exposedTokens"], transmitted);
+        let baseline = summary["fullTokens"].as_u64().unwrap();
+        assert_eq!(summary["tokensSaved"], baseline as i64 - transmitted as i64);
     }
 
     #[test]
@@ -37266,6 +37458,8 @@ mod tests {
     /// reach the model verbatim otherwise.
     #[test]
     fn full_tools_list_neutralizes_spoofs_outside_the_description() {
+        let _data =
+            DataDirTestEnv::new("full_tools_list_neutralizes_spoofs_outside_the_description");
         let host = dispatch_host(false);
         host.set_discovery_mode(DiscoveryMode::Full);
         let poisoned = vec![spoofed_tool("resend__send_email")];

@@ -189,3 +189,7 @@ required-features = ["test-support"]
 [[example]]
 name = "client-locations-scan"
 required-features = ["test-support"]
+
+[[example]]
+name = "savings-report"
+required-features = ["test-support"]

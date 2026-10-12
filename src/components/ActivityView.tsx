@@ -459,100 +459,106 @@ function QuietDriftHistory({
   );
 }
 
-/** Catalog exposure: exact serialized bytes with a provider-independent estimate. */
+/** One session baseline minus every catalog response and search response. */
 function SavingsBanner({ savings }: { savings: SavingsSummary }) {
   const hasCatalog = (savings.tokenizedLoads ?? 0) > 0;
-  const measured = (savings.measuredLoads ?? 0) > 0;
   const discovered = (savings.discoveryCount ?? 0) > 0;
-  const avoided = savings.avoidedSurfaceBytes ?? 0;
-  const legacy = savings.legacyEstimatedTokensAvoided ?? 0;
-  const oldV2 = savings.estimatedTokensAvoided ?? 0;
   const method =
-    "Tool descriptions are counted locally once per client session and catalog version, minus search results and any extra descriptions loaded. Older estimates are excluded; this is not a billing figure.";
-  const since = savings.sinceTs > 0 ? fmtTs(savings.sinceTs, "monthDay") : null;
+    "The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. We count compact JSON and search response text with cl100k_base, then subtract every tools/list and search response. Sessionless HTTP, initial catalogs above known client limits, and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.";
+  const exact = (value: number | undefined) => (value ?? 0).toLocaleString();
   const share = async () => {
-    const text = hasCatalog
-      ? `Toolport counted ${fmtTokens(savings.tokensSaved)} catalog tokens avoided. Estimated locally; not a billing figure. toolport.app`
-      : `Toolport recorded ${savings.discoveryCount ?? 0} discovery searches returning ${fmtBytes(savings.discoveryResponseBytes ?? 0)} of text at its MCP boundary. toolport.app`;
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(
+        `Toolport measured ${fmtTokens(savings.tokensSaved)} net tokens saved across ${savings.tokenizedLoads} client sessions. Full catalog baselines minus all catalog and search responses, counted locally with cl100k_base; not a billing figure. toolport.app`,
+      );
       toast.success("Savings copied, paste them anywhere");
     } catch {
       toastError("Couldn't copy to clipboard");
     }
   };
-
   return (
     <div className="mb-6 toolport-alert border-success bg-success/8 p-4">
       <div className="flex items-center gap-2">
         <Sparkles className="size-4 text-success" />
         <span className="text-sm font-medium text-muted-foreground">
-          {hasCatalog ? "Catalog text avoided" : "Discovery payload returned"}
+          {hasCatalog
+            ? "Net tool description savings"
+            : discovered
+              ? "Discovery payload returned"
+              : "Savings history"}
         </span>
       </div>
       <div className="mt-2 flex flex-wrap items-end gap-x-6 gap-y-1">
         <span className="text-3xl font-semibold tabular-nums text-success" title={method}>
           {hasCatalog
             ? fmtTokens(savings.tokensSaved)
-            : fmtBytes(savings.discoveryResponseBytes ?? 0)}{" "}
+            : discovered
+              ? fmtBytes(savings.discoveryResponseBytes ?? 0)
+              : "Not measured yet"}{" "}
           <span className="text-base font-normal text-muted-foreground">
-            {hasCatalog ? "tokens saved" : "discovery text"}
+            {hasCatalog ? "net tokens saved" : discovered ? "discovery text" : ""}
           </span>
         </span>
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
         {hasCatalog
-          ? "Tool descriptions your AI clients didn't have to load. Estimated locally; not a billing figure."
-          : "Text returned by tool searches, measured on this computer."}
+          ? "Full catalog baselines minus all catalog and search responses. Counted locally; not a billing figure."
+          : "Older records remain available below. Comparable session measurements start with this version."}
       </p>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      {(savings.previousReportedTokensSaved ?? 0) !== 0 && (
+        <div className="mt-3 border-t border-success/20 pt-3 text-xs text-muted-foreground">
+          <p className="font-medium">
+            Old estimate: {exact(savings.previousReportedTokensSaved)} tokens
+          </p>
+          <p className="mt-1">From previous versions; excluded from new savings.</p>
+        </div>
+      )}
+      {hasCatalog && (
         <button
           onClick={share}
-          className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition hover:text-foreground"
+          className="mt-3 inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition hover:text-foreground"
         >
           <Share2 className="size-3.5" /> Share
         </button>
-      </div>
+      )}
       <details className="mt-3 text-xs text-muted-foreground">
-        <summary className="cursor-pointer">How this is counted</summary>
+        <summary className="cursor-pointer">How this is measured</summary>
         <div className="mt-2 space-y-2">
           <p>{method}</p>
-          <p>
-            {savings.tokenizedLoads ?? 0} catalog loads counted
-            {since ? ` since ${since}` : ""}; largest catalog:{" "}
-            {savings.peakCatalog.toLocaleString()} tools.
-          </p>
-          {measured && (
+          {hasCatalog && (
             <p>
-              {fmtBytes(savings.fullSurfaceBytes ?? 0)} of tool descriptions available,{" "}
-              {fmtBytes(savings.exposedSurfaceBytes ?? 0)} loaded, {fmtBytes(avoided)}{" "}
-              avoided across {savings.measuredLoads} measured loads.
+              {exact(savings.fullTokens)} baseline tokens − {exact(savings.exposedTokens)}{" "}
+              catalog response tokens − {exact(savings.discoveryTokens)} search response
+              tokens = {exact(savings.tokensSaved)} net tokens saved.
             </p>
           )}
-          {(savings.latestCatalogTs ?? 0) > 0 && (
+          {(hasCatalog || discovered) && (
+            <>
+              <p>
+                {exact(savings.tokenizedLoads)} client sessions;{" "}
+                {exact(savings.listLoads)} catalog responses;{" "}
+                {exact(savings.discoveryCount)} search responses.
+              </p>
+              <p>
+                {fmtBytes(savings.fullSurfaceBytes ?? 0)} baseline catalog text;{" "}
+                {fmtBytes(savings.exposedSurfaceBytes ?? 0)} catalog text sent;{" "}
+                {fmtBytes(savings.discoveryResponseBytes ?? 0)} search text sent.
+              </p>
+            </>
+          )}
+          {(savings.historicalListLoads ?? 0) > 0 && (
             <p>
-              Latest load: {savings.latestFullToolCount} tools available (
-              {fmtBytes(savings.latestFullSurfaceBytes ?? 0)}),{" "}
-              {savings.latestExposedToolCount} loaded (
-              {fmtBytes(savings.latestExposedSurfaceBytes ?? 0)}).
+              Excluded history: {exact(savings.historicalListLoads)} catalog records (
+              {exact(savings.historicalMeasuredLoads)} with byte measurements). Session
+              identity and repeat loads cannot be verified.
             </p>
           )}
-          {(savings.extraExposedSurfaceBytes ?? 0) > 0 && (
+          {((savings.legacyEstimatedTokensAvoided ?? 0) > 0 ||
+            (savings.estimatedTokensAvoided ?? 0) > 0) && (
             <p>
-              {fmtBytes(savings.extraExposedSurfaceBytes ?? 0)} of extra descriptions
-              loaded for small catalogs.
-            </p>
-          )}
-          {discovered && (
-            <p>
-              {savings.discoveryCount} searches returned{" "}
-              {fmtBytes(savings.discoveryResponseBytes ?? 0)} of text.
-            </p>
-          )}
-          {(legacy > 0 || oldV2 > 0) && (
-            <p>
-              Older estimated records ({fmtTokens(legacy)} and {fmtTokens(oldV2)} tokens)
-              are excluded.
+              Older estimated records: {exact(savings.legacyEstimatedTokensAvoided)}{" "}
+              legacy tokens and {exact(savings.estimatedTokensAvoided)} size-based tokens,
+              excluded.
             </p>
           )}
         </div>
@@ -1942,7 +1948,10 @@ export function ActivityView({
         </p>
       )}
       {savings &&
-      ((savings.tokenizedLoads ?? 0) > 0 || (savings.discoveryCount ?? 0) > 0) ? (
+      ((savings.tokenizedLoads ?? 0) > 0 ||
+        (savings.discoveryCount ?? 0) > 0 ||
+        (savings.historicalListLoads ?? 0) > 0 ||
+        (savings.previousReportedTokensSaved ?? 0) !== 0) ? (
         <SavingsBanner savings={savings} />
       ) : null}
       <DiscoveryTraces

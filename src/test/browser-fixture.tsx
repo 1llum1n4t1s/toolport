@@ -396,6 +396,11 @@ if (dogfoodFixture) {
 
 const savingsSummary: SavingsSummary = {
   tokensSaved: 35_000,
+  fullTokens: 40_000,
+  exposedTokens: 3_400,
+  historicalListLoads: 5_884,
+  historicalMeasuredLoads: 3_027,
+  previousReportedTokensSaved: 195_640_064,
   tokenizedLoads: 12,
   catalogTokenDelta: 36_600,
   discoveryTokens: 1_600,

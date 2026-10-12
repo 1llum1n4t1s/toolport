@@ -155,7 +155,7 @@ fn render_with_savings(
     out.push_str(&format!("toolport_tokens_saved_total {}\n", tokens_saved));
 
     // Savings can decrease or become negative, so the net series is a gauge.
-    out.push_str("# HELP toolport_tokens_saved Net catalog tokens saved, excluding historical estimates; counted once per session and scoped catalog hash\n");
+    out.push_str("# HELP toolport_tokens_saved Net catalog tokens saved; one baseline per identifiable session minus all catalog and search responses; unverifiable history excluded\n");
     out.push_str("# TYPE toolport_tokens_saved gauge\n");
     out.push_str(&format!(
         "toolport_tokens_saved{{tokenizer=\"cl100k_base\",method=\"net_of_discovery\"}} {}\n",
@@ -392,7 +392,12 @@ mod tests {
     #[test]
     fn unreadable_savings_store_fails_the_scrape_for_both_eras() {
         let _lock = crate::registry::data_dir_test_lock();
-        for name in ["savings.jsonl", "savings-v2.jsonl", "savings-v3.jsonl"] {
+        for name in [
+            "savings.jsonl",
+            "savings-v2.jsonl",
+            "savings-v3.jsonl",
+            "savings-v4.jsonl",
+        ] {
             let dir = scratch_data_dir(name);
             let _override = crate::registry::DataDirOverride::set(&dir);
             std::fs::create_dir_all(dir.join(name)).unwrap();

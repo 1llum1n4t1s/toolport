@@ -105,7 +105,7 @@ try {
   await expect(page.getByRole("button", { name: "35.0k tokens saved" })).toBeVisible();
   await expect(page.getByRole("button", { name: "35.0k tokens saved" })).toHaveAttribute(
     "title",
-    /cl100k_base.*net of discovery.*once per session/,
+    /cl100k_base.*one full catalog baseline per client session.*every catalog and search response/,
   );
   await page.screenshot({ path: path.join(output, "servers.png") });
   await page.getByRole("button", { name: "Show GitHub details", exact: true }).click();
@@ -120,9 +120,9 @@ try {
   await page.screenshot({ path: path.join(output, "server-tools.png") });
   await page.getByRole("button", { name: "Activity", exact: true }).click();
   await expect(page.getByText("Protection active.", { exact: true })).toBeVisible();
-  await expect(page.getByText("Catalog text avoided")).toBeVisible();
-  await expect(page.getByRole("main").getByText("35.0k tokens saved")).toBeVisible();
-  await expect(page.getByText("How this is counted", { exact: true })).toBeVisible();
+  await expect(page.getByText("Net tool description savings")).toBeVisible();
+  await expect(page.getByRole("main").getByText("35.0k net tokens saved")).toBeVisible();
+  await expect(page.getByText("How this is measured", { exact: true })).toBeVisible();
   await expect(page.getByText(/Older estimated records/)).not.toBeVisible();
   await page.screenshot({ path: path.join(output, "activity.png") });
   await page.getByRole("button", { name: "Clients", exact: true }).click();
@@ -630,7 +630,7 @@ try {
     page.getByText("servers used", { exact: true }).locator(".."),
   ).toContainText("1");
   await page.screenshot({ path: path.join(output, "A1-A2-A3-A4-activity-after-r3.png") });
-  const counting = page.getByText("How this is counted", { exact: true });
+  const counting = page.getByText("How this is measured", { exact: true });
   await expect(counting.locator("..")).not.toHaveAttribute("open");
   await counting.scrollIntoViewIfNeeded();
   await page.screenshot({ path: path.join(output, "A5-savings-after-r2.png") });
