@@ -718,7 +718,7 @@ try {
   ).toBe(true);
   await page.screenshot({ path: path.join(output, "clients-narrow.png") });
   await page.getByRole("button", { name: "Activity", exact: true }).click();
-  await expect(page.getByText(/update.*to review/).first()).toBeVisible();
+  await expect(page.getByText("Protection active.", { exact: true })).toBeVisible();
   const activityReads = await page.evaluate(
     () => window.toolportFixture.calls.get_audit_log,
   );
