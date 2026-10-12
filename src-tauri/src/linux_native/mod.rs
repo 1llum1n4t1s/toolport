@@ -7,6 +7,7 @@ mod branding;
 mod catalog;
 mod health;
 mod http_bridge;
+mod io;
 mod notify;
 mod onboarding;
 mod package_updates;
@@ -58,94 +59,80 @@ pub fn run() {
         app.run_with_args(&args);
         return;
     }
-    let registry = match crate::registry::load() {
-        Ok(registry) => registry,
-        Err(error) => {
-            run_registry_startup_failure(&app, &args, error);
-            return;
-        }
-    };
-    // The sidebar hides Team until this install is paired. Reads the same load
-    // above so the nav reflects the registry the rest of startup sees.
-    let paired = registry.team.is_some();
-    if !registry.live_inspect {
-        crate::inspect::clear();
-    }
-    let startup_notice = std::rc::Rc::new(std::cell::RefCell::new(
-        crate::registry::take_recovery_notice(),
-    ));
-    if !cfg!(debug_assertions) {
-        std::thread::spawn(run_startup_maintenance);
-    }
     let _hold = app.hold();
-    let broker = crate::approval_broker::start_native();
-    let bridge = http_bridge::BridgeController::default();
-    let bridge_for_restore = bridge.clone();
-    std::thread::spawn(move || {
-        if let Err(error) = bridge_for_restore.restore() {
-            eprintln!("toolport: could not restore the native HTTP endpoint: {error}");
-        }
-    });
     let quit = gtk::gio::SimpleAction::new("quit", None);
     let app_for_quit = app.clone();
     quit.connect_activate(move |_, _| app_for_quit.quit());
     app.add_action(&quit);
     app.set_accels_for_action("app.quit", &["<Primary>q"]);
-    migrate_preview_identity();
-    crate::autostart::repair_linux(settings::NATIVE_AUTOSTART_NAME);
-    ensure_url_scheme_handlers();
 
-    let tray = tray::start(&app);
-    // Hidden launch requires a REAL tray host, not just a spawned SNI item: the
-    // item is registered optimistically so the icon appears when a host shows
-    // up later, but a hidden window with no icon today is unreachable. At login
-    // the host may still be starting, so give it a short grace period.
-    let hide_first_activation =
-        std::rc::Rc::new(std::cell::Cell::new(launch_hidden && tray.is_some()));
-    let broker_for_activate = broker.clone();
-    let bridge_for_activate = bridge.clone();
-    let hide_first_for_activate = hide_first_activation.clone();
-    let notice_for_activate = startup_notice.clone();
+    let startup = std::rc::Rc::new(std::cell::RefCell::new(
+        None::<Result<NativeStartup, String>>,
+    ));
+    let requested = std::rc::Rc::new(std::cell::Cell::new(false));
+    let present = std::rc::Rc::new(std::cell::Cell::new(!launch_hidden));
+    let urls = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let tray = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let state = startup.clone();
+    let requested_for_activate = requested.clone();
+    let present_for_activate = present.clone();
+    let urls_for_activate = urls.clone();
     app.connect_activate(move |app| {
-        let hidden = hide_first_for_activate.replace(false);
-        build_window(
-            app,
-            theme::ThemeController::new(),
-            broker_for_activate.clone(),
-            bridge_for_activate.clone(),
-            notice_for_activate.clone(),
-            paired,
-            !hidden,
-        );
-        if hidden && !tray::sni_watcher_present() {
-            tray::present_unless_host_appears(app, tray::HOST_GRACE);
+        // A second activation (including a tray click) must reveal even a hidden launch.
+        if requested_for_activate.replace(true) {
+            present_for_activate.set(true);
         }
-    });
-    let broker_for_open = broker.clone();
-    let bridge_for_open = bridge.clone();
-    let notice_for_open = startup_notice.clone();
-    app.connect_open(move |app, files, _hint| {
-        if files
-            .iter()
-            .any(|file| crate::teams::parse_pair_link(file.uri().as_str()).is_some())
-        {
-            let _ = onboarding::mark_complete();
-        }
-        build_window(
-            app,
-            theme::ThemeController::new(),
-            broker_for_open.clone(),
-            bridge_for_open.clone(),
-            notice_for_open.clone(),
-            paired,
-            true,
-        );
-        let Some(action) = app.lookup_action("open-share-url") else {
+        let mut state = state.borrow_mut();
+        let Some(result) = state.as_mut() else {
             return;
         };
-        for file in files {
-            let uri = file.uri();
-            action.activate(Some(&uri.to_variant()));
+        match result {
+            Ok(startup) => {
+                build_window(
+                    app,
+                    theme::ThemeController::new(),
+                    startup.broker.clone(),
+                    startup.bridge.clone(),
+                    &mut startup.window,
+                    present_for_activate.get(),
+                );
+                for uri in urls_for_activate.borrow_mut().drain(..) {
+                    if let Some(action) = app.lookup_action("open-share-url") {
+                        action.activate(Some(&uri.to_variant()));
+                    }
+                }
+            }
+            Err(error) => show_registry_startup_failure(app, error),
+        }
+    });
+    let present_for_open = present.clone();
+    app.connect_open(move |app, files, _hint| {
+        present_for_open.set(true);
+        urls.borrow_mut()
+            .extend(files.iter().map(|file| file.uri().to_string()));
+        app.activate();
+    });
+    let app_for_startup = app.clone();
+    let state = startup.clone();
+    let tray_for_startup = tray.clone();
+    gtk::glib::spawn_future_local(async move {
+        let result = gtk::gio::spawn_blocking(load_native_startup)
+            .await
+            .unwrap_or_else(|_| Err("The startup worker stopped unexpectedly".into()));
+        if result.is_ok() {
+            *tray_for_startup.borrow_mut() = tray::start(&app_for_startup);
+            if launch_hidden && tray_for_startup.borrow().is_none() {
+                present.set(true);
+            }
+        }
+        *state.borrow_mut() = Some(result);
+        if requested.get() {
+            // Deliver the initial activation without treating it as a second launch.
+            requested.set(false);
+            app_for_startup.activate();
+            if launch_hidden && !present.get() {
+                tray::present_unless_host_appears(&app_for_startup, tray::HOST_GRACE);
+            }
         }
     });
     app.connect_shutdown(|_| {
@@ -153,11 +140,61 @@ pub fn run() {
         crate::telemetry::shutdown();
     });
     app.run_with_args(&args);
-    if let Some(tray) = tray {
+    if let Some(tray) = tray.borrow_mut().take() {
         tray.shutdown().wait();
     }
-    bridge.shutdown();
-    broker.clear_endpoint();
+    if let Some(Ok(startup)) = startup.borrow_mut().take() {
+        startup.bridge.shutdown();
+        startup.broker.clear_endpoint();
+    }
+}
+
+struct WindowStartup {
+    paired: bool,
+    saved_state: Option<WindowState>,
+    removed: Vec<String>,
+    access_notice: bool,
+    recovery: Option<crate::registry::RegistryRecoveryNotice>,
+}
+
+struct NativeStartup {
+    window: WindowStartup,
+    broker: crate::approval_broker::ApprovalBroker,
+    bridge: http_bridge::BridgeController,
+}
+
+/// Everything that can wait on the registry, disk, broker or endpoint runs on a worker.
+fn load_native_startup() -> Result<NativeStartup, String> {
+    let registry = crate::registry::load()?;
+    if !registry.live_inspect {
+        crate::inspect::clear();
+    }
+    let window = WindowStartup {
+        paired: registry.team.is_some(),
+        saved_state: load_window_state(),
+        removed: registry.removed_features_notice(),
+        access_notice: registry.access_upgrade_notice_pending(),
+        recovery: crate::registry::take_recovery_notice(),
+    };
+    let broker = crate::approval_broker::start_native();
+    let bridge = http_bridge::BridgeController::default();
+    let restore = bridge.clone();
+    std::thread::spawn(move || {
+        if let Err(error) = restore.restore() {
+            eprintln!("toolport: could not restore the native HTTP endpoint: {error}");
+        }
+    });
+    migrate_preview_identity();
+    crate::autostart::repair_linux(settings::NATIVE_AUTOSTART_NAME);
+    ensure_url_scheme_handlers();
+    if !cfg!(debug_assertions) {
+        std::thread::spawn(run_startup_maintenance);
+    }
+    Ok(NativeStartup {
+        window,
+        broker,
+        bridge,
+    })
 }
 
 /// Make `toolport://` and `conduit://` links reach this binary even on an
@@ -268,10 +305,7 @@ fn build_window(
     theme: std::rc::Rc<theme::ThemeController>,
     broker: crate::approval_broker::ApprovalBroker,
     bridge: http_bridge::BridgeController,
-    startup_notice: std::rc::Rc<
-        std::cell::RefCell<Option<crate::registry::RegistryRecoveryNotice>>,
-    >,
-    paired: bool,
+    startup: &mut WindowStartup,
     present: bool,
 ) {
     if let Some(window) = app.windows().into_iter().next() {
@@ -281,7 +315,9 @@ fn build_window(
         return;
     }
 
-    let saved_state = load_window_state();
+    let saved_state = &startup.saved_state;
+    let paired = startup.paired;
+    let startup_notice = std::rc::Rc::new(std::cell::RefCell::new(startup.recovery.take()));
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Toolport")
@@ -342,34 +378,15 @@ fn build_window(
         settings_page.clone(),
         paired,
     );
-    // The Settings tab must not go stale while open: quarantine and remembered
-    // approvals change underneath it (the shipping
-    // app polls the same way).
     {
-        let settings_for_tick = settings_page.clone();
-        gtk::glib::timeout_add_local(std::time::Duration::from_secs(15), move || {
-            if settings_for_tick.root.is_mapped() {
-                settings_for_tick.refresh_quietly();
-            }
-            gtk::glib::ControlFlow::Continue
-        });
-    }
-    // Activity ticks while visible, like the shipping dashboard, so calls land
-    // as they happen; identical data is dropped before any re-render.
-    {
-        let activity_for_tick = activity_page.clone();
-        gtk::glib::timeout_add_local(std::time::Duration::from_secs(3), move || {
-            if activity_for_tick.root.is_mapped() {
-                activity_for_tick.refresh_quietly();
-            }
-            gtk::glib::ControlFlow::Continue
-        });
+        let settings = settings_page.clone();
+        io::while_mapped(&settings_page.root, 15, move || settings.refresh_quietly());
+        let activity = activity_page.clone();
+        io::while_mapped(&activity_page.root, 3, move || activity.refresh_quietly());
     }
     split.set_sidebar(Some(&adw::NavigationPage::new(&sidebar, "Navigation")));
     let content_with_notice = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let removed = crate::registry::load()
-        .map(|reg| reg.removed_features_notice())
-        .unwrap_or_default();
+    let removed = &startup.removed;
     if !removed.is_empty() {
         let notice = gtk::Box::new(gtk::Orientation::Vertical, 8);
         notice.add_css_class("toolport-setting-row");
@@ -414,7 +431,7 @@ fn build_window(
         notice.append(&actions);
         content_with_notice.append(&notice);
     }
-    if crate::registry::load().is_ok_and(|reg| reg.access_upgrade_notice_pending()) {
+    if startup.access_notice {
         let notice = gtk::Box::new(gtk::Orientation::Vertical, 8);
         notice.add_css_class("toolport-setting-row");
         notice.append(&gtk::Label::builder().label(
@@ -512,8 +529,8 @@ fn build_window(
     quarantine_host.set_margin_end(12);
     quarantine_host.set_margin_bottom(16);
     alerts.add_overlay(&quarantine_host);
-    start_quarantine_watch(app, quarantine_badge, quarantine_alert);
-    start_security_event_watch(app, security_event_alert);
+    start_quarantine_watch(app, &window, quarantine_badge, quarantine_alert);
+    start_security_event_watch(app, &window, security_event_alert);
 
     let narrow = adw::Breakpoint::new(
         adw::BreakpointCondition::parse("max-width: 620px")
@@ -710,8 +727,7 @@ fn run_startup_maintenance() {
     crate::guard_cleanup::run_once();
 }
 
-fn run_registry_startup_failure(app: &adw::Application, args: &[String], error: String) {
-    app.connect_activate(move |app| {
+fn show_registry_startup_failure(app: &adw::Application, error: &str) {
         if let Some(window) = app.active_window() { window.present(); return; }
         let path = crate::registry::resolved_path()
             .map(|path| path.display().to_string())
@@ -763,9 +779,6 @@ fn run_registry_startup_failure(app: &adw::Application, args: &[String], error: 
         page.append(&close);
         window.set_content(Some(&page));
         window.present();
-    });
-    app.connect_open(|app, _, _| app.activate());
-    app.run_with_args(args);
 }
 
 /// The 2.0 top-level navigation, in sidebar order. Team joins only on a paired
@@ -1490,7 +1503,11 @@ fn security_attention_incidents(events: &[serde_json::Value]) -> Vec<serde_json:
         .collect()
 }
 
-fn start_security_event_watch(app: &adw::Application, alert: SecurityEventAlert) {
+fn start_security_event_watch(
+    app: &adw::Application,
+    window: &adw::ApplicationWindow,
+    alert: SecurityEventAlert,
+) {
     let app = app.clone();
     let seen: std::rc::Rc<std::cell::RefCell<Option<std::collections::HashSet<String>>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -1533,14 +1550,27 @@ fn start_security_event_watch(app: &adw::Application, alert: SecurityEventAlert)
         gtk::glib::ControlFlow::Continue
     };
     tick();
-    gtk::glib::timeout_add_local(std::time::Duration::from_secs(5), tick);
+    io::watch_data(
+        window,
+        |name| {
+            name == "security.jsonl" || name.starts_with("quarantine") || name == "registry.json"
+        },
+        move || {
+            tick();
+        },
+    );
 }
 
-/// Poll the quarantine store every 15 seconds (matching the shipping app): keep
+/// Watch quarantine store changes, including while hidden: keep
 /// the sidebar badge current, and send one OS notification per newly blocked
 /// tool batch. The first poll only establishes the baseline so a restart does
 /// not re-announce an already known backlog; the badge still shows it.
-fn start_quarantine_watch(app: &adw::Application, badge: gtk::Label, alert: QuarantineAlert) {
+fn start_quarantine_watch(
+    app: &adw::Application,
+    window: &adw::ApplicationWindow,
+    badge: gtk::Label,
+    alert: QuarantineAlert,
+) {
     let app = app.clone();
     let seen: std::rc::Rc<std::cell::RefCell<Option<std::collections::HashSet<String>>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -1603,7 +1633,17 @@ fn start_quarantine_watch(app: &adw::Application, badge: gtk::Label, alert: Quar
         gtk::glib::ControlFlow::Continue
     };
     tick();
-    gtk::glib::timeout_add_local(std::time::Duration::from_secs(15), tick);
+    io::watch_data(
+        window,
+        |name| {
+            name.starts_with("quarantine")
+                || name == "registry.json"
+                || name == "root-integrity-scopes.json"
+        },
+        move || {
+            tick();
+        },
+    );
 }
 
 // Keep the native navigation widgets and their shared page state together.

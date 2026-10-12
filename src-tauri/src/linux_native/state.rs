@@ -837,17 +837,13 @@ impl RegistryController {
     }
 
     pub(super) fn attach(self: &Rc<Self>, window: &adw::ApplicationWindow) {
-        self.reload();
         self.start_monitors();
+        Self::reload_in_background(self);
 
         let controller = Rc::clone(self);
         window.connect_destroy(move |_| {
             controller.monitors.borrow_mut().clear();
         });
-    }
-
-    fn reload(&self) {
-        (self.render)(load_read_only(self.path.as_deref()));
     }
 
     fn schedule_reload(controller: Weak<Self>) {

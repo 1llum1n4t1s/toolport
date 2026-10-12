@@ -7,16 +7,27 @@ use adw::prelude::*;
 use image::GenericImageView;
 use ksni::blocking::TrayMethods;
 
-/// Written by the approval page on every poll, read by the tray timer. The
+/// Written by the approval page when its queue changes. The
 /// count must be visible with the window hidden - that is the whole point of a
 /// tray - so it lives here rather than in any page state.
 static PENDING_APPROVALS: AtomicUsize = AtomicUsize::new(0);
 
 pub(super) fn set_pending(count: usize) {
-    PENDING_APPROVALS.store(count, Ordering::Relaxed);
+    if PENDING_APPROVALS.swap(count, Ordering::Relaxed) != count {
+        TRAY_COMMANDS.with(|commands| {
+            if let Some(commands) = commands.borrow().as_ref() {
+                let _ = commands.send(Command::Pending(count));
+            }
+        });
+    }
+}
+
+thread_local! {
+    static TRAY_COMMANDS: std::cell::RefCell<Option<mpsc::Sender<Command>>> = const { std::cell::RefCell::new(None) };
 }
 
 enum Command {
+    Pending(usize),
     Show,
     ShowApprovals,
     Quit,
@@ -163,34 +174,42 @@ pub(super) fn present_unless_host_appears(app: &adw::Application, grace: Duratio
 pub(super) fn start(app: &adw::Application) -> Option<ksni::blocking::Handle<ToolportTray>> {
     let (sender, receiver) = mpsc::channel();
     let handle = ToolportTray {
-        commands: sender,
+        commands: sender.clone(),
         pending: 0,
     }
     .assume_sni_available(true)
     .spawn()
     .ok()?;
-    let app = app.clone();
+    PENDING_APPROVALS.store(0, Ordering::Relaxed);
+    TRAY_COMMANDS.with(|commands| *commands.borrow_mut() = Some(sender));
+    let app: gtk::glib::SendWeakRef<adw::Application> = app.downgrade().into();
     let handle_for_updates = handle.clone();
-    let mut shown_pending = 0usize;
-    gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
-        for command in receiver.try_iter() {
-            match command {
-                Command::Show => app.activate(),
-                Command::ShowApprovals => {
-                    app.activate();
-                    if let Some(action) = app.lookup_action("show-servers") {
-                        action.activate(None);
-                    }
-                }
-                Command::Quit => app.quit(),
+    // Block on commands on one worker. GTK wakes only for an actual tray action;
+    // pending-count updates go straight to the SNI worker even while hidden.
+    std::thread::spawn(move || {
+        while let Ok(command) = receiver.recv() {
+            if let Command::Pending(pending) = command {
+                let _ = handle_for_updates.update(move |tray| tray.pending = pending);
+                continue;
             }
+            let app = app.clone();
+            gtk::glib::idle_add_once(move || {
+                let Some(app) = app.upgrade() else {
+                    return;
+                };
+                match command {
+                    Command::Show => app.activate(),
+                    Command::ShowApprovals => {
+                        app.activate();
+                        if let Some(action) = app.lookup_action("show-servers") {
+                            action.activate(None);
+                        }
+                    }
+                    Command::Quit => app.quit(),
+                    Command::Pending(_) => {}
+                }
+            });
         }
-        let pending = PENDING_APPROVALS.load(Ordering::Relaxed);
-        if pending != shown_pending {
-            shown_pending = pending;
-            let _ = handle_for_updates.update(move |tray| tray.pending = pending);
-        }
-        gtk::glib::ControlFlow::Continue
     });
     Some(handle)
 }
