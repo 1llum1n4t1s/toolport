@@ -70,6 +70,7 @@ pub(super) struct SettingsPage {
     /// since changed: a background tick landing after a toggle used to put the
     /// old value straight back into the switch.
     mutation_generation: Rc<Cell<u64>>,
+    quarantine_release_generation: Rc<Cell<u64>>,
 }
 
 impl SettingsPage {
@@ -673,6 +674,7 @@ impl SettingsPage {
             updating: Rc::new(Cell::new(false)),
             refreshing: Rc::new(Cell::new(false)),
             mutation_generation: Rc::new(Cell::new(0)),
+            quarantine_release_generation: Rc::new(Cell::new(0)),
         };
         settings_page.connect_switches();
         let remove_page = settings_page.clone();
@@ -1841,7 +1843,10 @@ impl SettingsPage {
 
     fn finish_quarantine_release(&self, needed: Vec<(String, String)>, preserve_error: bool) {
         self.begin_mutation();
-        let generation = self.mutation_generation.get();
+        // Only a newer release supersedes this wait. Unrelated settings changes
+        // must still let it render the current quarantine list and final feedback.
+        let generation = self.quarantine_release_generation.get().wrapping_add(1);
+        self.quarantine_release_generation.set(generation);
         let page = self.clone();
         if !preserve_error {
             page.feedback.set_label(if needed.is_empty() {
@@ -1857,7 +1862,7 @@ impl SettingsPage {
             let result = gtk::gio::spawn_blocking(move || wait_for_captured_quarantines(
                 &expected, read_quarantined_tools, std::time::Duration::from_secs(10),
             )).await;
-            if page.mutation_generation.get() != generation {
+            if page.quarantine_release_generation.get() != generation {
                 return;
             }
             match result {
@@ -2031,7 +2036,7 @@ struct QuarantinedTool {
 
 fn capture_feedback(captured: bool) -> &'static str {
     if captured {
-        "Current definition captured. One more review is needed."
+        "Current definition captured. One more review is needed; the tool stays blocked until then."
     } else {
         "The gateway has not captured the definition yet. Refresh to review it when the gateway is running."
     }
@@ -2929,6 +2934,8 @@ mod tests {
         page.finish_quarantine_release(vec![("".into(), "srv__wipe".into())], false);
         assert!(page.feedback.label().contains("One more review is needed"));
         assert!(!page.feedback.label().contains("re-approved"));
+        // An unrelated settings mutation must not strand the capture wait.
+        page.begin_mutation();
         let path = data.dir.join("quarantine.json");
         let writer = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(150));
