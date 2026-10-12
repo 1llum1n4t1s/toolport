@@ -2031,42 +2031,10 @@ fn stem_token(token: &str) -> String {
     }
 }
 
-/// Negative instructions are constraints, not additional requested operations.
-/// Stop at the constraint within each sentence; keep later positive sentences.
+// Legacy projection assertions also protect the lossless parser's retrieval behavior.
+#[cfg(test)]
 fn positive_query(query: &str) -> String {
-    let mut positive = Vec::new();
-    for sentence in query.split([',', ';', '.', '!', '?']) {
-        // ASCII folding preserves byte offsets and the original Unicode/camelCase.
-        let lower = sentence.to_ascii_lowercase();
-        let mut separators: Vec<_> = lower
-            .match_indices(" and ")
-            .chain(lower.match_indices(" but "))
-            .collect();
-        separators.sort_by_key(|(position, _)| *position);
-        let mut start = 0;
-        for (end, separator) in separators
-            .into_iter()
-            .chain(std::iter::once((sentence.len(), "")))
-        {
-            if end < start {
-                continue;
-            }
-            let clause = &sentence[start..end];
-            let folded = &lower[start..end];
-            let end = ["do not ", "don't ", "dont ", "without ", "not "]
-                .iter()
-                .filter_map(|marker| {
-                    folded.find(marker).filter(|position| {
-                        *position == 0 || folded.as_bytes()[position - 1].is_ascii_whitespace()
-                    })
-                })
-                .min()
-                .unwrap_or(clause.len());
-            positive.push(&clause[..end]);
-            start += clause.len() + separator.len();
-        }
-    }
-    positive.join(" ")
+    search_query::Query::parse(query).positive
 }
 
 /// Tokenize tool text or a query into normalized search tokens (break on
@@ -2423,11 +2391,9 @@ impl CatalogSearchIndex {
         let mut document_frequency = HashMap::new();
 
         for tool in tools.iter() {
-            let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
-            let description = tool
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let source = search_static::source(tool);
+            let name = source.name;
+            let description = source.description;
             let server_prefix = tool_prefix(tool);
             let operation = name
                 .split_once("__")
@@ -2445,7 +2411,7 @@ impl CatalogSearchIndex {
             let name_tokens: HashSet<String> = operation_tokens.into_iter().collect();
             // Parameters provide lower-weight evidence; bound traversal by nodes,
             // depth and tokens so very large API schemas cannot grow the index unboundedly.
-            let parameter_tokens = schema_search_tokens(tool.get("inputSchema"));
+            let parameter_tokens = schema_search_tokens(source.input_schema);
             let description_tokens: HashSet<String> =
                 index_tokens(description).into_iter().collect();
 
@@ -2781,8 +2747,9 @@ fn search_catalog_filtered(
         let n = index.documents.len().max(1) as f64;
         let idf = |tok: &str| ((n + 1.0) / (*df.get(tok).unwrap_or(&0) as f64 + 1.0)).ln() + 1.0;
 
-        let positive = positive_query(query);
-        let mut q_tokens = query_tokens(&positive, |token| {
+        let evidence = search_query::Query::parse(query);
+        let positive = evidence.positive.as_str();
+        let mut q_tokens = query_tokens(positive, |token| {
             df.contains_key(token) || index.provider_tokens.contains(token)
         });
         for token in &mut q_tokens {
@@ -2821,9 +2788,9 @@ fn search_catalog_filtered(
                     .entry(doc.server_prefix.as_str())
                     .or_insert_with(|| {
                         let tokens = search_tokens(&doc.server_prefix);
-                        let named = query_names_server(&positive, &doc.server_prefix)
+                        let named = query_names_server(positive, &doc.server_prefix)
                             || identities.iter().any(|(id, name)| {
-                                id == &doc.server_prefix && query_names_server(&positive, name)
+                                id == &doc.server_prefix && query_names_server(positive, name)
                             });
                         (tokens, named)
                     });
@@ -2901,10 +2868,10 @@ fn search_catalog_filtered(
             .collect();
 
         // Keep user-configured endpoint search; the default signal is fully local.
-        let remote_ranked = semantic_rerank(sem, &positive, &lex);
+        let remote_ranked = semantic_rerank(sem, positive, &lex);
 
         let query_vector = if use_local_semantic {
-            search_static::query_vector(&positive)
+            search_static::query_vector(positive)
         } else {
             Vec::new()
         };

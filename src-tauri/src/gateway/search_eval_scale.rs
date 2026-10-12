@@ -19,12 +19,203 @@ fn scale_catalog() -> Vec<Value> {
     tools
 }
 
+fn menu_candidate_coverage(names: &[&str], expected: &[&str], menu_limit: usize) -> usize {
+    names
+        .iter()
+        .take(menu_limit)
+        .filter(|name| expected.contains(name))
+        .count()
+}
+
+fn assert_handler_menu(row: &mut Value) {
+    let text = row["response_text"].as_str().unwrap();
+    let payload: Value = serde_json::from_str(text.split_once("\n\n").unwrap().1).unwrap();
+    let names: Vec<&str> = payload
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            if entry.is_array() {
+                entry[0].as_str().unwrap()
+            } else {
+                entry["name"].as_str().unwrap()
+            }
+        })
+        .collect();
+    assert_eq!(
+        json!(names),
+        row["menu_names"],
+        "actual handler menu differs from the declared menu"
+    );
+    assert_eq!(row["handler_low_confidence"], row["menu_low_confidence"]);
+    row["handler_names"] = json!(names);
+}
+
+#[test]
+fn search_ambiguity_uses_the_declared_menu_depth() {
+    let _env = DataDirTestEnv::new("search-ambiguity-menu-depth");
+    let names = [
+        "first", "2", "3", "4", "5", "6", "7", "8", "9", "10", "second",
+    ];
+    assert_eq!(menu_candidate_coverage(&names, &["first", "second"], 10), 1);
+    assert_eq!(menu_candidate_coverage(&names, &["first", "second"], 25), 2);
+    let tools: Vec<Value> = (1..=25).map(|n| json!({"name":format!("records__read_record_{n:02}"),"description":"Read a record","inputSchema":{}})).collect();
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    let intents = vec![
+        json!({"id":"menu-depth","query":"read record","kind":"ambiguous","expected":[tools[0]["name"],tools[10]["name"]],"category":"synthetic depth regression"}),
+    ];
+    let default = measure_handler_phase(&tools, &index, &intents, "pending");
+    assert_eq!(default["ambiguity_honesty"], 0.0);
+    assert_eq!(default["rows"][0]["candidate_coverage"], 1);
+    assert_eq!(default["rows"][0]["names"][10], tools[10]["name"]);
+    let explicit = evaluate_at_menu_depth("explicit 25", &intents, &tools, &index, 25, 25);
+    assert_eq!(explicit["ambiguity_honesty"], 1.0);
+}
+
+#[test]
+fn search_semantic_document_retains_later_capabilities() {
+    let tool = json!({"name":"sample__inspect","description":"Inspect a record. Include historical changes. Fail when the destination exists."});
+    let text = search_static::document(&tool);
+    assert!(text.contains("historical changes"), "{text}");
+    assert!(text.contains("destination exists"), "{text}");
+}
+
+#[test]
+fn search_complete_catalog_evidence_is_retained_and_semantic_caps_are_explicit() {
+    let description = format!(
+        "Inspect a record. {} Final constraint.",
+        "additional capability ".repeat(300)
+    );
+    let schema = json!({"type":"object","properties":{"mode":{"enum":["read","write"]}}});
+    let tool = json!({"name":"sample__inspect","description":description,"inputSchema":schema});
+    let source = search_static::source(&tool);
+    assert_eq!(source.description, description);
+    assert_eq!(source.input_schema, Some(&schema));
+    let status = search_static::document_status(&tool);
+    assert_eq!(status["semantic_chars"], 2048);
+    assert_eq!(status["description_complete_before_token_cap"], false);
+    assert_eq!(status["token_truncated"], true);
+    assert_eq!(status["schema_embedded"], false);
+    let index = CatalogSearchIndex::build_lexical(&vec![tool]);
+    assert!(index.documents[0].description_tokens.contains("constraint"));
+}
+
+fn measure_handler_phase(
+    tools: &dyn ToolCatalog,
+    index: &CatalogSearchIndex,
+    intents: &[Value],
+    phase: &str,
+) -> Value {
+    let mut report = evaluate(phase, intents, tools, index, 25);
+    report["latency_scope"] = json!(format!("direct_{phase}_ranker"));
+    report["vector_state"] = json!(phase);
+    for (row, intent) in report["rows"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .zip(intents)
+    {
+        let mut arguments = json!({"query":intent["query"]});
+        if let Some(server) = intent["server"].as_str() {
+            arguments["server"] = json!(server);
+        }
+        let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"toolport_search_tools","arguments":arguments}});
+        let started = Instant::now();
+        let response = handle_request_with_cancel(
+            &dispatch_host(false),
+            &request,
+            &Registry::default(),
+            &router(),
+            tools,
+            DiscoveryMode::Lazy,
+            None,
+            &SearchGuard::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(index),
+            None,
+            None,
+        )
+        .unwrap();
+        row["handler_latency_us"] = json!(started.elapsed().as_secs_f64() * 1e6);
+        row["response_text"] = response["result"]["content"][0]["text"].clone();
+        row["handler_low_confidence"] = response["result"]["low_confidence"].clone();
+        assert_handler_menu(row);
+    }
+    report
+}
+
+#[test]
+fn search_pending_and_ready_handler_menus_match_indexed_results() {
+    let _env = DataDirTestEnv::new("search-pending-ready-handler");
+    let tools = scale_catalog();
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    let intents = vec![
+        json!({"id":"boundary","query":"list records without deleting them","kind":"ambiguous","expected":[],"category":"synthetic boundary"}),
+    ];
+    assert!(index.semantic_vectors.0.get().is_none());
+    let _pending = measure_handler_phase(&tools, &index, &intents, "pending");
+    let (send, receive) = std::sync::mpsc::channel();
+    index
+        .semantic_vectors
+        .start_background(tools.clone().into(), None, Some(send));
+    receive.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert_eq!(index.semantic_vectors.0.get().unwrap().len(), tools.len());
+    let _ready = measure_handler_phase(&tools, &index, &intents, "ready");
+}
+
+#[test]
+#[ignore = "explicit original-tune production-handler pending/ready boundary measurement"]
+fn search_scale_production_boundary_measure() {
+    let _env = DataDirTestEnv::new("search-scale-production-boundary");
+    let tools = scale_catalog();
+    let intents: Vec<Value> = serde_json::from_slice(
+        &std::fs::read(std::env::var_os("SEARCH_SCALE_INTENTS").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let started = Instant::now();
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    let lexical_build_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let pending = measure_handler_phase(&tools, &index, &intents, "pending");
+    let (send, receive) = std::sync::mpsc::channel();
+    let started = Instant::now();
+    index
+        .semantic_vectors
+        .start_background(tools.clone().into(), None, Some(send));
+    receive.recv_timeout(Duration::from_secs(30)).unwrap();
+    let background_ready_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let ready = measure_handler_phase(&tools, &index, &intents, "ready");
+    let documents: Vec<_> = tools
+        .iter()
+        .map(|tool| json!({"name":tool["name"],"status":search_static::document_status(tool)}))
+        .collect();
+    std::fs::write(std::env::var_os("SEARCH_BOUNDARY_OUTPUT").unwrap(), serde_json::to_vec_pretty(&json!({
+        "tools":tools.len(),"lexical_build_ms":lexical_build_ms,"background_ready_ms":background_ready_ms,
+        "boundary":"pending requests precede worker submission; ready requests follow actual worker publication",
+        "cache":"uncached","pending":pending,"ready":ready,"documents":documents
+    })).unwrap()).unwrap();
+}
+
 fn evaluate(
     split: &str,
     intents: &[Value],
     tools: &dyn ToolCatalog,
     index: &CatalogSearchIndex,
     limit: usize,
+) -> Value {
+    evaluate_at_menu_depth(split, intents, tools, index, limit, DEFAULT_SEARCH_RESULTS)
+}
+
+fn evaluate_at_menu_depth(
+    split: &str,
+    intents: &[Value],
+    tools: &dyn ToolCatalog,
+    index: &CatalogSearchIndex,
+    limit: usize,
+    menu_limit: usize,
 ) -> Value {
     let mut rows = Vec::new();
     let (mut confident, mut confident_correct, mut uncertain_correct) = (0, 0, 0);
@@ -97,10 +288,17 @@ fn evaluate(
                 honest_negative += 1;
             }
         }
-        let candidates = names.iter().filter(|name| expected.contains(name)).count();
+        let menu_outcome =
+            search_catalog_indexed(tools, query, server, menu_limit, None, Some(index));
+        let menu_names: Vec<&str> = menu_outcome
+            .matches
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        let candidates = menu_candidate_coverage(&menu_names, &expected, menu_limit);
         if kind == "ambiguous" {
             ambiguous += 1;
-            if outcome.low_confidence && candidates >= 2 {
+            if menu_outcome.low_confidence && candidates >= 2 {
                 honest_ambiguous += 1;
             }
         }
@@ -108,7 +306,10 @@ fn evaluate(
             json!({"id":intent["id"],"kind":kind,"query":query,"server":server,
             "expected":expected,"category":intent["category"],"rank":rank,"names":names,
             "low_confidence":outcome.low_confidence,"direct_matches":outcome.total,
-            "candidate_coverage":candidates,"latency_us":micros,"returned":names.len()}),
+            "candidate_coverage":candidates,"menu_names":menu_names,
+            "menu_low_confidence":menu_outcome.low_confidence,"menu_limit":menu_limit,
+            "query_evidence":search_query::Query::parse(query),
+            "latency_us":micros,"returned":names.len()}),
         );
     }
     latencies.sort_by(f64::total_cmp);
@@ -130,12 +331,17 @@ fn evaluate(
         "correct_top1_uncertainty_rate":if top1 == 0 {Value::Null} else {json!(uncertain_correct as f64 / top1 as f64)},
         "split":split,"intents":intents.len(),"positives":positives,"top1":top1,
         "top3":top3,"recall_at": recall_at,"top1_rate":top1 as f64 / positives as f64,
-        "top3_rate":top3 as f64 / positives as f64,"mrr_at_25":reciprocal_rank / positives as f64,
+        "top3_rate":top3 as f64 / positives as f64,
+        "mrr_at_25":if limit == 25 {json!(reciprocal_rank / positives as f64)} else {Value::Null},
+        "mrr_at_ranking_limit":reciprocal_rank / positives as f64,
         "no_match_precision": if rejected == 0 { Value::Null } else {json!(true_rejected as f64 / rejected as f64)},
         "no_match_recall":true_rejected as f64 / negatives as f64,
         "no_match_honesty":honest_negative as f64 / negatives as f64,
         "no_match_count":negatives,"ambiguity_honesty":honest_ambiguous as f64 / ambiguous as f64,
-        "ambiguity_count":ambiguous,"latency_p50_us":percentile(0.50),"latency_p95_us":percentile(0.95),
+        "ambiguity_count":ambiguous,"ambiguity_menu_limit":menu_limit,
+        "ranking_limit":if limit == 0 {DEFAULT_SEARCH_RESULTS} else {limit},
+        "latency_scope":"direct_ready_ranker",
+        "latency_p50_us":percentile(0.50),"latency_p95_us":percentile(0.95),
         "rows":rows})
 }
 
@@ -172,7 +378,12 @@ fn search_scale_measure() {
             continue;
         }
         let intents: Vec<Value> = serde_json::from_str(text).unwrap();
-        let mut report = evaluate(name, &intents, &tools, &index, 25);
+        let menu_limit = if limit == 0 {
+            DEFAULT_SEARCH_RESULTS
+        } else {
+            limit
+        };
+        let mut report = evaluate_at_menu_depth(name, &intents, &tools, &index, 25, menu_limit);
         // Capture the actual first-search response, including all model guidance.
         // A fresh guard per intent prevents repeated searches from truncating results.
         for (row, intent) in report["rows"]
@@ -211,7 +422,9 @@ fn search_scale_measure() {
             .unwrap();
             row["dispatch_latency_us"] = json!(started.elapsed().as_secs_f64() * 1e6);
             row["response_text"] = response["result"]["content"][0]["text"].clone();
+            row["handler_low_confidence"] = response["result"]["low_confidence"].clone();
             assert!(row["response_text"].is_string(), "{response}");
+            assert_handler_menu(row);
             let entries = response["result"]["content"][0]["text"]
                 .as_str()
                 .unwrap()
@@ -1039,10 +1252,24 @@ fn search_interleaved_measure() {
         );
         let latency_us = started.elapsed().as_secs_f64() * 1e6;
         let mut row = json!({"names":outcome.matches.iter().map(|t| &t["name"]).collect::<Vec<_>>(),
-            "low_confidence":outcome.low_confidence,"latency_us":latency_us});
+            "low_confidence":outcome.low_confidence,"latency_us":latency_us,
+            "latency_scope":"direct_ready_ranker","vector_state":"ready",
+            "query_evidence":search_query::Query::parse(request["query"].as_str().unwrap())});
         if request["payload"] == true {
+            let menu = search_catalog_indexed(
+                catalog,
+                request["query"].as_str().unwrap(),
+                None,
+                DEFAULT_SEARCH_RESULTS,
+                None,
+                Some(index),
+            );
+            row["menu_names"] = json!(menu.matches.iter().map(|t| &t["name"]).collect::<Vec<_>>());
+            row["menu_low_confidence"] = json!(menu.low_confidence);
+            row["menu_limit"] = json!(DEFAULT_SEARCH_RESULTS);
             let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
                 "params":{"name":"toolport_search_tools","arguments":{"query":request["query"]}}});
+            let started = Instant::now();
             let response = handle_request_with_cancel(
                 &dispatch_host(false),
                 &req,
@@ -1061,9 +1288,12 @@ fn search_interleaved_measure() {
                 None,
             )
             .unwrap();
+            row["handler_latency_us"] = json!(started.elapsed().as_secs_f64() * 1e6);
             let text = response["result"]["content"][0]["text"].as_str().unwrap();
             row["response_tokens"] = json!(tokenizer.encode_ordinary(text).len());
             row["response_text"] = json!(text);
+            row["handler_low_confidence"] = response["result"]["low_confidence"].clone();
+            assert_handler_menu(&mut row);
         }
         eprintln!("MEASURE {}", row);
     }

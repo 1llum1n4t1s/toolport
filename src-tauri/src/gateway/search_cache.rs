@@ -184,6 +184,19 @@ fn submit(
 }
 
 impl Vectors {
+    /// The same asynchronous publication path used by shipping and boundary probes.
+    pub fn start_background(
+        &self,
+        tools: SharedTools,
+        directory: Option<PathBuf>,
+        completed: Option<std::sync::mpsc::Sender<()>>,
+    ) {
+        static WORKER: OnceLock<Option<Queue>> = OnceLock::new();
+        if let Some(queue) = WORKER.get_or_init(worker) {
+            submit(queue, tools, directory, self.0.clone(), completed);
+        }
+    }
+
     pub fn build(tools: &dyn ToolCatalog) -> Self {
         let result = Self::default();
         if !search_static::enabled() {
@@ -196,12 +209,9 @@ impl Vectors {
             .unwrap();
         #[cfg(not(test))]
         {
-            static WORKER: OnceLock<Option<Queue>> = OnceLock::new();
-            if let Some(queue) = WORKER.get_or_init(worker) {
-                let directory =
-                    conduit_lib::registry::conduit_dir().map(|dir| dir.join("search-vectors"));
-                submit(queue, tools.shared(), directory, result.0.clone(), None);
-            }
+            let directory =
+                conduit_lib::registry::conduit_dir().map(|dir| dir.join("search-vectors"));
+            result.start_background(tools.shared(), directory, None);
         }
         result
     }
