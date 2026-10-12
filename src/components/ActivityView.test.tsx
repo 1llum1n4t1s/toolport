@@ -157,7 +157,7 @@ it("pauses Activity polling while hidden and resumes when visible", async () => 
   windowVisible = true;
   view.rerender(<ActivityView refreshKey={0} registry={null} />);
   await act(() => vi.advanceTimersByTimeAsync(3000));
-  expect(getAuditLog).toHaveBeenCalledTimes(loaded + 2);
+  expect(getAuditLog).toHaveBeenCalledTimes(loaded + 4);
 });
 
 it("keeps an idle Activity page unchanged and reads new rows when the revision changes", async () => {
@@ -1207,7 +1207,7 @@ it("keeps revision failures visible after successful panel reads and clears them
   ).not.toBeInTheDocument();
 });
 
-it("releases a revision watch again when an in-flight check finishes after unmount", async () => {
+it("discards a late revision without evicting a newer visibility session", async () => {
   let complete!: (revision: string) => void;
   getActivityRevision.mockImplementation(
     () =>
@@ -1221,7 +1221,7 @@ it("releases a revision watch again when an in-flight check finishes after unmou
   view.unmount();
   expect(releaseActivityRevision).toHaveBeenCalledTimes(releases + 1);
   await act(async () => complete("late"));
-  expect(releaseActivityRevision).toHaveBeenCalledTimes(releases + 2);
+  expect(releaseActivityRevision).toHaveBeenCalledTimes(releases + 1);
 });
 
 it("reconciles a write between initial panel snapshot and first revision baseline", async () => {
@@ -1241,4 +1241,49 @@ it("reconciles a write between initial panel snapshot and first revision baselin
   expect(getAuditLog).toHaveBeenCalledTimes(calls + 1);
   expect(screen.queryByText("list_issues")).toBeInTheDocument();
   view.unmount();
+});
+
+it("reconciles after an initial revision error and rejects obsolete panel completions", async () => {
+  let finishOld!: (rows: AuditEntry[]) => void;
+  getActivityRevision.mockRejectedValueOnce("unreadable");
+  getActivityRevision.mockResolvedValue("same");
+  getAuditLog.mockImplementationOnce(() => new Promise<AuditEntry[]>((resolve) => {
+    finishOld = resolve;
+  }));
+  getAuditLog.mockResolvedValue(refreshedLog);
+  render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  expect(screen.getByText(/Activity change checks are unavailable/)).toBeInTheDocument();
+  await act(() => vi.advanceTimersByTimeAsync(3000));
+  fireEvent.click(screen.getByRole("button", { name: /recent calls/i }));
+  expect(screen.getByText("list_issues")).toBeInTheDocument();
+  await act(async () => finishOld(initialLog));
+  expect(screen.getByText("list_issues")).toBeInTheDocument();
+  const calls = getAuditLog.mock.calls.length;
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(getAuditLog).toHaveBeenCalledTimes(calls);
+});
+
+it("reconciles hide/show with a delayed first revision and no overlapping checks", async () => {
+  let finish!: (revision: string) => void;
+  getActivityRevision.mockImplementationOnce(() => new Promise<string>((resolve) => {
+    finish = resolve;
+  }));
+  getActivityRevision.mockResolvedValue("same");
+  const view = render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  windowVisible = false;
+  view.rerender(<ActivityView refreshKey={0} registry={null} />);
+  getAuditLog.mockResolvedValue(refreshedLog);
+  windowVisible = true;
+  view.rerender(<ActivityView refreshKey={0} registry={null} />);
+  await act(() => vi.advanceTimersByTimeAsync(6000));
+  expect(getActivityRevision).toHaveBeenCalledTimes(1);
+  await act(async () => finish("obsolete"));
+  await act(() => vi.advanceTimersByTimeAsync(3000));
+  fireEvent.click(screen.getByRole("button", { name: /recent calls/i }));
+  expect(screen.getByText("list_issues")).toBeInTheDocument();
+  const calls = getAuditLog.mock.calls.length;
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(getAuditLog).toHaveBeenCalledTimes(calls);
 });

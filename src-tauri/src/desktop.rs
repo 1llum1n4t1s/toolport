@@ -1086,7 +1086,10 @@ async fn has_client_secret(server_id: String) -> Result<bool, String> {
 
 #[tauri::command]
 async fn activity_revision() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(crate::observability_controller::activity_revision)
+    let generation = crate::observability_controller::activity_revision_generation();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::observability_controller::activity_revision_for(generation)
+    })
         .await
         .map_err(|error| format!("Activity revision task failed: {error}"))?
 }

@@ -1773,21 +1773,22 @@ export function ActivityView({
   const windowVisible = useWindowVisible();
   const [liveTick, setLiveTick] = useState(0);
   const [revisionUnavailable, setRevisionUnavailable] = useState(false);
-  const activityRevision = useRef<string | undefined>(undefined);
+  const revisionChecking = useRef(false);
   useEffect(() => {
     if (!windowVisible) return;
     let alive = true;
-    let checking = false;
+    let previous: string | undefined;
     async function checkRevision() {
-      if (checking) return;
-      checking = true;
+      if (revisionChecking.current) return;
+      revisionChecking.current = true;
       try {
         const revision = await getActivityRevision();
         if (!alive) return;
         setRevisionUnavailable(false);
-        const previous = activityRevision.current;
-        activityRevision.current = revision;
-        if (previous !== undefined && previous !== revision) setLiveTick((t) => t + 1);
+        // Initial panel reads can precede a delayed digest. Reconcile once after
+        // the first successful baseline, then leave genuinely idle rows alone.
+        if (previous !== revision) setLiveTick((t) => t + 1);
+        previous = revision;
       } catch {
         // Let panel readers surface an unreadable store rather than masking it
         // with a successful old revision.
@@ -1796,9 +1797,7 @@ export function ActivityView({
           setLiveTick((t) => t + 1);
         }
       } finally {
-        checking = false;
-        // A queued IPC read may start after cleanup; release again on completion.
-        if (!alive) void releaseActivityRevision().catch(() => {});
+        revisionChecking.current = false;
       }
     }
     void checkRevision();
@@ -1857,6 +1856,7 @@ export function ActivityView({
   const liveKey = refreshKey + liveTick;
 
   useEffect(() => {
+    if (!windowVisible) return;
     let alive = true;
     const generation = auditGeneration.current;
     getAuditLog(200)
@@ -1906,7 +1906,7 @@ export function ActivityView({
     return () => {
       alive = false;
     };
-  }, [liveKey, reloadTick]);
+  }, [liveKey, reloadTick, windowVisible]);
 
   // Export the full retained audit log. The save dialog offers CSV and JSON; the
   // chosen extension picks the format. CSV is formula-injection-safe in the backend.

@@ -4067,13 +4067,14 @@ impl ActivityPage {
             return;
         }
         let generation = self.health_generation.get();
+        let revision_generation = crate::observability_controller::activity_revision_generation();
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
-            let result =
-                gtk::gio::spawn_blocking(crate::observability_controller::activity_revision).await;
+            let result = gtk::gio::spawn_blocking(move || {
+                crate::observability_controller::activity_revision_for(revision_generation)
+            }).await;
             page.revision_loading.set(false);
             if !page.root.is_mapped() {
-                crate::observability_controller::release_activity_revision();
                 return;
             }
             if generation != page.health_generation.get() {
@@ -4132,21 +4133,25 @@ impl ActivityPage {
             self.feedback.remove_css_class("error");
             self.feedback.set_visible(true);
         }
+        let mut revision_generation = crate::observability_controller::activity_revision_generation();
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
             loop {
+                if !page.root.is_mapped() {
+                    break;
+                }
                 page.dirty.set(false);
-                let result = gtk::gio::spawn_blocking(|| {
-                    let revision = crate::observability_controller::activity_revision();
+                let result = gtk::gio::spawn_blocking(move || {
+                    let revision = crate::observability_controller::activity_revision_for(revision_generation);
                     (revision, state::load_activity_snapshot())
                 })
                 .await;
                 if !page.root.is_mapped() {
-                    crate::observability_controller::release_activity_revision();
                     page.dirty.set(true);
                     break;
                 }
                 if page.dirty.get() {
+                    revision_generation = crate::observability_controller::activity_revision_generation();
                     continue;
                 }
                 match result {
@@ -12249,6 +12254,76 @@ mod tests {
         assert!(page.list.first_child().is_none());
         window.close();
         crate::observability_controller::release_activity_revision();
+    }
+
+    #[test]
+    #[ignore = "requires isolated GTK and the disposable read-gate interposer; run in omabox"]
+    fn activity_unmap_during_real_digest_io_is_nonblocking() {
+        adw::init().unwrap();
+        let data = crate::registry::DataDirTestEnv::new("activity-slow-digest");
+        crate::observability_controller::release_activity_revision();
+        let watches = || {
+            std::fs::read_dir("/proc/self/fd").unwrap().filter_map(Result::ok)
+                .filter(|entry| std::fs::read_link(entry.path()).is_ok_and(|path|
+                    path.to_string_lossy().contains("inotify"))).count()
+        };
+        let path = data.dir.join("audit.jsonl");
+        std::fs::write(&path, "{\"ts\":1,\"tool\":\"server__first\",\"server\":\"server\",\"ok\":true}\n").unwrap();
+        let entered = data.dir.join("entered");
+        let permit = data.dir.join("permit");
+        assert!(std::env::var("LD_PRELOAD").unwrap_or_default().contains("read-gate"));
+        std::env::set_var("REVIEW_HOOK_TARGET", &path);
+        std::env::set_var("REVIEW_HOOK_ENTERED", &entered);
+        std::env::set_var("REVIEW_HOOK_PERMIT", &permit);
+        let app = adw::Application::builder().application_id("com.tsout.ActivitySlowDigestTest").build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let page = ActivityPage::new(&app);
+        let window = adw::ApplicationWindow::builder().application(&app).content(&page.root).build();
+        page.attach(&window);
+        window.present();
+        gtk::glib::MainContext::default().block_on(async {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !entered.exists() {
+                gtk::glib::timeout_future(std::time::Duration::from_millis(10)).await;
+                assert!(std::time::Instant::now() < deadline, "real digest read did not enter gate");
+            }
+        });
+        let in_flight_watches = watches();
+        // An independent supervisor prevents a broken implementation hanging the
+        // test forever. It does not open the gate until the UI has had one second.
+        let proceeded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = proceeded.clone();
+        let supervisor = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let before_io_returned = observed.load(std::sync::atomic::Ordering::SeqCst);
+            std::fs::write(permit, "go").unwrap();
+            before_io_returned
+        });
+        let start = std::time::Instant::now();
+        window.set_visible(false);
+        let unmap = start.elapsed();
+        assert!(page.last_snapshot.borrow().is_none());
+        assert!(page.list.first_child().is_none());
+        gtk::glib::MainContext::default().block_on(async {
+            gtk::glib::timeout_future(std::time::Duration::from_millis(10)).await;
+            proceeded.store(true, std::sync::atomic::Ordering::SeqCst);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while page.loading.get() || page.revision_loading.get() {
+                gtk::glib::timeout_future(std::time::Duration::from_millis(10)).await;
+                assert!(std::time::Instant::now() < deadline, "hidden worker did not finish");
+            }
+        });
+        assert!(supervisor.join().unwrap(), "UI stalled until digest IO returned");
+        assert!(unmap < std::time::Duration::from_millis(100), "unmap waited {unmap:?}");
+        assert_eq!(watches(), in_flight_watches - 1, "cancelled owner must close its watch");
+        assert!(page.revision.borrow().is_none());
+        assert!(page.last_snapshot.borrow().is_none());
+        assert!(page.list.first_child().is_none());
+        println!("slow real digest: unmap={unmap:?}, UI proceeded before read permit, watch closed");
+        window.close();
+        for key in ["REVIEW_HOOK_TARGET", "REVIEW_HOOK_ENTERED", "REVIEW_HOOK_PERMIT"] {
+            std::env::remove_var(key);
+        }
     }
 
     #[test]

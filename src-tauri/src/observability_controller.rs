@@ -57,24 +57,53 @@ pub fn activity_health() -> serde_json::Value {
 /// remote filesystems or symlink targets). Other platforms, or failed watches,
 /// digest on every check. Sampling and timestamps alone cannot detect rewrites.
 pub fn activity_revision() -> Result<String, String> {
-    let dir = crate::registry::conduit_dir().ok_or("Could not resolve Activity directory")?;
-    let mut cache = ACTIVITY_REVISION
-        .lock()
-        .map_err(|error| error.to_string())?;
-    if cache.as_ref().is_none_or(|cache| cache.dir != dir) {
-        *cache = Some(RevisionCache::new(dir));
-    }
-    cache.as_mut().unwrap().revision()
+    activity_revision_for(activity_revision_generation())
 }
 
-/// Both shells release the one cached directory/watch when Activity hides.
-/// There are no watcher threads, timers or global per-directory collections.
+/// Capture before queuing a worker, so release also cancels work not yet started.
+pub fn activity_revision_generation() -> u64 {
+    ACTIVITY_GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn activity_revision_for(generation: u64) -> Result<String, String> {
+    // Only workers wait here. Cache ownership is moved out of the short state
+    // lock before any path resolution, metadata, watch setup or digest IO.
+    let _reading = ACTIVITY_READING.lock().map_err(|error| error.to_string())?;
+    let mut cache = {
+        let mut state = ACTIVITY_REVISION.lock().map_err(|error| error.to_string())?;
+        if generation != activity_revision_generation() {
+            return Err("Activity change check cancelled".into());
+        }
+        state.take()
+    };
+    let result = (|| {
+        let dir = crate::registry::conduit_dir().ok_or("Could not resolve Activity directory")?;
+        if cache.as_ref().is_none_or(|cache| cache.dir != dir) {
+            cache = Some(RevisionCache::new(dir));
+        }
+        cache.as_mut().unwrap().revision()
+    })();
+    let mut state = ACTIVITY_REVISION.lock().map_err(|error| error.to_string())?;
+    if generation != activity_revision_generation() {
+        // The worker owns the only in-flight watch. Drop it here, rather than
+        // publishing cancelled state or scheduling cleanup on the UI thread.
+        return Err("Activity change check cancelled".into());
+    }
+    *state = cache;
+    result
+}
+
+/// Cancel immediately, without waiting for metadata or regular-file reads.
+/// An in-flight owner drops its watch when IO returns; queued old generations
+/// cannot create one. No watcher thread or deferred UI-thread wait is needed.
 pub fn release_activity_revision() {
-    if let Ok(mut cache) = ACTIVITY_REVISION.lock() {
-        *cache = None;
-    }
+    let mut state = ACTIVITY_REVISION.lock().unwrap_or_else(|error| error.into_inner());
+    ACTIVITY_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    *state = None;
 }
 
+static ACTIVITY_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static ACTIVITY_READING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static ACTIVITY_REVISION: std::sync::Mutex<Option<RevisionCache>> = std::sync::Mutex::new(None);
 const CONTENT_RECHECK: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -482,6 +511,22 @@ mod tests {
             cache.revision().is_err(),
             "broken targets must not reuse cached success"
         );
+    }
+
+    #[test]
+    fn activity_revision_rejects_queued_generations_after_release() {
+        let data = crate::registry::DataDirTestEnv::new("activity-revision-cancelled");
+        std::fs::write(data.dir.join("audit.jsonl"), "before").unwrap();
+        release_activity_revision();
+        let generation = activity_revision_generation();
+        let reading = ACTIVITY_READING.lock().unwrap();
+        let worker = std::thread::spawn(move || activity_revision_for(generation));
+        release_activity_revision();
+        drop(reading);
+        assert!(worker.join().unwrap().unwrap_err().contains("cancelled"));
+        assert!(ACTIVITY_REVISION.lock().unwrap().is_none());
+        assert!(activity_revision().is_ok(), "new visible generation can read");
+        release_activity_revision();
     }
 
     #[test]
