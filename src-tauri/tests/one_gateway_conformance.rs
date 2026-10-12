@@ -2520,6 +2520,36 @@ fn matrix_preview_approval_off_single() { preview_approval_requires_gateway_revi
 #[test]
 fn matrix_preview_approval_off_bulk() { preview_approval_requires_gateway_review(registry::SafetyLevel::Off, true); }
 
+#[test]
+fn matrix_legacy_summary_release_uses_store_key() {
+    let _guard = CASE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _data_lock = registry::data_dir_test_lock();
+    let (_fixture, dir) = Fixture::new("legacy-summary-store-key");
+    let _data_dir = registry::DataDirOverride::set(&dir);
+    write_registry(&dir, vec![], vec![]);
+    let reg = registry::load_from(&dir.join("registry.json")).unwrap();
+    let scope = reg.active_profile_id.as_deref().unwrap();
+    for (profile, path) in [("", dir.join("quarantine.json")), (scope, dir.join(format!("quarantine-v2-{}.json", registry::profile_store_key(scope))))] {
+        let record = json!({"tool":"wipe", "change":"changed", "ts":1, "definition":{"name":"srv__wipe", "inputSchema":{"type":"object"}}});
+        std::fs::write(&path, json!({"srv__wipe":record}).to_string()).unwrap();
+        let displayed = conduit_lib::integrity::all_quarantined_summaries().unwrap().into_iter()
+            .find(|row| row["profile"] == profile).unwrap();
+        assert_eq!(displayed["tool"], "srv__wipe");
+        assert_eq!(displayed["record_id"], conduit_lib::integrity::quarantine_record_id(&record));
+        assert_eq!(conduit_lib::integrity::quarantine_definition(
+            (!profile.is_empty()).then_some(profile), "srv__wipe", displayed["record_id"].as_str().unwrap(),
+        ).unwrap(), record["definition"]);
+        let newer = json!({"tool":"wipe", "change":"poison", "ts":2, "definition":record["definition"]});
+        std::fs::write(&path, json!({"srv__wipe":newer}).to_string()).unwrap();
+        assert!(approve_displayed_quarantine(&displayed).is_err());
+        let current = conduit_lib::integrity::all_quarantined_summaries().unwrap().into_iter()
+            .find(|row| row["profile"] == profile).unwrap();
+        assert!(conduit_lib::integrity::release_record(
+            (!profile.is_empty()).then_some(profile), current["tool"].as_str().unwrap(), current["record_id"].as_str().unwrap(),
+        ).unwrap());
+    }
+}
+
 fn quarantine_release_restores_calls(reserved_alias: bool, product_release: bool) {
     let _guard = CASE_LOCK
         .lock()
@@ -2566,7 +2596,7 @@ fn quarantine_release_restores_calls(reserved_alias: bool, product_release: bool
     for store in &stores {
         std::fs::write(
             store,
-            json!({(policy_name): {"server": "files", "tool": policy_name, "change": "changed"}})
+            json!({(policy_name): {"server": "files", "tool": "echo", "change": "changed"}})
                 .to_string(),
         )
         .unwrap();
@@ -2593,14 +2623,15 @@ fn quarantine_release_restores_calls(reserved_alias: bool, product_release: bool
         // The first product approval has no saved definition or pin to trust.
         // It must capture the live definition for one additional bound review,
         // then publish on that approval without a registry edit or reconnect.
-        let displayed = conduit_lib::integrity::all_quarantined().unwrap();
+        let displayed = conduit_lib::integrity::all_quarantined_summaries().unwrap();
         assert_eq!(displayed.len(), 2);
         for record in displayed {
+            assert_eq!(record["tool"], policy_name, "UI release must use the store key, not the older tool field");
             approve_displayed_quarantine(&record).unwrap();
         }
         let deadline = Instant::now() + Duration::from_secs(10);
         let captured = loop {
-            let records: Vec<_> = conduit_lib::integrity::all_quarantined()
+            let records: Vec<_> = conduit_lib::integrity::all_quarantined_summaries()
                 .unwrap()
                 .into_iter()
                 .filter(|record| record["tool"] == policy_name)
@@ -2608,7 +2639,7 @@ fn quarantine_release_restores_calls(reserved_alias: bool, product_release: bool
             if !records.is_empty()
                 && records
                     .iter()
-                    .all(|record| record["definition_fp"].is_string())
+                    .all(|record| record["has_definition"] == true && record["definition_fp"].is_string())
             {
                 break records;
             }
@@ -2633,8 +2664,12 @@ fn quarantine_release_restores_calls(reserved_alias: bool, product_release: bool
             true
         );
         for record in captured {
-            assert_eq!(record["definition"]["name"], policy_name);
-            assert!(record["definition"]["inputSchema"].is_object());
+            let scope = record["profile"].as_str().unwrap();
+            let definition = conduit_lib::integrity::quarantine_definition(
+                (!scope.is_empty()).then_some(scope), policy_name, record["record_id"].as_str().unwrap(),
+            ).unwrap();
+            assert_eq!(definition["name"], policy_name);
+            assert!(definition["inputSchema"].is_object());
             assert!(record["reason"]
                 .as_str()
                 .unwrap()

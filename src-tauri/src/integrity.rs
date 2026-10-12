@@ -1915,7 +1915,7 @@ fn all_quarantined_inner(summary: bool) -> Result<Vec<Value>, String> {
                 if let Some(object) = record.as_object_mut() {
                     object.retain(|key, _| matches!(key.as_str(),
                         "server" | "tool" | "reason" | "ts" | "detail" | "change" |
-                        "severity" | "prev_ro" | "new_ro" | "prev_dh" | "new_dh"
+                        "severity" | "definition_fp" | "prev_ro" | "new_ro" | "prev_dh" | "new_dh"
                     ));
                 }
                 record["has_definition"] = json!(has_definition);
