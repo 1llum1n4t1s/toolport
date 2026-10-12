@@ -39579,6 +39579,40 @@ mod tests {
     }
 
     #[test]
+    fn review_r3_failed_gate_keeps_disabled_rowless_review_blocked() {
+        let data = DataDirTestEnv::new("review-failed-gate-enable");
+        for post_write in [false, true] {
+            for level in [registry::SafetyLevel::Ask, registry::SafetyLevel::Strict, registry::SafetyLevel::Off] {
+                seed_legacy_review(&data.dir, None, "v2");
+                integrity::release(None, "srv__read").unwrap();
+                let mut reg = Registry::default();
+                reg.servers = vec![stub_server("srv", "Source")];
+                reg.set_safety_level(level);
+                let registry = Arc::new(Mutex::new(reg));
+                let mut built = readonly_router("srv", "Unseen definition.");
+                built.apply_registry_policy(RegistryPolicy { disabled: HashMap::from([("srv".into(), HashSet::from(["read".into()]))]), ..Default::default() });
+                // No row can rescue the pending pin if this gate or its re-read fails.
+                std::fs::write(data.dir.join("quarantine.json"), "{ failing store").unwrap();
+                assert!(integrity::quarantined(None).is_err());
+                if post_write {
+                    requarantine_after_integrity_change(&mut built, BTreeSet::new(), Err("failed re-read".into()));
+                } else {
+                    let offered = built.shared_tools();
+                    requarantine_if_needed(&registry, &mut built, offered, None);
+                }
+                let live = Arc::new(Mutex::new(Arc::new(built)));
+                assert!(republish_registry_policy(&live, RegistryPolicy::default()));
+                assert!(live.lock().unwrap().shared_tools().is_empty(), "unchecked review exposed, post_write={post_write}, level={level:?}");
+                assert!(live.lock().unwrap().quarantined().contains("srv__read"), "pending pin was lost from the enforced set");
+                for _ in 0..2 {
+                    reconcile_quarantine(&registry, &live, &test_stdio_session(), None, None, &AtomicBool::new(false));
+                    assert!(live.lock().unwrap().shared_tools().is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn review_r2_rooted_hidden_and_wrong_store_reviews_do_not_retry_per_request() {
         let scope = format!("root:{}", registry::sha256_hex("/fixture/project"));
         let keys = vec![LaunchKey { server: "srv".into(), kind: "stdio", digest: "fixture".into() }];
