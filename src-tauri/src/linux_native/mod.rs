@@ -108,9 +108,18 @@ pub fn run() {
     let present_for_open = present.clone();
     app.connect_open(move |app, files, _hint| {
         present_for_open.set(true);
+        let pair_link = files
+            .iter()
+            .any(|file| crate::teams::parse_pair_link(file.uri().as_str()).is_some());
         urls.borrow_mut()
             .extend(files.iter().map(|file| file.uri().to_string()));
-        app.activate();
+        let app = app.clone();
+        gtk::glib::spawn_future_local(async move {
+            if pair_link {
+                let _ = gtk::gio::spawn_blocking(onboarding::mark_complete).await;
+            }
+            app.activate();
+        });
     });
     let app_for_startup = app.clone();
     let state = startup.clone();
@@ -148,7 +157,7 @@ pub fn run() {
     if let Some(Ok(startup)) = startup.borrow_mut().take() {
         startup.bridge.shutdown();
         startup.broker.clear_endpoint();
-    }
+    };
 }
 
 struct WindowStartup {
@@ -346,10 +355,26 @@ fn build_window(
     // already learned this is not told again. Closing is also the natural moment
     // to remember the geometry the user chose.
     {
-        let app_for_hint = app.clone();
+        let app_for_hint: gtk::glib::SendWeakRef<adw::Application> = app.downgrade().into();
+        let (saved, receiver) = std::sync::mpsc::channel::<WindowState>();
+        std::thread::spawn(move || {
+            while let Ok(state) = receiver.recv() {
+                save_window_state(state);
+                if mark_tray_hint_shown() {
+                    let app = app_for_hint.clone();
+                    gtk::glib::idle_add_once(move || {
+                        if let Some(app) = app.upgrade() {
+                            show_tray_hint(&app);
+                        }
+                    });
+                }
+            }
+        });
         window.connect_close_request(move |window| {
-            save_window_state(window);
-            maybe_show_tray_hint(&app_for_hint);
+            let _ = saved.send(WindowState {
+                width: window.width(),
+                height: window.height(),
+            });
             gtk::glib::Propagation::Proceed
         });
     }
@@ -405,7 +430,7 @@ fn build_window(
         notice.add_css_class("toolport-setting-row");
         notice.append(
             &gtk::Label::builder()
-                .label(crate::registry::removed_features_message(&removed))
+                .label(crate::registry::removed_features_message(removed))
                 .wrap(true)
                 .xalign(0.0)
                 .build(),
@@ -419,7 +444,7 @@ fn build_window(
         });
         actions.append(&exports);
         let need = gtk::Button::with_label("I need this");
-        let issue = crate::registry::removed_features_issue_url(&removed);
+        let issue = crate::registry::removed_features_issue_url(removed);
         need.connect_clicked(move |_| {
             let _ = crate::oauth::open_web_url(&issue);
         });
@@ -7445,13 +7470,9 @@ fn load_window_state() -> Option<WindowState> {
     parse_window_state(&std::fs::read_to_string(window_state_path()?).ok()?)
 }
 
-fn save_window_state(window: &adw::ApplicationWindow) {
+fn save_window_state(state: WindowState) {
     let Some(path) = window_state_path() else {
         return;
-    };
-    let state = WindowState {
-        width: window.width(),
-        height: window.height(),
     };
     if state.width < 200 || state.height < 200 {
         // Not realized yet (hidden launch) - keep the previous saved state.
@@ -7465,15 +7486,18 @@ fn save_window_state(window: &adw::ApplicationWindow) {
 /// One-time notification the first time the window hides to the tray, matching
 /// the shipping shell's `.tray-hint-shown` marker (and sharing it, so the hint
 /// is shown at most once across both shells).
-fn maybe_show_tray_hint(app: &adw::Application) {
+fn mark_tray_hint_shown() -> bool {
     let Some(dir) = crate::registry::conduit_dir() else {
-        return;
+        return false;
     };
-    let marker = dir.join(".tray-hint-shown");
-    if marker.exists() {
-        return;
-    }
-    let _ = std::fs::write(&marker, b"1");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.join(".tray-hint-shown"))
+        .is_ok()
+}
+
+fn show_tray_hint(app: &adw::Application) {
     let notification = gtk::gio::Notification::new("Toolport is still running");
     notification.set_body(Some(
         "It stays in your tray so it can hold tool calls for your approval. \
