@@ -3932,10 +3932,11 @@ impl ActivityPage {
                 .map(format_duration)
                 .unwrap_or_else(|| "–".to_string()),
         );
-        self.tokens_saved
-            .set_label(&format_saved_tokens(snapshot.tokens_saved));
+        self.tokens_saved.set_label(&if snapshot.savings_tokenized_loads > 0 {
+            format_saved_tokens(snapshot.tokens_saved)
+        } else { "Not measured".to_string() });
         self.tokens_saved.set_tooltip_text(Some(
-            "Estimated locally from tool descriptions and search results. Older estimates are excluded; not a billing figure.",
+            "One full catalog baseline per session minus all catalog and search responses, counted with cl100k_base. Unverifiable history excluded; not a billing figure.",
         ));
         self.feedback.set_label("");
         self.feedback.remove_css_class("error");
@@ -3947,6 +3948,7 @@ impl ActivityPage {
         self.clear_button.set_sensitive(
             snapshot.call_count > 0
                 || snapshot.savings_list_loads > 0
+                || snapshot.savings_historical_loads > 0
                 || snapshot.savings_discovery_count > 0
                 || !snapshot.search_traces.is_empty()
                 || !snapshot.inspect_calls.is_empty(),

@@ -37031,7 +37031,6 @@ mod tests {
             version: 1,
             ..Registry::default()
         };
-        let guard = SearchGuard::default();
         let req = json!({"jsonrpc":"2.0", "id":1, "method":"tools/list"});
         let allowed = std::collections::HashSet::from(["alpha".to_string()]);
         let scoped_client = format!("scoped-{}", new_correlation_id());
@@ -37046,7 +37045,7 @@ mod tests {
                 &cached,
                 false,
                 None,
-                &guard,
+                &SearchGuard::default(),
                 Some(&allowed),
                 Some(&scoped_client),
             )
@@ -37076,7 +37075,7 @@ mod tests {
                     &cached,
                     mode == DiscoveryMode::Lazy,
                     None,
-                    &guard,
+                    &SearchGuard::default(),
                     Some(&allowed),
                     Some(&scoped_client),
                 )
@@ -37126,7 +37125,7 @@ mod tests {
             &cached,
             false,
             None,
-            &guard,
+            &SearchGuard::default(),
             Some(&allowed),
             Some(&scoped_client),
         )
@@ -37145,7 +37144,7 @@ mod tests {
             &cached,
             true,
             None,
-            &guard,
+            &SearchGuard::default(),
             Some(&allowed),
             Some(&scoped_client),
         )
@@ -37160,6 +37159,27 @@ mod tests {
             savings::surface_bytes(filtered["result"]["tools"].as_array().unwrap())
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn changing_discovery_modes_subtracts_responses_without_a_new_baseline() {
+        let _data = DataDirTestEnv::new("savings-mode-changes");
+        let host = dispatch_host(false);
+        let reg = Registry::default();
+        let guard = SearchGuard::default();
+        let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
+        let mut transmitted = 0;
+        for mode in [DiscoveryMode::Lazy, DiscoveryMode::Lazy, DiscoveryMode::Full] {
+            host.set_discovery_mode(mode);
+            let response = handle_request(&host, &req, &reg, &router(), &catalog(), mode == DiscoveryMode::Lazy, None, &guard, None, None).unwrap();
+            transmitted += savings::count_tokens(&serde_json::to_string(&response["result"]["tools"]).unwrap());
+        }
+        let summary = savings::summary();
+        assert_eq!(summary["tokenizedLoads"], 1);
+        assert_eq!(summary["listLoads"], 3);
+        assert_eq!(summary["exposedTokens"], transmitted);
+        let baseline = summary["fullTokens"].as_u64().unwrap();
+        assert_eq!(summary["tokensSaved"], baseline as i64 - transmitted as i64);
     }
 
     #[test]
