@@ -10311,7 +10311,11 @@ fn maybe_check_integrity(
     let result = (|| {
         #[cfg(test)]
         observe_integrity_gate();
-        if review_state.is_err() {
+        if review_state.is_err() && !blocking && !quarantine_on {
+            // Preserve the tamper signal without allowing a corrupt baseline to
+            // rewrite away remembered review markers or approve unknown tools.
+            integrity::check_staged(profile, tools)
+                .map_err(|error| (error, review_names.clone()))?;
             return Err(("Could not read the integrity review state".into(), review_names.clone()));
         }
         integrity::ensure_quarantine_store_for_fresh_pins(profile)
@@ -12694,9 +12698,11 @@ impl HostState {
             let wanted = scope
                 .as_ref()
                 .and_then(|scope| self.rooted_quarantine(scope));
-            let present = cached.integrity_candidate_names();
-            let retry_capture = integrity::definition_reviews_need_capture(None, &present)
-                || scope.as_ref().is_some_and(|scope| integrity::definition_reviews_need_capture(Some(scope), &present));
+            let rooted_ids: HashSet<_> = keys.iter().map(|key| key.server.as_str()).collect();
+            let base_names = cached.integrity_candidate_names_for(|server| !rooted_ids.contains(server));
+            let rooted_names = cached.integrity_candidate_names_for(|server| rooted_ids.contains(server));
+            let retry_capture = integrity::definition_reviews_need_capture(None, &base_names)
+                || scope.as_ref().is_some_and(|scope| integrity::definition_reviews_need_capture(Some(scope), &rooted_names));
             if !retry_capture && (wanted
                 .as_ref()
                 .is_some_and(|set| set == cached.quarantined() && !cached.catalog_fail_closed())
@@ -39467,6 +39473,16 @@ mod tests {
     fn transient_catalog_absence_keeps_the_review_record_and_log_marker() {
         let data = DataDirTestEnv::new("review-transient-catalog-absence");
         let mut reg = Registry::default();
+        let fresh = reg.clone();
+        reg.version = 1;
+        reg.servers = vec![stub_server("srv", "Source"), stub_server("other", "Other")];
+        reg.profiles[0].enabled_server_ids = vec!["srv".into(), "other".into()];
+        let migration_path = data.dir.join("v1-access-registry.json");
+        std::fs::write(&migration_path, serde_json::to_string(&reg).unwrap()).unwrap();
+        let upgraded = registry::load_from(&migration_path).unwrap();
+        assert!(upgraded.default_access_profile_id.is_none(), "the v1 active set equals the union");
+        assert!(upgraded.default_access_context_id.is_some());
+        for mut reg in [fresh, upgraded] {
         assert!(reg.default_access_profile_id.is_none());
         let ids = [reg.default_access_id(), reg.all_access_id()];
         for profile in [None, Some(ids[0].as_str()), Some(ids[1].as_str())] {
@@ -39486,10 +39502,12 @@ mod tests {
             }).collect();
             std::fs::write(&path, format!("{}\n", aged.join("\n"))).unwrap();
             let logged = std::fs::read_to_string(&path).unwrap();
+            registry.lock().unwrap().servers[0].enabled = false;
             let mut degraded = readonly_router("other", "Healthy server.");
             let offered = degraded.shared_tools();
             requarantine_if_needed(&registry, &mut degraded, offered, profile);
             assert!(integrity::pending_definition_review(profile), "temporary catalog gaps must not retire shared reviews");
+            registry.lock().unwrap().servers[0].enabled = true;
             let mut returning = readonly_router("srv", "Unseen definition.");
             let offered = returning.shared_tools();
             assert!(requarantine_if_needed(&registry, &mut returning, offered, profile).is_empty());
@@ -39497,6 +39515,7 @@ mod tests {
             assert_eq!(integrity::quarantine_record_id(&after), id);
             assert_eq!(std::fs::read_to_string(path).unwrap(), logged, "catalog flaps must not relog a pending review");
             assert!(integrity::release_record(profile, "srv__read", &id).unwrap(), "the open Settings approval must stay valid");
+        }
         }
     }
 
@@ -39524,6 +39543,35 @@ mod tests {
             for _ in 0..3 {
                 assert!(!reconcile_quarantine(&registry, &router, &stdio, None, None, &AtomicBool::new(false)), "hidden review retried every tick, scope={scope_hidden}");
                 assert!(Arc::ptr_eq(&before, &router.lock().unwrap()));
+            }
+        }
+    }
+
+    #[test]
+    fn review_r2_rooted_hidden_and_wrong_store_reviews_do_not_retry_per_request() {
+        let data = DataDirTestEnv::new("rooted-hidden-review-retry");
+        let scope = format!("root:{}", registry::sha256_hex("/fixture/project"));
+        integrity::register_root_scope(&scope).unwrap();
+        let keys = vec![LaunchKey { server: "srv".into(), kind: "stdio", digest: "fixture".into() }];
+        for (profile, hidden) in [(Some(scope.as_str()), true), (None, false)] {
+            seed_legacy_review(&data.dir, profile, "v2");
+            integrity::release(profile, "srv__read").unwrap();
+            let state = http_state(false);
+            state.registry.lock().unwrap().servers = vec![stub_server("srv", "Source")];
+            let mut built = readonly_router("srv", "Unseen definition.");
+            if hidden {
+                built.apply_registry_policy(RegistryPolicy { allow: HashMap::from([("srv".into(), HashSet::from(["other".into()]))]), ..Default::default() });
+            }
+            built.requarantine(set_of(&["srv__read"]));
+            let cached = Arc::new(built);
+            {
+                let mut pool = state.root_launch_pool.lock().unwrap();
+                pool.views.insert(keys.clone(), cached.clone());
+                pool.root_scopes.insert(keys.clone(), scope.clone());
+            }
+            for _ in 0..3 {
+                let next = state.reconcile_rooted_view(&keys, cached.clone());
+                assert!(Arc::ptr_eq(&next, &cached), "review outside the checked rooted catalog caused a swap");
             }
         }
     }
@@ -39614,7 +39662,7 @@ mod tests {
     }
 
     #[test]
-    fn integrity_off_baseline_tamper_records_without_blocking() {
+    fn integrity_off_cold_baseline_tamper_blocks_unknown_review_state() {
         let _data_lock = registry::data_dir_test_lock();
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir =
@@ -39642,12 +39690,11 @@ mod tests {
         reg.set_safety_level(registry::SafetyLevel::Off);
         reg.quarantine_on_drift = false;
         let registry = Arc::new(Mutex::new(reg));
-        assert!(maybe_check_integrity(&registry, &tools, profile)
-            .unwrap()
-            .is_none());
+        let (_, pending) = maybe_check_integrity(&registry, &tools, profile).unwrap_err();
+        assert_eq!(pending, set_of(&["srv__read"]), "a cold corrupt store has no readable review state for this tool");
         assert_eq!(
             effective_quarantine(&registry, profile, &AtomicBool::new(false)),
-            Some(BTreeSet::new())
+            None
         );
         assert!(integrity::read_recent(20)
             .unwrap()

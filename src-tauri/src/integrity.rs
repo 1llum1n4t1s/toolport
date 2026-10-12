@@ -1711,7 +1711,7 @@ pub fn mandatory_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<S
     // A failed mandatory-tamper quarantine write leaves only the gateway's live fail-closed set.
     // While the pin trust root is still corrupt, report the durable enforcement state as unknown
     // so the watcher cannot reconcile that live set down to empty and re-expose tools.
-    if matches!(load_pins(profile), PinsLoad::Corrupt) {
+    if cached_review_pins(profile).unreadable {
         return Err(
             "The integrity pin store is corrupt; retaining the live mandatory quarantine set"
                 .to_string(),
@@ -1746,7 +1746,7 @@ pub fn reconcile_definition_reviews(
     let removed_profile = profile.is_some_and(|id| {
         let id = crate::registry::access_integrity_id(id);
         !valid_root_scope(id)
-            && registry.default_access_context_id.as_deref() != Some(id)
+            && registry.default_access_context_id.as_deref().unwrap_or("") != id
             && !registry.profiles.iter().any(|profile| profile.id == id)
     });
     let quarantine_path = quarantine_path(profile).ok_or("Could not resolve the quarantine store")?;
@@ -1848,6 +1848,10 @@ pub fn review_quarantined(profile: Option<&str>) -> Result<BTreeSet<String>, Str
 
 /// Watcher enforcement also retains retired review names in case they return.
 pub fn review_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<String>, String> {
+    let state = cached_review_pins(profile);
+    if state.unreadable && state.names.is_empty() && state.ordinary.is_empty() {
+        return Err("Could not read the integrity review state".into());
+    }
     let Some(path) = quarantine_path(profile) else {
         return Ok(BTreeSet::new());
     };

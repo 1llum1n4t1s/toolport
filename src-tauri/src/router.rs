@@ -1877,12 +1877,16 @@ impl Router {
     /// Names available to a private integrity candidate after removing only
     /// quarantine. Disabled, server-filtered and tool-scope-hidden tools stay out.
     pub fn integrity_candidate_names(&self) -> BTreeSet<String> {
-        self.tool_owners.keys().filter(|name| {
-            self.blocked.get(*name).is_none_or(|reason| matches!(reason.as_str(),
+        self.integrity_candidate_names_for(|_| true)
+    }
+
+    pub fn integrity_candidate_names_for(&self, visible: impl Fn(&str) -> bool) -> BTreeSet<String> {
+        self.tool_owners.iter().filter(|(name, server)| {
+            visible(server) && self.blocked.get(*name).is_none_or(|reason| matches!(reason.as_str(),
                 "quarantined after a high-risk change; re-approve to restore" |
                 "quarantine store unreadable; catalog blocked until the store reads"
             ))
-        }).map(|name| self.policy_name(name).to_string()).collect()
+        }).map(|(name, _)| self.policy_name(name).to_string()).collect()
     }
 
     pub fn policy_catalog(&self, tools: &SharedTools) -> SharedTools {
