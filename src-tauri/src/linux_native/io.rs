@@ -5,6 +5,49 @@ use std::sync::Arc;
 
 use adw::prelude::*;
 
+#[cfg(target_env = "gnu")]
+static PRIMARY_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_env = "gnu")]
+static TRIM_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Large JSON reads can leave free pages in glibc's per-thread arenas. Return
+/// those pages after hiding or hidden reads, without trimming on the GTK thread.
+pub(super) fn trim_if_hidden() {
+    #[cfg(target_env = "gnu")]
+    {
+        use std::sync::atomic::Ordering;
+        if !PRIMARY_HIDDEN.load(Ordering::Relaxed) || TRIM_PENDING.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        drop(gtk::gio::spawn_blocking(|| {
+            if PRIMARY_HIDDEN.load(Ordering::Relaxed) {
+                // SAFETY: glibc synchronizes its allocator internally. This takes
+                // no pointers and releases only free pages, never live UI data.
+                unsafe {
+                    libc::malloc_trim(0);
+                }
+            }
+            TRIM_PENDING.store(false, Ordering::Relaxed);
+        }));
+    }
+}
+
+pub(super) fn track_hidden_memory(window: &adw::ApplicationWindow) {
+    #[cfg(target_env = "gnu")]
+    {
+        use std::sync::atomic::Ordering;
+        PRIMARY_HIDDEN.store(!window.is_mapped(), Ordering::Relaxed);
+        window.connect_map(|_| PRIMARY_HIDDEN.store(false, Ordering::Relaxed));
+        window.connect_unmap(|_| {
+            PRIMARY_HIDDEN.store(true, Ordering::Relaxed);
+            trim_if_hidden();
+        });
+        trim_if_hidden();
+    }
+    #[cfg(not(target_env = "gnu"))]
+    let _ = window;
+}
+
 /// One read at a time. An invalidation during a read discards that result and
 /// starts one fresh read, so bursts cannot queue workers or overwrite newer state.
 pub(super) struct SnapshotReader<T> {
@@ -52,6 +95,7 @@ impl<T: Send + 'static> SnapshotReader<T> {
                 break;
             }
             reader.running.set(false);
+            trim_if_hidden();
         });
     }
 

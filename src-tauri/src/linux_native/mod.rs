@@ -603,6 +603,7 @@ fn build_window(
     window.add_breakpoint(narrow);
 
     window.set_content(Some(&alerts));
+    io::track_hidden_memory(&window);
     theme.attach(&window);
     let state = state::RegistryController::new(move |snapshot| {
         // Team joins the sidebar the moment the registry says this install is
