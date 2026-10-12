@@ -165,8 +165,9 @@ npm run format:check  # check only (fails without writing — same as CI)
 
 **Do not run `cargo fmt` on the whole crate.** CI checks only changed Rust lines
 with Rust 1.99.0, without following child modules. Legacy formatting elsewhere
-stays untouched. Compare against your target branch, and format only affected
-hunks when needed:
+stays untouched. PRs compare against their base, pushes against the previous
+commit, and manual runs against the checked commit's parent. Compare against
+your target branch, and format only affected hunks when needed:
 
 ```bash
 RUSTUP_TOOLCHAIN=1.99.0 python3 scripts/check-rustfmt.py --base origin/next/2.0

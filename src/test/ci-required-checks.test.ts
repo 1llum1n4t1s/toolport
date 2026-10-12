@@ -246,6 +246,10 @@ describe("CI required merge gate (SBS-874)", () => {
     expect(runScripts(jobs.rustfmt).join("\n")).toContain(
       'python3 scripts/check-rustfmt.py --base "$base"',
     );
+    expect(runScripts(jobs.rustfmt).join("\n")).toContain(
+      'base="$(git rev-parse HEAD^)"',
+    );
+    expect(runScripts(jobs.rustfmt).join("\n")).not.toContain("--max-parents=0");
     const manifest = JSON.parse(
       readFileSync(join(process.cwd(), "package.json"), "utf8"),
     );

@@ -255,7 +255,8 @@ jobs:
           python3 scripts/test-check-rustfmt.py
           base="$FORMAT_BASE"
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            base="$(git rev-list --max-parents=0 HEAD | head -1)"
+            # Manual runs and first pushes have no event base; check this commit.
+            base="$(git rev-parse HEAD^)"
           fi
           python3 scripts/check-rustfmt.py --base "$base"
 
