@@ -27,6 +27,25 @@ struct Snapshot {
     disconnect_before: Option<String>,
 }
 
+/// Read only valid writer provenance when a forgotten location has no store row.
+pub(super) fn purge_backup_config_paths(dir: &Path) -> Vec<String> {
+    std::fs::read_dir(dir).into_iter().flatten().filter_map(Result::ok).filter_map(|entry| {
+        let path = entry.path();
+        let name = path.file_name()?.to_str()?;
+        let hash = name.strip_prefix("original-")?.strip_suffix(".json")?;
+        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) { return None; }
+        let metadata = std::fs::symlink_metadata(&path).ok()?;
+        if !metadata.is_file() || crate::purge::is_link(&metadata) { return None; }
+        let record: Snapshot = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+        if record.version != 1 || !matches!(record.format, Format::JsonMcpServers)
+            || crate::registry::sha256_hex(&record.config_path) != hash
+            || record.original.as_deref().map(crate::registry::sha256_hex) != record.original_hash
+            || record.last_written.as_deref().map(crate::registry::sha256_hex) != record.last_written_hash
+        { return None; }
+        Some(record.config_path)
+    }).collect()
+}
+
 pub(super) fn record_path(client_id: &str, path: &Path) -> Result<PathBuf, String> {
     let hash = crate::registry::sha256_hex(&path.to_string_lossy());
     Ok(backup_dir(client_id)

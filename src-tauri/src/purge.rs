@@ -600,7 +600,7 @@ fn run_with(
     Ok(report)
 }
 
-fn is_link(metadata: &std::fs::Metadata) -> bool {
+pub(crate) fn is_link(metadata: &std::fs::Metadata) -> bool {
     #[cfg(windows)]
     { use std::os::windows::fs::MetadataExt; metadata.file_attributes() & 0x400 != 0 }
     #[cfg(not(windows))]
@@ -1032,6 +1032,35 @@ mod tests {
         assert_eq!(std::fs::read(wrong_hash.join("123-.claude.json")).unwrap(), b"user bytes");
         assert_eq!(std::fs::read(lookalike).unwrap(), b"user bytes");
         for (config, bytes) in configs { assert_eq!(std::fs::read(config).unwrap(), bytes); }
+    }
+
+    #[test]
+    fn purge_r7_forgotten_long_location_uses_its_recovery_record() {
+        let env = crate::registry::DataDirTestEnv::new("purge_r7_forgotten_long");
+        let home = env.dir.join("home");
+        let folder = home.join(format!(".claude-{}", "é".repeat(100)));
+        std::fs::create_dir_all(&folder).unwrap();
+        let _home = crate::clients::TestHome::set(&home);
+        let config = folder.join(".claude.json");
+        std::fs::write(&config, "{}").unwrap();
+        let id = crate::clients::add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
+        let write = crate::clients::write_servers(&id, &[]).unwrap();
+        let backup = PathBuf::from(write.backup.unwrap());
+        let record = write.recovery_path.unwrap();
+        let component = backup.parent().unwrap().file_name().unwrap().to_str().unwrap();
+        let wrong = env.dir.join("backups").join(format!("{}-{}", &component[..120], "0".repeat(64)));
+        std::fs::create_dir(&wrong).unwrap();
+        let copied = wrong.join(record.file_name().unwrap());
+        std::fs::copy(&record, &copied).unwrap();
+        crate::clients::remove_client_location(&id).unwrap();
+        std::fs::remove_dir_all(&folder).unwrap();
+        let report = run_with(
+            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
+            || Ok(crate::secrets::purge::Removal::default()), |_| Ok(()), |_| Ok(()),
+        ).unwrap();
+        assert!(report.leftovers.is_empty(), "{:?}", report.leftovers);
+        assert!(!backup.parent().unwrap().exists(), "forgotten generated folder removed");
+        assert!(copied.exists(), "a copied valid record cannot claim another folder");
     }
 
     #[test]

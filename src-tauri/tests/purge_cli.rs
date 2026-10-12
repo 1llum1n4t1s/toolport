@@ -354,6 +354,12 @@ fn purge_r7_cli_removes_location_store_and_exact_backup_names() {
     let legacy_file = legacy.join("123-.claude.json");
     std::fs::write(&legacy_file, "generated").unwrap();
     generated.push(legacy_file);
+    let orphan_id = format!("claude-code@claude-{}", "y".repeat(210));
+    let orphan_folder = env.dir.join("home").join(format!(".claude-{}", "y".repeat(210)));
+    std::fs::create_dir_all(&orphan_folder).unwrap();
+    let orphan_config = orphan_folder.join(".claude.json");
+    std::fs::write(&orphan_config, "{}").unwrap();
+    rows.push(serde_json::json!({"id":orphan_id,"clientType":"claude-code","name":"forgotten","configPath":orphan_config,"manual":true}));
     std::fs::write(data.join("client-locations.json"), serde_json::to_vec(&rows).unwrap()).unwrap();
     // Real writers supply valid provenance, which the CLI must restore before
     // purge. Fake recovery JSON would correctly block the entire removal.
@@ -368,6 +374,15 @@ fn purge_r7_cli_removes_location_store_and_exact_backup_names() {
         generated.push(moved);
     }
 
+    let orphan_backup = generated.last().unwrap().parent().unwrap().to_owned();
+    conduit_lib::clients::remove_client_location(&orphan_id).unwrap();
+    std::fs::remove_dir_all(&orphan_folder).unwrap();
+    rows.pop();
+    let orphan_legacy = data.join("backups").join(&orphan_id);
+    std::fs::create_dir(&orphan_legacy).unwrap();
+    let orphan_legacy_file = orphan_legacy.join("123-.claude.json");
+    std::fs::write(&orphan_legacy_file, "generated").unwrap();
+    generated.push(orphan_legacy_file);
     for name in ["client-locations.json.lock", "client-locations.json.123.1.conduit-tmp"] {
         let path = data.join(name);
         std::fs::write(&path, "generated").unwrap();
@@ -395,6 +410,8 @@ fn purge_r7_cli_removes_location_store_and_exact_backup_names() {
     assert_eq!(std::fs::read(data.join("client-locations.json.123.2.conduit-tmp/notes")).unwrap(), b"user bytes");
     assert!(!data.join("backups").join(bounded).exists(), "empty generated folder removed");
     assert!(!legacy.exists(), "empty legacy long-ID folder removed");
+    assert!(!orphan_backup.exists(), "forgotten bounded folder removed");
+    assert!(!orphan_legacy.exists(), "forgotten legacy folder removed");
     assert!(!data.join("backups/codex@0123456789abcdef").exists());
     assert!(data.join("backups/claude-code@claude2").is_dir(), "foreign files keep their folder");
     for row in rows { assert!(std::path::Path::new(row["configPath"].as_str().unwrap()).exists()); }

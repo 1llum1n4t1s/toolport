@@ -151,6 +151,15 @@ fn folder_key(folder: &str) -> String {
         .collect()
 }
 
+pub(super) fn claude_id_for_backup_path(path: &str) -> Option<String> {
+    // Recovery records may have been written on another OS. This is a filename
+    // check, not a client lookup or a read of the missing config.
+    let mut parts = path.rsplit(['/', '\\']);
+    if parts.next()? != ".claude.json" { return None; }
+    let folder = parts.next()?;
+    claude_profile_name(folder).then(|| format!("claude-code@{}", folder_key(folder)))
+}
+
 /// The two ID formats produced by add_client_location and automatic discovery.
 pub(super) fn generated_id_type(id: &str) -> Option<&str> {
     let (kind, key) = id.split_once('@')?;

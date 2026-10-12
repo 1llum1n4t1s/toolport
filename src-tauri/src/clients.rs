@@ -4026,6 +4026,27 @@ pub(crate) fn purge_backup_inventory() -> HashMap<String, PurgeBackupClient> {
         if id.len() <= 255 { clients.insert(id.clone(), client.clone()); }
         if id.len() > 200 { clients.insert(bounded_backup_component(&id), client); }
     }
+    // Forgetting a location leaves its recovery copies behind. A valid snapshot
+    // can recover a long Claude ID without reading the original profile or store.
+    if let Some(root) = crate::registry::conduit_dir().map(|dir| dir.join("backups")) {
+        let entries = std::fs::symlink_metadata(&root).ok()
+            .filter(|metadata| metadata.is_dir() && !crate::purge::is_link(metadata))
+            .and_then(|_| std::fs::read_dir(root).ok());
+        for entry in entries.into_iter().flatten().filter_map(Result::ok) {
+            let component = entry.file_name().to_string_lossy().into_owned();
+            if clients.contains_key(&component) || !bounded_backup_name(&component) { continue; }
+            let path = entry.path();
+            if !std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir() && !crate::purge::is_link(&metadata)) { continue; }
+            for config in restore::purge_backup_config_paths(&path) {
+                let Some(id) = locations::claude_id_for_backup_path(&config) else { continue; };
+                let expected = if id.len() <= 200 { id.clone() } else { bounded_backup_component(&id) };
+                if expected != component { continue; }
+                let def = defs().into_iter().find(|def| def.id == "claude-code").unwrap();
+                clients.insert(component.clone(), PurgeBackupClient::from_def(&def));
+                break;
+            }
+        }
+    }
     clients
 }
 
@@ -4063,21 +4084,25 @@ impl PurgeBackupClient {
     }
 }
 
-/// Removed short locations still have recognisable generated IDs. Bounded names
+/// Removed short and legacy locations still have generated IDs. Bounded names
 /// need the full saved ID so a similar prefix with a different digest stays alone.
 pub(crate) fn purge_backup_short_location(component: &str) -> Option<PurgeBackupClient> {
     if let Some(def) = defs().into_iter().find(|def| def.id == component) {
         return Some(PurgeBackupClient::from_def(&def));
     }
-    if component.len() > 200 { return None; }
+    if component.len() > 255 { return None; }
     let kind = locations::generated_id_type(component)?;
     // A bounded component also resembles a legal short Claude profile ID. Only
     // the snapshot may select that ambiguous spelling, using its full-ID digest.
-    if component.len() == 185 && component.as_bytes()[120] == b'-'
-        && component[121..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    { return None; }
+    if bounded_backup_name(component) { return None; }
     let def = defs().into_iter().find(|def| def.id == kind && !def.uses_connectors)?;
     Some(PurgeBackupClient::from_def(&def))
+}
+
+fn bounded_backup_name(component: &str) -> bool {
+    component.len() == 185 && component.starts_with("claude-code@")
+        && component.is_ascii() && component.as_bytes()[120] == b'-'
+        && component[121..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn bounded_backup_component(client_id: &str) -> String {
