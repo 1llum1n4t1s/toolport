@@ -133,7 +133,8 @@ The GitHub required check is still named **Build + test**. That name is a
 merge gate over frontend checks, the selected Linux and headless Rust suites
 (the Windows keyring tests live on `windows-latest`), both installer suites,
 and pinned install URLs (SBS-874). Failed or cancelled checks and unexpected
-skips block this gate. Clippy stays non-blocking until existing warnings are cleared.
+skips block this gate. ESLint warnings, all three Linux Clippy feature sets,
+and changed-line Rust formatting also block it.
 Adding the individual job names as separate required contexts is a GitHub
 settings click; it is not something a workflow file can do.
 
@@ -162,11 +163,15 @@ npm run format        # format all files in place
 npm run format:check  # check only (fails without writing — same as CI)
 ```
 
-**Do not run `cargo fmt`.** The Rust tree is deliberately not rustfmt-clean and
-there is no fmt gate in CI, so `cargo fmt` currently rewrites roughly 850
-places across every Rust file in the project. That buries your actual change in
-unrelated reflow, and it conflicts with every other open PR touching the same
-file. Match the style of the code around you, and leave the rest alone.
+**Do not run `cargo fmt` on the whole crate.** CI checks only changed Rust lines
+with Rust 1.99.0, without following child modules. Legacy formatting elsewhere
+stays untouched. Compare against your target branch, and format only affected
+hunks when needed:
+
+```bash
+RUSTUP_TOOLCHAIN=1.99.0 python3 scripts/check-rustfmt.py --base origin/next/2.0
+RUSTUP_TOOLCHAIN=1.99.0 python3 scripts/check-rustfmt.py --base origin/next/2.0 --fix
+```
 
 If your editor formats Rust on save, turn it off for this repo:
 
@@ -188,21 +193,25 @@ npm run lint        # check
 npm run lint:fix    # auto-fix what it can
 ```
 
-Warnings are non-blocking. If you see a `react-hooks/set-state-in-effect`
-warning, it's usually the standard Tauri pattern of loading data from the Rust
-backend in a `useEffect` — review it for unnecessary re-renders, but it won't
-block the build.
+ESLint uses `--max-warnings 0`, so warnings block the frontend job. Fix the
+cause first. If changing an existing effect or event callback would change
+behavior, a local exception needs a specific reason beside that expression.
 
 ### Rust linting
 
-Clippy checks the Rust backend and gateway binary. CI runs it on every PR.
+CI requires Clippy with `-D warnings` for all targets, including tests, in
+three Linux feature sets: `search-static,test-support`,
+`search-static,test-support,desktop`, and `search-static,test-support,gtk-desktop`.
+Run each with the pinned toolchain:
 
 ```bash
-cargo clippy --manifest-path src-tauri/Cargo.toml --lib --bins
+cargo +1.99.0 clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features search-static,test-support --all-targets -- -D warnings
 ```
 
-Clippy warnings are currently non-blocking. The CI gate will be made blocking
-after the existing warnings have been cleared.
+Clippy and rustfmt jobs pin Rust 1.99.0 in `.github/workflows/ci.yml`; other
+build jobs keep stable Rust. To bump the lint toolchain, update both job pins,
+review new diagnostics, run all three feature sets and the changed-line check,
+and keep any formatting fixes scoped to affected hunks.
 
 ### Git hooks (pre-commit)
 

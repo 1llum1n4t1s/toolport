@@ -56,6 +56,7 @@ function results(selected, packages = "true") {
       "installer-script-bash",
       "pinned-install-urls",
       "clippy",
+      "rustfmt",
       "build-test",
       "cross-platform-rust",
       "linux-native",
@@ -69,6 +70,7 @@ function results(selected, packages = "true") {
             : selected === "false" &&
                 [
                   "clippy",
+                  "rustfmt",
                   "build-test",
                   "cross-platform-rust",
                   "linux-native",

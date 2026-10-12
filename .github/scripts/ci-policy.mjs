@@ -85,6 +85,7 @@ export function requireResults(needs) {
     throw new Error("Rust selection is missing or invalid");
   for (const job of [
     "clippy",
+    "rustfmt",
     "build-test",
     "cross-platform-rust",
     "linux-native",
