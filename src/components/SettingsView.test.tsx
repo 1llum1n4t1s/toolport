@@ -813,7 +813,7 @@ it("does not show a resolved or other-profile baseline warning", async () => {
   expect(screen.queryByText(/Last baseline warning/)).not.toBeInTheDocument();
 });
 
- it.each([{ activeProfileId: "other" }, { safetyLevel: "ask" as const }])(
+it.each([{ activeProfileId: "other" }, { safetyLevel: "ask" as const }])(
   "hides a prior baseline notice when the profile or safety level changes: %o",
   async (change) => {
     vi.mocked(getBaselineNotice)
