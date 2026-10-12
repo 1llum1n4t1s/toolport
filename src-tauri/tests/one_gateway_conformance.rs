@@ -2603,7 +2603,9 @@ fn retired_review_off_store_failure(failed_store: &str) {
         assert!(!client.tool_names().contains(&name.to_string()));
         let records: Vec<_> = conduit_lib::integrity::all_quarantined_summaries().unwrap().into_iter()
             .filter(|record| record["tool"] == name).collect();
-        if !records.is_empty() && records.iter().all(|record| record["has_definition"] == true) { break records; }
+        if !records.is_empty() && records.iter().all(|record| {
+            record["has_definition"] == true && record["definition_fp"].is_string()
+        }) { break records; }
         assert!(Instant::now() < deadline, "store recovery did not recapture the review\n{}", client.diagnostics());
         std::thread::sleep(Duration::from_millis(25));
     };
@@ -2611,6 +2613,11 @@ fn retired_review_off_store_failure(failed_store: &str) {
     for record in captured {
         assert!(full.iter().any(|finding| finding["record_id"] == record["record_id"]
             && finding["profile"] == record["profile"] && finding["review_required"] == true));
+        let scope = record["profile"].as_str().unwrap();
+        let definition = conduit_lib::integrity::quarantine_definition(
+            (!scope.is_empty()).then_some(scope), name, record["record_id"].as_str().unwrap(),
+        ).unwrap();
+        assert_eq!(definition["name"], name);
         approve_displayed_quarantine(&record).unwrap();
     }
     client.wait_for_tool(name, Duration::from_secs(10));
