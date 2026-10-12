@@ -7462,7 +7462,11 @@ fn handle_request_with_cancel(
                 mode
             };
             {
-                let full = tool_surface(host, reg, router, &catalog, allowed, DiscoveryMode::Full);
+                let mut full =
+                    tool_surface(host, reg, router, &catalog, allowed, DiscoveryMode::Full);
+                if full_discovery_fallback(client) {
+                    full.splice(2..2, [search_tool_def(), call_tool_def()]);
+                }
                 if over_client_tool_limit(client, full.len()) {
                     guard.catalog.exclude_unloadable_baseline();
                 }
@@ -37163,6 +37167,33 @@ mod tests {
             savings::surface_bytes(filtered["result"]["tools"].as_array().unwrap())
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn uncached_full_baseline_includes_the_clients_fallback_tools() {
+        let _data = DataDirTestEnv::new("savings-full-fallback-baseline");
+        let host = dispatch_host(false);
+        host.set_discovery_mode(DiscoveryMode::Full);
+        let reply = handle_request(
+            &host,
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+            &Registry::default(),
+            &router(),
+            &catalog(),
+            false,
+            None,
+            &SearchGuard::default(),
+            None,
+            Some("codex"),
+        )
+        .unwrap();
+        let row = savings::entries().pop().unwrap();
+        assert_eq!(row["fullTokens"], row["exposedTokens"]);
+        assert_eq!(
+            row["fullSurfaceBytes"],
+            savings::surface_bytes(reply["result"]["tools"].as_array().unwrap())
+        );
+        assert_eq!(savings::summary()["tokensSaved"], 0);
     }
 
     #[test]
