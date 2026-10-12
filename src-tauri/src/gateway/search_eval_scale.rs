@@ -84,7 +84,7 @@ fn search_semantic_document_retains_later_capabilities() {
 fn search_complete_catalog_evidence_is_retained_and_semantic_caps_are_explicit() {
     let description = format!(
         "Inspect a record. {} Final constraint.",
-        "additional capability ".repeat(300)
+        "word ".repeat(1000)
     );
     let schema = json!({"type":"object","properties":{"mode":{"enum":["read","write"]}}});
     let tool = json!({"name":"sample__inspect","description":description,"inputSchema":schema});
