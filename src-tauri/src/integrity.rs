@@ -6401,7 +6401,7 @@ mod tests {
         let path = pins_path(Some(&profile)).unwrap();
         std::fs::write(&path, "{ unreadable pins").unwrap();
         record_event(
-            &json!({"type":"pins_load_failed", "ts":10, "profile":profile, "detail":"Old Ask text"}),
+            &json!({"type":"pins_load_failed", "ts":800010, "profile":profile, "detail":"Old Ask text"}),
         );
         record_event(
             &json!({"type":"pins_load_failed", "ts":20, "profile":"other", "detail":"Other profile"}),
