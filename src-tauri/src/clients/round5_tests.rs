@@ -3,6 +3,8 @@ use super::*;
 #[test]
 fn round5_absent_or_empty_home_has_no_disconnect_failures() {
     let data = crate::registry::DataDirTestEnv::new("round5-empty-home");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     let root = data.dir.join("home");
     let _home = TestHome::set(&root);
     crate::registry::save(&crate::registry::Registry::default()).unwrap();
@@ -19,8 +21,9 @@ fn round5_absent_or_empty_home_has_no_disconnect_failures() {
 #[test]
 fn round5_absent_home_still_checks_config_override_and_blocks_bad_client() {
     let data = crate::registry::DataDirTestEnv::new("round5-absent-home-override");
-    let _home = TestHome::set(&data.dir.join("absent-home"));
     let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
+    let _home = TestHome::set(&data.dir.join("absent-home"));
     let folder = data.dir.join("override");
     std::fs::create_dir(&folder).unwrap();
     let _config_dir = EnvRestore::set("CLAUDE_CONFIG_DIR", &folder);
@@ -57,7 +60,7 @@ fn exercise_manual_v1_profile(data: &crate::registry::DataDirTestEnv, folder: &P
     assert_eq!(row.entry_state, GatewayEntryState::Managed);
     let gateway = data.dir.join("toolport-gateway");
     std::fs::write(&gateway, "fixture").unwrap();
-    let outcome = repoint_stale_gateways_in(gateway.to_str().unwrap(), rows, &HashMap::new());
+    let outcome = repoint_stale_gateways_in(gateway.to_str().unwrap(), rows.into_iter().filter(|row| row.id == id).collect(), &HashMap::new());
     assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
     assert!(outcome.repointed.iter().any(|(client, _)| client == &id));
     let value = parse_json_value(&read_config_file(&path).unwrap()).unwrap();
@@ -83,6 +86,8 @@ fn exercise_manual_v1_profile(data: &crate::registry::DataDirTestEnv, folder: &P
 fn round5_readding_ordinary_v1_profiles_keeps_ownership_and_dedupe() {
     for folder_name in [".claude", ".claude-work"] {
         let data = crate::registry::DataDirTestEnv::new("round5-v1-readd");
+        let _env_lock = env_test_lock();
+        let _client_env = isolated_client_env(&data.dir);
         let _home = TestHome::set(&data.dir);
         let folder = data.dir.join(folder_name);
         std::fs::create_dir(&folder).unwrap();
@@ -97,6 +102,8 @@ fn round5_readding_ordinary_v1_profiles_keeps_ownership_and_dedupe() {
 #[test]
 fn round5_manual_linked_v1_profile_keeps_ownership_and_dedupe() {
     let data = crate::registry::DataDirTestEnv::new("round5-v1-linked");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     let home = data.dir.join("home");
     std::fs::create_dir(&home).unwrap();
     let _home = TestHome::set(&home);
@@ -111,6 +118,8 @@ fn round5_manual_linked_v1_profile_keeps_ownership_and_dedupe() {
 fn exercise_bad_profile_link(bad_link: &str) {
     use std::os::unix::fs::PermissionsExt;
     let data = crate::registry::DataDirTestEnv::new("round5-settings");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     let _home = TestHome::set(&data.dir);
     let bad = data.dir.join(".claude-bad");
     let blocked = data.dir.join("blocked");
@@ -137,7 +146,7 @@ fn exercise_bad_profile_link(bad_link: &str) {
     }});
     std::fs::write(&good, original.to_string()).unwrap();
     assert!(try_claude_code_config_paths().is_err(), "pruning must stay fail closed");
-    crate::hooks::cleanup_on_startup();
+    crate::hooks::cleanup_on_startup_with(&crate::clients::claude_settings_paths());
     crate::guard_cleanup::run_once_with_cursor(None);
     if bad_link == "unreadable" {
         std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -162,6 +171,8 @@ fn round5_unreadable_profile_link_does_not_skip_good_settings_cleanup() {
 #[test]
 fn round5_bulk_disconnect_matches_native_recovery_paths() {
     let data = crate::registry::DataDirTestEnv::new("round5-windows-recovery");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     let _home = TestHome::set(&data.dir);
     let folder = data.dir.join("work-profile");
     std::fs::create_dir(&folder).unwrap();
@@ -213,6 +224,8 @@ fn round5_bulk_disconnect_matches_native_recovery_paths() {
 #[test]
 fn round5_bulk_disconnect_deduplicates_equivalent_recovery_paths() {
     let data = crate::registry::DataDirTestEnv::new("round5-recovery-alias");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     let _home = TestHome::set(&data.dir);
     let folder = data.dir.join("work-profile");
     std::fs::create_dir(&folder).unwrap();

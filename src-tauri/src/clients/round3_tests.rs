@@ -9,6 +9,8 @@ fn entry(command: &Path) -> ServerEntry {
 #[test]
 fn round3_legacy_linked_and_backup_profiles_keep_references_and_repair() {
     let data = crate::registry::DataDirTestEnv::new("round3-legacy-profiles");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     let root = data.dir.join("home");
     std::fs::create_dir(&root).unwrap();
     let _home = TestHome::set(&root);
@@ -49,6 +51,8 @@ fn round3_legacy_linked_and_backup_profiles_keep_references_and_repair() {
 #[test]
 fn round3_main_client_recognizes_repoints_and_deduplicates_custom_gateway_names() {
     let data = crate::registry::DataDirTestEnv::new("round3-main-dedupe");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     let _home = TestHome::set(&data.dir);
     let def = find_def("cursor").unwrap();
     let path = resolved_definition_path(&def).unwrap();
@@ -73,6 +77,8 @@ fn round3_main_client_recognizes_repoints_and_deduplicates_custom_gateway_names(
 fn round3_missing_automatic_config_and_folder_are_absent_not_errors() {
     for remove_folder in [false, true] {
         let data = crate::registry::DataDirTestEnv::new("round3-missing-auto");
+        let _env_lock = env_test_lock();
+        let _client_env = isolated_client_env(&data.dir);
         let _home = TestHome::set(&data.dir);
         let folder = data.dir.join(".claude2");
         std::fs::create_dir(&folder).unwrap();
@@ -95,6 +101,8 @@ fn round3_missing_automatic_config_and_folder_are_absent_not_errors() {
 #[test]
 fn round3_unreadable_store_blocks_pruning_and_bulk_disconnect_reports_error() {
     let data = crate::registry::DataDirTestEnv::new("round3-bad-store");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     let _home = TestHome::set(&data.dir);
     crate::registry::save(&crate::registry::Registry::default()).unwrap();
     let folder = data.dir.join("external");
@@ -113,6 +121,8 @@ fn round3_unreadable_store_blocks_pruning_and_bulk_disconnect_reports_error() {
 #[test]
 fn round3_reserved_duplicates_removed_in_all_formats_and_foreign_slots_preserved() {
     let data = crate::registry::DataDirTestEnv::new("round3-duplicates");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     let gateway = entry(&data.dir.join("toolport-gateway"));
     for (index, (format, raw)) in [
         (Format::JsonMcpServers, r#"{"mcpServers":{"toolport":{"command":"toolport-gateway"},"conduit":{"command":"conduit-gateway"},"foreign":{"command":"toolport-gateway"}}}"#),
@@ -146,7 +156,8 @@ fn round3_reserved_duplicates_removed_in_all_formats_and_foreign_slots_preserved
 #[test]
 fn round3_configured_connected_location_reclaims_main_identity() {
     let data = crate::registry::DataDirTestEnv::new("round3-main-adoption");
-    let _env = env_test_lock();
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     let _home = TestHome::set(&data.dir);
     let folder = data.dir.join(".claude2");
     std::fs::create_dir(&folder).unwrap();
@@ -174,6 +185,8 @@ fn round3_configured_connected_location_reclaims_main_identity() {
 #[test]
 fn round3_windows_config_write_survives_native_canonicalization_failure() {
     let data = crate::registry::DataDirTestEnv::new("round3-windows-config");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     let path = data.dir.join("config.json");
     std::fs::write(&path, "{}").unwrap();
     crate::registry::client_file::with_native_canonicalize_failure(|| {
@@ -191,6 +204,8 @@ fn round3_windows_config_write_survives_native_canonicalization_failure() {
 #[test]
 fn round3_windows_backup_acl_survives_native_canonicalization_failure() {
     let data = crate::registry::DataDirTestEnv::new("round3-windows-acl");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     crate::registry::client_file::with_native_canonicalize_failure(|| {
         backup_permissions::secure(&data.dir).unwrap();
     });
@@ -199,6 +214,8 @@ fn round3_windows_backup_acl_survives_native_canonicalization_failure() {
 #[test]
 fn round3_unreadable_config_and_home_scan_fail_closed() {
     let data = crate::registry::DataDirTestEnv::new("round3-unreadable");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     let root = data.dir.join("home");
     std::fs::create_dir(&root).unwrap();
     let _home = TestHome::set(&root);
@@ -218,6 +235,8 @@ fn round3_unreadable_config_and_home_scan_fail_closed() {
 fn round3_windows_long_native_path_falls_back_when_canonicalization_fails() {
     use std::os::windows::ffi::OsStrExt;
     let data = crate::registry::DataDirTestEnv::new("round3-windows-long-fallback");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     let path = data.dir.join("x".repeat(200)).join("y".repeat(100)).join("config.json");
     crate::registry::client_file::with_native_canonicalize_failure(|| {
         let native = crate::registry::client_file::native_path(&path).unwrap();
@@ -228,6 +247,8 @@ fn round3_windows_long_native_path_falls_back_when_canonicalization_fails() {
 #[test]
 fn round3_location_disconnect_removes_both_reserved_names_after_adoption() {
     let data = crate::registry::DataDirTestEnv::new("round3-reserved-disconnect");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
     let folder = data.dir.join("profile");
     std::fs::create_dir(&folder).unwrap();
     let path = folder.join(".claude.json");

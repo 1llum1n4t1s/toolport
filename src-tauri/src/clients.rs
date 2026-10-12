@@ -7955,6 +7955,25 @@ impl EnvRestore {
     }
 }
 
+/// Isolate every ambient client override and OS directory input. Hold env_test_lock.
+#[cfg(test)]
+fn isolated_client_env(root: &Path) -> Vec<EnvRestore> {
+    let mut env: Vec<_> = [
+        "CLAUDE_CONFIG_DIR", "GOOSE_PATH_ROOT", "CODEX_HOME", "GEMINI_CLI_HOME",
+        "CRUSH_GLOBAL_CONFIG", "AMP_SETTINGS_FILE", "COPILOT_HOME", "GROK_HOME",
+        "QWEN_HOME", "KIMI_CODE_HOME",
+    ].into_iter().map(|key| EnvRestore::set(key, Path::new(""))).collect();
+    for (key, suffix) in [
+        ("HOME", "home"), ("USERPROFILE", "home"),
+        ("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"), ("XDG_STATE_HOME", "state"),
+        ("APPDATA", "roaming"), ("LOCALAPPDATA", "local"),
+    ] {
+        env.push(EnvRestore::set(key, &root.join(suffix)));
+    }
+    env
+}
+
 #[cfg(test)]
 impl Drop for EnvRestore {
     fn drop(&mut self) {

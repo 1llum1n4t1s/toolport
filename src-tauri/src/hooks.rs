@@ -127,7 +127,7 @@ pub fn cleanup_on_startup() {
 
 /// [`cleanup_on_startup`] over an explicit profile set and data directory, so tests
 /// drive known files instead of the developer's real `~/.claude`.
-fn cleanup_on_startup_with(profiles: &[PathBuf]) {
+pub(crate) fn cleanup_on_startup_with(profiles: &[PathBuf]) {
     let Some(marker) = crate::registry::conduit_dir().map(|dir| dir.join(CLEANUP_MARKER_FILE))
     else {
         return;
