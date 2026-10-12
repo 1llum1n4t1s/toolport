@@ -664,7 +664,10 @@ it("shows negative net savings with the tokenizer method and excludes legacy est
     "title",
     expect.stringContaining("minus every catalog and search response"),
   );
-  expect(badge).toHaveAttribute("title", expect.stringContaining("one full catalog baseline per client session"));
+  expect(badge).toHaveAttribute(
+    "title",
+    expect.stringContaining("one full catalog baseline per client session"),
+  );
   expect(badge).not.toHaveTextContent("1.0M");
 });
 
