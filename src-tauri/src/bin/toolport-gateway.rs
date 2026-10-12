@@ -39808,7 +39808,10 @@ mod tests {
         reg.set_safety_level(registry::SafetyLevel::Off);
         reg.quarantine_on_drift = false;
         let registry = Arc::new(Mutex::new(reg));
-        assert_eq!(maybe_check_integrity(&registry, &tools, profile).unwrap(), None);
+        assert_eq!(
+            maybe_check_integrity(&registry, &tools, profile).unwrap(),
+            None
+        );
         assert!(std::fs::read_to_string(dir.join(format!(
             "tool-pins-v2-{}.json",
             registry::profile_store_key("off-baseline-tamper")
@@ -39882,12 +39885,9 @@ mod tests {
             &AtomicBool::new(false),
         );
         assert_eq!(live.lock().unwrap().shared_tools()[0]["name"], "other__read");
-        assert!(integrity::read_recent(20).unwrap().iter().any(|event| event
-            ["change"]
-            == "tamper"
-            && event["detail"]
-                .as_str()
-                .is_some_and(|detail| detail.contains("Off"))));
+        let events = integrity::read_recent(20).unwrap();
+        let tamper = events.iter().find(|event| event["change"] == "tamper").unwrap();
+        assert!(tamper["detail"].as_str().unwrap().contains("Off"));
     }
 
     #[test]
