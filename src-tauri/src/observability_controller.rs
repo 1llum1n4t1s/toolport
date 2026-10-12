@@ -24,12 +24,21 @@ pub fn clear_activity_logs() -> Result<(), String> {
 /// Stores that can change an Activity panel. Exclude locks and backups: reading
 /// a store must not itself invalidate the page.
 pub fn activity_file(name: &str) -> bool {
-    matches!(name, "audit.jsonl" | "security.jsonl" | "inspect.jsonl"
-        | "search-trace.jsonl" | "search-trace-v2.jsonl" | "savings.jsonl"
-        | "savings-v2.jsonl" | "savings-v3.jsonl" | "registry.json"
-        | "client-locations.json" | "root-integrity-scopes.json")
-        || (name.ends_with(".json") && (name.starts_with("tool-pins")
-            || name.starts_with("quarantine")))
+    matches!(
+        name,
+        "audit.jsonl"
+            | "security.jsonl"
+            | "inspect.jsonl"
+            | "search-trace.jsonl"
+            | "search-trace-v2.jsonl"
+            | "savings.jsonl"
+            | "savings-v2.jsonl"
+            | "savings-v3.jsonl"
+            | "registry.json"
+            | "client-locations.json"
+            | "root-integrity-scopes.json"
+    ) || (name.ends_with(".json")
+        && (name.starts_with("tool-pins") || name.starts_with("quarantine")))
 }
 
 /// Cheap fallback for shells without a portable file watcher. No log parsing,
@@ -84,7 +93,13 @@ mod tests {
         assert_ne!(activity_revision().unwrap(), rewritten);
         std::fs::remove_file(path).unwrap();
         assert_eq!(activity_revision().unwrap(), empty);
-        for name in ["tool-pins-v2-profile.json", "quarantine-v2-profile.json", "security.jsonl", "savings-v3.jsonl", "client-locations.json"] {
+        for name in [
+            "tool-pins-v2-profile.json",
+            "quarantine-v2-profile.json",
+            "security.jsonl",
+            "savings-v3.jsonl",
+            "client-locations.json",
+        ] {
             assert!(activity_file(name));
             assert!(!activity_file(&format!("{name}.lock")));
             assert!(!activity_file(&format!("{name}.bak")));
