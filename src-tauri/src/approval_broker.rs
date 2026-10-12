@@ -310,7 +310,7 @@ pub fn start(app: AppHandle) -> ApprovalBroker {
     ))
 }
 
-#[cfg(all(target_os = "linux", feature = "gtk-desktop"))]
+#[cfg(all(target_os = "linux", feature = "gtk-desktop", test))]
 pub fn start_native() -> ApprovalBroker {
     start_native_with_events(|| {})
 }

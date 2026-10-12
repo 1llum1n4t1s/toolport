@@ -25,6 +25,9 @@ pub(super) struct TeamsPage {
     refresh_generation: Rc<Cell<u64>>,
     refresh_running: Rc<Cell<bool>>,
     personal: Rc<Cell<bool>>,
+    sync_status: Rc<RefCell<crate::team_sync_status::SyncStatus>>,
+    sync_state: Rc<RefCell<crate::personal_sync::SyncState>>,
+    server_snapshot: Rc<RefCell<Option<super::state::RegistrySnapshot>>>,
     pending: Rc<RefCell<Option<PendingJoin>>>,
     polling: Rc<Cell<bool>>,
     poll_timer: Rc<RefCell<Option<gtk::glib::SourceId>>>,
@@ -104,6 +107,9 @@ impl TeamsPage {
             refresh_generation: Rc::new(Cell::new(0)),
             refresh_running: Rc::new(Cell::new(false)),
             personal: Rc::new(Cell::new(true)),
+            sync_status: Default::default(),
+            sync_state: Default::default(),
+            server_snapshot: Default::default(),
             pending: Rc::new(RefCell::new(None)),
             polling: Rc::new(Cell::new(false)),
             poll_timer: Rc::new(RefCell::new(None)),
@@ -126,12 +132,15 @@ impl TeamsPage {
         gtk::glib::spawn_future_local(async move {
             loop {
                 let generation = page.refresh_generation.get();
-                let result = gtk::gio::spawn_blocking(crate::registry::load).await;
+                let result = gtk::gio::spawn_blocking(|| {
+                    crate::registry::load().map(TeamsSnapshot::from_registry)
+                })
+                .await;
                 if generation != page.refresh_generation.get() {
                     continue;
                 }
                 match result {
-                    Ok(Ok(registry)) => page.render(registry),
+                    Ok(Ok(snapshot)) => page.render_snapshot(snapshot),
                     Ok(Err(error)) => page.show_error(&error),
                     Err(_) => page.show_error("the team status read stopped unexpectedly"),
                 }
@@ -173,12 +182,13 @@ impl TeamsPage {
 
     #[cfg(test)]
     fn render_sync_failure(&self, error: &str) {
+        *self.sync_status.borrow_mut() = crate::team_sync_status::current();
         self.render_sync_status();
         self.set_status(&format!("{} {error}", self.feedback.label()), true);
     }
 
     fn render_sync_status(&self) {
-        let status = crate::team_sync_status::current();
+        let status = self.sync_status.borrow();
         let last = status
             .last_success_ms
             .and_then(|ms| gtk::glib::DateTime::from_unix_local(ms as i64 / 1000).ok())
@@ -195,7 +205,16 @@ impl TeamsPage {
         self.feedback.remove_css_class("success");
     }
 
+    #[cfg(test)]
     fn render(&self, registry: crate::registry::Registry) {
+        self.render_snapshot(TeamsSnapshot::from_registry(registry));
+    }
+
+    fn render_snapshot(&self, snapshot: TeamsSnapshot) {
+        let registry = snapshot.registry;
+        *self.sync_status.borrow_mut() = snapshot.sync_status;
+        *self.sync_state.borrow_mut() = snapshot.sync_state;
+        *self.server_snapshot.borrow_mut() = Some(snapshot.servers);
         let personal = registry.team.is_none() || crate::personal_sync::is_personal(&registry);
         self.personal.set(personal);
         self.header_title
@@ -223,9 +242,7 @@ impl TeamsPage {
                     .as_ref()
                     .map(|t| crate::personal_sync::status_lines(
                         &t.unknown_fields["accountStatus"],
-                        crate::personal_sync::state(&registry)
-                            .ok()
-                            .and_then(|s| s.last_synced_at)
+                        self.sync_state.borrow().last_synced_at
                     ))
             ),
             self.pending.borrow().is_some(),
@@ -476,12 +493,15 @@ impl TeamsPage {
                     .css_classes(["heading"])
                     .build(),
             );
-            let snapshot = super::state::RegistrySnapshot::from_registry(registry.clone());
+            let snapshot = self.server_snapshot.borrow();
+            let snapshot = snapshot
+                .as_ref()
+                .expect("the worker supplied the team snapshot");
             for server in review {
                 self.content.append(&review_server_row(
                     server,
                     &registry,
-                    &snapshot,
+                    snapshot,
                     self.clone(),
                 ));
             }
@@ -509,7 +529,7 @@ impl TeamsPage {
         registry: crate::registry::Registry,
         team: crate::registry::TeamConnection,
     ) {
-        let sync = crate::personal_sync::state(&registry).unwrap_or_default();
+        let sync = self.sync_state.borrow().clone();
         // One status line and one primary action, like the rest of the app.
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         let line = gtk::Label::builder()
@@ -746,7 +766,7 @@ impl TeamsPage {
         let (message, healthy) = crate::personal_sync::banner(registry);
         let last = crate::personal_sync::status_lines(
             &serde_json::Value::Null,
-            crate::personal_sync::state(registry).ok().and_then(|s| s.last_synced_at),
+            self.sync_state.borrow().last_synced_at,
         )
         .pop()
         .unwrap_or_default();
@@ -1185,6 +1205,24 @@ impl TeamsPage {
         self.feedback.set_visible(true);
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
+    }
+}
+
+struct TeamsSnapshot {
+    registry: crate::registry::Registry,
+    servers: super::state::RegistrySnapshot,
+    sync_status: crate::team_sync_status::SyncStatus,
+    sync_state: crate::personal_sync::SyncState,
+}
+
+impl TeamsSnapshot {
+    fn from_registry(registry: crate::registry::Registry) -> Self {
+        Self {
+            servers: super::state::RegistrySnapshot::from_registry(registry.clone()),
+            sync_status: crate::team_sync_status::for_registry(&registry),
+            sync_state: crate::personal_sync::state(&registry).unwrap_or_default(),
+            registry,
+        }
     }
 }
 
@@ -2054,7 +2092,7 @@ mod tests {
         app.register(gtk::gio::Cancellable::NONE).unwrap();
         let (_, servers, _) =
             super::super::build_content(&app, crate::approval_broker::start_native());
-        let page = TeamsPage::new(&app, servers);
+        let page = super::TeamsPage::new(&app, servers);
         let registry: crate::registry::Registry = serde_json::from_value(serde_json::json!({
             "version": 3,
             "servers": [
@@ -2064,13 +2102,13 @@ mod tests {
             "team": {"teamId":"fixture", "role":"member", "serverUrl":"http://127.0.0.1:1"}
         })).unwrap();
         let snapshot = super::super::state::RegistrySnapshot::from_registry(registry.clone());
-        std::fs::write(data.path.join("registry.json"), "{broken").unwrap();
+        std::fs::write(data.dir.join("registry.json"), "{broken").unwrap();
         for server in &registry.servers {
-            let row = review_server_row(server.clone(), &registry, &snapshot, page.clone());
+            let row = super::review_server_row(server.clone(), &registry, &snapshot, page.clone());
             assert!(row.first_child().is_some());
         }
         assert_eq!(
-            std::fs::read_to_string(data.path.join("registry.json")).unwrap(),
+            std::fs::read_to_string(data.dir.join("registry.json")).unwrap(),
             "{broken"
         );
     }

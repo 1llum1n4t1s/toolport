@@ -625,6 +625,9 @@ pub(super) enum RegistryState {
 impl RegistrySnapshot {
     pub(super) fn from_registry(registry: Registry) -> Self {
         let active_profile_id = registry.active_profile_id();
+        let sync_state = crate::personal_sync::is_personal(&registry)
+            .then(|| crate::personal_sync::state(&registry).ok())
+            .flatten();
         let servers = registry
             .servers
             .iter()
@@ -634,7 +637,7 @@ impl RegistrySnapshot {
                     origin_label: if crate::personal_sync::is_personal(&registry) {
                         if crate::personal_sync::keep_local(server) {
                             "This machine only".into()
-                        } else if crate::personal_sync::state(&registry).is_ok_and(|st| {
+                        } else if sync_state.as_ref().is_some_and(|st| {
                             st.conflicts.contains_key(
                                 server
                                     .unknown_fields
