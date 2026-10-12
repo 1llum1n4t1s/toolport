@@ -98,9 +98,15 @@ fn dispatch_cancels_before_response_poll_and_preserves_new_visible_callers() {
     #[cfg(target_os = "linux")]
     println!("pre-poll release: {result:?}, hidden watches={hidden_watches}");
     release(); // Clean up even when running this regression against old code.
-    assert_eq!(result, Err(serde_json::json!("Activity change check cancelled")));
+    assert_eq!(
+        result,
+        Err(serde_json::json!("Activity change check cancelled"))
+    );
     #[cfg(target_os = "linux")]
-    assert_eq!(hidden_watches, 0, "old IPC response recreated a hidden watch");
+    assert_eq!(
+        hidden_watches, 0,
+        "old IPC response recreated a hidden watch"
+    );
 
     // A new visible caller can finish before the renderer consumes old errors.
     let old = revision(&window);
@@ -112,7 +118,10 @@ fn dispatch_cancels_before_response_poll_and_preserves_new_visible_callers() {
     #[cfg(target_os = "linux")]
     assert_eq!(watches() - baseline, 1);
     let again = revision(&window);
-    assert_eq!(runtime.block_on(async { value(again.await.unwrap()) }), Ok(fresh));
+    assert_eq!(
+        runtime.block_on(async { value(again.await.unwrap()) }),
+        Ok(fresh)
+    );
 
     // A response completed before hide may reach the renderer after a fresh
     // response. Consuming it must not trigger any native cache release.
@@ -132,11 +141,15 @@ fn dispatch_cancels_before_response_poll_and_preserves_new_visible_callers() {
     std::fs::remove_file(data.dir.join("audit.jsonl")).unwrap();
     std::fs::create_dir(data.dir.join("audit.jsonl")).unwrap();
     let failed = revision(&window);
-    assert!(runtime.block_on(async { value(failed.await.unwrap()) }).is_err());
+    assert!(runtime
+        .block_on(async { value(failed.await.unwrap()) })
+        .is_err());
     std::fs::remove_dir(data.dir.join("audit.jsonl")).unwrap();
     std::fs::write(data.dir.join("audit.jsonl"), "recovered").unwrap();
     let recovered = revision(&window);
-    assert!(runtime.block_on(async { value(recovered.await.unwrap()) }).is_ok());
+    assert!(runtime
+        .block_on(async { value(recovered.await.unwrap()) })
+        .is_ok());
     #[cfg(target_os = "linux")]
     assert_eq!(watches() - baseline, 1);
     release();
