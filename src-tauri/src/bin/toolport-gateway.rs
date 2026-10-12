@@ -39219,17 +39219,16 @@ mod tests {
 
     #[test]
     fn integrity_pending_review_recaptures_missing_rows_at_every_safety_level() {
-        let _data_lock = registry::data_dir_test_lock();
-        let dir = tempfile::tempdir().unwrap();
-        let _data_dir = registry::DataDirOverride::set(dir.path());
+        let data = DataDirTestEnv::new("pending-review-missing-rows");
+        let dir = &data.dir;
         let tools = vec![json!({"name":"srv__read", "description":"Captured definition.", "inputSchema":{"type":"object"}})];
         for level in [registry::SafetyLevel::Ask, registry::SafetyLevel::Strict, registry::SafetyLevel::Off] {
             for profile in [None, Some("pending-review")] {
                 for deleted in [false, true] {
                     integrity::check(profile, &tools).unwrap();
                     let path = match profile {
-                        Some(id) => dir.path().join(format!("quarantine-v2-{}.json", registry::profile_store_key(id))),
-                        None => dir.path().join("quarantine.json"),
+                        Some(id) => dir.join(format!("quarantine-v2-{}.json", registry::profile_store_key(id))),
+                        None => dir.join("quarantine.json"),
                     };
                     std::fs::write(&path, json!({"srv__read":{"tool":"srv__read", "change":"changed"}}).to_string()).unwrap();
                     let displayed = integrity::all_quarantined_summaries().unwrap().into_iter().find(|r| r["profile"] == profile.unwrap_or("")).unwrap();

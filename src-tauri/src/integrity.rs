@@ -762,12 +762,15 @@ fn check_inner_with(
             match pins.get(name) {
                 // A different fingerprint is only a real change if it came from the same
                 // algorithm version; a version mismatch is our format upgrade, not the
-                // tool's, so re-baseline quietly unless a released legacy block requires review.
+                // tool's, so re-baseline quietly unless an explicit review is still pending.
                 Some(old)
                     if old.review_on_upgrade
+                        || old.review_pending
                         || (old.fp != pin.fp && fp_version(&old.fp) == fp_version(&pin.fp)) =>
                 {
-                    let sev = if old.review_on_upgrade {
+                    // Reassert pending reviews even when the fingerprint matches: the
+                    // quarantine row may have disappeared since the captured pin was saved.
+                    let sev = if old.review_on_upgrade || old.review_pending {
                         SEV_HIGH
                     } else {
                         drift_severity(
@@ -848,6 +851,7 @@ fn check_inner_with(
             Pin {
                 first_seen,
                 last_changed,
+                review_pending: pins.get(name).is_some_and(|old| old.review_pending),
                 ..fresh.clone()
             },
         );
@@ -944,6 +948,7 @@ fn merge_pending_pin(previous: Option<&Pin>, fresh: Pin, stamp: u64) -> Pin {
     Pin {
         first_seen,
         last_changed,
+        review_pending: fresh.review_pending || previous.is_some_and(|old| old.review_pending),
         ..fresh
     }
 }
@@ -985,7 +990,7 @@ fn accept_quarantined_pins_with(
             })?;
             // Pin acceptance records the captured baseline, not user approval.
             // Retain the explicit review even if the quarantine store later fails.
-            pin.review_pending = record["review_required"] == true;
+            pin.review_pending |= record["review_required"] == true;
             pending.push((name.clone(), pin));
         }
         if pending.is_empty() {
@@ -3755,7 +3760,7 @@ fn event(server: &str, tool: &str, change: &str, severity: &str) -> Value {
 /// `changed` drift with prior/new safety annotations for the quarantine card (SOU-305).
 fn changed_event(server: &str, tool: &str, severity: &str, old: &Pin, new: &Pin) -> Value {
     let mut e = event(server, tool, "changed", severity);
-    if old.review_on_upgrade {
+    if old.review_on_upgrade || old.review_pending {
         e["review_required"] = json!(true);
     }
     e["new_fp"] = json!(new.fp);
