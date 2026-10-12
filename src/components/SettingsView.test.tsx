@@ -812,3 +812,22 @@ it("does not show a resolved or other-profile baseline warning", async () => {
   await waitFor(() => expect(getBaselineNotice).toHaveBeenCalled());
   expect(screen.queryByText(/Last baseline warning/)).not.toBeInTheDocument();
 });
+
+ it.each([{ activeProfileId: "other" }, { safetyLevel: "ask" as const }])(
+  "hides a prior baseline notice when the profile or safety level changes: %o",
+  async (change) => {
+    vi.mocked(getBaselineNotice)
+      .mockReset()
+      .mockRejectedValue(new Error("Notice read failed"))
+      .mockResolvedValueOnce({ ts: 123, detail: "Prior profile and policy warning" });
+    const view = (settings: Registry) => (
+      <ThemeProvider>
+        <SettingsView page="safety" registry={settings} onRegistryChange={vi.fn()} />
+      </ThemeProvider>
+    );
+    const rendered = render(view(registry));
+    expect(await screen.findByText(/Last baseline warning/)).toBeInTheDocument();
+    rendered.rerender(view({ ...registry, ...change }));
+    expect(screen.queryByText(/Last baseline warning/)).not.toBeInTheDocument();
+  },
+);
