@@ -1700,7 +1700,7 @@ type QuarantineSets = (
 
 /// Load the quarantine map for `profile`.
 ///
-/// - Missing file after retries, pin store `Fresh` → empty set (honest first run).
+/// - Missing file, pin store `Fresh` → empty set without retries (honest first run).
 /// - Missing file after retries while pins are `Loaded`/`Corrupt` → `Err` (SBS-871).
 ///   A rename-window `NotFound` is not "nothing blocked".
 /// - Unreadable or corrupt → `Err` (fail closed). Never renames the file aside: moving a
