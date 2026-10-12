@@ -6555,11 +6555,12 @@ mod tests {
     fn review_r4_off_recovery_without_primary_keeps_its_notice() {
         let _lock = crate::registry::data_dir_test_lock();
         let _data = TestDataDir::new("review-off-missing-primary");
-        let profile = Some("missing-primary");
+        let id = "missing-primary";
+        let profile = Some(id);
         let path = pins_path(profile).unwrap();
         std::fs::write(pins_backup_path(&path), "{ unreadable backup").unwrap();
         let mut ask_warning = pins_tamper_event();
-        ask_warning["profile"] = json!(profile.unwrap());
+        ask_warning["profile"] = json!(id);
         assert!(record_event(&ask_warning));
         recover_unreadable_baseline_at_off(profile, &vec![tool("srv__read", "Current")]).unwrap();
         let event = read_recent(10).unwrap().remove(0);
