@@ -101,6 +101,22 @@ impl Fixture {
         for key in overrides {
             fixture.set(&key, None);
         }
+        // The linked library uses production resolvers. Redirect every OS root
+        // and clear client overrides before detection or Disconnect can run.
+        for key in ["GOOSE_PATH_ROOT", "CODEX_HOME", "GEMINI_CLI_HOME", "CRUSH_GLOBAL_CONFIG",
+            "AMP_SETTINGS_FILE", "COPILOT_HOME", "GROK_HOME", "QWEN_HOME", "KIMI_CODE_HOME"] {
+            fixture.set(key, None);
+        }
+        let home = fixture.dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        for (key, path) in [
+            ("HOME", home.clone()), ("USERPROFILE", home.clone()),
+            ("XDG_CONFIG_HOME", home.join(".config")), ("XDG_DATA_HOME", home.join(".local/share")),
+            ("XDG_CACHE_HOME", home.join(".cache")), ("XDG_STATE_HOME", home.join(".local/state")),
+            ("APPDATA", home.join("AppData/Roaming")), ("LOCALAPPDATA", home.join("AppData/Local")),
+        ] {
+            fixture.set(key, Some(path.into_os_string()));
+        }
         fixture.set(
             "CLAUDE_CONFIG_DIR",
             Some(fixture.dir.join("client").into_os_string()),

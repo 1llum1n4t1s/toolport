@@ -1736,6 +1736,16 @@ fn matrix_rollout_default_selects_the_shared_daemon() {
     let registry_before = std::fs::read(dir.join("registry.json")).unwrap();
     let removal = Command::new(env!("CARGO_BIN_EXE_toolport-gateway"))
         .args(["--remove-data", "--confirm"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("SystemRoot", std::env::var_os("SystemRoot").unwrap_or_default())
+        .env("WINDIR", std::env::var_os("WINDIR").unwrap_or_default())
+        .env("USERPROFILE", dir.join("purge-home"))
+        .env("APPDATA", dir.join("purge-home/AppData/Roaming"))
+        .env("LOCALAPPDATA", dir.join("purge-home/AppData/Local"))
+        .env("XDG_CONFIG_HOME", dir.join("purge-home/.config"))
+        .env("XDG_DATA_HOME", dir.join("purge-home/.local/share"))
+        .env("XDG_CACHE_HOME", dir.join("purge-home/.cache"))
         .env("TOOLPORT_DATA_DIR", &dir).env("HOME", dir.join("purge-home"))
         .env_remove("DBUS_SESSION_BUS_ADDRESS").output().unwrap();
     assert!(!removal.status.success());
