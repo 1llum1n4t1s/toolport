@@ -28,6 +28,15 @@ pub(super) fn env(key: &str) -> Option<OsString> {
     ENV.with(|slot| slot.borrow().get(key).cloned())
 }
 
+pub(super) fn is_client_path_key(key: &str) -> bool {
+    matches!(key,
+        "HOME" | "USERPROFILE" | "APPDATA" | "LOCALAPPDATA" |
+        "XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_CACHE_HOME" | "XDG_STATE_HOME" |
+        "CLAUDE_CONFIG_DIR" | "GOOSE_PATH_ROOT" | "CODEX_HOME" | "GEMINI_CLI_HOME" |
+        "CRUSH_GLOBAL_CONFIG" | "AMP_SETTINGS_FILE" | "COPILOT_HOME" | "GROK_HOME" |
+        "QWEN_HOME" | "KIMI_CODE_HOME")
+}
+
 pub(super) fn set(key: &'static str, value: Option<OsString>) -> Option<OsString> {
     ENV.with(|slot| match value {
         Some(value) => slot.borrow_mut().insert(key, value),
@@ -45,7 +54,7 @@ pub(super) fn dir(key: &str, fallback: impl FnOnce() -> PathBuf) -> Option<PathB
 }
 
 #[test]
-fn inherited_paths_and_parallel_overrides_cannot_reach_client_configs() {
+fn parallel_client_overrides_leave_process_paths_and_other_threads_untouched() {
     use super::*;
     let data = crate::registry::DataDirTestEnv::new("ambient-client-paths");
     let _lock = env_test_lock();
@@ -54,16 +63,23 @@ fn inherited_paths_and_parallel_overrides_cannot_reach_client_configs() {
     let path = sentinel.join(".claude.json");
     let original = r#"{"mcpServers":{"toolport":{"command":"/old/toolport-gateway"}}}"#;
     std::fs::write(&path, original).unwrap();
-    let _env: Vec<_> = [
+    let keys = [
         "HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "APPDATA", "LOCALAPPDATA",
+        "XDG_CACHE_HOME", "XDG_STATE_HOME",
         "CLAUDE_CONFIG_DIR", "GOOSE_PATH_ROOT", "CODEX_HOME", "GEMINI_CLI_HOME",
         "CRUSH_GLOBAL_CONFIG", "AMP_SETTINGS_FILE", "COPILOT_HOME", "GROK_HOME",
         "QWEN_HOME", "KIMI_CODE_HOME",
-    ].into_iter().map(|key| EnvRestore::set(key, &sentinel)).collect();
+    ];
+    let inherited: Vec<_> = keys.iter().map(std::env::var_os).collect();
+    let _env: Vec<_> = keys.into_iter().map(|key| EnvRestore::set(key, &sentinel)).collect();
+    assert_eq!(keys.iter().map(std::env::var_os).collect::<Vec<_>>(), inherited);
+    assert_eq!(client_config_path("claude-code"), Some(path.clone()));
     crate::registry::save(&crate::registry::Registry::default()).unwrap();
-    // A new worker has no fixture override, even while the process environment
-    // and another thread's overrides both name valid client configs.
-    std::thread::spawn(|| {
+    // Child launchers keep their inherited OS paths while a new client worker
+    // gets scratch paths, even when this thread names valid client configs.
+    let worker_keys = keys;
+    std::thread::spawn(move || {
+        assert_eq!(worker_keys.iter().map(std::env::var_os).collect::<Vec<_>>(), inherited);
         let scratch = home().unwrap();
         for def in defs() {
             assert!((def.path)().unwrap().starts_with(&scratch), "{}", def.id);

@@ -7972,20 +7972,26 @@ pub(crate) fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Sets a process env var and puts the old value back when the guard drops. Only valid while
-/// [`env_test_lock`] is held. Lives beside the lock so other modules' tests use both.
+/// Client path overrides stay thread-local so parallel child launchers retain the
+/// runner's OS paths. Other keys still use the process environment and require
+/// [`env_test_lock`]. Lives beside the lock so other modules' tests use both.
 #[cfg(test)]
 pub(crate) struct EnvRestore {
     key: &'static str,
-    previous: Option<std::ffi::OsString>,
+    previous: Option<Option<std::ffi::OsString>>,
     client_previous: Option<std::ffi::OsString>,
 }
 
 #[cfg(test)]
 impl EnvRestore {
     pub(crate) fn set(key: &'static str, value: &Path) -> Self {
-        let previous = std::env::var_os(key);
-        std::env::set_var(key, value);
+        let previous = if test_paths::is_client_path_key(key) {
+            None
+        } else {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Some(previous)
+        };
         let client_previous = test_paths::set(key, Some(value.as_os_str().to_owned()));
         Self { key, previous, client_previous }
     }
@@ -8015,8 +8021,9 @@ impl Drop for EnvRestore {
     fn drop(&mut self) {
         test_paths::set(self.key, self.client_previous.take());
         match &self.previous {
-            Some(value) => std::env::set_var(self.key, value),
-            None => std::env::remove_var(self.key),
+            Some(Some(value)) => std::env::set_var(self.key, value),
+            Some(None) => std::env::remove_var(self.key),
+            None => {},
         }
     }
 }
