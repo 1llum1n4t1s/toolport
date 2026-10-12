@@ -26,6 +26,13 @@ class ChangedFormatting(unittest.TestCase):
     def test_formatter_insertion_at_eof(self):
         self.assertEqual(check.format_edits("line\n", "line\n\n", {0}), [(1, 1, ["\n"])])
 
+    def test_renames_keep_both_paths(self):
+        status = "M\0src-tauri/a.rs\0R087\0src-tauri/old.rs\0src-tauri/new.rs\0A\0src-tauri/b.rs\0"
+        self.assertEqual(
+            check.changed_files(status),
+            [("src-tauri/a.rs",), ("src-tauri/old.rs", "src-tauri/new.rs"), ("src-tauri/b.rs",)],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

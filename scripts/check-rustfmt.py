@@ -30,25 +30,50 @@ def format_edits(source, formatted, changed):
     return edits
 
 
+def changed_files(status):
+    """Parse `git diff --name-status -z`; renames and copies keep (old, new) paths."""
+    fields = [field for field in status.split("\0") if field]
+    files = []
+    while fields:
+        kind = fields.pop(0)
+        count = 2 if kind[:1] in ("R", "C") else 1
+        files.append(tuple(fields[:count]))
+        del fields[:count]
+    return files
+
+
+def resolve_base(base):
+    """Use the event base, or this commit's parent if history no longer has it."""
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--verify", "--quiet", base + "^{commit}"],
+            text=True,
+        ).strip()
+    except subprocess.CalledProcessError:
+        # A force-push leaves the previous head outside the fetched history.
+        print(f"Base {base} is not in history; checking this commit only")
+        return subprocess.check_output(["git", "rev-parse", "HEAD^"], text=True).strip()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True, help="Commit to compare against")
     parser.add_argument("--fix", action="store_true", help="Format only affected hunks")
     args = parser.parse_args()
-    base = subprocess.check_output(
-        ["git", "rev-parse", "--verify", args.base + "^{commit}"], text=True
-    ).strip()
-    files = subprocess.check_output(
-        ["git", "diff", "--name-only", "--diff-filter=ACMR", "-z", base, "--", "src-tauri"],
+    base = resolve_base(args.base)
+    status = subprocess.check_output(
+        ["git", "diff", "--name-status", "-M", "--diff-filter=ACMR", "-z", base, "--", "src-tauri"],
         text=True,
-    ).split("\0")
+    )
     failed = False
     checked = 0
-    for name in files:
+    for paths in changed_files(status):
+        name = paths[-1]
         if not name.endswith(".rs"):
             continue
+        # A rename diffs against its old path, so only edited lines count as changed.
         diff = subprocess.check_output(
-            ["git", "diff", "--no-ext-diff", "--unified=0", base, "--", name], text=True
+            ["git", "diff", "--no-ext-diff", "-M", "--unified=0", base, "--", *paths], text=True
         )
         changed = changed_lines(diff)
         if not changed:
@@ -56,7 +81,7 @@ def main():
         checked += 1
         source = Path(name).read_text()
         formatted = subprocess.check_output(
-            ["rustfmt", "--edition", "2021", "--config", "skip_children=true", "--emit", "stdout"],
+            ["rustfmt", "--edition", "2021", "--emit", "stdout"],
             input=source,
             text=True,
         )
