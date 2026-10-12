@@ -1268,7 +1268,11 @@ mod tests {
         );
         record_discovery("hello world", 50);
         // The background writer owns the append now: land it before reading v2 directly.
-        crate::telemetry::flush();
+        // A slow runner can exceed the default flush budget; a late append would
+        // then land after the checks below and look like a v2 history change.
+        assert!(crate::telemetry::flush_for_test(
+            std::time::Duration::from_secs(30)
+        ));
         let v2 = v3_path().unwrap();
         let v2_before = std::fs::read(&v2).unwrap();
         let initial = try_summary().unwrap();
@@ -1369,7 +1373,11 @@ mod tests {
             |_| Some("alpha".into()),
         );
         // The background writer owns the append; land it before the file check.
-        crate::telemetry::flush();
+        // A slow runner can exceed the default flush budget; a late append would
+        // then land after the checks below and look like a v2 history change.
+        assert!(crate::telemetry::flush_for_test(
+            std::time::Duration::from_secs(30)
+        ));
         assert!(!legacy.exists());
         assert!(v2.exists());
         assert_eq!(try_summary().unwrap()["legacyEstimatedTokensAvoided"], 0);
