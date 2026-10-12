@@ -11445,7 +11445,7 @@ mod tests {
         app.add_action(&action);
         let page = ActivityPage::new(&app);
         let event = serde_json::json!({"type":"tool_drift", "server":"srv", "tool":"srv__update", "ts":100, "change":"changed", "blocked":true, "blocked_profiles":["work"], "new_fp":"v3:captured", "review_required":true});
-        let group = crate::integrity::group_tool_changes(&[event.clone()]).remove(0);
+        let group = crate::integrity::group_tool_changes(std::slice::from_ref(&event)).remove(0);
         let card = tool_change_group_card(&group, page.clone());
         let window = adw::ApplicationWindow::builder()
             .application(&app)
@@ -11477,7 +11477,7 @@ mod tests {
     fn captured_activity_review_requires_settings_instead_of_summary_acceptance() {
         let event = serde_json::json!({"type":"tool_drift", "server":"srv", "tool":"srv__update", "ts":100, "change":"changed", "blocked":true, "blocked_profiles":["work"], "new_fp":"v3:captured", "review_required":true});
         assert!(!change_can_be_accepted(&event));
-        let group = crate::integrity::group_tool_changes(&[event.clone()]).remove(0);
+        let group = crate::integrity::group_tool_changes(std::slice::from_ref(&event)).remove(0);
         assert!(!group_can_be_accepted(&group));
         assert!(security_review_lines(&event)
             .iter()

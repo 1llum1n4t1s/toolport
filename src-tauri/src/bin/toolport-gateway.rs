@@ -39236,7 +39236,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let _data_dir = conduit_lib::registry::DataDirOverride::set(&dir);
-        let profile = Some("corrupt-pins-live-q");
+        let profile_id = "corrupt-pins-live-q";
+        let profile = Some(profile_id);
         std::fs::write(
             dir.join(format!(
                 "tool-pins-v2-{}.json",
@@ -39298,7 +39299,7 @@ mod tests {
         assert!(router.lock().unwrap().quarantined().is_empty());
         assert!(std::fs::read_to_string(dir.join(format!(
             "tool-pins-v2-{}.json",
-            registry::profile_store_key(profile.unwrap())
+            registry::profile_store_key(profile_id)
         )))
         .unwrap()
         .contains("srv__read"));
@@ -39461,8 +39462,10 @@ mod tests {
             seed_legacy_review(&data.dir, None, "v2");
             integrity::release(None, "srv__read").unwrap();
             let srv = readonly_router("srv", "Captured read definition.");
-            let mut reg = Registry::default();
-            reg.servers = vec![stub_server("srv", "Source"), stub_server("other", "Other")];
+            let mut reg = Registry {
+                servers: vec![stub_server("srv", "Source"), stub_server("other", "Other")],
+                ..Default::default()
+            };
             reg.set_safety_level(level);
             let registry = Arc::new(Mutex::new(reg));
             maybe_check_integrity(&registry, &srv.shared_tools(), None).unwrap();
@@ -39533,8 +39536,10 @@ mod tests {
         for profile in [None, Some("returning-review")] {
             seed_legacy_review(&data.dir, profile, "v2");
             integrity::release(profile, "srv__read").unwrap();
-            let mut reg = Registry::default();
-            reg.servers = vec![stub_server("srv", "Source"), stub_server("other", "Other")];
+            let mut reg = Registry {
+                servers: vec![stub_server("srv", "Source"), stub_server("other", "Other")],
+                ..Default::default()
+            };
             if let Some(profile) = profile {
                 let id = reg.add_profile("Return review");
                 reg.profiles.iter_mut().find(|p| p.id == id).unwrap().id = profile.into();
@@ -39677,8 +39682,10 @@ mod tests {
         for scope_hidden in [false, true] {
             seed_legacy_review(&data.dir, None, "v2");
             integrity::release(None, "srv__read").unwrap();
-            let mut reg = Registry::default();
-            reg.servers = vec![stub_server("srv", "Source")];
+            let reg = Registry {
+                servers: vec![stub_server("srv", "Source")],
+                ..Default::default()
+            };
             let registry = Arc::new(Mutex::new(reg));
             let mut built = readonly_router("srv", "Unseen definition.");
             let policy = if scope_hidden {
@@ -39725,8 +39732,10 @@ mod tests {
         ] {
             seed_legacy_review(&data.dir, None, "v2");
             integrity::release(None, "srv__read").unwrap();
-            let mut reg = Registry::default();
-            reg.servers = vec![stub_server("srv", "Source")];
+            let mut reg = Registry {
+                servers: vec![stub_server("srv", "Source")],
+                ..Default::default()
+            };
             reg.set_safety_level(level);
             let registry = Arc::new(Mutex::new(reg));
             let mut built = readonly_router("srv", "Unseen definition.");
@@ -39847,8 +39856,10 @@ mod tests {
         let data = DataDirTestEnv::new("off-corrupt-retired-review");
         seed_legacy_review(&data.dir, None, "v2");
         integrity::release(None, "srv__read").unwrap();
-        let mut reg = Registry::default();
-        reg.servers = vec![stub_server("srv", "Source"), stub_server("other", "Other")];
+        let mut reg = Registry {
+            servers: vec![stub_server("srv", "Source"), stub_server("other", "Other")],
+            ..Default::default()
+        };
         reg.set_safety_level(registry::SafetyLevel::Off);
         let registry = Arc::new(Mutex::new(reg));
         let source = readonly_router("srv", "Unseen definition.");
@@ -39905,8 +39916,10 @@ mod tests {
         let data = DataDirTestEnv::new("review-watcher-cost");
         seed_legacy_review(&data.dir, None, "v2");
         integrity::release(None, "srv__read").unwrap();
-        let mut reg = Registry::default();
-        reg.servers = vec![stub_server("srv", "Source")];
+        let reg = Registry {
+            servers: vec![stub_server("srv", "Source")],
+            ..Default::default()
+        };
         let registry = Arc::new(Mutex::new(reg));
         let mut built = readonly_router("srv", "Pending definition.");
         let offered = built.shared_tools();
