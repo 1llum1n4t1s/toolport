@@ -116,7 +116,9 @@ pub fn run() {
     let state = startup.clone();
     let tray_for_startup = tray.clone();
     gtk::glib::spawn_future_local(async move {
-        let result = gtk::gio::spawn_blocking(load_native_startup)
+        let app_for_events: gtk::glib::SendWeakRef<adw::Application> =
+            app_for_startup.downgrade().into();
+        let result = gtk::gio::spawn_blocking(move || load_native_startup(app_for_events))
             .await
             .unwrap_or_else(|_| Err("The startup worker stopped unexpectedly".into()));
         if result.is_ok() {
@@ -164,7 +166,9 @@ struct NativeStartup {
 }
 
 /// Everything that can wait on the registry, disk, broker or endpoint runs on a worker.
-fn load_native_startup() -> Result<NativeStartup, String> {
+fn load_native_startup(
+    app: gtk::glib::SendWeakRef<adw::Application>,
+) -> Result<NativeStartup, String> {
     let registry = crate::registry::load()?;
     if !registry.live_inspect {
         crate::inspect::clear();
@@ -176,7 +180,16 @@ fn load_native_startup() -> Result<NativeStartup, String> {
         access_notice: registry.access_upgrade_notice_pending(),
         recovery: crate::registry::take_recovery_notice(),
     };
-    let broker = crate::approval_broker::start_native();
+    let broker = crate::approval_broker::start_native_with_events(move || {
+        let app = app.clone();
+        gtk::glib::idle_add_once(move || {
+            if let Some(app) = app.upgrade() {
+                if let Some(action) = app.lookup_action("approval-queue-changed") {
+                    action.activate(None);
+                }
+            }
+        });
+    });
     let bridge = http_bridge::BridgeController::default();
     let restore = bridge.clone();
     std::thread::spawn(move || {
@@ -955,16 +968,20 @@ fn build_sidebar(
                     row.append(&badge);
                     let broker = settings_page.approval_broker();
                     let badge = badge.downgrade();
-                    gtk::glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
-                        let Some(badge) = badge.upgrade() else {
-                            return gtk::glib::ControlFlow::Break;
-                        };
-                        let count = broker.list().len();
-                        badge.set_label(&count.to_string());
-                        badge.set_tooltip_text(Some(&format!("{count} pending approvals")));
-                        badge.set_visible(count > 0);
-                        gtk::glib::ControlFlow::Continue
-                    });
+                    if let Some(action) = app
+                        .lookup_action("approval-queue-changed")
+                        .and_then(|action| action.downcast::<gtk::gio::SimpleAction>().ok())
+                    {
+                        action.connect_activate(move |_, _| {
+                            let Some(badge) = badge.upgrade() else {
+                                return;
+                            };
+                            let count = broker.list().len();
+                            badge.set_label(&count.to_string());
+                            badge.set_tooltip_text(Some(&format!("{count} pending approvals")));
+                            badge.set_visible(count > 0);
+                        });
+                    }
                 }
                 child.set_child(Some(&row));
                 let selected = child.clone();
@@ -1511,52 +1528,41 @@ fn start_security_event_watch(
     let app = app.clone();
     let seen: std::rc::Rc<std::cell::RefCell<Option<std::collections::HashSet<String>>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
-    let running = std::rc::Rc::new(std::cell::Cell::new(false));
-    let tick = move || {
-        if running.replace(true) {
-            return gtk::glib::ControlFlow::Continue;
+    let reader = io::SnapshotReader::new(read_security_watch_snapshot, move |result| {
+        let Ok((events, quarantined)) = result else {
+            return;
+        };
+        let mut guard = seen.borrow_mut();
+        let (current, newcomers) = newly_observed_security_events(
+            guard.as_ref(),
+            &events,
+            quarantined.as_deref().unwrap_or_default(),
+        );
+        *guard = Some(current);
+        if newcomers.is_empty() {
+            return;
         }
-        let app = app.clone();
-        let alert = alert.clone();
-        let seen = seen.clone();
-        let running = running.clone();
-        gtk::glib::spawn_future_local(async move {
-            let result = gtk::gio::spawn_blocking(read_security_watch_snapshot).await;
-            running.set(false);
-            let Ok(Ok((events, quarantined))) = result else {
-                return;
-            };
-            let mut guard = seen.borrow_mut();
-            let (current, newcomers) = newly_observed_security_events(
-                guard.as_ref(),
-                &events,
-                quarantined.as_deref().unwrap_or_default(),
-            );
-            *guard = Some(current);
-            if newcomers.is_empty() {
-                return;
-            }
-            alert.show(&newcomers);
-            if app.active_window().is_some_and(|window| window.is_active()) {
-                return;
-            }
-            let (title, detail) = security_alert_copy(&newcomers);
-            let notification = gtk::gio::Notification::new(&title);
-            notification.set_body(Some(&detail));
-            notification.set_priority(gtk::gio::NotificationPriority::High);
-            notification.set_default_action("app.review-security");
-            app.send_notification(Some("toolport-security-finding"), &notification);
-        });
-        gtk::glib::ControlFlow::Continue
-    };
-    tick();
+        alert.show(&newcomers);
+        if app.active_window().is_some_and(|window| window.is_active()) {
+            return;
+        }
+        let (title, detail) = security_alert_copy(&newcomers);
+        let notification = gtk::gio::Notification::new(&title);
+        notification.set_body(Some(&detail));
+        notification.set_priority(gtk::gio::NotificationPriority::High);
+        notification.set_default_action("app.review-security");
+        app.send_notification(Some("toolport-security-finding"), &notification);
+    });
+    reader.refresh();
+    let reader_for_destroy = reader.clone();
+    window.connect_destroy(move |_| reader_for_destroy.stop());
     io::watch_data(
         window,
         |name| {
             name == "security.jsonl" || name.starts_with("quarantine") || name == "registry.json"
         },
         move || {
-            tick();
+            reader.refresh();
         },
     );
 }
@@ -1574,21 +1580,10 @@ fn start_quarantine_watch(
     let app = app.clone();
     let seen: std::rc::Rc<std::cell::RefCell<Option<std::collections::HashSet<String>>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
-    let running = std::rc::Rc::new(std::cell::Cell::new(false));
-    let tick = move || {
-        if running.replace(true) {
-            return gtk::glib::ControlFlow::Continue;
-        }
-        let app = app.clone();
-        let badge = badge.clone();
-        let alert = alert.clone();
-        let seen = seen.clone();
-        let running = running.clone();
-        gtk::glib::spawn_future_local(async move {
-            let result = gtk::gio::spawn_blocking(crate::integrity::all_quarantined_summaries).await;
-            running.set(false);
+    let reader =
+        io::SnapshotReader::new(crate::integrity::all_quarantined_summaries, move |result| {
             let list = match result {
-                Ok(Ok(list)) => list,
+                Ok(list) => list,
                 _ => {
                     badge.set_label("?");
                     badge.set_tooltip_text(Some(
@@ -1630,9 +1625,9 @@ fn start_quarantine_watch(
                 }
             }
         });
-        gtk::glib::ControlFlow::Continue
-    };
-    tick();
+    reader.refresh();
+    let reader_for_destroy = reader.clone();
+    window.connect_destroy(move |_| reader_for_destroy.stop());
     io::watch_data(
         window,
         |name| {
@@ -1641,7 +1636,7 @@ fn start_quarantine_watch(
                 || name == "root-integrity-scopes.json"
         },
         move || {
-            tick();
+            reader.refresh();
         },
     );
 }
@@ -5927,7 +5922,6 @@ struct ApprovalPage {
     count: gtk::Label,
     list: gtk::Box,
     broker: crate::approval_broker::ApprovalBroker,
-    timer: std::rc::Rc<std::cell::RefCell<Option<gtk::glib::SourceId>>>,
     rendered: std::rc::Rc<std::cell::RefCell<Vec<(String, u64)>>>,
     /// True while the panel is explaining that another process owns approvals,
     /// so the explanation renders once rather than on every poll.
@@ -5963,35 +5957,28 @@ impl ApprovalPage {
 
         let list = gtk::Box::new(gtk::Orientation::Vertical, 10);
         root.append(&list);
-        Self {
+        let page = Self {
             root,
             count,
             list,
             broker,
-            timer: std::rc::Rc::new(std::cell::RefCell::new(None)),
             rendered: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             showing_inert: std::rc::Rc::new(std::cell::RefCell::new(false)),
             deadlines: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             notified: std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashSet::new())),
             notification: notify::ApprovalNotification::new(app),
-        }
+        };
+        let action = gtk::gio::SimpleAction::new("approval-queue-changed", None);
+        let page_for_event = page.clone();
+        action.connect_activate(move |_, _| page_for_event.refresh());
+        app.add_action(&action);
+        page
     }
 
-    fn attach(&self, window: &adw::ApplicationWindow) {
+    fn attach(&self, _window: &adw::ApplicationWindow) {
         self.refresh();
         let page = self.clone();
-        let timer = gtk::glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
-            page.refresh();
-            gtk::glib::ControlFlow::Continue
-        });
-        *self.timer.borrow_mut() = Some(timer);
-
-        let timer = self.timer.clone();
-        window.connect_destroy(move |_| {
-            if let Some(timer) = timer.borrow_mut().take() {
-                timer.remove();
-            }
-        });
+        io::while_mapped(&self.root, 1, move || page.refresh());
     }
 
     fn refresh(&self) {

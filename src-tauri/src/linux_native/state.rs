@@ -817,22 +817,23 @@ fn load_read_only(path: Option<&Path>) -> RegistryState {
 
 pub(super) struct RegistryController {
     path: Option<PathBuf>,
-    render: Box<dyn Fn(RegistryState)>,
+    reader: Rc<super::io::SnapshotReader<RegistryState>>,
     monitors: RefCell<Vec<gio::FileMonitor>>,
     reload_pending: Cell<bool>,
-    /// Bumped per background read so an older read that lands late never
-    /// replaces a newer one.
-    reload_generation: Cell<u64>,
 }
 
 impl RegistryController {
     pub(super) fn new(render: impl Fn(RegistryState) + 'static) -> Rc<Self> {
+        let path = registry::resolved_path();
+        let read_path = path.clone();
         Rc::new(Self {
-            path: registry::resolved_path(),
-            render: Box::new(render),
+            path,
+            reader: super::io::SnapshotReader::new(
+                move || load_read_only(read_path.as_deref()),
+                render,
+            ),
             monitors: RefCell::new(Vec::new()),
             reload_pending: Cell::new(false),
-            reload_generation: Cell::new(0),
         })
     }
 
@@ -843,6 +844,7 @@ impl RegistryController {
         let controller = Rc::clone(self);
         window.connect_destroy(move |_| {
             controller.monitors.borrow_mut().clear();
+            controller.reader.stop();
         });
     }
 
@@ -866,21 +868,7 @@ impl RegistryController {
     /// events arrive in bursts while other processes write, and a large
     /// registry must not stall the window.
     fn reload_in_background(controller: &Rc<Self>) {
-        let generation = controller.reload_generation.get().wrapping_add(1);
-        controller.reload_generation.set(generation);
-        let path = controller.path.clone();
-        let controller = Rc::downgrade(controller);
-        gtk::glib::spawn_future_local(async move {
-            let Ok(state) = gio::spawn_blocking(move || load_read_only(path.as_deref())).await
-            else {
-                return;
-            };
-            if let Some(controller) = controller.upgrade() {
-                if controller.reload_generation.get() == generation {
-                    (controller.render)(state);
-                }
-            }
-        });
+        controller.reader.refresh();
     }
 
     fn start_monitors(self: &Rc<Self>) {

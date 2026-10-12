@@ -116,34 +116,6 @@ impl ksni::Tray for ToolportTray {
     }
 }
 
-/// Whether a StatusNotifierWatcher actually owns its bus name right now. The
-/// tray itself is spawned with `assume_sni_available` so the icon appears when
-/// a host shows up later, but hidden launches must not trust that assumption:
-/// on a desktop with no SNI host (stock GNOME) a hidden window with no tray
-/// icon is unreachable.
-pub(super) fn sni_watcher_present() -> bool {
-    let Ok(connection) =
-        gtk::gio::bus_get_sync(gtk::gio::BusType::Session, gtk::gio::Cancellable::NONE)
-    else {
-        return false;
-    };
-    connection
-        .call_sync(
-            Some("org.freedesktop.DBus"),
-            "/org/freedesktop/DBus",
-            "org.freedesktop.DBus",
-            "NameHasOwner",
-            Some(&("org.kde.StatusNotifierWatcher",).into()),
-            Some(gtk::glib::VariantTy::new("(b)").expect("static variant type")),
-            gtk::gio::DBusCallFlags::NONE,
-            1000,
-            gtk::gio::Cancellable::NONE,
-        )
-        .ok()
-        .and_then(|reply| reply.child_value(0).get::<bool>())
-        .unwrap_or(false)
-}
-
 /// How long a hidden launch waits for a tray host before showing the window.
 /// At login the host (the Omarchy shell, Waybar) often starts in the same
 /// second as Toolport and registers its watcher a moment later.
@@ -153,21 +125,23 @@ pub(super) const HOST_GRACE: Duration = Duration::from_secs(15);
 /// may still be starting, and present it if none appears within `grace` so the
 /// app never sits running with no way to reach it.
 pub(super) fn present_unless_host_appears(app: &adw::Application, grace: Duration) {
-    let poll = Duration::from_millis(500);
-    let mut remaining = grace.as_millis() / poll.as_millis();
+    let appeared = std::rc::Rc::new(std::cell::Cell::new(false));
+    let present = appeared.clone();
+    let watcher = gtk::gio::bus_watch_name(
+        gtk::gio::BusType::Session,
+        "org.kde.StatusNotifierWatcher",
+        gtk::gio::BusNameWatcherFlags::NONE,
+        move |_, _, _| present.set(true),
+        |_, _| {},
+    );
     let app = app.clone();
-    gtk::glib::timeout_add_local(poll, move || {
-        if sni_watcher_present() {
-            return gtk::glib::ControlFlow::Break;
+    gtk::glib::timeout_add_local_once(grace, move || {
+        gtk::gio::bus_unwatch_name(watcher);
+        if !appeared.get() {
+            if let Some(window) = app.windows().into_iter().next() {
+                window.present();
+            }
         }
-        remaining = remaining.saturating_sub(1);
-        if remaining > 0 {
-            return gtk::glib::ControlFlow::Continue;
-        }
-        if let Some(window) = app.windows().into_iter().next() {
-            window.present();
-        }
-        gtk::glib::ControlFlow::Break
     });
 }
 

@@ -312,14 +312,22 @@ pub fn start(app: AppHandle) -> ApprovalBroker {
 
 #[cfg(all(target_os = "linux", feature = "gtk-desktop"))]
 pub fn start_native() -> ApprovalBroker {
+    start_native_with_events(|| {})
+}
+
+/// Native queue events wake GTK without polling. The desktop host stays unchanged.
+#[cfg(all(target_os = "linux", feature = "gtk-desktop"))]
+pub fn start_native_with_events(changed: impl Fn() + Send + Sync + 'static) -> ApprovalBroker {
+    let changed = Arc::new(changed);
+    let pending = changed.clone();
     start_with_host(BrokerHost {
         persistent_allowed: Arc::new(|key| {
             crate::registry::load()
                 .map(|registry| registry.is_tool_allowed(key))
                 .unwrap_or(false)
         }),
-        pending: Arc::new(|_| {}),
-        resolved: Arc::new(|_| {}),
+        pending: Arc::new(move |_| pending()),
+        resolved: Arc::new(move |_| changed()),
     })
 }
 
