@@ -38718,7 +38718,12 @@ mod tests {
             (**guard).clone()
         };
 
-        requarantine_after_integrity_change(&mut live, None, BTreeSet::new(), Ok(set_of(&["srv__wipe"])));
+        requarantine_after_integrity_change(
+            &mut live,
+            None,
+            BTreeSet::new(),
+            Ok(set_of(&["srv__wipe"])),
+        );
 
         assert!(!live.catalog_fail_closed());
         assert_eq!(live.quarantined(), &set_of(&["srv__wipe"]));
@@ -39241,9 +39246,21 @@ mod tests {
             Some(BTreeSet::new()),
             "Off ignores baseline loss for ordinary tools"
         );
-        assert!(reconcile_quarantine(&registry, &router, &stdio, profile, None, &AtomicBool::new(false)));
+        assert!(reconcile_quarantine(
+            &registry,
+            &router,
+            &stdio,
+            profile,
+            None,
+            &AtomicBool::new(false)
+        ));
         assert!(router.lock().unwrap().quarantined().is_empty());
-        assert!(std::fs::read_to_string(dir.join(format!("tool-pins-v2-{}.json", registry::profile_store_key(profile.unwrap())))).unwrap().contains("srv__read"));
+        assert!(std::fs::read_to_string(dir.join(format!(
+            "tool-pins-v2-{}.json",
+            registry::profile_store_key(profile.unwrap())
+        )))
+        .unwrap()
+        .contains("srv__read"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -39581,7 +39598,11 @@ mod tests {
     fn review_r3_failed_gate_keeps_disabled_rowless_review_blocked() {
         let data = DataDirTestEnv::new("review-failed-gate-enable");
         for post_write in [false, true] {
-            for level in [registry::SafetyLevel::Ask, registry::SafetyLevel::Strict, registry::SafetyLevel::Off] {
+            for level in [
+                registry::SafetyLevel::Ask,
+                registry::SafetyLevel::Strict,
+                registry::SafetyLevel::Off,
+            ] {
                 seed_legacy_review(&data.dir, None, "v2");
                 integrity::release(None, "srv__read").unwrap();
                 let mut reg = Registry {
@@ -39591,22 +39612,43 @@ mod tests {
                 reg.set_safety_level(level);
                 let registry = Arc::new(Mutex::new(reg));
                 let mut built = readonly_router("srv", "Unseen definition.");
-                built.apply_registry_policy(RegistryPolicy { disabled: HashMap::from([("srv".into(), HashSet::from(["read".into()]))]), ..Default::default() });
+                built.apply_registry_policy(RegistryPolicy {
+                    disabled: HashMap::from([("srv".into(), HashSet::from(["read".into()]))]),
+                    ..Default::default()
+                });
                 // No row can rescue the pending pin if this gate or its re-read fails.
                 std::fs::write(data.dir.join("quarantine.json"), "{ failing store").unwrap();
                 assert!(integrity::quarantined(None).is_err());
                 if post_write {
-                    requarantine_after_integrity_change(&mut built, None, BTreeSet::new(), Err("failed re-read".into()));
+                    requarantine_after_integrity_change(
+                        &mut built,
+                        None,
+                        BTreeSet::new(),
+                        Err("failed re-read".into()),
+                    );
                 } else {
                     let offered = built.shared_tools();
                     requarantine_if_needed(&registry, &mut built, offered, None);
                 }
                 let live = Arc::new(Mutex::new(Arc::new(built)));
                 assert!(republish_registry_policy(&live, RegistryPolicy::default()));
-                assert!(live.lock().unwrap().shared_tools().is_empty(), "unchecked review exposed, post_write={post_write}, level={level:?}");
-                assert!(live.lock().unwrap().quarantined().contains("srv__read"), "pending pin was lost from the enforced set");
+                assert!(
+                    live.lock().unwrap().shared_tools().is_empty(),
+                    "unchecked review exposed, post_write={post_write}, level={level:?}"
+                );
+                assert!(
+                    live.lock().unwrap().quarantined().contains("srv__read"),
+                    "pending pin was lost from the enforced set"
+                );
                 for _ in 0..2 {
-                    reconcile_quarantine(&registry, &live, &test_stdio_session(), None, None, &AtomicBool::new(false));
+                    reconcile_quarantine(
+                        &registry,
+                        &live,
+                        &test_stdio_session(),
+                        None,
+                        None,
+                        &AtomicBool::new(false),
+                    );
                     assert!(live.lock().unwrap().shared_tools().is_empty());
                 }
             }
@@ -39668,7 +39710,10 @@ mod tests {
         let published = requarantine_if_needed(&registry, &mut built, offered, None);
         assert!(!published.iter().any(|tool| tool["name"] == "srv__read"));
         assert!(published.iter().any(|tool| tool["name"] == "other__read"));
-        assert!(published.iter().any(|tool| tool["name"] == "unknown__read"), "Off re-baselines ordinary unknown names");
+        assert!(
+            published.iter().any(|tool| tool["name"] == "unknown__read"),
+            "Off re-baselines ordinary unknown names"
+        );
         let router = Arc::new(Mutex::new(Arc::new(built)));
         let before = router.lock().unwrap().clone();
         for _ in 0..3 {
@@ -39764,7 +39809,12 @@ mod tests {
         reg.quarantine_on_drift = false;
         let registry = Arc::new(Mutex::new(reg));
         assert_eq!(maybe_check_integrity(&registry, &tools, profile).unwrap(), None);
-        assert!(std::fs::read_to_string(dir.join(format!("tool-pins-v2-{}.json", registry::profile_store_key("off-baseline-tamper")))).unwrap().contains("srv__read"));
+        assert!(std::fs::read_to_string(dir.join(format!(
+            "tool-pins-v2-{}.json",
+            registry::profile_store_key("off-baseline-tamper")
+        )))
+        .unwrap()
+        .contains("srv__read"));
         assert_eq!(
             effective_quarantine(&registry, profile, &AtomicBool::new(false)),
             Some(BTreeSet::new())
@@ -39796,9 +39846,17 @@ mod tests {
         let id = "off-cold-pending-store";
         let profile = Some(id);
         let key = registry::profile_store_key(id);
-        std::fs::copy(data.dir.join("quarantine.json"), data.dir.join(format!("quarantine-v2-{key}.json"))).unwrap();
+        std::fs::copy(
+            data.dir.join("quarantine.json"),
+            data.dir.join(format!("quarantine-v2-{key}.json")),
+        )
+        .unwrap();
         for suffix in ["", ".bak"] {
-            std::fs::write(data.dir.join(format!("tool-pins-v2-{key}.json{suffix}")), "{ corrupt pins").unwrap();
+            std::fs::write(
+                data.dir.join(format!("tool-pins-v2-{key}.json{suffix}")),
+                "{ corrupt pins",
+            )
+            .unwrap();
         }
         assert!(integrity::definition_review_names(profile).is_empty());
         let ordinary = readonly_router("other", "Ordinary definition.");
@@ -39807,12 +39865,29 @@ mod tests {
         let published = requarantine_if_needed(&registry, &mut built, offered, profile);
         assert_eq!(published.len(), 1, "Off must expose the ordinary tool");
         assert_eq!(published[0]["name"], "other__read");
-        assert!(built.quarantined().contains("srv__read"), "the persisted review must remain blocked");
-        assert!(integrity::all_quarantined().unwrap().iter().any(|row| row["tool"] == "srv__read" && row["review_required"] == true));
+        assert!(
+            built.quarantined().contains("srv__read"),
+            "the persisted review must remain blocked"
+        );
+        assert!(integrity::quarantine_list(profile)
+            .iter()
+            .any(|row| row["tool"] == "srv__read" && row["review_required"] == true));
         let live = Arc::new(Mutex::new(Arc::new(built)));
-        reconcile_quarantine(&registry, &live, &test_stdio_session(), profile, None, &AtomicBool::new(false));
+        reconcile_quarantine(
+            &registry,
+            &live,
+            &test_stdio_session(),
+            profile,
+            None,
+            &AtomicBool::new(false),
+        );
         assert_eq!(live.lock().unwrap().shared_tools()[0]["name"], "other__read");
-        assert!(integrity::read_recent(20).unwrap().iter().any(|event| event["change"] == "tamper" && event["detail"].as_str().is_some_and(|detail| detail.contains("Off"))));
+        assert!(integrity::read_recent(20).unwrap().iter().any(|event| event
+            ["change"]
+            == "tamper"
+            && event["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("Off"))));
     }
 
     #[test]

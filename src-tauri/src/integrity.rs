@@ -601,9 +601,8 @@ fn cached_review_pins(profile: Option<&str>) -> std::sync::Arc<ReviewPins> {
     let mut cache = REVIEW_PINS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let entry = cache.entry(path).or_default();
     let fresh = matches!(loaded, PinsLoad::Fresh);
-    let same_failed_read = matches!(loaded, PinsLoad::Corrupt)
-        && entry.state.unreadable
-        && entry.stamp == stable;
+    let same_failed_read =
+        matches!(loaded, PinsLoad::Corrupt) && entry.state.unreadable && entry.stamp == stable;
     let state = match loaded {
         PinsLoad::Loaded(pins) => ReviewPins::from_pins(&pins),
         PinsLoad::Fresh => ReviewPins::default(),
