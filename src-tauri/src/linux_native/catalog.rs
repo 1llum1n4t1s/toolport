@@ -859,6 +859,7 @@ mod tests {
         // Only the catalog is mounted. No broker, registry load or probes run.
         let server_page = super::super::ServerPage {
             app: app.clone(),
+            share_requests: Default::default(),
             server_count: gtk::Label::new(None),
             enabled_count: gtk::Label::new(None),
             section_title: gtk::Label::new(None),

@@ -147,7 +147,6 @@ impl TeamsPage {
                 break;
             }
             page.refresh_running.set(false);
-            super::io::trim_if_hidden();
         });
     }
 
@@ -158,6 +157,8 @@ impl TeamsPage {
         let runtime_for_events = runtime.clone();
         super::io::watch_data(
             window,
+            15,
+            false,
             |name| name == "registry.json",
             move || {
                 if page.root.is_mapped() {
@@ -1282,7 +1283,6 @@ fn sync_background_step(page: TeamsPage, runtime: Rc<SyncLoop>) {
                 }
             }
         };
-        super::io::trim_if_hidden();
         let next = runtime.clone();
         *runtime.timer.borrow_mut() = Some(gtk::glib::timeout_add_local_once(
             std::time::Duration::from_secs(delay),

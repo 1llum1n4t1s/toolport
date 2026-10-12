@@ -73,6 +73,7 @@ pub fn run() {
     let present = std::rc::Rc::new(std::cell::Cell::new(!launch_hidden));
     let urls = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
     let tray = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let fallback_scheduled = std::cell::Cell::new(false);
     let state = startup.clone();
     let requested_for_activate = requested.clone();
     let present_for_activate = present.clone();
@@ -95,6 +96,13 @@ pub fn run() {
                     startup.bridge.clone(),
                     &mut startup.window,
                     present_for_activate.get(),
+                );
+                schedule_hidden_fallback(
+                    app,
+                    launch_hidden,
+                    present_for_activate.get(),
+                    &fallback_scheduled,
+                    tray::HOST_GRACE,
                 );
                 for uri in urls_for_activate.borrow_mut().drain(..) {
                     if let Some(action) = app.lookup_action("open-share-url") {
@@ -141,9 +149,6 @@ pub fn run() {
             // Deliver the initial activation without treating it as a second launch.
             requested.set(false);
             app_for_startup.activate();
-            if launch_hidden && !present.get() {
-                tray::present_unless_host_appears(&app_for_startup, tray::HOST_GRACE);
-            }
         }
     });
     app.connect_shutdown(|_| {
@@ -161,6 +166,19 @@ pub fn run() {
         startup.bridge.shutdown();
         startup.broker.clear_endpoint();
     };
+}
+
+/// Called after the window exists, regardless of startup/activation ordering.
+fn schedule_hidden_fallback(
+    app: &adw::Application,
+    hidden: bool,
+    present: bool,
+    scheduled: &std::cell::Cell<bool>,
+    grace: std::time::Duration,
+) {
+    if hidden && !present && !scheduled.replace(true) {
+        tray::present_unless_host_appears(app, grace);
+    }
 }
 
 struct WindowStartup {
@@ -407,6 +425,8 @@ fn build_window(
     split.set_max_sidebar_width(280.0);
 
     let (content, server_page, approval_page) = build_content(app, broker.clone());
+    let share_requests = server_page.share_requests.clone();
+    window.connect_destroy(move |_| share_requests.stop());
     let bridge_for_reap = bridge.clone();
     let server_page_for_reap = server_page.clone();
     let client_page = ClientPage::new(app, server_page.clone());
@@ -846,24 +866,26 @@ fn show_registry_startup_failure(app: &adw::Application, error: &str) {
                 .wrap(true)
                 .build(),
         );
-        page.append(
-            &gtk::Label::builder()
-                .label(format!("Registry: {path}\n\nError: {error}"))
-                .halign(gtk::Align::Fill)
-                .xalign(0.0)
-                .wrap(true)
-                .selectable(true)
-                .css_classes(["dim-label"])
-                .build(),
-        );
-        let close = gtk::Button::with_label("Close Toolport");
-        close.set_halign(gtk::Align::End);
-        close.add_css_class("suggested-action");
-        let app = app.clone();
-        close.connect_clicked(move |_| app.quit());
-        page.append(&close);
-        window.set_content(Some(&page));
-        window.present();
+    page.append(
+        &gtk::Label::builder()
+            .label(format!("Registry: {path}\n\nError: {error}"))
+            .halign(gtk::Align::Fill)
+            .xalign(0.0)
+            .wrap(true)
+            .selectable(true)
+            .css_classes(["dim-label"])
+            .build(),
+    );
+    let app_for_destroy = app.clone();
+    window.connect_destroy(move |_| app_for_destroy.quit());
+    let close = gtk::Button::with_label("Close Toolport");
+    close.set_halign(gtk::Align::End);
+    close.add_css_class("suggested-action");
+    let app = app.clone();
+    close.connect_clicked(move |_| app.quit());
+    page.append(&close);
+    window.set_content(Some(&page));
+    window.present();
 }
 
 /// The 2.0 top-level navigation, in sidebar order. Team joins only on a paired
@@ -1630,6 +1652,8 @@ fn start_security_event_watch(
     window.connect_destroy(move |_| reader_for_destroy.stop());
     io::watch_data(
         window,
+        5,
+        true,
         |name| {
             name == "security.jsonl" || name.starts_with("quarantine") || name == "registry.json"
         },
@@ -1702,6 +1726,8 @@ fn start_quarantine_watch(
     window.connect_destroy(move |_| reader_for_destroy.stop());
     io::watch_data(
         window,
+        15,
+        true,
         |name| {
             name.starts_with("quarantine")
                 || name == "registry.json"
@@ -1755,6 +1781,7 @@ fn show_native_page(
 #[derive(Clone)]
 struct ServerPage {
     app: adw::Application,
+    share_requests: std::rc::Rc<io::RequestGuard>,
     server_count: gtk::Label,
     enabled_count: gtk::Label,
     section_title: gtk::Label,
@@ -6001,6 +6028,7 @@ struct ApprovalPage {
     deadlines: std::rc::Rc<std::cell::RefCell<Vec<(u64, gtk::Label)>>>,
     notified: std::rc::Rc<std::cell::RefCell<std::collections::HashSet<String>>>,
     notification: notify::ApprovalNotification,
+    stopped: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 impl ApprovalPage {
@@ -6039,6 +6067,7 @@ impl ApprovalPage {
             deadlines: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             notified: std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashSet::new())),
             notification: notify::ApprovalNotification::new(app),
+            stopped: Default::default(),
         };
         let action = gtk::gio::SimpleAction::new("approval-queue-changed", None);
         let page_for_event = page.clone();
@@ -6048,6 +6077,8 @@ impl ApprovalPage {
     }
 
     fn attach(&self, window: &adw::ApplicationWindow) {
+        let stopped = self.stopped.clone();
+        window.connect_destroy(move |_| stopped.set(true));
         // A request can arrive before the window finishes building. Publish its
         // initial snapshot to both the panel and the sidebar badge.
         if let Some(action) = window
@@ -6161,14 +6192,16 @@ impl ApprovalPage {
                     );
                     self.broker.add_session_allow(key.clone());
                     if scope == "always" {
-                        if let Err(error) = crate::registry::update(|registry| {
-                            registry.allow_tool(key);
-                            Ok(())
-                        }) {
-                            eprintln!(
-                                "toolport-gtk: approved the call but could not save its allow rule: {error}"
-                            );
-                        }
+                        let page = self.clone();
+                        gtk::glib::spawn_future_local(async move {
+                            let result = persist_always_allow(key).await;
+                            if page.stopped.get() {
+                                return;
+                            }
+                            if let Err(error) = result {
+                                eprintln!("toolport-gtk: approved the call but could not save its allow rule: {error}");
+                            }
+                        });
                     }
                 }
             }
@@ -6176,6 +6209,33 @@ impl ApprovalPage {
         }
         self.refresh();
     }
+}
+
+async fn persist_always_allow(key: String) -> Result<(), String> {
+    gtk::gio::spawn_blocking(move || save_always_allow(key))
+        .await
+        .map_err(|_| "The allow-rule worker stopped unexpectedly".to_string())?
+}
+
+async fn read_pair_target(origin: String, team: String) -> Result<bool, String> {
+    gtk::gio::spawn_blocking(move || pair_target_is_signed_in(&origin, &team))
+        .await
+        .map_err(|_| "The pairing worker stopped unexpectedly".to_string())
+}
+
+fn save_always_allow(key: String) -> Result<(), String> {
+    crate::registry::update(|registry| {
+        registry.allow_tool(key);
+        Ok(())
+    })
+    .map(|_| ())
+}
+
+fn pair_target_is_signed_in(origin: &str, team: &str) -> bool {
+    crate::registry::load().is_ok_and(|reg| {
+        crate::teams::pair_target_is_current(&reg, origin, team)
+            && !crate::personal_sync::state(&reg).is_ok_and(|st| st.sign_in_required)
+    })
 }
 
 /// Shown when another Toolport process owns the approval endpoint. Both shells
@@ -6640,6 +6700,7 @@ fn build_content(
         root,
         ServerPage {
             app: app.clone(),
+            share_requests: Default::default(),
             server_count: values.remove(0),
             enabled_count: values.remove(0),
             section_title,
@@ -6732,51 +6793,31 @@ fn build_content(
 }
 
 fn open_shared_setup(url: &str, page: ServerPage) {
+    let generation = page.share_requests.begin();
     if let Some((origin, team)) = crate::teams::parse_pair_link(url) {
-        // Already connected here, unless this machine lost its sign-in: then
-        // pairing again is exactly how it reconnects.
-        if crate::registry::load().is_ok_and(|reg| {
-            crate::teams::pair_target_is_current(&reg, &origin, &team)
-                && !crate::personal_sync::state(&reg).is_ok_and(|st| st.sign_in_required)
-        }) {
-            if let Some(action) = page.app.lookup_action("show-teams") {
-                action.activate(None);
+        gtk::glib::spawn_future_local(async move {
+            let current = read_pair_target(origin.clone(), team.clone()).await;
+            if !page.share_requests.is_current(generation) {
+                return;
             }
-            if let Some(window) = page.app.active_window() {
-                window.present();
-            }
-            return;
-        }
-        for window in page.app.windows() {
-            if window.title().as_deref() == Some("Toolport setup") {
-                window.close();
-            }
-        }
-        let (parent_app, connected_app, feedback) =
-            (page.app.clone(), page.app.clone(), page.clone());
-        let hooks = pairing::PairingHooks {
-            parent: Box::new(move || parent_app.active_window()),
-            feedback: Box::new(move |message, error| feedback.show_feedback(message, error)),
-            connected: Box::new(move || {
-                if let Some(action) = connected_app.lookup_action("show-teams") {
+            let current = match current {
+                Ok(current) => current,
+                Err(error) => {
+                    page.show_feedback(&error, true);
+                    return;
+                }
+            };
+            if current {
+                if let Some(action) = page.app.lookup_action("show-teams") {
                     action.activate(None);
                 }
-                if let Some(window) = connected_app.active_window() {
+                if let Some(window) = page.app.active_window() {
                     window.present();
                 }
-            }),
-            open_url: Box::new(|url| {
-                let _ = crate::oauth::open_web_url(url);
-            }),
-        };
-        let pair_origin = origin.clone();
-        pairing::request(
-            hooks,
-            &origin,
-            Box::new(move |cancel, show| {
-                crate::teams::pair_device(&pair_origin, &team, cancel, show).map(|_| ())
-            }),
-        );
+                return;
+            }
+            request_pairing(origin, team, page);
+        });
         return;
     }
     let Some(id) = crate::sharing_controller::parse_share_url(url) else {
@@ -6791,6 +6832,9 @@ fn open_shared_setup(url: &str, page: ServerPage) {
             Ok::<_, String>((json, preview))
         })
         .await;
+        if !page.share_requests.is_current(generation) {
+            return;
+        }
         match result {
             Ok(Ok((json, preview))) => show_setup_import_review(json, preview, page),
             Ok(Err(error)) => {
@@ -6799,6 +6843,39 @@ fn open_shared_setup(url: &str, page: ServerPage) {
             Err(_) => page.show_feedback("The shared setup fetch stopped unexpectedly.", true),
         }
     });
+}
+
+fn request_pairing(origin: String, team: String, page: ServerPage) {
+    for window in page.app.windows() {
+        if window.title().as_deref() == Some("Toolport setup") {
+            window.close();
+        }
+    }
+    let (parent_app, connected_app, feedback) =
+        (page.app.clone(), page.app.clone(), page.clone());
+    let hooks = pairing::PairingHooks {
+        parent: Box::new(move || parent_app.active_window()),
+        feedback: Box::new(move |message, error| feedback.show_feedback(message, error)),
+        connected: Box::new(move || {
+            if let Some(action) = connected_app.lookup_action("show-teams") {
+                action.activate(None);
+            }
+            if let Some(window) = connected_app.active_window() {
+                window.present();
+            }
+        }),
+        open_url: Box::new(|url| {
+            let _ = crate::oauth::open_web_url(url);
+        }),
+    };
+    let pair_origin = origin.clone();
+    pairing::request(
+        hooks,
+        &origin,
+        Box::new(move |cancel, show| {
+            crate::teams::pair_device(&pair_origin, &team, cancel, show).map(|_| ())
+        }),
+    );
 }
 
 /// The share/export dialog: name and describe the setup, choose which servers
@@ -10758,6 +10835,160 @@ fn state_card(icon_name: &str, title: &str, body: &str, error: bool) -> gtk::Box
 #[cfg(test)]
 mod tests {
     #[test]
+    fn approval_persistence_and_pair_reads_do_not_block_main_context() {
+        use super::*;
+        let data = crate::registry::DataDirTestEnv::new("gtk-approval-pair-workers");
+        let context = gtk::glib::MainContext::new();
+        context
+            .with_thread_default(|| {
+                context.block_on(async {
+                    let lock = crate::registry::lock_at(&data.dir.join("registry.json")).unwrap();
+                    let persisted = std::rc::Rc::new(std::cell::Cell::new(false));
+                    let done = persisted.clone();
+                    let writer = gtk::glib::spawn_future_local(async move {
+                        persist_always_allow("fixture/read@hash".into())
+                            .await
+                            .unwrap();
+                        done.set(true);
+                    });
+                    let paired = std::rc::Rc::new(std::cell::Cell::new(false));
+                    let done = paired.clone();
+                    let reader = gtk::glib::spawn_future_local(async move {
+                        assert!(
+                            !read_pair_target("https://team.invalid".into(), "fixture".into())
+                                .await
+                                .unwrap()
+                        );
+                        done.set(true);
+                    });
+                    gtk::glib::timeout_future(std::time::Duration::from_millis(80)).await;
+                    assert!(
+                        !persisted.get() && !paired.get(),
+                        "registry IO waits on the worker while the context advances"
+                    );
+                    drop(lock);
+                    writer.await.unwrap();
+                    reader.await.unwrap();
+                    assert!(persisted.get() && paired.get());
+                });
+            })
+            .unwrap();
+        assert!(crate::registry::load()
+            .unwrap()
+            .is_tool_allowed("fixture/read@hash"));
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop without a tray host; run in omabox"]
+    fn hidden_fallback_handles_both_startup_activation_orders() {
+        use super::*;
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        gtk::glib::MainContext::default().block_on(async {
+            for activate_first in [true, false] {
+                let scheduled = std::cell::Cell::new(false);
+                // Early activation defers construction until the worker result;
+                // late activation constructs immediately. Both schedule here.
+                if activate_first {
+                    gtk::glib::timeout_future(std::time::Duration::from_millis(10)).await;
+                }
+                let window = adw::ApplicationWindow::builder().application(&app).build();
+                assert!(!window.is_visible());
+                schedule_hidden_fallback(
+                    &app,
+                    true,
+                    false,
+                    &scheduled,
+                    std::time::Duration::from_millis(80),
+                );
+                gtk::glib::timeout_future(std::time::Duration::from_millis(150)).await;
+                assert!(
+                    window.is_visible(),
+                    "no tray host must reveal a hidden launch"
+                );
+                window.close();
+            }
+        });
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn registry_failure_window_close_quits_even_with_application_hold() {
+        use super::*;
+        let _data = crate::registry::DataDirTestEnv::new("gtk-startup-error-close");
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let _hold = app.hold();
+        let timed_out = std::rc::Rc::new(std::cell::Cell::new(false));
+        let failed = timed_out.clone();
+        let timeout_app = app.clone();
+        let timeout =
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+                failed.set(true);
+                timeout_app.quit();
+            });
+        app.connect_activate(|app| {
+            show_registry_startup_failure(app, "fixture unreadable registry");
+            let window = app.active_window().unwrap();
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
+                window.close()
+            });
+        });
+        app.run_with_args::<&str>(&[]);
+        assert!(
+            !timed_out.get(),
+            "window close must quit despite the background hold"
+        );
+        timeout.remove();
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn superseded_pair_link_does_not_open_a_pairing_window() {
+        use super::*;
+        let data = crate::registry::DataDirTestEnv::new("gtk-pair-link-stale");
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let broker = crate::approval_broker::start_native();
+        let (root, page, _) = build_content(&app, broker);
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .content(&root)
+            .build();
+        let requests = page.share_requests.clone();
+        window.connect_destroy(move |_| requests.stop());
+        let lock = crate::registry::lock_at(&data.dir.join("registry.json")).unwrap();
+        open_shared_setup(
+            "toolport://teams/connect?origin=https%3A%2F%2Fteam.invalid&team=fixture",
+            page.clone(),
+        );
+        gtk::glib::MainContext::default().block_on(async {
+            gtk::glib::timeout_future(std::time::Duration::from_millis(80)).await;
+            open_shared_setup("invalid", page.clone());
+            assert_eq!(page.feedback.text(), "The shared setup link was invalid.");
+            drop(lock);
+            gtk::glib::timeout_future(std::time::Duration::from_millis(150)).await;
+            assert_eq!(
+                app.windows().len(),
+                1,
+                "the older pair read cannot open a dialog"
+            );
+            assert_eq!(page.feedback.text(), "The shared setup link was invalid.");
+            window.close();
+            assert!(!page.share_requests.is_current(page.share_requests.begin()));
+        });
+    }
+
+    #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn tool_change_history_and_details_build_only_on_expand() {
         use super::*;
@@ -10902,11 +11133,22 @@ mod tests {
         assert!(!activity.savings_detail.text().contains("cl100k"));
         assert!(!activity.savings_detail.text().contains("bytes/4"));
         let server_page = ServerPage {
-            app: app.clone(), server_count: gtk::Label::new(None), enabled_count: gtk::Label::new(None),
-            section_title: gtk::Label::new(None), posture: gtk::Label::new(None),
-            search: gtk::SearchEntry::new(), feedback: gtk::Label::new(None), list: gtk::Box::new(gtk::Orientation::Vertical, 0),
-            last_snapshot: Default::default(), feedback_timer: Default::default(), health_rows: Default::default(),
-            rows: Default::default(), no_matches: Default::default(), off_heading: Default::default(), health: Default::default(),
+            app: app.clone(),
+            share_requests: Default::default(),
+            server_count: gtk::Label::new(None),
+            enabled_count: gtk::Label::new(None),
+            section_title: gtk::Label::new(None),
+            posture: gtk::Label::new(None),
+            search: gtk::SearchEntry::new(),
+            feedback: gtk::Label::new(None),
+            list: gtk::Box::new(gtk::Orientation::Vertical, 0),
+            last_snapshot: Default::default(),
+            feedback_timer: Default::default(),
+            health_rows: Default::default(),
+            rows: Default::default(),
+            no_matches: Default::default(),
+            off_heading: Default::default(),
+            health: Default::default(),
         };
         let clients = ClientPage::new(&app, server_page);
         let fixture_clients = [("codex", "Codex", state::ClientGatewayState::Connected), ("cursor", "Cursor", state::ClientGatewayState::Disconnected), ("claude-code", "Claude Code", state::ClientGatewayState::Customized)].into_iter().map(|(id, name, gateway_state)| state::ClientView {
@@ -10983,6 +11225,7 @@ mod tests {
         activity.run_id = Some("0123456789abcdef0123456789abcdef".into());
         let server_page = ServerPage {
             app: app.clone(),
+            share_requests: Default::default(),
             server_count: gtk::Label::new(None),
             enabled_count: gtk::Label::new(None),
             section_title: gtk::Label::new(None),
@@ -11041,6 +11284,7 @@ mod tests {
             .build();
         let server_page = ServerPage {
             app: app.clone(),
+            share_requests: Default::default(),
             server_count: gtk::Label::new(None),
             enabled_count: gtk::Label::new(None),
             section_title: gtk::Label::new(None),

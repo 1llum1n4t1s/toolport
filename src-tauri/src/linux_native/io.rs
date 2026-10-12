@@ -5,47 +5,89 @@ use std::sync::Arc;
 
 use adw::prelude::*;
 
-#[cfg(target_env = "gnu")]
-static PRIMARY_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-#[cfg(target_env = "gnu")]
-static TRIM_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Large JSON reads can leave free pages in glibc's per-thread arenas. Return
-/// those pages after hiding or hidden reads, without trimming on the GTK thread.
-pub(super) fn trim_if_hidden() {
-    #[cfg(target_env = "gnu")]
-    {
-        use std::sync::atomic::Ordering;
-        if !PRIMARY_HIDDEN.load(Ordering::Relaxed) || TRIM_PENDING.swap(true, Ordering::Relaxed) {
-            return;
-        }
-        drop(gtk::gio::spawn_blocking(|| {
-            if PRIMARY_HIDDEN.load(Ordering::Relaxed) {
-                // SAFETY: glibc synchronizes its allocator internally. This takes
-                // no pointers and releases only free pages, never live UI data.
-                unsafe {
-                    libc::malloc_trim(0);
-                }
-            }
-            TRIM_PENDING.store(false, Ordering::Relaxed);
-        }));
-    }
-}
-
+/// Trim once per hidden period, after a short debounce. Mapping or destroying
+/// the window cancels the timer; reads and syncs never trigger allocator work.
 pub(super) fn track_hidden_memory(window: &adw::ApplicationWindow) {
     #[cfg(target_env = "gnu")]
     {
-        use std::sync::atomic::Ordering;
-        PRIMARY_HIDDEN.store(!window.is_mapped(), Ordering::Relaxed);
-        window.connect_map(|_| PRIMARY_HIDDEN.store(false, Ordering::Relaxed));
-        window.connect_unmap(|_| {
-            PRIMARY_HIDDEN.store(true, Ordering::Relaxed);
-            trim_if_hidden();
-        });
-        trim_if_hidden();
+        use std::cell::RefCell;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let epoch = Arc::new(AtomicU64::new(0));
+        let source = Rc::new(RefCell::new(None::<gtk::glib::SourceId>));
+        let schedule = {
+            let epoch = epoch.clone();
+            let source = source.clone();
+            move |window: &adw::ApplicationWindow| {
+                let generation = epoch.fetch_add(1, Ordering::SeqCst) + 1;
+                if let Some(timer) = source.borrow_mut().take() {
+                    timer.remove();
+                }
+                let epoch = epoch.clone();
+                let source_for_timer = source.clone();
+                let window = window.downgrade();
+                *source.borrow_mut() = Some(gtk::glib::timeout_add_local_once(
+                    std::time::Duration::from_secs(30),
+                    move || {
+                        source_for_timer.borrow_mut().take();
+                        if window.upgrade().is_none_or(|window| window.is_mapped()) {
+                            return;
+                        }
+                        drop(gtk::gio::spawn_blocking(move || {
+                            if epoch.load(Ordering::SeqCst) == generation {
+                                // SAFETY: glibc synchronizes its allocator. No
+                                // pointers are passed and only free pages return.
+                                unsafe {
+                                    libc::malloc_trim(0);
+                                }
+                            }
+                        }));
+                    },
+                ));
+            }
+        };
+        schedule(window);
+        window.connect_unmap(move |window| schedule(window));
+        for destroy in [false, true] {
+            let source = source.clone();
+            let epoch = epoch.clone();
+            let cancel = move |_: &adw::ApplicationWindow| {
+                epoch.fetch_add(1, Ordering::SeqCst);
+                if let Some(timer) = source.borrow_mut().take() {
+                    timer.remove();
+                }
+            };
+            if destroy {
+                window.connect_destroy(cancel);
+            } else {
+                window.connect_map(cancel);
+            }
+        }
     }
     #[cfg(not(target_env = "gnu"))]
     let _ = window;
+}
+
+/// Share requests replace earlier requests; destroyed owners reject completion.
+#[derive(Default)]
+pub(super) struct RequestGuard {
+    generation: Cell<u64>,
+    stopped: Cell<bool>,
+}
+
+impl RequestGuard {
+    pub(super) fn begin(&self) -> u64 {
+        let generation = self.generation.get().wrapping_add(1);
+        self.generation.set(generation);
+        generation
+    }
+
+    pub(super) fn is_current(&self, generation: u64) -> bool {
+        !self.stopped.get() && self.generation.get() == generation
+    }
+
+    pub(super) fn stop(&self) {
+        self.stopped.set(true);
+    }
 }
 
 /// One read at a time. An invalidation during a read discards that result and
@@ -95,7 +137,6 @@ impl<T: Send + 'static> SnapshotReader<T> {
                 break;
             }
             reader.running.set(false);
-            trim_if_hidden();
         });
     }
 
@@ -105,9 +146,11 @@ impl<T: Send + 'static> SnapshotReader<T> {
 }
 
 /// Monitor the parent so atomic replacements and previously absent stores are
-/// observed. The slow fallback exists only when the filesystem cannot watch.
+/// observed. Fallbacks preserve alert deadlines when the filesystem cannot watch.
 pub(super) fn watch_data(
     window: &adw::ApplicationWindow,
+    fallback_seconds: u64,
+    hidden_alerts: bool,
     matches: impl Fn(&str) -> bool + 'static,
     changed: impl Fn() + 'static,
 ) {
@@ -142,17 +185,53 @@ pub(super) fn watch_data(
             monitor.cancel();
         });
     } else {
-        let source = gtk::glib::timeout_add_local(std::time::Duration::from_secs(60), move || {
+        start_fallback_poll(window, fallback_seconds, hidden_alerts, changed);
+    }
+}
+
+fn start_fallback_poll(
+    window: &adw::ApplicationWindow,
+    seconds: u64,
+    hidden_alerts: bool,
+    changed: Rc<dyn Fn()>,
+) {
+    let source = Rc::new(std::cell::RefCell::new(None::<gtk::glib::SourceId>));
+    let start = {
+        let source = source.clone();
+        let changed = changed.clone();
+        move || {
+            if source.borrow().is_none() {
+                let changed = changed.clone();
+                *source.borrow_mut() = Some(gtk::glib::timeout_add_local(
+                    std::time::Duration::from_secs(seconds),
+                    move || {
+                        changed();
+                        gtk::glib::ControlFlow::Continue
+                    },
+                ));
+            }
+        }
+    };
+    if hidden_alerts || window.is_mapped() {
+        start();
+    }
+    if !hidden_alerts {
+        window.connect_map(move |_| {
             changed();
-            gtk::glib::ControlFlow::Continue
+            start();
         });
-        let source = std::cell::RefCell::new(Some(source));
-        window.connect_destroy(move |_| {
-            if let Some(source) = source.borrow_mut().take() {
-                source.remove();
+        let source = source.clone();
+        window.connect_unmap(move |_| {
+            if let Some(timer) = source.borrow_mut().take() {
+                timer.remove();
             }
         });
     }
+    window.connect_destroy(move |_| {
+        if let Some(timer) = source.borrow_mut().take() {
+            timer.remove();
+        }
+    });
 }
 
 /// A visible page may need a clock (for relative times). Remove its source
@@ -186,6 +265,59 @@ pub(super) fn while_mapped(widget: &gtk::Box, seconds: u64, tick: impl Fn() + 's
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn requests_reject_replacement_and_destroyed_owner() {
+        let guard = RequestGuard::default();
+        let first = guard.begin();
+        assert!(guard.is_current(first));
+        let second = guard.begin();
+        assert!(!guard.is_current(first));
+        assert!(guard.is_current(second));
+        guard.stop();
+        assert!(!guard.is_current(second));
+        assert!(!guard.is_current(guard.begin()));
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn fallback_polls_keep_hidden_alerts_and_stop_hidden_page_work() {
+        adw::init().unwrap();
+        let window = adw::ApplicationWindow::builder()
+            .hide_on_close(true)
+            .build();
+        let alerts = Rc::new(Cell::new(0));
+        let pages = Rc::new(Cell::new(0));
+        let count = alerts.clone();
+        start_fallback_poll(
+            &window,
+            1,
+            true,
+            Rc::new(move || count.set(count.get() + 1)),
+        );
+        let count = pages.clone();
+        start_fallback_poll(
+            &window,
+            1,
+            false,
+            Rc::new(move || count.set(count.get() + 1)),
+        );
+        gtk::glib::MainContext::default().block_on(async {
+            gtk::glib::timeout_future(std::time::Duration::from_millis(1100)).await;
+            assert!(alerts.get() >= 1);
+            assert_eq!(pages.get(), 0);
+            window.present();
+            gtk::glib::timeout_future(std::time::Duration::from_millis(1100)).await;
+            assert!(pages.get() >= 2);
+            window.set_visible(false);
+            let hidden_pages = pages.get();
+            let hidden_alerts = alerts.get();
+            gtk::glib::timeout_future(std::time::Duration::from_millis(1100)).await;
+            assert_eq!(pages.get(), hidden_pages);
+            assert!(alerts.get() > hidden_alerts);
+        });
+        window.destroy();
+    }
 
     #[test]
     fn delayed_reads_leave_main_context_free_and_discard_superseded_results() {
@@ -264,6 +396,8 @@ mod tests {
         let change_count = changes.clone();
         watch_data(
             &window,
+            15,
+            true,
             |name| name == "registry.json",
             move || change_count.set(change_count.get() + 1),
         );
