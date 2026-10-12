@@ -6489,7 +6489,9 @@ mod tests {
                 "{}.unreadable-",
                 path.file_name().unwrap().to_str().unwrap()
             );
-            for timestamp in 1..=5 {
+            // Prior snapshots may carry future times after a clock correction.
+            let future = u128::from(epoch_millis()) * 1_000_000 + 31_536_000_000_000_000;
+            for timestamp in future..future + 5 {
                 std::fs::write(
                     path.parent().unwrap().join(format!("{prefix}{timestamp}")),
                     "old",
