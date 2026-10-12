@@ -36,6 +36,7 @@ struct QuarantineReadCache {
     len: u64,
     set: BTreeSet<String>,
     mandatory: BTreeSet<String>,
+    review: BTreeSet<String>,
 }
 
 static QUARANTINE_READ_CACHE: Mutex<Option<QuarantineReadCache>> = Mutex::new(None);
@@ -1319,6 +1320,7 @@ pub fn all_quarantined_names() -> Result<BTreeSet<String>, String> {
 /// Quarantine map: namespaced tool name (`server__tool`) -> a record of why it's
 /// blocked (server, tool, reason, ts), shown in the UI and persisted across restarts.
 type Quarantine = BTreeMap<String, Value>;
+type QuarantineSets = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
 
 /// Load the quarantine map for `profile`.
 ///
@@ -1539,7 +1541,7 @@ pub fn quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<String>, St
     quarantined_checked_at(&path, profile)
 }
 
-/// Tools quarantined because the integrity baseline itself was lost. Unlike ordinary
+/// Tools quarantined for a lost integrity baseline or an explicit pending review. Unlike ordinary
 /// high-risk drift quarantine, these entries are always enforced: disabling the optional
 /// drift policy must not turn a corrupt baseline into a fail-open catalog.
 pub fn mandatory_quarantined(profile: Option<&str>) -> Result<BTreeSet<String>, String> {
@@ -1570,9 +1572,31 @@ pub fn mandatory_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<S
     Ok(quarantined_sets_checked_at(&path, profile)?.1)
 }
 
+/// Explicit definition reviews survive every safety level, including Off.
+pub fn review_quarantined(profile: Option<&str>) -> Result<BTreeSet<String>, String> {
+    Ok(review_quarantine_set(&load_quarantine(profile)?))
+}
+
+pub fn review_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<String>, String> {
+    let Some(path) = quarantine_path(profile) else {
+        return Ok(BTreeSet::new());
+    };
+    if profile.is_some_and(|id| crate::registry::unmigrated_legacy_profile_store(id, false)) {
+        return Err("The quarantine store was not migrated; retaining pending reviews".into());
+    }
+    Ok(quarantined_sets_checked_at(&path, profile)?.2)
+}
+
+fn review_quarantine_set(q: &Quarantine) -> BTreeSet<String> {
+    q.iter()
+        .filter(|(_, record)| record["review_required"] == true)
+        .map(|(tool, _)| tool.clone())
+        .collect()
+}
+
 fn mandatory_quarantine_set(q: &Quarantine) -> BTreeSet<String> {
     q.iter()
-        .filter(|(_, record)| record.get("change").and_then(Value::as_str) == Some("tamper"))
+        .filter(|(_, record)| record["change"] == "tamper" || record["review_required"] == true)
         .map(|(tool, _)| tool.clone())
         .collect()
 }
@@ -1586,7 +1610,7 @@ fn quarantined_checked_at(path: &Path, profile: Option<&str>) -> Result<BTreeSet
 fn quarantined_sets_checked_at(
     path: &Path,
     profile: Option<&str>,
-) -> Result<(BTreeSet<String>, BTreeSet<String>), String> {
+) -> Result<QuarantineSets, String> {
     // SBS-871: retry the same transient rename window `read_pins_at` already covers
     // instead of treating a vanished file as a legitimate empty set.
     for attempt in 0..PINS_READ_ATTEMPTS {
@@ -1628,7 +1652,7 @@ fn quarantined_sets_checked_at(
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(c) = cache.as_ref() {
                 if c.path == path && c.mtime == mtime && c.len == len {
-                    return Ok((c.set.clone(), c.mandatory.clone()));
+                    return Ok((c.set.clone(), c.mandatory.clone(), c.review.clone()));
                 }
             }
         }
@@ -1656,6 +1680,7 @@ fn quarantined_sets_checked_at(
         // Fail closed: do not cache a corrupt parse, do not return empty, do not rename.
         let records = parse_quarantine_raw(&raw, path)?;
         let mandatory = mandatory_quarantine_set(&records);
+        let review = review_quarantine_set(&records);
         let set: BTreeSet<String> = records.into_keys().collect();
 
         *QUARANTINE_READ_CACHE
@@ -1666,8 +1691,9 @@ fn quarantined_sets_checked_at(
             len,
             set: set.clone(),
             mandatory: mandatory.clone(),
+            review: review.clone(),
         });
-        return Ok((set, mandatory));
+        return Ok((set, mandatory, review));
     }
     missing_quarantine_as_sets(profile, path)
 }
@@ -1675,11 +1701,11 @@ fn quarantined_sets_checked_at(
 fn missing_quarantine_as_sets(
     profile: Option<&str>,
     path: &Path,
-) -> Result<(BTreeSet<String>, BTreeSet<String>), String> {
+) -> Result<QuarantineSets, String> {
     match missing_quarantine_store(profile, path) {
         Ok(_) => {
             clear_quarantine_read_cache_for(path);
-            Ok((BTreeSet::new(), BTreeSet::new()))
+            Ok((BTreeSet::new(), BTreeSet::new(), BTreeSet::new()))
         }
         Err(e) => {
             clear_quarantine_read_cache_for(path);
@@ -2467,6 +2493,11 @@ fn apply_quarantine_inner_with(
                 "pending_pin": pending,
                 "definition": definition,
             });
+            if events.iter().any(|event| {
+                event["tool"] == e["tool"] && event["review_required"] == true
+            }) {
+                rec["review_required"] = json!(true);
+            }
             // Concrete annotation prior→new (SOU-305). Optional: older events / poison
             // rows omit these; the UI falls back to `reason` alone.
             for key in ["prev_ro", "new_ro", "prev_dh", "new_dh"] {

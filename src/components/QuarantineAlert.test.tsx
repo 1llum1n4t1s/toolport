@@ -83,7 +83,7 @@ describe("QuarantineAlert bulk re-approval", () => {
     expect(releaseQuarantine).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole("region")).not.toBeInTheDocument());
     expect(toastSuccess).toHaveBeenCalledWith(
-      "Saved 40 approvals. Current definitions need one more review.",
+      "Saved 40 approvals. Current definitions need one more review and stay blocked until then.",
     );
   });
 
@@ -301,7 +301,7 @@ describe("QuarantineAlert", () => {
     render(<QuarantineAlert />);
     expect(
       await screen.findByText(
-        "No saved definition. Approving captures the current definition for one more review.",
+        "No saved definition. Approving captures the current definition for one more review. The tool stays blocked until then.",
       ),
     ).toBeInTheDocument();
   });

@@ -16,7 +16,7 @@ function Definition({ tool }: { tool: QuarantinedTool }) {
     return (
       <p className="mt-1 text-xs text-muted-foreground">
         No saved definition. Approving captures the current definition for one more
-        review.
+        review. The tool stays blocked until then.
       </p>
     );
   }

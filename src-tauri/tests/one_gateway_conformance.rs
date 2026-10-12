@@ -2424,6 +2424,102 @@ fn matrix_first_quarantine_approval_rejects_a_replaced_record() {
     assert!(conduit_lib::integrity::quarantined(None).unwrap().contains("srv__wipe"));
 }
 
+fn preview_approval_requires_gateway_review(level: registry::SafetyLevel, bulk: bool) {
+    let _guard = CASE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _data_lock = registry::data_dir_test_lock();
+    let (_fixture, dir) = Fixture::new("preview-release-review");
+    let _data_dir = registry::DataDirOverride::set(&dir);
+    write_registry(&dir, vec![mock_server_entry("files", &dir.join("downstream.jsonl"), None)], vec![]);
+    let path = dir.join("registry.json");
+    let mut reg = registry::load_from(&path).unwrap();
+    if level == registry::SafetyLevel::Ask {
+        assert_eq!(reg.safety_level_effective(), level);
+        assert!(!reg.quarantine_on_drift_effective(), "Ask must use default drift settings");
+    } else {
+        reg.set_safety_level(level);
+        registry::save_to(&path, &reg).unwrap();
+    }
+    let name = "files__echo";
+    let tools = vec![json!({"name":name, "description":"Preview-era echo", "inputSchema":{"type":"object"}})];
+    for scope in [None, reg.active_profile_id.as_deref()] {
+        conduit_lib::integrity::check(scope, &tools).unwrap();
+        conduit_lib::integrity::apply_quarantine(scope, &tools, &[json!({"type":"pins_load_failed", "change":"tamper", "severity":"high"})]).unwrap();
+    }
+    for store in [dir.join("quarantine.json"), dir.join(format!("quarantine-v2-{}.json", registry::profile_store_key(reg.active_profile_id.as_deref().unwrap())))] {
+        let mut records: Value = serde_json::from_slice(&std::fs::read(&store).unwrap()).unwrap();
+        assert!(records[name]["pending_pin"]["fp"].as_str().unwrap().starts_with("v3:"));
+        records[name].as_object_mut().unwrap().remove("definition");
+        std::fs::write(store, records.to_string()).unwrap();
+    }
+    let mut running = if level == registry::SafetyLevel::Off { None } else {
+        let mut client = spawn_adapter(&dir, &AdapterOptions::default());
+        client.initialize("matrix-preview-release-review");
+        client.wait_for_tool("__add", Duration::from_secs(30));
+        assert!(!client.tool_names().contains(&name.to_string()));
+        Some(client)
+    };
+    let displayed = conduit_lib::integrity::all_quarantined_summaries().unwrap();
+    assert_eq!(displayed.len(), 2);
+    for record in &displayed {
+        assert_eq!(record["has_definition"], false);
+        let scope = record["profile"].as_str().unwrap();
+        let scope = (!scope.is_empty()).then_some(scope);
+        if bulk {
+            let expected = std::collections::BTreeMap::from([(name.into(), record["record_id"].as_str().unwrap().into())]);
+            assert_eq!(conduit_lib::integrity::release_all_records(scope, &expected).unwrap().released, 1);
+        } else {
+            approve_displayed_quarantine(record).unwrap();
+        }
+    }
+    let mut client = running.take().unwrap_or_else(|| {
+        let mut client = spawn_adapter(&dir, &AdapterOptions::default());
+        client.initialize("matrix-preview-release-review");
+        client.wait_for_tool("__add", Duration::from_secs(30));
+        client
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(!client.tool_names().contains(&name.to_string()), "unseen definition published at {level:?}, bulk={bulk}");
+        let records = conduit_lib::integrity::all_quarantined_summaries().unwrap();
+        if !records.is_empty() && records.iter().all(|r| r["has_definition"] == true) { break; }
+        assert!(Instant::now() < deadline, "no captured review at {level:?}, bulk={bulk}\n{}", client.diagnostics());
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    for route in [name, "toolport_call_tool"] {
+        let args = if route == name { json!({"text":"unreviewed"}) } else { json!({"name":name, "arguments":{"text":"unreviewed"}}) };
+        assert_eq!(client.call_tool(route, args)["isError"], true);
+    }
+    // Another publication and watcher pass must retain the captured block.
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(!client.tool_names().contains(&name.to_string()));
+    // Load the finding shown for the second review after publication settles.
+    let captured = conduit_lib::integrity::all_quarantined_summaries().unwrap();
+    assert!(!captured.is_empty());
+    for record in captured {
+        assert_eq!(record["has_definition"], true);
+        let scope = record["profile"].as_str().unwrap();
+        let definition = conduit_lib::integrity::quarantine_definition((!scope.is_empty()).then_some(scope), name, record["record_id"].as_str().unwrap()).unwrap();
+        assert_eq!(definition["name"], name);
+        approve_displayed_quarantine(&record).unwrap();
+    }
+    client.wait_for_tool(name, Duration::from_secs(10));
+    assert_eq!(client.call_tool(name, json!({"text":"approved"}))["isError"], false);
+    assert_eq!(client.call_tool("toolport_call_tool", json!({"name":name, "arguments":{"text":"approved"}}))["isError"], false);
+}
+
+#[test]
+fn matrix_preview_approval_ask_single() { preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, false); }
+#[test]
+fn matrix_preview_approval_ask_bulk() { preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, true); }
+#[test]
+fn matrix_preview_approval_strict_single() { preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, false); }
+#[test]
+fn matrix_preview_approval_strict_bulk() { preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, true); }
+#[test]
+fn matrix_preview_approval_off_single() { preview_approval_requires_gateway_review(registry::SafetyLevel::Off, false); }
+#[test]
+fn matrix_preview_approval_off_bulk() { preview_approval_requires_gateway_review(registry::SafetyLevel::Off, true); }
+
 fn quarantine_release_restores_calls(reserved_alias: bool, product_release: bool) {
     let _guard = CASE_LOCK
         .lock()

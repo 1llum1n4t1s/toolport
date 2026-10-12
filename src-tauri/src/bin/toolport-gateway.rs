@@ -8761,7 +8761,7 @@ fn build_router_incremental(
     } else if reg.safety_level_effective() != registry::SafetyLevel::Off {
         integrity::mandatory_quarantined(profile)
     } else {
-        Ok(BTreeSet::new())
+        integrity::review_quarantined(profile)
     };
     let stored_error = stored.as_ref().err().cloned();
     let bootstrap = quarantine_bootstrap(stored, previous_quarantine.as_ref());
@@ -10311,6 +10311,7 @@ fn maybe_check_integrity(
             r.quarantine_on_drift_effective(),
         )
     };
+    let mut review_required = false;
     let result = (|| {
         #[cfg(test)]
         observe_integrity_gate();
@@ -10326,6 +10327,7 @@ fn maybe_check_integrity(
                 .collect();
             (e, all)
         })?;
+        review_required = events.iter().any(|event| event["review_required"] == true);
         // A previous cycle may have persisted quarantine and then failed (or exited) before
         // advancing the corresponding pins. Recover from those durable records without depending on
         // the filtered catalog. Do this after `check_staged` so a corrupt pin store still takes the
@@ -10343,15 +10345,25 @@ fn maybe_check_integrity(
         ));
             eprintln!("toolport: SECURITY tool drift ({change}) {tool}");
         }
-        // Drift quarantine is Strict or team-forced; baseline tamper also blocks at Ask.
-        if quarantine_on || (blocking && integrity::baseline_tamper_detected(&events)) {
-            let pending = integrity::quarantine_candidates(tools, &events);
-            integrity::apply_quarantine(profile, tools, &events)
+        // Explicit reviews block at every level. Ordinary Ask drift still only notifies.
+        let enforce_drift =
+            quarantine_on || (blocking && integrity::baseline_tamper_detected(&events));
+        if enforce_drift || review_required {
+            let required: Vec<_> = events
+                .iter()
+                .filter(|event| enforce_drift || event["review_required"] == true)
+                .cloned()
+                .collect();
+            let pending = integrity::quarantine_candidates(tools, &required);
+            integrity::apply_quarantine(profile, tools, &required)
                 .map_err(|e| (e, pending.clone()))?;
             // `check_staged` deliberately kept these old pins until the quarantine write was
             // durable. Accept from that durable record so a failed pin write or process exit can
             // recover even after the router filters the quarantined tool from its next catalog.
             integrity::accept_quarantined_pins(profile).map_err(|e| (e, pending.clone()))?;
+            if !enforce_drift {
+                integrity::accept_staged_pins(profile, tools, &events).map_err(|e| (e, pending.clone()))?;
+            }
             Ok((!pending.is_empty()).then_some(pending))
         } else {
             // Record ordinary drift at Ask, and all findings at Off, without blocking.
@@ -10361,7 +10373,7 @@ fn maybe_check_integrity(
         }
     })();
     match result {
-        Err((error, _)) if !blocking && !quarantine_on => {
+        Err((error, _)) if !blocking && !quarantine_on && !review_required => {
             glog(&format!("SECURITY: integrity recording failed: {error}"));
             Ok(None)
         }
@@ -10509,7 +10521,7 @@ fn fail_closed_integrity_catalog(
 
 /// The quarantine set the router SHOULD be enforcing right now, mirroring how the
 /// initial build gates on safety: Strict or team-forced drift quarantine enforces all
-/// entries. Otherwise Ask enforces baseline tamper and Off leaves findings unenforced.
+/// entries. Ask also enforces baseline tamper; every level enforces explicit definition reviews.
 fn effective_quarantine(
     registry: &Arc<Mutex<Registry>>,
     profile: Option<&str>,
@@ -10529,7 +10541,7 @@ fn effective_quarantine(
     } else if level == registry::SafetyLevel::Ask {
         integrity::mandatory_quarantined_checked(profile)
     } else {
-        Ok(BTreeSet::new())
+        integrity::review_quarantined_checked(profile)
     };
     match stored {
         Ok(set) => {

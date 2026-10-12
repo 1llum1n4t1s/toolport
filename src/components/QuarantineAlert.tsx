@@ -195,7 +195,9 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
           (q) => !(q.has_definition ?? Boolean(q.definition)),
         );
         toast.success(
-          needsCapture ? `${saved} Current definitions need one more review.` : saved,
+          needsCapture
+            ? `${saved} Current definitions need one more review and stay blocked until then.`
+            : saved,
         );
       }
     } catch (e) {
