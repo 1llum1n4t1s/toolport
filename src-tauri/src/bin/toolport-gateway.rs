@@ -39220,6 +39220,15 @@ mod tests {
             .lock()
             .unwrap()
             .set_safety_level(registry::SafetyLevel::Off);
+        assert_eq!(effective_quarantine(&registry, profile, &AtomicBool::new(false)), None,
+            "switching to Off must not approve an unreadable review state");
+        assert!(!reconcile_quarantine(&registry, &router, &stdio, profile, None, &AtomicBool::new(false)));
+        assert!(router.lock().unwrap().quarantined().contains("srv__wipe"));
+        // Once its ordinary pin and quarantine state are readable, Off restores
+        // v1 exposure without requiring approval of an ordinary drift record.
+        let key = registry::profile_store_key(profile.unwrap());
+        std::fs::write(dir.join(format!("tool-pins-v2-{key}.json")), json!({"srv__wipe":"v3:accepted-definition"}).to_string()).unwrap();
+        std::fs::write(dir.join(format!("quarantine-v2-{key}.json")), "{}").unwrap();
         assert_eq!(
             effective_quarantine(&registry, profile, &AtomicBool::new(false)),
             Some(BTreeSet::new())
