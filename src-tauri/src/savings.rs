@@ -386,7 +386,7 @@ pub fn record_discovery(session: &CatalogSession, text: &str, matched_schema_byt
 }
 
 /// Record one code-mode script run: the downstream round-trips it collapsed into a single
-/// `run_script` call (`round_trips_saved` = calls - 1). Written to the v2 log,
+/// `run_script` call (`round_trips_saved` = calls - 1). Written to the current log,
 /// tagged `kind:"orchestration"` and carrying `roundTripsSaved` so the reader
 /// totals round trips separately from catalog estimates. `loads:0` keeps it out
 /// of the list-serve count (a script run is not a `tools/list`). No-op when nothing was saved.
@@ -403,7 +403,7 @@ pub fn record_orchestration(round_trips_saved: u64) {
     }));
 }
 
-/// Append one JSON entry under the v2 lock. The lock covers both append and
+/// Append one JSON entry under the v4 lock. The lock covers both append and
 /// any rotation; an old gateway never opens this versioned path.
 fn append_line(entry: &Value) {
     if let Some(path) = v4_path() {
@@ -899,7 +899,9 @@ fn aggregate(entries: &[Value]) -> Value {
         "legacyEstimatedTokensAvoided": folded["legacyTokensSaved"],
         "estimatedTokensAvoided": folded["estimatedTokensAvoided"],
         "previousReportedTokensSaved": signed(old_delta - net),
+        "estimatedDiscoveryTokens": folded["estimatedResponseTokens"],
         "historicalListLoads": folded["loads"].as_u64().unwrap_or(0).saturating_sub(number("tokenizedLoads")),
+        "historicalDiscoveryCount": folded["discoveryCount"].as_u64().unwrap_or(0).saturating_sub(number("discoveryCount")),
         "historicalPeakCatalog": folded["tools"], "historicalSinceTs": folded["ts"],
         "historicalMeasuredLoads": folded["measuredLoads"].as_u64().unwrap_or(0).saturating_sub(number("tokenizedLoads")),
         "roundTripsSaved": folded["roundTripsSaved"],
@@ -1579,7 +1581,7 @@ mod tests {
         assert!(!second.contains_key("bravo"));
         assert_eq!(summary()["estimatedTokensAvoided"], 60);
         assert_eq!(summary()["legacyEstimatedTokensAvoided"], 99);
-        assert_eq!(summary()["discoveryCount"], 1);
+        assert_eq!(summary()["historicalDiscoveryCount"], 1);
         try_clear().unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }

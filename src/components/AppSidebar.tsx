@@ -653,7 +653,7 @@ export function AppSidebar({
           <button
             onClick={() => onSelectView("activity")}
             className="sidebar-savings mx-3 mt-2 flex items-center gap-2 rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-left text-xs transition-colors hover:bg-success/10"
-            title={`${savingsStale ? "Catalog telemetry unavailable; showing the last loaded measurement. " : ""}cl100k_base tokenizer; net of discovery responses and extra catalog exposure; counted once per session and scoped catalog hash (sessionless HTTP: per listener/client). Historical estimates excluded; not model usage or billing. Click for the breakdown.`}
+            title={`${savingsStale ? "Catalog telemetry unavailable; showing the last loaded measurement. " : ""}cl100k_base tokenizer; one full catalog baseline per client session minus every catalog and search response. Sessionless HTTP and unverifiable history excluded; not model usage or billing. Click for the breakdown.`}
           >
             <Zap className="size-3.5 shrink-0 text-success" />
             <span className="text-muted-foreground">

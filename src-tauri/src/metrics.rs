@@ -155,7 +155,7 @@ fn render_with_savings(
     out.push_str(&format!("toolport_tokens_saved_total {}\n", tokens_saved));
 
     // Savings can decrease or become negative, so the net series is a gauge.
-    out.push_str("# HELP toolport_tokens_saved Net catalog tokens saved, excluding historical estimates; counted once per session and scoped catalog hash\n");
+    out.push_str("# HELP toolport_tokens_saved Net catalog tokens saved; one baseline per identifiable session minus all catalog and search responses; unverifiable history excluded\n");
     out.push_str("# TYPE toolport_tokens_saved gauge\n");
     out.push_str(&format!(
         "toolport_tokens_saved{{tokenizer=\"cl100k_base\",method=\"net_of_discovery\"}} {}\n",

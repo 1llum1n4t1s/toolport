@@ -5463,17 +5463,6 @@ fn format_byte_count(bytes: u64) -> String {
     }
 }
 
-fn savings_since_date(since_ts_ms: u64) -> Option<String> {
-    if since_ts_ms == 0 {
-        return None;
-    }
-    gtk::glib::DateTime::from_unix_local(since_ts_ms as i64 / 1000)
-        .ok()?
-        .format("%b %e")
-        .ok()
-        .map(|formatted| formatted.split_whitespace().collect::<Vec<_>>().join(" "))
-}
-
 /// PII pseudonymization badge for one call, mirroring the shipping rules:
 /// nothing when the pass didn't run or replaced zero values; a warning when the
 /// pass ran but failed OPEN, because the honest reading of that row is "some of
