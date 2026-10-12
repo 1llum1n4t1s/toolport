@@ -37,6 +37,7 @@ struct QuarantineReadCache {
     set: BTreeSet<String>,
     mandatory: BTreeSet<String>,
     review: BTreeSet<String>,
+    captured_reviews: BTreeSet<String>,
 }
 
 static QUARANTINE_READ_CACHE: Mutex<Option<QuarantineReadCache>> = Mutex::new(None);
@@ -531,6 +532,105 @@ enum PinsLoad {
     Corrupt,
 }
 
+/// Review-only pin metadata. A failed read never supplies a trusted baseline,
+/// but remembered review names must stay blocked, including retired reviews.
+#[derive(Clone, Default)]
+struct ReviewPins {
+    names: BTreeSet<String>,
+    active: BTreeSet<String>,
+    ordinary: BTreeSet<String>,
+    unreadable: bool,
+}
+
+impl ReviewPins {
+    fn from_pins(pins: &Pins) -> Self {
+        let mut state = Self::default();
+        for (name, pin) in pins {
+            if pin.review_on_upgrade || pin.review_pending {
+                state.names.insert(name.clone());
+                if !pin.review_retired {
+                    state.active.insert(name.clone());
+                }
+            } else {
+                state.ordinary.insert(name.clone());
+            }
+        }
+        state
+    }
+}
+
+#[derive(Default)]
+struct ReviewPinsCache {
+    stamp: Option<Vec<Option<ReviewFileStamp>>>,
+    state: std::sync::Arc<ReviewPins>,
+}
+
+static REVIEW_PINS_CACHE: Mutex<BTreeMap<PathBuf, ReviewPinsCache>> = Mutex::new(BTreeMap::new());
+
+// Include both primary and backup identities, so atomic replacements, equal-size
+// rewrites, backup recovery and deletion invalidate a cached read.
+fn review_pins_stamp(path: &Path) -> Option<Vec<Option<ReviewFileStamp>>> {
+    [path.to_path_buf(), pins_backup_path(path)].iter().map(|path| {
+        match std::fs::metadata(path) {
+            Ok(metadata) => review_file_stamp(path, &metadata).map(Some),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+            Err(_) => None,
+        }
+    }).collect()
+}
+
+fn cached_review_pins(profile: Option<&str>) -> std::sync::Arc<ReviewPins> {
+    let Some(path) = pins_path(profile) else {
+        return Default::default();
+    };
+    let stamp = review_pins_stamp(&path);
+    {
+        let cache = REVIEW_PINS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = cache.get(&path) {
+            if stamp.is_some() && entry.stamp == stamp {
+                return entry.state.clone();
+            }
+        }
+    }
+    let loaded = load_pins(profile);
+    // Do not freeze a mixed snapshot if another writer replaced either file.
+    let stable = stamp.filter(|stamp| Some(stamp) == review_pins_stamp(&path).as_ref());
+    let mut cache = REVIEW_PINS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = cache.entry(path).or_default();
+    let fresh = matches!(loaded, PinsLoad::Fresh);
+    let state = match loaded {
+        PinsLoad::Loaded(pins) => ReviewPins::from_pins(&pins),
+        PinsLoad::Fresh => ReviewPins::default(),
+        PinsLoad::Corrupt => ReviewPins { unreadable: true, ..(*entry.state).clone() },
+    };
+    entry.state = std::sync::Arc::new(state);
+    // Fresh stores still need the legacy-migration guard on the next read.
+    entry.stamp = if fresh { None } else { stable };
+    entry.state.clone()
+}
+
+fn remember_saved_review_pins(path: &Path, pins: &Pins) {
+    let mut cache = REVIEW_PINS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = cache.entry(path.to_path_buf()).or_default();
+    entry.stamp = None;
+    entry.state = std::sync::Arc::new(ReviewPins::from_pins(pins));
+}
+
+/// Unknown review states fail closed only for their catalog names. Remembered
+/// ordinary Off pins remain ordinary; an unreadable file cannot approve a return.
+pub fn definition_review_names_for_catalog(
+    profile: Option<&str>, present: &BTreeSet<String>,
+) -> Result<BTreeSet<String>, BTreeSet<String>> {
+    let state = cached_review_pins(profile);
+    let mut names: BTreeSet<_> = state.names.intersection(present).cloned().collect();
+    if state.unreadable {
+        names.extend(present.difference(&state.ordinary).cloned());
+        Err(names)
+    } else {
+        Ok(names)
+    }
+}
+
 /// Reads and retries before giving up on a pin store.
 ///
 /// Every connected client spawns its own gateway and they all share this file, so a
@@ -545,8 +645,13 @@ enum PinsLoad {
 const PINS_READ_ATTEMPTS: u32 = 5;
 const PINS_READ_BACKOFF_MS: u64 = 40;
 
+#[cfg(test)]
+static PINS_REVIEW_READ_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn read_pins_at(path: &Path) -> Option<Pins> {
     for attempt in 0..PINS_READ_ATTEMPTS {
+        #[cfg(test)]
+        PINS_REVIEW_READ_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let last = attempt + 1 == PINS_READ_ATTEMPTS;
         let retry = || std::thread::sleep(std::time::Duration::from_millis(PINS_READ_BACKOFF_MS));
         let raw = match std::fs::read_to_string(path) {
@@ -649,7 +754,9 @@ fn save_pins_with(
         }
     }
     write(&path, &serialized)
-        .map_err(|e| format!("Could not persist the integrity pin store at {path:?}: {e}"))
+        .map_err(|e| format!("Could not persist the integrity pin store at {path:?}: {e}"))?;
+    remember_saved_review_pins(&path, pins);
+    Ok(())
 }
 
 fn save_pins(profile: Option<&str>, pins: &Pins) -> Result<(), String> {
@@ -1371,7 +1478,7 @@ pub fn all_quarantined_names() -> Result<BTreeSet<String>, String> {
 /// Quarantine map: namespaced tool name (`server__tool`) -> a record of why it's
 /// blocked (server, tool, reason, ts), shown in the UI and persisted across restarts.
 type Quarantine = BTreeMap<String, Value>;
-type QuarantineSets = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
+type QuarantineSets = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
 
 /// Load the quarantine map for `profile`.
 ///
@@ -1710,39 +1817,28 @@ fn registry_has_tool_identity(registry: &crate::registry::Registry, name: &str) 
 /// Every unapproved review pin, including retired identities. Retirement is not
 /// approval: a returning name stays behind the gate even if its stores cannot be written.
 pub fn definition_review_names(profile: Option<&str>) -> BTreeSet<String> {
-    match load_pins(profile) {
-        PinsLoad::Loaded(pins) => pins.into_iter()
-            .filter(|(_, pin)| pin.review_on_upgrade || pin.review_pending)
-            .map(|(name, _)| name).collect(),
-        _ => BTreeSet::new(),
-    }
+    cached_review_pins(profile).names.clone()
 }
 
-/// Retry capture after a store failure even when the watcher's enforced set is
-/// unchanged. Otherwise a returning review can remain hidden without a Settings row.
+/// Retry only reviews whose definitions the candidate integrity check can see.
+/// Use cached quarantine capture metadata instead of parsing payloads every tick.
 pub fn definition_reviews_need_capture(profile: Option<&str>, present: &BTreeSet<String>) -> bool {
-    let reviews = definition_review_names(profile);
-    let present_reviews: Vec<_> = reviews.intersection(present).collect();
-    if present_reviews.is_empty() {
+    let state = cached_review_pins(profile);
+    if state.names.is_disjoint(present) {
         return false;
     }
-    let Ok(records) = load_quarantine(profile) else {
+    let Some(path) = quarantine_path(profile) else {
         return true;
     };
-    present_reviews.into_iter().any(|name| {
-        !records.get(name).is_some_and(|record| {
-            record["review_required"] == true && record["definition"].is_object()
-        })
-    })
+    let Ok(sets) = quarantined_sets_checked_at(&path, profile) else {
+        return true;
+    };
+    state.names.intersection(present).any(|name| !sets.3.contains(name))
 }
 
 fn active_definition_review_names(profile: Option<&str>) -> BTreeSet<String> {
-    match load_pins(profile) {
-        PinsLoad::Loaded(pins) => pins.into_iter()
-            .filter(|(_, pin)| !pin.review_retired && (pin.review_on_upgrade || pin.review_pending))
-            .map(|(name, _)| name).collect(),
-        _ => BTreeSet::new(),
-    }
+    let state = cached_review_pins(profile);
+    if state.unreadable { state.names.clone() } else { state.active.clone() }
 }
 
 /// Explicit definition reviews survive every safety level, including Off.
@@ -1764,12 +1860,7 @@ pub fn review_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<Stri
 
 /// A release awaiting its captured definition stays pending until bound approval.
 pub fn pending_definition_review(profile: Option<&str>) -> bool {
-    match load_pins(profile) {
-        PinsLoad::Loaded(pins) => pins.values().any(|pin| {
-            !pin.review_retired && (pin.review_on_upgrade || pin.review_pending)
-        }),
-        _ => false,
-    }
+    !cached_review_pins(profile).active.is_empty()
 }
 
 // Off ignores ordinary store errors, but an explicit pending review fails closed.
@@ -1847,7 +1938,7 @@ fn quarantined_sets_checked_at(
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(c) = cache.as_ref() {
                 if c.path == path && c.mtime == mtime && c.len == len {
-                    return Ok((c.set.clone(), c.mandatory.clone(), c.review.clone()));
+                    return Ok((c.set.clone(), c.mandatory.clone(), c.review.clone(), c.captured_reviews.clone()));
                 }
             }
         }
@@ -1876,6 +1967,9 @@ fn quarantined_sets_checked_at(
         let records = parse_quarantine_raw(&raw, path)?;
         let mandatory = mandatory_quarantine_set(&records);
         let review = review_quarantine_set(&records);
+        let captured_reviews: BTreeSet<_> = records.iter()
+            .filter(|(_, record)| record["review_required"] == true && record["definition"].is_object())
+            .map(|(name, _)| name.clone()).collect();
         let set: BTreeSet<String> = records.into_keys().collect();
 
         *QUARANTINE_READ_CACHE
@@ -1887,8 +1981,9 @@ fn quarantined_sets_checked_at(
             set: set.clone(),
             mandatory: mandatory.clone(),
             review: review.clone(),
+            captured_reviews: captured_reviews.clone(),
         });
-        return Ok((set, mandatory, review));
+        return Ok((set, mandatory, review, captured_reviews));
     }
     missing_quarantine_as_sets(profile, path)
 }
@@ -1900,7 +1995,7 @@ fn missing_quarantine_as_sets(
     match missing_quarantine_store(profile, path) {
         Ok(_) => {
             clear_quarantine_read_cache_for(path);
-            Ok((BTreeSet::new(), BTreeSet::new(), BTreeSet::new()))
+            Ok((BTreeSet::new(), BTreeSet::new(), BTreeSet::new(), BTreeSet::new()))
         }
         Err(e) => {
             clear_quarantine_read_cache_for(path);
@@ -4225,7 +4320,7 @@ struct ReviewStamp {
     files: BTreeMap<PathBuf, ReviewFileStamp>,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 struct ReviewFileStamp {
     modified: SystemTime,
     len: u64,
@@ -5948,6 +6043,49 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn review_r2_pin_cache_invalidates_rewrites_and_retains_corrupt_review_names() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("review-pin-cache");
+        let mut pin = pin_of(&destructive_tool("srv__wipe", "Unseen definition."));
+        pin.review_pending = true;
+        let pins = BTreeMap::from([("srv__wipe".into(), pin)]);
+        save_pins(None, &pins).unwrap();
+        assert!(definition_review_names(None).contains("srv__wipe"));
+        PINS_REVIEW_READ_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+        for _ in 0..10 {
+            assert!(pending_definition_review(None));
+            assert!(definition_review_names(None).contains("srv__wipe"));
+        }
+        assert_eq!(PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let path = pins_path(None).unwrap();
+        let original = std::fs::read_to_string(&path).unwrap();
+        // Equal-length external rewrites must not preserve cached tool names.
+        std::fs::write(&path, original.replace("srv__wipe", "srv__read")).unwrap();
+        assert_eq!(definition_review_names(None), BTreeSet::from(["srv__read".into()]));
+        std::fs::write(&path, "{ corrupt pins").unwrap();
+        std::fs::write(pins_backup_path(&path), "{ corrupt backup").unwrap();
+        let present = BTreeSet::from(["srv__read".into(), "new__unknown".into()]);
+        assert_eq!(definition_review_names_for_catalog(None, &present), Err(present));
+        PINS_REVIEW_READ_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+        assert!(definition_review_names(None).contains("srv__read"));
+        assert_eq!(PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst), 0, "unchanged corruption must not repeat the read backoff");
+        std::fs::write(&path, &original).unwrap();
+        assert_eq!(definition_review_names(None), BTreeSet::from(["srv__wipe".into()]));
+        std::fs::write(pins_backup_path(&path), original.replace("srv__wipe", "srv__read")).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(definition_review_names(None), BTreeSet::from(["srv__read".into()]));
+    }
+
+    #[test]
+    fn review_r2_cold_corrupt_review_state_does_not_imply_approval() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("review-cold-corrupt");
+        std::fs::write(pins_path(None).unwrap(), "{ unreadable review state").unwrap();
+        let present = BTreeSet::from(["srv__wipe".into()]);
+        assert_eq!(definition_review_names_for_catalog(None, &present), Err(present));
     }
 
     #[test]

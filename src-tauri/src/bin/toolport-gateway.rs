@@ -10303,12 +10303,17 @@ fn maybe_check_integrity(
         .collect();
     // Include retired pins before any fallible store work. A failed reactivation
     // or definition check cannot turn a returning unseen definition into approval.
-    let mut review_names: BTreeSet<_> = integrity::definition_review_names(profile)
-        .intersection(&all_names).cloned().collect();
+    let review_state = integrity::definition_review_names_for_catalog(profile, &all_names);
+    let mut review_names = match &review_state {
+        Ok(names) | Err(names) => names.clone(),
+    };
     let mut review_required = !review_names.is_empty();
     let result = (|| {
         #[cfg(test)]
         observe_integrity_gate();
+        if review_state.is_err() {
+            return Err(("Could not read the integrity review state".into(), review_names.clone()));
+        }
         integrity::ensure_quarantine_store_for_fresh_pins(profile)
             .map_err(|error| (error, all_names.clone()))?;
         let events = integrity::check_staged(profile, tools).map_err(|e| {
@@ -10641,7 +10646,7 @@ fn reconcile_to_checked(
     want: BTreeSet<String>,
 ) -> bool {
     let current = router.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-    let retry_capture = integrity::definition_reviews_need_capture(profile, &current.indexed_policy_names());
+    let retry_capture = integrity::definition_reviews_need_capture(profile, &current.integrity_candidate_names());
     reconcile_to_with(router, stdio, mcp_sessions, want, retry_capture, |next| {
         let tools = next.shared_tools();
         requarantine_if_needed(registry, next, tools, profile);
@@ -12689,7 +12694,7 @@ impl HostState {
             let wanted = scope
                 .as_ref()
                 .and_then(|scope| self.rooted_quarantine(scope));
-            let present = cached.indexed_policy_names();
+            let present = cached.integrity_candidate_names();
             let retry_capture = integrity::definition_reviews_need_capture(None, &present)
                 || scope.as_ref().is_some_and(|scope| integrity::definition_reviews_need_capture(Some(scope), &present));
             if !retry_capture && (wanted

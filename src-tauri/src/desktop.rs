@@ -450,6 +450,7 @@ fn delete_profile(state: State<RegistryState>, id: String) -> Result<Registry, S
     let (reg, _) = write_registry(state.inner(), |reg| {
         crate::registry_controller::apply_delete_profile(reg, &id)
     })?;
+    crate::registry_controller::cleanup_deleted_profile_reviews(&id, &reg);
     Ok(reg)
 }
 
