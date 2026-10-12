@@ -1085,16 +1085,6 @@ async fn has_client_secret(server_id: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-async fn activity_revision() -> Result<String, String> {
-    let generation = crate::observability_controller::activity_revision_generation();
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::observability_controller::activity_revision_for(generation)
-    })
-    .await
-    .map_err(|error| format!("Activity revision task failed: {error}"))?
-}
-
-#[tauri::command]
 fn release_activity_revision() {
     crate::observability_controller::release_activity_revision();
 }
@@ -4262,7 +4252,7 @@ pub fn run() {
         .manage(PendingShare::default())
         .manage(PendingTrayApprovals::default())
         .manage(RestartAdvice::default())
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(crate::activity_revision_ipc::handler(tauri::generate_handler![
             detect_clients,
             client_location_types,
             add_client_location,
@@ -4304,7 +4294,6 @@ pub fn run() {
             clear_client_credentials,
             has_client_secret,
             secret_status,
-            activity_revision,
             release_activity_revision,
             activity_health,
             get_audit_log,
@@ -4401,7 +4390,7 @@ pub fn run() {
             disable_launch_at_login,
             is_launch_at_login_enabled,
             open_external,
-        ])
+        ]))
         // Only a usable tray can keep a closed window reachable. Without one,
         // close exits through the normal run-loop cleanup.
         .on_window_event(|window, event| {

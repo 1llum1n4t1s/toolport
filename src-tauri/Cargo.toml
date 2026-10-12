@@ -51,7 +51,7 @@ desktop = [
 # enable in a shipped binary. `cargo test --release --bin toolport-gateway`
 # needs it because the library is compiled without `cfg(test)` when linked
 # into the binary; docker-publish rebuilds without this feature before upload.
-test-support = []
+test-support = ["tauri?/test"]
 # Additive Linux-native shell. This is deliberately not a default feature: the
 # current Tauri app remains the shipping desktop while the GTK shell reaches
 # behavioral parity.
@@ -189,3 +189,7 @@ required-features = ["test-support"]
 [[example]]
 name = "client-locations-scan"
 required-features = ["test-support"]
+
+[dev-dependencies.tokio]
+version = "1"
+features = ["rt", "sync"]
