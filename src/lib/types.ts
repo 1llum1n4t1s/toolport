@@ -345,6 +345,12 @@ export interface AuditStats {
 export interface SavingsSummary {
   /** Signed cl100k_base catalog delta minus discovery responses; excludes historical estimates. */
   tokensSaved: number;
+  fullTokens?: number;
+  exposedTokens?: number;
+  previousReportedTokensSaved?: number;
+  historicalListLoads?: number;
+  historicalMeasuredLoads?: number;
+  accountingMethod?: string;
   tokenizedLoads?: number;
   catalogTokenDelta?: number;
   discoveryTokens?: number;

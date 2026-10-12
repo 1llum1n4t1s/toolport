@@ -685,7 +685,7 @@ const DATA_FILES: &[&str] = &[
     "secrets.enc", "embeddings.json", "root-integrity-scopes.json",
     "tool-cache.json", "tool-pins.json", "quarantine.json",
     "audit.jsonl", "security.jsonl", "inspect.jsonl", "gateway.log", "daemon.log",
-    "savings.jsonl", "savings-v2.jsonl", "savings-v3.jsonl",
+    "savings.jsonl", "savings-v2.jsonl", "savings-v3.jsonl", "savings-v4.jsonl",
     "search-trace.jsonl", "search-trace-v2.jsonl", "oauth-debug.log",
     "last-daemon-exit.json", "approval-endpoint.json", "secret-reference-approvals.json",
     "rate_limit_counters.json", "downstream_backoff.json", "team-sync-status.json",

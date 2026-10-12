@@ -3361,6 +3361,7 @@ struct ActivityPage {
     savings_unit: gtk::Label,
     savings_detail: gtk::Label,
     savings_summary: gtk::Label,
+    savings_share: gtk::Button,
     expanded_stat_servers: std::rc::Rc<std::cell::RefCell<std::collections::HashSet<String>>>,
     server_stat_order: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
     expanded_activity_rows: ActivityExpansionState,
@@ -3542,7 +3543,7 @@ impl ActivityPage {
             .build();
         let savings_summary = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["toolport-muted", "caption"]).build();
         savings_banner.append(&savings_summary);
-        let savings_counting = gtk::Expander::builder().label("How this is counted").expanded(false).child(&savings_detail).build();
+        let savings_counting = gtk::Expander::builder().label("How this is measured").expanded(false).child(&savings_detail).build();
         savings_banner.append(&savings_counting);
         performance.append(&savings_banner);
 
@@ -3709,6 +3710,7 @@ impl ActivityPage {
             savings_unit,
             savings_detail,
             savings_summary,
+            savings_share: savings_share.clone(),
             expanded_stat_servers: std::rc::Rc::new(std::cell::RefCell::new(
                 std::collections::HashSet::new(),
             )),
@@ -3729,7 +3731,7 @@ impl ActivityPage {
                 .map(|snapshot| {
                     (
                         snapshot.tokens_saved,
-                        snapshot.savings_list_loads,
+                        snapshot.savings_tokenized_loads,
                         snapshot.savings_discovery_count,
                         snapshot.savings_discovery_bytes,
                     )
@@ -4261,86 +4263,32 @@ impl ActivityPage {
         let Some(snapshot) = borrowed.as_ref() else {
             return;
         };
-        if !savings_banner_visible(
-            snapshot.savings_tokenized_loads,
-            snapshot.savings_discovery_count,
-        ) {
-            self.savings_banner.set_visible(false);
-            return;
-        }
-        self.savings_banner.set_visible(true);
         let has_catalog = snapshot.savings_tokenized_loads > 0;
-        self.savings_summary.set_label(if has_catalog { "Tool descriptions your AI clients didn't have to load. Estimated locally; not a billing figure." } else { "Text returned by tool searches, measured on this computer." });
-        self.savings_title
-            .set_label(savings_title(snapshot.savings_tokenized_loads));
-        let (primary, unit) = savings_primary_display(
-            snapshot.tokens_saved,
-            snapshot.savings_tokenized_loads,
-            snapshot.savings_discovery_bytes,
-        );
+        let discovered = snapshot.savings_discovery_count > 0;
+        self.savings_banner.set_visible(has_catalog || discovered || snapshot.savings_historical_loads > 0);
+        self.savings_title.set_label(if has_catalog { "Net tool description savings" } else if discovered { "Discovery payload returned" } else { "Savings history" });
+        self.savings_summary.set_label(if has_catalog { "Full catalog baselines minus all catalog and search responses. Counted locally; not a billing figure." } else { "Older records remain available below. Comparable session measurements start with this version." });
+        let (primary, unit) = if has_catalog || discovered {
+            savings_primary_display(snapshot.tokens_saved, snapshot.savings_tokenized_loads, snapshot.savings_discovery_bytes)
+        } else { ("Not measured yet".to_string(), "") };
+        self.savings_share.set_visible(has_catalog);
         self.savings_value.set_label(&primary);
         self.savings_unit.set_label(unit);
-        let mut detail = if has_catalog {
-            savings_detail_line(
-                snapshot.savings_tokenized_loads,
-                snapshot.savings_peak_catalog,
-                savings_since_date(snapshot.savings_since_ts),
-            )
-        } else {
-            String::new()
-        };
-        if snapshot.savings_latest_catalog_ts > 0 {
-            detail.push_str(&format!(
-                "\nLatest load: {} / {} tools available → {} / {} tools loaded.",
-                format_byte_count(snapshot.savings_latest_full_bytes),
-                snapshot.savings_latest_full_tools,
-                format_byte_count(snapshot.savings_latest_exposed_bytes),
-                snapshot.savings_latest_exposed_tools,
-            ));
+        let mut detail = String::from("The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. Compact JSON and search response text are counted with cl100k_base. Every tools/list and search response is subtracted. Sessionless HTTP and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.");
+        if has_catalog || discovered {
+            detail.push_str(&format!("\n{} baseline tokens − {} catalog response tokens − {} search response tokens = {} net tokens saved.\n{} client sessions; {} catalog responses; {} search responses.\n{} baseline catalog text; {} catalog text sent; {} search text sent.",
+                grouped_number(snapshot.savings_full_tokens), grouped_number(snapshot.savings_exposed_tokens), grouped_number(snapshot.savings_discovery_tokens), snapshot.tokens_saved,
+                snapshot.savings_tokenized_loads, snapshot.savings_list_loads, snapshot.savings_discovery_count,
+                format_byte_count(snapshot.savings_full_bytes), format_byte_count(snapshot.savings_exposed_bytes), format_byte_count(snapshot.savings_discovery_bytes)));
         }
-        if snapshot.savings_measured_loads > 0 {
-            detail.push_str(&format!("\n{} available · {} loaded · {} avoided across {} measured loads",
-                format_byte_count(snapshot.savings_full_bytes),
-                format_byte_count(snapshot.savings_exposed_bytes),
-                format_byte_count(snapshot.savings_avoided_bytes),
-                snapshot.savings_measured_loads));
-            detail.push_str(&format!(
-                " · {} available per load",
-                format_byte_count(snapshot.savings_full_bytes / snapshot.savings_measured_loads)
-            ));
-            if snapshot.savings_extra_bytes > 0 {
-                detail.push_str(&format!(
-                    "\n{} extra descriptions loaded for small catalogs.",
-                    format_byte_count(snapshot.savings_extra_bytes)
-                ));
-            }
+        if snapshot.savings_historical_loads > 0 {
+            detail.push_str(&format!("\nExcluded history: {} catalog records ({} with byte measurements). Session identity and repeat loads cannot be verified.", grouped_number(snapshot.savings_historical_loads), grouped_number(snapshot.savings_historical_measured)));
         }
-        if snapshot.savings_discovery_count > 0 {
-            detail.push_str(&format!(
-                "\n{} searches returned {} of discovery text.",
-                snapshot.savings_discovery_count,
-                format_byte_count(snapshot.savings_discovery_bytes)
-            ));
+        if snapshot.savings_previous_tokens != 0 {
+            detail.push_str(&format!("\nPrevious tokenized total: {} tokens, excluded from the headline.", snapshot.savings_previous_tokens));
         }
-        if snapshot.savings_legacy_tokens > 0 {
-            detail.push_str(&format!(
-                "\nHistorical: ≈{} from older estimated records, excluded.",
-                state::format_token_count(snapshot.savings_legacy_tokens)
-            ));
-        }
-        if has_catalog {
-            detail.push_str("\nDescriptions are counted locally once per client session and catalog version, minus search results and extra descriptions loaded. This is not a billing figure.");
-            self.savings_value.set_tooltip_text(Some("Estimated locally; not a billing figure. Older estimates are excluded."));
-        } else {
-            detail.push_str(
-                "\nExact text bytes at Toolport's MCP boundary; model token usage may differ.",
-            );
-        }
-        if snapshot.savings_old_v2_tokens > 0 {
-            detail.push_str(&format!(
-                "\nOlder size-based estimate: ≈{} estimated tokens, excluded.",
-                state::format_token_count(snapshot.savings_old_v2_tokens)
-            ));
+        if snapshot.savings_legacy_tokens > 0 || snapshot.savings_old_v2_tokens > 0 {
+            detail.push_str(&format!("\nOlder estimated records: {} legacy tokens and {} size-based tokens, excluded.", grouped_number(snapshot.savings_legacy_tokens), grouped_number(snapshot.savings_old_v2_tokens)));
         }
         self.savings_detail.set_label(&detail);
     }
@@ -5408,6 +5356,7 @@ fn inspect_card(capture: &serde_json::Value, expanded_rows: ActivityExpansionSta
     card
 }
 
+#[cfg(test)]
 fn savings_detail_line(list_loads: u64, peak_catalog: u64, since: Option<String>) -> String {
     let mut parts = vec![format!(
         "{list_loads} catalog {}",
@@ -5422,15 +5371,17 @@ fn savings_detail_line(list_loads: u64, peak_catalog: u64, since: Option<String>
     parts.join(" · ")
 }
 
+#[cfg(test)]
 fn savings_banner_visible(loads: u64, searches: u64) -> bool {
     loads > 0 || searches > 0
 }
 
+#[cfg(test)]
 fn savings_title(loads: u64) -> &'static str {
     if loads == 0 {
         "Discovery payload returned"
     } else {
-        "Catalog text avoided"
+        "Net tool description savings"
     }
 }
 
@@ -5464,14 +5415,14 @@ fn savings_primary_display(
             "discovery text returned",
         );
     }
-    (format_saved_tokens(tokens_saved), "tokens saved")
+    (format_saved_tokens(tokens_saved), "net tokens saved")
 }
 
 fn savings_share_line(tokens_saved: i64, loads: u64, searches: u64, bytes: u64) -> String {
     if loads == 0 {
         return format!("Toolport recorded {searches} discovery searches returning {} of text at its MCP boundary. toolport.app", format_byte_count(bytes));
     }
-    format!("Toolport recorded {}{} catalog tokens avoided after discovery text. Estimated locally; not a billing figure. toolport.app", if tokens_saved < 0 { "-" } else { "" }, state::format_token_count(tokens_saved.unsigned_abs()))
+    format!("Toolport recorded {}{} net tokens saved. Full catalog baselines minus all catalog and search responses; counted locally with cl100k_base, not a billing figure. toolport.app", if tokens_saved < 0 { "-" } else { "" }, state::format_token_count(tokens_saved.unsigned_abs()))
 }
 
 fn format_byte_count(bytes: u64) -> String {
@@ -5489,6 +5440,7 @@ fn format_byte_count(bytes: u64) -> String {
 }
 
 /// "Mar 4"-style date for the savings detail line, or `None` for epoch 0.
+#[cfg(test)]
 fn savings_since_date(since_ts_ms: u64) -> Option<String> {
     if since_ts_ms == 0 {
         return None;
@@ -11315,7 +11267,7 @@ mod tests {
         activity.render(snapshot);
         let counting = activity.savings_banner.last_child().unwrap().downcast::<gtk::Expander>().unwrap();
         assert!(!counting.is_expanded());
-        assert!(!activity.savings_detail.text().contains("cl100k"));
+        assert!(activity.savings_detail.text().contains("cl100k_base"));
         assert!(!activity.savings_detail.text().contains("bytes/4"));
         let server_page = ServerPage {
             app: app.clone(),
@@ -12228,7 +12180,7 @@ mod tests {
     fn savings_detail_and_share_describe_net_tokenized_exposure() {
         assert_eq!(
             savings_primary_display(-123, 1, 0),
-            ("-123".into(), "tokens saved")
+            ("-123".into(), "net tokens saved")
         );
         assert!(!savings_banner_visible(0, 0));
         assert!(
@@ -12238,13 +12190,13 @@ mod tests {
         assert!(savings_banner_visible(1, 0));
         assert_eq!(
             savings_primary_display(41_100, 12, 0),
-            ("41.1k".into(), "tokens saved")
+            ("41.1k".into(), "net tokens saved")
         );
         assert_eq!(
             savings_primary_display(0, 0, 12_340),
             ("12.3 KB".into(), "discovery text returned")
         );
-        assert_eq!(savings_title(12), "Catalog text avoided");
+        assert_eq!(savings_title(12), "Net tool description savings");
         assert_eq!(savings_title(0), "Discovery payload returned");
         assert_eq!(format_byte_count(999_949), "999.9 KB");
         assert_eq!(format_byte_count(999_999), "1.0 MB");
@@ -12258,7 +12210,7 @@ mod tests {
         assert_eq!(savings_detail_line(1, 3, None), "1 catalog load");
         assert_eq!(
             savings_share_line(41_100, 12, 0, 0),
-            "Toolport recorded 41.1k catalog tokens avoided after discovery text. Estimated locally; not a billing figure. toolport.app"
+            "Toolport recorded 41.1k net tokens saved. Full catalog baselines minus all catalog and search responses; counted locally with cl100k_base, not a billing figure. toolport.app"
         );
         assert_eq!(savings_share_line(0, 0, 3, 12_340), "Toolport recorded 3 discovery searches returning 12.3 KB of text at its MCP boundary. toolport.app");
     }

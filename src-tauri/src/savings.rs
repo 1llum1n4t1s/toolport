@@ -1,11 +1,11 @@
 //! Local MCP catalog exposure measurements and legacy estimates.
 //!
-//! Distinct lazy/grouped catalog exposures are counted once per session. The
+//! One full catalog baseline is counted per identifiable client session. The
 //! telemetry writer tokenizes full/exposed arrays and discovery text offline.
 //! The headline is their signed net; historical estimates stay separate.
 //!
 //! Old gateways retain ownership of `savings.jsonl` and `savings-v2.jsonl`.
-//! Tokenized events go to `savings-v3.jsonl`. Its append and rotation
+//! Session-accounted events go to `savings-v4.jsonl`. Its append and rotation
 //! share a cross-process lock.
 
 use std::collections::BTreeMap;
@@ -18,32 +18,33 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 pub const TOKENIZER: &str = "cl100k_base";
 
-/// Owned by a client session, never shared across stdio/legacy HTTP sessions.
-/// Sessionless HTTP uses its listener guard, keyed additionally by client label.
-#[derive(Default)]
+/// One baseline per identifiable client session. Every later response is a cost,
+/// even when its catalog is identical. Sessionless HTTP cannot supply a baseline.
 pub struct CatalogSession {
-    seen: Mutex<std::collections::HashSet<[u8; 32]>>,
+    id: String,
+    loaded: Mutex<bool>,
+    measurable: bool,
+}
+
+impl Default for CatalogSession {
+    fn default() -> Self {
+        let mut bytes = [0u8; 16];
+        getrandom::getrandom(&mut bytes).expect("CSPRNG unavailable");
+        Self {
+            id: bytes.iter().map(|byte| format!("{byte:02x}")).collect(),
+            loaded: Mutex::new(false),
+            measurable: true,
+        }
+    }
 }
 
 impl CatalogSession {
-    fn first_exposure(
-        &self,
-        client: Option<&str>,
-        full: &SurfaceSummary,
-        exposed: &SerializedSurface,
-    ) -> bool {
-        let mut hash = Sha256::new();
-        let client = client.unwrap_or("");
-        hash.update((client.len() as u64).to_le_bytes());
-        hash.update(client.as_bytes());
-        hash.update(full.hash);
-        hash.update(exposed.hash);
-        self.seen
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(hash.finalize().into())
+    pub fn unmeasured() -> Self {
+        Self { measurable: false, ..Self::default() }
     }
 }
+
+pub const ACCOUNTING_METHOD: &str = "session_baseline_minus_all_responses";
 
 /// Special-token-like strings in schemas are ordinary text. No runtime IO.
 pub fn count_tokens(text: &str) -> u64 {
@@ -75,6 +76,10 @@ fn v3_path() -> Option<PathBuf> {
     Some(crate::registry::conduit_dir()?.join("savings-v3.jsonl"))
 }
 
+fn v4_path() -> Option<PathBuf> {
+    Some(crate::registry::conduit_dir()?.join("savings-v4.jsonl"))
+}
+
 /// Delete all savings logs, including carry-forward aggregates (called when the
 /// user clears retained activity). Returns `Err` only on a real removal failure; a
 /// missing file (nothing to clear) is success. Local and irreversible; the running
@@ -87,7 +92,7 @@ pub fn try_clear() -> std::io::Result<()> {
         ));
     }
     let mut first_error = None;
-    for path in [savings_path(), v2_path(), v3_path()].into_iter().flatten() {
+    for path in [savings_path(), v2_path(), v3_path(), v4_path()].into_iter().flatten() {
         let _lock = match crate::registry::lock_at(&path) {
             Ok(lock) => lock,
             Err(error) => {
@@ -310,8 +315,8 @@ pub fn record_catalog(
     );
 }
 
-/// Record cached surfaces once per client/session and pair of surface hashes.
-/// Dedupe precedes attribution, text copies and offline tokenization.
+/// Credit the first baseline once; subtract every tools/list response thereafter.
+/// Hold the session lock until enqueueing so concurrent first loads stay ordered.
 pub fn record_catalog_surfaces(
     session: &CatalogSession,
     mode: &str,
@@ -321,42 +326,50 @@ pub fn record_catalog_surfaces(
     full_text: impl FnOnce() -> String,
     route: impl Fn(&str) -> Option<String>,
 ) {
-    if !session.first_exposure(client, full, exposed) {
+    if !session.measurable {
         return;
     }
+    let mut loaded = session.loaded.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let first = !*loaded;
     let mut by_server_bytes = BTreeMap::<String, u64>::new();
-    for (name, bytes) in &full.tools {
+    for (name, bytes) in full.tools.iter().filter(|_| first) {
         if !exposed.tools.contains_key(name) {
             if let Some(server) = route(name) {
                 *by_server_bytes.entry(server).or_default() += bytes;
             }
         }
     }
-    let full_bytes = full.bytes;
+    let full_bytes = if first { full.bytes } else { 0 };
     let exposed_bytes = exposed.json.get().len() as u64;
     let avoided = full_bytes.saturating_sub(exposed_bytes);
     let extra = exposed_bytes.saturating_sub(full_bytes);
     let mut row = json!({
-        "v": 3, "kind": "catalog_exposure", "ts": epoch_millis() as u64,
-        "mode": mode, "fullToolCount": full.count, "exposedToolCount": exposed.count,
+        "v": 4, "kind": if first { "catalog_exposure" } else { "catalog_response" }, "ts": epoch_millis() as u64,
+        "accounting": ACCOUNTING_METHOD, "sessionId": session.id,
+        "mode": mode, "fullToolCount": if first { full.count } else { 0 }, "exposedToolCount": exposed.count,
         "fullSurfaceBytes": full_bytes, "exposedSurfaceBytes": exposed_bytes,
         "avoidedSurfaceBytes": avoided,
         "extraExposedSurfaceBytes": extra,
         "surfaceDeltaBytes": full_bytes as i64 - exposed_bytes as i64,
         "tokenizer": TOKENIZER,
-        "_fullText": full_text(), "_exposedText": exposed.json.get(),
+        "_fullText": if first { full_text() } else { String::new() }, "_exposedText": exposed.json.get(),
         "byServerBytes": by_server_bytes,
     });
     if let Some(client) = client.filter(|client| !client.is_empty()) {
         row["client"] = json!(client);
     }
     append_line(&row);
+    *loaded = true;
 }
 
 /// Search content is measured after composing the text returned by tools/call.
-pub fn record_discovery(text: &str, matched_schema_bytes: u64) {
+pub fn record_discovery(session: &CatalogSession, text: &str, matched_schema_bytes: u64) {
+    if !session.measurable {
+        return;
+    }
     append_line(&json!({
-        "v": 3, "kind": "discovery_response", "ts": epoch_millis() as u64,
+        "v": 4, "kind": "discovery_response", "ts": epoch_millis() as u64,
+        "accounting": ACCOUNTING_METHOD, "sessionId": session.id,
         "responseContentBytes": text.len() as u64,
         "matchedSchemaBytes": matched_schema_bytes,
         "tokenizer": TOKENIZER, "_discoveryText": text,
@@ -384,7 +397,7 @@ pub fn record_orchestration(round_trips_saved: u64) {
 /// Append one JSON entry under the v2 lock. The lock covers both append and
 /// any rotation; an old gateway never opens this versioned path.
 fn append_line(entry: &Value) {
-    if let Some(path) = v3_path() {
+    if let Some(path) = v4_path() {
         crate::telemetry::record(
             &path,
             &entry.to_string(),
@@ -721,7 +734,47 @@ fn fold(entries: &[Value]) -> Value {
         "latestExposedToolCount": latest_exposed_tools,
         "latestFullSurfaceBytes": latest_full_bytes, "latestExposedSurfaceBytes": latest_exposed_bytes,
         "discoveryCount": discovery_count, "responseContentBytes": discovery_bytes,
-        "matchedSchemaBytes": matched_schema_bytes, "estimatedResponseTokens": estimated_discovery_tokens })
+        "matchedSchemaBytes": matched_schema_bytes, "estimatedResponseTokens": estimated_discovery_tokens, "verified": fold_verified(entries) })
+}
+
+/// Carry verified accounting separately so rotation cannot promote old rows.
+fn fold_verified(entries: &[Value]) -> Value {
+    let mut totals = BTreeMap::<String, u64>::new();
+    let mut since = 0;
+    let mut peak = 0;
+    for entry in entries {
+        let carry = &entry["verified"];
+        let row = if carry.is_object() { carry } else { entry };
+        if !carry.is_object() && (row["v"] != 4 || row["accounting"] != ACCOUNTING_METHOD
+            || row["tokenizer"] != TOKENIZER || row["sessionId"].as_str().is_none_or(str::is_empty)) {
+            continue;
+        }
+        let kind = row["kind"].as_str().unwrap_or("");
+        let catalog = kind == "catalog_exposure";
+        let response = catalog || kind == "catalog_response";
+        let discovery = kind == "discovery_response";
+        if !carry.is_object() && !response && !discovery {
+            continue;
+        }
+        for key in ["fullTokens", "exposedTokens", "discoveryTokens", "fullSurfaceBytes",
+            "exposedSurfaceBytes", "responseContentBytes"] {
+            let value = row[key].as_u64().unwrap_or(0);
+            let total = totals.entry(key.to_string()).or_default();
+            *total = total.saturating_add(value);
+        }
+        for (key, increment) in [("tokenizedLoads", catalog), ("listLoads", response), ("discoveryCount", discovery)] {
+            let value = if carry.is_object() { row[key].as_u64().unwrap_or(0) } else { u64::from(increment) };
+            let total = totals.entry(key.to_string()).or_default();
+            *total = total.saturating_add(value);
+        }
+        peak = peak.max(row["fullToolCount"].as_u64().unwrap_or(0)).max(row["peakCatalog"].as_u64().unwrap_or(0));
+        let ts = row["ts"].as_u64().unwrap_or(0);
+        if ts > 0 && (since == 0 || ts < since) { since = ts; }
+    }
+    let mut result = json!(totals);
+    result["ts"] = json!(since);
+    result["peakCatalog"] = json!(peak);
+    result
 }
 
 /// Every savings line on disk, oldest first (bounded by rotation). Shared by the
@@ -768,7 +821,7 @@ pub fn try_entries() -> io::Result<Vec<Value>> {
             "unexpected v2 telemetry in legacy savings.jsonl",
         ));
     }
-    for path in [v2_path(), v3_path()].into_iter().flatten() {
+    for path in [v2_path(), v3_path(), v4_path()].into_iter().flatten() {
         let _lock = crate::registry::lock_at(&path).map_err(io::Error::other)?;
         old.extend(read_lines(Some(path))?);
     }
@@ -792,39 +845,33 @@ pub fn try_summary() -> io::Result<Value> {
 /// A normal line counts as one load; a carry line carries its own `loads`.
 fn aggregate(entries: &[Value]) -> Value {
     let folded = fold(entries);
-    let number = |key| folded[key].as_u64().unwrap_or(0) as i128;
-    let delta = number("fullTokens") - number("exposedTokens");
+    let verified = &folded["verified"];
+    let number = |key: &str| verified[key].as_u64().unwrap_or(0);
+    let delta = number("fullTokens") as i128 - number("exposedTokens") as i128;
     let signed = |n: i128| n.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+    let old_delta = folded["fullTokens"].as_u64().unwrap_or(0) as i128
+        - folded["exposedTokens"].as_u64().unwrap_or(0) as i128
+        - folded["discoveryTokens"].as_u64().unwrap_or(0) as i128;
+    let net = delta - number("discoveryTokens") as i128;
     json!({
-        "tokensSaved": signed(delta - number("discoveryTokens")),
-        "catalogTokenDelta": signed(delta),
-        "fullTokens": folded["fullTokens"],
-        "exposedTokens": folded["exposedTokens"],
-        "discoveryTokens": folded["discoveryTokens"],
-        "tokenizedLoads": folded["tokenizedLoads"],
-        "tokenizer": TOKENIZER,
-        "listLoads": folded.get("loads").and_then(Value::as_u64).unwrap_or(0),
-        "peakCatalog": folded.get("tools").and_then(Value::as_u64).unwrap_or(0),
-        "sinceTs": folded.get("ts").and_then(Value::as_u64).unwrap_or(0),
-        "roundTripsSaved": folded.get("roundTripsSaved").and_then(Value::as_u64).unwrap_or(0),
+        "tokensSaved": signed(net), "catalogTokenDelta": signed(delta),
+        "fullTokens": number("fullTokens"), "exposedTokens": number("exposedTokens"),
+        "discoveryTokens": number("discoveryTokens"), "tokenizedLoads": number("tokenizedLoads"),
+        "tokenizer": TOKENIZER, "accountingMethod": ACCOUNTING_METHOD,
+        "listLoads": number("listLoads"), "measuredLoads": number("tokenizedLoads"),
+        "peakCatalog": number("peakCatalog"), "sinceTs": number("ts"),
+        "fullSurfaceBytes": number("fullSurfaceBytes"), "exposedSurfaceBytes": number("exposedSurfaceBytes"),
+        "surfaceDeltaBytes": signed(number("fullSurfaceBytes") as i128 - number("exposedSurfaceBytes") as i128),
+        "avoidedSurfaceBytes": number("fullSurfaceBytes").saturating_sub(number("exposedSurfaceBytes")),
+        "extraExposedSurfaceBytes": number("exposedSurfaceBytes").saturating_sub(number("fullSurfaceBytes")),
+        "discoveryCount": number("discoveryCount"), "discoveryResponseBytes": number("responseContentBytes"),
         "legacyEstimatedTokensAvoided": folded["legacyTokensSaved"],
-        "measuredLoads": folded["measuredLoads"],
-        "latestCatalogTs": folded["latestCatalogTs"],
-        "latestFullToolCount": folded["latestFullToolCount"],
-        "latestExposedToolCount": folded["latestExposedToolCount"],
-        "latestFullSurfaceBytes": folded["latestFullSurfaceBytes"],
-        "latestExposedSurfaceBytes": folded["latestExposedSurfaceBytes"],
-        "fullSurfaceBytes": folded["fullSurfaceBytes"],
-        "exposedSurfaceBytes": folded["exposedSurfaceBytes"],
-        "avoidedSurfaceBytes": folded["avoidedSurfaceBytes"],
-        "extraExposedSurfaceBytes": folded["extraExposedSurfaceBytes"],
-        "surfaceDeltaBytes": folded["avoidedSurfaceBytes"].as_u64().unwrap_or(0) as i64 - folded["extraExposedSurfaceBytes"].as_u64().unwrap_or(0) as i64,
         "estimatedTokensAvoided": folded["estimatedTokensAvoided"],
-        "estimateMethod": ESTIMATE_METHOD,
-        "discoveryCount": folded["discoveryCount"],
-        "discoveryResponseBytes": folded["responseContentBytes"],
-        "matchedSchemaBytes": folded["matchedSchemaBytes"],
-        "estimatedDiscoveryTokens": folded["estimatedResponseTokens"],
+        "previousReportedTokensSaved": signed(old_delta - net),
+        "historicalListLoads": folded["loads"].as_u64().unwrap_or(0).saturating_sub(number("tokenizedLoads")),
+        "historicalPeakCatalog": folded["tools"], "historicalSinceTs": folded["ts"],
+        "historicalMeasuredLoads": folded["measuredLoads"].as_u64().unwrap_or(0).saturating_sub(number("tokenizedLoads")),
+        "roundTripsSaved": folded["roundTripsSaved"],
     })
 }
 
@@ -858,26 +905,8 @@ mod tests {
             estimated_tokens(summary.bytes),
             estimated_tokens(surface.json.get().len() as u64)
         );
-        let session = CatalogSession::default();
-        let exposed = SerializedSurface::new(&[]);
-        assert!(session.first_exposure(Some("client"), &surface, &exposed));
-        assert!(!session.first_exposure(Some("client"), &surface, &exposed));
-        assert!(session.first_exposure(Some("other"), &surface, &exposed));
-        let changed = SerializedSurface::new(&[
-            json!({"name":"s__read", "inputSchema":{"type":"object","properties":{"new":{"type":"string"}}}}),
-        ]);
-        assert!(session.first_exposure(Some("client"), &changed, &exposed));
-        assert!(session.first_exposure(Some("client"), &surface, &surface));
-        // A hit must stop before resolving attribution or copying schema texts.
-        record_catalog_surfaces(
-            &session,
-            "lazy",
-            Some("client"),
-            &surface,
-            &exposed,
-            || panic!("repeated exposure rebuilt text"),
-            |_| panic!("repeated exposure was attributed again"),
-        );
+        let changed = SerializedSurface::new(&[json!({"name":"changed"})]);
+        assert_ne!(summary.hash, changed.hash);
     }
 
     #[test]
@@ -922,9 +951,13 @@ mod tests {
             |_| panic!("warm attribution"),
         );
         let mut rows = entries();
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[2]["kind"], "catalog_response");
+        assert_eq!(rows[2]["fullTokens"], 0);
+        assert!(rows[2]["exposedTokens"].as_u64().unwrap() > 0);
         for row in &mut rows {
             row.as_object_mut().unwrap().remove("ts");
+            row.as_object_mut().unwrap().remove("sessionId");
         }
         assert_eq!(
             serde_json::to_vec(&rows[0]).unwrap(),
@@ -974,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_reloads_count_once_and_changes_and_sessions_count_separately() {
+    fn concurrent_reloads_and_catalog_changes_never_multiply_the_baseline() {
         let _guard = crate::registry::data_dir_test_lock();
         let dir = std::env::temp_dir().join(format!("toolport-net-savings-{}", std::process::id()));
         let _override = crate::registry::DataDirOverride::set(&dir);
@@ -995,16 +1028,16 @@ mod tests {
         });
         let full_count = count_tokens(&serde_json::to_string(&full).unwrap());
         let exposed_count = count_tokens(&serde_json::to_string(&exposed).unwrap());
-        record_discovery("hello world", 0);
+        record_discovery(&CatalogSession::default(), "hello world", 0);
         let first = summary();
         assert_eq!(first["tokenizedLoads"], 1);
         assert_eq!(
             first["tokensSaved"],
-            full_count as i64 - exposed_count as i64 - 2
+            full_count as i64 - 16 * exposed_count as i64 - 2
         );
         assert_eq!(first["legacyEstimatedTokensAvoided"], 0);
         assert_eq!(first["estimatedTokensAvoided"], 0);
-        let disk = std::fs::read_to_string(v3_path().unwrap()).unwrap();
+        let disk = std::fs::read_to_string(v4_path().unwrap()).unwrap();
         assert!(!disk.contains("_fullText"));
         assert!(!disk.contains("_discoveryText"));
         let mut changed = full.clone();
@@ -1013,7 +1046,8 @@ mod tests {
             None
         });
         record_catalog(&session, "lazy", Some("client"), &full, &exposed, |_| None);
-        assert_eq!(summary()["tokenizedLoads"], 2);
+        assert_eq!(summary()["tokenizedLoads"], 1);
+        assert_eq!(summary()["listLoads"], 18);
         record_catalog(
             &CatalogSession::default(),
             "lazy",
@@ -1030,7 +1064,8 @@ mod tests {
             &exposed,
             |_| None,
         );
-        assert_eq!(summary()["tokenizedLoads"], 4);
+        assert_eq!(summary()["tokenizedLoads"], 2);
+        assert_eq!(summary()["listLoads"], 20);
         try_clear().unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1046,8 +1081,9 @@ mod tests {
             json!({"v":3,"kind":"discovery_response","ts":6,"tokenizer":TOKENIZER,"discoveryTokens":90}),
         ];
         let before = aggregate(&rows);
-        assert_eq!(before["tokensSaved"], -10);
-        assert_eq!(before["tokenizedLoads"], 2);
+        assert_eq!(before["tokensSaved"], 0);
+        assert_eq!(before["previousReportedTokensSaved"], -10);
+        assert_eq!(before["tokenizedLoads"], 0);
         assert_eq!(before["legacyEstimatedTokensAvoided"], 900);
         assert_eq!(before["estimatedTokensAvoided"], 800);
         assert_eq!(before["estimatedDiscoveryTokens"], 200);
@@ -1064,14 +1100,57 @@ mod tests {
         let v2 = v2_path().unwrap();
         let old = "{\"v\":2,\"kind\":\"catalog_exposure\",\"estimatedTokensAvoided\":1000}\n";
         std::fs::write(&v2, old).unwrap();
-        record_discovery("hello world", 0);
+        record_discovery(&CatalogSession::default(), "hello world", 0);
         assert_eq!(summary()["tokensSaved"], -2);
         assert_eq!(summary()["estimatedTokensAvoided"], 1000);
         assert_eq!(std::fs::read_to_string(&v2).unwrap(), old);
         try_clear().unwrap();
         assert!(!v2.exists());
-        assert!(!v3_path().unwrap().exists());
+        assert!(!v4_path().unwrap().exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verified_formula_survives_rotation_with_contradictory_history() {
+        let mut rows = vec![
+            json!({"v":2,"kind":"carry","loads":2834,"measuredLoads":2834,"fullSurfaceBytes":18_400_000_000u64,"estimatedTokensAvoided":4_600_000_000u64}),
+            json!({"v":3,"kind":"catalog_exposure","tokenizer":TOKENIZER,"fullTokens":188_100_000,"exposedTokens":1,"fullSurfaceBytes":1200,"exposedSurfaceBytes":2100}),
+        ];
+        for row in [
+            json!({"kind":"catalog_exposure","fullTokens":100,"exposedTokens":20,"fullSurfaceBytes":1200,"exposedSurfaceBytes":2100,"fullToolCount":4,"ts":10}),
+            json!({"kind":"catalog_response","exposedTokens":30,"exposedSurfaceBytes":300,"ts":11}),
+            json!({"kind":"discovery_response","discoveryTokens":60,"responseContentBytes":200,"ts":12}),
+        ] {
+            let mut row = row;
+            row["v"] = json!(4);
+            row["accounting"] = json!(ACCOUNTING_METHOD);
+            row["sessionId"] = json!("one-session");
+            row["tokenizer"] = json!(TOKENIZER);
+            rows.push(row);
+        }
+        let summary = aggregate(&rows);
+        assert_eq!(summary["tokensSaved"], -10); // 100 - (20 + 30) - 60
+        assert_eq!(summary["tokenizedLoads"], 1);
+        assert_eq!(summary["measuredLoads"], 1);
+        assert_eq!(summary["listLoads"], 2);
+        assert_eq!(summary["fullSurfaceBytes"], 1200);
+        assert_eq!(summary["exposedSurfaceBytes"], 2400);
+        assert_eq!(summary["surfaceDeltaBytes"], -1200);
+        assert_eq!(summary["avoidedSurfaceBytes"], 0);
+        assert_eq!(summary["previousReportedTokensSaved"], 188_099_999);
+        assert_eq!(aggregate(&[fold(&rows)]), summary);
+        assert_eq!(aggregate(&[fold(&[fold(&rows)])]), summary);
+    }
+
+    #[test]
+    fn sessionless_http_records_no_comparison() {
+        let data = crate::registry::DataDirTestEnv::new("savings-sessionless");
+        let session = CatalogSession::unmeasured();
+        record_catalog(&session, "lazy", None, &[json!({"name":"big"})], &[], |_| None);
+        record_discovery(&session, "some search text", 0);
+        assert_eq!(summary()["tokensSaved"], 0);
+        assert_eq!(summary()["listLoads"], 0);
+        assert!(!data.dir.join("savings-v4.jsonl").exists());
     }
 
     #[test]
@@ -1092,9 +1171,9 @@ mod tests {
         let s = aggregate(&entries);
         assert_eq!(s["tokensSaved"], 0); // Historical estimates are excluded.
         assert_eq!(s["legacyEstimatedTokensAvoided"], 200);
-        assert_eq!(s["listLoads"], 3);
-        assert_eq!(s["peakCatalog"], 80); // biggest catalog collapsed
-        assert_eq!(s["sinceTs"], 100); // earliest
+        assert_eq!(s["historicalListLoads"], 3);
+        assert_eq!(s["historicalPeakCatalog"], 80); // biggest catalog collapsed
+        assert_eq!(s["historicalSinceTs"], 100); // earliest
     }
 
     #[test]
@@ -1110,17 +1189,17 @@ mod tests {
         let after = vec![carry, detail[2].clone()];
         let s = aggregate(&after);
         assert_eq!(s["tokensSaved"], 0); // Historical estimates stay outside the headline.
-        assert_eq!(s["listLoads"], 3); // 2 folded + 1 fresh
-        assert_eq!(s["peakCatalog"], 90);
-        assert_eq!(s["sinceTs"], 10);
+        assert_eq!(s["historicalListLoads"], 3); // 2 folded + 1 fresh
+        assert_eq!(s["historicalPeakCatalog"], 90);
+        assert_eq!(s["historicalSinceTs"], 10);
     }
 
     #[test]
     fn aggregate_handles_empty() {
         let s = aggregate(&[]);
         assert_eq!(s["tokensSaved"], 0);
-        assert_eq!(s["listLoads"], 0);
-        assert_eq!(s["sinceTs"], 0);
+        assert_eq!(s["historicalListLoads"], 0);
+        assert_eq!(s["historicalSinceTs"], 0);
         assert_eq!(s["roundTripsSaved"], 0);
     }
 
@@ -1135,9 +1214,9 @@ mod tests {
         ];
         let s = aggregate(&entries);
         assert_eq!(s["tokensSaved"], 0);
-        assert_eq!(s["listLoads"], 1); // only the list serve
+        assert_eq!(s["historicalListLoads"], 1); // only the list serve
         assert_eq!(s["roundTripsSaved"], 8); // 5 + 3
-        assert_eq!(s["peakCatalog"], 80);
+        assert_eq!(s["historicalPeakCatalog"], 80);
     }
 
     #[test]
@@ -1151,7 +1230,7 @@ mod tests {
         let carry = fold(&detail);
         let s = aggregate(&[carry]);
         assert_eq!(s["tokensSaved"], 0);
-        assert_eq!(s["listLoads"], 1);
+        assert_eq!(s["historicalListLoads"], 1);
         assert_eq!(s["roundTripsSaved"], 7);
     }
 
@@ -1189,14 +1268,12 @@ mod tests {
         assert_eq!(before, after);
         assert_eq!(after["legacyEstimatedTokensAvoided"], 1_342_400);
         assert_eq!(after["tokensSaved"], 0);
-        assert_eq!(after["listLoads"], 2);
-        assert_eq!(after["measuredLoads"], 1);
-        assert_eq!(after["discoveryCount"], 1);
-        assert_eq!(after["discoveryResponseBytes"], 101);
+        assert_eq!(after["historicalListLoads"], 2);
+        assert_eq!(after["historicalMeasuredLoads"], 1);
+        assert_eq!(after["discoveryCount"], 0);
+        assert_eq!(after["discoveryResponseBytes"], 0);
         assert_eq!(after["roundTripsSaved"], 3);
-        assert_eq!(after["latestFullToolCount"], 2);
-        assert_eq!(after["latestExposedToolCount"], 1);
-        assert_eq!(after["latestFullSurfaceBytes"], full_bytes);
+        assert_eq!(after["fullSurfaceBytes"], 0);
     }
 
     #[test]
@@ -1206,7 +1283,7 @@ mod tests {
         assert_eq!(summary["tokensSaved"], 0);
         assert_eq!(summary["legacyEstimatedTokensAvoided"], 3_692_944_923u64);
         assert_eq!(summary["avoidedSurfaceBytes"], 0);
-        assert_eq!(summary["listLoads"], 2751);
+        assert_eq!(summary["historicalListLoads"], 2751);
     }
 
     #[test]
@@ -1218,8 +1295,8 @@ mod tests {
         assert_eq!(s["tokensSaved"], 0);
         assert_eq!(s["estimatedTokensAvoided"], 200);
         assert_eq!(s["legacyEstimatedTokensAvoided"], 0);
-        assert_eq!(s["avoidedSurfaceBytes"], 800);
-        assert_eq!(s["listLoads"], 1);
+        assert_eq!(s["avoidedSurfaceBytes"], 0);
+        assert_eq!(s["historicalListLoads"], 1);
     }
 
     #[test]
@@ -1266,17 +1343,18 @@ mod tests {
             &[json!({"name":"toolport_status"})],
             |_| Some("alpha".into()),
         );
-        record_discovery("hello world", 50);
+        record_discovery(&CatalogSession::default(), "hello world", 50);
         // The background writer owns the append now: land it before reading v2 directly.
         // A slow runner can exceed the default flush budget; a late append would
         // then land after the checks below and look like a v2 history change.
         assert!(crate::telemetry::flush_for_test(
             std::time::Duration::from_secs(30)
         ));
-        let v2 = v3_path().unwrap();
+        let v2 = v4_path().unwrap();
         let v2_before = std::fs::read(&v2).unwrap();
         let initial = try_summary().unwrap();
-        assert_eq!(initial["listLoads"], 2);
+        assert_eq!(initial["listLoads"], 1);
+        assert_eq!(initial["historicalListLoads"], 1);
         assert_eq!(initial["legacyEstimatedTokensAvoided"], 300);
         let mut old_writer = crate::registry::open_append_private(&legacy).unwrap();
         old_writer
@@ -1285,7 +1363,8 @@ mod tests {
         drop(old_writer);
         let before = try_summary().unwrap();
         assert_eq!(before["legacyEstimatedTokensAvoided"], 320);
-        assert_eq!(before["listLoads"], 3);
+        assert_eq!(before["listLoads"], 1);
+        assert_eq!(before["historicalListLoads"], 2);
         assert_eq!(before["measuredLoads"], 1);
         assert_eq!(before["discoveryCount"], 1);
         assert_eq!(before["fullSurfaceBytes"], initial["fullSurfaceBytes"]);
@@ -1328,7 +1407,7 @@ mod tests {
         assert_eq!(try_summary().unwrap()["tokensSaved"], 0);
         assert!(!legacy.exists());
         assert!(!v2.exists());
-        record_discovery("hello world", 12);
+        record_discovery(&CatalogSession::default(), "hello world", 12);
         assert_eq!(try_summary().unwrap()["discoveryCount"], 1);
         assert_eq!(try_summary().unwrap()["listLoads"], 0);
         assert!(v2.exists());
@@ -1357,7 +1436,7 @@ mod tests {
         let _override = crate::registry::DataDirOverride::set(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let legacy = savings_path().unwrap();
-        let v2 = v3_path().unwrap();
+        let v2 = v4_path().unwrap();
         assert_eq!(try_summary().unwrap()["listLoads"], 0);
         std::fs::write(&legacy, "{\"ts\":1,\"saved\":80,\"tools\":5}\n").unwrap();
         assert!(!v2.exists());
@@ -1393,7 +1472,7 @@ mod tests {
             std::env::temp_dir().join(format!("toolport-savings-corrupt-{}", std::process::id()));
         let _override = crate::registry::DataDirOverride::set(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let v2 = v3_path().unwrap();
+        let v2 = v4_path().unwrap();
         std::fs::write(&v2, "{broken\n").unwrap();
         assert_eq!(
             try_summary().unwrap_err().kind(),
@@ -1432,7 +1511,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("toolport-savings-days-{}", std::process::id()));
         let _override = crate::registry::DataDirOverride::set(&dir);
-        let path = v3_path().unwrap();
+        let path = v4_path().unwrap();
         let day1 = 1_783_470_600_000u64;
         let day2 = day1 + 86_400_000;
         let rows = [

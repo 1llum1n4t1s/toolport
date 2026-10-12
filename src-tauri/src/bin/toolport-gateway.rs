@@ -3550,7 +3550,7 @@ fn savings_line() -> String {
         let sign = if saved < 0 { "-" } else { "" };
         line.push_str(&format!(
             "{sign}{} tokens saved. cl100k_base, net of discovery responses and extra catalog exposure; \
-             counted once per session and scoped catalog hash. Historical estimates excluded; \
+             one baseline per session minus every catalog and search response. Historical estimates excluded; \
              client transformations and caching affect actual model usage.\n",
             fmt_tokens(saved.unsigned_abs())
         ));
@@ -7461,15 +7461,11 @@ fn handle_request_with_cancel(
             } else {
                 mode
             };
-            if mode != DiscoveryMode::Full {
+            {
                 let full = tool_surface(host, reg, router, &catalog, allowed, DiscoveryMode::Full);
                 savings::record_catalog(
                     &guard.catalog,
-                    if mode == DiscoveryMode::Lazy {
-                        "lazy"
-                    } else {
-                        "grouped"
-                    },
+                    mode.as_str(),
                     client,
                     &full,
                     &tools,
@@ -7570,7 +7566,7 @@ fn handle_request_with_cancel(
                     .unwrap_or("");
                 if let Err(message) = validate_search_query(query) {
                     if mode != DiscoveryMode::Full {
-                        savings::record_discovery(&message, savings::surface_bytes(&[]));
+                        savings::record_discovery(&guard.catalog, &message, savings::surface_bytes(&[]));
                     }
                     return Some(success(
                         id,
@@ -7827,7 +7823,7 @@ fn handle_request_with_cancel(
                             },
                         );
                 if mode != DiscoveryMode::Full {
-                    savings::record_discovery(
+                    savings::record_discovery(&guard.catalog,
                         search_result["content"][0]["text"].as_str().unwrap_or(""),
                         matched_schema_bytes,
                     );
@@ -16584,14 +16580,10 @@ fn process_request_wire_inner(
         } else {
             discovery
         };
-        if discovery != DiscoveryMode::Full {
+        {
             savings::record_catalog_surfaces(
                 &guard.catalog,
-                if discovery == DiscoveryMode::Lazy {
-                    "lazy"
-                } else {
-                    "grouped"
-                },
+                discovery.as_str(),
                 client,
                 &full,
                 &exposed,
@@ -19588,7 +19580,7 @@ fn serve_daemon(state: GatewayState, private: bool) -> ! {
         "daemon: host runtime on http://127.0.0.1:{port} for {}",
         compat.fingerprint()
     ));
-    let search = Arc::new(SearchGuard::default());
+    let search = Arc::new(SearchGuard { catalog: savings::CatalogSession::unmeasured() });
     state.touch_activity();
     let inflight = Arc::clone(&state.http_inflight);
     spawn_daemon_idle_watchdog(
