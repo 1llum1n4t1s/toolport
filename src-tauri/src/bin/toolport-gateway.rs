@@ -39785,19 +39785,26 @@ mod tests {
         maybe_check_integrity(&registry, &source.shared_tools(), None).unwrap();
         let record = integrity::all_quarantined().unwrap()[0].clone();
         assert_eq!(record["review_required"], true);
-        for filename in ["tool-pins.json", "tool-pins.json.bak"] {
-            std::fs::write(data.dir.join(filename), "{ corrupt pins").unwrap();
+        // Use a new store path so this is a cold pin read with only the durable
+        // quarantine row preserving the review.
+        let id = "off-cold-pending-store";
+        let profile = Some(id);
+        let key = registry::profile_store_key(id);
+        std::fs::copy(data.dir.join("quarantine.json"), data.dir.join(format!("quarantine-v2-{key}.json"))).unwrap();
+        for suffix in ["", ".bak"] {
+            std::fs::write(data.dir.join(format!("tool-pins-v2-{key}.json{suffix}")), "{ corrupt pins").unwrap();
         }
+        assert!(integrity::definition_review_names(profile).is_empty());
         let ordinary = readonly_router("other", "Ordinary definition.");
         let mut built = source.with_shared_server_slot(&ordinary.server_slot("other").unwrap());
         let offered = built.shared_tools();
-        let published = requarantine_if_needed(&registry, &mut built, offered, None);
+        let published = requarantine_if_needed(&registry, &mut built, offered, profile);
         assert_eq!(published.len(), 1, "Off must expose the ordinary tool");
         assert_eq!(published[0]["name"], "other__read");
         assert!(built.quarantined().contains("srv__read"), "the persisted review must remain blocked");
         assert!(integrity::all_quarantined().unwrap().iter().any(|row| row["tool"] == "srv__read" && row["review_required"] == true));
         let live = Arc::new(Mutex::new(Arc::new(built)));
-        reconcile_quarantine(&registry, &live, &test_stdio_session(), None, None, &AtomicBool::new(false));
+        reconcile_quarantine(&registry, &live, &test_stdio_session(), profile, None, &AtomicBool::new(false));
         assert_eq!(live.lock().unwrap().shared_tools()[0]["name"], "other__read");
         assert!(integrity::read_recent(20).unwrap().iter().any(|event| event["change"] == "tamper" && event["detail"].as_str().is_some_and(|detail| detail.contains("Off"))));
     }

@@ -6154,6 +6154,7 @@ mod tests {
         let _lock = crate::registry::data_dir_test_lock();
         let _data = TestDataDir::new("review-transient-pin-read");
         let tools = vec![destructive_tool("srv__wipe", "Accepted definition.")];
+        save_quarantine(None, &Quarantine::new()).unwrap();
         check(None, &tools).unwrap();
         let path = pins_path(None).unwrap();
         let stamp = review_pins_stamp(&path);
