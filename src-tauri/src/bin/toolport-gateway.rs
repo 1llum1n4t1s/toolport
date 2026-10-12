@@ -8761,7 +8761,7 @@ fn build_router_incremental(
     } else if reg.safety_level_effective() != registry::SafetyLevel::Off {
         integrity::mandatory_quarantined(profile)
     } else {
-        Ok(BTreeSet::new())
+        integrity::review_quarantined(profile)
     };
     let stored_error = stored.as_ref().err().cloned();
     let bootstrap = quarantine_bootstrap(stored, previous_quarantine.as_ref());
@@ -10311,6 +10311,7 @@ fn maybe_check_integrity(
             r.quarantine_on_drift_effective(),
         )
     };
+    let mut review_required = integrity::pending_definition_review(profile);
     let result = (|| {
         #[cfg(test)]
         observe_integrity_gate();
@@ -10326,11 +10327,15 @@ fn maybe_check_integrity(
                 .collect();
             (e, all)
         })?;
+        let recapture_review = events.iter().any(|event| event["review_required"] == true);
+        review_required |= recapture_review;
         // A previous cycle may have persisted quarantine and then failed (or exited) before
         // advancing the corresponding pins. Recover from those durable records without depending on
         // the filtered catalog. Do this after `check_staged` so a corrupt pin store still takes the
         // mandatory baseline-tamper path instead of returning early from ordinary recovery.
-        if !integrity::baseline_tamper_detected(&events) {
+        // An explicit review may be rebuilding a deleted store. Persist that captured
+        // record first, then recover its pin below; reads still fail closed on missing stores.
+        if !integrity::baseline_tamper_detected(&events) && !recapture_review {
             let pending = integrity::quarantine_candidates(tools, &events);
             integrity::accept_quarantined_pins(profile).map_err(|e| (e, pending))?;
         }
@@ -10343,15 +10348,30 @@ fn maybe_check_integrity(
         ));
             eprintln!("toolport: SECURITY tool drift ({change}) {tool}");
         }
-        // Drift quarantine is Strict or team-forced; baseline tamper also blocks at Ask.
-        if quarantine_on || (blocking && integrity::baseline_tamper_detected(&events)) {
-            let pending = integrity::quarantine_candidates(tools, &events);
-            integrity::apply_quarantine(profile, tools, &events)
+        // Explicit reviews block at every level. Ordinary Ask drift still only notifies.
+        let enforce_drift =
+            quarantine_on || (blocking && integrity::baseline_tamper_detected(&events));
+        if enforce_drift || review_required {
+            let required: Vec<_> = events
+                .iter()
+                .filter(|event| enforce_drift || event["review_required"] == true)
+                .cloned()
+                .collect();
+            let pending = integrity::quarantine_candidates(tools, &required);
+            integrity::apply_quarantine(profile, tools, &required)
                 .map_err(|e| (e, pending.clone()))?;
             // `check_staged` deliberately kept these old pins until the quarantine write was
             // durable. Accept from that durable record so a failed pin write or process exit can
             // recover even after the router filters the quarantined tool from its next catalog.
             integrity::accept_quarantined_pins(profile).map_err(|e| (e, pending.clone()))?;
+            if !enforce_drift {
+                let ordinary: Vec<_> = events
+                    .iter()
+                    .filter(|event| event["review_required"] != true)
+                    .cloned()
+                    .collect();
+                integrity::accept_staged_pins(profile, tools, &ordinary).map_err(|e| (e, pending.clone()))?;
+            }
             Ok((!pending.is_empty()).then_some(pending))
         } else {
             // Record ordinary drift at Ask, and all findings at Off, without blocking.
@@ -10361,7 +10381,7 @@ fn maybe_check_integrity(
         }
     })();
     match result {
-        Err((error, _)) if !blocking && !quarantine_on => {
+        Err((error, _)) if !blocking && !quarantine_on && !review_required => {
             glog(&format!("SECURITY: integrity recording failed: {error}"));
             Ok(None)
         }
@@ -10492,8 +10512,13 @@ fn fail_closed_integrity_catalog(
     // If the quarantine write succeeded but the subsequent pin write failed, the durable
     // store contains the new block. If the store itself is unreadable, retain the current set
     // plus the candidates above rather than weakening either one.
-    if let Ok(persisted) = integrity::quarantined(profile) {
-        fail_closed.extend(persisted);
+    match integrity::quarantined(profile) {
+        Ok(persisted) => fail_closed.extend(persisted),
+        // A prior gate can persist a block and advance its pin, then lose the
+        // swap. The retry has no drift candidates, so its old blocked set cannot
+        // identify the saved block. Hide the catalog until a readable store and
+        // checked reconciliation establish what may be published.
+        Err(_) => router.fail_closed_catalog(),
     }
     // Never `requarantine_from_store` here: this is the integrity-store FAILURE path,
     // so a fail-closed catalog stays hidden. `reconcile_quarantine` lifts it on the
@@ -10504,7 +10529,7 @@ fn fail_closed_integrity_catalog(
 
 /// The quarantine set the router SHOULD be enforcing right now, mirroring how the
 /// initial build gates on safety: Strict or team-forced drift quarantine enforces all
-/// entries. Otherwise Ask enforces baseline tamper and Off leaves findings unenforced.
+/// entries. Ask also enforces baseline tamper; every level enforces explicit definition reviews.
 fn effective_quarantine(
     registry: &Arc<Mutex<Registry>>,
     profile: Option<&str>,
@@ -10524,7 +10549,7 @@ fn effective_quarantine(
     } else if level == registry::SafetyLevel::Ask {
         integrity::mandatory_quarantined_checked(profile)
     } else {
-        Ok(BTreeSet::new())
+        integrity::review_quarantined_checked(profile)
     };
     match stored {
         Ok(set) => {
@@ -39196,6 +39221,39 @@ mod tests {
     }
 
     #[test]
+    fn integrity_pending_review_recaptures_missing_rows_at_every_safety_level() {
+        let data = DataDirTestEnv::new("pending-review-missing-rows");
+        let dir = &data.dir;
+        let tools = vec![json!({"name":"srv__read", "description":"Captured definition.", "inputSchema":{"type":"object"}})];
+        for level in [registry::SafetyLevel::Ask, registry::SafetyLevel::Strict, registry::SafetyLevel::Off] {
+            for profile in [None, Some("pending-review")] {
+                for deleted in [false, true] {
+                    integrity::check(profile, &tools).unwrap();
+                    let path = match profile {
+                        Some(id) => dir.join(format!("quarantine-v2-{}.json", registry::profile_store_key(id))),
+                        None => dir.join("quarantine.json"),
+                    };
+                    std::fs::write(&path, json!({"srv__read":{"tool":"srv__read", "change":"changed"}}).to_string()).unwrap();
+                    let displayed = integrity::quarantine_list(profile).remove(0);
+                    integrity::release_record(profile, "srv__read", &integrity::quarantine_record_id(&displayed)).unwrap();
+                    let mut reg = Registry::default();
+                    reg.set_safety_level(level);
+                    let registry = Arc::new(Mutex::new(reg));
+                    assert_eq!(maybe_check_integrity(&registry, &tools, profile).unwrap(), Some(set_of(&["srv__read"])));
+                    if deleted { std::fs::remove_file(&path).unwrap(); } else { std::fs::write(&path, "{}").unwrap(); }
+                    assert_eq!(maybe_check_integrity(&registry, &tools, profile).unwrap(), Some(set_of(&["srv__read"])), "lost review at {level:?}");
+                    assert_eq!(effective_quarantine(&registry, profile, &AtomicBool::new(false)), Some(set_of(&["srv__read"])));
+                    let captured = integrity::quarantine_list(profile).remove(0);
+                    let id = integrity::quarantine_record_id(&captured);
+                    assert_eq!(integrity::quarantine_definition(profile, "srv__read", &id).unwrap(), tools[0]);
+                    integrity::release_record(profile, "srv__read", &id).unwrap();
+                    assert_eq!(maybe_check_integrity(&registry, &tools, profile).unwrap(), None);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn integrity_off_baseline_tamper_records_without_blocking() {
         let _data_lock = registry::data_dir_test_lock();
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -40187,6 +40245,66 @@ mod tests {
         let live = state.router.lock().unwrap();
         assert!(live.aggregated_tools().iter().any(|tool| tool["name"] == "other__read"));
         assert!(!live.aggregated_tools().iter().any(|tool| tool["name"] == "srv__read"));
+    }
+
+    #[test]
+    fn watcher_swap_retry_hides_catalog_when_saved_block_becomes_unreadable() {
+        let data = DataDirTestEnv::new("watcher-retry-unreadable-block");
+        for profile in [None, Some("work")] {
+            let state = http_state(false);
+            state.registry.lock().unwrap().set_safety_level(registry::SafetyLevel::Strict);
+            seed_legacy_review(&data.dir, profile, "v1");
+            let mut cached = readonly_router("srv", "Changed while quarantined.");
+            cached.requarantine(set_of(&["srv__read"]));
+            *state.router.lock().unwrap() = Arc::new(cached);
+            conduit_lib::registry_controller::release_quarantine(profile, "srv__read").unwrap();
+            let path = data.dir.join(match profile {
+                None => "quarantine.json".to_string(),
+                Some(id) => format!("quarantine-v2-{}.json", registry::profile_store_key(id)),
+            });
+            let saved = Arc::new(Mutex::new(String::new()));
+            let observed_store = Arc::clone(&saved);
+            let gates = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&gates);
+            let live = Arc::clone(&state.router);
+            let corrupt_path = path.clone();
+            *INTEGRITY_GATE_OBSERVER.lock().unwrap() = Some((
+                std::thread::current().id(), Box::new(move || {
+                    if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                        let mut current = live.lock().unwrap();
+                        *current = Arc::new((**current).clone());
+                    } else {
+                        // The first gate persisted the block and advanced its pin,
+                        // then lost its swap. Retry sees matching pins but cannot read
+                        // either the recovery store or the final enforcement store.
+                        *observed_store.lock().unwrap() = std::fs::read_to_string(&corrupt_path).unwrap();
+                        std::fs::write(&corrupt_path, "{ unreadable").unwrap();
+                    }
+                }),
+            ));
+            let reconciled = reconcile_quarantine(
+                &state.registry, &state.router, &state.stdio_upstream,
+                profile, None, &AtomicBool::new(false),
+            );
+            *INTEGRITY_GATE_OBSERVER.lock().unwrap() = None;
+            assert!(reconciled);
+            assert_eq!(gates.load(Ordering::SeqCst), 2);
+            assert!(!state.router.lock().unwrap().aggregated_tools().iter()
+                .any(|tool| tool["name"] == "srv__read"));
+            assert!(state.router.lock().unwrap().catalog_fail_closed());
+            // Repair restores the durable block, then exact review permits recovery.
+            std::fs::write(&path, &*saved.lock().unwrap()).unwrap();
+            reconcile_quarantine(&state.registry, &state.router, &state.stdio_upstream,
+                profile, None, &AtomicBool::new(false));
+            assert!(!state.router.lock().unwrap().aggregated_tools().iter()
+                .any(|tool| tool["name"] == "srv__read"));
+            let fp = integrity::baselines(profile)["srv__read"].fingerprint.clone();
+            integrity::release_definition(profile, "srv__read", &fp).unwrap();
+            assert!(reconcile_quarantine(&state.registry, &state.router, &state.stdio_upstream,
+                profile, None, &AtomicBool::new(false)));
+            assert!(state.router.lock().unwrap().aggregated_tools().iter()
+                .any(|tool| tool["name"] == "srv__read"));
+        }
     }
 
     #[test]

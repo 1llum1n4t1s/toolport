@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { toastError } from "@/lib/toast";
+import { QuarantineDefinition } from "@/components/QuarantineDefinition";
 import {
   Dialog,
   DialogContent,
@@ -798,7 +799,7 @@ export function SettingsView({
 
   const reapprove = async (q: QuarantinedTool) => {
     try {
-      await releaseQuarantine(q.profile, q.tool);
+      await releaseQuarantine(q.profile, q.tool, undefined, q.record_id);
       setQuarantined(await listQuarantined());
     } catch (e) {
       toastError(`Couldn't re-approve: ${e}`);
@@ -1171,15 +1172,13 @@ export function SettingsView({
                 {quarantined.map((q) => (
                   <li
                     key={`${q.profile}:${q.tool}`}
-                    className="flex items-center gap-2 text-xs"
+                    className="flex items-start gap-2 text-xs"
                   >
-                    <span className="min-w-0 truncate font-mono">{q.tool}</span>
-                    <span
-                      className="min-w-0 truncate text-muted-foreground"
-                      title={q.detail || q.reason}
-                    >
-                      {q.detail ? q.detail : q.reason}
-                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="break-words font-mono">{q.tool}</p>
+                      <p className="text-muted-foreground">{q.detail || q.reason}</p>
+                      <QuarantineDefinition tool={q} />
+                    </div>
                     <button
                       type="button"
                       onClick={() => reapprove(q)}

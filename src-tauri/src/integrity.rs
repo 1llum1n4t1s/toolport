@@ -36,6 +36,7 @@ struct QuarantineReadCache {
     len: u64,
     set: BTreeSet<String>,
     mandatory: BTreeSet<String>,
+    review: BTreeSet<String>,
 }
 
 static QUARANTINE_READ_CACHE: Mutex<Option<QuarantineReadCache>> = Mutex::new(None);
@@ -71,6 +72,9 @@ struct Pin {
     /// A released legacy block must be reviewed again against a live definition.
     #[serde(default)]
     review_on_upgrade: bool,
+    /// The captured definition still awaits the user's bound second approval.
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    review_pending: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parameters: Option<BTreeMap<String, String>>,
     /// `readOnlyHint` at pin time, if the tool advertised one.
@@ -114,6 +118,10 @@ enum PinRepr {
     Legacy(String),
 }
 
+fn bool_is_false(value: &bool) -> bool {
+    !value
+}
+
 impl From<PinRepr> for Pin {
     fn from(r: PinRepr) -> Self {
         match r {
@@ -121,6 +129,7 @@ impl From<PinRepr> for Pin {
             PinRepr::Legacy(fp) => Pin {
                 fp,
                 review_on_upgrade: false,
+                review_pending: false,
                 parameters: None,
                 ro: None,
                 dh: None,
@@ -154,6 +163,7 @@ fn pin_with_source(tool: &Value, source_input_schema: Option<&str>) -> Pin {
     Pin {
         fp: pin_fingerprint(tool, &parts),
         review_on_upgrade: false,
+        review_pending: false,
         parameters: Some(input_parameters(tool)),
         ro: read_hint(tool, "readOnlyHint"),
         dh: read_hint(tool, "destructiveHint"),
@@ -752,12 +762,15 @@ fn check_inner_with(
             match pins.get(name) {
                 // A different fingerprint is only a real change if it came from the same
                 // algorithm version; a version mismatch is our format upgrade, not the
-                // tool's, so re-baseline quietly unless a released legacy block requires review.
+                // tool's, so re-baseline quietly unless an explicit review is still pending.
                 Some(old)
                     if old.review_on_upgrade
+                        || old.review_pending
                         || (old.fp != pin.fp && fp_version(&old.fp) == fp_version(&pin.fp)) =>
                 {
-                    let sev = if old.review_on_upgrade {
+                    // Reassert pending reviews even when the fingerprint matches: the
+                    // quarantine row may have disappeared since the captured pin was saved.
+                    let sev = if old.review_on_upgrade || old.review_pending {
                         SEV_HIGH
                     } else {
                         drift_severity(
@@ -838,6 +851,7 @@ fn check_inner_with(
             Pin {
                 first_seen,
                 last_changed,
+                review_pending: pins.get(name).is_some_and(|old| old.review_pending),
                 ..fresh.clone()
             },
         );
@@ -934,6 +948,7 @@ fn merge_pending_pin(previous: Option<&Pin>, fresh: Pin, stamp: u64) -> Pin {
     Pin {
         first_seen,
         last_changed,
+        review_pending: fresh.review_pending || previous.is_some_and(|old| old.review_pending),
         ..fresh
     }
 }
@@ -970,9 +985,12 @@ fn accept_quarantined_pins_with(
                 // because their baseline was already advanced before quarantine was written.
                 continue;
             };
-            let pin = serde_json::from_value::<Pin>(value).map_err(|_| {
+            let mut pin = serde_json::from_value::<Pin>(value).map_err(|_| {
                 format!("The quarantine record for {name} has an invalid captured pin")
             })?;
+            // Pin acceptance records the captured baseline, not user approval.
+            // Retain the explicit review even if the quarantine store later fails.
+            pin.review_pending |= record["review_required"] == true;
             pending.push((name.clone(), pin));
         }
         if pending.is_empty() {
@@ -1319,6 +1337,7 @@ pub fn all_quarantined_names() -> Result<BTreeSet<String>, String> {
 /// Quarantine map: namespaced tool name (`server__tool`) -> a record of why it's
 /// blocked (server, tool, reason, ts), shown in the UI and persisted across restarts.
 type Quarantine = BTreeMap<String, Value>;
+type QuarantineSets = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
 
 /// Load the quarantine map for `profile`.
 ///
@@ -1539,7 +1558,7 @@ pub fn quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<String>, St
     quarantined_checked_at(&path, profile)
 }
 
-/// Tools quarantined because the integrity baseline itself was lost. Unlike ordinary
+/// Tools quarantined for a lost integrity baseline or an explicit pending review. Unlike ordinary
 /// high-risk drift quarantine, these entries are always enforced: disabling the optional
 /// drift policy must not turn a corrupt baseline into a fail-open catalog.
 pub fn mandatory_quarantined(profile: Option<&str>) -> Result<BTreeSet<String>, String> {
@@ -1570,9 +1589,49 @@ pub fn mandatory_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<S
     Ok(quarantined_sets_checked_at(&path, profile)?.1)
 }
 
+/// Explicit definition reviews survive every safety level, including Off.
+pub fn review_quarantined(profile: Option<&str>) -> Result<BTreeSet<String>, String> {
+    off_review_read(profile, load_quarantine(profile).map(|q| review_quarantine_set(&q)))
+}
+
+pub fn review_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<String>, String> {
+    let Some(path) = quarantine_path(profile) else {
+        return Ok(BTreeSet::new());
+    };
+    if profile.is_some_and(|id| crate::registry::unmigrated_legacy_profile_store(id, false)) {
+        return off_review_read(profile, Err("The quarantine store was not migrated; retaining pending reviews".into()));
+    }
+    off_review_read(profile, quarantined_sets_checked_at(&path, profile).map(|sets| sets.2))
+}
+
+/// A release awaiting its captured definition stays pending until bound approval.
+pub fn pending_definition_review(profile: Option<&str>) -> bool {
+    match load_pins(profile) {
+        PinsLoad::Loaded(pins) => pins.values().any(|pin| pin.review_on_upgrade || pin.review_pending),
+        _ => false,
+    }
+}
+
+// Off ignores ordinary store errors, but an explicit pending review fails closed.
+fn off_review_read(
+    profile: Option<&str>, read: Result<BTreeSet<String>, String>,
+) -> Result<BTreeSet<String>, String> {
+    match read {
+        Err(_) if !pending_definition_review(profile) => Ok(BTreeSet::new()),
+        result => result,
+    }
+}
+
+fn review_quarantine_set(q: &Quarantine) -> BTreeSet<String> {
+    q.iter()
+        .filter(|(_, record)| record["review_required"] == true)
+        .map(|(tool, _)| tool.clone())
+        .collect()
+}
+
 fn mandatory_quarantine_set(q: &Quarantine) -> BTreeSet<String> {
     q.iter()
-        .filter(|(_, record)| record.get("change").and_then(Value::as_str) == Some("tamper"))
+        .filter(|(_, record)| record["change"] == "tamper" || record["review_required"] == true)
         .map(|(tool, _)| tool.clone())
         .collect()
 }
@@ -1586,7 +1645,7 @@ fn quarantined_checked_at(path: &Path, profile: Option<&str>) -> Result<BTreeSet
 fn quarantined_sets_checked_at(
     path: &Path,
     profile: Option<&str>,
-) -> Result<(BTreeSet<String>, BTreeSet<String>), String> {
+) -> Result<QuarantineSets, String> {
     // SBS-871: retry the same transient rename window `read_pins_at` already covers
     // instead of treating a vanished file as a legitimate empty set.
     for attempt in 0..PINS_READ_ATTEMPTS {
@@ -1628,7 +1687,7 @@ fn quarantined_sets_checked_at(
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(c) = cache.as_ref() {
                 if c.path == path && c.mtime == mtime && c.len == len {
-                    return Ok((c.set.clone(), c.mandatory.clone()));
+                    return Ok((c.set.clone(), c.mandatory.clone(), c.review.clone()));
                 }
             }
         }
@@ -1656,6 +1715,7 @@ fn quarantined_sets_checked_at(
         // Fail closed: do not cache a corrupt parse, do not return empty, do not rename.
         let records = parse_quarantine_raw(&raw, path)?;
         let mandatory = mandatory_quarantine_set(&records);
+        let review = review_quarantine_set(&records);
         let set: BTreeSet<String> = records.into_keys().collect();
 
         *QUARANTINE_READ_CACHE
@@ -1666,8 +1726,9 @@ fn quarantined_sets_checked_at(
             len,
             set: set.clone(),
             mandatory: mandatory.clone(),
+            review: review.clone(),
         });
-        return Ok((set, mandatory));
+        return Ok((set, mandatory, review));
     }
     missing_quarantine_as_sets(profile, path)
 }
@@ -1675,11 +1736,11 @@ fn quarantined_sets_checked_at(
 fn missing_quarantine_as_sets(
     profile: Option<&str>,
     path: &Path,
-) -> Result<(BTreeSet<String>, BTreeSet<String>), String> {
+) -> Result<QuarantineSets, String> {
     match missing_quarantine_store(profile, path) {
         Ok(_) => {
             clear_quarantine_read_cache_for(path);
-            Ok((BTreeSet::new(), BTreeSet::new()))
+            Ok((BTreeSet::new(), BTreeSet::new(), BTreeSet::new()))
         }
         Err(e) => {
             clear_quarantine_read_cache_for(path);
@@ -1867,6 +1928,10 @@ pub fn quarantine_notification(newcomers: &[&Value]) -> (String, String) {
 /// Same contract as [`all_quarantined_names`]: only a fresh profile's missing
 /// store contributes nothing; a damaged one is an `Err` rather than a shorter list.
 pub fn all_quarantined() -> Result<Vec<Value>, String> {
+    all_quarantined_inner(false)
+}
+
+fn all_quarantined_inner(summary: bool) -> Result<Vec<Value>, String> {
     if crate::registry::conduit_dir().is_none() {
         return Ok(Vec::new());
     }
@@ -1875,15 +1940,75 @@ pub fn all_quarantined() -> Result<Vec<Value>, String> {
         let Some(store) = read_quarantine_for_scan(&profile, &path)? else {
             continue;
         };
-        for mut record in store.into_values() {
+        for (name, mut record) in store {
             if is_legacy_added(&record) {
                 continue;
             }
+            let id = quarantine_record_id(&record);
+            if summary {
+                let has_definition = record["definition"].is_object();
+                if let Some(object) = record.as_object_mut() {
+                    object.retain(|key, _| matches!(key.as_str(),
+                        "server" | "tool" | "reason" | "ts" | "detail" | "change" |
+                        "severity" | "definition_fp" | "prev_ro" | "new_ro" | "prev_dh" | "new_dh"
+                    ));
+                }
+                record["has_definition"] = json!(has_definition);
+                // Release operates on the store key, including older unqualified records.
+                record["tool"] = json!(name);
+            }
+            record["record_id"] = json!(id);
             record["profile"] = json!(profile);
             out.push(record);
         }
     }
     Ok(out)
+}
+
+/// Bounded list payload for the app; definitions are loaded per displayed record.
+pub fn all_quarantined_summaries() -> Result<Vec<Value>, String> {
+    with_quarantined_summaries(|records| records.to_vec())
+}
+
+/// Count the same validated summaries without cloning rows for a metrics scrape.
+pub fn all_quarantined_count() -> Result<usize, String> {
+    with_quarantined_summaries(<[Value]>::len)
+}
+
+fn with_quarantined_summaries<T>(read: impl FnOnce(&[Value]) -> T) -> Result<T, String> {
+    let stamp = quarantine_summary_stamp();
+    let mut cache = QUARANTINE_SUMMARY_CACHE.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let (Some(stamp), Some(cached)) = (stamp.as_ref(), cache.as_ref()) {
+        if stamp == &cached.stamp {
+            return Ok(read(&cached.records));
+        }
+    }
+    let records = all_quarantined_inner(true)?;
+    let result = read(&records);
+    if let Some(stamp) = stamp.filter(|stamp| Some(stamp) == quarantine_summary_stamp().as_ref()) {
+        *cache = Some(QuarantineSummaryCache { stamp, records });
+    } else {
+        *cache = None;
+    }
+    Ok(result)
+}
+
+/// Fetch only the definition belonging to the displayed finding. A changed or
+/// removed record cannot substitute a different definition in an open review.
+pub fn quarantine_definition(
+    profile: Option<&str>, tool: &str, expected_id: &str,
+) -> Result<Value, String> {
+    let path = quarantine_path(profile).ok_or("Could not resolve the quarantine store")?;
+    with_store_lock(&path, || {
+        let store = load_quarantine(profile)?;
+        let record = store.get(tool).ok_or("This finding is no longer blocked. Refresh the list.")?;
+        if quarantine_record_id(record) != expected_id {
+            return Err("The blocked finding changed. Refresh and review the latest definition.".into());
+        }
+        record.get("definition").filter(|definition| definition.is_object()).cloned()
+            .ok_or_else(|| "This finding has no saved definition. Approving captures it for one more review.".into())
+    })
 }
 
 /// Re-approve a quarantined tool: drop it so the gateway re-exposes it on the next
@@ -1901,6 +2026,55 @@ pub fn release(profile: Option<&str>, tool: &str) -> Result<bool, String> {
     with_store_lock(&path, || {
         release_inner(profile, tool, save_pins, save_quarantine)
     })
+}
+
+/// Release only the record displayed by the caller.
+pub fn release_record(profile: Option<&str>, tool: &str, expected_id: &str) -> Result<bool, String> {
+    let path = quarantine_path(profile).ok_or("Could not resolve the quarantine store")?;
+    with_store_lock(&path, || {
+        let quarantine = load_quarantine(profile)?;
+        if let Some(record) = quarantine.get(tool) {
+            if quarantine_record_id(record) != expected_id {
+                return Err("The blocked finding changed since you reviewed it. It remains blocked. Refresh and review the latest finding.".to_string());
+            }
+        }
+        release_inner(profile, tool, save_pins, save_quarantine)
+    })
+}
+
+/// Release only the records displayed by the caller, keyed by tool name.
+pub fn release_all_records(
+    profile: Option<&str>,
+    expected: &BTreeMap<String, String>,
+) -> Result<ReleaseAllOutcome, String> {
+    let path = quarantine_path(profile).ok_or("Could not resolve the quarantine store")?;
+    with_store_lock(&path, || {
+        release_all_inner_with_records(profile, Some(expected), save_pins, save_quarantine)
+    })
+}
+
+/// Content identity for a quarantine record, independent of its presentation scope.
+pub fn quarantine_record_id(record: &Value) -> String {
+    // Stream into the digest so listing a large catalog neither clones each
+    // captured schema nor allocates its full serialized JSON a second time.
+    struct HashWriter(Sha256);
+    impl std::io::Write for HashWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    let mut writer = HashWriter(Sha256::new());
+    if let Some(object) = record.as_object() {
+        let stored: BTreeMap<_, _> = object.iter()
+            .filter(|(key, _)| !matches!(key.as_str(), "profile" | "record_id"))
+            .collect();
+        serde_json::to_writer(&mut writer, &stored).expect("JSON values serialize");
+    } else {
+        serde_json::to_writer(&mut writer, record).expect("JSON values serialize");
+    }
+    format!("{:x}", writer.0.finalize())
 }
 
 /// Accept only the definition displayed in a review. A newer quarantine written
@@ -1966,7 +2140,9 @@ fn release_inner(
                 }
             };
             let mut updated = pins.clone();
-            apply_release_pin(&mut updated, tool, pending, epoch_millis());
+            apply_release_pin(
+                &mut updated, tool, pending, record["definition"].is_object(), epoch_millis(),
+            );
             if updated != pins {
                 save_pin(profile, &updated)?;
             }
@@ -1996,16 +2172,27 @@ fn release_pending_pin(tool: &str, record: &Value) -> Result<Option<Pin>, String
     }
 }
 
-fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, stamp: u64) {
+fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, reviewed: bool, stamp: u64) {
     if let Some(pending) = pending {
         let pin = merge_pending_pin(pins.get(tool), pending, stamp);
         pins.insert(tool.to_string(), pin);
     }
-    if let Some(pin) = pins.get_mut(tool) {
-        if fp_version(&pin.fp) != PIN_FP_VERSION {
-            pin.review_on_upgrade = true;
-        }
-    }
+    // A legacy record may have neither a captured definition nor an existing pin.
+    // Persist a review marker before lifting that block so first sight cannot be
+    // mistaken for an ordinary added tool (which never blocks).
+    let pin = pins.entry(tool.to_string()).or_insert_with(|| Pin {
+        fp: "released-without-baseline".to_string(),
+        review_on_upgrade: true,
+        review_pending: true,
+        parameters: None,
+        ro: None,
+        dh: None,
+        parts: None,
+        first_seen: stamp,
+        last_changed: stamp,
+    });
+    pin.review_on_upgrade = !reviewed || fp_version(&pin.fp) != PIN_FP_VERSION;
+    pin.review_pending = !reviewed;
 }
 
 /// How a bulk re-approval went: how many blocks were lifted, and the tools that
@@ -2015,6 +2202,8 @@ fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, stamp: u
 pub struct ReleaseAllOutcome {
     pub released: usize,
     pub skipped: Vec<String>,
+    /// Records replaced or added since the displayed list was loaded.
+    pub changed: Vec<String>,
 }
 
 /// Re-approve every quarantined tool for a profile in one pass.
@@ -2042,6 +2231,15 @@ fn release_all_inner(
     save_pin: impl FnOnce(Option<&str>, &Pins) -> Result<(), String>,
     save_quarantine: impl FnOnce(Option<&str>, &Quarantine) -> Result<(), String>,
 ) -> Result<ReleaseAllOutcome, String> {
+    release_all_inner_with_records(profile, None, save_pin, save_quarantine)
+}
+
+fn release_all_inner_with_records(
+    profile: Option<&str>,
+    expected: Option<&BTreeMap<String, String>>,
+    save_pin: impl FnOnce(Option<&str>, &Pins) -> Result<(), String>,
+    save_quarantine: impl FnOnce(Option<&str>, &Quarantine) -> Result<(), String>,
+) -> Result<ReleaseAllOutcome, String> {
     // Fail closed on a corrupt store, exactly as `release_inner` does: never treat it
     // as empty and save `{}`, which would drop every block without repairing anything.
     let q = load_quarantine(profile)
@@ -2052,8 +2250,15 @@ fn release_all_inner(
 
     let mut accepted: Vec<(String, Option<Pin>)> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    let mut changed: Vec<String> = Vec::new();
     let mut tamper_seen = false;
     for (tool, record) in q.iter() {
+        if let Some(expected) = expected {
+            if expected.get(tool) != Some(&quarantine_record_id(record)) {
+                changed.push(tool.clone());
+                continue;
+            }
+        }
         let tamper = record.get("change").and_then(Value::as_str) == Some("tamper");
         match release_pending_pin(tool, record) {
             Ok(pin) => {
@@ -2085,7 +2290,9 @@ fn release_all_inner(
             let mut updated = pins.clone();
             let stamp = epoch_millis();
             for (tool, pin) in &accepted {
-                apply_release_pin(&mut updated, tool, pin.clone(), stamp);
+                apply_release_pin(
+                    &mut updated, tool, pin.clone(), q[tool]["definition"].is_object(), stamp,
+                );
             }
             if updated != pins {
                 save_pin(profile, &updated)?;
@@ -2098,7 +2305,7 @@ fn release_all_inner(
     // Everything repaired (or needing no repair) is unblocked in one write. Anything
     // skipped stays in the store so it is still blocked and still visible in the UI.
     let mut remaining = Quarantine::new();
-    for tool in &skipped {
+    for tool in skipped.iter().chain(&changed) {
         if let Some(record) = q.get(tool) {
             remaining.insert(tool.clone(), record.clone());
         }
@@ -2107,7 +2314,7 @@ fn release_all_inner(
     if released > 0 {
         save_quarantine(profile, &remaining)?;
     }
-    Ok(ReleaseAllOutcome { released, skipped })
+    Ok(ReleaseAllOutcome { released, skipped, changed })
 }
 
 /// From `check`'s drift `events` and the `current` tool list, quarantine the HIGH-RISK
@@ -2172,6 +2379,18 @@ fn apply_quarantine_inner(
     events: &[Value],
 ) -> Result<bool, String> {
     apply_quarantine_inner_with(profile, current, events, save_quarantine)
+}
+
+// Poison wins ties with other high findings. Older records without an explicit
+// severity retain their historical high tier rather than being downgraded.
+fn quarantine_priority(record: &Value) -> u8 {
+    if record["change"] == "poison" {
+        3
+    } else if record["severity"] == "warn" {
+        1
+    } else {
+        2
+    }
 }
 
 fn apply_quarantine_inner_with(
@@ -2240,6 +2459,7 @@ fn apply_quarantine_inner_with(
                     "reason": "the integrity baseline was corrupt or tampered with",
                     "change": "tamper",
                     "pending_pin": pending,
+                    "definition": tool,
                 }),
             );
             added = true;
@@ -2250,7 +2470,16 @@ fn apply_quarantine_inner_with(
         return Ok(added);
     }
 
-    for e in events {
+    let mut strongest: BTreeMap<&str, &Value> = BTreeMap::new();
+    for event in events.iter().filter(|event| is_high_risk_drift(event)) {
+        if let Some(tool) = event["tool"].as_str() {
+            let selected = strongest.entry(tool).or_insert(event);
+            if quarantine_priority(event) > quarantine_priority(selected) {
+                *selected = event;
+            }
+        }
+    }
+    for e in strongest.into_values() {
         let (Some(tool), Some(change)) = (
             e.get("tool").and_then(Value::as_str),
             e.get("change").and_then(Value::as_str),
@@ -2267,6 +2496,9 @@ fn apply_quarantine_inner_with(
             continue;
         }
         let reason = match change {
+            "changed" if e["review_required"] == true => {
+                "This older block had no saved definition. Review the captured current definition before approving."
+            }
             "poison" => "a poisoned definition was detected",
             "changed" if is_destructive_named(current, tool) => {
                 "a destructive tool's definition changed"
@@ -2283,25 +2515,32 @@ fn apply_quarantine_inner_with(
             // time by Block/Confirm/Require-approval if those are on.
             _ => continue,
         };
-        if !q.contains_key(tool) {
+        if q.get(tool).is_none_or(|record| quarantine_priority(e) > quarantine_priority(record)) {
             let server = e.get("server").and_then(Value::as_str).unwrap_or("?");
-            let pending = current
+            let (definition, source) = current
                 .pin_values()
                 .find(|(candidate, _)| candidate.get("name").and_then(Value::as_str) == Some(tool))
-                .map(|(definition, source)| pin_with_source(definition, source))
                 .ok_or_else(|| {
                     format!(
                         "Refusing to quarantine {tool}; its current definition could not be captured"
                     )
                 })?;
+            let pending = pin_with_source(definition, source);
             let mut rec = json!({
                 "ts": epoch_millis(),
                 "server": server,
                 "tool": tool,
                 "reason": reason,
+                "severity": e["severity"],
                 "change": change,
                 "pending_pin": pending,
+                "definition": definition,
             });
+            if events.iter().any(|event| {
+                event["tool"] == e["tool"] && event["review_required"] == true
+            }) {
+                rec["review_required"] = json!(true);
+            }
             // Concrete annotation prior→new (SOU-305). Optional: older events / poison
             // rows omit these; the UI falls back to `reason` alone.
             for key in ["prev_ro", "new_ro", "prev_dh", "new_dh"] {
@@ -2309,7 +2548,9 @@ fn apply_quarantine_inner_with(
                     rec[key] = v.clone();
                 }
             }
-            if let Some(detail) = annotation_change_detail(e) {
+            if let Some(detail) =
+                annotation_change_detail(e).filter(|_| e["review_required"] != true)
+            {
                 rec["detail"] = json!(detail);
             }
             q.insert(tool.to_string(), rec);
@@ -3519,6 +3760,9 @@ fn event(server: &str, tool: &str, change: &str, severity: &str) -> Value {
 /// `changed` drift with prior/new safety annotations for the quarantine card (SOU-305).
 fn changed_event(server: &str, tool: &str, severity: &str, old: &Pin, new: &Pin) -> Value {
     let mut e = event(server, tool, "changed", severity);
+    if old.review_on_upgrade || old.review_pending {
+        e["review_required"] = json!(true);
+    }
     e["new_fp"] = json!(new.fp);
     e["prev_ro"] = json!(old.ro);
     e["new_ro"] = json!(new.ro);
@@ -3818,6 +4062,13 @@ struct ReviewFileStamp {
     created: Option<SystemTime>,
 }
 
+struct QuarantineSummaryCache {
+    stamp: ReviewStamp,
+    records: Vec<Value>,
+}
+
+static QUARANTINE_SUMMARY_CACHE: Mutex<Option<QuarantineSummaryCache>> = Mutex::new(None);
+
 struct ReviewCache {
     stamp: ReviewStamp,
     limit: usize,
@@ -3837,6 +4088,56 @@ fn review_input_name(name: &std::ffi::OsStr) -> bool {
     })
 }
 
+/// Cache summaries by quarantine stores while validating scope discovery and missing stores.
+fn quarantine_summary_stamp() -> Option<ReviewStamp> {
+    let dir = crate::registry::conduit_dir()?;
+    let mut files = BTreeMap::new();
+    // Discover and validate scopes on each read, but only quarantine files feed
+    // the summary payload. Security log appends and pin updates are independent.
+    for (profile, path) in quarantine_scan_stores().ok()? {
+        match std::fs::metadata(&path) {
+            Ok(metadata) => {
+                files.insert(path.clone(), review_file_stamp(&path, &metadata)?);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing_quarantine_store((!profile.is_empty()).then_some(profile.as_str()), &path).ok()?;
+            }
+            Err(_) => return None,
+        }
+    }
+    Some(ReviewStamp { dir, files })
+}
+
+fn review_file_stamp(path: &Path, metadata: &std::fs::Metadata) -> Option<ReviewFileStamp> {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    #[cfg(windows)]
+    let identity = {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+        let file = std::fs::File::open(path).ok()?;
+        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+        // The file handle and writable output buffer remain live for the call.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+            return None;
+        }
+        let info = unsafe { info.assume_init() };
+        (info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow)
+    };
+    #[cfg(not(windows))]
+    let _ = path;
+    Some(ReviewFileStamp {
+        modified: metadata.modified().ok()?,
+        len: metadata.len(),
+        #[cfg(unix)]
+        identity: (metadata.dev(), metadata.ino(), metadata.ctime(), metadata.ctime_nsec()),
+        #[cfg(windows)]
+        identity,
+        #[cfg(not(any(unix, windows)))]
+        created: metadata.created().ok(),
+    })
+}
+
 /// Metadata only: do not reload the registry or parse every profile store on an
 /// unchanged Activity tick. Include pins because missing quarantine is fail closed
 /// for established profiles, plus the scope index and registry for store discovery.
@@ -3848,45 +4149,9 @@ fn review_stamp() -> Option<ReviewStamp> {
         if !review_input_name(&entry.file_name()) {
             continue;
         }
-        let metadata = entry.metadata().ok()?;
-        #[cfg(unix)]
-        use std::os::unix::fs::MetadataExt;
-        #[cfg(windows)]
-        let identity = {
-            use std::os::windows::io::AsRawHandle;
-            use windows_sys::Win32::Storage::FileSystem::{
-                GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-            };
-            let file = std::fs::File::open(entry.path()).ok()?;
-            let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
-            // A live file handle and a writable output buffer, retained for the call.
-            if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
-                return None;
-            }
-            let info = unsafe { info.assume_init() };
-            (
-                info.dwVolumeSerialNumber,
-                info.nFileIndexHigh,
-                info.nFileIndexLow,
-            )
-        };
         files.insert(
             entry.path(),
-            ReviewFileStamp {
-                modified: metadata.modified().ok()?,
-                len: metadata.len(),
-                #[cfg(unix)]
-                identity: (
-                    metadata.dev(),
-                    metadata.ino(),
-                    metadata.ctime(),
-                    metadata.ctime_nsec(),
-                ),
-                #[cfg(windows)]
-                identity,
-                #[cfg(not(any(unix, windows)))]
-                created: metadata.created().ok(),
-            },
+            review_file_stamp(&entry.path(), &entry.metadata().ok()?)?,
         );
     }
     Some(ReviewStamp { dir, files })
@@ -5221,6 +5486,308 @@ mod tests {
             check_staged(profile, &catalog).unwrap().is_empty(),
             "a repaired baseline must not immediately re-flag the same catalog"
         );
+    }
+
+    #[test]
+    fn displayed_release_keeps_replaced_and_new_records_blocked() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("displayed-release-records");
+        for profile in [None, Some("work")] {
+            let old = json!({"tool":"srv__old", "change":"changed", "ts":1});
+            let unchanged = json!({"tool":"srv__same", "change":"changed", "ts":1});
+            let expected = BTreeMap::from([
+                ("srv__old".into(), quarantine_record_id(&old)),
+                ("srv__same".into(), quarantine_record_id(&unchanged)),
+            ]);
+            let replaced = json!({"tool":"srv__old", "change":"changed", "ts":2});
+            save_quarantine(profile, &BTreeMap::from([
+                ("srv__old".into(), replaced.clone()),
+                ("srv__same".into(), unchanged),
+                ("srv__new".into(), json!({"tool":"srv__new", "change":"changed", "ts":2})),
+            ])).unwrap();
+            assert!(release_record(profile, "srv__old", &expected["srv__old"]).is_err());
+            let outcome = release_all_records(profile, &expected).unwrap();
+            assert_eq!(outcome.released, 1);
+            assert_eq!(outcome.changed, vec!["srv__new", "srv__old"]);
+            assert!(outcome.skipped.is_empty());
+            assert_eq!(load_quarantine(profile).unwrap()["srv__old"], replaced);
+            assert_eq!(quarantined(profile).unwrap(), BTreeSet::from([
+                "srv__new".into(), "srv__old".into(),
+            ]));
+            // Empty bound lists must never fall back to the unbound bulk form.
+            assert_eq!(release_all_records(profile, &BTreeMap::new()).unwrap().released, 0);
+        }
+    }
+
+    #[test]
+    fn legacy_release_without_pin_requires_review_before_publication() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("legacy-release-missing-pin");
+        for profile in [None, Some("work")] {
+            for bulk in [false, true] {
+                save_pins(profile, &Pins::new()).unwrap();
+                save_quarantine(profile, &BTreeMap::from([(
+                    "srv__wipe".into(), json!({"tool":"srv__wipe", "change":"changed"}),
+                )])).unwrap();
+                if bulk {
+                    assert_eq!(release_all(profile).unwrap().released, 1);
+                } else {
+                    assert!(release(profile, "srv__wipe").unwrap());
+                }
+                let tools = vec![destructive_tool("srv__wipe", "Unseen definition.")];
+                let events = check_staged(profile, &tools).unwrap();
+                assert!(events.iter().any(|e| e["tool"] == "srv__wipe"
+                    && e["change"] == "changed" && e["severity"] == "high"));
+                apply_quarantine(profile, &tools, &events).unwrap();
+                accept_quarantined_pins(profile).unwrap();
+                assert!(quarantined(profile).unwrap().contains("srv__wipe"));
+                let captured = load_quarantine(profile).unwrap()["srv__wipe"].clone();
+                assert_eq!(captured["definition"], tools[0]);
+                assert_eq!(captured["definition_fp"], pin_of(&tools[0]).fp);
+                assert!(captured["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("no saved definition"));
+                assert!(captured.get("detail").is_none());
+                // The UI approves the captured record, not an unbound retry of the old block.
+                assert!(
+                    release_record(profile, "srv__wipe", &quarantine_record_id(&captured)).unwrap()
+                );
+                assert!(check_staged(profile, &tools).unwrap().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn quarantine_summaries_omit_definitions_but_keep_the_bound_identity() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("quarantine-summary");
+        let tools = vec![destructive_tool("srv__wipe", "Captured text.")];
+        let events = vec![json!({"tool":"srv__wipe", "change":"changed", "severity":"high"})];
+        apply_quarantine(None, &tools, &events).unwrap();
+        let full = all_quarantined().unwrap();
+        let summaries = all_quarantined_summaries().unwrap();
+        assert_eq!(full.len(), summaries.len());
+        for (record, summary) in full.iter().zip(&summaries) {
+            assert!(summary.get("definition").is_none(), "list IPC must not include full schemas per row");
+            assert!(summary.get("pending_pin").is_none());
+            assert_eq!(summary["has_definition"], true);
+            assert_eq!(summary["record_id"], record["record_id"]);
+            let mut stored = record.clone();
+            stored.as_object_mut().unwrap().remove("record_id");
+            stored.as_object_mut().unwrap().remove("profile");
+            assert_eq!(record["record_id"], format!("{:x}", Sha256::digest(stored.to_string().as_bytes())));
+            let profile = summary["profile"].as_str().unwrap();
+            assert_eq!(quarantine_definition((!profile.is_empty()).then_some(profile), "srv__wipe", summary["record_id"].as_str().unwrap()).unwrap(), tools[0]);
+        }
+    }
+
+    #[test]
+    fn quarantine_summary_cache_detects_same_length_edits_and_store_damage() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("quarantine-summary-cache");
+        let path = quarantine_path(None).unwrap();
+        let old = json!({"srv__wipe":{"tool":"srv__wipe", "change":"changed", "ts":1}}).to_string();
+        std::fs::write(&path, &old).unwrap();
+        let first = all_quarantined_summaries().unwrap();
+        assert_eq!(all_quarantined_summaries().unwrap(), first);
+        assert_eq!(all_quarantined_count().unwrap(), first.len());
+        let new = old.replace("\"ts\":1", "\"ts\":2");
+        assert_eq!(new.len(), old.len());
+        std::fs::write(&path, new).unwrap();
+        let changed = all_quarantined_summaries().unwrap();
+        assert_ne!(first[0]["record_id"], changed[0]["record_id"]);
+        std::fs::write(&path, "corrupt").unwrap();
+        assert!(all_quarantined_summaries().is_err());
+        assert!(all_quarantined_count().is_err());
+        std::fs::write(&path, "").unwrap();
+        assert!(all_quarantined_summaries().is_err());
+        std::fs::write(&path, "{}").unwrap();
+        assert!(!all_quarantined_summaries().unwrap().iter().any(|record| record["profile"] == ""));
+    }
+
+    #[test]
+    fn quarantine_summary_cache_ignores_security_appends() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let data = TestDataDir::new("quarantine-summary-security-append");
+        save_quarantine(None, &BTreeMap::from([("srv__read".into(), json!({"tool":"srv__read", "change":"changed", "ts":1}))])).unwrap();
+        let first = all_quarantined_summaries().unwrap();
+        std::fs::write(data.path.join("security.jsonl"), "{}\n").unwrap();
+        let stamp = quarantine_summary_stamp().unwrap();
+        assert!(QUARANTINE_SUMMARY_CACHE.lock().unwrap().as_ref().is_some_and(|cache| cache.stamp == stamp), "security append invalidated the quarantine summary cache");
+        assert_eq!(all_quarantined_summaries().unwrap(), first);
+        assert_eq!(all_quarantined_count().unwrap(), first.len());
+        // Scope discovery and missing-store guards still run on a warm cache.
+        let path = quarantine_path(None).unwrap();
+        let tools = vec![destructive_tool("srv__read", "Read records.")];
+        check(None, &tools).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(all_quarantined_count().is_err());
+    }
+
+    #[test]
+    fn quarantine_definition_fetch_rejects_a_replaced_record() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("quarantine-definition-bound");
+        let old = json!({"tool":"srv__wipe", "change":"changed", "definition":{"name":"old"}});
+        let id = quarantine_record_id(&old);
+        save_quarantine(None, &BTreeMap::from([("srv__wipe".into(), old)])).unwrap();
+        assert_eq!(quarantine_definition(None, "srv__wipe", &id).unwrap()["name"], "old");
+        save_quarantine(None, &BTreeMap::from([("srv__wipe".into(), json!({"tool":"srv__wipe", "change":"poison", "definition":{"name":"new"}}))])).unwrap();
+        assert!(quarantine_definition(None, "srv__wipe", &id).unwrap_err().contains("changed"));
+        assert!(quarantined(None).unwrap().contains("srv__wipe"));
+    }
+
+    #[test]
+    fn quarantine_reason_keeps_the_most_severe_finding() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("quarantine-reason-severity");
+        let current = vec![destructive_tool("srv__wipe", "Changed definition.")];
+        let poison = json!({"tool":"srv__wipe", "server":"srv", "change":"poison", "severity":"high"});
+        for review in [false, true] {
+            for reverse in [false, true] {
+                save_quarantine(None, &Quarantine::new()).unwrap();
+                let changed = json!({"tool":"srv__wipe", "server":"srv", "change":"changed", "severity":"high", "review_required":review});
+                let events = if reverse { vec![poison.clone(), changed.clone()] } else { vec![changed.clone(), poison.clone()] };
+                apply_quarantine(None, &current, &events).unwrap();
+                let record = load_quarantine(None).unwrap()["srv__wipe"].clone();
+                assert_eq!(record["reason"], "a poisoned definition was detected");
+                assert_eq!(record["change"], "poison");
+                // A later softer event cannot replace the warning either.
+                apply_quarantine(None, &current, &[changed]).unwrap();
+                assert_eq!(load_quarantine(None).unwrap()["srv__wipe"]["reason"], record["reason"]);
+            }
+        }
+        save_quarantine(None, &Quarantine::new()).unwrap();
+        let warn = json!({"tool":"srv__wipe", "server":"srv", "change":"changed", "severity":"warn"});
+        apply_quarantine(None, &current, &[warn]).unwrap();
+        apply_quarantine(None, &current, &[poison]).unwrap();
+        assert_eq!(load_quarantine(None).unwrap()["srv__wipe"]["change"], "poison", "upgrade an already blocked softer finding");
+    }
+
+    #[test]
+    fn preview_v3_release_captures_unseen_definition_before_publication() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("preview-v3-release");
+        for profile in [None, Some("work")] {
+            for bulk in [false, true] {
+                for change in ["changed", "tamper"] {
+                    let tool = destructive_tool("srv__wipe", "Unseen preview definition.");
+                    let pin = pin_of(&tool);
+                    save_pins(profile, &BTreeMap::from([("srv__wipe".into(), pin.clone())])).unwrap();
+                    let mut old = json!({"tool":"srv__wipe", "change":change, "definition_fp":pin.fp});
+                    if change == "tamper" {
+                        old["pending_pin"] = json!(pin);
+                    }
+                    save_quarantine(profile, &BTreeMap::from([("srv__wipe".into(), old.clone())])).unwrap();
+                    let id = quarantine_record_id(&old);
+                    if bulk {
+                        assert_eq!(release_all_records(profile, &BTreeMap::from([("srv__wipe".into(), id)])).unwrap().released, 1);
+                    } else {
+                        assert!(release_record(profile, "srv__wipe", &id).unwrap());
+                    }
+                    let current = vec![tool.clone()];
+                    let events = check_staged(profile, &current).unwrap();
+                    assert!(events.iter().any(|e| e["review_required"] == true), "{change} preview approval published an unseen v3 definition");
+                    apply_quarantine(profile, &current, &events).unwrap();
+                    accept_quarantined_pins(profile).unwrap();
+                    let captured = load_quarantine(profile).unwrap()["srv__wipe"].clone();
+                    assert_eq!(captured["definition"], tool);
+                    assert!(release_record(profile, "srv__wipe", &quarantine_record_id(&captured)).unwrap());
+                    assert!(check_staged(profile, &current).unwrap().is_empty(), "bound approval must end the review cycle");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pending_review_survives_pin_acceptance_and_store_failure_until_bound_approval() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("pending-review-store-failure");
+        for profile in [None, Some("work")] {
+            let tools = vec![destructive_tool("srv__wipe", "Captured definition.")];
+            save_pins(profile, &BTreeMap::from([("srv__wipe".into(), pin_of(&tools[0]))])).unwrap();
+            let path = quarantine_path(profile).unwrap();
+            std::fs::write(&path, "corrupt").unwrap();
+            assert!(review_quarantined(profile).unwrap().is_empty(), "ordinary Off errors must not block");
+            assert!(review_quarantined_checked(profile).unwrap().is_empty());
+            let old = json!({"tool":"srv__wipe", "change":"changed"});
+            save_quarantine(profile, &BTreeMap::from([("srv__wipe".into(), old.clone())])).unwrap();
+            release_record(profile, "srv__wipe", &quarantine_record_id(&old)).unwrap();
+            let events = check_staged(profile, &tools).unwrap();
+            apply_quarantine(profile, &tools, &events).unwrap();
+            accept_quarantined_pins(profile).unwrap();
+            assert!(matches!(load_pins(profile), PinsLoad::Loaded(pins) if pins["srv__wipe"].review_pending), "pin acceptance must not consume user review");
+            let captured = load_quarantine(profile).unwrap();
+            std::fs::write(&path, "corrupt").unwrap();
+            assert!(review_quarantined(profile).is_err(), "pending review must fail closed even at Off");
+            assert!(review_quarantined_checked(profile).is_err());
+            save_quarantine(profile, &captured).unwrap();
+            let id = quarantine_record_id(&captured["srv__wipe"]);
+            assert!(release_record(profile, "srv__wipe", &id).unwrap());
+            assert!(matches!(load_pins(profile), PinsLoad::Loaded(pins) if !pins["srv__wipe"].review_on_upgrade && !pins["srv__wipe"].review_pending));
+            assert!(check_staged(profile, &tools).unwrap().is_empty(), "second approval must end the review");
+        }
+    }
+
+    #[test]
+    fn pending_review_recaptures_a_missing_quarantine_until_bound_approval() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("pending-review-missing-quarantine");
+        for profile in [None, Some("work")] {
+            for deleted in [false, true] {
+                for staged in [false, true] {
+                    let tools = vec![destructive_tool("srv__wipe", "Captured definition.")];
+                    save_pins(profile, &BTreeMap::from([("srv__wipe".into(), pin_of(&tools[0]))])).unwrap();
+                    let old = json!({"tool":"srv__wipe", "change":"changed"});
+                    save_quarantine(profile, &BTreeMap::from([("srv__wipe".into(), old.clone())])).unwrap();
+                    release_record(profile, "srv__wipe", &quarantine_record_id(&old)).unwrap();
+                    let events = check_staged(profile, &tools).unwrap();
+                    apply_quarantine(profile, &tools, &events).unwrap();
+                    accept_quarantined_pins(profile).unwrap();
+                    if deleted {
+                        std::fs::remove_file(quarantine_path(profile).unwrap()).unwrap();
+                    } else {
+                        save_quarantine(profile, &Quarantine::new()).unwrap();
+                    }
+                    let events = if staged { check_staged(profile, &tools) } else { check(profile, &tools) }.unwrap();
+                    assert!(events.iter().any(|e| e["review_required"] == true), "pending review vanished after its quarantine row was lost");
+                    assert!(pending_definition_review(profile), "catalog pin writes must retain the review");
+                    apply_quarantine(profile, &tools, &events).unwrap();
+                    accept_quarantined_pins(profile).unwrap();
+                    let captured = load_quarantine(profile).unwrap()["srv__wipe"].clone();
+                    assert_eq!(captured["definition"], tools[0]);
+                    assert!(review_quarantined(profile).unwrap().contains("srv__wipe"));
+                    assert!(release_record(profile, "srv__wipe", &quarantine_record_id(&captured)).unwrap());
+                    assert!(!pending_definition_review(profile));
+                    assert!(check_staged(profile, &tools).unwrap().is_empty(), "one bound approval must end the review");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pending_review_survives_all_unreviewed_pin_merges() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("pending-review-pin-merges");
+        for profile in [None, Some("work")] {
+            for write in ["catalog", "staged", "quarantined"] {
+                let tools = vec![destructive_tool("srv__wipe", "Changed definition.")];
+                let mut old = pin_of(&destructive_tool("srv__wipe", "Previously captured definition."));
+                old.review_pending = true;
+                save_pins(profile, &BTreeMap::from([("srv__wipe".into(), old)])).unwrap();
+                let event = json!({"tool":"srv__wipe", "change":"changed", "severity":"high"});
+                match write {
+                    "catalog" => { check(profile, &tools).unwrap(); }
+                    "staged" => { accept_staged_pins(profile, &tools, &[event]).unwrap(); }
+                    _ => {
+                        save_quarantine(profile, &BTreeMap::from([("srv__wipe".into(), json!({"tool":"srv__wipe", "change":"changed", "pending_pin":pin_of(&tools[0])}))])).unwrap();
+                        accept_quarantined_pins(profile).unwrap();
+                    }
+                }
+                assert!(matches!(load_pins(profile), PinsLoad::Loaded(pins) if pins["srv__wipe"].review_pending), "{write} consumed a pending review");
+            }
+        }
     }
 
     #[test]
@@ -7808,6 +8375,7 @@ mod tests {
         let old = Pin {
             fp: "v1:old".into(),
             review_on_upgrade: false,
+            review_pending: false,
             parameters: None,
             ro: Some(true),
             dh: None,
@@ -8290,6 +8858,7 @@ mod tests {
         Pin {
             fp: fp.to_string(),
             review_on_upgrade: false,
+            review_pending: false,
             parameters: None,
             ro: None,
             dh: None,

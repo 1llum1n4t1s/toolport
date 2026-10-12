@@ -1576,12 +1576,23 @@ fn set_pii_redaction(state: State<RegistryState>, on: bool) -> Result<Registry, 
 #[tauri::command]
 async fn list_quarantined(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let list = integrity::all_quarantined()?;
+        let list = integrity::all_quarantined_summaries()?;
         notify_new_quarantines(&app, &list);
         Ok(list)
     })
     .await
     .map_err(|e| format!("quarantine read task join failed: {e}"))?
+}
+
+#[tauri::command]
+async fn get_quarantine_definition(
+    profile: String, tool: String, expected_record_id: String,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        integrity::quarantine_definition(
+            (!profile.is_empty()).then_some(profile.as_str()), &tool, &expected_record_id,
+        )
+    }).await.map_err(|e| format!("definition read task join failed: {e}"))?
 }
 
 /// Keys of quarantine entries we have already observed this process. `None` = not
@@ -1625,13 +1636,16 @@ fn release_quarantine(
     profile: String,
     tool: String,
     expected_fingerprint: Option<String>,
+    expected_record_id: Option<String>,
 ) -> Result<(), String> {
     let prof = if profile.is_empty() {
         None
     } else {
         Some(profile.as_str())
     };
-    if let Some(expected) = expected_fingerprint {
+    if let Some(expected) = expected_record_id {
+        integrity::release_record(prof, &tool, &expected)?;
+    } else if let Some(expected) = expected_fingerprint {
         integrity::release_definition(prof, &tool, &expected)?;
     } else {
         crate::registry_controller::release_quarantine(prof, &tool)?;
@@ -1657,6 +1671,7 @@ fn release_quarantine(
 async fn release_all_quarantine(
     app: AppHandle,
     profile: String,
+    expected_records: Option<std::collections::BTreeMap<String, String>>,
 ) -> Result<integrity::ReleaseAllOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<RegistryState>();
@@ -1665,8 +1680,11 @@ async fn release_all_quarantine(
         } else {
             Some(profile.as_str())
         };
-        let outcome = integrity::release_all(prof)
-            .map_err(|e| format!("Could not re-approve the blocked tools: {e}"))?;
+        let outcome = match expected_records {
+            Some(expected) => integrity::release_all_records(prof, &expected),
+            None => integrity::release_all(prof),
+        }
+        .map_err(|e| format!("Could not re-approve the blocked tools: {e}"))?;
         // Same reasoning as `release_quarantine`: refresh the cache rather than
         // blind-writing a possibly stale snapshot over a concurrent gateway write.
         reload_into_state(state.inner())?;
@@ -4256,6 +4274,7 @@ pub fn run() {
             list_tool_identities,
             set_pii_redaction,
             list_quarantined,
+            get_quarantine_definition,
             release_quarantine,
             release_all_quarantine,
             set_lazy_discovery,

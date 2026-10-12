@@ -30,7 +30,7 @@ pub fn render() -> Result<String, String> {
         .and_then(Value::as_u64)
         .unwrap_or(0)
         .saturating_add(savings["estimatedTokensAvoided"].as_u64().unwrap_or(0));
-    let quarantined = crate::integrity::all_quarantined()?.len() as u64;
+    let quarantined = crate::integrity::all_quarantined_count()? as u64;
     Ok(render_with_savings(
         &entries,
         tokens_saved,

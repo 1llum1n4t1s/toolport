@@ -281,6 +281,7 @@ export function setPiiRedaction(on: boolean): Promise<Registry> {
 /** A tool blocked after high-risk drift or loss of the integrity baseline,
  * awaiting re-approval. */
 export interface QuarantinedTool {
+  record_id: string;
   server: string;
   tool: string;
   reason: string;
@@ -288,6 +289,10 @@ export interface QuarantinedTool {
   profile: string;
   /** Concrete annotation delta when known, e.g. `readOnlyHint: true → false` (SOU-305). */
   detail?: string | null;
+  /** Definition captured with this blocked record, including schemas and annotations. */
+  definition?: Record<string, unknown> | null;
+  /** The list omits schemas; fetch a captured definition only when expanded. */
+  has_definition?: boolean;
   prev_ro?: boolean | null;
   new_ro?: boolean | null;
   prev_dh?: boolean | null;
@@ -300,19 +305,38 @@ export function listQuarantined(): Promise<QuarantinedTool[]> {
   return invoke<QuarantinedTool[]>("list_quarantined");
 }
 
+export function getQuarantineDefinition(
+  profile: string,
+  tool: string,
+  expectedRecordId: string,
+): Promise<Record<string, unknown>> {
+  return invoke<Record<string, unknown>>("get_quarantine_definition", {
+    profile,
+    tool,
+    expectedRecordId,
+  });
+}
+
 /** Re-approve a quarantined tool so the gateway re-exposes it on its next rebuild. */
 export function releaseQuarantine(
   profile: string,
   tool: string,
   expectedFingerprint?: string,
+  expectedRecordId?: string,
 ): Promise<void> {
-  return invoke<void>("release_quarantine", { profile, tool, expectedFingerprint });
+  return invoke<void>("release_quarantine", {
+    profile,
+    tool,
+    expectedFingerprint,
+    expectedRecordId,
+  });
 }
 
 /** Outcome of a bulk re-approval. `skipped` names tools that stay blocked. */
 export type ReleaseAllOutcome = {
   released: number;
   skipped: string[];
+  changed?: string[];
 };
 
 /**
@@ -321,8 +345,14 @@ export type ReleaseAllOutcome = {
  * at a time. Tools whose captured definition could not be read stay blocked and
  * are returned in `skipped`.
  */
-export function releaseAllQuarantine(profile: string): Promise<ReleaseAllOutcome> {
-  return invoke<ReleaseAllOutcome>("release_all_quarantine", { profile });
+export function releaseAllQuarantine(
+  profile: string,
+  expectedRecords?: Record<string, string>,
+): Promise<ReleaseAllOutcome> {
+  return invoke<ReleaseAllOutcome>("release_all_quarantine", {
+    profile,
+    expectedRecords,
+  });
 }
 
 /** Toggle global lazy discovery (meta-tools vs full catalog) for all clients. */

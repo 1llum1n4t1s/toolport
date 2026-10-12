@@ -10,6 +10,7 @@ import {
 import { toastError } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { QuarantineDefinition } from "@/components/QuarantineDefinition";
 import { fmtTs } from "@/lib/utils";
 
 /** Matches the PendingApprovals cadence so the two attention surfaces feel equally live. */
@@ -64,6 +65,7 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
   const [items, setItems] = useState<QuarantinedTool[]>([]);
   const [releasing, setReleasing] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkReview, setBulkReview] = useState<QuarantinedTool[] | null>(null);
   const [dismissedFor, setDismissedFor] = useState<string | null>(null);
   // Monotonic request id: `release` refreshes while the interval may already have a poll
   // in flight, so an older response can land last and momentarily resurrect a tool the
@@ -75,6 +77,7 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
     try {
       const list = await listQuarantined();
       if (id === reqId.current) setItems(list);
+      return list;
     } catch {
       // Backend not up yet or a transient failure: keep the current list rather than
       // flashing empty, which would read as "all clear" when nothing was verified.
@@ -94,7 +97,7 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
     const k = entryKey(q);
     setReleasing((s) => new Set(s).add(k));
     try {
-      await releaseQuarantine(q.profile, q.tool);
+      await releaseQuarantine(q.profile, q.tool, undefined, q.record_id);
       // Re-read rather than removing optimistically: the gateway reconciles the store
       // on its own tick, and the list is the authority on what is still blocked.
       await refresh();
@@ -123,13 +126,23 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
     try {
       // The card can span profiles (the same tool may be blocked in one and fine in
       // another), and the store is per-profile, so clear each one it covers.
-      const profiles = [...new Set(items.map((q) => q.profile))];
+      // Polling may update the card while confirmation is open. Approve only
+      // the records displayed when the user opened that confirmation.
+      const reviewed = bulkReview ?? [];
+      const profiles = [...new Set(reviewed.map((q) => q.profile))];
       // allSettled, not all: one profile's store being locked must not throw away the
       // outcome of the profiles that did succeed, nor skip the refresh that takes
       // their tools off the card. With Promise.all the card kept listing tools that
       // were already released, and the count never came down.
       const settled = await Promise.allSettled(
-        profiles.map((p) => releaseAllQuarantine(p)),
+        profiles.map((p) =>
+          releaseAllQuarantine(
+            p,
+            Object.fromEntries(
+              reviewed.filter((q) => q.profile === p).map((q) => [q.tool, q.record_id]),
+            ),
+          ),
+        ),
       );
       const outcomes = settled.flatMap((r) =>
         r.status === "fulfilled" ? [r.value] : [],
@@ -137,24 +150,55 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
       const failed = settled.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
       const released = outcomes.reduce((n, o) => n + o.released, 0);
       const skipped = outcomes.flatMap((o) => o.skipped);
-      await refresh();
+      const changed = new Set(
+        settled.flatMap((result, index) =>
+          result.status === "fulfilled"
+            ? (result.value.changed ?? []).map(
+                (tool) => `${profiles[index]}\u0000${tool}`,
+              )
+            : [],
+        ),
+      );
+      const remaining = await refresh();
+      // Include blocks in scopes that were absent from the confirmation, and
+      // any newer findings written after the backend finished its bound release.
+      const displayedIds = new Set(
+        reviewed.map((q) => `${entryKey(q)}\u0000${q.record_id}`),
+      );
+      for (const q of remaining ?? []) {
+        if (!displayedIds.has(`${entryKey(q)}\u0000${q.record_id}`)) {
+          changed.add(entryKey(q));
+        }
+      }
+      const saved = `Saved ${released} approval${released === 1 ? "" : "s"}.`;
       if (failed.length > 0) {
         // Say what did get through, so the number still on the card adds up.
         toastError(
-          `Re-approved ${released}. ${failed.length} profile${
+          `${saved} ${failed.length} profile${
             failed.length === 1 ? "" : "s"
           } could not be re-approved: ${failed[0]}`,
+        );
+      } else if (changed.size > 0) {
+        toastError(
+          `${saved} ${changed.size} new or changed findings remain blocked. Refresh and review them.`,
         );
       } else if (skipped.length > 0) {
         // Not a success: these are still blocked, and saying otherwise would send the
         // user away believing the catalog is whole.
         toastError(
-          `Re-approved ${released}. ${skipped.length} could not be repaired and ${
+          `${saved} ${skipped.length} could not be repaired and ${
             skipped.length === 1 ? "is" : "are"
           } still blocked.`,
         );
       } else {
-        toast.success(`Re-approved ${released} tool${released === 1 ? "" : "s"}`);
+        const needsCapture = reviewed.some(
+          (q) => !(q.has_definition ?? Boolean(q.definition)),
+        );
+        toast.success(
+          needsCapture
+            ? `${saved} Current definitions need one more review and stay blocked until then.`
+            : saved,
+        );
       }
     } catch (e) {
       toastError(`Couldn't re-approve the blocked tools: ${e}`);
@@ -166,6 +210,8 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
   if (items.length === 0 || dismissed) return null;
 
   const many = items.length > 1;
+  const reviewCount = bulkReview?.length ?? items.length;
+  const reviewMany = reviewCount > 1;
 
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 pb-4">
@@ -213,6 +259,7 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
                   {q.detail ? (
                     <p className="mt-0.5 text-[11px] text-muted-foreground">{q.reason}</p>
                   ) : null}
+                  <QuarantineDefinition tool={q} />
                   <p className="mt-0.5 text-[11px] text-muted-foreground">
                     {q.server}
                     {q.profile ? ` · ${q.profile}` : ""} · {whenLabel(q.ts)}
@@ -238,15 +285,14 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
               the whole catalog at once, so it is the difference between the app being
               usable and not. */}
           <ConfirmDialog
-            title={`Re-approve ${items.length} blocked tool${many ? "s" : ""}?`}
+            title={`Re-approve ${reviewCount} blocked tool${reviewMany ? "s" : ""}?`}
+            onOpenChange={(open) => setBulkReview(open ? items : null)}
             description={
               <div className="space-y-2">
                 <p>
-                  This trusts{" "}
-                  {many
-                    ? "these tools' current definitions"
-                    : "this tool's current definition"}{" "}
-                  and makes {many ? "them" : "it"} callable by every client again.
+                  Approve {reviewMany ? "these blocked findings" : "this blocked finding"}
+                  . Findings without a saved definition require one more review of the
+                  current definition before the tool becomes callable.
                 </p>
                 <p>
                   Only do this if you expected the change. If a definition was altered by
