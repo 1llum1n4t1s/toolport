@@ -2094,7 +2094,7 @@ mod tests {
             super::super::build_content(&app, crate::approval_broker::start_native());
         let page = super::TeamsPage::new(&app, servers);
         let registry: crate::registry::Registry = serde_json::from_value(serde_json::json!({
-            "version": 3,
+            "version": 3, "profiles": [], "activeProfileId": "default",
             "servers": [
                 {"id":"enabled", "name":"Enabled team server", "source":"team:fixture", "transport":"http", "url":"https://example.invalid/mcp", "env":[], "enabled":true},
                 {"id":"review", "name":"Review team server", "source":"team:fixture", "transport":"http", "url":"https://example.invalid/mcp", "env":[], "enabled":false}

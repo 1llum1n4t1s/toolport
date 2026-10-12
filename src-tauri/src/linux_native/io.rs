@@ -196,4 +196,52 @@ mod tests {
             })
             .unwrap();
     }
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn mapped_timers_stop_and_store_replacements_arrive_while_hidden() {
+        adw::init().unwrap();
+        let data = crate::registry::DataDirTestEnv::new("gtk-events-hidden");
+        let app = adw::Application::builder()
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .content(&root)
+            .build();
+        let ticks = Rc::new(Cell::new(0));
+        let tick_count = ticks.clone();
+        while_mapped(&root, 1, move || tick_count.set(tick_count.get() + 1));
+        let changes = Rc::new(Cell::new(0));
+        let change_count = changes.clone();
+        watch_data(
+            &window,
+            |name| name == "registry.json",
+            move || change_count.set(change_count.get() + 1),
+        );
+        window.present();
+        gtk::glib::MainContext::default().block_on(async {
+            gtk::glib::timeout_future(std::time::Duration::from_millis(1100)).await;
+            assert!(ticks.get() >= 2);
+            window.set_visible(false);
+            let hidden_ticks = ticks.get();
+            let path = data.dir.join("registry.json");
+            crate::registry::atomic_write(&path, "fixture replacement").unwrap();
+            gtk::glib::timeout_future(std::time::Duration::from_millis(1100)).await;
+            assert_eq!(
+                ticks.get(),
+                hidden_ticks,
+                "hidden pages have no timer callbacks"
+            );
+            assert!(
+                changes.get() > 0,
+                "atomic replacements wake hidden watchers"
+            );
+            window.present();
+            gtk::glib::timeout_future(std::time::Duration::from_millis(50)).await;
+            assert!(ticks.get() > hidden_ticks, "mapping refreshes immediately");
+        });
+        window.close();
+    }
 }
