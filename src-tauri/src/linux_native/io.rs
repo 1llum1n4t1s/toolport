@@ -203,7 +203,9 @@ pub(super) fn watch_data(
                 callback();
             });
         });
-        on_window_closed(window, move || monitor.cancel());
+        on_window_closed(window, move || {
+            monitor.cancel();
+        });
     } else {
         start_fallback_poll(window, fallback_seconds, hidden_alerts, changed);
     }
