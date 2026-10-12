@@ -1637,6 +1637,7 @@ pub fn reconcile_definition_reviews(
         return Ok(());
     }
     let removed_profile = profile.is_some_and(|id| {
+        let id = crate::registry::access_integrity_id(id);
         !valid_root_scope(id)
             && registry.default_access_context_id.as_deref() != Some(id)
             && !registry.profiles.iter().any(|profile| profile.id == id)
