@@ -1007,3 +1007,64 @@ fn search_menu_meets_o200k_context_budget() {
         p95(&menu_tokens)
     );
 }
+
+// Paired release benchmark transport. The controller alternates identical requests
+// across separately compiled revisions; no benchmark control ships in the gateway.
+#[test]
+#[ignore = "explicit interleaved benchmark controlled through stdin"]
+fn search_interleaved_measure() {
+    use std::io::BufRead;
+    let _env = DataDirTestEnv::new("search-interleaved-measure");
+    let tools = scale_catalog();
+    let index = CatalogSearchIndex::build(&tools);
+    let small = search_eval::catalog();
+    let small_index = CatalogSearchIndex::build(&small);
+    let tokenizer = tiktoken_rs::o200k_base().unwrap();
+    eprintln!("MEASURE_READY");
+    for line in std::io::stdin().lock().lines() {
+        let request: Value = serde_json::from_str(&line.unwrap()).unwrap();
+        let (catalog, index) = if request["catalog"] == "66" {
+            (&small, &small_index)
+        } else {
+            (&tools, &index)
+        };
+        let started = Instant::now();
+        let outcome = search_catalog_indexed(
+            catalog,
+            request["query"].as_str().unwrap(),
+            None,
+            25,
+            None,
+            Some(index),
+        );
+        let latency_us = started.elapsed().as_secs_f64() * 1e6;
+        let mut row = json!({"names":outcome.matches.iter().map(|t| &t["name"]).collect::<Vec<_>>(),
+            "low_confidence":outcome.low_confidence,"latency_us":latency_us});
+        if request["payload"] == true {
+            let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":"toolport_search_tools","arguments":{"query":request["query"]}}});
+            let response = handle_request_with_cancel(
+                &dispatch_host(false),
+                &req,
+                &Registry::default(),
+                &router(),
+                catalog,
+                DiscoveryMode::Lazy,
+                None,
+                &SearchGuard::default(),
+                None,
+                None,
+                None,
+                None,
+                Some(index),
+                None,
+                None,
+            )
+            .unwrap();
+            let text = response["result"]["content"][0]["text"].as_str().unwrap();
+            row["response_tokens"] = json!(tokenizer.encode_ordinary(text).len());
+            row["response_text"] = json!(text);
+        }
+        eprintln!("MEASURE {}", row);
+    }
+}

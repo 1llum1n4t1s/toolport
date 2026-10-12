@@ -45586,7 +45586,7 @@ mod search_eval {
     const TOP1_MIN: f64 = 0.85;
     const TOP3_MIN: f64 = 0.90;
 
-    fn catalog() -> Vec<Value> {
+    pub(crate) fn catalog() -> Vec<Value> {
         let doc: Value = serde_json::from_str(CATALOG).expect("catalog fixture parses");
         let shared = doc["sharedInputSchema"].clone();
         let mut tools: Vec<Value> = doc["tools"]
