@@ -3967,6 +3967,10 @@ impl ActivityPage {
     }
 
     fn accept_security(&self, events: Vec<serde_json::Value>) {
+        if events.iter().any(|event| event["review_required"] == true) {
+            if let Some(action) = self.app.lookup_action("review-quarantine") { action.activate(None); }
+            return;
+        }
         let keys = events.iter().map(security_dismissal_key).collect();
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
@@ -4509,12 +4513,13 @@ fn security_status_detail(events: &[serde_json::Value]) -> &'static str {
 }
 
 fn change_can_be_accepted(event: &serde_json::Value) -> bool {
-    event["blocked"] == false
+    event["review_required"] != true
+        && (event["blocked"] == false
         || (event["blocked"] == true
             && event["new_fp"].is_string()
             && event["blocked_profiles"]
                 .as_array()
-                .is_some_and(|profiles| !profiles.is_empty()))
+                .is_some_and(|profiles| !profiles.is_empty())))
 }
 
 fn group_can_be_accepted(group: &crate::integrity::ToolChangeGroup) -> bool {
@@ -4602,7 +4607,10 @@ fn tool_change_group_card(
         .filter(|event| event["blocked"] == true)
         .count();
     let unknown = group.tools.iter().any(|event| event["blocked"].is_null());
-    let status = if blocked > 0 {
+    let review_required = group.tools.iter().any(|event| event["review_required"] == true);
+    let status = if review_required {
+        "Review the captured definition in Settings before accepting it.".to_string()
+    } else if blocked > 0 {
         format!(
             "{blocked} {} blocked. Review the changes or accept them.",
             if blocked == 1 { "tool is" } else { "tools are" }
@@ -4635,6 +4643,12 @@ fn tool_change_group_card(
         page.accept_security(events.clone());
     });
     card.append(&accept);
+    if review_required {
+        let review = gtk::Button::with_label("Review in Settings");
+        review.set_halign(gtk::Align::Start);
+        review.set_action_name(Some("app.review-quarantine"));
+        card.append(&review);
+    }
     card.append(&reveal);
     card
 }
@@ -4715,8 +4729,11 @@ fn security_notice_card(
             .build(),
     );
     let is_change = event["type"] == "tool_drift";
+    let review_required = is_change && event["review_required"] == true;
     let dismiss = gtk::Button::builder()
-        .label(if is_change {
+        .label(if review_required {
+            "Review in Settings"
+        } else if is_change {
             "Accept this tool"
         } else {
             "Reviewed"
@@ -4724,7 +4741,7 @@ fn security_notice_card(
         .tooltip_text("Accept this occurrence; a later change will reappear")
         .css_classes(["flat"])
         .build();
-    dismiss.set_sensitive(!is_change || change_can_be_accepted(event));
+    dismiss.set_sensitive(review_required || !is_change || change_can_be_accepted(event));
     let accepted_event = event.clone();
     let key = security_dismissal_key(event);
     let expansion_key = format!("security:{key}");
@@ -4735,7 +4752,9 @@ fn security_notice_card(
             .expanded_activity_rows
             .borrow_mut()
             .remove(&expansion_key_for_dismiss);
-        if is_change {
+        if review_required {
+            if let Some(action) = page_for_dismiss.app.lookup_action("review-quarantine") { action.activate(None); }
+        } else if is_change {
             page_for_dismiss.accept_security(vec![accepted_event.clone()]);
         } else {
             page_for_dismiss.dismiss_security(vec![key.clone()]);
@@ -4837,6 +4856,9 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
     }
 
     if event_type == "tool_drift" {
+        if event["review_required"] == true {
+            lines.push("Review the captured definition in Settings before accepting it.".to_string());
+        }
         if let Some(parameters) = event.get("parameters") {
             for (key, label) in [
                 ("added", "Added"),

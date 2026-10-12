@@ -64,6 +64,8 @@ export interface SecurityEvent {
   change: string;
   changed_fields?: string[];
   new_fp?: string;
+  /** Captured definition requires review in Settings before bound approval. */
+  review_required?: boolean;
   /** Older unblocked records without a captured fingerprint, shown in history. */
   historical?: boolean;
   parameters?: { added: string[]; removed: string[]; changed: string[] };
