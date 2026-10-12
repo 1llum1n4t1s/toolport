@@ -40435,7 +40435,13 @@ mod tests {
                         .any(|tool| tool["name"] == "srv__read"));
                     let fp = integrity::baselines(profile)["srv__read"].fingerprint.clone();
                     assert!(fp.starts_with("v3:"));
-                    assert!(approve_captured_review(profile, "srv__read", &fp));
+                    if version == "v3" {
+                        // Ordinary drift has an already-reviewed baseline and retains
+                        // fingerprint-bound Activity approval.
+                        assert!(integrity::release_definition(profile, "srv__read", &fp).unwrap());
+                    } else {
+                        assert!(approve_captured_review(profile, "srv__read", &fp));
+                    }
                     assert!(reconcile_quarantine(
                         &state.registry, &state.router, &state.stdio_upstream,
                         profile, None, &AtomicBool::new(false),
@@ -40821,7 +40827,11 @@ mod tests {
         }}), DiscoveryMode::Full);
         assert!(!called["error"].is_null() || called["result"]["isError"] == true, "{called}");
         let fp = global["srv__read"].fingerprint.clone();
-        assert!(approve_captured_review(None, "srv__read", &fp));
+        if legacy.is_some() {
+            assert!(approve_captured_review(None, "srv__read", &fp));
+        } else {
+            assert!(integrity::release_definition(None, "srv__read", &fp).unwrap());
+        }
         let accepted = request(json!({"jsonrpc":"2.0","id":4,"method":"tools/list"}), DiscoveryMode::Full);
         assert!(
             accepted["result"]["tools"].as_array().unwrap().iter()
