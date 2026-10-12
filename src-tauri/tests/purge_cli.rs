@@ -325,6 +325,18 @@ fn purge_r7_cli_removes_location_store_and_exact_backup_names() {
     std::fs::create_dir(&data).unwrap();
     std::fs::write(data.join("registry.json"), serde_json::to_vec(&conduit_lib::registry::Registry::default()).unwrap()).unwrap();
     let _selected = conduit_lib::registry::DataDirOverride::set(data.clone());
+    // These writers run in this process, so child-only roots are insufficient.
+    struct TestRoot(Option<std::ffi::OsString>);
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("TOOLPORT_TEST_ROOT", value),
+                None => std::env::remove_var("TOOLPORT_TEST_ROOT"),
+            }
+        }
+    }
+    let _root = TestRoot(std::env::var_os("TOOLPORT_TEST_ROOT"));
+    std::env::set_var("TOOLPORT_TEST_ROOT", env.dir.join("home"));
     let long_id = format!("claude-code@claude-{}", "x".repeat(210));
     let prefix: String = long_id.chars().take(120).collect();
     let bounded = format!("{prefix}-{}", conduit_lib::registry::sha256_hex(&long_id));
@@ -429,4 +441,21 @@ fn purge_r7_cli_test_root_redirects_os_known_folders() {
     let plan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(std::path::Path::new(plan["reportPath"].as_str().unwrap()).starts_with(env.dir.join("home")));
     assert!(data.join("registry.json").exists(), "planning stays read-only");
+}
+
+#[test]
+#[should_panic(expected = "in-process integration tests require TOOLPORT_TEST_ROOT")]
+fn in_process_client_discovery_requires_test_root() {
+    let _env = conduit_lib::registry::DataDirTestEnv::new("purge_cli_root_guard");
+    struct RestoreRoot(Option<std::ffi::OsString>);
+    impl Drop for RestoreRoot {
+        fn drop(&mut self) {
+            if let Some(value) = self.0.take() {
+                std::env::set_var("TOOLPORT_TEST_ROOT", value);
+            }
+        }
+    }
+    let _restore = RestoreRoot(std::env::var_os("TOOLPORT_TEST_ROOT"));
+    std::env::remove_var("TOOLPORT_TEST_ROOT");
+    conduit_lib::clients::detect_clients();
 }
