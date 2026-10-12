@@ -456,14 +456,26 @@ fn build_window(
         actions.append(&go_back);
         let dismiss = gtk::Button::with_label("Dismiss");
         let notice_for_dismiss = notice.clone();
-        dismiss.connect_clicked(move |_| {
-            match crate::registry::update(|reg| {
-                reg.dismiss_removed_features_notice();
-                Ok(())
-            }) {
-                Ok(_) => notice_for_dismiss.set_visible(false),
-                Err(error) => eprintln!("toolport: could not dismiss the notice: {error}"),
-            }
+        dismiss.connect_clicked(move |button| {
+            button.set_sensitive(false);
+            let button = button.clone();
+            let notice = notice_for_dismiss.clone();
+            gtk::glib::spawn_future_local(async move {
+                let result = gtk::gio::spawn_blocking(|| {
+                    crate::registry::update(|reg| {
+                        reg.dismiss_removed_features_notice();
+                        Ok(())
+                    })
+                })
+                .await;
+                match result {
+                    Ok(Ok(_)) => notice.set_visible(false),
+                    _ => {
+                        button.set_sensitive(true);
+                        eprintln!("toolport: could not dismiss the notice");
+                    }
+                }
+            });
         });
         actions.append(&dismiss);
         notice.append(&actions);
@@ -489,14 +501,26 @@ fn build_window(
         actions.append(&stop);
         let dismiss = gtk::Button::with_label("Dismiss");
         let notice_for_dismiss = notice.clone();
-        dismiss.connect_clicked(move |_| {
-            match crate::registry::update(|reg| {
-                reg.dismiss_access_upgrade_notice();
-                Ok(())
-            }) {
-                Ok(_) => notice_for_dismiss.set_visible(false),
-                Err(error) => eprintln!("toolport: could not dismiss upgrade notice: {error}"),
-            }
+        dismiss.connect_clicked(move |button| {
+            button.set_sensitive(false);
+            let button = button.clone();
+            let notice = notice_for_dismiss.clone();
+            gtk::glib::spawn_future_local(async move {
+                let result = gtk::gio::spawn_blocking(|| {
+                    crate::registry::update(|reg| {
+                        reg.dismiss_access_upgrade_notice();
+                        Ok(())
+                    })
+                })
+                .await;
+                match result {
+                    Ok(Ok(_)) => notice.set_visible(false),
+                    _ => {
+                        button.set_sensitive(true);
+                        eprintln!("toolport: could not dismiss the upgrade notice");
+                    }
+                }
+            });
         });
         actions.append(&dismiss);
         notice.append(&actions);

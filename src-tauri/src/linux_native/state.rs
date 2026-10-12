@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
@@ -822,7 +822,6 @@ pub(super) struct RegistryController {
     path: Option<PathBuf>,
     reader: Rc<super::io::SnapshotReader<RegistryState>>,
     monitors: RefCell<Vec<gio::FileMonitor>>,
-    reload_pending: Cell<bool>,
 }
 
 impl RegistryController {
@@ -836,7 +835,6 @@ impl RegistryController {
                 render,
             ),
             monitors: RefCell::new(Vec::new()),
-            reload_pending: Cell::new(false),
         })
     }
 
@@ -855,16 +853,7 @@ impl RegistryController {
         let Some(controller) = controller.upgrade() else {
             return;
         };
-        if controller.reload_pending.replace(true) {
-            return;
-        }
-        let controller = Rc::downgrade(&controller);
-        gtk::glib::idle_add_local_once(move || {
-            if let Some(controller) = controller.upgrade() {
-                controller.reload_pending.set(false);
-                Self::reload_in_background(&controller);
-            }
-        });
+        Self::reload_in_background(&controller);
     }
 
     /// Read and parse the registry off the GTK main thread. Registry file
