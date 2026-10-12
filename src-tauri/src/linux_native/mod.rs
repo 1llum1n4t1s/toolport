@@ -6024,8 +6024,17 @@ impl ApprovalPage {
         page
     }
 
-    fn attach(&self, _window: &adw::ApplicationWindow) {
-        self.refresh();
+    fn attach(&self, window: &adw::ApplicationWindow) {
+        // A request can arrive before the window finishes building. Publish its
+        // initial snapshot to both the panel and the sidebar badge.
+        if let Some(action) = window
+            .application()
+            .and_then(|app| app.lookup_action("approval-queue-changed"))
+        {
+            action.activate(None);
+        } else {
+            self.refresh();
+        }
         let page = self.clone();
         io::while_mapped(&self.root, 1, move || page.refresh());
     }
