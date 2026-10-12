@@ -39740,7 +39740,7 @@ mod tests {
     }
 
     #[test]
-    fn integrity_off_cold_baseline_tamper_blocks_unknown_review_state() {
+    fn integrity_off_cold_baseline_tamper_restores_v1_behavior() {
         let _data_lock = registry::data_dir_test_lock();
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir =
@@ -39768,17 +39768,47 @@ mod tests {
         reg.set_safety_level(registry::SafetyLevel::Off);
         reg.quarantine_on_drift = false;
         let registry = Arc::new(Mutex::new(reg));
-        let (_, pending) = maybe_check_integrity(&registry, &tools, profile).unwrap_err();
-        assert_eq!(pending, set_of(&["srv__read"]), "a cold corrupt store has no readable review state for this tool");
+        assert_eq!(maybe_check_integrity(&registry, &tools, profile).unwrap(), None);
+        assert!(std::fs::read_to_string(dir.join(format!("tool-pins-v2-{}.json", registry::profile_store_key("off-baseline-tamper")))).unwrap().contains("srv__read"));
         assert_eq!(
             effective_quarantine(&registry, profile, &AtomicBool::new(false)),
-            Some(set_of(&["srv__read"]))
+            Some(BTreeSet::new())
         );
         assert!(integrity::read_recent(20)
             .unwrap()
             .iter()
             .any(|event| event["change"] == "tamper"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn review_r3_off_corrupt_pins_retains_pending_store_review() {
+        let data = DataDirTestEnv::new("off-corrupt-pending-store");
+        seed_legacy_review(&data.dir, None, "v2");
+        integrity::release(None, "srv__read").unwrap();
+        let source = readonly_router("srv", "Unseen definition.");
+        let mut reg = Registry::default();
+        reg.servers = vec![stub_server("srv", "Source"), stub_server("other", "Other")];
+        reg.set_safety_level(registry::SafetyLevel::Off);
+        let registry = Arc::new(Mutex::new(reg));
+        maybe_check_integrity(&registry, &source.shared_tools(), None).unwrap();
+        let record = integrity::all_quarantined().unwrap()[0].clone();
+        assert_eq!(record["review_required"], true);
+        for filename in ["tool-pins.json", "tool-pins.json.bak"] {
+            std::fs::write(data.dir.join(filename), "{ corrupt pins").unwrap();
+        }
+        let ordinary = readonly_router("other", "Ordinary definition.");
+        let mut built = source.with_shared_server_slot(&ordinary.server_slot("other").unwrap());
+        let offered = built.shared_tools();
+        let published = requarantine_if_needed(&registry, &mut built, offered, None);
+        assert_eq!(published.len(), 1, "Off must expose the ordinary tool");
+        assert_eq!(published[0]["name"], "other__read");
+        assert!(built.quarantined().contains("srv__read"), "the persisted review must remain blocked");
+        assert!(integrity::all_quarantined().unwrap().iter().any(|row| row["tool"] == "srv__read" && row["review_required"] == true));
+        let live = Arc::new(Mutex::new(Arc::new(built)));
+        reconcile_quarantine(&registry, &live, &test_stdio_session(), None, None, &AtomicBool::new(false));
+        assert_eq!(live.lock().unwrap().shared_tools()[0]["name"], "other__read");
+        assert!(integrity::read_recent(20).unwrap().iter().any(|event| event["change"] == "tamper" && event["detail"].as_str().is_some_and(|detail| detail.contains("Off"))));
     }
 
     #[test]
