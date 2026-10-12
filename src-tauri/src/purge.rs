@@ -596,7 +596,20 @@ fn run_with(
     }
     // Bounded long-ID backup names need the location inventory on the next pass.
     if report.leftovers.is_empty() {
-        remove_path(&locations_path, &mut report);
+        match std::fs::symlink_metadata(&locations_path) {
+            Ok(metadata) if !metadata.is_dir() && !is_link(&metadata) => {
+                remove_path(&locations_path, &mut report);
+            }
+            Ok(_) => report.preserved.push(format!(
+                "{} (not a Toolport-created entry)",
+                locations_path.display()
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => report.leftovers.push(Leftover {
+                path: locations_path.display().to_string(),
+                error: error.to_string(),
+            }),
+        }
     } else if locations_path.exists() {
         report.leftovers.push(Leftover {
             path: locations_path.display().to_string(),
@@ -1118,6 +1131,43 @@ mod tests {
         assert_eq!(std::fs::read_dir(backup_dir).unwrap().count(), 1);
         assert_eq!(std::fs::read(user_file).unwrap(), b"user bytes");
         assert!(config.exists());
+    }
+
+    #[test]
+    fn purge_location_inventory_collisions_remain_preserved() {
+        for linked in [false, true] {
+            if linked && !cfg!(unix) {
+                continue;
+            }
+            let env = crate::registry::DataDirTestEnv::new("purge_location_collision");
+            crate::registry::save(&crate::registry::Registry::default()).unwrap();
+            let store = env.dir.join("client-locations.json");
+            let user = env.dir.join("user.json");
+            std::fs::write(&user, "[]").unwrap();
+            if linked {
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&user, &store).unwrap();
+            } else {
+                std::fs::create_dir(&store).unwrap();
+            }
+            let report = run_with(
+                |_| Vec::new(),
+                || Ok(Vec::new()),
+                |_| Vec::new(),
+                || Ok(crate::secrets::purge::Removal::default()),
+                |_| Ok(()),
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert!(report.leftovers.is_empty(), "{:?}", report.leftovers);
+            assert!(std::fs::symlink_metadata(&store).is_ok());
+            assert!(report
+                .preserved
+                .iter()
+                .any(|entry| entry.starts_with(&store.display().to_string())));
+            assert_eq!(std::fs::read(user).unwrap(), b"[]");
+            assert!(!env.dir.join("registry.json").exists());
+        }
     }
 
     #[test]
