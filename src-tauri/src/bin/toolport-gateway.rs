@@ -39884,9 +39884,15 @@ mod tests {
             None,
             &AtomicBool::new(false),
         );
-        assert_eq!(live.lock().unwrap().shared_tools()[0]["name"], "other__read");
+        assert_eq!(
+            live.lock().unwrap().shared_tools()[0]["name"],
+            "other__read"
+        );
         let events = integrity::read_recent(20).unwrap();
-        let tamper = events.iter().find(|event| event["change"] == "tamper").unwrap();
+        let tamper = events
+            .iter()
+            .find(|event| event["change"] == "tamper")
+            .unwrap();
         assert!(tamper["detail"].as_str().unwrap().contains("Off"));
     }
 
