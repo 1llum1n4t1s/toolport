@@ -3634,14 +3634,25 @@ impl ActivityPage {
         filter_server.set_tooltip_text(Some("Show events from one server"));
         let factory = gtk::SignalListItemFactory::new();
         factory.connect_setup(|_, item| {
-            let item = item.downcast_ref::<gtk::ListItem>().expect("a dropdown list item");
-            item.set_child(Some(&gtk::Label::builder().xalign(0.0)
-                .ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(24).build()));
+            let item = item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("a dropdown list item");
+            item.set_child(Some(
+                &gtk::Label::builder()
+                    .xalign(0.0)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .max_width_chars(24)
+                    .build(),
+            ));
         });
         factory.connect_bind(|_, item| {
-            let item = item.downcast_ref::<gtk::ListItem>().expect("a dropdown list item");
-            if let (Some(value), Some(label)) = (item.item().and_downcast::<gtk::StringObject>(),
-                item.child().and_downcast::<gtk::Label>()) {
+            let item = item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("a dropdown list item");
+            if let (Some(value), Some(label)) = (
+                item.item().and_downcast::<gtk::StringObject>(),
+                item.child().and_downcast::<gtk::Label>(),
+            ) {
                 label.set_label(&value.string());
                 label.set_tooltip_text(Some(&value.string()));
             }
@@ -12061,8 +12072,10 @@ mod tests {
         page.render(state::load_activity_snapshot().unwrap());
         let old = page.list.first_child().unwrap();
         let stats = page.stats_list.first_child().unwrap();
-        assert!(page.root.measure(gtk::Orientation::Horizontal, -1).0 <= 480,
-            "Activity must fit a 480px window with loaded counts");
+        assert!(
+            page.root.measure(gtk::Orientation::Horizontal, -1).0 <= 480,
+            "Activity must fit a 480px window with loaded counts"
+        );
         page.render(state::load_activity_snapshot().unwrap());
         assert_eq!(page.list.first_child().unwrap(), old);
         assert_eq!(page.stats_list.first_child().unwrap(), stats);
