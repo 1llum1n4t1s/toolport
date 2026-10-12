@@ -37242,10 +37242,10 @@ mod tests {
                     req,
                     &guard,
                     None,
+                    None,
+                    None,
+                    None,
                     Some("codex"),
-                    None,
-                    None,
-                    None,
                     None,
                     DiscoveryMode::Lazy,
                 )
@@ -37287,11 +37287,16 @@ mod tests {
             assert_eq!(run(&invalid)["result"]["isError"], true);
             assert!(run(&list)["result"]["tools"].is_array());
         }
-        assert!(
-            savings::entries().is_empty(),
-            "excluded session must not write comparable rows"
-        );
+        let rows = savings::entries();
         let summary = savings::summary();
+        assert!(
+            rows.is_empty(),
+            "wire={wire}, concurrent={concurrent}: rows={}, sessions={}, discoveries={}, net={}",
+            rows.len(),
+            summary["tokenizedLoads"],
+            summary["discoveryCount"],
+            summary["tokensSaved"]
+        );
         assert_eq!(summary["tokenizedLoads"], 0);
         assert_eq!(summary["discoveryCount"], 0);
         assert_eq!(summary["tokensSaved"], 0);
