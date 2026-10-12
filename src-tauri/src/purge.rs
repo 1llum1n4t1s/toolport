@@ -784,7 +784,8 @@ fn owned_data_entry(relative: &Path) -> Option<DataEntry> {
 
 #[cfg(test)]
 fn owned_data_entry_with_legacy(relative: &Path, legacy: &std::collections::HashSet<String>) -> Option<DataEntry> {
-    owned_data_entry_with_backups(relative, legacy, &crate::clients::purge_backup_inventory())
+    // Pure name checks must not read the location store or require a data root.
+    owned_data_entry_with_backups(relative, legacy, &Default::default())
 }
 
 fn owned_data_entry_with_backups(relative: &Path, legacy: &std::collections::HashSet<String>, backups: &std::collections::HashMap<String, crate::clients::PurgeBackupClient>) -> Option<DataEntry> {

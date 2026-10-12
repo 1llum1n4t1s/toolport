@@ -4066,6 +4066,9 @@ impl PurgeBackupClient {
 /// Removed short locations still have recognisable generated IDs. Bounded names
 /// need the full saved ID so a similar prefix with a different digest stays alone.
 pub(crate) fn purge_backup_short_location(component: &str) -> Option<PurgeBackupClient> {
+    if let Some(def) = defs().into_iter().find(|def| def.id == component) {
+        return Some(PurgeBackupClient::from_def(&def));
+    }
     if component.len() > 200 { return None; }
     let kind = locations::generated_id_type(component)?;
     // A bounded component also resembles a legal short Claude profile ID. Only
