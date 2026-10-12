@@ -6343,13 +6343,13 @@ mod tests {
         std::fs::write(&path, "{ unreadable pins").unwrap();
         record_event(&json!({"type":"pins_load_failed", "ts":10, "profile":profile, "detail":"Old Ask text"}));
         record_event(&json!({"type":"pins_load_failed", "ts":20, "profile":"other", "detail":"Other profile"}));
-        record_event(&json!({"type":"pins_load_failed", "ts":15, "profile":profile, "detail":"Latest failure"}));
+        record_event(&json!({"type":"pins_load_failed", "ts":700015, "profile":profile, "detail":"Latest failure"}));
         // The relevant failure must not disappear after 100 unrelated events.
         for ts in 21..=125 { record_event(&json!({"type":"tool_drift", "ts":ts})); }
         for (level, wording) in [(crate::registry::SafetyLevel::Ask, "Safety is Ask"), (crate::registry::SafetyLevel::Strict, "Safety is Strict"), (crate::registry::SafetyLevel::Off, "Safety is Off")] {
             registry.set_safety_level(level);
             let notice = baseline_notice(&registry).unwrap().unwrap();
-            assert_eq!(notice["ts"], 15);
+            assert_eq!(notice["ts"], 700015);
             assert!(notice["detail"].as_str().unwrap().contains(wording));
             assert!(!notice["detail"].as_str().unwrap().contains("Old Ask text"));
         }
@@ -6459,6 +6459,12 @@ mod tests {
             let run_check = || if staged { check_staged(None, &tools) } else { check(None, &tools) };
             let events = run_check().unwrap();
             assert!(events.iter().any(|event| event["review_required"] == true));
+            assert!(definition_review_names(None).contains("srv__wipe"), "the staged gate must retain the upgrade marker before acceptance");
+            apply_quarantine(None, &tools, &events).unwrap();
+            if staged {
+                accept_staged_pins(None, &tools, &events).unwrap();
+            }
+            accept_quarantined_pins(None).unwrap();
             assert!(
                 pending_definition_review(None),
                 "upgrade-only review was consumed"

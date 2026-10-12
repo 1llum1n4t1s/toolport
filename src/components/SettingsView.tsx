@@ -786,9 +786,11 @@ export function SettingsView({
   }, [loadBridge]);
 
   useEffect(() => {
+    let current = true;
     const load = () => {
       void getBaselineNotice()
         .then((notice) => {
+          if (!current) return;
           setBaselineNotice(
             notice ? `${new Date(notice.ts).toLocaleString()}: ${notice.detail}` : null,
           );
@@ -808,7 +810,10 @@ export function SettingsView({
     load();
     // Quarantine happens asynchronously in the gateway, so poll to keep the list fresh.
     const id = setInterval(load, 15000);
-    return () => clearInterval(id);
+    return () => {
+      current = false;
+      clearInterval(id);
+    };
   }, [registry?.activeProfileId, effectiveLevel, registry?.quarantineOnDrift, registry?.teamForcedQuarantineOnDrift]);
 
   const reapprove = async (q: QuarantinedTool) => {
