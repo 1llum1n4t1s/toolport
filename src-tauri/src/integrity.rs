@@ -628,6 +628,14 @@ pub fn definition_review_names_for_catalog(
     let mut names: BTreeSet<_> = state.names.intersection(present).cloned().collect();
     if state.unreadable {
         names.extend(present.difference(&state.ordinary).cloned());
+        if let Some(path) = pins_path(profile) {
+            let mut cache = REVIEW_PINS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(entry) = cache.get_mut(&path) {
+                if std::sync::Arc::ptr_eq(&entry.state, &state) {
+                    std::sync::Arc::make_mut(&mut entry.state).names.extend(names.iter().cloned());
+                }
+            }
+        }
         Err(names)
     } else {
         Ok(names)
@@ -1849,7 +1857,9 @@ pub fn definition_review_names(profile: Option<&str>) -> BTreeSet<String> {
 /// Use cached quarantine capture metadata instead of parsing payloads every tick.
 pub fn definition_reviews_need_capture(profile: Option<&str>, present: &BTreeSet<String>) -> bool {
     let state = cached_review_pins(profile);
-    if state.names.is_disjoint(present) {
+    if state.unreadable || state.names.is_disjoint(present) {
+        // A failed pin stamp cannot capture a trustworthy definition. The next
+        // readable stamp retries capture, without repeating a failed gate now.
         return false;
     }
     let Some(path) = quarantine_path(profile) else {

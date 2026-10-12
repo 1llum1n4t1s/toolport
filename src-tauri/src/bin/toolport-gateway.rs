@@ -39594,13 +39594,20 @@ mod tests {
         for filename in ["tool-pins.json", "tool-pins.json.bak"] {
             std::fs::write(data.dir.join(filename), "{ corrupt pins").unwrap();
         }
-        let mut built = source.with_shared_server_slot(&ordinary.server_slot("other").unwrap());
+        let unknown = readonly_router("unknown", "Definition with unreadable review state.");
+        let mut built = source.with_shared_server_slot(&ordinary.server_slot("other").unwrap())
+            .with_shared_server_slot(&unknown.server_slot("unknown").unwrap());
         let offered = built.shared_tools();
         let published = requarantine_if_needed(&registry, &mut built, offered, None);
         assert!(!published.iter().any(|tool| tool["name"] == "srv__read"));
         assert!(published.iter().any(|tool| tool["name"] == "other__read"));
+        assert!(!published.iter().any(|tool| tool["name"] == "unknown__read"));
         let router = Arc::new(Mutex::new(Arc::new(built)));
-        reconcile_quarantine(&registry, &router, &test_stdio_session(), None, None, &AtomicBool::new(false));
+        let before = router.lock().unwrap().clone();
+        for _ in 0..3 {
+            assert!(!reconcile_quarantine(&registry, &router, &test_stdio_session(), None, None, &AtomicBool::new(false)));
+            assert!(Arc::ptr_eq(&before, &router.lock().unwrap()));
+        }
         assert!(!router.lock().unwrap().shared_tools().iter().any(|tool| tool["name"] == "srv__read"));
     }
 
