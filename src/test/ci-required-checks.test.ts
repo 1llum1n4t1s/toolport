@@ -20,6 +20,8 @@ const REQUIRED_CHECK_NAME = "Build + test";
 
 /** Jobs that must be green before the required check can be green. */
 const GATED_JOB_IDS = [
+  "clippy",
+  "rustfmt",
   "build-test",
   "cross-platform-rust",
   "installer-script",
@@ -32,6 +34,7 @@ interface WorkflowStep {
   if?: string;
   run?: string;
   uses?: string;
+  with?: Record<string, string>;
   shell?: string;
   env?: Record<string, string>;
   "continue-on-error"?: boolean;
@@ -188,8 +191,7 @@ describe("CI required merge gate (SBS-874)", () => {
     // skipped required check does not block merge.
     expect(gate.if?.trim()).toBe("always()");
     expect(needsOf(gate)).toEqual(expect.arrayContaining(GATED_JOB_IDS));
-    // Clippy is non-blocking until the existing warnings are cleared.
-    expect(needsOf(gate)).not.toContain("clippy");
+    expect(needsOf(gate)).toEqual(expect.arrayContaining(["clippy", "rustfmt"]));
   });
 
   it("passes every dependency to the fail-closed selected-check policy", () => {
@@ -209,6 +211,45 @@ describe("CI required merge gate (SBS-874)", () => {
     expect(runScripts(jobs.changes).join("\n")).toContain(
       "node --test .github/scripts/ci-policy.test.mjs",
     );
+  });
+
+  it("requires strict lint commands and pins both Rust lint toolchains", () => {
+    const clippy = jobs.clippy;
+    expect(clippy["continue-on-error"]).not.toBe(true);
+    expect(clippy.strategy?.matrix?.include).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          shell: "headless",
+          features: "search-static,test-support",
+        }),
+        expect.objectContaining({
+          shell: "desktop",
+          features: "search-static,test-support,desktop",
+        }),
+        expect.objectContaining({
+          shell: "gtk",
+          features: "search-static,test-support,gtk-desktop",
+        }),
+      ]),
+    );
+    const lint = clippy.steps?.find((step) => step.name === "Clippy");
+    expect(lint?.run).toContain(
+      "--no-default-features --features ${{ matrix.features }} --all-targets -- -D warnings",
+    );
+    expect(lint?.["continue-on-error"]).not.toBe(true);
+    for (const id of ["clippy", "rustfmt"]) {
+      const toolchain = jobs[id].steps?.find((step) =>
+        step.uses?.startsWith("dtolnay/rust-toolchain@"),
+      );
+      expect(toolchain?.with?.toolchain).toBe("1.99.0");
+    }
+    expect(runScripts(jobs.rustfmt).join("\n")).toContain(
+      'python3 scripts/check-rustfmt.py --base "$base"',
+    );
+    const manifest = JSON.parse(
+      readFileSync(join(process.cwd(), "package.json"), "utf8"),
+    );
+    expect(manifest.scripts.lint).toBe("eslint . --max-warnings 0");
   });
 
   it("keeps the Linux suite under a different check name", () => {
