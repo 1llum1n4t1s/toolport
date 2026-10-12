@@ -117,8 +117,11 @@ pub(super) fn while_mapped(widget: &gtk::Box, seconds: u64, tick: impl Fn() + 's
     let tick = Rc::new(tick);
     let source = Rc::new(std::cell::RefCell::new(None::<gtk::glib::SourceId>));
     let source_for_map = source.clone();
-    widget.connect_map(move |_| {
+    widget.connect_map(move |widget| {
         tick();
+        if !widget.is_mapped() {
+            return;
+        }
         let tick = tick.clone();
         *source_for_map.borrow_mut() = Some(gtk::glib::timeout_add_local(
             std::time::Duration::from_secs(seconds),
