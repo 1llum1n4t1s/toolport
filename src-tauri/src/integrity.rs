@@ -563,6 +563,7 @@ impl ReviewPins {
 struct ReviewPinsCache {
     stamp: Option<Vec<Option<ReviewFileStamp>>>,
     state: std::sync::Arc<ReviewPins>,
+    tamper_logged: bool,
 }
 
 static REVIEW_PINS_CACHE: Mutex<BTreeMap<PathBuf, ReviewPinsCache>> = Mutex::new(BTreeMap::new());
@@ -604,6 +605,7 @@ fn cached_review_pins(profile: Option<&str>) -> std::sync::Arc<ReviewPins> {
         PinsLoad::Corrupt => ReviewPins { unreadable: true, ..(*entry.state).clone() },
     };
     entry.state = std::sync::Arc::new(state);
+    entry.tamper_logged = false;
     // Fresh stores still need the legacy-migration guard on the next read.
     entry.stamp = if fresh { None } else { stable };
     entry.state.clone()
@@ -614,6 +616,7 @@ fn remember_saved_review_pins(path: &Path, pins: &Pins) {
     let entry = cache.entry(path.to_path_buf()).or_default();
     entry.stamp = None;
     entry.state = std::sync::Arc::new(ReviewPins::from_pins(pins));
+    entry.tamper_logged = false;
 }
 
 /// Unknown review states fail closed only for their catalog names. Remembered
@@ -628,6 +631,28 @@ pub fn definition_review_names_for_catalog(
         Err(names)
     } else {
         Ok(names)
+    }
+}
+
+/// Record corruption once per failed stamped read without repeating its I/O
+/// retry budget during review-capture retries. A failed log write is retried.
+pub fn record_unreadable_review_state(profile: Option<&str>) {
+    let Some(path) = pins_path(profile) else { return; };
+    let stamp = {
+        let cache = REVIEW_PINS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(entry) = cache.get(&path) else { return; };
+        if !entry.state.unreadable || entry.tamper_logged { return; }
+        entry.stamp.clone()
+    };
+    let mut event = pins_tamper_event();
+    event["profile"] = json!(profile.unwrap_or(""));
+    if record_event(&event) {
+        let mut cache = REVIEW_PINS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = cache.get_mut(&path) {
+            if entry.state.unreadable && entry.stamp == stamp {
+                entry.tamper_logged = true;
+            }
+        }
     }
 }
 

@@ -10314,8 +10314,7 @@ fn maybe_check_integrity(
         if review_state.is_err() && !blocking && !quarantine_on {
             // Preserve the tamper signal without allowing a corrupt baseline to
             // rewrite away remembered review markers or approve unknown tools.
-            integrity::check_staged(profile, tools)
-                .map_err(|error| (error, review_names.clone()))?;
+            integrity::record_unreadable_review_state(profile);
             return Err(("Could not read the integrity review state".into(), review_names.clone()));
         }
         integrity::ensure_quarantine_store_for_fresh_pins(profile)
@@ -39483,39 +39482,39 @@ mod tests {
         assert!(upgraded.default_access_profile_id.is_none(), "the v1 active set equals the union");
         assert!(upgraded.default_access_context_id.is_some());
         for mut reg in [fresh, upgraded] {
-        assert!(reg.default_access_profile_id.is_none());
-        let ids = [reg.default_access_id(), reg.all_access_id()];
-        for profile in [None, Some(ids[0].as_str()), Some(ids[1].as_str())] {
-            seed_legacy_review(&data.dir, profile, "v2");
-            integrity::release(profile, "srv__read").unwrap();
-            reg.servers = vec![stub_server("srv", "Source"), stub_server("other", "Other")];
-            let registry = Arc::new(Mutex::new(reg.clone()));
-            let mut source = readonly_router("srv", "Unseen definition.");
-            let offered = source.shared_tools();
-            requarantine_if_needed(&registry, &mut source, offered, profile);
-            let record = integrity::quarantine_list(profile).remove(0);
-            let id = integrity::quarantine_record_id(&record);
-            let path = data.dir.join("security.jsonl");
-            let aged: Vec<_> = integrity::read_recent(100).unwrap().into_iter().map(|mut e| {
-                e["ts"] = json!(1);
-                e.to_string()
-            }).collect();
-            std::fs::write(&path, format!("{}\n", aged.join("\n"))).unwrap();
-            let logged = std::fs::read_to_string(&path).unwrap();
-            registry.lock().unwrap().servers[0].enabled = false;
-            let mut degraded = readonly_router("other", "Healthy server.");
-            let offered = degraded.shared_tools();
-            requarantine_if_needed(&registry, &mut degraded, offered, profile);
-            assert!(integrity::pending_definition_review(profile), "temporary catalog gaps must not retire shared reviews");
-            registry.lock().unwrap().servers[0].enabled = true;
-            let mut returning = readonly_router("srv", "Unseen definition.");
-            let offered = returning.shared_tools();
-            assert!(requarantine_if_needed(&registry, &mut returning, offered, profile).is_empty());
-            let after = integrity::quarantine_list(profile).remove(0);
-            assert_eq!(integrity::quarantine_record_id(&after), id);
-            assert_eq!(std::fs::read_to_string(path).unwrap(), logged, "catalog flaps must not relog a pending review");
-            assert!(integrity::release_record(profile, "srv__read", &id).unwrap(), "the open Settings approval must stay valid");
-        }
+            assert!(reg.default_access_profile_id.is_none());
+            let ids = [reg.default_access_id(), reg.all_access_id()];
+            for profile in [None, Some(ids[0].as_str()), Some(ids[1].as_str())] {
+                seed_legacy_review(&data.dir, profile, "v2");
+                integrity::release(profile, "srv__read").unwrap();
+                reg.servers = vec![stub_server("srv", "Source"), stub_server("other", "Other")];
+                let registry = Arc::new(Mutex::new(reg.clone()));
+                let mut source = readonly_router("srv", "Unseen definition.");
+                let offered = source.shared_tools();
+                requarantine_if_needed(&registry, &mut source, offered, profile);
+                let record = integrity::quarantine_list(profile).remove(0);
+                let id = integrity::quarantine_record_id(&record);
+                let path = data.dir.join("security.jsonl");
+                let aged: Vec<_> = integrity::read_recent(100).unwrap().into_iter().map(|mut e| {
+                    e["ts"] = json!(1);
+                    e.to_string()
+                }).collect();
+                std::fs::write(&path, format!("{}\n", aged.join("\n"))).unwrap();
+                let logged = std::fs::read_to_string(&path).unwrap();
+                registry.lock().unwrap().servers[0].enabled = false;
+                let mut degraded = readonly_router("other", "Healthy server.");
+                let offered = degraded.shared_tools();
+                requarantine_if_needed(&registry, &mut degraded, offered, profile);
+                assert!(integrity::pending_definition_review(profile), "temporary catalog gaps must not retire shared reviews");
+                registry.lock().unwrap().servers[0].enabled = true;
+                let mut returning = readonly_router("srv", "Unseen definition.");
+                let offered = returning.shared_tools();
+                assert!(requarantine_if_needed(&registry, &mut returning, offered, profile).is_empty());
+                let after = integrity::quarantine_list(profile).remove(0);
+                assert_eq!(integrity::quarantine_record_id(&after), id);
+                assert_eq!(std::fs::read_to_string(path).unwrap(), logged, "catalog flaps must not relog a pending review");
+                assert!(integrity::release_record(profile, "srv__read", &id).unwrap(), "the open Settings approval must stay valid");
+            }
         }
     }
 
