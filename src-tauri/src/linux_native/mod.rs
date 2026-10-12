@@ -11397,6 +11397,15 @@ mod tests {
     }
 
     #[test]
+    fn captured_activity_review_requires_settings_instead_of_summary_acceptance() {
+        let event = serde_json::json!({"type":"tool_drift", "server":"srv", "tool":"srv__update", "ts":100, "change":"changed", "blocked":true, "blocked_profiles":["work"], "new_fp":"v3:captured", "review_required":true});
+        assert!(!change_can_be_accepted(&event));
+        let group = crate::integrity::group_tool_changes(&[event.clone()]).remove(0);
+        assert!(!group_can_be_accepted(&group));
+        assert!(security_review_lines(&event).iter().any(|line| line.contains("Review the captured definition in Settings")));
+    }
+
+    #[test]
     fn legacy_quarantine_review_stays_in_the_main_view_and_cannot_be_accepted() {
         let data = crate::registry::DataDirTestEnv::new("gtk-legacy-quarantine-review");
         let mut registry = crate::registry::Registry::default();
