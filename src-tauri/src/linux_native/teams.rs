@@ -1246,6 +1246,9 @@ fn sync_background_step(page: TeamsPage, runtime: Rc<SyncLoop>) {
         let result = gtk::gio::spawn_blocking(move || {
             let registry = crate::registry::load()?;
             if registry.team.is_none() {
+                // This slow unpaired poll also stays alive while hidden on
+                // filesystems without a registry monitor. Paired installs use
+                // only the sync retry schedule, never a second fallback poll.
                 return Ok((None, 60));
             }
             let result = crate::teams::sync_wait(25);

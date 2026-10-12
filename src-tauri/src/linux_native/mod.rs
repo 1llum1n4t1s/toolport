@@ -10923,7 +10923,7 @@ mod tests {
         release.join().unwrap();
         drop(save);
         let registry = crate::registry::load().unwrap();
-        assert!(registry.tool_allow.contains(&"fixture/read@hash".to_string()));
+        assert!(registry.is_tool_allowed("fixture/read@hash"));
     }
 
     #[test]
