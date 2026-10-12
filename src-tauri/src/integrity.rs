@@ -947,9 +947,14 @@ fn save_pins_with(
     // the corrupt one; a save whose backup fails still proceeds, since refusing to
     // persist a fresh baseline would be the worse outcome. Callers hold the pin-store
     // lock, so this cannot race a peer gateway.
-    if let Some(previous) = read_pins_at(&path) {
-        if let Ok(encoded) = serde_json::to_string(&previous) {
-            let _ = crate::registry::atomic_write(&pins_backup_path(&path), &encoded);
+    // There is no outgoing primary to back up on its first write. Established
+    // files and metadata errors still use the full read/retry path.
+    if !matches!(std::fs::metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
+        if let Some(previous) = read_pins_at(&path) {
+            if let Ok(encoded) = serde_json::to_string(&previous) {
+                let _ = crate::registry::atomic_write(&pins_backup_path(&path), &encoded);
+            }
         }
     }
     write(&path, &serialized)
@@ -7024,6 +7029,47 @@ mod tests {
             vec!["srv__broken".to_string()],
             "an unrepairable tool stays blocked instead of being exposed unpinned"
         );
+    }
+
+    #[test]
+    fn cold_start_pin_write_skips_absent_primary_but_keeps_existing_backups() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("cold-start-pin-write");
+        for profile in [None, Some("cold-start")] {
+            let path = pins_path(profile).unwrap();
+            let backup = pins_backup_path(&path);
+            PINS_REVIEW_READ_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+            save_pins(profile, &Pins::new()).unwrap();
+            assert_eq!(
+                PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "the first pin write must not retry a nonexistent outgoing baseline"
+            );
+            assert!(!backup.exists());
+
+            write_loaded_pin_store(profile);
+            PINS_REVIEW_READ_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+            save_pins(profile, &Pins::new()).unwrap();
+            assert_eq!(
+                PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "an established primary must still be read for its backup"
+            );
+            assert_eq!(
+                read_pins_at(&backup).unwrap()["srv__a"].fp,
+                "deadbeef"
+            );
+            let previous_backup = std::fs::read_to_string(&backup).unwrap();
+
+            std::fs::remove_file(&path).unwrap();
+            PINS_REVIEW_READ_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+            save_pins(profile, &Pins::new()).unwrap();
+            assert_eq!(
+                PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+            assert_eq!(std::fs::read_to_string(&backup).unwrap(), previous_backup);
+        }
     }
 
     /// The baseline had no backup at all, so a single unreadable read blocked every
