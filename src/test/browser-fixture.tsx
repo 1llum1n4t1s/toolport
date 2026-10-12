@@ -821,7 +821,7 @@ mockIPC(
         return [...grouped.values()];
       }
       case "activity_revision":
-        return JSON.stringify(auditRows);
+        return JSON.stringify([auditRows, driftEvents]);
       case "get_audit_log":
         return auditRows;
       case "audit_stats":
