@@ -6471,7 +6471,7 @@ mod tests {
         });
         assert_eq!(
             PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst),
-            2 * PINS_READ_ATTEMPTS,
+            2 * PINS_READ_ATTEMPTS as usize,
             "concurrent calls must share one primary-and-backup retry budget"
         );
     }
