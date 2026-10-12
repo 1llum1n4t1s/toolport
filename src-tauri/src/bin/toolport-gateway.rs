@@ -10426,7 +10426,7 @@ fn requarantine_if_needed(
             pending.extend(built.quarantined().iter().cloned());
             let stored = effective_quarantine(registry, profile, &AtomicBool::new(false))
                 .ok_or_else(|| "Could not read the effective quarantine set".to_string());
-            requarantine_after_integrity_change(built, pending, stored)
+            requarantine_after_integrity_change(built, profile, pending, stored)
         }
         Ok(None) => {
             // An earlier gate can have saved a block and advanced its pin before
@@ -10492,6 +10492,7 @@ fn publish_built_router(
 
 fn requarantine_after_integrity_change(
     router: &mut Router,
+    profile: Option<&str>,
     pending: BTreeSet<String>,
     persisted: Result<BTreeSet<String>, String>,
 ) -> SharedTools {
@@ -10506,7 +10507,9 @@ fn requarantine_after_integrity_change(
             eprintln!(
                 "toolport: {e}; keeping the live quarantine set plus newly quarantined tools"
             );
-            router.quarantined().clone()
+            let mut names = router.quarantined().clone();
+            names.extend(integrity::definition_review_names(profile));
+            names
         }
     };
     // Even after a successful quarantine write, a post-write read may fail or race. The names
@@ -10534,6 +10537,7 @@ fn fail_closed_integrity_catalog(
     };
     let mut fail_closed = if off { BTreeSet::new() } else { router.quarantined().clone() };
     fail_closed.extend(pending);
+    fail_closed.extend(integrity::definition_review_names(profile));
     // If the quarantine write succeeded but the subsequent pin write failed, the durable
     // store contains the new block. If the store itself is unreadable, retain the current set
     // plus the candidates above rather than weakening either one.
@@ -38684,6 +38688,7 @@ mod tests {
 
         requarantine_after_integrity_change(
             &mut live,
+            None,
             set_of(&["srv__new_drift"]),
             Err("quarantine store unreadable".into()),
         );
@@ -38708,7 +38713,7 @@ mod tests {
             (**guard).clone()
         };
 
-        requarantine_after_integrity_change(&mut live, BTreeSet::new(), Ok(set_of(&["srv__wipe"])));
+        requarantine_after_integrity_change(&mut live, None, BTreeSet::new(), Ok(set_of(&["srv__wipe"])));
 
         assert!(!live.catalog_fail_closed());
         assert_eq!(live.quarantined(), &set_of(&["srv__wipe"]));
@@ -38806,6 +38811,7 @@ mod tests {
 
         requarantine_after_integrity_change(
             &mut live,
+            None,
             set_of(&["srv__new_drift"]),
             Err("injected post-write read failure".to_string()),
         );
@@ -39595,7 +39601,7 @@ mod tests {
                 std::fs::write(data.dir.join("quarantine.json"), "{ failing store").unwrap();
                 assert!(integrity::quarantined(None).is_err());
                 if post_write {
-                    requarantine_after_integrity_change(&mut built, BTreeSet::new(), Err("failed re-read".into()));
+                    requarantine_after_integrity_change(&mut built, None, BTreeSet::new(), Err("failed re-read".into()));
                 } else {
                     let offered = built.shared_tools();
                     requarantine_if_needed(&registry, &mut built, offered, None);
