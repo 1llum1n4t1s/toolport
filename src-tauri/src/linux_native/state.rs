@@ -625,9 +625,15 @@ pub(super) enum RegistryState {
 impl RegistrySnapshot {
     pub(super) fn from_registry(registry: Registry) -> Self {
         let active_profile_id = registry.active_profile_id();
-        let sync_state = crate::personal_sync::is_personal(&registry)
-            .then(|| crate::personal_sync::state(&registry).ok())
-            .flatten();
+        // Origin labels need only the registry's conflict map, not the disk
+        // receipt timestamp. This conversion also runs after UI mutations.
+        let sync_state = registry
+            .team
+            .as_ref()
+            .and_then(|team| team.unknown_fields.get("personalSyncState"))
+            .and_then(|value| {
+                serde_json::from_value::<crate::personal_sync::SyncState>(value.clone()).ok()
+            });
         let servers = registry
             .servers
             .iter()
@@ -907,6 +913,43 @@ fn connect_reload(monitor: &gio::FileMonitor, controller: Weak<RegistryControlle
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn snapshot_conversion_does_not_open_the_sync_receipt() {
+        let data = crate::registry::DataDirTestEnv::new("gtk-snapshot-no-io");
+        let fifo = data.dir.join("registry.personal-sync-status.json");
+        let path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: the NUL-terminated path is a fixture-owned path and lives
+        // throughout the call. A FIFO with no writer would block a disk read.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let mut registry = crate::registry::Registry {
+            team: Some(
+                serde_json::from_value(serde_json::json!({
+                    "teamId":"fixture", "role":"admin", "serverUrl":"http://127.0.0.1:1",
+                    "accountStatus":{"personalSync":true},
+                    "personalSyncState":{"conflicts":{"one":{"name":"Remote"}}}
+                }))
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        registry.servers.push(
+            serde_json::from_value(serde_json::json!({
+                "id":"one", "name":"One", "transport":"http", "url":"https://example.invalid/mcp",
+                "env":[], "enabled":false, "source":"team:fixture", "personalSyncEntry":true
+            }))
+            .unwrap(),
+        );
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            send.send(super::RegistrySnapshot::from_registry(registry))
+                .unwrap()
+        });
+        let snapshot = receive
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("snapshot conversion must not wait for the receipt FIFO");
+        assert_eq!(snapshot.servers[0].origin_label, "Sync conflict");
+    }
+
     #[test]
     fn historical_caller_paths_do_not_reach_native_rows_or_tooltips() {
         let snapshot = super::ActivitySnapshot::from_entries(
