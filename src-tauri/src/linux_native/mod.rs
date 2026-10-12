@@ -10982,7 +10982,7 @@ mod tests {
                 "the older pair read cannot open a dialog"
             );
             assert_eq!(page.feedback.text(), "The shared setup link was invalid.");
-            window.close();
+            window.destroy();
             assert!(!page.share_requests.is_current(page.share_requests.begin()));
         });
     }
