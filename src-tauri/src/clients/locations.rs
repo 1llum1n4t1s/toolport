@@ -151,6 +151,26 @@ fn folder_key(folder: &str) -> String {
         .collect()
 }
 
+/// The two ID formats produced by add_client_location and automatic discovery.
+pub(super) fn generated_id_type(id: &str) -> Option<&str> {
+    let (kind, key) = id.split_once('@')?;
+    if key.len() == 16 && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return Some(kind);
+    }
+    if kind != "claude-code" { return None; }
+    let mut bytes = Vec::new();
+    let mut chars = key.as_bytes().iter().copied();
+    while let Some(byte) = chars.next() {
+        bytes.push(if byte == b'%' {
+            u8::from_str_radix(std::str::from_utf8(&[chars.next()?, chars.next()?]).ok()?, 16).ok()?
+        } else { byte });
+    }
+    let label = String::from_utf8(bytes).ok()?;
+    if label.contains(['/', '\\']) || label.chars().any(char::is_control) { return None; }
+    let folder = format!(".{label}");
+    (claude_profile_name(&folder) && folder_key(&folder) == key).then_some(kind)
+}
+
 /// Automatic locations remain shallow, ordinary files inside home. Manual
 /// registration is the explicit opt-in to linked or external config paths.
 pub(super) fn automatic_path_is_safe(home: &Path, config: &Path) -> bool {

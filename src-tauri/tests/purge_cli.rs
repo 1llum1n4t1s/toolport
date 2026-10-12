@@ -316,3 +316,86 @@ fn purge_r4_custom_plan_guidance_matches_post_removal_ownership_check() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("Could not verify Toolport ownership"));
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn purge_r7_cli_removes_location_store_and_exact_backup_names() {
+    let env = conduit_lib::registry::DataDirTestEnv::new("purge_r7_cli_locations");
+    let data = env.dir.join("data");
+    std::fs::create_dir(&data).unwrap();
+    std::fs::write(data.join("registry.json"), serde_json::to_vec(&conduit_lib::registry::Registry::default()).unwrap()).unwrap();
+    let _selected = conduit_lib::registry::DataDirOverride::set(data.clone());
+    let long_id = format!("claude-code@claude-{}", "x".repeat(210));
+    let prefix: String = long_id.chars().take(120).collect();
+    let bounded = format!("{prefix}-{}", conduit_lib::registry::sha256_hex(&long_id));
+    let mut rows = Vec::new();
+    let mut generated = Vec::new();
+    for (id, component, kind, basename) in [
+        ("claude-code@claude2", "claude-code@claude2", "claude-code", ".claude.json"),
+        (long_id.as_str(), bounded.as_str(), "claude-code", ".claude.json"),
+        ("codex@0123456789abcdef", "codex@0123456789abcdef", "codex", "config.toml"),
+    ] {
+        let config = env.dir.join(format!("client-{}", rows.len())).join(basename);
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(&config, if kind == "codex" { "" } else { "{}" }).unwrap();
+        rows.push(serde_json::json!({"id":id,"clientType":kind,"name":"fixture","configPath":config,"manual":true}));
+        let dir = data.join("backups").join(component);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [format!("123-{basename}"), format!("123-{basename}.123.1.conduit-tmp")] {
+            let path = dir.join(name);
+            std::fs::write(&path, "generated").unwrap();
+            generated.push(path);
+        }
+    }
+    // The earlier unbounded long-ID writer is still supported alongside the
+    // current bounded component when both recovery folders exist.
+    let legacy = data.join("backups").join(&long_id);
+    std::fs::create_dir(&legacy).unwrap();
+    let legacy_file = legacy.join("123-.claude.json");
+    std::fs::write(&legacy_file, "generated").unwrap();
+    generated.push(legacy_file);
+    std::fs::write(data.join("client-locations.json"), serde_json::to_vec(&rows).unwrap()).unwrap();
+    // Real writers supply valid provenance, which the CLI must restore before
+    // purge. Fake recovery JSON would correctly block the entire removal.
+    for row in &rows {
+        let id = row["id"].as_str().unwrap();
+        let write = conduit_lib::clients::write_servers(id, &[]).unwrap();
+        generated.push(std::path::PathBuf::from(write.backup.unwrap()));
+        let record = std::path::PathBuf::from(write.recovery_path.unwrap());
+        generated.push(record.clone());
+        let moved = record.parent().unwrap().join("moved-servers.json");
+        std::fs::write(&moved, serde_json::to_vec(&serde_json::json!({"configPath":row["configPath"],"entries":[]})).unwrap()).unwrap();
+        generated.push(moved);
+    }
+
+    for name in ["client-locations.json.lock", "client-locations.json.123.1.conduit-tmp"] {
+        let path = data.join(name);
+        std::fs::write(&path, "generated").unwrap();
+        generated.push(path);
+    }
+    let wrong_hash = format!("backups/{prefix}-{}", "0".repeat(64));
+    let collisions = ["client-locations.json.notes".to_owned(), "client-locations.json.123.bad.conduit-tmp".into(),
+        "backups/claude-code@claude2/2024-taxes.pdf".into(), "backups/claude-code@claude2/123-config.toml".into(),
+        "backups/codex@personal/123-config.toml".into(), format!("{wrong_hash}/123-.claude.json")];
+    for name in &collisions {
+        let path = data.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "user bytes").unwrap();
+    }
+    // A directory colliding with an owned file is retained with its contents.
+    std::fs::create_dir(data.join("client-locations.json.123.2.conduit-tmp")).unwrap();
+    std::fs::write(data.join("client-locations.json.123.2.conduit-tmp/notes"), "user bytes").unwrap();
+    let output = isolated_command(&env.dir, &data).args(["--remove-data", "--confirm"]).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(report["leftovers"].as_array().unwrap().is_empty());
+    assert!(!data.join("client-locations.json").exists());
+    for path in generated { assert!(!path.exists(), "{}", path.display()); }
+    for name in collisions { assert_eq!(std::fs::read(data.join(name)).unwrap(), b"user bytes"); }
+    assert_eq!(std::fs::read(data.join("client-locations.json.123.2.conduit-tmp/notes")).unwrap(), b"user bytes");
+    assert!(!data.join("backups").join(bounded).exists(), "empty generated folder removed");
+    assert!(!legacy.exists(), "empty legacy long-ID folder removed");
+    assert!(!data.join("backups/codex@0123456789abcdef").exists());
+    assert!(data.join("backups/claude-code@claude2").is_dir(), "foreign files keep their folder");
+    for row in rows { assert!(std::path::Path::new(row["configPath"].as_str().unwrap()).exists()); }
+}

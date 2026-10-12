@@ -369,10 +369,10 @@ pub(crate) fn home() -> Option<PathBuf> {
 thread_local! { static TEST_HOME: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) }; }
 
 #[cfg(test)]
-struct TestHome(Option<PathBuf>);
+pub(crate) struct TestHome(Option<PathBuf>);
 #[cfg(test)]
 impl TestHome {
-    fn set(path: &Path) -> Self {
+    pub(crate) fn set(path: &Path) -> Self {
         Self(TEST_HOME.with(|slot| slot.replace(Some(path.to_path_buf()))))
     }
 }
@@ -4003,29 +4003,75 @@ fn find_def(client_id: &str) -> Option<ClientDef> {
     Some(def)
 }
 
-/// Only client ids from the same definitions that create backup folders.
-pub(crate) fn purge_backup_client_id(client_id: &str) -> bool {
-    defs().iter().any(|client| client.id == client_id)
+/// Snapshot the exact writer basenames before purge can remove the location store.
+pub(crate) fn purge_backup_inventory() -> HashMap<String, PurgeBackupClient> {
+    let mut clients = HashMap::new();
+    for def in defs() {
+        clients.insert(def.id.to_owned(), PurgeBackupClient::from_def(&def));
+    }
+    for location in locations::all() {
+        let Some(mut def) = defs().into_iter().find(|def| def.id == location.client_type) else { continue; };
+        let id = location.id.clone();
+        def.location = Some(location);
+        let client = PurgeBackupClient::from_def(&def);
+        if id.len() <= 255 { clients.insert(id.clone(), client.clone()); }
+        if id.len() > 200 { clients.insert(bounded_backup_component(&id), client); }
+    }
+    clients
 }
 
-/// Match the basenames used by backup_file and the two named Claude writers.
-pub(crate) fn purge_backup_name(client_id: &str, basename: &str) -> bool {
-    let Some(def) = find_def(client_id) else { return false; };
-    let named_prefixes: &[&str] = match client_id {
-        "claude-code" => &["claude-", "claude-settings-"],
-        "cursor" => &["claude-settings-"], // write_settings_key_for uses the same writer.
-        _ => &[],
-    };
-    if named_prefixes.iter().any(|prefix| {
-        basename.strip_prefix(prefix).and_then(|name| name.strip_suffix(".json"))
-            .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
-    }) { return true; }
-    let matches = |path: PathBuf| path.file_name().and_then(|name| name.to_str()) == Some(basename);
-    if resolved_definition_path(&def).is_ok_and(matches) { return true; }
-    // Also recognize copies from the client's standard config on another OS.
-    [Platform::Windows, Platform::MacOs, Platform::Linux].into_iter().any(|platform| {
-        resolve_client_config_path(client_id, Path::new("/"), platform).is_some_and(matches)
-    }) || client_id == "opencode" && basename == "opencode.jsonc"
+#[derive(Clone)]
+pub(crate) struct PurgeBackupClient {
+    basenames: std::collections::HashSet<String>,
+    named_prefixes: &'static [&'static str],
+}
+
+impl PurgeBackupClient {
+    fn from_def(def: &ClientDef) -> Self {
+        let mut basenames = std::collections::HashSet::new();
+        let mut add = |path: PathBuf| {
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                basenames.insert(name.to_owned());
+            }
+        };
+        if let Ok(path) = resolved_definition_path(def) { add(path); }
+        for platform in [Platform::Windows, Platform::MacOs, Platform::Linux] {
+            if let Some(path) = resolve_client_config_path(def.id, Path::new("/"), platform) { add(path); }
+        }
+        if def.id == "opencode" { basenames.insert("opencode.jsonc".into()); }
+        Self { basenames, named_prefixes: match def.id {
+            "claude-code" => &["claude-", "claude-settings-"],
+            "cursor" => &["claude-settings-"],
+            _ => &[],
+        } }
+    }
+
+    pub(crate) fn owns_basename(&self, basename: &str) -> bool {
+        self.basenames.contains(basename) || self.named_prefixes.iter().any(|prefix| {
+            basename.strip_prefix(prefix).and_then(|name| name.strip_suffix(".json"))
+                .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        })
+    }
+}
+
+/// Removed short locations still have recognisable generated IDs. Bounded names
+/// need the full saved ID so a similar prefix with a different digest stays alone.
+pub(crate) fn purge_backup_short_location(component: &str) -> Option<PurgeBackupClient> {
+    if component.len() > 200 { return None; }
+    let kind = locations::generated_id_type(component)?;
+    // A bounded component also resembles a legal short Claude profile ID. Only
+    // the snapshot may select that ambiguous spelling, using its full-ID digest.
+    if component.len() == 185 && component.as_bytes()[120] == b'-'
+        && component[121..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    { return None; }
+    let def = defs().into_iter().find(|def| def.id == kind && !def.uses_connectors)?;
+    Some(PurgeBackupClient::from_def(&def))
+}
+
+fn bounded_backup_component(client_id: &str) -> String {
+    let digest = crate::registry::sha256_hex(client_id);
+    let prefix: String = client_id.chars().take(120).collect();
+    format!("{prefix}-{digest}")
 }
 
 pub(crate) fn backup_dir(client_id: &str) -> Option<PathBuf> {
@@ -4034,9 +4080,7 @@ pub(crate) fn backup_dir(client_id: &str) -> Option<PathBuf> {
     // so move records and original snapshots remain findable.
     let root = crate::registry::conduit_dir()?.join("backups");
     if client_id.len() <= 200 { return Some(root.join(client_id)); }
-    let digest = crate::registry::sha256_hex(client_id);
-    let prefix: String = client_id.chars().take(120).collect();
-    let bounded = root.join(format!("{prefix}-{digest}"));
+    let bounded = root.join(bounded_backup_component(client_id));
     let legacy = root.join(client_id);
     if !bounded.exists() && client_id.len() <= 255 && legacy.is_dir() {
         Some(legacy)
