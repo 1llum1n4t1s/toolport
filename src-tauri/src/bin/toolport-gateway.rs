@@ -39570,7 +39570,7 @@ mod tests {
             if hidden {
                 built.apply_registry_policy(RegistryPolicy { allow: HashMap::from([("srv".into(), HashSet::from(["other".into()]))]), ..Default::default() });
             }
-            built.requarantine(set_of(&["srv__read"]));
+            built.requarantine(state.rooted_quarantine(&scope).unwrap());
             let cached = Arc::new(built);
             {
                 let mut pool = state.root_launch_pool.lock().unwrap();
