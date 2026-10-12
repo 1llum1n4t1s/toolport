@@ -71,7 +71,8 @@ Every list response is subtracted, including concurrent repeats, catalog changes
 and a switch to full discovery. None earns another baseline. Search text is also
 subtracted, including its guidance. The result can be negative for small catalogs
 or repeated responses. Sessionless HTTP is excluded because it has no identifiable
-client session. A cold first catalog stays a conservative baseline even if more
+client session. Sessions whose initial full catalog exceeds a known client tool
+limit are also excluded. A cold first catalog stays a conservative baseline even if more
 tools become available later.
 
 Tokenization runs on the existing background telemetry writer, with no runtime

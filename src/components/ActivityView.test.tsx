@@ -569,7 +569,9 @@ it("distinguishes measured bytes from legacy estimates in catalog savings", asyn
   });
   render(<ActivityView refreshKey={0} registry={null} />);
   await act(async () => {});
-  expect(screen.getByText(/923/, { selector: "span[title]" })).toHaveTextContent("tokens saved");
+  expect(screen.getByText(/923/, { selector: "span[title]" })).toHaveTextContent(
+    "tokens saved",
+  );
   expect(screen.getByText(/923/, { selector: "span[title]" })).toHaveAttribute(
     "title",
     expect.stringContaining("cl100k_base"),
@@ -600,30 +602,55 @@ it("does not promote historical estimates into a catalog token headline", async 
 
 it("keeps contradictory pre-session history outside all measured totals", async () => {
   getSavingsSummary.mockResolvedValue({
-    tokensSaved: -10, fullTokens: 100, exposedTokens: 50, discoveryTokens: 60,
-    tokenizedLoads: 1, measuredLoads: 1, listLoads: 2, discoveryCount: 1,
-    peakCatalog: 4, sinceTs: 1, fullSurfaceBytes: 1200, exposedSurfaceBytes: 2400,
-    historicalListLoads: 3019, historicalMeasuredLoads: 3019,
+    tokensSaved: -10,
+    fullTokens: 100,
+    exposedTokens: 50,
+    discoveryTokens: 60,
+    tokenizedLoads: 1,
+    measuredLoads: 1,
+    listLoads: 2,
+    discoveryCount: 1,
+    peakCatalog: 4,
+    sinceTs: 1,
+    fullSurfaceBytes: 1200,
+    exposedSurfaceBytes: 2400,
+    historicalListLoads: 3019,
+    historicalMeasuredLoads: 3019,
     previousReportedTokensSaved: 188_100_000,
   });
   render(<ActivityView refreshKey={0} registry={null} />);
   await act(async () => {});
-  expect(screen.getByText(/100 baseline tokens/)).toHaveTextContent("100 baseline tokens − 50 catalog response tokens − 60 search response tokens = -10 net tokens saved.");
+  expect(screen.getByText(/100 baseline tokens/)).toHaveTextContent(
+    "100 baseline tokens − 50 catalog response tokens − 60 search response tokens = -10 net tokens saved.",
+  );
   expect(screen.getByText(/1 client sessions/)).toHaveTextContent("2 catalog responses");
-  expect(screen.getByText(/1.2 KB baseline catalog text/)).toHaveTextContent("2.4 KB catalog text sent");
-  expect(screen.getByText(/Excluded history:/)).toHaveTextContent("3,019 catalog records");
-  expect(screen.getByText(/Previous tokenized total:/)).toHaveTextContent("188,100,000 tokens, excluded");
+  expect(screen.getByText(/1.2 KB baseline catalog text/)).toHaveTextContent(
+    "2.4 KB catalog text sent",
+  );
+  expect(screen.getByText(/Excluded history:/)).toHaveTextContent(
+    "3,019 catalog records",
+  );
+  expect(screen.getByText(/Previous tokenized total:/)).toHaveTextContent(
+    "188,100,000 tokens, excluded",
+  );
   expect(screen.queryByText(/18.4 GB/)).not.toBeInTheDocument();
 });
 
 it("shows preserved history without a shareable savings headline", async () => {
-  getSavingsSummary.mockResolvedValue({tokensSaved: 0, listLoads: 0, peakCatalog: 0, sinceTs: 0,
-    historicalListLoads: 3019, historicalMeasuredLoads: 3019, previousReportedTokensSaved: 188_100_000});
+  getSavingsSummary.mockResolvedValue({
+    tokensSaved: 0,
+    listLoads: 0,
+    peakCatalog: 0,
+    sinceTs: 0,
+    historicalListLoads: 3019,
+    historicalMeasuredLoads: 3019,
+    previousReportedTokensSaved: 188_100_000,
+  });
   render(<ActivityView refreshKey={0} registry={null} />);
   await act(async () => {});
   expect(screen.getByText("Not measured yet")).toBeInTheDocument();
   expect(screen.getByText(/Previous tokenized total:/)).toBeInTheDocument();
-  expect(screen.queryByRole("button", {name: "Share"})).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Share" })).not.toBeInTheDocument();
 });
 
 it("shares a token savings statement without a billing claim", async () => {

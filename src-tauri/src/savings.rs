@@ -23,7 +23,7 @@ pub const TOKENIZER: &str = "cl100k_base";
 pub struct CatalogSession {
     id: String,
     loaded: Mutex<bool>,
-    measurable: bool,
+    measurable: std::sync::atomic::AtomicBool,
 }
 
 impl Default for CatalogSession {
@@ -33,15 +33,24 @@ impl Default for CatalogSession {
         Self {
             id: bytes.iter().map(|byte| format!("{byte:02x}")).collect(),
             loaded: Mutex::new(false),
-            measurable: true,
+            measurable: std::sync::atomic::AtomicBool::new(true),
         }
     }
 }
 
 impl CatalogSession {
+    /// A client that would reject its initial full catalog has no usable baseline.
+    /// Once credited, later growth must still subtract every response.
+    pub fn exclude_unloadable_baseline(&self) {
+        let loaded = self.loaded.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !*loaded {
+            self.measurable.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     pub fn unmeasured() -> Self {
         Self {
-            measurable: false,
+            measurable: std::sync::atomic::AtomicBool::new(false),
             ..Self::default()
         }
     }
@@ -218,6 +227,10 @@ fn write_surface<T: std::borrow::Borrow<Value>>(
 }
 
 impl SurfaceSummary {
+    pub fn tool_count(&self) -> usize {
+        self.count
+    }
+
     pub fn from_tools<T: std::borrow::Borrow<Value>>(tools: impl IntoIterator<Item = T>) -> Self {
         Self::build(&mut SurfaceWriter::default(), tools)
     }
@@ -332,13 +345,13 @@ pub fn record_catalog_surfaces(
     full_text: impl FnOnce() -> String,
     route: impl Fn(&str) -> Option<String>,
 ) {
-    if !session.measurable {
-        return;
-    }
     let mut loaded = session
         .loaded
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !session.measurable.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let first = !*loaded;
     let mut by_server_bytes = BTreeMap::<String, u64>::new();
     if first {
@@ -375,7 +388,7 @@ pub fn record_catalog_surfaces(
 
 /// Search content is measured after composing the text returned by tools/call.
 pub fn record_discovery(session: &CatalogSession, text: &str, matched_schema_bytes: u64) {
-    if !session.measurable {
+    if !session.measurable.load(std::sync::atomic::Ordering::Relaxed) {
         return;
     }
     append_line(&json!({
@@ -1175,6 +1188,22 @@ mod tests {
         assert_eq!(summary["previousReportedTokensSaved"], 188_099_999);
         assert_eq!(aggregate(&[fold(&rows)]), summary);
         assert_eq!(aggregate(&[fold(&[fold(&rows)])]), summary);
+    }
+
+    #[test]
+    fn an_unloadable_first_baseline_is_excluded_but_later_growth_keeps_costs() {
+        let _data = crate::registry::DataDirTestEnv::new("savings-unloadable-baseline");
+        let excluded = CatalogSession::default();
+        excluded.exclude_unloadable_baseline();
+        record_catalog(&excluded, "lazy", None, &[], &[], |_| None);
+        assert_eq!(summary()["tokenizedLoads"], 0);
+        let valid = CatalogSession::default();
+        record_catalog(&valid, "lazy", None, &[], &[], |_| None);
+        valid.exclude_unloadable_baseline();
+        record_catalog(&valid, "lazy", None, &[], &[], |_| None);
+        assert_eq!(summary()["tokenizedLoads"], 1);
+        assert_eq!(summary()["listLoads"], 2);
+        assert_eq!(summary()["tokensSaved"], -(count_tokens("[]") as i64));
     }
 
     #[test]

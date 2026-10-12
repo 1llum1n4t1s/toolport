@@ -464,7 +464,7 @@ function SavingsBanner({ savings }: { savings: SavingsSummary }) {
   const hasCatalog = (savings.tokenizedLoads ?? 0) > 0;
   const discovered = (savings.discoveryCount ?? 0) > 0;
   const method =
-    "The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. We count compact JSON and search response text with cl100k_base, then subtract every tools/list and search response. Sessionless HTTP and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.";
+    "The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. We count compact JSON and search response text with cl100k_base, then subtract every tools/list and search response. Sessionless HTTP, initial catalogs above known client limits, and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.";
   const exact = (value: number | undefined) => (value ?? 0).toLocaleString();
   const share = async () => {
     try {

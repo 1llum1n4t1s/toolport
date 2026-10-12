@@ -3932,9 +3932,12 @@ impl ActivityPage {
                 .map(format_duration)
                 .unwrap_or_else(|| "–".to_string()),
         );
-        self.tokens_saved.set_label(&if snapshot.savings_tokenized_loads > 0 {
-            format_saved_tokens(snapshot.tokens_saved)
-        } else { "Not measured".to_string() });
+        self.tokens_saved
+            .set_label(&if snapshot.savings_tokenized_loads > 0 {
+                format_saved_tokens(snapshot.tokens_saved)
+            } else {
+                "Not measured".to_string()
+            });
         self.tokens_saved.set_tooltip_text(Some(
             "One full catalog baseline per session minus all catalog and search responses, counted with cl100k_base. Unverifiable history excluded; not a billing figure.",
         ));
@@ -4293,7 +4296,7 @@ impl ActivityPage {
         self.savings_share.set_visible(has_catalog);
         self.savings_value.set_label(&primary);
         self.savings_unit.set_label(unit);
-        let mut detail = String::from("The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. Compact JSON and search response text are counted with cl100k_base. Every tools/list and search response is subtracted. Sessionless HTTP and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.");
+        let mut detail = String::from("The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. Compact JSON and search response text are counted with cl100k_base. Every tools/list and search response is subtracted. Sessionless HTTP, initial catalogs above known client limits, and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.");
         if has_catalog || discovered {
             detail.push_str(&format!("\n{} baseline tokens − {} catalog response tokens − {} search response tokens = {} net tokens saved.\n{} client sessions; {} catalog responses; {} search responses.\n{} baseline catalog text; {} catalog text sent; {} search text sent.",
                 grouped_number(snapshot.savings_full_tokens), grouped_number(snapshot.savings_exposed_tokens), grouped_number(snapshot.savings_discovery_tokens), snapshot.tokens_saved,

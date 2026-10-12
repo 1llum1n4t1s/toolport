@@ -7463,6 +7463,9 @@ fn handle_request_with_cancel(
             };
             {
                 let full = tool_surface(host, reg, router, &catalog, allowed, DiscoveryMode::Full);
+                if over_client_tool_limit(client, full.len()) {
+                    guard.catalog.exclude_unloadable_baseline();
+                }
                 savings::record_catalog(
                     &guard.catalog,
                     mode.as_str(),
@@ -7565,13 +7568,7 @@ fn handle_request_with_cancel(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if let Err(message) = validate_search_query(query) {
-                    if mode != DiscoveryMode::Full {
-                        savings::record_discovery(
-                            &guard.catalog,
-                            &message,
-                            savings::surface_bytes(&[]),
-                        );
-                    }
+                    savings::record_discovery(&guard.catalog, &message, savings::surface_bytes(&[]));
                     return Some(success(
                         id,
                         json!({
@@ -7826,13 +7823,11 @@ fn handle_request_with_cancel(
                                 }
                             },
                         );
-                if mode != DiscoveryMode::Full {
-                    savings::record_discovery(
-                        &guard.catalog,
-                        search_result["content"][0]["text"].as_str().unwrap_or(""),
-                        matched_schema_bytes,
-                    );
-                }
+                savings::record_discovery(
+                    &guard.catalog,
+                    search_result["content"][0]["text"].as_str().unwrap_or(""),
+                    matched_schema_bytes,
+                );
                 // Record exact UTF-8 returned text and serialized menu bytes. Legacy
                 // token fields remain reference estimates for existing readers.
                 let returned_names: Vec<String> = matches
@@ -16586,6 +16581,9 @@ fn process_request_wire_inner(
             discovery
         };
         {
+            if over_client_tool_limit(client, full.summary.tool_count()) {
+                guard.catalog.exclude_unloadable_baseline();
+            }
             savings::record_catalog_surfaces(
                 &guard.catalog,
                 discovery.as_str(),
@@ -19674,7 +19672,7 @@ fn serve_http(state: GatewayState, port: u16) {
     // is the fallback for requests that have no session record: a modern
     // (self-contained) request, an OpenAPI tool call, and the pre-session
     // `initialize`.
-    let search = Arc::new(SearchGuard::default());
+    let search = Arc::new(SearchGuard { catalog: savings::CatalogSession::unmeasured() });
 
     // When binding the default IPv4 loopback, ALSO listen on the IPv6 loopback
     // (best-effort). Many systems resolve "localhost" to ::1 first, and clients
@@ -37169,10 +37167,28 @@ mod tests {
         let guard = SearchGuard::default();
         let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
         let mut transmitted = 0;
-        for mode in [DiscoveryMode::Lazy, DiscoveryMode::Lazy, DiscoveryMode::Full] {
+        for mode in [
+            DiscoveryMode::Lazy,
+            DiscoveryMode::Lazy,
+            DiscoveryMode::Full,
+        ] {
             host.set_discovery_mode(mode);
-            let response = handle_request(&host, &req, &reg, &router(), &catalog(), mode == DiscoveryMode::Lazy, None, &guard, None, None).unwrap();
-            transmitted += savings::count_tokens(&serde_json::to_string(&response["result"]["tools"]).unwrap());
+            let response = handle_request(
+                &host,
+                &req,
+                &reg,
+                &router(),
+                &catalog(),
+                mode == DiscoveryMode::Lazy,
+                None,
+                &guard,
+                None,
+                None,
+            )
+            .unwrap();
+            transmitted += savings::count_tokens(
+                &serde_json::to_string(&response["result"]["tools"]).unwrap(),
+            );
         }
         let summary = savings::summary();
         assert_eq!(summary["tokenizedLoads"], 1);
