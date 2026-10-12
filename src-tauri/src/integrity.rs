@@ -1626,6 +1626,11 @@ pub fn mandatory_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<S
 /// with indexed upstream identities, including tools hidden by quarantine or other policy.
 /// Retained pins reassert the review before a returning definition can be published.
 pub fn retire_absent_reviews(profile: Option<&str>, present: &BTreeSet<String>) -> Result<(), String> {
+    // Ordinary Off operation must not depend on a writable quarantine store. A
+    // returning retired review is reactivated by the definition check itself.
+    if !pending_definition_review(profile) {
+        return Ok(());
+    }
     let quarantine_path = quarantine_path(profile).ok_or("Could not resolve the quarantine store")?;
     let pin_path = pins_path(profile).ok_or("Could not resolve the integrity pin store")?;
     // Match the release lock order: quarantine, then pins.
@@ -5857,6 +5862,19 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn review_cleanup_without_pending_reviews_does_not_require_store_locks() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("review-cleanup-no-pending-locks");
+        let tools = vec![destructive_tool("srv__wipe", "Accepted definition.")];
+        check(None, &tools).unwrap();
+        let path = quarantine_path(None).unwrap();
+        std::fs::create_dir(path.with_extension("json.lock")).unwrap();
+        assert!(crate::registry::lock_at(&path).is_err(), "fixture must refuse a store lock");
+        assert!(retire_absent_reviews(None, &BTreeSet::new()).is_ok());
+        assert!(!pending_definition_review(None));
     }
 
     #[test]

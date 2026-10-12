@@ -39295,9 +39295,11 @@ mod tests {
                 reg.set_safety_level(level);
                 let registry = Arc::new(Mutex::new(reg));
                 assert!(maybe_check_integrity(&registry, &tools, profile).unwrap().is_some());
-                let mut removed = Router::default();
-                let published = requarantine_if_needed(&registry, &mut removed, Vec::<Value>::new(), profile);
-                assert!(published.is_empty());
+                let mut removed = readonly_router("other", "Unrelated accepted tool.");
+                let offered = removed.shared_tools();
+                let published = requarantine_if_needed(&registry, &mut removed, offered, profile);
+                assert_eq!(published.len(), 1, "removed review must not hide unrelated tools");
+                assert_eq!(published.iter().next().unwrap()["name"], "other__read");
                 assert!(!integrity::pending_definition_review(profile), "absent review keeps {level:?} pending");
                 assert!(integrity::review_quarantined(profile).unwrap().is_empty());
                 // Absence cancels the active review, never approval of an unseen return.
