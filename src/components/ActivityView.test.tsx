@@ -8,6 +8,7 @@ import type { SecurityEvent } from "@/lib/api";
 let windowVisible = true;
 vi.mock("@/lib/windowVisible", () => ({ useWindowVisible: () => windowVisible }));
 
+const getActivityRevision = vi.fn();
 const getAuditLog = vi.fn();
 const getSearchTraces = vi.fn();
 const getSecurityEvents = vi.fn();
@@ -23,6 +24,7 @@ vi.mock("@/lib/api", () => ({
   releaseQuarantine: (...a: unknown[]) => releaseQuarantine(...a),
   clearActivityLogs: (...a: unknown[]) => clearActivityLogs(...a),
   exportAuditToPath: vi.fn(),
+  getActivityRevision: (...a: unknown[]) => getActivityRevision(...a),
   getAuditLog: (...a: unknown[]) => getAuditLog(...a),
   getAuditStats: (...a: unknown[]) => getAuditStats(...a),
   getInspectLog: (...a: unknown[]) => getInspectLog(...a),
@@ -62,6 +64,8 @@ const initialLog = [failed, entry()];
 const refreshedLog = [entry({ ts: 1700000002000, tool: "list_issues" }), ...initialLog];
 
 beforeEach(() => {
+  let revision = 0;
+  getActivityRevision.mockImplementation(async () => String(revision++));
   getAuditStats.mockResolvedValue(null);
   windowVisible = true;
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -139,6 +143,28 @@ it("pauses Activity polling while hidden and resumes when visible", async () => 
   view.rerender(<ActivityView refreshKey={0} registry={null} />);
   await act(() => vi.advanceTimersByTimeAsync(3000));
   expect(getAuditLog).toHaveBeenCalledTimes(loaded + 2);
+});
+
+it("keeps an idle Activity page unchanged and reads new rows when the revision changes", async () => {
+  getActivityRevision.mockResolvedValue("same");
+  const view = render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  const calls = getAuditLog.mock.calls.length;
+  const stats = getAuditStats.mock.calls.length;
+  const security = getSecurityEvents.mock.calls.length;
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(getAuditLog).toHaveBeenCalledTimes(calls);
+  expect(getAuditStats).toHaveBeenCalledTimes(stats);
+  expect(getSecurityEvents).toHaveBeenCalledTimes(security);
+  expect(getSearchTraces).toHaveBeenCalledTimes(1);
+  getActivityRevision.mockResolvedValue("changed");
+  getAuditLog.mockResolvedValue(refreshedLog);
+  await act(() => vi.advanceTimersByTimeAsync(3000));
+  expect(getAuditLog).toHaveBeenCalledTimes(calls + 1);
+  view.unmount();
+  const revisions = getActivityRevision.mock.calls.length;
+  await act(() => vi.advanceTimersByTimeAsync(6000));
+  expect(getActivityRevision).toHaveBeenCalledTimes(revisions);
 });
 
 describe("ActivityView trust-state loading", () => {

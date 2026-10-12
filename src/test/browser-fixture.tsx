@@ -820,6 +820,8 @@ mockIPC(
         }
         return [...grouped.values()];
       }
+      case "activity_revision":
+        return JSON.stringify(auditRows);
       case "get_audit_log":
         return auditRows;
       case "audit_stats":

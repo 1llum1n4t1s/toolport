@@ -48,6 +48,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   clearActivityLogs,
   exportAuditToPath,
+  getActivityRevision,
   getAuditLog,
   getAuditStats,
   getInspectLog,
@@ -1761,15 +1762,38 @@ export function ActivityView({
     }
   }
 
-  // Native visibility also covers a window hidden to the tray, where the
-  // webview may keep reporting "visible". Pause file reads and rerenders while
-  // the user is elsewhere; resume within one tick when they return.
+  // Poll only store metadata. Idle pages keep their rows, stats and open panels;
+  // native visibility also pauses this cheap check while hidden to the tray.
   const windowVisible = useWindowVisible();
   const [liveTick, setLiveTick] = useState(0);
+  const activityRevision = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!windowVisible) return;
-    const id = setInterval(() => setLiveTick((t) => t + 1), 3000);
-    return () => clearInterval(id);
+    let alive = true;
+    let checking = false;
+    async function checkRevision() {
+      if (checking) return;
+      checking = true;
+      try {
+        const revision = await getActivityRevision();
+        if (!alive) return;
+        const previous = activityRevision.current;
+        activityRevision.current = revision;
+        if (previous !== undefined && previous !== revision) setLiveTick((t) => t + 1);
+      } catch {
+        // Let panel readers surface an unreadable store rather than masking it
+        // with a successful old revision.
+        if (alive) setLiveTick((t) => t + 1);
+      } finally {
+        checking = false;
+      }
+    }
+    void checkRevision();
+    const id = setInterval(() => void checkRevision(), 3000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
   }, [windowVisible]);
   // Combined so panels refetch on either a registry change or a live tick. Both counters
   // only increase, so the sum always changes when either does (no collisions).

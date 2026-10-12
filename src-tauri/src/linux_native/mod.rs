@@ -2292,11 +2292,11 @@ impl ClientPage {
             .build();
         header.pack_end(&refresh_button);
         let add_location = gtk::Button::with_label("Add client location");
-        header.pack_start(&add_location);
+
         let import_button = gtk::Button::with_label("Import");
         import_button.set_tooltip_text(Some("Review servers found in client configurations"));
         import_button.add_css_class("toolport-secondary-action");
-        header.pack_end(&import_button);
+
         root.append(&header);
 
         let scroller = gtk::ScrolledWindow::builder()
@@ -2309,6 +2309,10 @@ impl ClientPage {
         page.set_margin_bottom(20);
         page.set_margin_start(20);
         page.set_margin_end(20);
+        let page_actions = wrapping_actions();
+        page_actions.insert(&add_location, -1);
+        page_actions.insert(&import_button, -1);
+        page.append(&page_actions);
         page.append(
             &gtk::Label::builder()
                 .label("Your AI clients, one Toolport gateway")
@@ -2802,18 +2806,33 @@ fn toolport_menu_choice_button(label: &str, selected: bool) -> gtk::Button {
         .build()
 }
 
+fn wrapping_actions() -> gtk::FlowBox {
+    gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .min_children_per_line(1)
+        .max_children_per_line(8)
+        .column_spacing(8)
+        .row_spacing(6)
+        .build()
+}
+
 fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
-    let card = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 10);
     card.add_css_class("toolport-card");
+    let heading = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    card.append(&heading);
     let icon = branding::client_logo(&client.id);
-    card.append(&icon);
+    icon.set_valign(gtk::Align::Start);
+    heading.append(&icon);
     let copy = gtk::Box::new(gtk::Orientation::Vertical, 3);
     copy.set_hexpand(true);
     copy.append(
         &gtk::Label::builder()
             .label(&client.name)
-            .halign(gtk::Align::Start)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .halign(gtk::Align::Fill)
+            .xalign(0.0)
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
             .tooltip_text(format!("{}\nClient id: {}", client.name, client.id))
             .css_classes(["heading"])
             .build(),
@@ -2911,18 +2930,16 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
                 .build(),
         );
     }
-    card.append(&copy);
+    heading.append(&copy);
     if client.gateway_state == state::ClientGatewayState::Customized {
         let badge = gtk::Label::new(Some("Customized"));
         badge.add_css_class("toolport-badge");
         badge.set_valign(gtk::Align::Center);
         badge.set_halign(gtk::Align::Start);
         badge.add_css_class("review");
-        card.append(&badge);
+        copy.append(&badge);
     }
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    actions.set_halign(gtk::Align::End);
-    actions.set_valign(gtk::Align::Center);
+    let actions = wrapping_actions();
     if client.legacy_bearer_argv {
         let warning = gtk::Label::new(Some("This older HTTP connection exposes a bearer credential in process arguments. Review migration to stdio; it stays unchanged until you confirm."));
         warning.set_wrap(true);
@@ -2934,7 +2951,7 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
         migrate.connect_clicked(move |button| {
             confirm_client_reset(&reviewed_client, button.clone(), reviewed_page.clone());
         });
-        actions.append(&migrate);
+        actions.insert(&migrate, -1);
     }
     if client.location_removable {
         let remove = gtk::Button::with_label("Remove location");
@@ -2961,7 +2978,7 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
             });
             dialog.present();
         });
-        actions.append(&remove);
+        actions.insert(&remove, -1);
     }
     match client.gateway_state {
         state::ClientGatewayState::Disconnected => {
@@ -2972,7 +2989,7 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
             connect.connect_clicked(move |_| {
                 confirm_client_migrate(&client_for_connect, page_for_connect.clone());
             });
-            actions.append(&connect);
+            actions.insert(&connect, -1);
         }
         state::ClientGatewayState::Customized if client_needs_reset_action(client) => {
             let reset = gtk::Button::with_label("Reset");
@@ -2982,12 +2999,12 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
             reset.connect_clicked(move |button| {
                 confirm_client_reset(&client_for_reset, button.clone(), page_for_reset.clone());
             });
-            actions.append(&reset);
+            actions.insert(&reset, -1);
         }
         state::ClientGatewayState::Customized => {}
         state::ClientGatewayState::Connected => {
-            actions.append(&client_scope_menu(client.clone(), page.clone()));
-            actions.append(&connected_client_actions_menu(client.clone(), page));
+            actions.insert(&client_scope_menu(client.clone(), page.clone()), -1);
+            actions.insert(&connected_client_actions_menu(client.clone(), page), -1);
         }
     }
     if actions.first_child().is_some() {
@@ -3145,8 +3162,9 @@ fn client_scope_menu(client: state::ClientView, page: ClientPage) -> gtk::MenuBu
         format!("Access: {label}")
     };
     let menu = gtk::MenuButton::builder()
-        .label(label)
-        .tooltip_text("Choose this client's access to enabled servers")
+        .child(&gtk::Label::builder().label(&label)
+            .ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(24).build())
+        .tooltip_text(format!("Choose this client's access to enabled servers: {label}"))
         .build();
     menu.add_css_class("toolport-secondary-action");
     let popover = toolport_menu_popover();

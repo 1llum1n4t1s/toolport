@@ -1084,6 +1084,13 @@ async fn has_client_secret(server_id: String) -> Result<bool, String> {
     .map_err(|e| format!("keychain task join failed: {e}"))?
 }
 
+#[tauri::command]
+async fn activity_revision() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(crate::observability_controller::activity_revision)
+        .await
+        .map_err(|error| format!("Activity revision task failed: {error}"))?
+}
+
 /// The most recent tool-call audit entries (newest first).
 #[tauri::command]
 async fn get_audit_log(limit: usize) -> Result<Vec<serde_json::Value>, String> {
@@ -4282,6 +4289,7 @@ pub fn run() {
             clear_client_credentials,
             has_client_secret,
             secret_status,
+            activity_revision,
             get_audit_log,
             get_client_sessions,
             audit_stats,

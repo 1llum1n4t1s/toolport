@@ -38,6 +38,11 @@ export function searchCatalog(query: string): Promise<CatalogSearch> {
   return invoke<CatalogSearch>("search_catalog", { query });
 }
 
+/** Metadata revision of the local Activity stores, without loading their contents. */
+export function getActivityRevision(): Promise<string> {
+  return invoke<string>("activity_revision");
+}
+
 /** Recent tool-call audit entries (newest first). */
 export function getAuditLog(limit = 200): Promise<AuditEntry[]> {
   return invoke<AuditEntry[]>("get_audit_log", { limit });
