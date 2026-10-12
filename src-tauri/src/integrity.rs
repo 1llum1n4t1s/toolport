@@ -5726,6 +5726,66 @@ mod tests {
     }
 
     #[test]
+    fn pending_review_recaptures_a_missing_quarantine_until_bound_approval() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("pending-review-missing-quarantine");
+        for profile in [None, Some("work")] {
+            for deleted in [false, true] {
+                for staged in [false, true] {
+                    let tools = vec![destructive_tool("srv__wipe", "Captured definition.")];
+                    save_pins(profile, &BTreeMap::from([("srv__wipe".into(), pin_of(&tools[0]))])).unwrap();
+                    let old = json!({"tool":"srv__wipe", "change":"changed"});
+                    save_quarantine(profile, &BTreeMap::from([("srv__wipe".into(), old.clone())])).unwrap();
+                    release_record(profile, "srv__wipe", &quarantine_record_id(&old)).unwrap();
+                    let events = check_staged(profile, &tools).unwrap();
+                    apply_quarantine(profile, &tools, &events).unwrap();
+                    accept_quarantined_pins(profile).unwrap();
+                    if deleted {
+                        std::fs::remove_file(quarantine_path(profile).unwrap()).unwrap();
+                    } else {
+                        save_quarantine(profile, &Quarantine::new()).unwrap();
+                    }
+                    let events = if staged { check_staged(profile, &tools) } else { check(profile, &tools) }.unwrap();
+                    assert!(events.iter().any(|e| e["review_required"] == true), "pending review vanished after its quarantine row was lost");
+                    assert!(pending_definition_review(profile), "catalog pin writes must retain the review");
+                    apply_quarantine(profile, &tools, &events).unwrap();
+                    accept_quarantined_pins(profile).unwrap();
+                    let captured = load_quarantine(profile).unwrap()["srv__wipe"].clone();
+                    assert_eq!(captured["definition"], tools[0]);
+                    assert!(review_quarantined(profile).unwrap().contains("srv__wipe"));
+                    assert!(release_record(profile, "srv__wipe", &quarantine_record_id(&captured)).unwrap());
+                    assert!(!pending_definition_review(profile));
+                    assert!(check_staged(profile, &tools).unwrap().is_empty(), "one bound approval must end the review");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pending_review_survives_all_unreviewed_pin_merges() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("pending-review-pin-merges");
+        for profile in [None, Some("work")] {
+            for write in ["catalog", "staged", "quarantined"] {
+                let tools = vec![destructive_tool("srv__wipe", "Changed definition.")];
+                let mut old = pin_of(&destructive_tool("srv__wipe", "Previously captured definition."));
+                old.review_pending = true;
+                save_pins(profile, &BTreeMap::from([("srv__wipe".into(), old)])).unwrap();
+                let event = json!({"tool":"srv__wipe", "change":"changed", "severity":"high"});
+                match write {
+                    "catalog" => { check(profile, &tools).unwrap(); }
+                    "staged" => { accept_staged_pins(profile, &tools, &[event]).unwrap(); }
+                    _ => {
+                        save_quarantine(profile, &BTreeMap::from([("srv__wipe".into(), json!({"tool":"srv__wipe", "change":"changed", "pending_pin":pin_of(&tools[0])}))])).unwrap();
+                        accept_quarantined_pins(profile).unwrap();
+                    }
+                }
+                assert!(matches!(load_pins(profile), PinsLoad::Loaded(pins) if pins["srv__wipe"].review_pending), "{write} consumed a pending review");
+            }
+        }
+    }
+
+    #[test]
     fn release_all_requires_review_for_legacy_pending_pins() {
         let _data_dir_lock = crate::registry::data_dir_test_lock();
         let _data_dir = TestDataDir::new("release-all-legacy-pending");

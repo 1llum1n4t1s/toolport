@@ -2424,7 +2424,7 @@ fn matrix_first_quarantine_approval_rejects_a_replaced_record() {
     assert!(conduit_lib::integrity::quarantined(None).unwrap().contains("srv__wipe"));
 }
 
-fn preview_approval_requires_gateway_review(level: registry::SafetyLevel, bulk: bool) {
+fn preview_approval_requires_gateway_review(level: registry::SafetyLevel, bulk: bool, lost_store: Option<bool>) {
     let _guard = CASE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let _data_lock = registry::data_dir_test_lock();
     let (_fixture, dir) = Fixture::new("preview-release-review");
@@ -2451,7 +2451,7 @@ fn preview_approval_requires_gateway_review(level: registry::SafetyLevel, bulk: 
         records[name].as_object_mut().unwrap().remove("definition");
         std::fs::write(store, records.to_string()).unwrap();
     }
-    let mut running = if level == registry::SafetyLevel::Off { None } else {
+    let mut running = if level == registry::SafetyLevel::Off || lost_store.is_some() { None } else {
         let mut client = spawn_adapter(&dir, &AdapterOptions::default());
         client.initialize("matrix-preview-release-review");
         client.wait_for_tool("__add", Duration::from_secs(30));
@@ -2469,6 +2469,17 @@ fn preview_approval_requires_gateway_review(level: registry::SafetyLevel, bulk: 
             assert_eq!(conduit_lib::integrity::release_all_records(scope, &expected).unwrap().released, 1);
         } else {
             approve_displayed_quarantine(record).unwrap();
+        }
+    }
+    if let Some(deleted) = lost_store {
+        for scope in [None, reg.active_profile_id.as_deref()] {
+            let events = conduit_lib::integrity::check_staged(scope, &tools).unwrap();
+            conduit_lib::integrity::apply_quarantine(scope, &tools, &events).unwrap();
+            conduit_lib::integrity::accept_quarantined_pins(scope).unwrap();
+            assert!(conduit_lib::integrity::pending_definition_review(scope));
+        }
+        for store in [dir.join("quarantine.json"), dir.join(format!("quarantine-v2-{}.json", registry::profile_store_key(reg.active_profile_id.as_deref().unwrap())))] {
+            if deleted { std::fs::remove_file(store).unwrap(); } else { std::fs::write(store, "{}").unwrap(); }
         }
     }
     let mut client = running.take().unwrap_or_else(|| {
@@ -2508,17 +2519,35 @@ fn preview_approval_requires_gateway_review(level: registry::SafetyLevel, bulk: 
 }
 
 #[test]
-fn matrix_preview_approval_ask_single() { preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, false); }
+fn matrix_preview_approval_ask_single() { preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, false, None); }
 #[test]
-fn matrix_preview_approval_ask_bulk() { preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, true); }
+fn matrix_preview_approval_ask_bulk() { preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, true, None); }
 #[test]
-fn matrix_preview_approval_strict_single() { preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, false); }
+fn matrix_preview_approval_strict_single() { preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, false, None); }
 #[test]
-fn matrix_preview_approval_strict_bulk() { preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, true); }
+fn matrix_preview_approval_strict_bulk() { preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, true, None); }
 #[test]
-fn matrix_preview_approval_off_single() { preview_approval_requires_gateway_review(registry::SafetyLevel::Off, false); }
+fn matrix_preview_approval_off_single() { preview_approval_requires_gateway_review(registry::SafetyLevel::Off, false, None); }
 #[test]
-fn matrix_preview_approval_off_bulk() { preview_approval_requires_gateway_review(registry::SafetyLevel::Off, true); }
+fn matrix_preview_approval_off_bulk() { preview_approval_requires_gateway_review(registry::SafetyLevel::Off, true, None); }
+
+#[test]
+fn matrix_pending_review_ask_empty_store() { preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, false, Some(false)); }
+
+#[test]
+fn matrix_pending_review_ask_deleted_store() { preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, true, Some(true)); }
+
+#[test]
+fn matrix_pending_review_strict_empty_store() { preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, false, Some(false)); }
+
+#[test]
+fn matrix_pending_review_strict_deleted_store() { preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, true, Some(true)); }
+
+#[test]
+fn matrix_pending_review_off_empty_store() { preview_approval_requires_gateway_review(registry::SafetyLevel::Off, false, Some(false)); }
+
+#[test]
+fn matrix_pending_review_off_deleted_store() { preview_approval_requires_gateway_review(registry::SafetyLevel::Off, true, Some(true)); }
 
 #[test]
 fn matrix_legacy_summary_release_uses_store_key() {

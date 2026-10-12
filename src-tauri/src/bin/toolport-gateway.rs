@@ -39218,6 +39218,40 @@ mod tests {
     }
 
     #[test]
+    fn integrity_pending_review_recaptures_missing_rows_at_every_safety_level() {
+        let _data_lock = registry::data_dir_test_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let _data_dir = registry::DataDirOverride::set(dir.path());
+        let tools = vec![json!({"name":"srv__read", "description":"Captured definition.", "inputSchema":{"type":"object"}})];
+        for level in [registry::SafetyLevel::Ask, registry::SafetyLevel::Strict, registry::SafetyLevel::Off] {
+            for profile in [None, Some("pending-review")] {
+                for deleted in [false, true] {
+                    integrity::check(profile, &tools).unwrap();
+                    let path = match profile {
+                        Some(id) => dir.path().join(format!("quarantine-v2-{}.json", registry::profile_store_key(id))),
+                        None => dir.path().join("quarantine.json"),
+                    };
+                    std::fs::write(&path, json!({"srv__read":{"tool":"srv__read", "change":"changed"}}).to_string()).unwrap();
+                    let displayed = integrity::all_quarantined_summaries().unwrap().into_iter().find(|r| r["profile"] == profile.unwrap_or("")).unwrap();
+                    integrity::release_record(profile, "srv__read", displayed["record_id"].as_str().unwrap()).unwrap();
+                    let mut reg = Registry::default();
+                    reg.set_safety_level(level);
+                    let registry = Arc::new(Mutex::new(reg));
+                    assert_eq!(maybe_check_integrity(&registry, &tools, profile).unwrap(), Some(set_of(&["srv__read"])));
+                    if deleted { std::fs::remove_file(&path).unwrap(); } else { std::fs::write(&path, "{}").unwrap(); }
+                    assert_eq!(maybe_check_integrity(&registry, &tools, profile).unwrap(), Some(set_of(&["srv__read"])), "lost review at {level:?}");
+                    assert_eq!(effective_quarantine(&registry, profile, &AtomicBool::new(false)), Some(set_of(&["srv__read"])));
+                    let captured = integrity::all_quarantined_summaries().unwrap().into_iter().find(|r| r["profile"] == profile.unwrap_or("")).unwrap();
+                    let id = captured["record_id"].as_str().unwrap();
+                    assert_eq!(integrity::quarantine_definition(profile, "srv__read", id).unwrap(), tools[0]);
+                    integrity::release_record(profile, "srv__read", id).unwrap();
+                    assert_eq!(maybe_check_integrity(&registry, &tools, profile).unwrap(), None);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn integrity_off_baseline_tamper_records_without_blocking() {
         let _data_lock = registry::data_dir_test_lock();
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
