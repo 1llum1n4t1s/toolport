@@ -830,6 +830,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn live_activity_health_changes_without_retained_store_changes() {
         let data = crate::registry::DataDirTestEnv::new("live-health-revision");
         std::fs::write(data.dir.join("audit.jsonl"), "{\"ts\":1}\n").unwrap();
