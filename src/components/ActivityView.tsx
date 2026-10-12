@@ -49,6 +49,7 @@ import {
   clearActivityLogs,
   exportAuditToPath,
   getActivityRevision,
+  releaseActivityRevision,
   getActivityHealth,
   getAuditLog,
   getAuditStats,
@@ -1767,10 +1768,11 @@ export function ActivityView({
     }
   }
 
-  // Poll only store metadata. Idle pages keep their rows, stats and open panels;
+  // Poll a cached content revision. Idle pages keep rows, stats and open panels;
   // native visibility also pauses this cheap check while hidden to the tray.
   const windowVisible = useWindowVisible();
   const [liveTick, setLiveTick] = useState(0);
+  const [revisionUnavailable, setRevisionUnavailable] = useState(false);
   const activityRevision = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!windowVisible) return;
@@ -1782,15 +1784,21 @@ export function ActivityView({
       try {
         const revision = await getActivityRevision();
         if (!alive) return;
+        setRevisionUnavailable(false);
         const previous = activityRevision.current;
         activityRevision.current = revision;
         if (previous !== undefined && previous !== revision) setLiveTick((t) => t + 1);
       } catch {
         // Let panel readers surface an unreadable store rather than masking it
         // with a successful old revision.
-        if (alive) setLiveTick((t) => t + 1);
+        if (alive) {
+          setRevisionUnavailable(true);
+          setLiveTick((t) => t + 1);
+        }
       } finally {
         checking = false;
+        // A queued IPC read may start after cleanup; release again on completion.
+        if (!alive) void releaseActivityRevision().catch(() => {});
       }
     }
     void checkRevision();
@@ -1798,6 +1806,7 @@ export function ActivityView({
     return () => {
       alive = false;
       clearInterval(id);
+      void releaseActivityRevision().catch(() => {});
     };
   }, [windowVisible]);
   const [liveHealth, setLiveHealth] = useState<Pick<
@@ -1965,6 +1974,11 @@ export function ActivityView({
   const banner = (
     <>
       <TelemetryNotice stats={noticeStats} />
+      {revisionUnavailable ? (
+        <p role="status" className="mb-4 text-sm text-destructive">
+          Activity change checks are unavailable. Displayed activity may be stale.
+        </p>
+      ) : null}
       {/* Loud lane: the only thing here that may need a decision. */}
       {securityLoadStatus !== "ready" ? (
         <SecurityLoadNotice status={securityLoadStatus} onRetry={retryLoads} />

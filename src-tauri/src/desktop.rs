@@ -1092,6 +1092,11 @@ async fn activity_revision() -> Result<String, String> {
 }
 
 #[tauri::command]
+fn release_activity_revision() {
+    crate::observability_controller::release_activity_revision();
+}
+
+#[tauri::command]
 async fn activity_health() -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(crate::observability_controller::activity_health)
         .await
@@ -4297,6 +4302,7 @@ pub fn run() {
             has_client_secret,
             secret_status,
             activity_revision,
+            release_activity_revision,
             activity_health,
             get_audit_log,
             get_client_sessions,

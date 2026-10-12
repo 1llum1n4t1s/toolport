@@ -10,6 +10,7 @@ vi.mock("@/lib/windowVisible", () => ({ useWindowVisible: () => windowVisible })
 
 const getActivityRevision = vi.fn();
 const getActivityHealth = vi.fn();
+const releaseActivityRevision = vi.fn();
 const getAuditLog = vi.fn();
 const getSearchTraces = vi.fn();
 const getSecurityEvents = vi.fn();
@@ -26,6 +27,7 @@ vi.mock("@/lib/api", () => ({
   clearActivityLogs: (...a: unknown[]) => clearActivityLogs(...a),
   exportAuditToPath: vi.fn(),
   getActivityRevision: (...a: unknown[]) => getActivityRevision(...a),
+  releaseActivityRevision: (...a: unknown[]) => releaseActivityRevision(...a),
   getActivityHealth: (...a: unknown[]) => getActivityHealth(...a),
   getAuditLog: (...a: unknown[]) => getAuditLog(...a),
   getAuditStats: (...a: unknown[]) => getAuditStats(...a),
@@ -66,6 +68,7 @@ const initialLog = [failed, entry()];
 const refreshedLog = [entry({ ts: 1700000002000, tool: "list_issues" }), ...initialLog];
 
 beforeEach(() => {
+  releaseActivityRevision.mockResolvedValue(undefined);
   let revision = 0;
   getActivityRevision.mockImplementation(async () => String(revision++));
   getActivityHealth.mockResolvedValue({
@@ -148,6 +151,7 @@ it("pauses Activity polling while hidden and resumes when visible", async () => 
   expect(getAuditLog).toHaveBeenCalledTimes(loaded + 1);
   windowVisible = false;
   view.rerender(<ActivityView refreshKey={0} registry={null} />);
+  expect(releaseActivityRevision).toHaveBeenCalled();
   await act(() => vi.advanceTimersByTimeAsync(60_000));
   expect(getAuditLog).toHaveBeenCalledTimes(loaded + 1);
   windowVisible = true;
@@ -1187,4 +1191,35 @@ it("uses one server option for hyphenated call and approval identities", async (
   await user.click(screen.getByRole("combobox"));
   expect(screen.getAllByRole("option", { name: /^team_slack$/ })).toHaveLength(1);
   expect(screen.queryByRole("option", { name: /^team-slack$/ })).not.toBeInTheDocument();
+});
+
+it("keeps revision failures visible after successful panel reads and clears them on recovery", async () => {
+  getActivityRevision.mockRejectedValue("unreadable");
+  render(<ActivityView refreshKey={0} registry={null} />);
+  expect(
+    await screen.findByText(/Activity change checks are unavailable/),
+  ).toBeInTheDocument();
+  expect(getAuditLog).toHaveBeenCalled();
+  getActivityRevision.mockResolvedValue("recovered");
+  await act(() => vi.advanceTimersByTimeAsync(3000));
+  expect(
+    screen.queryByText(/Activity change checks are unavailable/),
+  ).not.toBeInTheDocument();
+});
+
+it("releases a revision watch again when an in-flight check finishes after unmount", async () => {
+  let complete!: (revision: string) => void;
+  getActivityRevision.mockImplementation(
+    () =>
+      new Promise<string>((resolve) => {
+        complete = resolve;
+      }),
+  );
+  const view = render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  const releases = releaseActivityRevision.mock.calls.length;
+  view.unmount();
+  expect(releaseActivityRevision).toHaveBeenCalledTimes(releases + 1);
+  await act(async () => complete("late"));
+  expect(releaseActivityRevision).toHaveBeenCalledTimes(releases + 2);
 });

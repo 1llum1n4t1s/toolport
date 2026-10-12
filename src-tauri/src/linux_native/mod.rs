@@ -3411,6 +3411,8 @@ struct ActivityPage {
     loading: std::rc::Rc<std::cell::Cell<bool>>,
     dirty: std::rc::Rc<std::cell::Cell<bool>>,
     revision: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    revision_error: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    revision_loading: std::rc::Rc<std::cell::Cell<bool>>,
     health_loading: std::rc::Rc<std::cell::Cell<bool>>,
     health_generation: std::rc::Rc<std::cell::Cell<u64>>,
     recent_rows: RetainedRows<state::ActivityView>,
@@ -3802,6 +3804,8 @@ impl ActivityPage {
             loading: std::rc::Rc::new(std::cell::Cell::new(false)),
             dirty: std::rc::Rc::new(std::cell::Cell::new(true)),
             revision: Default::default(),
+            revision_error: Default::default(),
+            revision_loading: Default::default(),
             health_loading: Default::default(),
             health_generation: Default::default(),
             recent_rows: Default::default(),
@@ -3963,11 +3967,7 @@ impl ActivityPage {
                     page.dirty.set(true);
                     return;
                 }
-                let revision = crate::observability_controller::activity_revision().ok();
-                if revision.is_none() || *page.revision.borrow() != revision {
-                    page.dirty.set(true);
-                    page.refresh_quietly();
-                }
+                page.check_revision();
             },
         );
         let page = self.clone();
@@ -3979,6 +3979,9 @@ impl ActivityPage {
     }
 
     fn release_rows(&self) {
+        crate::observability_controller::release_activity_revision();
+        self.revision.borrow_mut().take();
+        self.revision_error.borrow_mut().take();
         self.health_generation
             .set(self.health_generation.get().wrapping_add(1));
         self.dirty.set(true);
@@ -4051,10 +4054,56 @@ impl ActivityPage {
             return;
         }
         snapshot.telemetry_notices = notices;
-        self.telemetry_feedback
-            .set_label(&snapshot.telemetry_notices.join("\n"));
-        self.telemetry_feedback
-            .set_visible(!snapshot.telemetry_notices.is_empty());
+        self.render_activity_notices(&snapshot.telemetry_notices);
+    }
+
+    fn check_revision(&self) {
+        if self.loading.get() || self.revision_loading.replace(true) {
+            return;
+        }
+        let generation = self.health_generation.get();
+        let page = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            let result =
+                gtk::gio::spawn_blocking(crate::observability_controller::activity_revision).await;
+            page.revision_loading.set(false);
+            if !page.root.is_mapped() {
+                crate::observability_controller::release_activity_revision();
+                return;
+            }
+            if generation != page.health_generation.get() {
+                return;
+            }
+            let revision = result
+                .unwrap_or_else(|error| Err(format!("Activity change check failed: {error}")));
+            page.set_revision_error(revision.as_ref().err().cloned());
+            let revision = revision.ok();
+            if revision.is_none() || *page.revision.borrow() != revision {
+                page.dirty.set(true);
+                page.refresh_quietly();
+            }
+        });
+    }
+
+    fn set_revision_error(&self, error: Option<String>) {
+        *self.revision_error.borrow_mut() = error;
+        let snapshot = self.last_snapshot.borrow();
+        self.render_activity_notices(
+            snapshot
+                .as_ref()
+                .map_or(&[], |snapshot| snapshot.telemetry_notices.as_slice()),
+        );
+    }
+
+    fn render_activity_notices(&self, health: &[String]) {
+        let mut notices = health.to_vec();
+        if let Some(error) = self.revision_error.borrow().as_ref() {
+            notices.push(format!(
+                "Activity change checks are unavailable. Displayed activity may be stale. {error}"
+            ));
+        }
+        self.telemetry_feedback.set_label(&notices.join("\n"));
+        self.telemetry_feedback.set_visible(!notices.is_empty());
     }
 
     fn refresh_quietly(&self) {
@@ -4083,11 +4132,12 @@ impl ActivityPage {
             loop {
                 page.dirty.set(false);
                 let result = gtk::gio::spawn_blocking(|| {
-                    let revision = crate::observability_controller::activity_revision().ok();
+                    let revision = crate::observability_controller::activity_revision();
                     (revision, state::load_activity_snapshot())
                 })
                 .await;
                 if !page.root.is_mapped() {
+                    crate::observability_controller::release_activity_revision();
                     page.dirty.set(true);
                     break;
                 }
@@ -4096,7 +4146,8 @@ impl ActivityPage {
                 }
                 match result {
                     Ok((revision, Ok(snapshot))) => {
-                        *page.revision.borrow_mut() = revision;
+                        page.set_revision_error(revision.as_ref().err().cloned());
+                        *page.revision.borrow_mut() = revision.ok();
                         if announce || page.last_snapshot.borrow().as_ref() != Some(&snapshot) {
                             page.render(snapshot);
                         }
@@ -4172,10 +4223,7 @@ impl ActivityPage {
         self.feedback.remove_css_class("error");
         self.feedback.remove_css_class("success");
         self.feedback.set_visible(false);
-        self.telemetry_feedback
-            .set_label(&snapshot.telemetry_notices.join("\n"));
-        self.telemetry_feedback
-            .set_visible(!snapshot.telemetry_notices.is_empty());
+        self.render_activity_notices(&snapshot.telemetry_notices);
         self.clear_button.set_sensitive(
             snapshot.call_count > 0
                 || snapshot.savings_list_loads > 0
@@ -12155,9 +12203,20 @@ mod tests {
         assert_eq!(page.list.first_child().unwrap(), old);
         assert_eq!(page.stats_list.first_child().unwrap(), stats);
         page.show_error("retained store unreadable");
-        page.apply_health_notices(Vec::new());
-        assert!(!page.telemetry_feedback.is_visible());
         assert!(page.feedback.text().contains("Could not refresh"));
+        page.set_revision_error(Some("revision read failed".into()));
+        page.apply_health_notices(Vec::new());
+        assert!(page
+            .telemetry_feedback
+            .text()
+            .contains("Activity change checks are unavailable"));
+        page.render(state::load_activity_snapshot().unwrap());
+        assert!(page
+            .telemetry_feedback
+            .text()
+            .contains("revision read failed"));
+        page.set_revision_error(None);
+        assert!(!page.telemetry_feedback.is_visible());
         page.render(state::load_activity_snapshot().unwrap());
         assert_eq!(page.list.first_child().unwrap(), old);
         assert_eq!(page.stats_list.first_child().unwrap(), stats);

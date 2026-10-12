@@ -38,9 +38,14 @@ export function searchCatalog(query: string): Promise<CatalogSearch> {
   return invoke<CatalogSearch>("search_catalog", { query });
 }
 
-/** Metadata revision of the local Activity stores, without loading their contents. */
+/** Content revision of Activity stores, cached behind notifications where supported. */
 export function getActivityRevision(): Promise<string> {
   return invoke<string>("activity_revision");
+}
+
+/** Release the cached revision and native watch when Activity hides. */
+export function releaseActivityRevision(): Promise<void> {
+  return invoke("release_activity_revision");
 }
 
 /** Bounded live health probe, independent of retained Activity stores. */

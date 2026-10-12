@@ -830,6 +830,8 @@ mockIPC(
           },
           gatewayNotes: [],
         };
+      case "release_activity_revision":
+        return null;
       case "activity_revision":
         return JSON.stringify([auditRows, driftEvents]);
       case "get_audit_log":
