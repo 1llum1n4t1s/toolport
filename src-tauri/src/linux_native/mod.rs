@@ -3164,6 +3164,7 @@ fn client_scope_menu(client: state::ClientView, page: ClientPage) -> gtk::MenuBu
         format!("Access: {label}")
     };
     let menu = gtk::MenuButton::builder()
+        .always_show_arrow(true)
         .child(
             &gtk::Label::builder()
                 .label(&label)
