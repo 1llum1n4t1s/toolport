@@ -157,7 +157,7 @@ it("pauses Activity polling while hidden and resumes when visible", async () => 
   windowVisible = true;
   view.rerender(<ActivityView refreshKey={0} registry={null} />);
   await act(() => vi.advanceTimersByTimeAsync(3000));
-  expect(getAuditLog).toHaveBeenCalledTimes(loaded + 4);
+  expect(getAuditLog).toHaveBeenCalledTimes(loaded + 3);
 });
 
 it("keeps an idle Activity page unchanged and reads new rows when the revision changes", async () => {
@@ -171,7 +171,7 @@ it("keeps an idle Activity page unchanged and reads new rows when the revision c
   expect(getAuditLog).toHaveBeenCalledTimes(calls);
   expect(getAuditStats).toHaveBeenCalledTimes(stats);
   expect(getSecurityEvents).toHaveBeenCalledTimes(security);
-  expect(getSearchTraces).toHaveBeenCalledTimes(1);
+  expect(getSearchTraces).toHaveBeenCalledTimes(2);
   getActivityRevision.mockResolvedValue("changed");
   getAuditLog.mockResolvedValue(refreshedLog);
   await act(() => vi.advanceTimersByTimeAsync(3000));
@@ -304,6 +304,7 @@ describe("ActivityView trust-state loading", () => {
     getAuditLog.mockResolvedValue([]);
     getSecurityEvents
       .mockRejectedValueOnce(new Error("unreadable"))
+      .mockRejectedValueOnce(new Error("unreadable"))
       .mockResolvedValueOnce([]);
 
     render(<ActivityView refreshKey={0} registry={null} />);
@@ -333,6 +334,7 @@ describe("ActivityView trust-state loading", () => {
     };
     getSecurityEvents
       .mockResolvedValueOnce([finding])
+      .mockResolvedValueOnce([finding])
       .mockRejectedValueOnce(new Error("locked"));
 
     render(<ActivityView refreshKey={0} registry={null} />);
@@ -356,6 +358,7 @@ describe("ActivityView trust-state loading", () => {
     clearActivityLogs.mockResolvedValue(undefined);
     getAuditLog
       .mockResolvedValueOnce(initialLog)
+      .mockResolvedValueOnce(initialLog)
       .mockRejectedValueOnce(new Error("locked"));
 
     render(<ActivityView refreshKey={0} registry={null} />);
@@ -378,6 +381,7 @@ describe("ActivityView trust-state loading", () => {
     clearActivityLogs.mockResolvedValue(undefined);
     let resolveStale!: (rows: AuditEntry[]) => void;
     getAuditLog
+      .mockResolvedValueOnce(initialLog)
       .mockResolvedValueOnce(initialLog)
       .mockReturnValueOnce(
         new Promise<AuditEntry[]>((res) => {
@@ -410,7 +414,7 @@ describe("ActivityView trust-state loading", () => {
   });
 
   it("does not turn a last-known empty audit log into a current all-clear", async () => {
-    getAuditLog.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error("locked"));
+    getAuditLog.mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockRejectedValueOnce(new Error("locked"));
 
     render(<ActivityView refreshKey={0} registry={null} />);
     await act(async () => {});
@@ -434,6 +438,7 @@ describe("ActivityView trust-state loading", () => {
     });
     getAuditLog
       .mockResolvedValueOnce(initialLog)
+      .mockResolvedValueOnce(initialLog)
       .mockRejectedValueOnce(new Error("locked"));
 
     render(<ActivityView refreshKey={0} registry={null} />);
@@ -456,7 +461,7 @@ describe("ActivityView trust-state loading", () => {
     const user = userEvent.setup({
       advanceTimers: (ms) => vi.advanceTimersByTime(ms),
     });
-    getAuditLog.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
+    getAuditLog.mockRejectedValueOnce(new Error("offline")).mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
 
     render(<ActivityView refreshKey={0} registry={null} />);
     await act(async () => {});
@@ -602,7 +607,7 @@ describe("ActivityView discovery", () => {
     const user = userEvent.setup({
       advanceTimers: (ms) => vi.advanceTimersByTime(ms),
     });
-    getSearchTraces.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
+    getSearchTraces.mockRejectedValueOnce(new Error("offline")).mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
 
     render(<ActivityView refreshKey={0} registry={null} />);
     await act(async () => {});
@@ -788,6 +793,7 @@ it("keeps last-loaded catalog telemetry visibly stale after a failed refresh", a
       peakCatalog: 3,
       sinceTs: 1700000000000,
     })
+    .mockResolvedValueOnce({ tokensSaved: 100, listLoads: 1, tokenizedLoads: 1, peakCatalog: 3, sinceTs: 1700000000000 })
     .mockRejectedValueOnce(new Error("unreadable"));
   const view = render(<ActivityView refreshKey={0} registry={null} />);
   await act(async () => {});
@@ -803,6 +809,7 @@ describe("ActivityView tool identities", () => {
       advanceTimers: (ms) => vi.advanceTimersByTime(ms),
     });
     getToolIdentities
+      .mockRejectedValueOnce(new Error("offline"))
       .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValueOnce([]);
 
@@ -1054,7 +1061,7 @@ describe("ActivityView live inspector", () => {
     const user = userEvent.setup({
       advanceTimers: (ms) => vi.advanceTimersByTime(ms),
     });
-    getInspectLog.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
+    getInspectLog.mockRejectedValueOnce(new Error("offline")).mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
 
     // LiveInspector only mounts while live inspection is on (ActivityView.tsx:1772).
     render(<ActivityView refreshKey={0} registry={{ liveInspect: true } as never} />);
