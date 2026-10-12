@@ -790,17 +790,24 @@ export function SettingsView({
       void getSecurityEvents()
         .then((events) => {
           const event = events.find((event) => event.type === "pins_load_failed");
-          setBaselineNotice(event ? event.detail || "Toolport could not read the integrity baseline because it was unreadable or corrupt. See Activity for details." : null);
+          setBaselineNotice(
+            event
+              ? event.detail ||
+                  "Toolport could not read the integrity baseline because it was unreadable or corrupt. See Activity for details."
+              : null,
+          );
         })
         .catch(() => {});
-      return listQuarantined()
-        .then((q) => {
-          setQuarantined(q);
-          setQuarantineError(false);
-        })
-        // A failed poll must not read as "nothing quarantined": keep any prior
-        // list and flag the error so the panel can say the status is stale.
-        .catch(() => setQuarantineError(true));
+      return (
+        listQuarantined()
+          .then((q) => {
+            setQuarantined(q);
+            setQuarantineError(false);
+          })
+          // A failed poll must not read as "nothing quarantined": keep any prior
+          // list and flag the error so the panel can say the status is stale.
+          .catch(() => setQuarantineError(true))
+      );
     };
     load();
     // Quarantine happens asynchronously in the gateway, so poll to keep the list fresh.
@@ -1166,7 +1173,10 @@ export function SettingsView({
             </p>
           )}
           {baselineNotice && (
-            <p role="status" className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+            <p
+              role="status"
+              className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
+            >
               Last baseline warning: {baselineNotice}
             </p>
           )}

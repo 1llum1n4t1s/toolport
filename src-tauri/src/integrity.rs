@@ -698,7 +698,17 @@ const PINS_READ_BACKOFF_MS: u64 = 40;
 #[cfg(test)]
 static PINS_REVIEW_READ_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(test)]
+thread_local! {
+    static PINS_REVIEW_FORCE_UNREADABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn read_pins_at(path: &Path) -> Option<Pins> {
+    #[cfg(test)]
+    if PINS_REVIEW_FORCE_UNREADABLE.with(std::cell::Cell::get) {
+        return None;
+    }
+
     for attempt in 0..PINS_READ_ATTEMPTS {
         #[cfg(test)]
         PINS_REVIEW_READ_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -6130,6 +6140,27 @@ mod tests {
         std::fs::write(pins_backup_path(&path), original.replace("srv__wipe", "srv__read")).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(definition_review_names(None), BTreeSet::from(["srv__read".into()]));
+    }
+
+    #[test]
+    fn review_r3_transient_pin_read_failure_recovers_without_file_changes() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("review-transient-pin-read");
+        let tools = vec![destructive_tool("srv__wipe", "Accepted definition.")];
+        check(None, &tools).unwrap();
+        let path = pins_path(None).unwrap();
+        let stamp = review_pins_stamp(&path);
+        // Force a cold failed read whose metadata remains unchanged, as with a
+        // transient sharing or storage error lasting longer than the retry budget.
+        REVIEW_PINS_CACHE.lock().unwrap().remove(&path);
+        PINS_REVIEW_FORCE_UNREADABLE.with(|flag| flag.set(true));
+        let present = BTreeSet::from(["srv__wipe".into()]);
+        let failed = definition_review_names_for_catalog(None, &present);
+        PINS_REVIEW_FORCE_UNREADABLE.with(|flag| flag.set(false));
+        assert_eq!(failed, Err(present.clone()));
+        assert!(mandatory_quarantined_checked(None).is_ok(), "the next tick must recover the readable pin state");
+        assert_eq!(definition_review_names_for_catalog(None, &present), Ok(BTreeSet::new()));
+        assert!(review_pins_stamp(&path) == stamp, "fixture changed the pin stamp");
     }
 
     #[test]

@@ -792,10 +792,12 @@ describe("SettingsView explicit data removal", () => {
   });
 });
 
-
 it("shows the baseline corruption cause at Off even without quarantined tools", async () => {
-  const detail = "The integrity baseline was unreadable or corrupt. Safety is Off, so ordinary tools remain available.";
-  vi.mocked(getSecurityEvents).mockResolvedValueOnce([{ ts: 1, type: "pins_load_failed", change: "tamper", detail }]);
+  const detail =
+    "The integrity baseline was unreadable or corrupt. Safety is Off, so ordinary tools remain available.";
+  vi.mocked(getSecurityEvents).mockResolvedValueOnce([
+    { ts: 1, type: "pins_load_failed", change: "tamper", detail },
+  ]);
   renderSettings("safety");
   expect(await screen.findByText(`Last baseline warning: ${detail}`)).toBeInTheDocument();
   expect(screen.queryByText("Quarantined tools")).not.toBeInTheDocument();
