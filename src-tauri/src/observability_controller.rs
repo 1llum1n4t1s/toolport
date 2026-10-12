@@ -189,7 +189,7 @@ fn activity_digest(paths: &[std::path::PathBuf]) -> Result<String, String> {
 
 fn activity_metadata(dir: &std::path::Path) -> Result<(String, Vec<std::path::PathBuf>), String> {
     use std::hash::{Hash, Hasher};
-    let entries = match std::fs::read_dir(&dir) {
+    let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(("missing".into(), Vec::new()))

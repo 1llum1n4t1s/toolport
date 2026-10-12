@@ -4079,8 +4079,8 @@ impl ActivityPage {
             if generation != page.health_generation.get() {
                 return;
             }
-            let revision = result
-                .unwrap_or_else(|error| Err(format!("Activity change check failed: {error}")));
+            let revision =
+                result.unwrap_or_else(|_| Err("Activity change check stopped unexpectedly".into()));
             page.set_revision_error(revision.as_ref().err().cloned());
             let revision = revision.ok();
             if revision.is_none() || *page.revision.borrow() != revision {
