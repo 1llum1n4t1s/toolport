@@ -4408,6 +4408,9 @@ fn recently_recorded(event: &Value, path: &Path) -> bool {
             && prev.get("change").and_then(Value::as_str) == change
             && prev.get("severity").and_then(Value::as_str) == severity
             && prev["new_fp"] == event["new_fp"]
+            // Off recovery must publish the saved file path even if Ask just
+            // recorded the same baseline failure within the dedup window.
+            && prev["saved_path"] == event["saved_path"]
         {
             let prev_ts = prev.get("ts").and_then(Value::as_u64).unwrap_or(0);
             return now_ts.saturating_sub(prev_ts) <= DEDUP_WINDOW_MS;
