@@ -73,46 +73,16 @@ pub fn run() {
     let present = std::rc::Rc::new(std::cell::Cell::new(!launch_hidden));
     let urls = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
     let tray = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let fallback_scheduled = std::cell::Cell::new(false);
-    let state = startup.clone();
-    let requested_for_activate = requested.clone();
-    let present_for_activate = present.clone();
-    let urls_for_activate = urls.clone();
-    app.connect_activate(move |app| {
-        // A second activation (including a tray click) must reveal even a hidden launch.
-        if requested_for_activate.replace(true) {
-            present_for_activate.set(true);
-        }
-        let mut state = state.borrow_mut();
-        let Some(result) = state.as_mut() else {
-            return;
-        };
-        match result {
-            Ok(startup) => {
-                build_window(
-                    app,
-                    theme::ThemeController::new(),
-                    startup.broker.clone(),
-                    startup.bridge.clone(),
-                    &mut startup.window,
-                    present_for_activate.get(),
-                );
-                schedule_hidden_fallback(
-                    app,
-                    launch_hidden,
-                    present_for_activate.get(),
-                    &fallback_scheduled,
-                    tray::HOST_GRACE,
-                );
-                for uri in urls_for_activate.borrow_mut().drain(..) {
-                    if let Some(action) = app.lookup_action("open-share-url") {
-                        action.activate(Some(&uri.to_variant()));
-                    }
-                }
-            }
-            Err(error) => show_registry_startup_failure(app, error),
-        }
+    let activation = std::rc::Rc::new(NativeActivation {
+        state: startup.clone(),
+        requested: requested.clone(),
+        present: present.clone(),
+        urls: urls.clone(),
+        launch_hidden,
+        fallback_scheduled: std::cell::Cell::new(false),
     });
+    let activation_for_signal = activation.clone();
+    app.connect_activate(move |app| activation_for_signal.activate(app, tray::HOST_GRACE));
     let present_for_open = present.clone();
     app.connect_open(move |app, files, _hint| {
         present_for_open.set(true);
@@ -130,7 +100,7 @@ pub fn run() {
         });
     });
     let app_for_startup = app.clone();
-    let state = startup.clone();
+    let activation_for_startup = activation.clone();
     let tray_for_startup = tray.clone();
     gtk::glib::spawn_future_local(async move {
         let app_for_events: gtk::glib::SendWeakRef<adw::Application> =
@@ -144,12 +114,7 @@ pub fn run() {
                 present.set(true);
             }
         }
-        *state.borrow_mut() = Some(result);
-        if requested.get() {
-            // Deliver the initial activation without treating it as a second launch.
-            requested.set(false);
-            app_for_startup.activate();
-        }
+        activation_for_startup.ready(&app_for_startup, result);
     });
     app.connect_shutdown(|_| {
         crate::oauth_controller::cancel_all_attempts();
@@ -166,6 +131,64 @@ pub fn run() {
         startup.bridge.shutdown();
         startup.broker.clear_endpoint();
     };
+}
+
+/// Queue activation while startup runs, then replay it once the result arrives.
+/// The same activation handler also handles a first launch arriving after readiness.
+struct NativeActivation {
+    state: std::rc::Rc<std::cell::RefCell<Option<Result<NativeStartup, String>>>>,
+    requested: std::rc::Rc<std::cell::Cell<bool>>,
+    present: std::rc::Rc<std::cell::Cell<bool>>,
+    urls: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    launch_hidden: bool,
+    fallback_scheduled: std::cell::Cell<bool>,
+}
+
+impl NativeActivation {
+    fn ready(&self, app: &adw::Application, result: Result<NativeStartup, String>) {
+        *self.state.borrow_mut() = Some(result);
+        if self.requested.get() {
+            // Replaying the first activation must preserve a hidden launch.
+            self.requested.set(false);
+            app.activate();
+        }
+    }
+
+    fn activate(&self, app: &adw::Application, grace: std::time::Duration) {
+        // A second activation (including a tray click) must reveal even a hidden launch.
+        if self.requested.replace(true) {
+            self.present.set(true);
+        }
+        let mut state = self.state.borrow_mut();
+        let Some(result) = state.as_mut() else {
+            return;
+        };
+        match result {
+            Ok(startup) => {
+                build_window(
+                    app,
+                    theme::ThemeController::new(),
+                    startup.broker.clone(),
+                    startup.bridge.clone(),
+                    &mut startup.window,
+                    self.present.get(),
+                );
+                schedule_hidden_fallback(
+                    app,
+                    self.launch_hidden,
+                    self.present.get(),
+                    &self.fallback_scheduled,
+                    grace,
+                );
+                for uri in self.urls.borrow_mut().drain(..) {
+                    if let Some(action) = app.lookup_action("open-share-url") {
+                        action.activate(Some(&uri.to_variant()));
+                    }
+                }
+            }
+            Err(error) => show_registry_startup_failure(app, error),
+        }
+    }
 }
 
 /// Called after the window exists, regardless of startup/activation ordering.
@@ -10886,34 +10909,77 @@ mod tests {
     #[ignore = "requires an isolated GTK desktop without a tray host; run in omabox"]
     fn hidden_fallback_handles_both_startup_activation_orders() {
         use super::*;
+        let data = crate::registry::DataDirTestEnv::new("gtk-startup-activation-orders");
+        std::fs::write(data.dir.join("gtk-onboarding-complete"), "complete").unwrap();
         adw::init().unwrap();
-        let app = adw::Application::builder()
-            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
-            .build();
-        app.register(gtk::gio::Cancellable::NONE).unwrap();
         gtk::glib::MainContext::default().block_on(async {
             for activate_first in [true, false] {
-                let scheduled = std::cell::Cell::new(false);
-                // Early activation defers construction until the worker result;
-                // late activation constructs immediately. Both schedule here.
+                let app = adw::Application::builder()
+                    .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+                    .build();
+                app.register(gtk::gio::Cancellable::NONE).unwrap();
+                let activation = std::rc::Rc::new(NativeActivation {
+                    state: Default::default(),
+                    requested: Default::default(),
+                    present: Default::default(),
+                    urls: Default::default(),
+                    launch_hidden: true,
+                    fallback_scheduled: std::cell::Cell::new(false),
+                });
+                let handler = activation.clone();
+                app.connect_activate(move |app| {
+                    handler.activate(app, std::time::Duration::from_millis(80));
+                });
                 if activate_first {
-                    gtk::glib::timeout_future(std::time::Duration::from_millis(10)).await;
+                    app.activate();
+                    assert!(activation.requested.get());
+                    assert!(
+                        app.windows().is_empty(),
+                        "early activation queues until readiness"
+                    );
                 }
-                let window = adw::ApplicationWindow::builder().application(&app).build();
-                assert!(!window.is_visible());
-                schedule_hidden_fallback(
+                activation.ready(
                     &app,
-                    true,
-                    false,
-                    &scheduled,
-                    std::time::Duration::from_millis(80),
+                    Ok(NativeStartup {
+                        window: WindowStartup {
+                            paired: false,
+                            saved_state: None,
+                            removed: Vec::new(),
+                            access_notice: false,
+                            recovery: None,
+                            writers: Vec::new(),
+                        },
+                        broker: crate::approval_broker::start_native(),
+                        bridge: http_bridge::BridgeController::default(),
+                    }),
                 );
+                if !activate_first {
+                    assert!(
+                        app.windows().is_empty(),
+                        "readiness waits for the first activation"
+                    );
+                    app.activate();
+                }
+                let window = app.windows().into_iter().next().unwrap();
+                assert!(
+                    !window.is_visible(),
+                    "both orders preserve the initial hidden launch"
+                );
+                assert!(activation.fallback_scheduled.get());
                 gtk::glib::timeout_future(std::time::Duration::from_millis(150)).await;
                 assert!(
                     window.is_visible(),
-                    "no tray host must reveal a hidden launch"
+                    "no tray host must reveal either activation order"
                 );
-                window.close();
+                window.destroy();
+                if let Some(Ok(startup)) = activation.state.borrow_mut().take() {
+                    for writer in startup.window.writers {
+                        writer.finish();
+                    }
+                    startup.bridge.shutdown();
+                    startup.broker.clear_endpoint();
+                }
+                gtk::glib::timeout_future(std::time::Duration::from_millis(50)).await;
             }
         });
     }
