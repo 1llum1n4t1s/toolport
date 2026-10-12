@@ -10583,7 +10583,10 @@ fn effective_quarantine(
         integrity::review_quarantined_checked(profile)
     };
     match stored {
-        Ok(set) => {
+        Ok(mut set) => {
+            // A rowless legacy review may be disabled or outside the checked
+            // catalog. Keep its pin enforced before a policy edit can enable it.
+            set.extend(integrity::definition_review_names(profile));
             // Recovered: let a future failure warn again.
             read_failed.store(false, Ordering::SeqCst);
             Some(set)
