@@ -1126,7 +1126,11 @@ pub fn delete_profile(profile_id: &str) -> Result<Registry, String> {
 /// Both desktop shells call this after committing deletion. Cleanup failures
 /// cannot undo the saved registry or turn a successful deletion into an error.
 pub fn cleanup_deleted_profile_reviews(profile_id: &str, registry: &Registry) {
-    if let Err(error) = crate::integrity::reconcile_definition_reviews(Some(profile_id), registry, &Default::default()) {
+    if let Err(error) = crate::integrity::reconcile_definition_reviews(
+        Some(profile_id),
+        registry,
+        &Default::default(),
+    ) {
         eprintln!("toolport: profile deleted, but pending review cleanup failed: {error}");
     }
 }

@@ -3968,7 +3968,9 @@ impl ActivityPage {
 
     fn accept_security(&self, events: Vec<serde_json::Value>) {
         if events.iter().any(|event| event["review_required"] == true) {
-            if let Some(action) = self.app.lookup_action("review-quarantine") { action.activate(None); }
+            if let Some(action) = self.app.lookup_action("review-quarantine") {
+                action.activate(None);
+            }
             return;
         }
         let keys = events.iter().map(security_dismissal_key).collect();
@@ -4515,11 +4517,11 @@ fn security_status_detail(events: &[serde_json::Value]) -> &'static str {
 fn change_can_be_accepted(event: &serde_json::Value) -> bool {
     event["review_required"] != true
         && (event["blocked"] == false
-        || (event["blocked"] == true
-            && event["new_fp"].is_string()
-            && event["blocked_profiles"]
-                .as_array()
-                .is_some_and(|profiles| !profiles.is_empty())))
+            || (event["blocked"] == true
+                && event["new_fp"].is_string()
+                && event["blocked_profiles"]
+                    .as_array()
+                    .is_some_and(|profiles| !profiles.is_empty())))
 }
 
 fn group_can_be_accepted(group: &crate::integrity::ToolChangeGroup) -> bool {
@@ -4607,7 +4609,10 @@ fn tool_change_group_card(
         .filter(|event| event["blocked"] == true)
         .count();
     let unknown = group.tools.iter().any(|event| event["blocked"].is_null());
-    let review_required = group.tools.iter().any(|event| event["review_required"] == true);
+    let review_required = group
+        .tools
+        .iter()
+        .any(|event| event["review_required"] == true);
     let status = if review_required {
         "Review the captured definition in Settings before accepting it.".to_string()
     } else if blocked > 0 {
@@ -4753,7 +4758,9 @@ fn security_notice_card(
             .borrow_mut()
             .remove(&expansion_key_for_dismiss);
         if review_required {
-            if let Some(action) = page_for_dismiss.app.lookup_action("review-quarantine") { action.activate(None); }
+            if let Some(action) = page_for_dismiss.app.lookup_action("review-quarantine") {
+                action.activate(None);
+            }
         } else if is_change {
             page_for_dismiss.accept_security(vec![accepted_event.clone()]);
         } else {
@@ -4859,7 +4866,9 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
 
     if event_type == "tool_drift" {
         if event["review_required"] == true {
-            lines.push("Review the captured definition in Settings before accepting it.".to_string());
+            lines.push(
+                "Review the captured definition in Settings before accepting it.".to_string(),
+            );
         }
         if let Some(parameters) = event.get("parameters") {
             for (key, label) in [
@@ -11425,7 +11434,9 @@ mod tests {
     fn captured_activity_review_routes_to_settings_without_release() {
         let _data = crate::registry::DataDirTestEnv::new("gtk-captured-activity-routing");
         adw::init().unwrap();
-        let app = adw::Application::builder().application_id("com.toolport.DriftReviewTest").build();
+        let app = adw::Application::builder()
+            .application_id("com.toolport.DriftReviewTest")
+            .build();
         app.register(None::<&gtk::gio::Cancellable>).unwrap();
         let reviewed = std::rc::Rc::new(std::cell::Cell::new(0));
         let calls = reviewed.clone();
@@ -11436,7 +11447,10 @@ mod tests {
         let event = serde_json::json!({"type":"tool_drift", "server":"srv", "tool":"srv__update", "ts":100, "change":"changed", "blocked":true, "blocked_profiles":["work"], "new_fp":"v3:captured", "review_required":true});
         let group = crate::integrity::group_tool_changes(&[event.clone()]).remove(0);
         let card = tool_change_group_card(&group, page.clone());
-        let window = adw::ApplicationWindow::builder().application(&app).content(&card).build();
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .content(&card)
+            .build();
         let mut child = card.first_child();
         let mut found = false;
         while let Some(widget) = child {
@@ -11465,7 +11479,9 @@ mod tests {
         assert!(!change_can_be_accepted(&event));
         let group = crate::integrity::group_tool_changes(&[event.clone()]).remove(0);
         assert!(!group_can_be_accepted(&group));
-        assert!(security_review_lines(&event).iter().any(|line| line.contains("Review the captured definition in Settings")));
+        assert!(security_review_lines(&event)
+            .iter()
+            .any(|line| line.contains("Review the captured definition in Settings")));
     }
 
     #[test]

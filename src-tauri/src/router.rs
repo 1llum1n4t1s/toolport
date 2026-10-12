@@ -1868,9 +1868,16 @@ impl Router {
                         .clone()
                 })
             })
-            .chain(self.restored_candidates.iter().filter(|tool| visible(&tool.server)).map(|tool| {
-                tool.policy_name.clone().unwrap_or_else(|| tool.exposed.clone())
-            }))
+            .chain(
+                self.restored_candidates
+                    .iter()
+                    .filter(|tool| visible(&tool.server))
+                    .map(|tool| {
+                        tool.policy_name
+                            .clone()
+                            .unwrap_or_else(|| tool.exposed.clone())
+                    }),
+            )
             .collect()
     }
 
@@ -1880,13 +1887,23 @@ impl Router {
         self.integrity_candidate_names_for(|_| true)
     }
 
-    pub fn integrity_candidate_names_for(&self, visible: impl Fn(&str) -> bool) -> BTreeSet<String> {
-        self.tool_owners.iter().filter(|(name, server)| {
-            visible(server) && self.blocked.get(*name).is_none_or(|reason| matches!(reason.as_str(),
+    pub fn integrity_candidate_names_for(
+        &self,
+        visible: impl Fn(&str) -> bool,
+    ) -> BTreeSet<String> {
+        self.tool_owners
+            .iter()
+            .filter(|(name, server)| {
+                visible(server)
+                    && self.blocked.get(*name).is_none_or(|reason| {
+                        matches!(reason.as_str(),
                 "quarantined after a high-risk change; re-approve to restore" |
                 "quarantine store unreadable; catalog blocked until the store reads"
-            ))
-        }).map(|(name, _)| self.policy_name(name).to_string()).collect()
+            )
+                    })
+            })
+            .map(|(name, _)| self.policy_name(name).to_string())
+            .collect()
     }
 
     pub fn policy_catalog(&self, tools: &SharedTools) -> SharedTools {
@@ -7236,11 +7253,17 @@ for line in sys.stdin:
                     .unwrap()["new_fp"]
                     .as_str()
                     .unwrap();
-                assert!(crate::integrity::release_definition(profile, "srv__echo", reviewed_fp).is_err());
-                let captured = crate::integrity::quarantine_list(profile).into_iter()
-                    .find(|record| record["tool"] == "srv__echo").unwrap();
+                assert!(
+                    crate::integrity::release_definition(profile, "srv__echo", reviewed_fp)
+                        .is_err()
+                );
+                let captured = crate::integrity::quarantine_list(profile)
+                    .into_iter()
+                    .find(|record| record["tool"] == "srv__echo")
+                    .unwrap();
                 let id = crate::integrity::quarantine_record_id(&captured);
-                let definition = crate::integrity::quarantine_definition(profile, "srv__echo", &id).unwrap();
+                let definition =
+                    crate::integrity::quarantine_definition(profile, "srv__echo", &id).unwrap();
                 assert_eq!(definition["name"], "srv__echo");
                 assert!(crate::integrity::release_record(profile, "srv__echo", &id).unwrap());
                 router.requarantine(crate::integrity::quarantined(profile).unwrap());
@@ -8572,11 +8595,18 @@ for line in sys.stdin:
         let _data = crate::registry::DataDirTestEnv::new("review-presence-policy-hidden");
         let mut policy = ToolPolicy::default();
         policy.quarantined.insert("github__echo".into());
-        policy.disabled.insert("github".into(), ["add".into()].into_iter().collect());
+        policy
+            .disabled
+            .insert("github".into(), ["add".into()].into_iter().collect());
         let mut router = Router::with_policy(policy);
         router.add(mock_server("github"));
         assert!(router.shared_tools().is_empty());
-        assert_eq!(router.indexed_policy_names(), ["github__echo".into(), "github__add".into()].into_iter().collect());
+        assert_eq!(
+            router.indexed_policy_names(),
+            ["github__echo".into(), "github__add".into()]
+                .into_iter()
+                .collect()
+        );
     }
 
     #[test]

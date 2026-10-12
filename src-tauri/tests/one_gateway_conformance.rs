@@ -2560,29 +2560,67 @@ fn retired_review_off_store_failure(failed_store: &str) {
     let _data_lock = registry::data_dir_test_lock();
     let (_fixture, dir) = Fixture::new("retired-review-store-failure");
     let _data_dir = registry::DataDirOverride::set(&dir);
-    write_registry(&dir, vec![mock_server_entry("files", &dir.join("downstream.jsonl"), None)], vec![]);
+    write_registry(
+        &dir,
+        vec![mock_server_entry(
+            "files",
+            &dir.join("downstream.jsonl"),
+            None,
+        )],
+        vec![],
+    );
     let path = dir.join("registry.json");
     let mut reg = registry::load_from(&path).unwrap();
     reg.set_safety_level(registry::SafetyLevel::Off);
     registry::save_to(&path, &reg).unwrap();
     let name = "files__echo";
-    let tools = vec![json!({"name":name, "description":"Unseen definition.", "inputSchema":{"type":"object"}})];
+    let tools = vec![
+        json!({"name":name, "description":"Unseen definition.", "inputSchema":{"type":"object"}}),
+    ];
     let mut failed_locks = Vec::new();
     for scope in [None, reg.active_profile_id.as_deref()] {
         conduit_lib::integrity::check(scope, &tools).unwrap();
-        let quarantine = scope.map(|p| format!("quarantine-v2-{}.json", registry::profile_store_key(p))).unwrap_or_else(|| "quarantine.json".into());
-        let pins = scope.map(|p| format!("tool-pins-v2-{}.json", registry::profile_store_key(p))).unwrap_or_else(|| "tool-pins.json".into());
-        std::fs::write(dir.join(&quarantine), json!({name:{"tool":name, "change":"changed"}}).to_string()).unwrap();
+        let quarantine = scope
+            .map(|p| format!("quarantine-v2-{}.json", registry::profile_store_key(p)))
+            .unwrap_or_else(|| "quarantine.json".into());
+        let pins = scope
+            .map(|p| format!("tool-pins-v2-{}.json", registry::profile_store_key(p)))
+            .unwrap_or_else(|| "tool-pins.json".into());
+        std::fs::write(
+            dir.join(&quarantine),
+            json!({name:{"tool":name, "change":"changed"}}).to_string(),
+        )
+        .unwrap();
         let displayed = conduit_lib::integrity::quarantine_list(scope).remove(0);
-        conduit_lib::integrity::release_record(scope, name, &conduit_lib::integrity::quarantine_record_id(&displayed)).unwrap();
+        conduit_lib::integrity::release_record(
+            scope,
+            name,
+            &conduit_lib::integrity::quarantine_record_id(&displayed),
+        )
+        .unwrap();
         let events = conduit_lib::integrity::check_staged(scope, &tools).unwrap();
         conduit_lib::integrity::apply_quarantine(scope, &tools, &events).unwrap();
         conduit_lib::integrity::accept_quarantined_pins(scope).unwrap();
         // The server was deleted, then re-added before this daemon starts.
-        conduit_lib::integrity::reconcile_definition_reviews(scope, &Registry::default(), &Default::default()).unwrap();
+        conduit_lib::integrity::reconcile_definition_reviews(
+            scope,
+            &Registry::default(),
+            &Default::default(),
+        )
+        .unwrap();
         assert!(!conduit_lib::integrity::pending_definition_review(scope));
-        std::fs::write(dir.join(&quarantine), json!({"files__add":{"tool":"files__add", "change":"changed"}}).to_string()).unwrap();
-        let lock = dir.join(if failed_store == "pins" { pins } else { quarantine }).with_extension("json.lock");
+        std::fs::write(
+            dir.join(&quarantine),
+            json!({"files__add":{"tool":"files__add", "change":"changed"}}).to_string(),
+        )
+        .unwrap();
+        let lock = dir
+            .join(if failed_store == "pins" {
+                pins
+            } else {
+                quarantine
+            })
+            .with_extension("json.lock");
         std::fs::remove_file(&lock).unwrap();
         std::fs::create_dir(&lock).unwrap();
         failed_locks.push(lock);
@@ -2591,37 +2629,74 @@ fn retired_review_off_store_failure(failed_store: &str) {
     client.initialize("matrix-retired-review-store-failure");
     client.wait_for_tool("files__add", Duration::from_secs(30));
     for _ in 0..2 {
-        assert!(!client.tool_names().contains(&name.to_string()), "Off published an unseen return after {failed_store} failure");
-        assert_eq!(client.call_tool(name, json!({"text":"unreviewed"}))["isError"], true);
-        assert_eq!(client.call_tool("toolport_call_tool", json!({"name":name, "arguments":{"text":"unreviewed"}}))["isError"], true);
-        assert_eq!(client.call_tool("files__add", json!({"a":1,"b":2}))["isError"], false);
+        assert!(
+            !client.tool_names().contains(&name.to_string()),
+            "Off published an unseen return after {failed_store} failure"
+        );
+        assert_eq!(
+            client.call_tool(name, json!({"text":"unreviewed"}))["isError"],
+            true
+        );
+        assert_eq!(
+            client.call_tool(
+                "toolport_call_tool",
+                json!({"name":name, "arguments":{"text":"unreviewed"}})
+            )["isError"],
+            true
+        );
+        assert_eq!(
+            client.call_tool("files__add", json!({"a":1,"b":2}))["isError"],
+            false
+        );
         std::thread::sleep(Duration::from_millis(1200));
     }
-    for lock in failed_locks { std::fs::remove_dir(lock).unwrap(); }
+    for lock in failed_locks {
+        std::fs::remove_dir(lock).unwrap();
+    }
     let deadline = Instant::now() + Duration::from_secs(10);
     let captured = loop {
         assert!(!client.tool_names().contains(&name.to_string()));
-        let records: Vec<_> = conduit_lib::integrity::all_quarantined_summaries().unwrap().into_iter()
-            .filter(|record| record["tool"] == name).collect();
-        if !records.is_empty() && records.iter().all(|record| {
-            record["has_definition"] == true && record["definition_fp"].is_string()
-        }) { break records; }
-        assert!(Instant::now() < deadline, "store recovery did not recapture the review\n{}", client.diagnostics());
+        let records: Vec<_> = conduit_lib::integrity::all_quarantined_summaries()
+            .unwrap()
+            .into_iter()
+            .filter(|record| record["tool"] == name)
+            .collect();
+        if !records.is_empty()
+            && records.iter().all(|record| {
+                record["has_definition"] == true && record["definition_fp"].is_string()
+            })
+        {
+            break records;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "store recovery did not recapture the review\n{}",
+            client.diagnostics()
+        );
         std::thread::sleep(Duration::from_millis(25));
     };
     let full = conduit_lib::integrity::all_quarantined().unwrap();
     for record in captured {
-        assert!(full.iter().any(|finding| finding["record_id"] == record["record_id"]
-            && finding["profile"] == record["profile"] && finding["review_required"] == true));
+        assert!(full
+            .iter()
+            .any(|finding| finding["record_id"] == record["record_id"]
+                && finding["profile"] == record["profile"]
+                && finding["review_required"] == true));
         let scope = record["profile"].as_str().unwrap();
         let definition = conduit_lib::integrity::quarantine_definition(
-            (!scope.is_empty()).then_some(scope), name, record["record_id"].as_str().unwrap(),
-        ).unwrap();
+            (!scope.is_empty()).then_some(scope),
+            name,
+            record["record_id"].as_str().unwrap(),
+        )
+        .unwrap();
         assert_eq!(definition["name"], name);
         approve_displayed_quarantine(&record).unwrap();
     }
     client.wait_for_tool(name, Duration::from_secs(10));
-    assert_eq!(client.call_tool(name, json!({"text":"approved"}))["isError"], false);
+    assert_eq!(
+        client.call_tool(name, json!({"text":"approved"}))["isError"],
+        false
+    );
 }
 
 #[test]
@@ -2630,42 +2705,103 @@ fn matrix_disabled_server_keeps_pending_review_identity() {
     let _data_lock = registry::data_dir_test_lock();
     let (_fixture, dir) = Fixture::new("review-disabled-server");
     let _data_dir = registry::DataDirOverride::set(&dir);
-    write_registry(&dir, vec![mock_server_entry("files", &dir.join("downstream.jsonl"), None)], vec![]);
+    write_registry(
+        &dir,
+        vec![mock_server_entry(
+            "files",
+            &dir.join("downstream.jsonl"),
+            None,
+        )],
+        vec![],
+    );
     let path = dir.join("registry.json");
     let reg = registry::load_from(&path).unwrap();
     let name = "files__echo";
-    let tools = vec![json!({"name":name, "description":"Preview-era echo", "inputSchema":{"type":"object"}})];
+    let tools = vec![
+        json!({"name":name, "description":"Preview-era echo", "inputSchema":{"type":"object"}}),
+    ];
     for scope in [None, reg.active_profile_id.as_deref()] {
         conduit_lib::integrity::check(scope, &tools).unwrap();
-        let quarantine = scope.map(|p| format!("quarantine-v2-{}.json", registry::profile_store_key(p))).unwrap_or_else(|| "quarantine.json".into());
-        std::fs::write(dir.join(quarantine), json!({name:{"tool":name, "change":"changed"}}).to_string()).unwrap();
+        let quarantine = scope
+            .map(|p| format!("quarantine-v2-{}.json", registry::profile_store_key(p)))
+            .unwrap_or_else(|| "quarantine.json".into());
+        std::fs::write(
+            dir.join(quarantine),
+            json!({name:{"tool":name, "change":"changed"}}).to_string(),
+        )
+        .unwrap();
         let displayed = conduit_lib::integrity::quarantine_list(scope).remove(0);
-        conduit_lib::integrity::release_record(scope, name, &conduit_lib::integrity::quarantine_record_id(&displayed)).unwrap();
+        conduit_lib::integrity::release_record(
+            scope,
+            name,
+            &conduit_lib::integrity::quarantine_record_id(&displayed),
+        )
+        .unwrap();
     }
     let mut client = spawn_adapter(&dir, &AdapterOptions::default());
     client.initialize("matrix-review-disabled-server");
     client.wait_for_tool("files__add", Duration::from_secs(30));
     assert!(!client.tool_names().contains(&name.to_string()));
-    let displayed: Vec<_> = conduit_lib::integrity::all_quarantined_summaries().unwrap().into_iter()
-        .filter(|record| record["tool"] == name).collect();
+    let displayed: Vec<_> = conduit_lib::integrity::all_quarantined_summaries()
+        .unwrap()
+        .into_iter()
+        .filter(|record| record["tool"] == name)
+        .collect();
     assert!(!displayed.is_empty());
-    assert!(displayed.iter().all(|record| record["has_definition"] == true));
-    registry::update(|reg| { reg.servers.iter_mut().find(|s| s.id == "files").unwrap().enabled = false; Ok(()) }).unwrap();
+    assert!(displayed
+        .iter()
+        .all(|record| record["has_definition"] == true));
+    registry::update(|reg| {
+        reg.servers
+            .iter_mut()
+            .find(|s| s.id == "files")
+            .unwrap()
+            .enabled = false;
+        Ok(())
+    })
+    .unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
-    while client.tool_names().iter().any(|name| name.starts_with("files__")) {
-        assert!(Instant::now() < deadline, "disabled server remained exposed\n{}", client.diagnostics());
+    while client
+        .tool_names()
+        .iter()
+        .any(|name| name.starts_with("files__"))
+    {
+        assert!(
+            Instant::now() < deadline,
+            "disabled server remained exposed\n{}",
+            client.diagnostics()
+        );
         std::thread::sleep(Duration::from_millis(25));
     }
     let after = conduit_lib::integrity::all_quarantined_summaries().unwrap();
     for record in &displayed {
-        assert!(after.iter().any(|next| next["record_id"] == record["record_id"] && next["profile"] == record["profile"]), "disabled server retired an open Settings review");
+        assert!(
+            after
+                .iter()
+                .any(|next| next["record_id"] == record["record_id"]
+                    && next["profile"] == record["profile"]),
+            "disabled server retired an open Settings review"
+        );
     }
-    registry::update(|reg| { reg.servers.iter_mut().find(|s| s.id == "files").unwrap().enabled = true; Ok(()) }).unwrap();
+    registry::update(|reg| {
+        reg.servers
+            .iter_mut()
+            .find(|s| s.id == "files")
+            .unwrap()
+            .enabled = true;
+        Ok(())
+    })
+    .unwrap();
     client.wait_for_tool("files__add", Duration::from_secs(30));
     assert!(!client.tool_names().contains(&name.to_string()));
-    for record in displayed { approve_displayed_quarantine(&record).unwrap(); }
+    for record in displayed {
+        approve_displayed_quarantine(&record).unwrap();
+    }
     client.wait_for_tool(name, Duration::from_secs(10));
-    assert_eq!(client.call_tool(name, json!({"text":"approved"}))["isError"], false);
+    assert_eq!(
+        client.call_tool(name, json!({"text":"approved"}))["isError"],
+        false
+    );
 }
 
 #[test]
