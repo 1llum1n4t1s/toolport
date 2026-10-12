@@ -72,6 +72,9 @@ struct Pin {
     /// A released legacy block must be reviewed again against a live definition.
     #[serde(default)]
     review_on_upgrade: bool,
+    /// The captured definition still awaits the user's bound second approval.
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    review_pending: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parameters: Option<BTreeMap<String, String>>,
     /// `readOnlyHint` at pin time, if the tool advertised one.
@@ -115,6 +118,10 @@ enum PinRepr {
     Legacy(String),
 }
 
+fn bool_is_false(value: &bool) -> bool {
+    !value
+}
+
 impl From<PinRepr> for Pin {
     fn from(r: PinRepr) -> Self {
         match r {
@@ -122,6 +129,7 @@ impl From<PinRepr> for Pin {
             PinRepr::Legacy(fp) => Pin {
                 fp,
                 review_on_upgrade: false,
+                review_pending: false,
                 parameters: None,
                 ro: None,
                 dh: None,
@@ -155,6 +163,7 @@ fn pin_with_source(tool: &Value, source_input_schema: Option<&str>) -> Pin {
     Pin {
         fp: pin_fingerprint(tool, &parts),
         review_on_upgrade: false,
+        review_pending: false,
         parameters: Some(input_parameters(tool)),
         ro: read_hint(tool, "readOnlyHint"),
         dh: read_hint(tool, "destructiveHint"),
@@ -971,9 +980,12 @@ fn accept_quarantined_pins_with(
                 // because their baseline was already advanced before quarantine was written.
                 continue;
             };
-            let pin = serde_json::from_value::<Pin>(value).map_err(|_| {
+            let mut pin = serde_json::from_value::<Pin>(value).map_err(|_| {
                 format!("The quarantine record for {name} has an invalid captured pin")
             })?;
+            // Pin acceptance records the captured baseline, not user approval.
+            // Retain the explicit review even if the quarantine store later fails.
+            pin.review_pending = record["review_required"] == true;
             pending.push((name.clone(), pin));
         }
         if pending.is_empty() {
@@ -1574,7 +1586,7 @@ pub fn mandatory_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<S
 
 /// Explicit definition reviews survive every safety level, including Off.
 pub fn review_quarantined(profile: Option<&str>) -> Result<BTreeSet<String>, String> {
-    Ok(review_quarantine_set(&load_quarantine(profile)?))
+    off_review_read(profile, load_quarantine(profile).map(|q| review_quarantine_set(&q)))
 }
 
 pub fn review_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<String>, String> {
@@ -1582,9 +1594,27 @@ pub fn review_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<Stri
         return Ok(BTreeSet::new());
     };
     if profile.is_some_and(|id| crate::registry::unmigrated_legacy_profile_store(id, false)) {
-        return Err("The quarantine store was not migrated; retaining pending reviews".into());
+        return off_review_read(profile, Err("The quarantine store was not migrated; retaining pending reviews".into()));
     }
-    Ok(quarantined_sets_checked_at(&path, profile)?.2)
+    off_review_read(profile, quarantined_sets_checked_at(&path, profile).map(|sets| sets.2))
+}
+
+/// A release awaiting its captured definition stays pending until bound approval.
+pub fn pending_definition_review(profile: Option<&str>) -> bool {
+    match load_pins(profile) {
+        PinsLoad::Loaded(pins) => pins.values().any(|pin| pin.review_on_upgrade || pin.review_pending),
+        _ => false,
+    }
+}
+
+// Off ignores ordinary store errors, but an explicit pending review fails closed.
+fn off_review_read(
+    profile: Option<&str>, read: Result<BTreeSet<String>, String>,
+) -> Result<BTreeSet<String>, String> {
+    match read {
+        Err(_) if !pending_definition_review(profile) => Ok(BTreeSet::new()),
+        result => result,
+    }
 }
 
 fn review_quarantine_set(q: &Quarantine) -> BTreeSet<String> {
@@ -2148,6 +2178,7 @@ fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, reviewed
     let pin = pins.entry(tool.to_string()).or_insert_with(|| Pin {
         fp: "released-without-baseline".to_string(),
         review_on_upgrade: true,
+        review_pending: true,
         parameters: None,
         ro: None,
         dh: None,
@@ -2155,9 +2186,8 @@ fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, reviewed
         first_seen: stamp,
         last_changed: stamp,
     });
-    if !reviewed || fp_version(&pin.fp) != PIN_FP_VERSION {
-        pin.review_on_upgrade = true;
-    }
+    pin.review_on_upgrade = !reviewed || fp_version(&pin.fp) != PIN_FP_VERSION;
+    pin.review_pending = !reviewed;
 }
 
 /// How a bulk re-approval went: how many blocks were lifted, and the tools that
@@ -5666,6 +5696,36 @@ mod tests {
     }
 
     #[test]
+    fn pending_review_survives_pin_acceptance_and_store_failure_until_bound_approval() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("pending-review-store-failure");
+        for profile in [None, Some("work")] {
+            let tools = vec![destructive_tool("srv__wipe", "Captured definition.")];
+            save_pins(profile, &BTreeMap::from([("srv__wipe".into(), pin_of(&tools[0]))])).unwrap();
+            let path = quarantine_path(profile).unwrap();
+            std::fs::write(&path, "corrupt").unwrap();
+            assert!(review_quarantined(profile).unwrap().is_empty(), "ordinary Off errors must not block");
+            assert!(review_quarantined_checked(profile).unwrap().is_empty());
+            let old = json!({"tool":"srv__wipe", "change":"changed"});
+            save_quarantine(profile, &BTreeMap::from([("srv__wipe".into(), old.clone())])).unwrap();
+            release_record(profile, "srv__wipe", &quarantine_record_id(&old)).unwrap();
+            let events = check_staged(profile, &tools).unwrap();
+            apply_quarantine(profile, &tools, &events).unwrap();
+            accept_quarantined_pins(profile).unwrap();
+            assert!(matches!(load_pins(profile), PinsLoad::Loaded(pins) if pins["srv__wipe"].review_pending), "pin acceptance must not consume user review");
+            let captured = load_quarantine(profile).unwrap();
+            std::fs::write(&path, "corrupt").unwrap();
+            assert!(review_quarantined(profile).is_err(), "pending review must fail closed even at Off");
+            assert!(review_quarantined_checked(profile).is_err());
+            save_quarantine(profile, &captured).unwrap();
+            let id = quarantine_record_id(&captured["srv__wipe"]);
+            assert!(release_record(profile, "srv__wipe", &id).unwrap());
+            assert!(matches!(load_pins(profile), PinsLoad::Loaded(pins) if !pins["srv__wipe"].review_on_upgrade && !pins["srv__wipe"].review_pending));
+            assert!(check_staged(profile, &tools).unwrap().is_empty(), "second approval must end the review");
+        }
+    }
+
+    #[test]
     fn release_all_requires_review_for_legacy_pending_pins() {
         let _data_dir_lock = crate::registry::data_dir_test_lock();
         let _data_dir = TestDataDir::new("release-all-legacy-pending");
@@ -8250,6 +8310,7 @@ mod tests {
         let old = Pin {
             fp: "v1:old".into(),
             review_on_upgrade: false,
+            review_pending: false,
             parameters: None,
             ro: Some(true),
             dh: None,
@@ -8732,6 +8793,7 @@ mod tests {
         Pin {
             fp: fp.to_string(),
             review_on_upgrade: false,
+            review_pending: false,
             parameters: None,
             ro: None,
             dh: None,

@@ -10311,7 +10311,7 @@ fn maybe_check_integrity(
             r.quarantine_on_drift_effective(),
         )
     };
-    let mut review_required = false;
+    let mut review_required = integrity::pending_definition_review(profile);
     let result = (|| {
         #[cfg(test)]
         observe_integrity_gate();
@@ -10327,7 +10327,7 @@ fn maybe_check_integrity(
                 .collect();
             (e, all)
         })?;
-        review_required = events.iter().any(|event| event["review_required"] == true);
+        review_required |= events.iter().any(|event| event["review_required"] == true);
         // A previous cycle may have persisted quarantine and then failed (or exited) before
         // advancing the corresponding pins. Recover from those durable records without depending on
         // the filtered catalog. Do this after `check_staged` so a corrupt pin store still takes the
@@ -10362,7 +10362,12 @@ fn maybe_check_integrity(
             // recover even after the router filters the quarantined tool from its next catalog.
             integrity::accept_quarantined_pins(profile).map_err(|e| (e, pending.clone()))?;
             if !enforce_drift {
-                integrity::accept_staged_pins(profile, tools, &events).map_err(|e| (e, pending.clone()))?;
+                let ordinary: Vec<_> = events
+                    .iter()
+                    .filter(|event| event["review_required"] != true)
+                    .cloned()
+                    .collect();
+                integrity::accept_staged_pins(profile, tools, &ordinary).map_err(|e| (e, pending.clone()))?;
             }
             Ok((!pending.is_empty()).then_some(pending))
         } else {
