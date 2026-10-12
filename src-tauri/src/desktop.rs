@@ -1091,6 +1091,13 @@ async fn activity_revision() -> Result<String, String> {
         .map_err(|error| format!("Activity revision task failed: {error}"))?
 }
 
+#[tauri::command]
+async fn activity_health() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(crate::observability_controller::activity_health)
+        .await
+        .map_err(|error| format!("Activity health task failed: {error}"))
+}
+
 /// The most recent tool-call audit entries (newest first).
 #[tauri::command]
 async fn get_audit_log(limit: usize) -> Result<Vec<serde_json::Value>, String> {
@@ -4290,6 +4297,7 @@ pub fn run() {
             has_client_secret,
             secret_status,
             activity_revision,
+            activity_health,
             get_audit_log,
             get_client_sessions,
             audit_stats,

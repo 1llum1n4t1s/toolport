@@ -43,6 +43,13 @@ export function getActivityRevision(): Promise<string> {
   return invoke<string>("activity_revision");
 }
 
+/** Bounded live health probe, independent of retained Activity stores. */
+export function getActivityHealth(): Promise<
+  Pick<AuditStats, "telemetry" | "gatewayNotes">
+> {
+  return invoke("activity_health");
+}
+
 /** Recent tool-call audit entries (newest first). */
 export function getAuditLog(limit = 200): Promise<AuditEntry[]> {
   return invoke<AuditEntry[]>("get_audit_log", { limit });

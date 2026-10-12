@@ -34,11 +34,21 @@ pub fn activity_file(name: &str) -> bool {
             | "savings.jsonl"
             | "savings-v2.jsonl"
             | "savings-v3.jsonl"
+            | "savings-v4.jsonl"
             | "registry.json"
             | "client-locations.json"
             | "root-integrity-scopes.json"
     ) || (name.ends_with(".json")
         && (name.starts_with("tool-pins") || name.starts_with("quarantine")))
+}
+
+/// Live health is independent of retained stores. The daemon identity probe is
+/// read-only and bounded to two seconds; this path never reads Activity logs.
+pub fn activity_health() -> serde_json::Value {
+    serde_json::json!({
+        "telemetry": crate::telemetry::activity_health(),
+        "gatewayNotes": crate::daemon::status_notes(),
+    })
 }
 
 /// Cheap fallback for shells without a portable file watcher. No log parsing,
@@ -104,6 +114,35 @@ pub fn activity_revision() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn savings_v4_revision_observes_creation_append_replacement_and_removal() {
+        let data = crate::registry::DataDirTestEnv::new("activity-v4-revision");
+        let empty = activity_revision().unwrap();
+        for name in ["savings-v4.jsonl.lock", "savings-v4.jsonl.bak"] {
+            std::fs::write(data.dir.join(name), "ignored").unwrap();
+        }
+        assert_eq!(activity_revision().unwrap(), empty);
+        let path = data.dir.join("savings-v4.jsonl");
+        std::fs::write(&path, "one").unwrap();
+        let created = activity_revision().unwrap();
+        assert_ne!(created, empty);
+        std::fs::write(&path, "one two").unwrap();
+        let appended = activity_revision().unwrap();
+        assert_ne!(appended, created);
+        let replacement = data.dir.join("replacement");
+        std::fs::write(&replacement, "new two").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_modified(std::fs::metadata(&path).unwrap().modified().unwrap())
+            .unwrap();
+        std::fs::rename(replacement, &path).unwrap();
+        assert_ne!(activity_revision().unwrap(), appended);
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(activity_revision().unwrap(), empty);
+    }
 
     #[test]
     fn activity_revision_observes_appends_rewrites_replacements_and_removal() {

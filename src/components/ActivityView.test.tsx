@@ -9,6 +9,7 @@ let windowVisible = true;
 vi.mock("@/lib/windowVisible", () => ({ useWindowVisible: () => windowVisible }));
 
 const getActivityRevision = vi.fn();
+const getActivityHealth = vi.fn();
 const getAuditLog = vi.fn();
 const getSearchTraces = vi.fn();
 const getSecurityEvents = vi.fn();
@@ -25,6 +26,7 @@ vi.mock("@/lib/api", () => ({
   clearActivityLogs: (...a: unknown[]) => clearActivityLogs(...a),
   exportAuditToPath: vi.fn(),
   getActivityRevision: (...a: unknown[]) => getActivityRevision(...a),
+  getActivityHealth: (...a: unknown[]) => getActivityHealth(...a),
   getAuditLog: (...a: unknown[]) => getAuditLog(...a),
   getAuditStats: (...a: unknown[]) => getAuditStats(...a),
   getInspectLog: (...a: unknown[]) => getInspectLog(...a),
@@ -66,6 +68,15 @@ const refreshedLog = [entry({ ts: 1700000002000, tool: "list_issues" }), ...init
 beforeEach(() => {
   let revision = 0;
   getActivityRevision.mockImplementation(async () => String(revision++));
+  getActivityHealth.mockResolvedValue({
+    telemetry: {
+      queueDropped: 0,
+      writeFailedRecords: 0,
+      writeFailures: 0,
+      incompleteFlushes: 0,
+    },
+    gatewayNotes: [],
+  });
   getAuditStats.mockResolvedValue(null);
   windowVisible = true;
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -165,6 +176,65 @@ it("keeps an idle Activity page unchanged and reads new rows when the revision c
   const revisions = getActivityRevision.mock.calls.length;
   await act(() => vi.advanceTimersByTimeAsync(6000));
   expect(getActivityRevision).toHaveBeenCalledTimes(revisions);
+});
+
+it("refreshes live health without rereading unchanged stores and preserves retained drops", async () => {
+  getActivityRevision.mockResolvedValue("same");
+  getAuditStats.mockResolvedValue({
+    total: 0,
+    errors: 0,
+    errorRate: 0,
+    servers: [],
+    telemetry: {
+      queueDropped: 0,
+      writeFailedRecords: 0,
+      writeFailures: 0,
+      incompleteFlushes: 0,
+      retainedDropped: 7,
+    },
+  });
+  const view = render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  const calls = getAuditLog.mock.calls.length;
+  const stats = getAuditStats.mock.calls.length;
+  getActivityHealth.mockResolvedValue({
+    telemetry: {
+      queueDropped: 3,
+      writeFailedRecords: 2,
+      writeFailures: 1,
+      incompleteFlushes: 0,
+    },
+    gatewayNotes: [],
+  });
+  await act(() => vi.advanceTimersByTimeAsync(15_000));
+  expect(screen.getByText(/3 records dropped/)).toBeInTheDocument();
+  expect(
+    screen.getByText(/7 dropped telemetry records are recorded/),
+  ).toBeInTheDocument();
+  getActivityHealth.mockRejectedValue(new Error("unreachable"));
+  await act(() => vi.advanceTimersByTimeAsync(15_000));
+  expect(screen.getByText(/Gateway telemetry health is unavailable/)).toBeInTheDocument();
+  expect(screen.getByText(/3 records dropped/)).toBeInTheDocument();
+  getActivityHealth.mockResolvedValue({
+    telemetry: {
+      queueDropped: 0,
+      writeFailedRecords: 0,
+      writeFailures: 0,
+      incompleteFlushes: 0,
+    },
+    gatewayNotes: [],
+  });
+  await act(() => vi.advanceTimersByTimeAsync(15_000));
+  expect(
+    screen.queryByText(/Gateway telemetry health is unavailable/),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByText(/3 records dropped/)).not.toBeInTheDocument();
+  expect(getAuditLog).toHaveBeenCalledTimes(calls);
+  expect(getAuditStats).toHaveBeenCalledTimes(stats);
+  view.unmount();
+  const probes = getActivityHealth.mock.calls.length;
+  await act(() => vi.advanceTimersByTimeAsync(30_000));
+  expect(getActivityHealth).toHaveBeenCalledTimes(probes);
 });
 
 describe("ActivityView trust-state loading", () => {

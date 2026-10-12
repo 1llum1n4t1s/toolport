@@ -49,6 +49,7 @@ import {
   clearActivityLogs,
   exportAuditToPath,
   getActivityRevision,
+  getActivityHealth,
   getAuditLog,
   getAuditStats,
   getInspectLog,
@@ -870,7 +871,11 @@ const UNKNOWN_APPROVAL = {
   className: "border-border text-muted-foreground",
 };
 
-export function TelemetryNotice({ stats }: { stats: AuditStats | null }) {
+export function TelemetryNotice({
+  stats,
+}: {
+  stats: Pick<AuditStats, "telemetry" | "gatewayNotes"> | null;
+}) {
   const health = stats?.telemetry;
   const messages = [...(stats?.gatewayNotes ?? [])];
   if (
@@ -1795,6 +1800,49 @@ export function ActivityView({
       clearInterval(id);
     };
   }, [windowVisible]);
+  const [liveHealth, setLiveHealth] = useState<Pick<
+    AuditStats,
+    "telemetry" | "gatewayNotes"
+  > | null>(null);
+  const [healthUnavailable, setHealthUnavailable] = useState(false);
+  const healthChecking = useRef(false);
+  useEffect(() => {
+    if (!windowVisible) return;
+    let alive = true;
+    async function checkHealth() {
+      if (healthChecking.current) return;
+      healthChecking.current = true;
+      try {
+        const health = await getActivityHealth();
+        if (alive) {
+          setLiveHealth(health);
+          setHealthUnavailable(false);
+        }
+      } catch {
+        if (alive) setHealthUnavailable(true);
+      } finally {
+        healthChecking.current = false;
+      }
+    }
+    const id = setInterval(() => void checkHealth(), 15_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [windowVisible]);
+  const noticeHealth = liveHealth ?? stats;
+  const noticeStats = {
+    gatewayNotes: noticeHealth?.gatewayNotes,
+    telemetry: {
+      queueDropped: 0,
+      writeFailedRecords: 0,
+      writeFailures: 0,
+      incompleteFlushes: 0,
+      ...noticeHealth?.telemetry,
+      retainedDropped: stats?.telemetry?.retainedDropped,
+      ...(healthUnavailable ? { unavailable: true } : {}),
+    },
+  };
   // Combined so panels refetch on either a registry change or a live tick. Both counters
   // only increase, so the sum always changes when either does (no collisions).
   const liveKey = refreshKey + liveTick;
@@ -1916,7 +1964,7 @@ export function ActivityView({
 
   const banner = (
     <>
-      <TelemetryNotice stats={stats} />
+      <TelemetryNotice stats={noticeStats} />
       {/* Loud lane: the only thing here that may need a decision. */}
       {securityLoadStatus !== "ready" ? (
         <SecurityLoadNotice status={securityLoadStatus} onRetry={retryLoads} />

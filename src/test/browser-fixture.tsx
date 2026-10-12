@@ -820,6 +820,16 @@ mockIPC(
         }
         return [...grouped.values()];
       }
+      case "activity_health":
+        return {
+          telemetry: {
+            queueDropped: 0,
+            writeFailedRecords: 0,
+            writeFailures: 0,
+            incompleteFlushes: 0,
+          },
+          gatewayNotes: [],
+        };
       case "activity_revision":
         return JSON.stringify([auditRows, driftEvents]);
       case "get_audit_log":

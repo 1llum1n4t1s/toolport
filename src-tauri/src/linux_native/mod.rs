@@ -3410,6 +3410,8 @@ struct ActivityPage {
     loading: std::rc::Rc<std::cell::Cell<bool>>,
     dirty: std::rc::Rc<std::cell::Cell<bool>>,
     revision: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    health_loading: std::rc::Rc<std::cell::Cell<bool>>,
+    health_generation: std::rc::Rc<std::cell::Cell<u64>>,
     recent_rows: RetainedRows<state::ActivityView>,
     stat_rows: RetainedRows<serde_json::Value>,
     /// The last successfully loaded snapshot. Kept so a failed refresh shows a
@@ -3790,6 +3792,8 @@ impl ActivityPage {
             loading: std::rc::Rc::new(std::cell::Cell::new(false)),
             dirty: std::rc::Rc::new(std::cell::Cell::new(true)),
             revision: Default::default(),
+            health_loading: Default::default(),
+            health_generation: Default::default(),
             recent_rows: Default::default(),
             stat_rows: Default::default(),
             last_snapshot: std::rc::Rc::new(std::cell::RefCell::new(None)),
@@ -3957,12 +3961,16 @@ impl ActivityPage {
             },
         );
         let page = self.clone();
+        io::while_mapped(&self.root, 15, move || page.refresh_health());
+        let page = self.clone();
         self.root.connect_map(move |_| page.refresh_quietly());
         let page = self.clone();
         self.root.connect_unmap(move |_| page.release_rows());
     }
 
     fn release_rows(&self) {
+        self.health_generation
+            .set(self.health_generation.get().wrapping_add(1));
         self.dirty.set(true);
         self.last_snapshot.borrow_mut().take();
         self.recent_rows.borrow_mut().clear();
@@ -3997,6 +4005,52 @@ impl ActivityPage {
         self.savings_banner.set_visible(false);
     }
 
+    fn refresh_health(&self) {
+        if self.loading.get()
+            || self.last_snapshot.borrow().is_none()
+            || self.health_loading.replace(true)
+        {
+            return;
+        }
+        let generation = self.health_generation.get();
+        let page = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(|| {
+                crate::telemetry::activity_notices(&crate::telemetry::activity_health())
+            })
+            .await;
+            page.health_loading.set(false);
+            if !page.root.is_mapped() || page.health_generation.get() != generation {
+                return;
+            }
+            let notices = result.unwrap_or_else(|_| vec![
+                "Gateway telemetry health is unavailable. Activity and savings may be incomplete.".into(),
+            ]);
+            page.apply_health_notices(notices);
+        });
+    }
+
+    fn apply_health_notices(&self, notices: Vec<String>) {
+        let mut snapshot = self.last_snapshot.borrow_mut();
+        let Some(snapshot) = snapshot.as_mut() else {
+            return;
+        };
+        if snapshot.telemetry_notices == notices {
+            return;
+        }
+        snapshot.telemetry_notices = notices;
+        // Keep loading, stale-read and action feedback until its owner clears it.
+        if !self.loading.get()
+            && !self.feedback.has_css_class("error")
+            && !self.feedback.has_css_class("success")
+        {
+            self.feedback
+                .set_label(&snapshot.telemetry_notices.join("\n"));
+            self.feedback
+                .set_visible(!snapshot.telemetry_notices.is_empty());
+        }
+    }
+
     fn refresh_quietly(&self) {
         if self.dirty.get() {
             self.refresh_with_feedback(false);
@@ -4004,6 +4058,8 @@ impl ActivityPage {
     }
 
     fn refresh_with_feedback(&self, announce: bool) {
+        self.health_generation
+            .set(self.health_generation.get().wrapping_add(1));
         if self.loading.replace(true) {
             if announce {
                 self.dirty.set(true);
@@ -12081,6 +12137,16 @@ mod tests {
             page.root.measure(gtk::Orientation::Horizontal, -1).0 <= 480,
             "Activity must fit a 480px window with loaded counts"
         );
+        page.apply_health_notices(vec![
+            "Gateway telemetry health is unavailable. Activity and savings may be incomplete."
+                .into(),
+        ]);
+        assert!(page.feedback.text().contains("health is unavailable"));
+        assert_eq!(page.list.first_child().unwrap(), old);
+        assert_eq!(page.stats_list.first_child().unwrap(), stats);
+        page.show_error("retained store unreadable");
+        page.apply_health_notices(Vec::new());
+        assert!(page.feedback.text().contains("Could not refresh"));
         page.render(state::load_activity_snapshot().unwrap());
         assert_eq!(page.list.first_child().unwrap(), old);
         assert_eq!(page.stats_list.first_child().unwrap(), stats);
