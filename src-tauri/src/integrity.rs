@@ -1062,7 +1062,10 @@ fn check_inner_with(
             Pin {
                 first_seen,
                 last_changed,
-                review_pending: pins.get(name).is_some_and(|old| old.review_pending),
+                // Advancing a fingerprint does not approve an upgrade-only review.
+                review_pending: pins
+                    .get(name)
+                    .is_some_and(|old| old.review_pending || old.review_on_upgrade),
                 review_logged_events: pins
                     .get(name)
                     .map(|old| old.review_logged_events.clone())
@@ -6319,9 +6322,15 @@ mod tests {
             // approval when advancing its captured fingerprint.
             let events = check(None, &tools).unwrap();
             assert!(events.iter().any(|event| event["review_required"] == true));
-            assert!(pending_definition_review(None), "upgrade-only review was consumed");
+            assert!(
+                pending_definition_review(None),
+                "upgrade-only review was consumed"
+            );
             assert!(definition_review_names(None).contains("srv__wipe"));
-            assert!(check(None, &tools).unwrap().iter().any(|event| event["review_required"] == true));
+            assert!(check(None, &tools)
+                .unwrap()
+                .iter()
+                .any(|event| event["review_required"] == true));
             apply_quarantine(None, &tools, &events).unwrap();
             accept_quarantined_pins(None).unwrap();
             let record = load_quarantine(None).unwrap()["srv__wipe"].clone();
