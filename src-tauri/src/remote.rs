@@ -4169,7 +4169,7 @@ mod tests {
         );
         let result = refresh_token_if_needed(RESERVED_VAULT_NS);
         assert!(
-            matches!(result, Err(_)),
+            result.is_err(),
             "a failed state read must not skip refresh as if there is no state: {result:?}"
         );
         let err = result.unwrap_err();

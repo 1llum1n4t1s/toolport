@@ -9151,12 +9151,12 @@ fn mtime(path: &Path) -> Option<SystemTime> {
 }
 
 type McpSessions = Arc<Mutex<HashMap<String, Arc<SessionState>>>>;
-type RouteSubscriptions = (Arc<Mutex<ResourceSubscriptionTable>>, Option<Arc<AtomicBool>>);
+type RouteSubscriptions = (
+    Arc<Mutex<ResourceSubscriptionTable>>,
+    Option<Arc<AtomicBool>>,
+);
 
-fn notify_tools_changed(
-    stdio: &SessionState,
-    mcp_sessions: Option<&McpSessions>,
-) {
+fn notify_tools_changed(stdio: &SessionState, mcp_sessions: Option<&McpSessions>) {
     notify_list_changed(stdio, mcp_sessions, "notifications/tools/list_changed");
 }
 
@@ -9272,9 +9272,7 @@ fn visible_changed_list(
     kind: ChangedListKind,
 ) -> Vec<Value> {
     let in_scope = |server: Option<&str>| {
-        allowed.is_none_or(|set| {
-            server.is_some_and(|server| server_in_allowed_scope(server, set))
-        })
+        allowed.is_none_or(|set| server.is_some_and(|server| server_in_allowed_scope(server, set)))
     };
     match kind {
         ChangedListKind::Resources => {
@@ -9476,11 +9474,7 @@ fn drain_stdio_deferred(stdio: &SessionState) {
 /// `stdio` is the gateway's stdio client session. Both the sink it writes to and
 /// the protocol era that decides whether it may write at all are session state,
 /// so one owner holds them instead of two process-wide flags.
-fn notify_list_changed(
-    stdio: &SessionState,
-    mcp_sessions: Option<&McpSessions>,
-    method: &str,
-) {
+fn notify_list_changed(stdio: &SessionState, mcp_sessions: Option<&McpSessions>, method: &str) {
     if let Some(stdout) = stdio.stdio_stdout() {
         if !stdio.is_modern_upstream() {
             let ready = {
@@ -9510,10 +9504,7 @@ fn notify_list_changed(
 /// Queue a server→client JSON-RPC notification on every non-expired MCP session
 /// (SOU-328). Best-effort: a session that cannot take the message drops its copy
 /// and the rest continue, so one stuck client cannot block the others.
-fn fanout_mcp_notification(
-    mcp_sessions: &McpSessions,
-    msg: &Value,
-) {
+fn fanout_mcp_notification(mcp_sessions: &McpSessions, msg: &Value) {
     let sessions: Vec<Arc<SessionState>> = mcp_sessions
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -10030,11 +10021,7 @@ fn handle_resource_subscription(
                                 "resource route changed during subscribe".to_string(),
                             );
                             lead_guard.disarm();
-                            Some(error(
-                                id,
-                                -32602,
-                                "Toolport: resource route changed; retry",
-                            ))
+                            Some(error(id, -32602, "Toolport: resource route changed; retry"))
                         }
                         Ok(_) => {
                             let mut table = subscriptions
@@ -10093,14 +10080,10 @@ fn handle_resource_subscription(
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
                         match table.join_open(&session, uri, &owner) {
                             Ok(()) => Some(success(id, json!({}))),
-                            Err(e) => {
-                                Some(error(id, -32602, &format!("Toolport: {e}")))
-                            }
+                            Err(e) => Some(error(id, -32602, &format!("Toolport: {e}"))),
                         }
                     }
-                    Err(e) => {
-                        Some(error(id, -32602, &format!("Toolport: {e}")))
-                    }
+                    Err(e) => Some(error(id, -32602, &format!("Toolport: {e}"))),
                 },
             }
         }
@@ -10285,8 +10268,9 @@ type IntegrityCheckFailure = (String, BTreeSet<String>);
 /// prove the drifted definition is never published in the first place. Registered and
 /// consumed on one thread, so a parallel test's gate cannot trigger it.
 #[cfg(test)]
-static INTEGRITY_GATE_OBSERVER: Mutex<Option<(std::thread::ThreadId, Box<dyn Fn() + Send + Sync>)>> =
-    Mutex::new(None);
+type IntegrityGateObserver = (std::thread::ThreadId, Box<dyn Fn() + Send + Sync>);
+#[cfg(test)]
+static INTEGRITY_GATE_OBSERVER: Mutex<Option<IntegrityGateObserver>> = Mutex::new(None);
 
 #[cfg(test)]
 fn observe_integrity_gate() {
@@ -10616,7 +10600,7 @@ fn reconcile_to_checked(
     registry: &Arc<Mutex<Registry>>,
     router: &Arc<Mutex<Arc<Router>>>,
     stdio: &SessionState,
-    mcp_sessions: Option<&Arc<Mutex<HashMap<String, Arc<SessionState>>>>>,
+    mcp_sessions: Option<&McpSessions>,
     profile: Option<&str>,
     want: BTreeSet<String>,
 ) -> bool {
@@ -10629,7 +10613,7 @@ fn reconcile_to_checked(
 fn reconcile_to_with(
     router: &Arc<Mutex<Arc<Router>>>,
     stdio: &SessionState,
-    mcp_sessions: Option<&Arc<Mutex<HashMap<String, Arc<SessionState>>>>>,
+    mcp_sessions: Option<&McpSessions>,
     want: BTreeSet<String>,
     gate: impl Fn(&mut Router),
 ) -> bool {
@@ -12145,11 +12129,7 @@ impl HostState {
                 .sum::<usize>()
     }
 
-    fn subscriptions_for_route(
-        &self,
-        router: &Router,
-        owner: &str,
-    ) -> Option<RouteSubscriptions> {
+    fn subscriptions_for_route(&self, router: &Router, owner: &str) -> Option<RouteSubscriptions> {
         if !self.daemon_mode.load(Ordering::SeqCst) {
             return Some((Arc::clone(&self.resource_subs), None));
         }
@@ -22363,8 +22343,10 @@ mod tests {
         // SBS-607 threads a `piiReplaced` onto the error path's audit row. That claim sits
         // beside the `error` field, so auditing the RAW downstream error would put an
         // address in the append-only log while asserting redaction ran.
-        let mut reg = Registry::default();
-        reg.pii_redaction = true;
+        let reg = Registry {
+            pii_redaction: true,
+            ..Default::default()
+        };
         let client = Some("pii-error-audit");
         with_pii_session(client, |map| *map = pii::SessionMap::new());
 
@@ -22425,8 +22407,10 @@ mod tests {
         // passed it to a tool on the SAME server. Origins are compared by string
         // equality, so both mint paths have to agree on the spelling.
         let client = Some("pii-origin-identity");
-        let mut reg = Registry::default();
-        reg.pii_redaction = true;
+        let reg = Registry {
+            pii_redaction: true,
+            ..Default::default()
+        };
 
         with_pii_session(client, |map| *map = pii::SessionMap::new());
 
@@ -23046,12 +23030,11 @@ mod tests {
         });
         let out =
             defend_and_shape(&reg, "evil-server", "evil__tool", None, result, "", true).result;
-        assert_ne!(
-            out["content"][0]["text"]
+        assert!(
+            !out["content"][0]["text"]
                 .as_str()
                 .unwrap()
                 .starts_with("Toolport: blocked"),
-            true,
             "exempt server must not hard-block"
         );
         assert_eq!(out["content"][0]["text"], payload);
@@ -23394,8 +23377,10 @@ mod tests {
     fn access_review_status_uses_public_access_names() {
         let _env = DataDirTestEnv::new("access-review-status");
         let state = http_state(false);
-        let mut reg = Registry::default();
-        reg.default_access_context_id = Some("default".into());
+        let reg = Registry {
+            default_access_context_id: Some("default".into()),
+            ..Default::default()
+        };
         for (reference, label) in [
             (reg.default_access_id(), "Default access"),
             (reg.all_access_id(), "All enabled servers"),
@@ -25420,8 +25405,10 @@ mod tests {
 
     #[test]
     fn access_precedence_and_global_off_apply_to_every_gateway_scope() {
-        let mut reg = Registry::default();
-        reg.default_access_context_id = Some("default".into());
+        let mut reg = Registry {
+            default_access_context_id: Some("default".into()),
+            ..Default::default()
+        };
         let work = reg.add_profile("Work");
         let mut server: ServerEntry = serde_json::from_value(json!({"id":"files","name":"Files","transport":"http","url":"https://example.test","enabled":true})).unwrap();
         reg.servers.push(server.clone());
@@ -26409,8 +26396,10 @@ mod tests {
     /// during the hold is allowed to run after revalidation (follow live, not snapshot).
     #[test]
     fn post_hitl_revalidation_follows_live_release_during_hold() {
-        let mut policy = ToolPolicy::default();
-        policy.quarantined = ["s__wipe".to_string()].into_iter().collect();
+        let policy = ToolPolicy {
+            quarantined: ["s__wipe".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
         let mut router = Router::with_policy(policy);
         let ds = DownstreamServer::connect(
             "s".into(),
@@ -26553,12 +26542,14 @@ mod tests {
     /// the configured profile (client_scopes, then env), so unmapped clients are unchanged.
     #[test]
     fn effective_profile_prefers_folder_override_then_configured() {
-        let mut reg = Registry::default();
-        reg.folder_profiles = vec![registry::FolderProfile {
-            path: "/proj/work".into(),
-            profile: "Work".into(),
-            unknown_fields: Default::default(),
-        }];
+        let mut reg = Registry {
+            folder_profiles: vec![registry::FolderProfile {
+                path: "/proj/work".into(),
+                profile: "Work".into(),
+                unknown_fields: Default::default(),
+            }],
+            ..Default::default()
+        };
         reg.client_scopes.insert("cursor".into(), "Billing".into());
         let env = Some("Env".to_string());
         // Root under a mapping -> folder override wins over the configured profile.
@@ -27772,8 +27763,10 @@ mod tests {
         // reaches `audit::record_timed`; the guard keeps that row out of the real dev log.
         let _data_env = DataDirTestEnv::new("run_script_is_refused_when_code_mode_disabled");
         let host = dispatch_host(false);
-        let mut reg = Registry::default();
-        reg.code_mode = false;
+        let reg = Registry {
+            code_mode: false,
+            ..Default::default()
+        };
         let router = routed_router("s", "tool");
         let req = json!({
             "jsonrpc": "2.0",
@@ -27956,12 +27949,11 @@ mod tests {
         // returned true, the host below would advertise and dispatch run_script, which the
         // assertions reject.
         let host = dispatch_host(seed_code_mode_after_registry_load(Err(())));
-        let mut reg = Registry::default();
-        reg.code_mode = true;
-        assert!(
-            reg.code_mode,
-            "the request fixture explicitly opts in"
-        );
+        let reg = Registry {
+            code_mode: true,
+            ..Default::default()
+        };
+        assert!(reg.code_mode, "the request fixture explicitly opts in");
 
         let list_req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
         let list = handle_request(
@@ -29113,7 +29105,7 @@ mod tests {
             parse_http_max_connections(Some("lots")),
             DEFAULT_HTTP_MAX_CONNECTIONS
         );
-        assert!(DEFAULT_HTTP_MAX_CONNECTIONS >= 1024);
+        assert!(parse_http_max_connections(None) >= 1024);
     }
 
     #[test]
@@ -32098,8 +32090,10 @@ mod tests {
 
     #[test]
     fn adapter_discovery_defaults_preserve_anonymous_and_explicit_choices() {
-        let mut reg = Registry::default();
-        reg.discovery_mode = Some("full".into());
+        let mut reg = Registry {
+            discovery_mode: Some("full".into()),
+            ..Default::default()
+        };
         let resolve = |reg: &Registry, id| resolve_adapter_caller(reg, id, None, None).1.discovery;
         assert_eq!(resolve(&reg, "adapter-pid-123"), Some(DiscoveryMode::Full));
         reg.discovery_mode = Some("lazy".into());
@@ -32875,8 +32869,10 @@ mod tests {
         }
 
         let state = http_state(false);
-        let mut reg = Registry::default();
-        reg.servers = vec![stub_server("one", "One"), stub_server("two", "Two")];
+        let mut reg = Registry {
+            servers: vec![stub_server("one", "One"), stub_server("two", "Two")],
+            ..Default::default()
+        };
         for server in &mut reg.servers {
             server.enabled = true;
         }
@@ -32964,8 +32960,10 @@ mod tests {
         let _env = DataDirTestEnv::new("profile-catalog-digest-publication");
         let state = http_state(false);
         state.daemon_mode.store(true, Ordering::SeqCst);
-        let mut reg = Registry::default();
-        reg.servers = vec![stub_server("one", "One"), stub_server("two", "Two")];
+        let mut reg = Registry {
+            servers: vec![stub_server("one", "One"), stub_server("two", "Two")],
+            ..Default::default()
+        };
         for server in &mut reg.servers {
             server.enabled = true;
         }
@@ -37044,8 +37042,7 @@ mod tests {
         // Other tests may append telemetry concurrently; select this client's row.
         let row = savings::entries()
             .into_iter()
-            .filter(|row| row["kind"] == "catalog_exposure" && row["client"] == scoped_client)
-            .last()
+            .rfind(|row| row["kind"] == "catalog_exposure" && row["client"] == scoped_client)
             .unwrap();
         assert_eq!(
             row["fullSurfaceBytes"],
@@ -39088,8 +39085,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let _data_dir = conduit_lib::registry::DataDirOverride::set(&dir);
-        let mut reg = Registry::default();
-        reg.quarantine_on_drift = false;
+        let reg = Registry {
+            quarantine_on_drift: false,
+            ..Default::default()
+        };
         assert!(
             !reg.quarantine_on_drift_effective(),
             "fixture must have the feature off"
@@ -39123,8 +39122,10 @@ mod tests {
         )
         .unwrap();
 
-        let mut reg = Registry::default();
-        reg.quarantine_on_drift = false;
+        let reg = Registry {
+            quarantine_on_drift: false,
+            ..Default::default()
+        };
         let registry = Arc::new(Mutex::new(reg));
         let (router, stdio) = reconcile_harness();
         {
@@ -39195,8 +39196,10 @@ mod tests {
             "inputSchema": {"type": "object"}
         })];
 
-        let mut reg = Registry::default();
-        reg.quarantine_on_drift = false;
+        let reg = Registry {
+            quarantine_on_drift: false,
+            ..Default::default()
+        };
         let registry = Arc::new(Mutex::new(reg));
         assert_eq!(
             maybe_check_integrity(&registry, &tools, profile).unwrap(),
@@ -39692,8 +39695,10 @@ mod tests {
     #[test]
     fn watch_tick_publishes_client_discovery_without_catalog_fanout() {
         let _env = DataDirTestEnv::new("client-discovery-tick");
-        let mut live = Registry::default();
-        live.servers = vec![stub_server("one", "One"), stub_server("two", "Two")];
+        let mut live = Registry {
+            servers: vec![stub_server("one", "One"), stub_server("two", "Two")],
+            ..Default::default()
+        };
         for server in &mut live.servers {
             server.enabled = true;
         }
@@ -41378,8 +41383,7 @@ mod tests {
             validate_search_query(&"x".repeat(MAX_SEARCH_QUERY_CHARS + 1)).unwrap_err();
         assert!(char_limit_error.contains(&MAX_SEARCH_QUERY_CHARS.to_string()));
 
-        let sixty_four_tokens = std::iter::repeat("x")
-            .take(MAX_SEARCH_QUERY_TOKENS)
+        let sixty_four_tokens = std::iter::repeat_n("x", MAX_SEARCH_QUERY_TOKENS)
             .collect::<Vec<_>>()
             .join(" ");
         assert!(validate_search_query(&sixty_four_tokens).is_ok());
@@ -43317,11 +43321,7 @@ mod tests {
             release_tx.send(()).unwrap();
             cold.join().unwrap();
             warm.join().unwrap();
-            assert_eq!(
-                completed.unwrap(),
-                true,
-                "cached view waited for another key"
-            );
+            assert!(completed.unwrap(), "cached view waited for another key");
         });
     }
 
@@ -43662,11 +43662,11 @@ mod tests {
 
         assert_eq!(
             old.search.surface_bytes,
-            savings::surface_bytes(&old.tools.to_vec())
+            savings::surface_bytes(old.tools.to_vec())
         );
         assert_eq!(
             next.search.surface_bytes,
-            savings::surface_bytes(&next.tools.to_vec())
+            savings::surface_bytes(next.tools.to_vec())
         );
         assert!(old.search.matches_catalog(&old.tools));
         assert!(next.search.matches_catalog(&next.tools));
@@ -43767,8 +43767,10 @@ mod tests {
             ] {
                 let host = dispatch_host(false);
                 host.set_discovery_mode(mode);
-                let mut reg = Registry::default();
-                reg.default_access_context_id = Some("default".into());
+                let mut reg = Registry {
+                    default_access_context_id: Some("default".into()),
+                    ..Default::default()
+                };
                 let mut server = stub_server("s", "S");
                 server.enabled = true;
                 reg.servers.push(server);
@@ -44090,7 +44092,7 @@ mod tests {
             .split("\"offset\":")
             .nth(1)
             .unwrap()
-            .split(|c| c == ',' || c == '}')
+            .split([',', '}'])
             .next()
             .unwrap()
             .parse()

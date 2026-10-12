@@ -367,7 +367,7 @@ fn purge_r7_cli_removes_location_store_and_exact_backup_names() {
         let id = row["id"].as_str().unwrap();
         let write = conduit_lib::clients::write_servers(id, &[]).unwrap();
         generated.push(std::path::PathBuf::from(write.backup.unwrap()));
-        let record = std::path::PathBuf::from(write.recovery_path.unwrap());
+        let record = write.recovery_path.unwrap();
         generated.push(record.clone());
         let moved = record.parent().unwrap().join("moved-servers.json");
         std::fs::write(&moved, serde_json::to_vec(&serde_json::json!({"configPath":row["configPath"],"entries":[]})).unwrap()).unwrap();

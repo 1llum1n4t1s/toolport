@@ -61,8 +61,7 @@ fn json_body(response: ureq::http::Response<ureq::Body>) -> serde_json::Value {
         body.lines()
             .filter_map(|line| line.strip_prefix("data:"))
             .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .last()
+            .rfind(|line| !line.is_empty())
             .and_then(|line| serde_json::from_str(line).ok())
             .unwrap_or_else(|| panic!("no JSON-RPC payload in SSE body: {body:?}"))
     } else {

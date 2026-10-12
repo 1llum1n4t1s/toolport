@@ -4795,8 +4795,7 @@ mod tests {
                 "kill denied",
             ))
         })
-        .err()
-        .expect("failed kill must be reported");
+        .expect_err("failed kill must be reported");
 
         assert!(error.contains("kill denied"));
         assert_eq!(bridge.port, Some(9876));

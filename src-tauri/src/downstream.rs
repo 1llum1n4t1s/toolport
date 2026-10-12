@@ -9271,7 +9271,8 @@ pub trait ServerDispatch {
             std::thread::sleep(MRTR_STATE_ONLY_DELAY);
         }
         Ok(Some(MrtrRequest {
-            input_responses: (!input_responses.is_empty()).then_some(Value::Object(input_responses)),
+            input_responses: (!input_responses.is_empty())
+                .then_some(Value::Object(input_responses)),
             request_state,
         }))
     }
@@ -9816,6 +9817,8 @@ mod tests {
     }
 
     impl MrtrTransport {
+        // Return the transport with its shared request capture for protocol assertions.
+        #[allow(clippy::type_complexity)]
         fn modern(
             call_responses: Vec<Result<Value, TransportError>>,
         ) -> (Self, Arc<Mutex<Vec<(String, Value)>>>) {
@@ -16007,9 +16010,7 @@ for line in sys.stdin:
         );
         let expected = format!("stamp:{MODERN_PROTOCOL_VERSION}");
         assert!(
-            events[discovers[0] + 1..discovers[1]]
-                .iter()
-                .any(|e| *e == expected),
+            events[discovers[0] + 1..discovers[1]].contains(&expected),
             "the retry must re-stamp between the two sends, got {events:?}"
         );
     }

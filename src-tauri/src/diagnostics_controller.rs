@@ -228,8 +228,10 @@ fn open_directory(directory: std::path::PathBuf, what: &str) -> Result<(), Strin
 mod tests {
     #[test]
     fn access_review_diagnostics_labels_default_access() {
-        let mut reg = crate::registry::Registry::default();
-        reg.default_access_profile_id = Some("default".into());
+        let reg = crate::registry::Registry {
+            default_access_profile_id: Some("default".into()),
+            ..Default::default()
+        };
         let text = super::registry_summary(&reg);
         assert!(
             text.contains("default access: Default access\n"),

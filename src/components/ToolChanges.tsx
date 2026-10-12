@@ -6,12 +6,14 @@ import type { Registry } from "@/lib/types";
 import { toastError } from "@/lib/toast";
 
 // Rust sanitize_segment maps Unicode scalar values, rather than UTF-16 code units.
+// eslint-disable-next-line react-refresh/only-export-components -- Review tests share this classifier; keep the pending drift fix easy to rebase.
 export function sanitizeSegment(value: string) {
   return Array.from(value, (character) =>
     /^[a-zA-Z0-9_]$/.test(character) ? character : "_",
   ).join("");
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- Review tests share this classifier; keep the pending drift fix easy to rebase.
 export function groupToolChanges(events: SecurityEvent[]) {
   const groups: {
     server: string;

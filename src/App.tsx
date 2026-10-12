@@ -1,3 +1,5 @@
+import { needsTeamEnableReview, sameReviewedDefinition } from "@/lib/importReview";
+import { serverPostureCopy } from "@/lib/serverPosture";
 import { type SettingsSubpage } from "@/lib/settingsPages";
 import { visibleExecutionText } from "@/lib/visibleExecutionText";
 import { isPersonalSync } from "@/lib/personalSync";
@@ -58,11 +60,7 @@ import { TeamPairingDialog } from "@/components/TeamPairingDialog";
 import { QuarantineAlert } from "@/components/QuarantineAlert";
 import { RegistryServerRow } from "@/components/RegistryServerRow";
 import { ServerDialog } from "@/components/ServerDialog";
-import {
-  ImportReviewDialog,
-  needsTeamEnableReview,
-  sameReviewedDefinition,
-} from "@/components/ImportReviewDialog";
+import { ImportReviewDialog } from "@/components/ImportReviewDialog";
 
 // Secondary destinations are code-split so the initial bundle only carries the
 // default Servers view and the app chrome. Each mounts behind a Suspense
@@ -342,6 +340,7 @@ function App() {
   );
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Start the backend load on mount without deferring its loading state.
     load();
   }, [load]);
 
@@ -612,6 +611,7 @@ function App() {
   useEffect(() => {
     if (onboarded || showOnboarding || resumeAtConnect || loading || !registry) return;
     const fresh = servers.length === 0 && !clients.some((c) => c.gatewayInstalled);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Latch the first-run wizard after the backend determines this is a fresh setup.
     if (fresh) setShowOnboarding(true);
   }, [
     onboarded,
@@ -628,6 +628,7 @@ function App() {
   // than abandoning onboarding, so they don't silently skip connecting a client.
   useEffect(() => {
     if (resumeAtConnect && view !== "catalog" && !onboarded) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Resume the wizard on navigation with the existing handoff timing.
       setOnboardingStep(2);
       setShowOnboarding(true);
       setResumeAtConnect(false);
@@ -1275,58 +1276,6 @@ function App() {
       />
     </TooltipProvider>
   );
-}
-
-/** A factual reachability baseline. Security posture remains in Settings; this only
- * summarizes the health probe and never presents a stale or partial check as healthy. */
-export function serverPostureCopy({
-  backendReachable,
-  probing,
-  enabled,
-  checked,
-  connected,
-  attention,
-  disabled,
-}: {
-  backendReachable: boolean;
-  probing: boolean;
-  enabled: number;
-  checked: number;
-  connected: number;
-  attention: number;
-  disabled: number;
-}) {
-  const complete = enabled > 0 && checked === enabled && !probing;
-  const healthy = backendReachable && complete && attention === 0;
-  const title = !backendReachable
-    ? "Reachability status unavailable"
-    : enabled === 0
-      ? "No servers enabled"
-      : probing
-        ? "Checking server reachability"
-        : checked < enabled
-          ? "Reachability check incomplete"
-          : attention === 0
-            ? `${connected} enabled server${connected === 1 ? "" : "s"} reachable`
-            : `${connected} of ${enabled} enabled servers reachable`;
-  const detail = !backendReachable
-    ? checked > 0
-      ? attention > 0
-        ? `Last known: ${connected} reachable; ${attention} need${attention === 1 ? "s" : ""} a quick check. Status may be out of date.`
-        : `Last known: ${connected} reachable. Status may be out of date.`
-      : "The last health check did not complete."
-    : enabled === 0
-      ? `${disabled} server${disabled === 1 ? "" : "s"} turned off.`
-      : probing
-        ? `${checked} of ${enabled} checked so far.`
-        : checked < enabled
-          ? `${checked} of ${enabled} checked. Refresh to try again.`
-          : attention > 0
-            ? `${attention} need${attention === 1 ? "s" : ""} a quick check.`
-            : disabled > 0
-              ? `${disabled} turned off.`
-              : "Every enabled server is ready.";
-  return { healthy, title, detail };
 }
 
 function ServerPosture({

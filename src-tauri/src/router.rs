@@ -8533,8 +8533,10 @@ for line in sys.stdin:
         // a client that already held its catalog stayed broken even though the app showed
         // nothing quarantined. Shrinking the set must restore the tool in place, with no
         // rebuild and no downstream re-query.
-        let mut policy = ToolPolicy::default();
-        policy.quarantined = ["github__echo".to_string()].into_iter().collect();
+        let policy = ToolPolicy {
+            quarantined: ["github__echo".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
         let mut router = Router::with_policy(policy);
         router.add(mock_server("github"));
 
@@ -8589,8 +8591,10 @@ for line in sys.stdin:
         let _data = crate::registry::DataDirTestEnv::new("f3-sbs871-fail-closed-catalog-hides-every-tool-until-requarantine");
         // SBS-871: a cold-start store Err has no prior live set, so the whole
         // catalog stays hidden until a later successful read installs a set.
-        let mut policy = ToolPolicy::default();
-        policy.fail_closed_catalog = true;
+        let policy = ToolPolicy {
+            fail_closed_catalog: true,
+            ..Default::default()
+        };
         let mut router = Router::with_policy(policy);
         router.add(mock_server("github"));
         assert!(
@@ -8618,8 +8622,10 @@ for line in sys.stdin:
     /// catalog hidden; only `requarantine_from_store` lifts it.
     #[test]
     fn sbs871_requarantine_on_an_error_path_does_not_lift_fail_closed() {
-        let mut policy = ToolPolicy::default();
-        policy.fail_closed_catalog = true;
+        let policy = ToolPolicy {
+            fail_closed_catalog: true,
+            ..Default::default()
+        };
         let mut router = Router::with_policy(policy);
         router.add(mock_server("github"));
 
@@ -8654,9 +8660,12 @@ for line in sys.stdin:
 
     #[test]
     fn block_reason_matches_route_call_blocked_map() {
-        let _data = crate::registry::DataDirTestEnv::new("f3-block-reason-matches-route-call-blocked-map");
-        let mut policy = ToolPolicy::default();
-        policy.quarantined = ["github__echo".to_string()].into_iter().collect();
+        let _data =
+            crate::registry::DataDirTestEnv::new("f3-block-reason-matches-route-call-blocked-map");
+        let policy = ToolPolicy {
+            quarantined: ["github__echo".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
         let mut router = Router::with_policy(policy);
         router.add(mock_server("github"));
 
@@ -9905,9 +9914,8 @@ for line in sys.stdin:
         let result = rx.recv_timeout(Duration::from_secs(1));
         drop(inner);
         worker.join().unwrap();
-        assert_eq!(
-            result.unwrap(),
-            false,
+        assert!(
+            !result.unwrap(),
             "busy serial request must fall back to breaker"
         );
 

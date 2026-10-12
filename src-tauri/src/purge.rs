@@ -1538,7 +1538,9 @@ mod tests {
         std::fs::create_dir(&other).unwrap();
         let other_registry = other.join("registry.json");
         std::fs::write(&other_registry, "broken").unwrap();
-        let error = credential_scope(&env.dir, &[other.clone()], false).err().expect("ownership failure must block cleanup");
+        let error = credential_scope(&env.dir, std::slice::from_ref(&other), false)
+            .err()
+            .expect("ownership failure must block cleanup");
         assert!(error.contains(other_registry.to_str().unwrap()), "{error}");
         assert!(error.contains("Credentials were not removed"), "{error}");
         assert_eq!(std::fs::read(&selected).unwrap(), original);
@@ -1630,7 +1632,7 @@ mod tests {
         for evidence in ["registry.json.bak", "registry.json.123.1.conduit-tmp", "registry.json.unreadable-123"] {
             std::fs::write(dev.join(evidence), "recovery bytes").unwrap();
             let others = other_installs(&selected, vec![dev.clone()]);
-            assert_eq!(others, [dev.clone()]);
+            assert_eq!(others.as_slice(), std::slice::from_ref(&dev));
             assert!(credential_scope(&selected, &others, false).is_err());
             std::fs::remove_file(dev.join(evidence)).unwrap();
         }
@@ -1664,7 +1666,7 @@ mod tests {
         let bytes = br#"{"servers":[]}"#;
         std::fs::write(&registry, bytes).unwrap();
         std::fs::write(env.dir.join("secrets.enc"), "encrypted bytes").unwrap();
-        let error = plan().err().expect("planning must reject a foreign registry");
+        let error = plan().expect_err("planning must reject a foreign registry");
         assert!(error.contains("ownership") && error.contains(&env.dir.display().to_string()), "{error}");
         assert_eq!(std::fs::read(&registry).unwrap(), bytes);
         assert_eq!(std::fs::read(env.dir.join("secrets.enc")).unwrap(), b"encrypted bytes");

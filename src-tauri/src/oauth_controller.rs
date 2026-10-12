@@ -340,7 +340,7 @@ pub(crate) fn start_attempt() -> String {
 
 /// Mark cancellation on the shell/IPC thread before scheduling cleanup. This is
 /// nonblocking even if a keychain commit already owns the cancellation gate.
-#[cfg(any(feature = "desktop", feature = "gtk-desktop", test))]
+#[cfg(any(feature = "desktop", feature = "gtk-desktop"))]
 pub(crate) fn request_cancel_attempt(attempt_id: &str) {
     if let Some(attempt) = attempts()
         .lock()

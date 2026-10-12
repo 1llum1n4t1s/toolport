@@ -1018,7 +1018,10 @@ mod tests {
             "ok": true,
         });
 
-        assert_eq!(audit_proof_after(&[retained.clone()], 100), None);
+        assert_eq!(
+            audit_proof_after(std::slice::from_ref(&retained), 100),
+            None
+        );
         assert_eq!(audit_proof_after(&[unrelated, retained], 100), None);
         assert_eq!(
             audit_proof_after(&[fresh], 100),

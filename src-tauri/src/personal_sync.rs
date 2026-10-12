@@ -3214,9 +3214,7 @@ mod tests {
         );
     }
     fn machine() -> Registry {
-        let mut r = Registry::default();
-        r.team=Some(serde_json::from_value(json!({"serverUrl":"https://example.com","teamId":"solo","role":"admin","reportingDeviceId":"fixture","accountStatus":{"personalSync":true,"plan":"pro","canReceiveConfig":true}})).unwrap());
-        r
+        Registry { team: Some(serde_json::from_value(json!({"serverUrl":"https://example.com","teamId":"solo","role":"admin","reportingDeviceId":"fixture","accountStatus":{"personalSync":true,"plan":"pro","canReceiveConfig":true}})).unwrap()), ..Default::default() }
     }
     fn http(id: &str) -> Value {
         json!({"id":id,"name":id,"transport":"http","url":"https://example.com/mcp","args":[],"env":[],"disabled":false})
@@ -4364,8 +4362,10 @@ mod tests {
         let _data =
             crate::registry::DataDirTestEnv::new("local_journal_and_ack_do_not_drop_newer_edits");
         let mut r = machine();
-        let mut st = SyncState::default();
-        st.initialized = true;
+        let mut st = SyncState {
+            initialized: true,
+            ..Default::default()
+        };
         st.baseline.insert("a".into(), http("a"));
         save(&mut r, &st).unwrap();
         let mut s = local(http("a"));

@@ -1026,7 +1026,8 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             stream.set_read_timeout(Some(READY_TIMEOUT)).unwrap();
             let mut scratch = [0; 4096];
-            stream.read(&mut scratch).unwrap();
+            // This fixture needs the request arrival, not the complete request body.
+            let _received = stream.read(&mut scratch).unwrap();
             accepted_tx.send(()).unwrap();
             // Hold the real response until the caller has outlived a health
             // sample. Channels control the order; no retry or startup race.

@@ -219,13 +219,6 @@ struct Client {
 }
 
 impl Client {
-    /// `explicit` runs `--stdio-adapter`; otherwise the registry-selected role a
-    /// real client gets, pinned to the daemon topology.
-    fn spawn(dir: &Path, explicit: bool) -> Self {
-        let client_id = Self::prepare(dir);
-        Self::spawn_prepared(dir, explicit, client_id)
-    }
-
     fn prepare(dir: &Path) -> String {
         let client_id = format!("health-{}", NEXT.fetch_add(1, Ordering::Relaxed));
         discovery_support::select_full(dir, &client_id);
@@ -397,6 +390,8 @@ impl Drop for Client {
 // Daemon HTTP helpers
 // ---------------------------------------------------------------------------
 
+// Preserve HTTP response bodies for the fixture's rejection assertions.
+#[allow(clippy::result_large_err)]
 fn post_mcp(
     endpoint: &str,
     token: &str,
@@ -429,8 +424,7 @@ fn body_json(response: ureq::http::Response<ureq::Body>) -> Value {
         body.lines()
             .filter_map(|line| line.strip_prefix("data:"))
             .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .last()
+            .rfind(|line| !line.is_empty())
             .and_then(|line| serde_json::from_str(line).ok())
             .unwrap_or(Value::Null)
     } else {
@@ -751,6 +745,8 @@ fn the_http_bridge_takes_a_burst_and_sheds_only_past_its_cap() {
             let barrier = Arc::clone(&barrier);
             std::thread::spawn(move || {
                 barrier.wait();
+                // Keep status errors intact for each concurrent request assertion.
+                #[allow(clippy::result_large_err)]
                 let initialize = || {
                     conduit_lib::http_client::agent()
                         .post(&format!("http://127.0.0.1:{port}/mcp"))

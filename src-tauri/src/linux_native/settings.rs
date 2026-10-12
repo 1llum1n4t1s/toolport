@@ -3007,8 +3007,10 @@ mod tests {
 
     #[test]
     fn posture_describes_the_effective_level_without_an_alarm_for_off() {
-        let mut settings = crate::registry_controller::EssentialSettings::default();
-        settings.safety_level = crate::registry::SafetyLevel::Off;
+        let mut settings = crate::registry_controller::EssentialSettings {
+            safety_level: crate::registry::SafetyLevel::Off,
+            ..Default::default()
+        };
         let (line, guarded) = posture_summary(&settings);
         assert!(line.starts_with("Safety is set to Off."));
         assert!(line.contains("Server sign-in and client permissions"));

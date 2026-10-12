@@ -539,8 +539,11 @@ fn remove(dest: &Path, expected: &Revision) -> Result<(), String> {
 }
 
 #[cfg(test)]
+type ClientFileHook = (&'static str, Box<dyn FnOnce(&Path)>);
+
+#[cfg(test)]
 thread_local! {
-    pub(crate) static HOOK: std::cell::RefCell<Option<(&'static str, Box<dyn FnOnce(&Path)>)>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static HOOK: std::cell::RefCell<Option<ClientFileHook>> = const { std::cell::RefCell::new(None) };
     pub(crate) static FORCE_NO_HARD_LINKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static FORCE_NO_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static FORCE_CLEANUP_ERROR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

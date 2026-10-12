@@ -193,6 +193,15 @@ pub fn cosine(left: &[f32], right: &[f32]) -> f64 {
     left.iter().zip(right).map(|(a, b)| a * b).sum::<f32>() as f64
 }
 
+// Benchmark controls never enter the shipped gateway.
+pub fn enabled() -> bool {
+    #[cfg(test)]
+    if std::env::var_os("SEARCH_LEXICAL_ONLY").is_some() {
+        return false;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,13 +228,4 @@ mod tests {
             "agenda  create Event . Create an event"
         );
     }
-}
-
-// Benchmark controls never enter the shipped gateway.
-pub fn enabled() -> bool {
-    #[cfg(test)]
-    if std::env::var_os("SEARCH_LEXICAL_ONLY").is_some() {
-        return false;
-    }
-    true
 }

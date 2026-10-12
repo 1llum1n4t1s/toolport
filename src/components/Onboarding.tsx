@@ -633,6 +633,7 @@ function Done({
   const [probeAttempt, setProbeAttempt] = useState(0);
   useEffect(() => {
     if (serverCount === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear stale probe results before checking the current server set.
       setHealth([]);
       setProbeFailed(false);
       return;
@@ -814,6 +815,7 @@ export function VerifyCall({
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = Date.now() + timeoutMs;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear a previous verification result before taking the new audit snapshot.
     setHit(null);
     setStatus("snapshot");
     void (async () => {

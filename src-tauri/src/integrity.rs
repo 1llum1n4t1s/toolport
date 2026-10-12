@@ -152,6 +152,7 @@ fn read_hint(tool: &Value, key: &str) -> Option<bool> {
 }
 
 /// Build the pin baseline for `tool` (fingerprint + the two safety annotation bits).
+#[cfg(test)]
 fn pin_of(tool: &Value) -> Pin {
     pin_with_source(tool, None)
 }
@@ -3140,8 +3141,8 @@ fn neutralize_close_markers(text: &str) -> String {
         // ": end external data]" (and any nonce guess before it) goes with the brand.
         let mut end = i + needle.chars().count();
         let limit = folded.len().min(i + RUN_MAX);
-        for j in end..limit {
-            match folded[j] {
+        for (j, character) in folded.iter().enumerate().take(limit).skip(end) {
+            match character {
                 '\n' | '\r' => break,
                 ']' => {
                     end = j + 1;
@@ -3644,7 +3645,7 @@ fn append_leaf_window(out: &mut String, leaf: &str, budget_total: usize) {
         return;
     }
     let room = budget_total - out.len();
-    if leaf.len() + 1 <= room {
+    if leaf.len() < room {
         out.push_str(leaf);
         out.push('\n');
         return;

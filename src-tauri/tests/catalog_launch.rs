@@ -499,6 +499,8 @@ fn gateway_lists_fixture_tools(fixture: &Fixture, ids: &[String]) {
             .unwrap(),
     );
     let endpoint = format!("http://127.0.0.1:{port}/mcp");
+    // Keep HTTP status bodies intact so fixture assertions can inspect rejected requests.
+    #[allow(clippy::result_large_err)]
     let post = |body: Value, session: Option<&str>| {
         let mut request = conduit_lib::http_client::agent()
             .post(&endpoint)

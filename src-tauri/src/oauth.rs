@@ -1711,14 +1711,6 @@ fn wait_for_code_until(
     }
 }
 
-/// Read an HTTP request from the callback socket and return its raw query string
-/// (the part after `?` in the request target). Reads until the end of the request
-/// line/headers so a long `code` isn't truncated by a single short read.
-#[cfg(test)]
-fn read_callback_query(stream: &mut std::net::TcpStream) -> String {
-    read_callback_query_cancellable(stream, &Cancellation::default()).unwrap_or_default()
-}
-
 fn read_callback_query_cancellable(
     stream: &mut std::net::TcpStream,
     cancellation: &Cancellation,

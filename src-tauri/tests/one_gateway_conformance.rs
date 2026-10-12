@@ -158,6 +158,7 @@ struct AdapterClient {
     stderr: Arc<Mutex<String>>,
 }
 
+#[derive(Default)]
 struct AdapterOptions<'a> {
     /// Exercise the registry-selected role with no explicit gateway flag.
     default_role: bool,
@@ -177,21 +178,6 @@ struct AdapterOptions<'a> {
     elicitation: bool,
 }
 
-impl Default for AdapterOptions<'_> {
-    fn default() -> Self {
-        Self {
-            default_role: false,
-            startup_catalog_servers: &[],
-            topology_override: None,
-            client_id: None,
-            profile: None,
-            cwd: None,
-            grace_ms: None,
-            roots: Vec::new(),
-            elicitation: false,
-        }
-    }
-}
 
 fn spawn_adapter(dir: &Path, options: &AdapterOptions) -> AdapterClient {
     let index = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -817,8 +803,7 @@ fn json_body(response: ureq::http::Response<ureq::Body>) -> Value {
         body.lines()
             .filter_map(|line| line.strip_prefix("data:"))
             .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .last()
+            .rfind(|line| !line.is_empty())
             .and_then(|line| serde_json::from_str(line).ok())
             .unwrap_or_else(|| panic!("no JSON-RPC payload in SSE body: {body:?}"))
     } else {

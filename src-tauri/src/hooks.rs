@@ -243,7 +243,7 @@ mod tests {
         .unwrap();
         std::fs::write(&path, &original).unwrap();
 
-        cleanup_on_startup_with(&[path.clone()]);
+        cleanup_on_startup_with(std::slice::from_ref(&path));
 
         let root: Value = crate::clients::read_settings_json(&path).unwrap().0;
         assert_eq!(root["model"], json!("opus"));
@@ -266,7 +266,7 @@ mod tests {
         .unwrap();
         std::fs::write(&path, &seeded).unwrap();
 
-        cleanup_on_startup_with(&[path.clone()]);
+        cleanup_on_startup_with(std::slice::from_ref(&path));
         let root: Value = crate::clients::read_settings_json(&path).unwrap().0;
         assert!(
             root.get("hooks").is_none(),
@@ -275,7 +275,7 @@ mod tests {
 
         // A second pass must not run: a fresh marked entry is left alone.
         std::fs::write(&path, &seeded).unwrap();
-        cleanup_on_startup_with(&[path.clone()]);
+        cleanup_on_startup_with(std::slice::from_ref(&path));
         let root: Value = crate::clients::read_settings_json(&path).unwrap().0;
         assert!(
             root.get("hooks").is_some(),

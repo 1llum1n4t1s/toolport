@@ -1094,8 +1094,10 @@ pub struct ToolOverride {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub enum SafetyLevel {
     Off,
+    #[default]
     Ask,
     Strict,
 }
@@ -1104,11 +1106,6 @@ fn team_safety_floor_default() -> SafetyLevel {
     SafetyLevel::Off
 }
 
-impl Default for SafetyLevel {
-    fn default() -> Self {
-        Self::Ask
-    }
-}
 
 /// 1.x protections an upgrader had on that their 2.0 level does not include.
 /// Set only by the v1 migration and cleared when the user picks a level, so an
@@ -2587,7 +2584,7 @@ impl Registry {
         }
         // Approval or confirmation is Ask and nothing is Off. The 1.x blocking
         // flags apply on their own (see `kept`), as they did in 1.x.
-        self.safety_level.unwrap_or_else(|| {
+        self.safety_level.unwrap_or({
             if self.human_approval || self.confirm_destructive {
                 SafetyLevel::Ask
             } else {
@@ -4252,8 +4249,10 @@ mod catalog_launch_migration_tests {
             revision: Some(1),
             ..Default::default()
         });
-        let mut registry = Registry::default();
-        registry.servers = vec![old, edited.clone(), v1_template];
+        let mut registry = Registry {
+            servers: vec![old, edited.clone(), v1_template],
+            ..Default::default()
+        };
         registry.profiles[0].enabled_server_ids = vec![
             "atlassian-work".into(),
             "atlassian-edited".into(),
@@ -4740,6 +4739,7 @@ fn lock_for(path: &Path, timeout: std::time::Duration) -> Result<FileLock, Strin
     }
     let file = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .write(true)
         .open(lock_path(path))
         .map_err(lock_error)?;
@@ -5713,7 +5713,7 @@ pub(crate) mod tests {
         r.block_on_injection = true;
 
         // Assert setup
-        assert!(r.tool_overrides.get(&id).is_some());
+        assert!(r.tool_overrides.contains_key(&id));
         assert!(r.is_tool_pinned(&id, "create_issue"));
         assert!(r.is_tool_allowed(&key));
         assert!(
@@ -5726,7 +5726,7 @@ pub(crate) mod tests {
         r.remove_server(&id).unwrap();
 
         // Assert cleanup
-        assert!(r.tool_overrides.get(&id).is_none());
+        assert!(!r.tool_overrides.contains_key(&id));
         assert!(!r.is_tool_pinned(&id, "create_issue"));
         assert!(!r.is_tool_allowed(&key));
         // Through the reader the gateway actually calls, not the raw map: a stale
@@ -5765,7 +5765,7 @@ pub(crate) mod tests {
         let new_id = r.add_server(sample_server("GitHub MCP"));
         // Assert
         assert_eq!(new_id, id);
-        assert!(r.tool_overrides.get(&new_id).is_none());
+        assert!(!r.tool_overrides.contains_key(&new_id));
         assert!(!r.is_tool_pinned(&new_id, "create_issue"));
         let new_key =
             fingerprint_allow_key(&sanitize_segment(&new_id), "create_issue", "v2:testfp");
@@ -5786,8 +5786,10 @@ pub(crate) mod tests {
         r.set_server_enabled(&legacy, &id, false).unwrap();
         assert!(!r.enabled_here(&id));
 
-        let mut old = Registry::default();
-        old.version = 2;
+        let mut old = Registry {
+            version: 2,
+            ..Default::default()
+        };
         let id = old.add_server(sample_server("files"));
         old.set_server_enabled(&legacy, &id, true).unwrap();
         assert!(old.enabled_here(&id));
@@ -5961,24 +5963,26 @@ pub(crate) mod tests {
 
     #[test]
     fn profile_for_root_longest_prefix_wins_on_a_path_boundary() {
-        let mut r = Registry::default();
-        r.folder_profiles = vec![
-            FolderProfile {
-                path: "/home/me/work".into(),
-                profile: "Work".into(),
-                unknown_fields: Default::default(),
-            },
-            FolderProfile {
-                path: "/home/me/work/client-a".into(),
-                profile: "ClientA".into(),
-                unknown_fields: Default::default(),
-            },
-            FolderProfile {
-                path: "/home/me/personal".into(),
-                profile: "Personal".into(),
-                unknown_fields: Default::default(),
-            },
-        ];
+        let r = Registry {
+            folder_profiles: vec![
+                FolderProfile {
+                    path: "/home/me/work".into(),
+                    profile: "Work".into(),
+                    unknown_fields: Default::default(),
+                },
+                FolderProfile {
+                    path: "/home/me/work/client-a".into(),
+                    profile: "ClientA".into(),
+                    unknown_fields: Default::default(),
+                },
+                FolderProfile {
+                    path: "/home/me/personal".into(),
+                    profile: "Personal".into(),
+                    unknown_fields: Default::default(),
+                },
+            ],
+            ..Default::default()
+        };
         // Exact match, and a descendant picks the parent mapping.
         assert_eq!(r.profile_for_root("/home/me/work"), Some("Work".into()));
         assert_eq!(r.profile_for_root("/home/me/work/src"), Some("Work".into()));
@@ -6094,12 +6098,14 @@ pub(crate) mod tests {
 
     #[test]
     fn profile_for_root_normalizes_separators_and_trailing_slash() {
-        let mut r = Registry::default();
-        r.folder_profiles = vec![FolderProfile {
-            path: "/home/me/work/".into(),
-            profile: "Work".into(),
-            unknown_fields: Default::default(),
-        }];
+        let r = Registry {
+            folder_profiles: vec![FolderProfile {
+                path: "/home/me/work/".into(),
+                profile: "Work".into(),
+                unknown_fields: Default::default(),
+            }],
+            ..Default::default()
+        };
         // A trailing slash on the mapping and backslash separators in the root both normalize.
         assert_eq!(r.profile_for_root("/home/me/work"), Some("Work".into()));
         assert_eq!(
@@ -6330,7 +6336,7 @@ pub(crate) mod tests {
         r.set_tool_pinned(&id, "create_issue", false);
         r.set_tool_pinned(&id, "list_issues", false);
         assert!(!r.is_tool_pinned(&id, "create_issue"));
-        assert!(r.pinned_tools.get(&id).is_none());
+        assert!(!r.pinned_tools.contains_key(&id));
     }
 
     #[test]
@@ -6956,6 +6962,7 @@ pub(crate) mod tests {
         // this is what serializes two Toolport processes' read-modify-write (SOU-23 / SOU-165).
         let second = std::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .write(true)
             .open(lock_path(&path))
             .unwrap();
@@ -6988,10 +6995,14 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("registry.json");
 
-        let mut stale = Registry::default();
-        stale.live_inspect = false;
-        let mut latest = Registry::default();
-        latest.live_inspect = true;
+        let stale = Registry {
+            live_inspect: false,
+            ..Default::default()
+        };
+        let latest = Registry {
+            live_inspect: true,
+            ..Default::default()
+        };
         atomic_write(
             &backup_path(&path),
             &serde_json::to_string_pretty(&stale).unwrap(),
@@ -8336,8 +8347,10 @@ pub(crate) mod tests {
 
     #[test]
     fn normalize_clears_a_stale_active_profile_for_first_profile_fallback() {
-        let mut registry = Registry::default();
-        registry.active_profile_id = Some("deleted-profile".into());
+        let mut registry = Registry {
+            active_profile_id: Some("deleted-profile".into()),
+            ..Default::default()
+        };
         registry.normalize_profile_references();
         assert_eq!(registry.active_profile_id, None);
         assert_eq!(registry.active_profile_id(), DEFAULT_PROFILE_ID);
@@ -9170,12 +9183,14 @@ mod safety_level_tests {
 
     #[test]
     fn kept_v1_protections_apply_until_the_user_picks_a_level() {
-        let mut r = Registry::default();
-        r.safety_level = Some(SafetyLevel::Off);
-        r.kept_v1_safety = Some(KeptV1Safety {
-            quarantine_on_drift: true,
+        let mut r = Registry {
+            safety_level: Some(SafetyLevel::Off),
+            kept_v1_safety: Some(KeptV1Safety {
+                quarantine_on_drift: true,
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
         assert!(r.quarantine_on_drift_effective());
         assert!(!r.deny_destructive_effective());
         assert!(!r.requires_human_approval(true, true));

@@ -2021,7 +2021,7 @@ fn daemon_roles_from_cim_json(
     let rows = value
         .as_array()
         .map(Vec::as_slice)
-        .unwrap_or_else(|| std::slice::from_ref(&value));
+        .unwrap_or_else(|| std::slice::from_ref(value));
     rows.iter()
         .filter_map(|row| {
             let pid = row.get("ProcessId")?.as_u64()? as u32;

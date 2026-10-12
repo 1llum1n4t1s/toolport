@@ -5459,8 +5459,7 @@ mod tests {
     #[test]
     fn account_status_mode_flips_preserve_unpublished_personal_journal() {
         let _data = crate::registry::DataDirTestEnv::new("account-mode-journal");
-        let mut reg = Registry::default();
-        reg.team = Some(serde_json::from_value(json!({"serverUrl":"https://example.com","teamId":"solo","role":"admin","accountStatus":{"personalSync":true,"plan":"pro","canReceiveConfig":true},"personalSyncState":{"initialized":true,"pending":{"s":{"localId":"s","after":{"id":"s","name":"Unpublished"}}}}})).unwrap());
+        let mut reg = Registry { team: Some(serde_json::from_value(json!({"serverUrl":"https://example.com","teamId":"solo","role":"admin","accountStatus":{"personalSync":true,"plan":"pro","canReceiveConfig":true},"personalSyncState":{"initialized":true,"pending":{"s":{"localId":"s","after":{"id":"s","name":"Unpublished"}}}}})).unwrap()), ..Default::default() };
         reg.servers.push(serde_json::from_value(json!({"id":"s","name":"Unpublished","transport":"http","url":"https://example.com/mcp","args":[],"env":[],"enabled":true,"source":"team:solo"})).unwrap());
         reg.profiles[0].enabled_server_ids.push("s".into());
         let original = crate::personal_sync::state(&reg).unwrap().pending;
@@ -5995,7 +5994,7 @@ mod tests {
                     Some("next instructions".into()),
                     2,
                     vec![key.clone()],
-                    &[key.clone()],
+                    std::slice::from_ref(&key),
                 )
             });
             assert!(
@@ -6323,7 +6322,7 @@ mod tests {
             Some("a's rules".into()),
             3,
             vec![key.clone()],
-            &[key.clone()],
+            std::slice::from_ref(&key),
         )
         .unwrap();
         assert!(
@@ -6360,7 +6359,7 @@ mod tests {
             Some("a's rules".into()),
             3,
             vec![key.clone()],
-            &[key.clone()],
+            std::slice::from_ref(&key),
         )
         .unwrap();
         assert!(path.exists(), "adoption never deletes");
@@ -6370,7 +6369,7 @@ mod tests {
             vec![key.clone()],
             "the content-less winner now owns the path"
         );
-        apply_instructions_to("team_c", 1, None, &[target.clone()]).unwrap();
+        apply_instructions_to("team_c", 1, None, std::slice::from_ref(&target)).unwrap();
         assert!(
             !path.exists(),
             "the winner's no-content pass cleans the adopted block"
@@ -6393,7 +6392,7 @@ mod tests {
             Some("a's rules".into()),
             4,
             vec![key.clone()],
-            &[key.clone()],
+            std::slice::from_ref(&key),
         )
         .unwrap();
         assert!(
@@ -6412,7 +6411,7 @@ mod tests {
             Some("a's rules".into()),
             5,
             vec![key.clone()],
-            &[key.clone()],
+            std::slice::from_ref(&key),
         )
         .unwrap();
         let (content, version, recorded) = loaded_instructions();
@@ -6477,10 +6476,12 @@ mod tests {
     }
 
     fn base_registry() -> Registry {
-        let mut r = Registry::default();
         // Exercise retained v1 fields and releasable team overlays.
-        r.version = 1;
-        r.safety_level = None;
+        let mut r = Registry {
+            version: 1,
+            safety_level: None,
+            ..Default::default()
+        };
         r.servers.push(ServerEntry {
             enabled: false,
             inherit_env: false,
@@ -9762,9 +9763,7 @@ mod member_review_tests {
         });
     }
     fn registry() -> Registry {
-        let mut reg = Registry::default();
-        reg.team = Some(serde_json::from_value(json!({"teamId":"review-team", "serverUrl":"https://teams.toolport.app", "role":"member"})).unwrap());
-        reg
+        Registry { team: Some(serde_json::from_value(json!({"teamId":"review-team", "serverUrl":"https://teams.toolport.app", "role":"member"})).unwrap()), ..Default::default() }
     }
 
     fn config(command: &str) -> Value {

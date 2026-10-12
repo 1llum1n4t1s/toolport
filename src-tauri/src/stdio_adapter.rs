@@ -2000,7 +2000,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let compat = CompatKey::new("test", "p08-lifetime-retry");
         let session = Session::new(
-            Rendezvous::new(&std::env::temp_dir(), compat.clone()),
+            Rendezvous::new(std::env::temp_dir(), compat.clone()),
             DaemonDescriptor::new(
                 listener.local_addr().unwrap().to_string(),
                 "test-token",
