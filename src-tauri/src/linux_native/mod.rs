@@ -2292,11 +2292,9 @@ impl ClientPage {
             .build();
         header.pack_end(&refresh_button);
         let add_location = gtk::Button::with_label("Add client location");
-
         let import_button = gtk::Button::with_label("Import");
         import_button.set_tooltip_text(Some("Review servers found in client configurations"));
         import_button.add_css_class("toolport-secondary-action");
-
         root.append(&header);
 
         let scroller = gtk::ScrolledWindow::builder()
@@ -3628,25 +3626,41 @@ impl ActivityPage {
                 .css_classes(["heading"])
                 .build(),
         );
-        let filter_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let filter_row = wrapping_actions();
         let filter_server = gtk::DropDown::from_strings(&["All servers"]);
         filter_server.add_css_class("toolport-input");
         filter_server.add_css_class("toolport-activity-filter");
         filter_server.set_valign(gtk::Align::Center);
         filter_server.set_tooltip_text(Some("Show events from one server"));
-        filter_row.append(&filter_server);
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_setup(|_, item| {
+            let item = item.downcast_ref::<gtk::ListItem>().expect("a dropdown list item");
+            item.set_child(Some(&gtk::Label::builder().xalign(0.0)
+                .ellipsize(gtk::pango::EllipsizeMode::End).max_width_chars(24).build()));
+        });
+        factory.connect_bind(|_, item| {
+            let item = item.downcast_ref::<gtk::ListItem>().expect("a dropdown list item");
+            if let (Some(value), Some(label)) = (item.item().and_downcast::<gtk::StringObject>(),
+                item.child().and_downcast::<gtk::Label>()) {
+                label.set_label(&value.string());
+                label.set_tooltip_text(Some(&value.string()));
+            }
+        });
+        filter_server.set_factory(Some(&factory));
+        filter_row.insert(&filter_server, -1);
         let errors_only = gtk::ToggleButton::with_label("Errors only");
         errors_only.add_css_class("toolport-secondary-action");
         errors_only.add_css_class("toolport-activity-filter");
         errors_only.set_valign(gtk::Align::Center);
-        filter_row.append(&errors_only);
+        filter_row.insert(&errors_only, -1);
         let filter_count = gtk::Label::builder()
-            .halign(gtk::Align::End)
-            .hexpand(true)
+            .halign(gtk::Align::Fill)
+            .xalign(0.0)
+            .wrap(true)
             .css_classes(["toolport-muted", "caption"])
             .build();
-        filter_row.append(&filter_count);
         page.append(&filter_row);
+        page.append(&filter_count);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 10);
         page.append(&list);
         let show_more_calls = gtk::Button::with_label("Show more events");
@@ -12047,6 +12061,8 @@ mod tests {
         page.render(state::load_activity_snapshot().unwrap());
         let old = page.list.first_child().unwrap();
         let stats = page.stats_list.first_child().unwrap();
+        assert!(page.root.measure(gtk::Orientation::Horizontal, -1).0 <= 480,
+            "Activity must fit a 480px window with loaded counts");
         page.render(state::load_activity_snapshot().unwrap());
         assert_eq!(page.list.first_child().unwrap(), old);
         assert_eq!(page.stats_list.first_child().unwrap(), stats);
