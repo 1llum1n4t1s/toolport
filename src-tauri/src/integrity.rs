@@ -6497,6 +6497,9 @@ mod tests {
             std::fs::write(&unrelated, "user bytes").unwrap();
             std::fs::write(&path, "{ original unreadable bytes").unwrap();
             std::fs::write(pins_backup_path(&path), "{ corrupt backup").unwrap();
+            let mut ask_warning = pins_tamper_event();
+            ask_warning["profile"] = json!(profile.unwrap_or(""));
+            assert!(record_event(&ask_warning));
             recover_unreadable_baseline_at_off(profile, &vec![tool("srv__read", "Current")])
                 .unwrap();
             let copies: Vec<_> = std::fs::read_dir(path.parent().unwrap())
