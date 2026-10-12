@@ -10312,10 +10312,13 @@ fn maybe_check_integrity(
         #[cfg(test)]
         observe_integrity_gate();
         if review_state.is_err() && !blocking && !quarantine_on {
-            // Preserve the tamper signal without allowing a corrupt baseline to
-            // rewrite away remembered review markers or approve unknown tools.
-            integrity::record_unreadable_review_state(profile);
-            return Err(("Could not read the integrity review state".into(), review_names.clone()));
+            // Off re-baselines ordinary tools, while known reviews still require
+            // bound approval. Unknown names alone do not create a review at Off.
+            review_names = integrity::definition_review_names(profile)
+                .intersection(&all_names).cloned().collect();
+            review_required = !review_names.is_empty();
+            integrity::recover_unreadable_baseline_at_off(profile, tools)
+                .map_err(|error| (error, review_names.clone()))?;
         }
         integrity::ensure_quarantine_store_for_fresh_pins(profile)
             .map_err(|error| (error, all_names.clone()))?;
@@ -39229,28 +39232,14 @@ mod tests {
             .lock()
             .unwrap()
             .set_safety_level(registry::SafetyLevel::Off);
-        assert_eq!(effective_quarantine(&registry, profile, &AtomicBool::new(false)), None,
-            "switching to Off must not approve an unreadable review state");
-        assert!(!reconcile_quarantine(&registry, &router, &stdio, profile, None, &AtomicBool::new(false)));
-        assert!(router.lock().unwrap().quarantined().contains("srv__wipe"));
-        // Once its ordinary pin and quarantine state are readable, Off restores
-        // v1 exposure without requiring approval of an ordinary drift record.
-        let key = registry::profile_store_key(profile.unwrap());
-        std::fs::write(dir.join(format!("tool-pins-v2-{key}.json")), json!({"srv__wipe":"v3:accepted-definition"}).to_string()).unwrap();
-        std::fs::write(dir.join(format!("quarantine-v2-{key}.json")), "{}").unwrap();
         assert_eq!(
             effective_quarantine(&registry, profile, &AtomicBool::new(false)),
-            Some(BTreeSet::new())
+            Some(BTreeSet::new()),
+            "Off ignores baseline loss for ordinary tools"
         );
-        assert!(reconcile_quarantine(
-            &registry,
-            &router,
-            &stdio,
-            profile,
-            None,
-            &AtomicBool::new(false)
-        ));
+        assert!(reconcile_quarantine(&registry, &router, &stdio, profile, None, &AtomicBool::new(false)));
         assert!(router.lock().unwrap().quarantined().is_empty());
+        assert!(std::fs::read_to_string(dir.join(format!("tool-pins-v2-{}.json", registry::profile_store_key(profile.unwrap())))).unwrap().contains("srv__wipe"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -39673,7 +39662,7 @@ mod tests {
         let published = requarantine_if_needed(&registry, &mut built, offered, None);
         assert!(!published.iter().any(|tool| tool["name"] == "srv__read"));
         assert!(published.iter().any(|tool| tool["name"] == "other__read"));
-        assert!(!published.iter().any(|tool| tool["name"] == "unknown__read"));
+        assert!(published.iter().any(|tool| tool["name"] == "unknown__read"), "Off re-baselines ordinary unknown names");
         let router = Arc::new(Mutex::new(Arc::new(built)));
         let before = router.lock().unwrap().clone();
         for _ in 0..3 {

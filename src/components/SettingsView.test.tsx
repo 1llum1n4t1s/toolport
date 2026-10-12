@@ -12,6 +12,7 @@ import {
   dataRemovalPlan,
   removeToolportData,
   getRegistry,
+  getSecurityEvents,
   isAutostartEnabled,
   listServerTools,
   listQuarantined,
@@ -37,6 +38,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     dataRemovalPlan: vi.fn(),
     removeToolportData: vi.fn(),
     getRegistry: vi.fn(),
+    getSecurityEvents: vi.fn().mockResolvedValue([]),
     listServerTools: vi.fn(),
     listQuarantined: vi.fn().mockResolvedValue([]),
     releaseQuarantine: vi.fn(),
@@ -788,4 +790,13 @@ describe("SettingsView explicit data removal", () => {
       "/fixture/Toolport-removal-report.json",
     );
   });
+});
+
+
+it("shows the baseline corruption cause at Off even without quarantined tools", async () => {
+  const detail = "The integrity baseline was unreadable or corrupt. Safety is Off, so ordinary tools remain available.";
+  vi.mocked(getSecurityEvents).mockResolvedValueOnce([{ ts: 1, type: "pins_load_failed", change: "tamper", detail }]);
+  renderSettings("safety");
+  expect(await screen.findByText(`Last baseline warning: ${detail}`)).toBeInTheDocument();
+  expect(screen.queryByText("Quarantined tools")).not.toBeInTheDocument();
 });

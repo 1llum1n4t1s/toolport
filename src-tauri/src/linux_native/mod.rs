@@ -4842,7 +4842,8 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
             lines.push("The tool definition matched suspicious instruction patterns.".to_string())
         }
         ("pins_load_failed", _) => lines.push(
-            "Toolport could not read the trusted definition baseline and failed closed."
+            event["detail"].as_str()
+                .unwrap_or("Toolport could not read the integrity baseline because it was unreadable or corrupt. See Settings for the current safety policy.")
                 .to_string(),
         ),
         ("sync_change_refused", _) => lines.push(

@@ -536,6 +536,7 @@ enum PinsLoad {
 /// but remembered review names must stay blocked, including retired reviews.
 #[derive(Clone, Default)]
 struct ReviewPins {
+    reviews: Pins,
     names: BTreeSet<String>,
     active: BTreeSet<String>,
     ordinary: BTreeSet<String>,
@@ -547,6 +548,7 @@ impl ReviewPins {
         let mut state = Self::default();
         for (name, pin) in pins {
             if pin.review_on_upgrade || pin.review_pending {
+                state.reviews.insert(name.clone(), pin.clone());
                 state.names.insert(name.clone());
                 if !pin.review_retired {
                     state.active.insert(name.clone());
@@ -628,18 +630,33 @@ pub fn definition_review_names_for_catalog(
     let mut names: BTreeSet<_> = state.names.intersection(present).cloned().collect();
     if state.unreadable {
         names.extend(present.difference(&state.ordinary).cloned());
-        if let Some(path) = pins_path(profile) {
-            let mut cache = REVIEW_PINS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(entry) = cache.get_mut(&path) {
-                if std::sync::Arc::ptr_eq(&entry.state, &state) {
-                    std::sync::Arc::make_mut(&mut entry.state).names.extend(names.iter().cloned());
-                }
-            }
-        }
         Err(names)
     } else {
         Ok(names)
     }
+}
+
+/// Off restores ordinary v1 exposure after baseline loss. Remembered pending pins
+/// survive the reset; durable quarantine reviews are recovered by the normal gate.
+pub fn recover_unreadable_baseline_at_off(
+    profile: Option<&str>, current: &(impl ToolCatalog + ?Sized),
+) -> Result<(), String> {
+    let remembered = cached_review_pins(profile).reviews.clone();
+    let path = pins_path(profile).ok_or("Could not resolve the integrity pin store")?;
+    with_store_lock(&path, || {
+        if !matches!(load_pins(profile), PinsLoad::Corrupt) {
+            return Ok(());
+        }
+        let mut event = pins_tamper_event();
+        event["profile"] = json!(profile.unwrap_or(""));
+        event["detail"] = json!("Toolport could not read the integrity baseline because it was unreadable or corrupt. Safety is Off, so ordinary tools remain available.");
+        record_event(&event);
+        let mut pins: Pins = current.pin_values()
+            .filter_map(|(tool, schema)| tool["name"].as_str().map(|name| (name.to_string(), pin_with_source(tool, schema))))
+            .collect();
+        pins.extend(remembered);
+        save_pins(profile, &pins)
+    })
 }
 
 /// Record corruption once per failed stamped read without repeating its I/O
@@ -1883,10 +1900,6 @@ pub fn review_quarantined(profile: Option<&str>) -> Result<BTreeSet<String>, Str
 
 /// Watcher enforcement also retains retired review names in case they return.
 pub fn review_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<String>, String> {
-    let state = cached_review_pins(profile);
-    if state.unreadable && state.names.is_empty() && state.ordinary.is_empty() {
-        return Err("Could not read the integrity review state".into());
-    }
     let Some(path) = quarantine_path(profile) else {
         return Ok(BTreeSet::new());
     };
@@ -4030,6 +4043,7 @@ fn pins_tamper_event() -> Value {
         "type": "pins_load_failed",
         "change": "tamper",
         "severity": SEV_HIGH,
+        "detail": "Toolport could not read the integrity baseline because it was unreadable or corrupt. Tools stay blocked at Ask and Strict until the baseline is restored.",
     })
 }
 

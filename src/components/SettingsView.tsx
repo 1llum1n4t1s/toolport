@@ -44,6 +44,7 @@ import {
   dataRemovalPlan,
   removeToolportData,
   getRegistry,
+  getSecurityEvents,
   type DisconnectResult,
   disableAutostart,
   enableAutostart,
@@ -662,6 +663,7 @@ export function SettingsView({
   }
   const [quarantined, setQuarantined] = useState<QuarantinedTool[]>([]);
   const [quarantineError, setQuarantineError] = useState(false);
+  const [baselineNotice, setBaselineNotice] = useState<string | null>(null);
   const [allowedTools, setAllowedTools] = useState<AllowedTool[]>([]);
   const [allowedError, setAllowedError] = useState(false);
   const [bridge, setBridge] = useState<HttpBridgeStatus | null>(null);
@@ -784,8 +786,14 @@ export function SettingsView({
   }, [loadBridge]);
 
   useEffect(() => {
-    const load = () =>
-      listQuarantined()
+    const load = () => {
+      void getSecurityEvents()
+        .then((events) => {
+          const event = events.find((event) => event.type === "pins_load_failed");
+          setBaselineNotice(event ? event.detail || "Toolport could not read the integrity baseline because it was unreadable or corrupt. See Activity for details." : null);
+        })
+        .catch(() => {});
+      return listQuarantined()
         .then((q) => {
           setQuarantined(q);
           setQuarantineError(false);
@@ -793,6 +801,7 @@ export function SettingsView({
         // A failed poll must not read as "nothing quarantined": keep any prior
         // list and flag the error so the panel can say the status is stale.
         .catch(() => setQuarantineError(true));
+    };
     load();
     // Quarantine happens asynchronously in the gateway, so poll to keep the list fresh.
     const id = setInterval(load, 15000);
@@ -1154,6 +1163,11 @@ export function SettingsView({
                 .filter(Boolean)
                 .join(", ")}
               . These protections do not raise your safety level.
+            </p>
+          )}
+          {baselineNotice && (
+            <p role="status" className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+              Last baseline warning: {baselineNotice}
             </p>
           )}
           {quarantined.length === 0 && quarantineError && (
