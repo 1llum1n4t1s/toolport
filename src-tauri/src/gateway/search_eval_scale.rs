@@ -378,11 +378,7 @@ fn search_scale_measure() {
             continue;
         }
         let intents: Vec<Value> = serde_json::from_str(text).unwrap();
-        let menu_limit = if limit == 0 {
-            DEFAULT_SEARCH_RESULTS
-        } else {
-            limit
-        };
+        let menu_limit = requested_search_limit(&json!({"limit":limit}));
         let mut report = evaluate_at_menu_depth(name, &intents, &tools, &index, 25, menu_limit);
         // Capture the actual first-search response, including all model guidance.
         // A fresh guard per intent prevents repeated searches from truncating results.

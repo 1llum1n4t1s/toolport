@@ -7,6 +7,10 @@ use tokenizers::Tokenizer;
 const WEIGHTS: &[u8] = include_bytes!("../../assets/search/model-q8.bin");
 const TOKENIZER: &[u8] = include_bytes!("../../assets/search/tokenizer.json");
 
+pub const DOCUMENT_REPRESENTATION: &str = "search-document-full-description-v2";
+pub const ENCODE_CHAR_LIMIT: usize = 2048;
+pub const ENCODE_TOKEN_LIMIT: usize = 256;
+
 pub struct Model {
     tokenizer: Tokenizer,
     weights: Cow<'static, [u8]>,
@@ -64,11 +68,15 @@ impl Model {
 
     pub fn encode(&self, text: &str) -> Vec<f32> {
         let mut out = vec![0.0; self.dimensions];
-        let bounded: String = text.chars().take(2048).collect();
-        let Ok(encoded) = self.tokenizer.encode(bounded, false) else {
+        let Ok(encoded) = self.encode_input(text) else {
             return out;
         };
-        for id in encoded.get_ids().iter().take(256).map(|id| *id as usize) {
+        for id in encoded
+            .get_ids()
+            .iter()
+            .take(ENCODE_TOKEN_LIMIT)
+            .map(|id| *id as usize)
+        {
             if id >= self.rows {
                 continue;
             }
@@ -96,6 +104,16 @@ impl Model {
         }
         out
     }
+
+    /// One tokenizer pass for both pooled vectors and future ordered evidence.
+    /// IDs/offsets cover the character-bounded input; consumers of static vectors
+    /// must use the first ENCODE_TOKEN_LIMIT IDs. No ordered cache is built here.
+    pub fn encode_input(&self, text: &str) -> Result<tokenizers::Encoding, String> {
+        let bounded: String = text.chars().take(ENCODE_CHAR_LIMIT).collect();
+        self.tokenizer
+            .encode(bounded, false)
+            .map_err(|error| error.to_string())
+    }
 }
 
 pub fn asset_digest() -> &'static [u8] {
@@ -103,7 +121,7 @@ pub fn asset_digest() -> &'static [u8] {
     static DIGEST: OnceLock<Vec<u8>> = OnceLock::new();
     DIGEST.get_or_init(|| {
         let mut hash = Sha256::new();
-        hash.update(b"search-document-full-description-v2");
+        hash.update(DOCUMENT_REPRESENTATION.as_bytes());
         hash.update(WEIGHTS);
         hash.update(TOKENIZER);
         hash.finalize().to_vec()
@@ -158,24 +176,25 @@ pub fn document(tool: &Value) -> String {
         previous_lower = c.is_lowercase();
     }
     readable.push_str(" . ");
-    let remaining = 2048usize.saturating_sub(readable.chars().count());
+    let remaining = ENCODE_CHAR_LIMIT.saturating_sub(readable.chars().count());
     readable.extend(evidence.description.chars().take(remaining));
-    readable.chars().take(2048).collect()
+    readable.chars().take(ENCODE_CHAR_LIMIT).collect()
 }
 
 #[cfg(test)]
 pub fn document_status(tool: &Value) -> Value {
     let evidence = source(tool);
     let text = document(tool);
-    let encoded = model().tokenizer.encode(text.clone(), false).unwrap();
+    let encoded = model().encode_input(&text).unwrap();
     serde_json::json!({
         "source_description_chars":evidence.description.chars().count(),
         "semantic_chars":text.chars().count(),
         "semantic_tokens_before_cap":encoded.get_ids().len(),
-        "token_truncated":encoded.get_ids().len() > 256,
+        "token_truncated":encoded.get_ids().len() > ENCODE_TOKEN_LIMIT,
         "description_complete_before_token_cap":text.ends_with(evidence.description),
         "schema_embedded":false,"schema_retained":evidence.input_schema.is_some(),
-        "complete_source_retained":true
+        "complete_source_retained":true,
+        "representation":DOCUMENT_REPRESENTATION,"char_limit":ENCODE_CHAR_LIMIT,"token_limit":ENCODE_TOKEN_LIMIT
     })
 }
 
