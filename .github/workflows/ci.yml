@@ -231,17 +231,59 @@ jobs:
               -- --exact --ignored
           done
 
+  rustfmt:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    name: Rust changed-line formatting
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.99.0
+          components: rustfmt
+      # A changed-line check avoids rewriting legacy files or following modules.
+      # Bump with Clippy after reviewing the resulting formatting and lint changes.
+      - name: Check changed Rust lines
+        env:
+          FORMAT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python3 scripts/test-check-rustfmt.py
+          base="$FORMAT_BASE"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            # Manual runs and first pushes have no event base; check this commit.
+            base="$(git rev-parse HEAD^)"
+          fi
+          python3 scripts/check-rustfmt.py --base "$base"
+
   clippy:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    name: Rust Clippy
+    name: Rust Clippy (${{ matrix.shell }})
     # Without this the job inherits GitHub's 6-hour default. A flaky Ubuntu mirror
     # hung `apt-get update` here for 34 minutes with no compiler ever reached, and
     # because the job never ended the whole run stayed in progress - which also
     # blocks `gh run rerun --failed` on the jobs that DID fail. 30 matches
     # cross-platform-rust, the other job that compiles this crate from cold.
     timeout-minutes: 30
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shell: headless
+            features: search-static,test-support
+            packages: ""
+          - shell: desktop
+            features: search-static,test-support,desktop
+            packages: libwebkit2gtk-4.1-dev libsoup-3.0-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev
+          - shell: gtk
+            features: search-static,test-support,gtk-desktop
+            packages: libgtk-4-dev libadwaita-1-dev
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -249,25 +291,25 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          toolchain: 1.99.0
           components: clippy
 
-      # Same headless dependency set as build-test: no GTK/WebKit, because the
-      # lint below skips the Tauri desktop feature for the same reason.
+      # Each shell is linted with its test fixtures and all targets.
       - name: Install Linux build dependencies
-        run: scripts/ci-apt-install.sh build-essential libssl-dev pkg-config libdbus-1-dev
+        run: scripts/ci-apt-install.sh build-essential libssl-dev pkg-config libdbus-1-dev ${{ matrix.packages }}
 
-      # --no-default-features matches every other Rust job here. With the desktop
-      # feature on, this needs the GTK and WebKit headers and dies building gdk-sys.
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
-          key: ci-clippy
+          key: ci-clippy-${{ matrix.shell }}
           cache-bin: "false"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Bump this job's toolchain only after reviewing new lints and running
+      # all three Clippy feature sets with -D warnings on devbox; other build jobs stay on stable.
       - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features search-static --lib --bins
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features ${{ matrix.features }} --all-targets -- -D warnings
 
   build-test:
     needs: changes
@@ -295,7 +337,7 @@ jobs:
       - name: Install Linux build dependencies
         # Same set as the release workflow: WebKitGTK + the Secret Service
         # (libdbus) deps the Tauri lib needs to compile on Linux.
-        run: scripts/ci-apt-install.sh libwebkit2gtk-4.1-dev libsoup-3.0-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf pkg-config libdbus-1-dev
+        run: scripts/ci-apt-install.sh libwebkit2gtk-4.1-dev libsoup-3.0-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf pkg-config libdbus-1-dev dbus-daemon
 
       - name: Give the runner headroom (a cold build links WebKitGTK)
         run: |
@@ -317,7 +359,8 @@ jobs:
       # Keeping all three flags prevents any test class from silently dropping
       # out of CI when the command is updated.
       - name: Rust tests (lib + binaries + integration)
-        run: npm run test:rust
+        # Notification fixtures register a mock endpoint on this private bus.
+        run: dbus-run-session -- npm run test:rust
 
       - name: Build headless gateway for smoke tests
         run: npm run build:gateway
@@ -552,8 +595,7 @@ jobs:
   # install.ps1 Pester job could not block merge. This job keeps the required
   # name and requires all selected checks. Only unchanged native jobs on a
   # frontend-only PR may skip; failures, cancellations and unexpected skips
-  # block the gate. Clippy stays out of this gate (non-blocking
-  # until existing warnings are cleared). Adding the individual job names as
+  # block the gate. Clippy and changed-line Rust formatting are also required. Adding job names as
   # separate required contexts still needs a GitHub settings click; this file
   # cannot do that.
   merge-gate:
@@ -562,6 +604,8 @@ jobs:
     needs:
       - changes
       - frontend
+      - clippy
+      - rustfmt
       - build-test
       - cross-platform-rust
       - linux-native

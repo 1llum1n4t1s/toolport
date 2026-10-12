@@ -33,6 +33,7 @@ export function AddClientLocationDialog({
   useEffect(() => {
     if (!open) return;
     let current = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the previous dialog error as the client-type request starts.
     setError(null);
     getClientLocationTypes()
       .then((rows) => {

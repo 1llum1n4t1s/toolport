@@ -355,21 +355,11 @@ pub const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
 /// aggregated result. `refresh_after` normally matches it; after a failed refresh
 /// it moves forward briefly to avoid retrying on every one-second watcher tick
 /// while the advertised remaining TTL correctly stays at zero.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CacheHint {
     expires_at: Option<Instant>,
     refresh_after: Option<Instant>,
     public: bool,
-}
-
-impl Default for CacheHint {
-    fn default() -> Self {
-        Self {
-            expires_at: None,
-            refresh_after: None,
-            public: false,
-        }
-    }
 }
 
 #[cfg(feature = "test-support")]
@@ -527,7 +517,6 @@ impl CatalogStorage for SerializedTools {
 ///   Requiring confirmation rather than refusing outright keeps a genuine
 ///   downsizing (revoked scopes, an admin pruning tools) from being pinned to a
 ///   stale catalog forever.
-
 fn apply_catalog_refresh(
     previous: &mut impl CatalogStorage,
     new_items: Vec<Value>,
@@ -616,7 +605,7 @@ pub fn relayable_meta(meta: Option<&Value>) -> Option<Value> {
         })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    (!kept.is_empty()).then(|| Value::Object(kept))
+    (!kept.is_empty()).then_some(Value::Object(kept))
 }
 
 /// Apply the same per-hop discipline to a params object that is forwarded
@@ -1986,8 +1975,8 @@ pub fn augmented_path() -> &'static str {
             .ok()
             .map(|p| p.split(':').map(String::from).collect())
             .unwrap_or_default();
-        let mut push = |d: String, list: &mut Vec<String>| {
-            if !d.is_empty() && !list.iter().any(|x| *x == d) {
+        let push = |d: String, list: &mut Vec<String>| {
+            if !d.is_empty() && !list.contains(&d) {
                 list.push(d);
             }
         };
@@ -2925,7 +2914,7 @@ fn deno_dangerous(args: &[String]) -> Option<&str> {
         "-L",
     ];
     let (sub, si) = next_operand(args, 0, VALUE_OPTS);
-    let Some(sub) = sub else { return None };
+    let sub = sub?;
     if sub.eq_ignore_ascii_case("eval") {
         return Some(sub);
     }
@@ -2950,7 +2939,7 @@ fn bun_dangerous(args: &[String]) -> Option<&str> {
     // `bun --cwd x run https://evil` is caught while a URL passed as an app arg is ignored.
     const VALUE_OPTS: &[&str] = &["--cwd", "--config", "-c"];
     let (sub, si) = next_operand(args, 0, VALUE_OPTS);
-    let Some(sub) = sub else { return None };
+    let sub = sub?;
     let (target, _) = if sub.eq_ignore_ascii_case("run")
         || sub.eq_ignore_ascii_case("x")
         || sub.eq_ignore_ascii_case("exec")
@@ -3888,6 +3877,8 @@ impl StdioCore {
     /// Wait for this request's response, handling server requests attributed to
     /// it on this thread. The deadline bounds the whole wait so an unresponsive
     /// server fails fast instead of hanging the thread indefinitely.
+    // The wait must carry the request context and both cancellation guards together.
+    #[allow(clippy::too_many_arguments)]
     fn wait(
         &self,
         mut waiter: WaiterGuard<'_>,
@@ -9213,7 +9204,7 @@ pub trait ServerDispatch {
                 ))
             }
         };
-        if requests.map_or(true, serde_json::Map::is_empty) && request_state.is_none() {
+        if requests.is_none_or(serde_json::Map::is_empty) && request_state.is_none() {
             return Err(TransportError::Fatal(
                 "modern server returned input_required without inputRequests or requestState"
                     .to_string(),
@@ -9280,7 +9271,8 @@ pub trait ServerDispatch {
             std::thread::sleep(MRTR_STATE_ONLY_DELAY);
         }
         Ok(Some(MrtrRequest {
-            input_responses: (!input_responses.is_empty()).then(|| Value::Object(input_responses)),
+            input_responses: (!input_responses.is_empty())
+                .then_some(Value::Object(input_responses)),
             request_state,
         }))
     }
@@ -9825,6 +9817,8 @@ mod tests {
     }
 
     impl MrtrTransport {
+        // Return the transport with its shared request capture for protocol assertions.
+        #[allow(clippy::type_complexity)]
         fn modern(
             call_responses: Vec<Result<Value, TransportError>>,
         ) -> (Self, Arc<Mutex<Vec<(String, Value)>>>) {
@@ -16016,9 +16010,7 @@ for line in sys.stdin:
         );
         let expected = format!("stamp:{MODERN_PROTOCOL_VERSION}");
         assert!(
-            events[discovers[0] + 1..discovers[1]]
-                .iter()
-                .any(|e| *e == expected),
+            events[discovers[0] + 1..discovers[1]].contains(&expected),
             "the retry must re-stamp between the two sends, got {events:?}"
         );
     }

@@ -316,7 +316,7 @@ fn mcp_request(scratch: &Scratch, daemon: &ChildGuard, method: &str, params: Val
         body.lines()
             .filter_map(|line| line.strip_prefix("data:"))
             .filter_map(|line| serde_json::from_str(line.trim()).ok())
-            .last()
+            .next_back()
             .unwrap()
     } else {
         serde_json::from_str(&body).unwrap()

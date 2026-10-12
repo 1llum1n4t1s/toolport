@@ -273,11 +273,10 @@ fn project<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
     for segment in path.split('.') {
         if let Some(object) = current.as_object() {
             current = object.get(segment)?;
-        } else if let Some(array) = current.as_array() {
+        } else {
+            let array = current.as_array()?;
             let index = segment.parse::<usize>().ok()?;
             current = array.get(index)?;
-        } else {
-            return None;
         }
     }
 

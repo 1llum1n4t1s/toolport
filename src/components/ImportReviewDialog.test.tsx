@@ -1,14 +1,14 @@
+import { ImportReviewDialog } from "./ImportReviewDialog";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
-  ImportReviewDialog,
   runsShell,
   isPrivateHostUrl,
   needsTeamEnableReview,
   sameReviewedDefinition,
-} from "./ImportReviewDialog";
-import type { ReviewedFields } from "./ImportReviewDialog";
+} from "@/lib/importReview";
+import type { ReviewedFields } from "@/lib/importReview";
 import type { ImportItem } from "@/lib/types";
 
 function items(): ImportItem[] {

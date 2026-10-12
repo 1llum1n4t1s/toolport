@@ -795,6 +795,8 @@ fn is_sidebar_row(target: &str, _paired: bool) -> bool {
     }
 }
 
+// Keep the native navigation widgets and their shared page state together.
+#[allow(clippy::too_many_arguments)]
 fn build_sidebar(
     app: &adw::Application,
     split: &adw::NavigationSplitView,
@@ -1152,10 +1154,10 @@ fn install_star_prompt(container: &gtk::Box) {
                         .downcast_ref::<gtk::Window>()
                         .is_some_and(|window| window.is_modal() && window.is_visible())
                 });
-            if star_should_show(eligible, sidebar_on_screen, unobstructed) {
-                if marker().is_some_and(|marker| spend_star_prompt(&marker)) {
-                    card_for_timer.set_visible(true);
-                }
+            if star_should_show(eligible, sidebar_on_screen, unobstructed)
+                && marker().is_some_and(|marker| spend_star_prompt(&marker))
+            {
+                card_for_timer.set_visible(true);
             }
         });
     });
@@ -1443,13 +1445,12 @@ fn newly_observed_security_events(
 /// A damaged quarantine store makes duplicate suppression uncertain, but it
 /// must not stop the independent security-event feed. The quarantine badge
 /// reports its own read failure as unknown.
-fn read_security_watch_snapshot() -> Result<
-    (
-        Vec<serde_json::Value>,
-        Result<Vec<serde_json::Value>, String>,
-    ),
-    String,
-> {
+type SecurityWatchSnapshot = (
+    Vec<serde_json::Value>,
+    Result<Vec<serde_json::Value>, String>,
+);
+
+fn read_security_watch_snapshot() -> Result<SecurityWatchSnapshot, String> {
     let events = crate::integrity::read_recent(25)
         .map_err(|error| format!("could not read security events: {error}"))?;
     // Keep the error distinct from a known-empty quarantine. The badge displays
@@ -1605,6 +1606,8 @@ fn start_quarantine_watch(app: &adw::Application, badge: gtk::Label, alert: Quar
     gtk::glib::timeout_add_local(std::time::Duration::from_secs(15), tick);
 }
 
+// Keep the native navigation widgets and their shared page state together.
+#[allow(clippy::too_many_arguments)]
 fn show_native_page(
     split: &adw::NavigationSplitView,
     stack: &gtk::Stack,
@@ -2008,7 +2011,7 @@ impl ServerPage {
             .into_iter()
             .flatten()
         {
-            let (status, class) = probe_status_line(&probe);
+            let (status, class) = probe_status_line(probe);
             row.label
                 .set_label(&format!("{} · {status}", row.transport));
             row.label.remove_css_class("success");
@@ -2060,6 +2063,7 @@ impl ServerPage {
         *self.feedback_timer.borrow_mut() = Some(timer);
     }
 
+    #[cfg(test)]
     fn hide_feedback(&self) {
         self.cancel_feedback_timer();
         self.feedback.set_visible(true);
@@ -2562,7 +2566,7 @@ fn grouped_number(n: u64) -> String {
         .chars()
         .enumerate()
         .fold(String::new(), |mut s, (i, c)| {
-            if i > 0 && (digits.len() - i) % 3 == 0 {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
                 s.push(',');
             }
             s.push(c);
@@ -3737,6 +3741,8 @@ impl ActivityPage {
             }
         }
         self.call_count.set_label(&snapshot.call_count.to_string());
+        // Do not evaluate the numerator when there are no calls.
+        #[allow(clippy::manual_checked_ops)]
         let success_rate = if snapshot.call_count == 0 {
             "–".to_string()
         } else {
@@ -6856,7 +6862,6 @@ fn share_setup(page: ServerPage) {
 
     {
         let collect = collect.clone();
-        let export = export.clone();
         let feedback = feedback.clone();
         copy_link.connect_clicked(move |button| {
             let (name, description, selected) = collect();
@@ -6866,7 +6871,6 @@ fn share_setup(page: ServerPage) {
             }
             button.set_sensitive(false);
             show(&feedback, "Creating a secret-free share link…", false);
-            let export = export.clone();
             let feedback = feedback.clone();
             let button = button.clone();
             gtk::glib::spawn_future_local(async move {
@@ -6897,7 +6901,6 @@ fn share_setup(page: ServerPage) {
     }
     {
         let collect = collect.clone();
-        let export = export.clone();
         let feedback = feedback.clone();
         copy_json.connect_clicked(move |_| {
             let (name, description, selected) = collect();
@@ -6932,7 +6935,6 @@ fn share_setup(page: ServerPage) {
                 .modal(true)
                 .build();
             set_file_dialog_folder(&dialog);
-            let export = export.clone();
             let feedback = feedback.clone();
             dialog.save(
                 Some(&window_for_save),
@@ -7291,9 +7293,11 @@ fn setup_import_target(item: &crate::sharing_controller::SetupImportItem) -> Str
             "{} · {}{}",
             item.transport,
             command,
-            (!args.is_empty())
-                .then(|| format!(" {args}"))
-                .unwrap_or_default()
+            if !args.is_empty() {
+                format!(" {args}")
+            } else {
+                Default::default()
+            }
         );
     }
     format!(
@@ -9411,7 +9415,8 @@ fn open_server_editor_prefilled(
 
     // Pasted env values wait here until the add commits; the entry itself never
     // carries secret values, they go straight to the keychain on save.
-    let snippet_env: std::rc::Rc<std::cell::RefCell<Vec<(String, Option<String>)>>> =
+    type SnippetEnv = Vec<(String, Option<String>)>;
+    let snippet_env: std::rc::Rc<std::cell::RefCell<SnippetEnv>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
 
     let name = gtk::Entry::builder()
@@ -9527,11 +9532,12 @@ fn open_server_editor_prefilled(
         .as_ref()
         .map(|server| server.args.clone())
         .unwrap_or_default();
-    let mut launch_entries: Vec<(
+    type LaunchEntry = (
         crate::registry::LaunchInput,
         gtk::Entry,
         Option<(gtk::DropDown, gtk::Entry)>,
-    )> = Vec::new();
+    );
+    let mut launch_entries: Vec<LaunchEntry> = Vec::new();
     if let Some(launch) = &original_launch {
         if !launch.inputs.is_empty() {
             let section = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -10721,9 +10727,7 @@ mod tests {
         app.register(gtk::gio::Cancellable::NONE).unwrap();
         let (root, page, _) = super::build_content(&app, crate::approval_broker::start_native());
         let window = adw::ApplicationWindow::builder().application(&app).content(&root).build();
-        let mut reg = crate::registry::Registry::default();
-        reg.team = Some(serde_json::from_value(serde_json::json!({"teamId":"solo","role":"admin","serverUrl":"http://127.0.0.1:1","reportingDeviceId":"fixture","accountStatus":{"personalSync":true,"plan":"pro","canReceiveConfig":true}})).unwrap());
-        reg.servers = ["A", "B"].into_iter().map(|name| serde_json::from_value(serde_json::json!({"id":name,"name":name,"transport":"http","url":"https://example.com/mcp","env":[],"enabled":false})).unwrap()).collect();
+        let mut reg = crate::registry::Registry { team: Some(serde_json::from_value(serde_json::json!({"teamId":"solo","role":"admin","serverUrl":"http://127.0.0.1:1","reportingDeviceId":"fixture","accountStatus":{"personalSync":true,"plan":"pro","canReceiveConfig":true}})).unwrap()), servers: ["A", "B"].into_iter().map(|name| serde_json::from_value(serde_json::json!({"id":name,"name":name,"transport":"http","url":"https://example.com/mcp","env":[],"enabled":false})).unwrap()).collect(), ..Default::default() };
         crate::registry::save(&reg).unwrap();
         page.render(super::state::RegistryState::Ready(super::state::RegistrySnapshot::from_registry(reg.clone())));
         window.present();
@@ -11202,7 +11206,7 @@ mod tests {
             super::NAV_SECTIONS
                 .iter()
                 .map(|(target, _, _)| *target)
-                .filter(|target| super::is_sidebar_row(*target, paired))
+                .filter(|target| super::is_sidebar_row(target, paired))
                 .collect::<Vec<_>>()
         };
         assert_eq!(
@@ -11425,7 +11429,7 @@ mod tests {
             assert_ne!(old["historical"], true);
             assert!(!change_can_be_accepted(old));
             assert!(!group_can_be_accepted(
-                &crate::integrity::group_tool_changes(&[old.clone()]).remove(0)
+                &crate::integrity::group_tool_changes(std::slice::from_ref(old)).remove(0)
             ));
             assert!(security_review_lines(old)
                 .iter()
@@ -11436,7 +11440,7 @@ mod tests {
     #[test]
     fn poison_flagged_drift_requires_per_tool_review_and_shows_signatures() {
         let event = serde_json::json!({"type":"tool_drift", "server":"srv", "tool":"srv__update", "ts":100, "blocked":true, "blocked_profiles":["work"], "new_fp":"v2:reviewed", "signatures":["instruction_override"]});
-        let group = crate::integrity::group_tool_changes(&[event.clone()]).remove(0);
+        let group = crate::integrity::group_tool_changes(std::slice::from_ref(&event)).remove(0);
         assert!(!group_can_be_accepted(&group));
         assert!(change_can_be_accepted(&event));
         assert!(security_review_lines(&event)

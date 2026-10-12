@@ -90,6 +90,7 @@ export function RegistryServerRow({
   const [detailTab, setDetailTab] = useState<"overview" | "tools">("overview");
   useEffect(() => {
     if (openTools) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Open the requested tools tab when navigation selects this row.
       setExpanded(true);
       setDetailTab("tools");
     }

@@ -9,6 +9,7 @@ const SERVICE: &str = "conduit-mcp";
 pub(crate) mod purge;
 
 const INTERNAL_SERVER_ID: &str = "__toolport_internal__";
+#[cfg(not(test))]
 const TASK_HANDLE_KEY: &str = "__task_handle_key__";
 
 /// Vault reference for a reviewed endpoint containing inline credentials.
@@ -1238,7 +1239,7 @@ pub fn get_secret(server_id: &str, key: &str) -> Option<String> {
 pub(crate) fn task_handle_key() -> Result<[u8; 32], String> {
     #[cfg(test)]
     {
-        return Ok([0x54; 32]);
+        Ok([0x54; 32])
     }
 
     #[cfg(not(test))]

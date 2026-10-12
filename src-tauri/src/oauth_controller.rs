@@ -328,6 +328,7 @@ fn attempts() -> &'static Mutex<std::collections::HashMap<String, Arc<Attempt>>>
     ATTEMPTS.get_or_init(Mutex::default)
 }
 
+#[cfg(any(feature = "desktop", feature = "gtk-desktop", test))]
 pub(crate) fn start_attempt() -> String {
     let id = oauth_attempt_id();
     attempts()
@@ -339,6 +340,7 @@ pub(crate) fn start_attempt() -> String {
 
 /// Mark cancellation on the shell/IPC thread before scheduling cleanup. This is
 /// nonblocking even if a keychain commit already owns the cancellation gate.
+#[cfg(any(feature = "desktop", feature = "gtk-desktop"))]
 pub(crate) fn request_cancel_attempt(attempt_id: &str) {
     if let Some(attempt) = attempts()
         .lock()
@@ -368,6 +370,7 @@ pub(crate) fn cancel_attempt(attempt_id: &str) -> bool {
     false
 }
 
+#[cfg(any(feature = "desktop", feature = "gtk-desktop"))]
 pub(crate) fn cancel_all_attempts() {
     let ids: Vec<_> = attempts()
         .lock()

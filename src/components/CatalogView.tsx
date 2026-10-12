@@ -59,6 +59,7 @@ export function CatalogView({ registry, onAdded }: Props) {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Start the catalog request on mount with its existing loading state.
     reloadPopular();
   }, [reloadPopular]);
 
@@ -67,6 +68,7 @@ export function CatalogView({ registry, onAdded }: Props) {
   useEffect(() => {
     const q = query.trim();
     if (!q) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset stale search state immediately when the query changes.
       setResults(null);
       setSearchError(false);
       setRegistryStatus("notQueried");

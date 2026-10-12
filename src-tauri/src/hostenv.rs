@@ -75,7 +75,7 @@ pub fn restore_session_bus_env() -> Option<PathBuf> {
         Path::new("/run/user"),
     )?;
 
-    if runtime.as_ref().map_or(true, |v| v.is_empty()) {
+    if runtime.as_ref().is_none_or(|v| v.is_empty()) {
         std::env::set_var("XDG_RUNTIME_DIR", &runtime_dir);
     }
     std::env::set_var(

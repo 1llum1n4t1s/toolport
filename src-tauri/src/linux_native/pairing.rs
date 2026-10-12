@@ -9,9 +9,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// What pairing needs from the window it runs in. Tests supply their own.
+type PairingFeedback = Box<dyn Fn(&str, bool)>;
+
 pub(super) struct PairingHooks {
     pub parent: Box<dyn Fn() -> Option<gtk::Window>>,
-    pub feedback: Box<dyn Fn(&str, bool)>,
+    pub feedback: PairingFeedback,
     /// Show the connected Teams view.
     pub connected: Box<dyn Fn()>,
     pub open_url: Box<dyn Fn(&str)>,

@@ -1261,6 +1261,7 @@ function DiscoveryTraces({
 
   useEffect(() => {
     let alive = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the retry error before the new backend request starts.
     setStatus((s) => (s === "error" ? "loading" : s));
     getSearchTraces(100)
       .then((e) => {
@@ -1478,6 +1479,7 @@ function ToolIdentities({ refreshKey }: { refreshKey: number }) {
 
   useEffect(() => {
     let alive = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the retry error before the new backend request starts.
     setStatus((s) => (s === "error" ? "loading" : s));
     getToolIdentities()
       .then((r) => {
@@ -1625,6 +1627,7 @@ function LiveInspector({ refreshKey }: { refreshKey: number }) {
 
   useEffect(() => {
     let alive = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the retry error before the new backend request starts.
     setStatus((s) => (s === "error" ? "loading" : s));
     getInspectLog(50)
       .then((e) => {

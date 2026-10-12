@@ -360,7 +360,9 @@ pub(crate) fn home() -> Option<PathBuf> {
     #[cfg(test)]
     if let Some(path) = TEST_HOME.with(|slot| slot.borrow().clone()) { return Some(path); }
     #[cfg(test)]
-    { return Some(test_paths::home()); }
+    {
+        Some(test_paths::home())
+    }
     #[cfg(all(not(test), feature = "test-support"))]
     if let Some(path) = crate::fixture_paths::dir("home") { return Some(path); }
     #[cfg(not(test))]
@@ -388,7 +390,9 @@ mod test_paths;
 
 fn client_path_env(key: &str) -> Option<std::ffi::OsString> {
     #[cfg(test)]
-    { return test_paths::env(key); }
+    {
+        test_paths::env(key)
+    }
     #[cfg(not(test))]
     std::env::var_os(key)
 }
@@ -396,7 +400,9 @@ fn client_path_env(key: &str) -> Option<std::ffi::OsString> {
 #[cfg(all(unix, not(target_os = "macos")))]
 fn client_config_dir() -> Option<PathBuf> {
     #[cfg(test)]
-    { return test_paths::dir("XDG_CONFIG_HOME", || home().unwrap().join(".config")); }
+    {
+        test_paths::dir("XDG_CONFIG_HOME", || home().unwrap().join(".config"))
+    }
     #[cfg(all(not(test), feature = "test-support"))]
     if let Some(path) = crate::fixture_paths::dir("config") { return Some(path); }
     #[cfg(not(test))]
@@ -405,7 +411,9 @@ fn client_config_dir() -> Option<PathBuf> {
 
 fn client_data_dir() -> Option<PathBuf> {
     #[cfg(test)]
-    { return test_paths::dir("XDG_DATA_HOME", || home().unwrap().join(".local/share")); }
+    {
+        test_paths::dir("XDG_DATA_HOME", || home().unwrap().join(".local/share"))
+    }
     #[cfg(all(not(test), feature = "test-support"))]
     if let Some(path) = crate::fixture_paths::dir("data") { return Some(path); }
     #[cfg(not(test))]
@@ -414,7 +422,9 @@ fn client_data_dir() -> Option<PathBuf> {
 
 fn client_local_data_dir() -> Option<PathBuf> {
     #[cfg(test)]
-    { return test_paths::dir("LOCALAPPDATA", || home().unwrap().join("AppData/Local")); }
+    {
+        test_paths::dir("LOCALAPPDATA", || home().unwrap().join("AppData/Local"))
+    }
     #[cfg(all(not(test), feature = "test-support"))]
     if let Some(path) = crate::fixture_paths::dir("local-data") { return Some(path); }
     #[cfg(not(test))]
@@ -1007,20 +1017,7 @@ pub(crate) fn write_settings_key_for(
     })
 }
 
-/// The exact bytes [`write_settings_json`] would put on disk.
-///
-/// Split out so a dry run can show the real result. Pretty-printing the value instead
-/// would report that every comment in the file is about to vanish, which is the
-/// opposite of what the CST write does (SBS-822 review).
-pub(crate) fn render_settings_json(
-    original: Option<&str>,
-    root: &serde_json::Value,
-) -> Result<String, String> {
-    render_settings_key(original, root, "hooks")
-}
-
-/// [`render_settings_json`] for one top-level `key`: rewrite that key through the CST,
-/// or delete it through the CST when `root` no longer has it.
+/// Rewrite one top-level key through the CST, or delete it when absent from `root`.
 pub(crate) fn render_settings_key(
     original: Option<&str>,
     root: &serde_json::Value,
@@ -1076,8 +1073,9 @@ fn client_config_path_with_home(client_id: &str, home: Option<PathBuf>) -> Optio
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        return resolve_client_config_path_linux(client_id, &home);
+        resolve_client_config_path_linux(client_id, &home)
     }
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
     resolve_client_config_path(client_id, &home, Platform::current())
 }
 
@@ -3576,9 +3574,8 @@ fn read_client(def: &ClientDef) -> DetectedClient {
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_default();
-            let config_exists = def.location.is_none() && fallback
-                .as_ref()
-                .is_some_and(|path| mutation::exists(&path));
+            let config_exists = def.location.is_none()
+                && fallback.as_ref().is_some_and(|path| mutation::exists(path));
             return build(config_path, config_exists, Vec::new(), Some(error));
         }
     };
@@ -4763,7 +4760,7 @@ fn toml_value_to_edit_value(value: &toml::Value) -> toml_edit::Value {
 /// non-empty file is an error (same fail-closed contract as `read_existing_toml`)
 /// so we never replace Codex/Grok `config.toml` with a pretty-printed stub.
 fn load_toml_document(path: &Path) -> Result<toml_edit::DocumentMut, String> {
-    if !mutation::exists(&path) {
+    if !mutation::exists(path) {
         return Ok(toml_edit::DocumentMut::new());
     }
     let content = read_config_file(path)?;
@@ -5570,7 +5567,7 @@ fn parse_existing_yaml_content(content: &str) -> Result<serde_yaml::Value, Strin
 fn read_existing_yaml_with_source(
     path: &Path,
 ) -> Result<(Option<String>, serde_yaml::Value), String> {
-    if !mutation::exists(&path) {
+    if !mutation::exists(path) {
         return Ok((None, serde_yaml::Value::Mapping(serde_yaml::Mapping::new())));
     }
     let content = read_config_file(path)?;
@@ -5665,7 +5662,7 @@ fn write_json_with(
     validate_crush_shape: bool,
     include_tools: bool,
 ) -> Result<(), String> {
-    let (mut root, original) = if mutation::exists(&path) {
+    let (mut root, original) = if mutation::exists(path) {
         let content = read_config_file(path)?;
         let root = read_existing_json(&content, lenient)?;
         (root, Some(content))
@@ -5728,7 +5725,7 @@ fn write_json_with_body(
 }
 
 fn write_qwen_json(path: &Path, servers: &[ServerEntry]) -> Result<(), String> {
-    let (mut root, original) = if mutation::exists(&path) {
+    let (mut root, original) = if mutation::exists(path) {
         let content = read_config_file(path)?;
         let root = read_existing_json(&content, true)?;
         (root, Some(content))
@@ -5785,7 +5782,7 @@ fn opencode_entry_is_override_only(definition: &serde_json::Value) -> bool {
 }
 
 fn write_opencode_json(path: &Path, servers: &[ServerEntry]) -> Result<(), String> {
-    let original = if mutation::exists(&path) {
+    let original = if mutation::exists(path) {
         Some(read_config_file(path)?)
     } else {
         None
@@ -6881,7 +6878,7 @@ fn edit_json_gateway_with(
     validate_crush_shape: bool,
     include_tools: bool,
 ) -> Result<(), String> {
-    let (mut root, original) = if mutation::exists(&path) {
+    let (mut root, original) = if mutation::exists(path) {
         let content = read_config_file(path)?;
         let root = read_existing_json(&content, lenient)?;
         (root, Some(content))
@@ -6957,7 +6954,7 @@ fn edit_json_gateway_body(
 }
 
 fn edit_opencode_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(), String> {
-    let original = if mutation::exists(&path) {
+    let original = if mutation::exists(path) {
         Some(read_config_file(path)?)
     } else {
         None
@@ -7394,13 +7391,6 @@ fn profile_key_from_config_text(content: &str, key: &str) -> Option<String> {
     (!val.is_empty()).then(|| val.to_string())
 }
 
-fn read_gateway_profile(client_id: &str) -> Option<String> {
-    let def = find_def(client_id)?;
-    let path = resolved_definition_path(&def).ok()?;
-    let content = read_config_file(&path).ok()?;
-    profile_from_config_text(&content)
-}
-
 /// Re-point / migrate client gateway entries to the current install on launch.
 /// Rewrites an entry when either:
 ///   - its command still names the pre-rename binary (or a path that no longer
@@ -7450,7 +7440,7 @@ pub fn referenced_gateway_paths() -> Option<Vec<PathBuf>> {
 fn referenced_gateway_paths_for(clients: &[DetectedClient], claude_paths: &[PathBuf]) -> Option<Vec<PathBuf>> {
     let mut paths = referenced_gateway_paths_in(clients)?;
     for path in claude_paths {
-        let text = read_config_file(&path).ok()?;
+        let text = read_config_file(path).ok()?;
         let servers = parse_client_content(Format::JsonMcpServers, &text).ok()?;
         for server in servers {
             if detected_is_gateway(&server) {
@@ -8960,7 +8950,7 @@ mod tests {
         let _home = EnvRestore::set("HOME", &root);
         let dir = root.join(".config/Toolport/bin");
         std::fs::create_dir_all(&dir).unwrap();
-        let old = b"\x7fELFtoolport-gateway\0TOOLPORT_CLIENT_ID\0tools/call\01.19.0";
+        let old = b"\x7fELFtoolport-gateway\0TOOLPORT_CLIENT_ID\0tools/call\x001.19.0";
         let current = root.join("installed with 'quotes'/toolport-gateway");
         std::fs::create_dir_all(current.parent().unwrap()).unwrap();
         std::fs::write(&current, b"current gateway").unwrap();
@@ -10450,7 +10440,7 @@ bad = "not-a-table"
             url: None,
         };
         assert_eq!(
-            resolve_entry_state(&[matching.clone()], Some(&rec)),
+            resolve_entry_state(std::slice::from_ref(&matching), Some(&rec)),
             GatewayEntryState::Managed
         );
 
@@ -10947,7 +10937,7 @@ command = "npx"
             uenv.get(crate::brand::CLIENT_ID).unwrap().as_deref(),
             Some("cursor")
         );
-        assert!(uenv.get(crate::brand::PROFILE).is_none());
+        assert!(!uenv.contains_key(crate::brand::PROFILE));
     }
 
     #[test]
@@ -10960,7 +10950,7 @@ command = "npx"
         let raw = serde_json::json!({"mcpServers":{"toolport":{"command":current,"args":["--private"],"env":{"TOOLPORT_PROFILE":"work","KEEP":"fixture"},"unknown":42}}});
         std::fs::write(&path, raw.to_string()).unwrap();
         assert_eq!(
-            claude_configs_needing_repair(&[path.clone()], current).len(),
+            claude_configs_needing_repair(std::slice::from_ref(&path), current).len(),
             1
         );
         repair_secondary_claude_config(&path, current).unwrap();
@@ -10976,8 +10966,12 @@ command = "npx"
             .remove(crate::brand::ATTRIBUTION_ID);
         assert_eq!(after, raw);
         std::fs::write(&path, raw.to_string()).unwrap();
-        assert_eq!(claude_configs_needing_repair(&[path.clone()], current).len(), 1);
-        let custom = r#"{"mcpServers":{"toolport":{"command":"manual-wrapper","env":{"KEEP":"fixture"}}}}"#;
+        assert_eq!(
+            claude_configs_needing_repair(std::slice::from_ref(&path), current).len(),
+            1
+        );
+        let custom =
+            r#"{"mcpServers":{"toolport":{"command":"manual-wrapper","env":{"KEEP":"fixture"}}}}"#;
         std::fs::write(&path, custom).unwrap();
         assert!(repair_secondary_claude_config(&path, current).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), custom);
@@ -13614,7 +13608,8 @@ rules:
 
     #[test]
     fn client_config_paths_are_stable_across_platforms() {
-        let cases: &[(&str, fn(&Path, Platform) -> PathBuf)] = &[
+        type ConfigPathCase = (&'static str, fn(&Path, Platform) -> PathBuf);
+        let cases: &[ConfigPathCase] = &[
             ("cursor", |home, _| home.join(".cursor").join("mcp.json")),
             ("droid", |home, _| home.join(".factory").join("mcp.json")),
             ("crush", |home, _| {

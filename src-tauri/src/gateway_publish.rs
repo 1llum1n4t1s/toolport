@@ -1881,7 +1881,7 @@ pub fn pid_is_running(pid: u32) -> bool {
         // Linux exposes a definitive answer without spawning anything.
         #[cfg(not(target_os = "macos"))]
         {
-            return Path::new(&format!("/proc/{pid}")).exists();
+            Path::new(&format!("/proc/{pid}")).exists()
         }
         // macOS has no /proc, so `kill -0` it is: the existence/permission check
         // without delivering a signal. Shelled out rather than via libc to match
@@ -2021,7 +2021,7 @@ fn daemon_roles_from_cim_json(
     let rows = value
         .as_array()
         .map(Vec::as_slice)
-        .unwrap_or_else(|| std::slice::from_ref(&value));
+        .unwrap_or_else(|| std::slice::from_ref(value));
     rows.iter()
         .filter_map(|row| {
             let pid = row.get("ProcessId")?.as_u64()? as u32;

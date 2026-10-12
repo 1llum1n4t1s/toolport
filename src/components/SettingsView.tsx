@@ -692,6 +692,7 @@ export function SettingsView({
     }
   }, [setNeedsRestart, setRestartCheckFailed]);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Start the restart-status request on mount.
     void loadNeedsRestart();
   }, [loadNeedsRestart]);
   // Launch-at-login is OS-level state owned by the autostart plugin. Model
@@ -723,6 +724,7 @@ export function SettingsView({
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Start the OS autostart request on mount.
     void loadAutostart();
   }, [loadAutostart]);
 
@@ -866,6 +868,7 @@ export function SettingsView({
     async (v: boolean) => {
       setBusySettings((current) => new Set(current).add(key));
       try {
+        // eslint-disable-next-line react-hooks/refs -- This callback reads the latest registry after IPC, not during render.
         publishRegistrySetting(key, await fn(v));
       } catch (e) {
         toastError(`Couldn't update the setting: ${e}`);
@@ -1033,6 +1036,7 @@ export function SettingsView({
               "text-info",
               "Find tools as needed",
               "Agents search for the tools they need instead of loading the full list. This is the default for connections without saved client settings. Choose a different behavior in Clients.",
+              // eslint-disable-next-line react-hooks/refs -- Render passes an event callback; its registry ref is read only after IPC.
               apply("lazy-discovery", setLazyDiscovery),
               "lazy-discovery",
             )}
@@ -1042,6 +1046,7 @@ export function SettingsView({
               "text-info",
               "Code mode",
               "Let agents combine several tool calls in one script to reduce back-and-forth. Each call follows your access and approval settings. Scripts run in a restricted environment, but this does not replace those settings.",
+              // eslint-disable-next-line react-hooks/refs -- Render passes an event callback; its registry ref is read only after IPC.
               apply("code-mode", setCodeMode),
               "code-mode",
               {
@@ -1234,6 +1239,7 @@ export function SettingsView({
               "text-info",
               "Hide personal data from the model",
               "Replace emails, phone numbers, card numbers and API keys in tool results with placeholders before the model sees them, then put the real values back when it calls a tool. A value only goes back to the server it came from, so a call that would send one server's data to another is refused. Real data stays on this machine and is forgotten when the conversation ends. Off by default; a value no detector recognises still passes through, so this reduces what reaches the model rather than guaranteeing it",
+              // eslint-disable-next-line react-hooks/refs -- Render passes an event callback; its registry ref is read only after IPC.
               apply("pii-redaction", setPiiRedaction),
               "pii-redaction",
             )}
@@ -1243,6 +1249,7 @@ export function SettingsView({
               "text-info",
               "Live request/response inspection",
               "Off by default. While on, Toolport captures each tool call's arguments and results to a small local, ephemeral buffer (the last 50 calls) so you can inspect them in Activity. This is separate from the audit log, never leaves your machine, and is cleared when you turn it off or restart the gateway.",
+              // eslint-disable-next-line react-hooks/refs -- Render passes an event callback; its registry ref is read only after IPC.
               applyLiveInspect,
               "live-inspect",
             )}

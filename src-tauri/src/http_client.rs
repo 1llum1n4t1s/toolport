@@ -236,6 +236,8 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 pub trait ResponseResultExt {
+    // Preserve the response body in status errors for callers that inspect it.
+    #[allow(clippy::result_large_err)]
     fn retain_status_body(self) -> Result<Response, Error>;
 }
 

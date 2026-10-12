@@ -85,6 +85,7 @@ export function QuarantineAlert({ onReview }: { onReview?: () => void }) {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Start the initial quarantine poll on mount.
     void refresh();
     const t = setInterval(() => void refresh(), POLL_MS);
     return () => clearInterval(t);

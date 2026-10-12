@@ -189,6 +189,7 @@ fn get_registry(state: State<RegistryState>) -> Registry {
 /// The onboarding banner promises a count across both server sources (see
 /// `importableServers` in `src/lib/types.ts`), so this must actually cover
 /// both or it silently under-imports relative to what was promised.
+#[cfg(test)]
 fn servers_to_import(
     detected: &[clients::DetectedClient],
     existing: &Registry,
@@ -196,6 +197,7 @@ fn servers_to_import(
     crate::registry_controller::servers_to_import(detected, existing)
 }
 
+#[cfg(test)]
 fn selected_servers_to_import(
     detected: &[clients::DetectedClient],
     existing: &Registry,
@@ -714,6 +716,8 @@ async fn preview_client_setup(
 /// directly - everything routes through Toolport. Backs the config up first.
 ///
 /// Import directly configured servers and connect through the stdio adapter.
+// Preserve the full reviewed import and connection request at the IPC boundary.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn migrate_client(
     state: State<'_, RegistryState>,
@@ -2065,38 +2069,38 @@ fn start_team_lifecycle(app: &tauri::AppHandle) {
                     failures = 0;
                     3
                 }
-                Ok(true) => match {
+                Ok(true) => {
                     let result = teams::sync_wait(25);
                     let _ = handle.emit("team-sync-status", crate::team_sync_status::current());
-                    result
-                } {
-                    Ok(result) => {
-                        failures = 0;
-                        if stop.load(std::sync::atomic::Ordering::Acquire) {
-                            break;
+                    match result {
+                        Ok(result) => {
+                            failures = 0;
+                            if stop.load(std::sync::atomic::Ordering::Acquire) {
+                                break;
+                            }
+                            let state = handle.state::<RegistryState>();
+                            match finish_sync(&handle, state.inner(), result) {
+                                Ok(fresh) => {
+                                    let _ = handle.emit("team-sync-registry", &fresh);
+                                }
+                                Err(error) => {
+                                    let _ = handle.emit("team-sync-error", &error);
+                                }
+                            }
+                            teams::retry_delay_seconds(0)
                         }
-                        let state = handle.state::<RegistryState>();
-                        match finish_sync(&handle, state.inner(), result) {
-                            Ok(fresh) => {
+                        Err(error) => {
+                            failures = failures.saturating_add(1);
+                            let _ = handle.emit("team-sync-error", &error);
+                            if let Ok(fresh) = registry::load() {
                                 let _ = handle.emit("team-sync-registry", &fresh);
                             }
-                            Err(error) => {
-                                let _ = handle.emit("team-sync-error", &error);
-                            }
+                            registry::load()
+                                .map(|r| teams::sync_retry_seconds(&r, failures))
+                                .unwrap_or_else(|_| teams::retry_delay_seconds(failures))
                         }
-                        teams::retry_delay_seconds(0)
                     }
-                    Err(error) => {
-                        failures = failures.saturating_add(1);
-                        let _ = handle.emit("team-sync-error", &error);
-                        if let Ok(fresh) = registry::load() {
-                            let _ = handle.emit("team-sync-registry", &fresh);
-                        }
-                        registry::load()
-                            .map(|r| teams::sync_retry_seconds(&r, failures))
-                            .unwrap_or_else(|_| teams::retry_delay_seconds(failures))
-                    }
-                },
+                }
                 Err(error) => {
                     failures = failures.saturating_add(1);
                     eprintln!("Toolport: Teams registry unavailable: {error}");
@@ -2916,7 +2920,7 @@ fn watch_retry_delay(consecutive_failures: u32) -> Duration {
 
 fn watch_failure_should_log(consecutive_failures: u32, error_changed: bool) -> bool {
     consecutive_failures > 0
-        && (consecutive_failures == 1 || error_changed || consecutive_failures % 20 == 0)
+        && (consecutive_failures == 1 || error_changed || consecutive_failures.is_multiple_of(20))
 }
 
 /// Watch the registry file and mirror external changes (e.g. an agent enabling a
@@ -4065,7 +4069,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 fn enable_launch_at_login(app: AppHandle) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        return crate::autostart::enable_linux(&app.package_info().name);
+        crate::autostart::enable_linux(&app.package_info().name)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -4078,7 +4082,7 @@ fn enable_launch_at_login(app: AppHandle) -> Result<(), String> {
 fn disable_launch_at_login(app: AppHandle) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        return crate::autostart::disable_linux(&app.package_info().name);
+        crate::autostart::disable_linux(&app.package_info().name)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -4091,7 +4095,7 @@ fn disable_launch_at_login(app: AppHandle) -> Result<(), String> {
 fn is_launch_at_login_enabled(app: AppHandle) -> Result<bool, String> {
     #[cfg(target_os = "linux")]
     {
-        return crate::autostart::is_enabled_linux(&app.package_info().name);
+        crate::autostart::is_enabled_linux(&app.package_info().name)
     }
     #[cfg(target_os = "windows")]
     {
@@ -4791,8 +4795,7 @@ mod tests {
                 "kill denied",
             ))
         })
-        .err()
-        .expect("failed kill must be reported");
+        .expect_err("failed kill must be reported");
 
         assert!(error.contains("kill denied"));
         assert_eq!(bridge.port, Some(9876));

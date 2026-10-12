@@ -81,6 +81,7 @@ function ToolOverrideEditor({
 
   // Re-sync the fields (and collapse) whenever the selected tool changes.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset editable tool fields only when the selected tool changes.
     setName(current?.name ?? "");
     setDescription(current?.description ?? "");
     setOpen(false);
@@ -373,6 +374,7 @@ function ResourcesPanel({ serverId }: { serverId: string }) {
 
   useEffect(() => {
     let alive = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the previous server resources before starting its replacement request.
     setLoading(true);
     setError(null);
     setResources(null);
@@ -470,6 +472,7 @@ function PromptsPanel({ serverId }: { serverId: string }) {
 
   useEffect(() => {
     let alive = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the previous server prompts before starting its replacement request.
     setLoading(true);
     setError(null);
     setPrompts(null);
@@ -488,6 +491,7 @@ function PromptsPanel({ serverId }: { serverId: string }) {
   const prompt = prompts?.find((p) => p.name === selected) ?? null;
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset prompt arguments and results when the selection changes.
     setArgs({});
     setResult(null);
     setRunError(null);
@@ -616,7 +620,7 @@ export function ServerToolsPanel({
   registry,
   onRegistryChange,
 }: ServerToolsProps) {
-  const servers = registry?.servers ?? [];
+  const servers = useMemo(() => registry?.servers ?? [], [registry?.servers]);
   const denyDestructive = registry?.denyDestructive ?? false;
   const defaultAccessKey = `${registry?.defaultAccessProfileId}:${registry?.defaultAccessContextId}:${registry?.defaultAccessLegacyPolicy}`;
   const overrideVersion = JSON.stringify(registry?.toolOverrides?.[serverId] ?? {});
@@ -669,6 +673,7 @@ export function ServerToolsPanel({
     // "Calling…" state + ticker, so a superseded call can't paint under the new server.
     callSeq.current += 1;
     if (tickerRef.current) clearInterval(tickerRef.current);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Invalidate the previous server call and clear its visible state together.
     setCalling(false);
     setElapsed(0);
     if (!serverId) {
@@ -762,6 +767,7 @@ export function ServerToolsPanel({
     // effect), so a late result doesn't land under the newly selected tool.
     callSeq.current += 1;
     if (tickerRef.current) clearInterval(tickerRef.current);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Invalidate the previous tool call and clear its visible state together.
     setCalling(false);
     setElapsed(0);
     setArgs({});

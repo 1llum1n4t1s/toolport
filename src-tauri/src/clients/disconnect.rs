@@ -197,8 +197,11 @@ fn run(
 }
 
 #[cfg(test)]
+type RestoreHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
 thread_local! {
-    static AFTER_RESTORE: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { std::cell::RefCell::new(None) };
+    static AFTER_RESTORE: std::cell::RefCell<Option<RestoreHook>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -322,7 +325,12 @@ mod tests {
         let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport", "transport":"stdio", "command":"/fixture/toolport-gateway"})).unwrap();
         mutation::run("fixture", &path, Format::JsonMcpServers, || {
             moved::record("fixture", Format::JsonMcpServers, &path)?;
-            write_format(Format::JsonMcpServers, &path, &[entry.clone()], true)
+            write_format(
+                Format::JsonMcpServers,
+                &path,
+                std::slice::from_ref(&entry),
+                true,
+            )
         })
         .unwrap();
         AFTER_RESTORE.with(|slot| {
@@ -421,8 +429,14 @@ mod tests {
         let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport", "transport":"stdio", "command":"/fixture/toolport-gateway"})).unwrap();
         mutation::run("claude-code", &path, Format::JsonMcpServers, || {
             moved::record("claude-code", Format::JsonMcpServers, &path)?;
-            write_format(Format::JsonMcpServers, &path, &[entry.clone()], true)
-        }).unwrap();
+            write_format(
+                Format::JsonMcpServers,
+                &path,
+                std::slice::from_ref(&entry),
+                true,
+            )
+        })
+        .unwrap();
         let registry = env.dir.join("registry.json");
         std::fs::write(&registry, "broken").unwrap();
         assert!(crate::registry_controller::registry_for_disconnect().is_err());

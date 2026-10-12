@@ -173,8 +173,10 @@ mod tests {
         registry.set_client_discovery("cursor", Some("full"));
         assert_eq!(super::super::client_discovery_mode(&registry, "cursor"), "full");
         // 1.x "Find tools as needed" turned off meant full for everyone.
-        let mut v1 = crate::registry::Registry::default();
-        v1.lazy_discovery = false;
+        let v1 = crate::registry::Registry {
+            lazy_discovery: false,
+            ..Default::default()
+        };
         assert_eq!(
             super::super::client_discovery_mode(&v1, "claude-code"),
             "full"

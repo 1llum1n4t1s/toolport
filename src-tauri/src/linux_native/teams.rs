@@ -163,7 +163,7 @@ impl TeamsPage {
                         *next_allowed.borrow_mut() =
                             std::time::Instant::now() + std::time::Duration::from_secs(10);
                     }
-                    Ok(Err(error)) => {
+                    Ok(Err(_error)) => {
                         failures.set(failures.get().saturating_add(1));
                         *next_allowed.borrow_mut() = std::time::Instant::now()
                             + std::time::Duration::from_secs(
@@ -203,6 +203,7 @@ impl TeamsPage {
         });
     }
 
+    #[cfg(test)]
     fn render_sync_failure(&self, error: &str) {
         self.render_sync_status();
         self.set_status(&format!("{} {error}", self.feedback.label()), true);
@@ -2037,8 +2038,7 @@ mod tests {
         app.register(gtk::gio::Cancellable::NONE).unwrap();
         let (_, servers, _) = super::super::build_content(&app, crate::approval_broker::start_native());
         let page = super::TeamsPage::new(&app, servers);
-        let mut reg = crate::registry::Registry::default();
-        reg.team = Some(serde_json::from_value(serde_json::json!({"teamId":"solo","role":"admin","serverUrl":"http://127.0.0.1:1","accountStatus":{"personalSync":true,"plan":"pro","canReceiveConfig":true},"personalSyncState":{"initialized":true,"pending":{"docs-http":{"localId":"docs-http","after":{"name":"Toolport docs","url":"https://example.com/this"}}},"conflicts":{"docs-http":{"name":"Toolport docs","url":"https://gitmcp.io/btsouth/Toolport2026"}}}})).unwrap());
+        let mut reg = crate::registry::Registry { team: Some(serde_json::from_value(serde_json::json!({"teamId":"solo","role":"admin","serverUrl":"http://127.0.0.1:1","accountStatus":{"personalSync":true,"plan":"pro","canReceiveConfig":true},"personalSyncState":{"initialized":true,"pending":{"docs-http":{"localId":"docs-http","after":{"name":"Toolport docs","url":"https://example.com/this"}}},"conflicts":{"docs-http":{"name":"Toolport docs","url":"https://gitmcp.io/btsouth/Toolport2026"}}}})).unwrap()), ..Default::default() };
         let server: crate::registry::ServerEntry = serde_json::from_value(serde_json::json!({"id":"docs-http","name":"Toolport docs","transport":"http","url":"https://example.com/this","env":[],"enabled":false,"source":"team:solo","personalSyncEntry":true})).unwrap();
         reg.servers.push(server.clone()); crate::registry::save(&reg).unwrap();
         *page.sync_notice.borrow_mut() = Some(("Sync is up to date".into(), false));
@@ -2078,8 +2078,7 @@ mod tests {
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn member_review_native_shows_diff_labels_and_both_decisions() {
         adw::init().unwrap();
-        let mut registry = crate::registry::Registry::default();
-        registry.team = Some(serde_json::from_value(serde_json::json!({"teamId":"native-review", "serverUrl":"https://teams.toolport.app", "role":"member"})).unwrap());
+        let mut registry = crate::registry::Registry { team: Some(serde_json::from_value(serde_json::json!({"teamId":"native-review", "serverUrl":"https://teams.toolport.app", "role":"member"})).unwrap()), ..Default::default() };
         crate::teams::stage_team_config(&mut registry, "native-review", &serde_json::json!({"servers":[], "instructions":{"content":"Recognized team instructions"}}), 12, &[serde_json::json!({"author":{"name":"Alice"},"at":1791417600000_i64,"via":"dashboard","approvedBy":{"name":"Bob"},"summary":{"instructions":true}})]).unwrap();
         let review = crate::teams::member_review(&registry).unwrap();
         let parent = adw::ApplicationWindow::builder()
@@ -2145,8 +2144,7 @@ mod tests {
             std::env::temp_dir().join(format!("toolport-native-queue-{}", std::process::id()));
         std::fs::create_dir_all(&scratch).unwrap();
         let _data = crate::registry::DataDirOverride::set(&scratch);
-        let mut reg = crate::registry::Registry::default();
-        reg.team = Some(serde_json::from_value(serde_json::json!({"teamId":"native-review", "serverUrl":"https://teams.toolport.app", "role":"member"})).unwrap());
+        let mut reg = crate::registry::Registry { team: Some(serde_json::from_value(serde_json::json!({"teamId":"native-review", "serverUrl":"https://teams.toolport.app", "role":"member"})).unwrap()), ..Default::default() };
         crate::teams::stage_team_config(&mut reg, "native-review", &serde_json::json!({"servers":[], "instructions":{"content":"Pending text"}, "callAuditExport":true}), 1, &[]).unwrap();
         crate::registry::save(&reg).unwrap();
         let review = crate::teams::member_review(&reg).unwrap();
@@ -2391,8 +2389,10 @@ mod tests {
             "serverUrl":"https://example.invalid", "teamId":"one", "role":"member"
         }))
         .unwrap();
-        let mut reg = crate::registry::Registry::default();
-        reg.team = Some(conn.clone());
+        let reg = crate::registry::Registry {
+            team: Some(conn.clone()),
+            ..Default::default()
+        };
         crate::registry::save(&reg).unwrap();
         crate::team_sync_status::record(&conn, Ok(())).unwrap();
         let success = crate::team_sync_status::current().last_success_ms;

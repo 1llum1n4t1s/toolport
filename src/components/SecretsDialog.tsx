@@ -153,6 +153,7 @@ export function SecretsDialog({
   ];
   const [references, setReferences] = useState<Record<string, string | undefined>>({});
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset editable references when the server definition changes.
     setReferences(
       Object.fromEntries(
         [...server.env, ...(server.headerKeys ?? [])]

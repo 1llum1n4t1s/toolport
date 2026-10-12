@@ -495,7 +495,7 @@ pub(crate) fn selected_servers_to_import(
 pub fn preview_client_imports() -> Result<Vec<ClientImportCandidate>, String> {
     let registry = read_registry_exact_or_default()?;
     let detected = clients::detect_clients();
-    Ok(servers_to_import(&detected, &registry)
+    servers_to_import(&detected, &registry)
         .into_iter()
         .map(|server| {
             let client = detected
@@ -548,7 +548,7 @@ pub fn preview_client_imports() -> Result<Vec<ClientImportCandidate>, String> {
                     .map(crate::import_credentials::shown_url),
             })
         })
-        .collect::<Result<Vec<_>, String>>()?)
+        .collect::<Result<Vec<_>, String>>()
 }
 
 fn registry_matches(left: &Registry, right: &Registry) -> Result<bool, String> {
@@ -2151,6 +2151,8 @@ fn migrate_client_reviewed_choices_with(
     )
 }
 
+// Preserve the complete reviewed setup request and verification callback together.
+#[allow(clippy::too_many_arguments)]
 fn migrate_client_reviewed_inputs_with(
     client_id: &str,
     profile: Option<&str>,
@@ -3180,6 +3182,145 @@ fn set_server_enabled_at(
     Ok(registry)
 }
 
+/// Update the member's safety choice without changing releasable team policy.
+pub fn set_safety_level(level: registry::SafetyLevel) -> Result<Registry, String> {
+    let (registry, _) = registry::update(|registry| {
+        registry.validate_safety_level(level)?;
+        registry.set_safety_level(level);
+        Ok(())
+    })?;
+    Ok(registry)
+}
+
+/// Store a reference, never its resolved value. Existing keychain values are ignored
+/// while the reference is selected; switching back uses the normal keychain path.
+pub fn apply_secret_reference(
+    reg: &mut Registry,
+    server_id: &str,
+    key: &str,
+    reference: &str,
+) -> Result<(), String> {
+    let key = normalize_secret_key(key)?;
+    let personal = crate::personal_sync::is_personal(reg);
+    let server = reg
+        .servers
+        .iter_mut()
+        .find(|s| s.id == server_id)
+        .ok_or("Server not found")?;
+    crate::secret_refs::check_policy(server, reference).map_err(|e| e.to_string())?;
+    let location = if server
+        .launch
+        .iter()
+        .flat_map(|l| &l.inputs)
+        .any(|i| i.key == key)
+    {
+        "input"
+    } else if crate::secret_refs::headers(server)
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|h| h.key == key)
+    {
+        "header"
+    } else {
+        "env"
+    };
+    if let Some(input) = server
+        .launch
+        .as_mut()
+        .and_then(|l| l.inputs.iter_mut().find(|i| i.key == key))
+    {
+        input.secret = true;
+        input.value = None;
+        input
+            .unknown_fields
+            .insert("source".into(), serde_json::json!({"ref": reference}));
+    } else if let Some(header) = server
+        .unknown_fields
+        .get_mut("headerKeys")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|hs| hs.iter_mut().find(|h| h["key"] == key))
+    {
+        header["source"] = serde_json::json!({"ref": reference});
+    } else {
+        if !server.env.iter().any(|e| e.key == key) {
+            server.env.push(crate::registry::EnvVar {
+                key: key.clone(),
+                value: None,
+                secret: true,
+                unknown_fields: Default::default(),
+            });
+        }
+        let entry = server.env.iter_mut().find(|e| e.key == key).unwrap();
+        entry.value = None;
+        entry.secret = true;
+        entry
+            .unknown_fields
+            .insert("source".into(), serde_json::json!({"ref": reference}));
+    }
+    crate::secret_refs::validate_server(server).map_err(|e| e.to_string())?;
+    if personal {
+        // Every machine on a personal account is the owner's, so the reference
+        // is the synced definition, not a local override that export holds back.
+        if let Some(overrides) = server
+            .unknown_fields
+            .get_mut("memberSecretRefs")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            overrides.remove(&format!("{location}:{key}"));
+        }
+    } else if crate::secret_refs::is_shared(server) {
+        let overrides = server
+            .unknown_fields
+            .entry("memberSecretRefs")
+            .or_insert_with(|| serde_json::json!({}));
+        overrides[format!("{location}:{key}")] = serde_json::json!(reference);
+    }
+    reg.secrets_generation = reg.secrets_generation.wrapping_add(1);
+    Ok(())
+}
+pub fn set_secret_reference(
+    server_id: &str,
+    key: &str,
+    reference: &str,
+) -> Result<Registry, String> {
+    let (reg, ()) = registry::update(|reg| apply_secret_reference(reg, server_id, key, reference))?;
+    approve_own_reference(&reg, server_id)?;
+    Ok(reg)
+}
+/// On a personal account the reference is now part of the synced definition,
+/// which other machines must approve. Saving it here is this machine's approval.
+pub fn approve_own_reference(reg: &Registry, server_id: &str) -> Result<(), String> {
+    if !crate::personal_sync::is_personal(reg) {
+        return Ok(());
+    }
+    match reg.servers.iter().find(|s| s.id == server_id) {
+        Some(server) => crate::secret_refs::approve_server(server).map_err(|e| e.to_string()),
+        None => Ok(()),
+    }
+}
+pub fn test_secret_reference(
+    server_id: &str,
+    reference: &str,
+) -> Result<(), crate::secret_refs::ResolveError> {
+    if !server_id.is_empty() {
+        let reg = registry::load().map_err(|_| crate::secret_refs::ResolveError {
+            state: crate::secret_refs::ErrorState::Failed,
+            message: "Could not read server configuration.".into(),
+        })?;
+        let server = reg
+            .servers
+            .iter()
+            .find(|s| s.id == server_id)
+            .ok_or_else(|| crate::secret_refs::ResolveError {
+                state: crate::secret_refs::ErrorState::Failed,
+                message: "Server not found.".into(),
+            })?;
+        crate::secret_refs::check_policy(server, reference)?;
+        crate::secret_refs::check_approval(server)?;
+    }
+    crate::secret_refs::resolve(reference).map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -3328,8 +3469,7 @@ mod tests {
     #[test]
     fn personal_sync_client_credentials_work_for_received_and_changed_urls() {
         crate::secrets::tests::with_isolated_vault(|| {
-            let mut reg = Registry::default();
-            reg.team = Some(serde_json::from_value(serde_json::json!({"serverUrl":"https://example.com","teamId":"solo","role":"admin","accountStatus":{"personalSync":true}})).unwrap());
+            let mut reg = Registry { team: Some(serde_json::from_value(serde_json::json!({"serverUrl":"https://example.com","teamId":"solo","role":"admin","accountStatus":{"personalSync":true}})).unwrap()), ..Default::default() };
             crate::personal_sync::apply(&mut reg, &serde_json::json!({"servers":[{"id":"received","name":"Received","transport":"http","url":"https://first.example/mcp"}]}), 1).unwrap();
             let id = reg.servers[0].id.clone();
             registry::save(&reg).unwrap();
@@ -4397,7 +4537,9 @@ mod tests {
             "legacy-disabled":{"command":"node", "enabled":true, "enable":false}
         }));
         let mut registry = Registry::default();
-        for entry in selected_servers_to_import(&[fixture.client.clone()], &registry, None).unwrap()
+        for entry in
+            selected_servers_to_import(std::slice::from_ref(&fixture.client), &registry, None)
+                .unwrap()
         {
             registry.add_server(entry);
         }
@@ -4432,7 +4574,8 @@ mod tests {
             let fixture = ZCodeImportFixture::new(serde_json::json!({"affected":definition}));
             let mut registry = Registry::default();
             let error =
-                selected_servers_to_import(&[fixture.client.clone()], &registry, None).unwrap_err();
+                selected_servers_to_import(std::slice::from_ref(&fixture.client), &registry, None)
+                    .unwrap_err();
             assert!(error.contains(field), "{error}");
             assert!(!error.contains("do-not-print"));
             let error =
@@ -5776,143 +5919,4 @@ DOCS_TOKEN = "tok"
         assert!(read_registry_exact().unwrap().servers.is_empty());
         assert!(!fixture.move_record("claude-code").exists());
     }
-}
-
-/// Update the member's safety choice without changing releasable team policy.
-pub fn set_safety_level(level: registry::SafetyLevel) -> Result<Registry, String> {
-    let (registry, _) = registry::update(|registry| {
-        registry.validate_safety_level(level)?;
-        registry.set_safety_level(level);
-        Ok(())
-    })?;
-    Ok(registry)
-}
-
-/// Store a reference, never its resolved value. Existing keychain values are ignored
-/// while the reference is selected; switching back uses the normal keychain path.
-pub fn apply_secret_reference(
-    reg: &mut Registry,
-    server_id: &str,
-    key: &str,
-    reference: &str,
-) -> Result<(), String> {
-    let key = normalize_secret_key(key)?;
-    let personal = crate::personal_sync::is_personal(reg);
-    let server = reg
-        .servers
-        .iter_mut()
-        .find(|s| s.id == server_id)
-        .ok_or("Server not found")?;
-    crate::secret_refs::check_policy(server, reference).map_err(|e| e.to_string())?;
-    let location = if server
-        .launch
-        .iter()
-        .flat_map(|l| &l.inputs)
-        .any(|i| i.key == key)
-    {
-        "input"
-    } else if crate::secret_refs::headers(server)
-        .map_err(|e| e.to_string())?
-        .iter()
-        .any(|h| h.key == key)
-    {
-        "header"
-    } else {
-        "env"
-    };
-    if let Some(input) = server
-        .launch
-        .as_mut()
-        .and_then(|l| l.inputs.iter_mut().find(|i| i.key == key))
-    {
-        input.secret = true;
-        input.value = None;
-        input
-            .unknown_fields
-            .insert("source".into(), serde_json::json!({"ref": reference}));
-    } else if let Some(header) = server
-        .unknown_fields
-        .get_mut("headerKeys")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|hs| hs.iter_mut().find(|h| h["key"] == key))
-    {
-        header["source"] = serde_json::json!({"ref": reference});
-    } else {
-        if !server.env.iter().any(|e| e.key == key) {
-            server.env.push(crate::registry::EnvVar {
-                key: key.clone(),
-                value: None,
-                secret: true,
-                unknown_fields: Default::default(),
-            });
-        }
-        let entry = server.env.iter_mut().find(|e| e.key == key).unwrap();
-        entry.value = None;
-        entry.secret = true;
-        entry
-            .unknown_fields
-            .insert("source".into(), serde_json::json!({"ref": reference}));
-    }
-    crate::secret_refs::validate_server(server).map_err(|e| e.to_string())?;
-    if personal {
-        // Every machine on a personal account is the owner's, so the reference
-        // is the synced definition, not a local override that export holds back.
-        if let Some(overrides) = server
-            .unknown_fields
-            .get_mut("memberSecretRefs")
-            .and_then(serde_json::Value::as_object_mut)
-        {
-            overrides.remove(&format!("{location}:{key}"));
-        }
-    } else if crate::secret_refs::is_shared(server) {
-        let overrides = server
-            .unknown_fields
-            .entry("memberSecretRefs")
-            .or_insert_with(|| serde_json::json!({}));
-        overrides[format!("{location}:{key}")] = serde_json::json!(reference);
-    }
-    reg.secrets_generation = reg.secrets_generation.wrapping_add(1);
-    Ok(())
-}
-pub fn set_secret_reference(
-    server_id: &str,
-    key: &str,
-    reference: &str,
-) -> Result<Registry, String> {
-    let (reg, ()) = registry::update(|reg| apply_secret_reference(reg, server_id, key, reference))?;
-    approve_own_reference(&reg, server_id)?;
-    Ok(reg)
-}
-/// On a personal account the reference is now part of the synced definition,
-/// which other machines must approve. Saving it here is this machine's approval.
-pub fn approve_own_reference(reg: &Registry, server_id: &str) -> Result<(), String> {
-    if !crate::personal_sync::is_personal(reg) {
-        return Ok(());
-    }
-    match reg.servers.iter().find(|s| s.id == server_id) {
-        Some(server) => crate::secret_refs::approve_server(server).map_err(|e| e.to_string()),
-        None => Ok(()),
-    }
-}
-pub fn test_secret_reference(
-    server_id: &str,
-    reference: &str,
-) -> Result<(), crate::secret_refs::ResolveError> {
-    if !server_id.is_empty() {
-        let reg = registry::load().map_err(|_| crate::secret_refs::ResolveError {
-            state: crate::secret_refs::ErrorState::Failed,
-            message: "Could not read server configuration.".into(),
-        })?;
-        let server = reg
-            .servers
-            .iter()
-            .find(|s| s.id == server_id)
-            .ok_or_else(|| crate::secret_refs::ResolveError {
-                state: crate::secret_refs::ErrorState::Failed,
-                message: "Server not found.".into(),
-            })?;
-        crate::secret_refs::check_policy(server, reference)?;
-        crate::secret_refs::check_approval(server)?;
-    }
-    crate::secret_refs::resolve(reference).map(|_| ())
 }

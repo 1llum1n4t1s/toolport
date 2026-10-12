@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -79,17 +79,18 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
   // when absent (to clean up a stale entry), but block a fresh Connect, writing a
   // config into a client that isn't installed just creates a file nothing reads.
   const present = client.appPresent;
-  const profiles = registry?.profiles ?? [];
+  const profiles = useMemo(() => registry?.profiles ?? [], [registry?.profiles]);
   // The access Toolport last connected this client with (empty uses the default). Keep the picker in sync with it as the selected client changes.
   const currentScope = registry?.clientScopes?.[client.id] ?? "";
   useEffect(() => {
     if (!currentScope) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset the editable access picker when the selected client or saved scope changes.
       setProfile("");
       return;
     }
     const match = profiles.find((p) => p.id === currentScope || p.name === currentScope);
     setProfile(match?.id ?? currentScope);
-  }, [currentScope, client.id, registry?.profiles]);
+  }, [currentScope, client.id, profiles]);
 
   // SOU-317 follow-up (SBS-336): the restart advice is load-bearing — an MCP client
   // typically does not pick up a rewritten config until relaunch — but it only ever

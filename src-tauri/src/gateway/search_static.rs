@@ -39,8 +39,8 @@ impl Model {
         {
             return Err("invalid static search model length".into());
         }
-        for bytes in weights[20..20 + rows * 4].chunks_exact(4) {
-            let scale = f32::from_le_bytes(bytes.try_into().unwrap());
+        for bytes in weights[20..20 + rows * 4].as_chunks::<4>().0 {
+            let scale = f32::from_le_bytes(*bytes);
             if !scale.is_finite() || scale <= 0.0 {
                 return Err("invalid static search model scale".into());
             }
@@ -82,7 +82,7 @@ impl Model {
                     *value += *byte as i8 as f32 * scale;
                 }
             } else {
-                for (values, byte) in out.chunks_exact_mut(2).zip(row) {
+                for (values, byte) in out.as_chunks_mut::<2>().0.iter_mut().zip(row) {
                     values[0] += ((*byte & 15) as f32 - 8.0) * scale;
                     values[1] += ((*byte >> 4) as f32 - 8.0) * scale;
                 }
@@ -193,6 +193,15 @@ pub fn cosine(left: &[f32], right: &[f32]) -> f64 {
     left.iter().zip(right).map(|(a, b)| a * b).sum::<f32>() as f64
 }
 
+// Benchmark controls never enter the shipped gateway.
+pub fn enabled() -> bool {
+    #[cfg(test)]
+    if std::env::var_os("SEARCH_LEXICAL_ONLY").is_some() {
+        return false;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,13 +228,4 @@ mod tests {
             "agenda  create Event . Create an event"
         );
     }
-}
-
-// Benchmark controls never enter the shipped gateway.
-pub fn enabled() -> bool {
-    #[cfg(test)]
-    if std::env::var_os("SEARCH_LEXICAL_ONLY").is_some() {
-        return false;
-    }
-    true
 }

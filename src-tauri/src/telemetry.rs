@@ -163,7 +163,7 @@ impl Writer {
             && self
                 .counters
                 .non_audit_queued
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
                     (queued < self.non_audit_limit).then_some(queued + 1)
                 })
                 .is_err()

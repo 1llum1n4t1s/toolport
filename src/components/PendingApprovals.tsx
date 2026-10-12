@@ -92,6 +92,7 @@ export function PendingApprovals({
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Start the initial broker poll on mount.
     void refresh();
     const poll = setInterval(() => void refresh(), 2000);
     const unlisten = Promise.all([
@@ -192,6 +193,8 @@ export function PendingApprovals({
         </header>
 
         <ul className="min-h-0 divide-y divide-border/60 overflow-y-auto overscroll-contain">
+          {/* First-sighting refs are read for the existing countdown, never mutated during render. */}
+          {/* eslint-disable-next-line react-hooks/refs -- Preserve broker deadline and first-sighting fallback timing. */}
           {pending.map((a) => {
             const reason = REASON[a.reason];
             const clientName = trustedClientName(a);

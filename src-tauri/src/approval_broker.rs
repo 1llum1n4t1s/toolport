@@ -426,7 +426,7 @@ fn acquire_owner_lock() -> Option<std::fs::File> {
 }
 
 fn acquire_owner_lock_at(dir: &std::path::Path) -> Option<std::fs::File> {
-    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::create_dir_all(dir).ok()?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -434,6 +434,8 @@ fn acquire_owner_lock_at(dir: &std::path::Path) -> Option<std::fs::File> {
     }
     let file = std::fs::OpenOptions::new()
         .create(true)
+        // Reuse the same lock inode without truncating another owner's file.
+        .truncate(false)
         .read(true)
         .write(true)
         .open(dir.join("owner.lock"))

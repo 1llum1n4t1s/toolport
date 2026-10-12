@@ -145,15 +145,17 @@ mod tests {
         let path = path(&device).unwrap();
         mutate(&path, |j| increment(j, "Audit-Echo", 1, true)).unwrap();
         let guard = registry::lock_at(&path).unwrap();
-        let mut reg = Registry::default();
-        reg.team = Some(
-            serde_json::from_value(serde_json::json!({
-                "serverUrl":"https://teams.example.com", "teamId":"test", "role":"member",
-                "lastVersion":2, "reportingDeviceId":device,
-                "managedServerIds":{"local":"Audit-Echo"}
-            }))
-            .unwrap(),
-        );
+        let mut reg = Registry {
+            team: Some(
+                serde_json::from_value(serde_json::json!({
+                    "serverUrl":"https://teams.example.com", "teamId":"test", "role":"member",
+                    "lastVersion":2, "reportingDeviceId":device,
+                    "managedServerIds":{"local":"Audit-Echo"}
+                }))
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
         reg.servers.push(
             serde_json::from_value(serde_json::json!({
                 "id":"local", "name":"fixture", "transport":"stdio", "source":"team:test"

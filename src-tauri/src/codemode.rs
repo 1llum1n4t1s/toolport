@@ -1145,9 +1145,7 @@ fn drive_to_completion(
     for _ in 0..MAX_DRIVE_ITERS {
         flush_pending_host_calls(context, state)?;
 
-        if let Err(e) = context.run_jobs() {
-            return Err(e);
-        }
+        context.run_jobs()?;
 
         // Host work may have been enqueued from a microtask after run_jobs.
         if !state.pending.borrow().is_empty() {
@@ -1214,7 +1212,7 @@ fn json_from_js(context: &mut Context, value: &JsValue) -> Result<Value, JsError
         .as_callable()
         .ok_or_else(|| type_error("JSON.stringify is not callable"))?;
 
-    let encoded = stringify.call(&JsValue::undefined(), &[value.clone()], context)?;
+    let encoded = stringify.call(&JsValue::undefined(), std::slice::from_ref(value), context)?;
     let Some(text) = encoded.as_string() else {
         // `JSON.stringify(undefined)` is `undefined`: the script returned nothing.
         return Ok(Value::Null);
@@ -1273,7 +1271,7 @@ fn flush_pending_host_calls(context: &mut Context, state: &HostState) -> Result<
             }
         }
 
-        for (pending_call, result) in batch.into_iter().zip(results.into_iter()) {
+        for (pending_call, result) in batch.into_iter().zip(results) {
             let result_str = serde_json::to_string(&result).unwrap_or_else(|_| "null".to_string());
             let js_result = JsValue::from(js_string!(result_str));
             pending_call
@@ -1310,7 +1308,6 @@ fn run_calls_parallel(
     std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(n);
         for (i, (name, args)) in items.into_iter().enumerate() {
-            let call = call;
             handles.push(scope.spawn(move || (i, call(start_index + i, &name, args))));
         }
         for handle in handles {

@@ -1163,7 +1163,7 @@ mod tests {
         let exposed_bytes = surface_bytes(&exposed);
         assert_eq!(
             full_bytes,
-            serde_json::to_string(&full).unwrap().as_bytes().len() as u64
+            serde_json::to_string(&full).unwrap().len() as u64
         );
         assert!(
             full_bytes

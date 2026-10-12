@@ -67,17 +67,6 @@ fn supports_mcp_app_html(extensions: &serde_json::Map<String, Value>) -> bool {
         .is_some_and(|mime_types| mime_types.iter().any(|mime| mime == MCP_APP_HTML_MIME))
 }
 
-/// MCP Apps resources are primarily discovered through tool metadata and MAY be
-/// omitted from `resources/list`. Keep both the current nested field and the
-/// pre-GA flat spelling so a transparent gateway can still route the host's
-/// subsequent `resources/read` to the tool's owning server.
-fn mcp_app_resource_uri(tool: &Value) -> Option<&str> {
-    tool.pointer("/_meta/ui/resourceUri")
-        .or_else(|| tool.pointer("/_meta/ui~1resourceUri"))
-        .and_then(Value::as_str)
-        .filter(|uri| uri.starts_with("ui://"))
-}
-
 /// Seal the owner and native task id into one opaque, unguessable handle. The
 /// installation-local key survives restarts; authenticated encryption prevents
 /// a client from changing either component to reach another task (SOU-453).
@@ -1262,7 +1251,7 @@ impl ReplayPolicy {
         }
     }
 
-    fn uncertain_failure<'a>(self, error: &'a TransportError) -> Option<&'a TransportError> {
+    fn uncertain_failure(self, error: &TransportError) -> Option<&TransportError> {
         match (self, error) {
             (Self::NoAmbiguousReplay, TransportError::Unavailable(_)) => Some(error),
             (_, TransportError::Classified(kind, _)) if kind.uncertain() => Some(error),
@@ -2236,6 +2225,8 @@ impl Router {
     /// `_2` collision suffixes are allocated by raw name rather than list
     /// position, so neither the call order nor a downstream reordering its own
     /// catalog can move them (see [`allocate_exposed_names`](Self::allocate_exposed_names)).
+    // Keep the complete catalog and its policy together at this indexing boundary.
+    #[allow(clippy::too_many_arguments)]
     fn index_server(
         &mut self,
         server_id: &str,
@@ -8542,8 +8533,10 @@ for line in sys.stdin:
         // a client that already held its catalog stayed broken even though the app showed
         // nothing quarantined. Shrinking the set must restore the tool in place, with no
         // rebuild and no downstream re-query.
-        let mut policy = ToolPolicy::default();
-        policy.quarantined = ["github__echo".to_string()].into_iter().collect();
+        let policy = ToolPolicy {
+            quarantined: ["github__echo".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
         let mut router = Router::with_policy(policy);
         router.add(mock_server("github"));
 
@@ -8598,8 +8591,10 @@ for line in sys.stdin:
         let _data = crate::registry::DataDirTestEnv::new("f3-sbs871-fail-closed-catalog-hides-every-tool-until-requarantine");
         // SBS-871: a cold-start store Err has no prior live set, so the whole
         // catalog stays hidden until a later successful read installs a set.
-        let mut policy = ToolPolicy::default();
-        policy.fail_closed_catalog = true;
+        let policy = ToolPolicy {
+            fail_closed_catalog: true,
+            ..Default::default()
+        };
         let mut router = Router::with_policy(policy);
         router.add(mock_server("github"));
         assert!(
@@ -8627,8 +8622,10 @@ for line in sys.stdin:
     /// catalog hidden; only `requarantine_from_store` lifts it.
     #[test]
     fn sbs871_requarantine_on_an_error_path_does_not_lift_fail_closed() {
-        let mut policy = ToolPolicy::default();
-        policy.fail_closed_catalog = true;
+        let policy = ToolPolicy {
+            fail_closed_catalog: true,
+            ..Default::default()
+        };
         let mut router = Router::with_policy(policy);
         router.add(mock_server("github"));
 
@@ -8663,9 +8660,12 @@ for line in sys.stdin:
 
     #[test]
     fn block_reason_matches_route_call_blocked_map() {
-        let _data = crate::registry::DataDirTestEnv::new("f3-block-reason-matches-route-call-blocked-map");
-        let mut policy = ToolPolicy::default();
-        policy.quarantined = ["github__echo".to_string()].into_iter().collect();
+        let _data =
+            crate::registry::DataDirTestEnv::new("f3-block-reason-matches-route-call-blocked-map");
+        let policy = ToolPolicy {
+            quarantined: ["github__echo".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
         let mut router = Router::with_policy(policy);
         router.add(mock_server("github"));
 
@@ -9914,9 +9914,8 @@ for line in sys.stdin:
         let result = rx.recv_timeout(Duration::from_secs(1));
         drop(inner);
         worker.join().unwrap();
-        assert_eq!(
-            result.unwrap(),
-            false,
+        assert!(
+            !result.unwrap(),
             "busy serial request must fall back to breaker"
         );
 

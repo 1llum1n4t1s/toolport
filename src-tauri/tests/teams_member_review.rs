@@ -12,8 +12,7 @@ fn held_team_servers_never_start_or_dispatch_via_search_and_call() {
     let scratch = Scratch::new("teams-member-review");
     let _data = registry::DataDirOverride::set(scratch.path());
     let marker = scratch.join("held-server-started");
-    let mut reg = registry::Registry::default();
-    reg.team = Some(serde_json::from_value(json!({"teamId":"test-review", "serverUrl":"https://teams.toolport.app", "role":"member"})).unwrap());
+    let mut reg = registry::Registry { team: Some(serde_json::from_value(json!({"teamId":"test-review", "serverUrl":"https://teams.toolport.app", "role":"member"})).unwrap()), ..Default::default() };
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let config = json!({"servers":[
@@ -59,8 +58,7 @@ fn public_team_remote_is_held_even_when_legacy_merge_would_enable_it() {
     listener.set_nonblocking(true).unwrap();
     let _public = teams::PublicTeamHostOverride::set("127.0.0.1");
     let config = json!({"servers":[{"id":"public", "name":"Public classified echo", "transport":"http", "url":format!("http://{}/mcp", listener.local_addr().unwrap()), "env":[]}]});
-    let mut reg = registry::Registry::default();
-    reg.team = Some(serde_json::from_value(json!({"teamId":"test-review", "serverUrl":"https://teams.toolport.app", "role":"member"})).unwrap());
+    let mut reg = registry::Registry { team: Some(serde_json::from_value(json!({"teamId":"test-review", "serverUrl":"https://teams.toolport.app", "role":"member"})).unwrap()), ..Default::default() };
     let mut legacy = reg.clone();
     teams::apply_team_config(&mut legacy, "test-review", &config);
     assert!(

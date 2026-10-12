@@ -339,7 +339,10 @@ fn run_inner<T>(
 }
 
 #[cfg(test)]
-thread_local! { pub(super) static BEFORE_COMMIT: RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { RefCell::new(None) }; }
+type CommitHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+thread_local! { pub(super) static BEFORE_COMMIT: RefCell<Option<CommitHook>> = const { RefCell::new(None) }; }
 #[cfg(test)]
 pub(super) fn before_commit(path: &Path) {
     let hook = BEFORE_COMMIT.with(|slot| slot.borrow_mut().take());
