@@ -9,6 +9,8 @@ pub mod catalog;
 pub mod call_failure;
 pub mod child_ledger;
 pub mod clients;
+#[cfg(any(test, feature = "test-support"))]
+mod fixture_paths;
 pub mod tool_definitions;
 pub mod client_process;
 pub mod session_observability;

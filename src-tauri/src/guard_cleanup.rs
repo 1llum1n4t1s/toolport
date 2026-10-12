@@ -56,7 +56,7 @@ pub fn run_no_op_hook() -> String {
 }
 
 fn cursor_hooks_path() -> Option<PathBuf> {
-    Some(dirs::home_dir()?.join(".cursor").join("hooks.json"))
+    Some(crate::clients::home()?.join(".cursor").join("hooks.json"))
 }
 
 fn is_ours(entry: &Value) -> bool {
@@ -179,6 +179,10 @@ fn marker_path() -> Option<PathBuf> {
 /// directory. Called at startup by both desktop shells. Each file is independent: one
 /// that cannot be read is logged and left alone, and the rest still run.
 pub fn run_once() {
+    run_once_with_cursor(cursor_hooks_path());
+}
+
+pub(crate) fn run_once_with_cursor(cursor: Option<PathBuf>) {
     let Some(marker) = marker_path() else {
         return;
     };
@@ -186,7 +190,7 @@ pub fn run_once() {
         return;
     }
     let mut paths: Vec<PathBuf> = Vec::new();
-    if let Some(path) = cursor_hooks_path() {
+    if let Some(path) = cursor {
         paths.push(path);
     }
     paths.extend(crate::clients::claude_settings_paths());

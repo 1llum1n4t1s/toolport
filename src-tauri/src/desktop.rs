@@ -129,11 +129,19 @@ async fn test_server(entry: ServerEntry) -> Result<ProbeResult, String> {
 #[tauri::command]
 async fn detect_clients(
     state: State<'_, RegistryState>,
+    inspect_configs: Option<bool>,
 ) -> Result<Vec<clients::DetectedClient>, String> {
     // Reads several config files and scans plugin dirs - off the UI thread.
-    let mut list = tauri::async_runtime::spawn_blocking(clients::detect_clients)
+    let mut list = tauri::async_runtime::spawn_blocking(move || {
+        clients::detect_clients_with_inspection(inspect_configs.unwrap_or(true))
+    })
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())??;
+    // Adoption may have updated ownership on disk.
+    if inspect_configs.unwrap_or(true) {
+        let fresh = crate::registry::load()?;
+        *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = fresh;
+    }
     // Ownership record lives on the registry (SOU-406).
     let managed = state
         .lock()
@@ -142,6 +150,23 @@ async fn detect_clients(
         .clone();
     clients::apply_entry_states(&mut list, &managed);
     Ok(list)
+}
+
+#[tauri::command]
+async fn client_location_types() -> Result<Vec<clients::ClientLocationType>, String> {
+    tauri::async_runtime::spawn_blocking(clients::client_location_types).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn remove_client_location(client_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || clients::remove_client_location(&client_id))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn add_client_location(client_type: String, folder: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || clients::add_client_location(&client_type, &folder))
+        .await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -4204,6 +4229,9 @@ pub fn run() {
         .manage(RestartAdvice::default())
         .invoke_handler(tauri::generate_handler![
             detect_clients,
+            client_location_types,
+            add_client_location,
+            remove_client_location,
             get_registry,
             take_registry_recovery_notice,
             import_servers,
@@ -5037,6 +5065,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             uses_connectors: false,
+            location_removable: false,
             config_path: String::new(),
             config_exists: true,
             app_present: true,

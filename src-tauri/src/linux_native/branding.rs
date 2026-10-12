@@ -49,6 +49,7 @@ const MONO_CLIENT_LOGOS: &[&str] = &[
 ];
 
 pub(super) fn client_logo(id: &str) -> gtk::Image {
+    let id = id.split('@').next().unwrap_or(id);
     let bytes: Option<&'static [u8]> = match id {
         "claude-desktop" => Some(include_bytes!("../../icons/client-logos/claude.png")),
         "claude-code" => Some(include_bytes!("../../icons/client-logos/claude-code.png")),

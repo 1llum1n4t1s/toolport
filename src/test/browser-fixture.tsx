@@ -1,4 +1,5 @@
 import { securityFixture } from "./security-fixture";
+const fixtureLocations: import("@/lib/types").DetectedClient[] = [];
 // Separate development entry. Never imported by the shipping application.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { useState } from "react";
@@ -417,6 +418,9 @@ const savingsSummary: SavingsSummary = {
   estimatedTokensAvoided: 41_100,
   estimateMethod: "utf8_bytes_div_4",
 };
+const connectedImportFixture = new URLSearchParams(location.search).has(
+  "connected-import",
+);
 const setupFixture = new URLSearchParams(location.search).has("setup");
 const setupFailure = new URLSearchParams(location.search).get("setup-failure");
 const setupVerifying = new URLSearchParams(location.search).has("setup-verifying");
@@ -469,7 +473,10 @@ function fixtureAdd(entry: ServerEntry) {
 const calls: Record<string, number> = {};
 const missing: string[] = [];
 Object.assign(window, { toolportFixture: { calls, missing, driftEvents } });
-localStorage.setItem("toolport.onboarded", "1");
+if (connectedImportFixture) {
+  servers.splice(0);
+  localStorage.removeItem("toolport.onboarded");
+} else localStorage.setItem("toolport.onboarded", "1");
 
 mockIPC(
   (command, payload) => {
@@ -671,8 +678,58 @@ mockIPC(
         return { ...registry, clientDiscovery: { ...registry.clientDiscovery } };
       case "get_registry":
         return registry;
+      case "client_location_types":
+        return [
+          { id: "claude-code", name: "Claude Code", configFile: ".claude.json" },
+          { id: "codex", name: "Codex", configFile: "config.toml" },
+        ];
+      case "add_client_location":
+        fixtureLocations.push({
+          id: `${String(args.clientType)}@fixture-${fixtureLocations.length}`,
+          name: `${args.clientType === "codex" ? "Codex" : "Claude Code"} (${String(args.folder).split("/").pop()?.replace(/^\./, "")})`,
+          usesConnectors: false,
+          locationRemovable: true,
+          configPath: `${String(args.folder)}/${args.clientType === "codex" ? "config.toml" : ".claude.json"}`,
+          configExists: true,
+          appPresent: true,
+          servers: [],
+          pluginServers: [],
+          gatewayInstalled: false,
+          entryState: "absent",
+          discovery: {
+            autoMode: args.clientType === "codex" ? "full" : "lazy",
+            nativeToolSearch: true,
+            toolsListChanged: null,
+            evidence: "fixture",
+          },
+          error: null,
+        });
+        return fixtureLocations.at(-1)!.id;
+      case "remove_client_location": {
+        const index = fixtureLocations.findIndex((client) => client.id === args.clientId);
+        if (index >= 0) fixtureLocations.splice(index, 1);
+        return null;
+      }
       case "detect_clients":
         return [
+          ...fixtureLocations,
+          ...(args.inspectConfigs
+            ? [
+                {
+                  id: "claude-code@claude2",
+                  name: "Claude Code (claude2)",
+                  usesConnectors: false,
+                  configPath: "/fixture/.claude2/.claude.json",
+                  configExists: true,
+                  appPresent: true,
+                  servers: [],
+                  pluginServers: [],
+                  gatewayInstalled: true,
+                  entryState: "managed",
+                  error: null,
+                },
+              ]
+            : []),
           {
             id: "codex",
             name: "Codex",
@@ -680,7 +737,7 @@ mockIPC(
             configPath: "/fixture/codex.toml",
             configExists: true,
             appPresent: true,
-            servers: setupFixture ? setupItems : [],
+            servers: setupFixture || connectedImportFixture ? setupItems : [],
             pluginServers: [],
             gatewayInstalled: !setupFixture || setupConnected,
             entryState: !setupFixture || setupConnected ? "managed" : "absent",

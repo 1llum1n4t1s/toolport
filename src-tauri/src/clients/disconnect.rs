@@ -36,26 +36,44 @@ fn all_with_clients(
     };
     let mut clients = detect();
     apply_entry_states(&mut clients, &current.client_managed_entries);
+    // Keep the stored recovery path beside the display path before restoration
+    // can remove a newly created file or directory.
+    let recovery_paths: HashMap<_, _> = clients.iter().map(|client| {
+        let native = locations::lookup(&client.id).map(|row| row.config_path)
+            .unwrap_or_else(|| PathBuf::from(&client.config_path));
+        (client.id.clone(), (client.config_path.clone(), native))
+    }).collect();
     let targets = clients.into_iter().filter(|client| {
-        (client.gateway_installed
-            && !restore::released(&client.id, Path::new(&client.config_path)).unwrap_or(false))
+        let recovery_path = &recovery_paths[&client.id].1;
+        client.error.is_some() || (client.gateway_installed
+            && !restore::released(&client.id, recovery_path).unwrap_or(false))
             || current.client_managed_entries.contains_key(&client.id)
             || moved::has_record(&client.id)
     });
+    let mut errors = Vec::new();
+    let targets = targets.filter_map(|client| {
+        if let Some(error) = client.error {
+            errors.push(ClientResult { client_id: client.id, path: client.config_path, dry_run, error: Some(error), warnings: Vec::new() });
+            None
+        } else { Some((client.id, client.config_path)) }
+    });
     let mut results = run(
-        targets.map(|client| (client.id, client.config_path)),
+        targets,
         dry_run,
         |id, path| {
             if recovery_only {
                 // Global removal can use the independent client snapshots without
                 // loading, migrating or overwriting a corrupt registry.
                 let def = find_def(id).ok_or("Unknown client")?;
-                restore_path(id, Path::new(path), def.format, None)
+                let native = recovery_paths.get(id).map(|(_, native)| native.as_path())
+                    .unwrap_or_else(|| Path::new(path));
+                restore_path(id, native, def.format, None)
             } else {
                 crate::registry_controller::disconnect_client(id).map(|result| result.outcome.warnings)
             }
         },
     );
+    results.extend(errors);
     // Secondary Claude profiles and settings have path-specific recovery records
     // too. They are restored even if the profile's config override has changed.
     let mut recorded = restore::recorded_paths();
@@ -76,7 +94,13 @@ fn all_with_clients(
         };
         if results
             .iter()
-            .any(|result| result.client_id == id && result.path == path.to_string_lossy())
+            .any(|result| result.client_id == id && {
+                let recovery_path = recovery_paths.get(&id)
+                    .filter(|(display, _)| display == &result.path)
+                    .map(|(_, native)| native.as_path())
+                    .unwrap_or_else(|| Path::new(&result.path));
+                locations::same_path(recovery_path, &path)
+            })
         {
             continue;
         }
@@ -377,6 +401,7 @@ mod tests {
             discovery: discovery::capabilities("claude-code"), config_path: selected.to_string_lossy().into_owned(),
             config_exists: true, app_present: true, servers, plugin_servers: Vec::new(),
             gateway_installed: true, entry_state: GatewayEntryState::Managed, error: None,
+            location_removable: false,
         };
         let results = all_with_clients(false, true, || vec![client]).unwrap();
         assert_eq!(results.len(), 1);

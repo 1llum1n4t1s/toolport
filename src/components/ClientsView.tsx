@@ -1,3 +1,5 @@
+import { AddClientLocationDialog } from "@/components/AddClientLocationDialog";
+import { Button } from "@/components/ui/button";
 import { trustedClientName, clientIdentityTooltip } from "@/lib/clientIdentity";
 import { getClientSessions } from "@/lib/api";
 import type { ClientActivity } from "@/lib/types";
@@ -112,12 +114,15 @@ export function ClientsView({
   registry,
   loading = false,
   onSelectClient,
+  onChanged,
 }: {
   clients: DetectedClient[];
   registry: Registry | null;
   loading?: boolean;
   onSelectClient: (id: string) => void;
+  onChanged?: () => Promise<void>;
 }) {
+  const [addingLocation, setAddingLocation] = useState(false);
   const [showMissing, setShowMissing] = useState(false);
   const [showRecent, setShowRecent] = useState(false);
   const [sessions, setSessions] = useState<ClientActivity[]>([]);
@@ -154,7 +159,7 @@ export function ClientsView({
     );
   }
 
-  if (clients.length === 0 && sessions.length === 0 && !sessionError) {
+  if (!onChanged && clients.length === 0 && sessions.length === 0 && !sessionError) {
     return (
       <EmptyState
         icon={<MonitorCog />}
@@ -166,6 +171,25 @@ export function ClientsView({
 
   return (
     <div className="flex flex-col gap-5">
+      {onChanged && (
+        <>
+          <Button
+            variant="outline"
+            className="self-start"
+            onClick={() => setAddingLocation(true)}
+          >
+            Add client location
+          </Button>
+          <AddClientLocationDialog
+            open={addingLocation}
+            onOpenChange={setAddingLocation}
+            onAdded={async (id) => {
+              await onChanged();
+              onSelectClient(id);
+            }}
+          />
+        </>
+      )}
       {sessionError && (
         <p role="status" className="text-xs text-muted-foreground">
           Client session history could not be read.

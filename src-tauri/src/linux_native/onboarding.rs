@@ -42,10 +42,10 @@ fn first_run_needed() -> Result<bool, String> {
     if has_servers {
         return Ok(false);
     }
-    let clients = state::detect_client_views()?;
-    Ok(should_offer(&registry, &clients))
+    Ok(!crate::clients::detect_clients().iter().any(|client| client.gateway_installed))
 }
 
+#[cfg(test)]
 fn should_offer(registry: &crate::registry::Registry, clients: &ClientSnapshot) -> bool {
     !registry
         .servers
@@ -932,6 +932,18 @@ mod tests {
     }
 
     #[test]
+    fn startup_skips_setup_for_a_connected_client_without_an_ownership_record() {
+        let data = crate::registry::DataDirTestEnv::new("location-native-first-run");
+        let _env_lock = crate::clients::env_test_lock();
+        let folder = data.dir.join(".claude-work");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join(".claude.json"), r#"{"mcpServers":{"toolport":{"command":"/usr/bin/toolport-gateway"}}}"#).unwrap();
+        let _override = crate::clients::EnvRestore::set("CLAUDE_CONFIG_DIR", &folder);
+        assert!(crate::registry::load().unwrap().client_managed_entries.is_empty());
+        assert!(!first_run_needed().unwrap());
+    }
+
+    #[test]
     fn setup_is_offered_only_without_servers_or_connected_clients() {
         let mut registry = crate::registry::Registry::default();
         let empty = ClientSnapshot {
@@ -960,6 +972,7 @@ mod tests {
                 discovery_mode: None,
                 inherited_discovery: None,
                 config_error: false,
+                location_removable: false,
             }],
             profiles: Vec::new(),
             sessions: Vec::new(),

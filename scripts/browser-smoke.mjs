@@ -69,6 +69,37 @@ try {
     }
     await page.screenshot({ path: path.join(output, `catalog-react-${state}.png`) });
   }
+  await page.goto(`${baseURL}/fixtures/?connected-import`);
+  await expect(
+    page.getByRole("button", { name: "Import 2 from clients", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Skip setup", exact: true })).toHaveCount(
+    0,
+  );
+  const probesAtStartup = await page.evaluate(
+    () => window.toolportFixture.calls.probe_servers ?? 0,
+  );
+  await page.getByRole("button", { name: "Activity", exact: true }).click();
+  await expect(page.getByText("Protection active.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Servers", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Import 2 from clients", exact: true }),
+  ).toBeVisible();
+  expect(await page.evaluate(() => window.toolportFixture.calls.probe_servers ?? 0)).toBe(
+    probesAtStartup,
+  );
+  await page.screenshot({ path: path.join(output, "connected-client-import.png") });
+  await page.getByRole("button", { name: "Help", exact: true }).click();
+  await page.getByRole("button", { name: "Run setup again", exact: true }).click();
+  await page.getByRole("button", { name: /Set up MCP servers/ }).click();
+  await page
+    .getByRole("button", { name: "Review and connect your clients", exact: true })
+    .click();
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Skip for now", exact: true }).click();
+  await expect(page.getByText(/You haven't added a server yet/)).toBeVisible();
+  await expect(page.getByText(/You haven't.*connected a client/)).toHaveCount(0);
+  await page.screenshot({ path: path.join(output, "onboarding-connected-client.png") });
   await page.goto(`${baseURL}/fixtures/`);
   await expect(page.getByText("GitHub", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "35.0k tokens saved" })).toBeVisible();
@@ -94,6 +125,27 @@ try {
   await expect(page.getByText("How this is counted", { exact: true })).toBeVisible();
   await expect(page.getByText(/Older estimated records/)).not.toBeVisible();
   await page.screenshot({ path: path.join(output, "activity.png") });
+  await page.getByRole("button", { name: "Clients", exact: true }).click();
+  await page.getByRole("button", { name: "Add client location", exact: true }).click();
+  await page.getByLabel("Client type", { exact: true }).selectOption("claude-code");
+  await page.getByLabel("Config folder", { exact: true }).fill("/fixture/.claude2");
+  await page.screenshot({ path: path.join(output, "client-location-add.png") });
+  await page.getByRole("button", { name: "Add location", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Add client location", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Claude Code (claude2)", exact: true }),
+  ).toBeVisible();
+  await page.screenshot({ path: path.join(output, "client-location-detail.png") });
+  await page.getByRole("button", { name: "Remove location", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Remove location", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Claude Code (claude2)", exact: true }),
+  ).toHaveCount(0);
   await page.getByRole("button", { name: "Clients", exact: true }).click();
   await page.getByRole("button", { name: /Codex/ }).click();
   await expect(page.getByRole("combobox", { name: "Access", exact: true })).toBeVisible();

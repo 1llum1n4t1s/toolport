@@ -120,27 +120,27 @@ pub(super) fn matches_path(client_id: &str, path: &Path) -> Result<bool, String>
 
 pub(super) fn recorded_paths() -> Vec<(String, PathBuf, Result<Format, String>)> {
     let mut paths = Vec::new();
-    for def in defs() {
-        if !has_record(def.id) {
+    for def in machine_defs(false) {
+        if !has_record(def.client_id()) {
             continue;
         }
-        match load(def.id) {
+        match load(def.client_id()) {
             Ok(Some(record)) => {
                 let path = PathBuf::from(record.config_path);
                 if path.is_absolute() {
-                    paths.push((def.id.into(), path, Ok(def.format)));
+                    paths.push((def.client_id().into(), path, Ok(def.format)));
                 } else {
                     paths.push((
-                        def.id.into(),
-                        record_path(def.id).unwrap_or_default(),
+                        def.client_id().into(),
+                        record_path(def.client_id()).unwrap_or_default(),
                         Err("Legacy move record has no absolute config path".into()),
                     ));
                 }
             }
             Ok(None) => {}
             Err(error) => paths.push((
-                def.id.into(),
-                record_path(def.id).unwrap_or_default(),
+                def.client_id().into(),
+                record_path(def.client_id()).unwrap_or_default(),
                 Err(error),
             )),
         }
@@ -295,7 +295,8 @@ pub(super) fn backfill_identity(
     name: &str,
     id: &str,
 ) -> Result<(), String> {
-    let key = crate::brand::ATTRIBUTION_ID;
+    let reclaim_main = main_location_identity_changed(id, location_launch_id(format, name, &read_config_file(path)?)?.as_deref());
+    let keys = if id.contains('@') || reclaim_main { vec![crate::brand::ATTRIBUTION_ID, crate::brand::CLIENT_ID] } else { vec![crate::brand::ATTRIBUTION_ID] };
     match container(format) {
         Container::Json {
             key: container_key,
@@ -318,11 +319,10 @@ pub(super) fn backfill_identity(
             if entry.get(env_key).is_none() {
                 entry[env_key] = serde_json::json!({});
             }
-            entry
-                .get_mut(env_key)
-                .and_then(serde_json::Value::as_object_mut)
-                .ok_or("Invalid gateway environment")?
-                .insert(key.into(), serde_json::json!(id));
+            for key in &keys {
+                entry.get_mut(env_key).and_then(serde_json::Value::as_object_mut)
+                    .ok_or("Invalid gateway environment")?.insert((*key).into(), serde_json::json!(id));
+            }
             atomic_write_json_config(path, Some(&original), &root, container_key)
         }
         Container::Toml => {
@@ -331,7 +331,9 @@ pub(super) fn backfill_identity(
             if entry.get("env").is_none() {
                 entry["env"] = toml_edit::Item::Table(toml_edit::Table::new());
             }
-            entry["env"].as_table_like_mut().ok_or("Invalid gateway environment")?.insert(key, toml_edit::value(id));
+            for key in &keys {
+                entry["env"].as_table_like_mut().ok_or("Invalid gateway environment")?.insert(key, toml_edit::value(id));
+            }
             atomic_write(path, &doc.to_string())
         }
         Container::YamlMap(container_key) | Container::YamlList(container_key) => {
@@ -357,14 +359,11 @@ pub(super) fn backfill_identity(
             if entry.get(env_key).is_none() {
                 entry[env_key] = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
             }
-            entry
-                .get_mut(env_key)
-                .and_then(serde_yaml::Value::as_mapping_mut)
-                .ok_or("Invalid gateway environment")?
-                .insert(
-                    serde_yaml::Value::String(key.into()),
-                    serde_yaml::Value::String(id.into()),
-                );
+            for key in &keys {
+                entry.get_mut(env_key).and_then(serde_yaml::Value::as_mapping_mut)
+                    .ok_or("Invalid gateway environment")?.insert(
+                        serde_yaml::Value::String((*key).into()), serde_yaml::Value::String(id.into()));
+            }
             atomic_write_yaml_config(path, original.as_deref(), &root, container_key)
         }
     }

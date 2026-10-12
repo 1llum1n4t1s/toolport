@@ -132,6 +132,10 @@ function App() {
   const [settingsPage, setSettingsPage] = useState<SettingsSubpage>("general");
   const [pendingCount, setPendingCount] = useState(0);
   const [view, setView] = useState<View>("servers");
+  const viewRef = useRef(view);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
   const [activityKey, setActivityKey] = useState(0);
   const [health, setHealth] = useState<Record<string, ProbeResult>>({});
   const [probing, setProbing] = useState(false);
@@ -281,11 +285,12 @@ function App() {
       setLoading(true);
       setError(null);
       try {
-        const [reg, dc, recovery] = await Promise.all([
-          getRegistry(),
-          detectClients(),
+        const [dc, recovery] = await Promise.all([
+          detectClients(viewRef.current === "clients"),
           takeRegistryRecoveryNotice(),
         ]);
+        // Inspecting locations can adopt an existing gateway and its access.
+        const reg = await getRegistry();
         registryRef.current = reg;
         setRegistry(reg);
         setClients(dc);
@@ -339,6 +344,25 @@ function App() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (view !== "clients") return;
+    let active = true;
+    void detectClients(true)
+      .then(async (detected) => {
+        const registry = await getRegistry();
+        if (!active) return;
+        registryRef.current = registry;
+        setRegistry(registry);
+        setClients(detected);
+      })
+      .catch((error) => {
+        if (active) toastError(`Couldn't refresh clients: ${error}`);
+      });
+    return () => {
+      active = false;
+    };
+  }, [view]);
 
   // An agent toggling a server through the gateway writes the registry; the backend
   // watches that file and emits this event, so the UI reflects the change live
@@ -1006,6 +1030,7 @@ function App() {
                         registry={registry}
                         loading={loading}
                         onSelectClient={selectClient}
+                        onChanged={load}
                       />
                     )
                   ) : view === "activity" ? (

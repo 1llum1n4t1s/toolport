@@ -2120,6 +2120,8 @@ impl ClientPage {
             .tooltip_text("Scan clients again")
             .build();
         header.pack_end(&refresh_button);
+        let add_location = gtk::Button::with_label("Add client location");
+        header.pack_start(&add_location);
         let import_button = gtk::Button::with_label("Import");
         import_button.set_tooltip_text(Some("Review servers found in client configurations"));
         import_button.add_css_class("toolport-secondary-action");
@@ -2147,7 +2149,7 @@ impl ClientPage {
         );
         page.append(
             &gtk::Label::builder()
-                .label("Toolport reads each supported client's local MCP configuration and shows whether its gateway is connected. This scan never changes client files.")
+                .label("Toolport reads each client's local MCP configuration. Existing Toolport entries in extra locations are adopted with a backup.")
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
@@ -2201,6 +2203,8 @@ impl ClientPage {
             pending_confirmation: std::rc::Rc::new(std::cell::RefCell::new(None)),
             feedback_timer: std::rc::Rc::new(std::cell::RefCell::new(None)),
         };
+        let page_for_add = client_page.clone();
+        add_location.connect_clicked(move |_| page_for_add.add_location());
         let page_for_refresh = client_page.clone();
         client_page
             .refresh_button
@@ -2210,6 +2214,55 @@ impl ClientPage {
             .import_button
             .connect_clicked(move |_| page_for_import.preview_imports());
         client_page
+    }
+
+    fn add_location(&self) {
+        let Some(parent) = self.root.root().and_downcast::<gtk::Window>() else { return; };
+        let page = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            let types = match gtk::gio::spawn_blocking(crate::clients::client_location_types).await {
+                Ok(types) => types,
+                Err(_) => { page.show_error("Could not load client types."); return; }
+            };
+            #[allow(deprecated)]
+            let dialog = adw::MessageDialog::new(Some(&parent), Some("Add client location"),
+                Some("Choose this client's config folder. Locations stay on this machine. Connecting is a separate step."));
+            let fields = gtk::Box::new(gtk::Orientation::Vertical, 8);
+            let kind_label = gtk::Label::builder().label("Client type").xalign(0.0).build();
+            fields.append(&kind_label);
+            let names: Vec<&str> = types.iter().map(|kind| kind.name.as_str()).collect();
+            let kind = gtk::DropDown::from_strings(&names);
+            kind.set_selected(types.iter().position(|kind| kind.id == "claude-code").unwrap_or(0) as u32);
+            fields.append(&kind);
+            fields.append(&gtk::Label::builder().label("Config folder").xalign(0.0).build());
+            let folder = gtk::Entry::builder().placeholder_text("~/.claude2").build();
+            fields.append(&folder);
+            let hint = gtk::Label::builder().label("For Codex, choose its CODEX_HOME folder.").wrap(true).xalign(0.0).build();
+            fields.append(&hint);
+            dialog.set_extra_child(Some(&fields));
+            dialog.add_response("cancel", "Cancel");
+            dialog.add_response("add", "Add location");
+            dialog.set_response_enabled("add", false);
+            dialog.set_close_response("cancel");
+            let dialog_for_input = dialog.clone();
+            folder.connect_changed(move |entry| dialog_for_input.set_response_enabled("add", !entry.text().trim().is_empty()));
+            dialog.connect_response(None, move |_, response| {
+                if response != "add" { return; }
+                let Some(selected) = types.get(kind.selected() as usize) else { return; };
+                let client_type = selected.id.clone();
+                let folder = folder.text().to_string();
+                let page = page.clone();
+                gtk::glib::spawn_future_local(async move {
+                    let result = gtk::gio::spawn_blocking(move || crate::clients::add_client_location(&client_type, &folder)).await;
+                    match result {
+                        Ok(Ok(_)) => page.refresh_with_confirmation("Client location added. Select Connect to configure it.".into()),
+                        Ok(Err(error)) => page.show_error(&error),
+                        Err(_) => page.show_error("Could not add client location."),
+                    }
+                });
+            });
+            dialog.present();
+        });
     }
 
     fn preview_imports(&self) {
@@ -2711,6 +2764,33 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
             confirm_client_reset(&reviewed_client, button.clone(), reviewed_page.clone());
         });
         actions.append(&migrate);
+    }
+    if client.location_removable {
+        let remove = gtk::Button::with_label("Remove location");
+        remove.set_sensitive(!client.config_error && client.gateway_state == state::ClientGatewayState::Disconnected);
+        let id = client.id.clone();
+        let page = page.clone();
+        remove.connect_clicked(move |_| {
+            let Some(parent) = page.root.root().and_downcast::<gtk::Window>() else { return; };
+            let dialog = adw::MessageDialog::new(Some(&parent), Some("Remove client location?"),
+                Some("This forgets the added location. Your client config and backups are kept. Auto-detected Claude folders still appear in Clients."));
+            dialog.add_responses(&[("cancel", "Cancel"), ("remove", "Remove location")]);
+            let id = id.clone();
+            let page = page.clone();
+            dialog.connect_response(Some("remove"), move |_, _| {
+                let id = id.clone();
+                let page = page.clone();
+                gtk::glib::spawn_future_local(async move {
+                    match gtk::gio::spawn_blocking(move || crate::clients::remove_client_location(&id)).await {
+                        Ok(Ok(())) => page.refresh_with_confirmation("Client location removed.".into()),
+                        Ok(Err(error)) => page.show_error(&error),
+                        Err(_) => page.show_error("Could not remove client location."),
+                    }
+                });
+            });
+            dialog.present();
+        });
+        actions.append(&remove);
     }
     match client.gateway_state {
         state::ClientGatewayState::Disconnected => {
@@ -10723,6 +10803,7 @@ mod tests {
             uses_connectors: false, server_count: 2, movable_server_count: 0, other_server_count: 2, gateway_state,
             shared_http: false, legacy_bearer_argv: false, scope_id: None, scope_name: None,
             discovery_mode: Some("lazy".into()), inherited_discovery: None, config_error: false,
+            location_removable: false,
         }).collect();
         clients.render(state::ClientSnapshot { clients: fixture_clients, profiles: Vec::new(), sessions_error: false, sessions: vec![serde_json::json!({"clientName":"Codex","clientType":"codex","sessionCount":5,"callsToday":60,"lastActiveMs":now-180000,"firstCatalogSize":1711})] });
         let approvals = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -10882,6 +10963,7 @@ mod tests {
             discovery_mode: None,
             inherited_discovery: None,
             config_error: false,
+            location_removable: false,
         };
         let mut heights = Vec::new();
         for state in [
@@ -10951,6 +11033,7 @@ mod tests {
             discovery_mode: None,
             inherited_discovery: None,
             config_error: false,
+            location_removable: false,
         };
         let mut registry = crate::registry::Registry::default();
         registry.profiles[0].id = "work".into();

@@ -108,7 +108,7 @@ export function ClientLogo({
   size?: number;
   className?: string;
 }) {
-  const key = CLIENT_LOGO[id] ?? "";
+  const key = CLIENT_LOGO[id.split("@")[0]] ?? "";
   const url = LOGOS[key];
 
   if (url) {

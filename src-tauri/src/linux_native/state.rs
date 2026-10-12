@@ -397,6 +397,7 @@ pub(super) struct ClientView {
     /// The global mode a client without its own choice inherits, if the user has one.
     pub(super) inherited_discovery: Option<String>,
     pub(super) config_error: bool,
+    pub(super) location_removable: bool,
 }
 
 impl ClientView {
@@ -434,6 +435,7 @@ impl ClientView {
             discovery_mode: None,
             inherited_discovery: None,
             config_error: client.error.is_some(),
+            location_removable: client.location_removable,
         }
     }
 }
@@ -511,13 +513,8 @@ fn unreadable_session_history_is_optional_to_client_detection() {
 }
 
 pub(super) fn detect_client_views() -> Result<ClientSnapshot, String> {
-    let path = registry::resolved_path().ok_or_else(|| "registry path unavailable".to_string())?;
-    let registry = match std::fs::read_to_string(&path) {
-        Ok(contents) => registry::parse_registry_contents(&contents)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Registry::default(),
-        Err(error) => return Err(format!("could not read registry: {error}")),
-    };
-    let mut clients = crate::clients::detect_clients();
+    let mut clients = crate::clients::detect_clients_for_display()?;
+    let registry = crate::registry::load()?;
     crate::clients::apply_entry_states(&mut clients, &registry.client_managed_entries);
     let shared_http_clients = registry
         .http_clients
@@ -1153,6 +1150,7 @@ mod tests {
             id: "codex".into(),
             name: "Codex".into(),
             uses_connectors: false,
+            location_removable: false,
             discovery: crate::clients::discovery_capabilities("codex"),
             config_path: "/private/config.toml".into(),
             config_exists: true,

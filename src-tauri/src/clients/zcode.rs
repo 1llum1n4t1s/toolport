@@ -349,7 +349,7 @@ fn gateway_definition(name: &str, definition: &Value) -> bool {
 
 fn retain_gateway_state(servers: &Map<String, Value>, value: &mut Value) -> Result<(), String> {
     for (name, definition) in servers {
-        if gateway_definition(name, definition) {
+        if gateway_edit_matches(name, definition.get("command").and_then(Value::as_str)) {
             // Repair may replace the command, but must preserve an explicit off
             // switch. False wins when the current and legacy fields disagree.
             if disabled(definition) {
@@ -388,7 +388,7 @@ pub(super) fn edit_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(
         retain_gateway_state(&servers, value)?;
     }
     let count = servers.len();
-    servers.retain(|name, definition| !gateway_definition(name, definition));
+    servers.retain(|name, definition| !gateway_edit_matches(name, definition.get("command").and_then(Value::as_str)));
     if entry.is_none()
         && servers.is_empty()
         && fallback_map(path)?

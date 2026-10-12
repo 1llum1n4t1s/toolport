@@ -27,6 +27,7 @@ export interface ParsedSnippetServer {
 export type GatewayEntryState = "managed" | "customized" | "absent";
 
 export interface DetectedClient {
+  locationRemovable?: boolean;
   id: string;
   name: string;
   usesConnectors: boolean;

@@ -2420,6 +2420,24 @@ pub fn record_error(error: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_locations_and_their_access_never_enter_personal_sync() {
+        let _data = crate::registry::DataDirTestEnv::new("location-sync-exclusion");
+        let folder = _data.dir.join("codex-location");
+        std::fs::create_dir(&folder).unwrap();
+        let mut registry = machine();
+        let before = definitions(&registry);
+        let id = crate::clients::add_client_location("codex", folder.to_str().unwrap()).unwrap();
+        registry.client_scopes.insert(id.clone(), "private-access".into());
+        registry.client_discovery.insert(id, "lazy".into());
+        assert_eq!(definitions(&registry), before);
+        let export = serde_json::to_string(&definitions(&registry)).unwrap();
+        assert!(!export.contains(folder.to_str().unwrap()));
+        assert!(!export.contains("private-access"));
+        assert!(!serde_json::to_value(&registry).unwrap().as_object().unwrap().contains_key("clientLocations"));
+    }
+
     #[test]
     fn risky_env_lists_match_the_renderer_copy() {
         let ts = include_str!("../../src/lib/personalSync.ts");

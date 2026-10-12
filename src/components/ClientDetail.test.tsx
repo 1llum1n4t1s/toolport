@@ -8,6 +8,7 @@ import type { DetectedClient, Registry } from "@/lib/types";
 const installGateway = vi.fn();
 const uninstallGateway = vi.fn();
 const migrateClient = vi.fn();
+const removeClientLocation = vi.fn();
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
 
@@ -32,6 +33,7 @@ vi.mock("@/lib/api", () => ({
     ],
   }),
   setClientDiscovery: vi.fn(),
+  removeClientLocation: (...a: unknown[]) => removeClientLocation(...a),
   importServers: vi.fn(),
   previewImportServers: vi.fn().mockResolvedValue([]),
 }));
@@ -598,4 +600,38 @@ describe("ClientDetail Auto discovery", () => {
       ).toBeInTheDocument();
     },
   );
+});
+
+it("removes a disconnected manual location through the confirmation flow", async () => {
+  const user = userEvent.setup();
+  const onChanged = vi.fn();
+  removeClientLocation.mockResolvedValue(undefined);
+  render(
+    <ClientDetail
+      client={client({ id: "codex@fixture", locationRemovable: true })}
+      registry={emptyRegistry()}
+      onChanged={onChanged}
+      onRegistryChange={vi.fn()}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: "Remove location" }));
+  await user.click(screen.getByRole("button", { name: "Remove location" }));
+  expect(removeClientLocation).toHaveBeenCalledWith("codex@fixture");
+  await waitFor(() => expect(onChanged).toHaveBeenCalled());
+});
+
+it("requires disconnect before forgetting a connected location", () => {
+  render(
+    <ClientDetail
+      client={client({
+        locationRemovable: true,
+        gatewayInstalled: true,
+        entryState: "managed",
+      })}
+      registry={emptyRegistry()}
+      onChanged={vi.fn()}
+      onRegistryChange={vi.fn()}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Remove location" })).toBeDisabled();
 });

@@ -615,9 +615,28 @@ export function teamPairCancel(): Promise<void> {
   return invoke<void>("team_pair_cancel");
 }
 
-/** Probe every supported MCP client and read its current server configuration. */
-export function detectClients(): Promise<DetectedClient[]> {
-  return invoke<DetectedClient[]>("detect_clients");
+/** Forget a disconnected manually added location while retaining its files. */
+export function removeClientLocation(clientId: string): Promise<void> {
+  return invoke("remove_client_location", { clientId });
+}
+
+/** Probe clients; inspection also adopts newly discovered locations. */
+export function detectClients(inspectConfigs = true): Promise<DetectedClient[]> {
+  return invoke<DetectedClient[]>("detect_clients", { inspectConfigs });
+}
+
+export interface ClientLocationType {
+  id: string;
+  name: string;
+  configFile: string;
+}
+
+export function getClientLocationTypes(): Promise<ClientLocationType[]> {
+  return invoke<ClientLocationType[]>("client_location_types");
+}
+
+export function addClientLocation(clientType: string, folder: string): Promise<string> {
+  return invoke<string>("add_client_location", { clientType, folder });
 }
 
 /** Install the Toolport gateway into a client's config, optionally scoped to a

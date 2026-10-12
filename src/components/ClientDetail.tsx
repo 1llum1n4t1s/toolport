@@ -20,6 +20,7 @@ import {
   installGateway,
   setClientDiscovery,
   uninstallGateway,
+  removeClientLocation,
 } from "@/lib/api";
 import {
   importableServers,
@@ -397,6 +398,26 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {client.locationRemovable && (
+            <ConfirmDialog
+              trigger={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy || installed || !!client.error}
+                >
+                  Remove location
+                </Button>
+              }
+              title={`Remove ${client.name}?`}
+              description="This forgets the added location. Your client config and backups are kept. Auto-detected Claude folders still appear in Clients."
+              confirmLabel="Remove location"
+              onConfirm={async () => {
+                await removeClientLocation(client.id);
+                onChanged();
+              }}
+            />
+          )}
           {!customized && <span className="text-xs text-muted-foreground">Access</span>}
           {!customized && (
             <Select

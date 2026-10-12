@@ -21,6 +21,10 @@ mod disconnect;
 pub use disconnect::{all as disconnect_all, ClientResult as DisconnectResult};
 pub(crate) use disconnect::for_purge as disconnect_all_for_purge;
 mod discovery;
+mod locations;
+pub use locations::{remove_client_location, add_client_location, client_location_types, ClientLocationType};
+#[cfg(feature = "test-support")]
+pub use locations::measure_scan as measure_client_location_scan;
 pub use discovery::DiscoveryCapabilities;
 mod moved;
 mod mutation;
@@ -28,6 +32,12 @@ mod restore;
 pub(crate) use restore::after_capture_conflict as record_config_capture_conflict;
 pub(crate) use restore::after_rollback as record_config_rollback;
 mod zcode;
+#[cfg(test)]
+mod round3_tests;
+#[cfg(test)]
+mod round4_tests;
+#[cfg(test)]
+mod round5_tests;
 
 /// One MCP server, normalized across every client format.
 #[derive(Debug, Clone, Serialize)]
@@ -69,6 +79,7 @@ pub struct DetectedClient {
     /// (Claude Desktop) rather than the local config file. Their file-based count
     /// is misleading, so the UI shows a connector indicator instead.
     pub uses_connectors: bool,
+    pub location_removable: bool,
     pub discovery: DiscoveryCapabilities,
     pub config_path: String,
     pub config_exists: bool,
@@ -166,6 +177,7 @@ struct CombinedToolNameBudget {
 struct ClientDef {
     id: &'static str,
     name: &'static str,
+    location: Option<locations::ClientLocation>,
     format: Format,
     discovery: DiscoveryCapabilities,
     combined_tool_name_budget: Option<CombinedToolNameBudget>,
@@ -175,6 +187,44 @@ struct ClientDef {
     /// Optional scan for servers stored outside the main config file but still
     /// readable (e.g. Cursor plugin manifests).
     plugin_scan: Option<fn() -> Vec<McpServer>>,
+}
+
+impl ClientDef {
+    fn client_id(&self) -> &str {
+        self.location.as_ref().map(|row| row.id.as_str()).unwrap_or(self.id)
+    }
+}
+
+fn machine_defs(include_detected: bool) -> Vec<ClientDef> {
+    let mut definitions = defs();
+    let locations = if include_detected { locations::all() } else { locations::saved().unwrap_or_default() };
+    for location in locations {
+        if let Some(mut def) = defs().into_iter().find(|def| def.id == location.client_type) {
+            def.location = Some(location);
+            definitions.push(def);
+        }
+    }
+    unique_config_definitions(definitions)
+}
+
+// The main configured path keeps its existing identity and ownership. A file
+// must never be maintained through both a main and a location client ID.
+fn unique_config_definitions(mut definitions: Vec<ClientDef>) -> Vec<ClientDef> {
+    let main_paths: Vec<_> = definitions.iter()
+        .filter(|def| def.location.is_none())
+        .filter_map(|def| resolved_definition_path(def).ok().map(|path| (def.id, std::fs::canonicalize(&path).unwrap_or(path))))
+        .collect();
+    let mut seen = Vec::new();
+    definitions.retain(|def| {
+        let Ok(path) = resolved_definition_path(def) else { return true; };
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        let identity = (def.id, path);
+        if def.location.is_some() && main_paths.contains(&identity) { return false; }
+        if def.location.is_some() && seen.contains(&identity) { return false; }
+        seen.push(identity);
+        true
+    });
+    definitions
 }
 
 /// Resolve Auto without changing serialized per-client overrides. The global default
@@ -195,7 +245,7 @@ pub fn discovery_capabilities(id: &str) -> DiscoveryCapabilities {
     // Adapter routing wraps legacy client IDs too. Only the capability lookup
     // uses this spelling; authorization and result ownership keep the wire ID.
     let id = id.strip_prefix("adapter:").unwrap_or(id);
-    discovery::capabilities(id.strip_prefix("client:").unwrap_or(id))
+    discovery::capabilities(id.strip_prefix("client:").unwrap_or(id).split('@').next().unwrap_or(id))
 }
 
 /// Client limits apply to the registered server key, profile separator overhead and alias.
@@ -203,6 +253,7 @@ pub fn client_tool_name_limit(id: Option<&str>, registered_key: &str) -> usize {
     let id = id.unwrap_or("");
     let id = id.strip_prefix("adapter:").unwrap_or(id);
     let id = id.strip_prefix("client:").unwrap_or(id);
+    let id = id.split('@').next().unwrap_or(id);
     defs()
         .into_iter()
         .find(|profile| profile.id == id)
@@ -240,6 +291,30 @@ fn gateway_identity_matches(id: &str, name: &str, command: Option<&str>) -> bool
     };
 
     has_gateway_name(id) || has_gateway_name(name) || command.is_some_and(command_is_gateway_binary)
+}
+
+// Added locations do not establish ownership from binary identity alone. Prefer the current slot, then its legacy name.
+fn owned_gateway_name<'a>(names: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    let names: Vec<_> = names.collect();
+    [GATEWAY_ENTRY_NAME, LEGACY_GATEWAY_ENTRY_NAME].into_iter()
+        .find_map(|owned| names.iter().copied().find(|name| name.eq_ignore_ascii_case(owned)))
+}
+
+fn owned_gateway_entry(servers: &[McpServer]) -> Option<&McpServer> {
+    let name = owned_gateway_name(servers.iter().map(|server| server.name.as_str()))?;
+    servers.iter().find(|server| server.name == name)
+}
+
+// Main clients and saved automatic v1 Claude profiles keep binary ownership.
+// New locations only own reserved names, even if other entries use our binary.
+fn gateway_entry_for_client<'a>(id: &str, servers: &'a [McpServer]) -> Option<&'a McpServer> {
+    owned_gateway_entry(servers).or_else(|| locations::legacy_gateway_ownership(id).then(||
+        servers.iter().find(|server| detected_is_gateway(server))).flatten())
+}
+
+fn gateway_edit_matches(name: &str, command: Option<&str>) -> bool {
+    gateway_identity_matches(name, name,
+        if mutation::legacy_gateway_ownership() { command } else { None })
 }
 
 /// Whether a registry entry refers to Toolport's own gateway. The gateway must
@@ -281,8 +356,69 @@ pub fn detected_is_gateway(server: &McpServer) -> bool {
     gateway_identity_matches(&server.name, &server.name, server.command.as_deref())
 }
 
-fn home() -> Option<PathBuf> {
+pub(crate) fn home() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_HOME.with(|slot| slot.borrow().clone()) { return Some(path); }
+    #[cfg(test)]
+    { return Some(test_paths::home()); }
+    #[cfg(all(not(test), feature = "test-support"))]
+    if let Some(path) = crate::fixture_paths::dir("home") { return Some(path); }
+    #[cfg(not(test))]
     dirs::home_dir()
+}
+
+#[cfg(test)]
+thread_local! { static TEST_HOME: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) }; }
+
+#[cfg(test)]
+pub(crate) struct TestHome(Option<PathBuf>);
+#[cfg(test)]
+impl TestHome {
+    pub(crate) fn set(path: &Path) -> Self {
+        Self(TEST_HOME.with(|slot| slot.replace(Some(path.to_path_buf()))))
+    }
+}
+#[cfg(test)]
+impl Drop for TestHome {
+    fn drop(&mut self) { TEST_HOME.with(|slot| { slot.replace(self.0.take()); }); }
+}
+
+#[cfg(test)]
+mod test_paths;
+
+fn client_path_env(key: &str) -> Option<std::ffi::OsString> {
+    #[cfg(test)]
+    { return test_paths::env(key); }
+    #[cfg(not(test))]
+    std::env::var_os(key)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn client_config_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    { return test_paths::dir("XDG_CONFIG_HOME", || home().unwrap().join(".config")); }
+    #[cfg(all(not(test), feature = "test-support"))]
+    if let Some(path) = crate::fixture_paths::dir("config") { return Some(path); }
+    #[cfg(not(test))]
+    dirs::config_dir()
+}
+
+fn client_data_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    { return test_paths::dir("XDG_DATA_HOME", || home().unwrap().join(".local/share")); }
+    #[cfg(all(not(test), feature = "test-support"))]
+    if let Some(path) = crate::fixture_paths::dir("data") { return Some(path); }
+    #[cfg(not(test))]
+    dirs::data_dir()
+}
+
+fn client_local_data_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    { return test_paths::dir("LOCALAPPDATA", || home().unwrap().join("AppData/Local")); }
+    #[cfg(all(not(test), feature = "test-support"))]
+    if let Some(path) = crate::fixture_paths::dir("local-data") { return Some(path); }
+    #[cfg(not(test))]
+    dirs::data_local_dir()
 }
 
 /// OS family for cross-platform path expectations. Production code uses
@@ -467,7 +603,7 @@ fn resolve_client_config_path(
 /// child process it spawns - Toolport cannot see that, and such a config stays
 /// stale. Kept split from the pure path table so tests stay env-free.
 fn claude_config_dir_override() -> Option<PathBuf> {
-    claude_config_dir_from(std::env::var_os("CLAUDE_CONFIG_DIR"))
+    claude_config_dir_from(client_path_env("CLAUDE_CONFIG_DIR"))
 }
 
 /// An env-supplied directory is only used when it is an absolute path.
@@ -574,39 +710,108 @@ fn rules_sentinel_block(
 /// updated starts it again. That is the failure this list exists to close.
 ///
 /// Discovery is deliberately narrow: the documented default, the override, and
-/// `.claude*` siblings directly under home. No recursion, nothing outside home.
+/// `.claude*` siblings directly under home. Legacy profiles retain v1 symlink support.
 fn claude_code_config_paths() -> Vec<PathBuf> {
-    let Some(home) = home() else {
-        return Vec::new();
-    };
-    let dirs = match claude_profile_dirs(&home) {
-        Ok(dirs) => dirs,
-        Err(error) => {
-            let msg = format!(
-                "toolport: could not scan {} for secondary Claude Code configs: {error}",
-                home.display()
-            );
-            eprintln!("{msg}");
-            crate::gatewaylog::append(&msg);
-            Vec::new()
-        }
-    };
-    claude_code_config_paths_from(&home, claude_config_dir_override().as_deref(), &dirs)
-        .into_iter()
-        .filter(|p| p.is_file())
-        .collect()
+    try_claude_code_config_paths().unwrap_or_else(|error| {
+        let msg = format!("toolport: could not scan secondary Claude Code configs: {error}");
+        eprintln!("{msg}");
+        crate::gatewaylog::append(&msg);
+        Vec::new()
+    })
 }
 
-/// Directory names directly under home that may hold Claude Code profiles. `Path::is_dir`
-/// deliberately follows symlinks: keeping a work profile on another volume via
-/// `~/.claude-work -> /volume/work-claude` is a supported filesystem shape.
+fn try_claude_code_config_paths() -> Result<Vec<PathBuf>, String> {
+    let home = home().ok_or("Could not resolve home for Claude Code configs")?;
+    let configured = client_config_path("claude-code");
+    let dirs = legacy_claude_profile_dirs(&home)?;
+    let mut paths = Vec::new();
+    for path in claude_code_config_paths_from(&home, claude_config_dir_override().as_deref(), &dirs) {
+        let legacy = path == home.join(".claude.json") || configured.as_ref() == Some(&path)
+            || path.parent().and_then(|folder| folder.file_name()).and_then(|name| name.to_str()).is_some_and(legacy_claude_profile_name);
+        if !legacy {
+            match std::fs::symlink_metadata(&path) {
+                Ok(meta) if meta.file_type().is_symlink() => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.to_string()),
+                Ok(_) if !locations::automatic_path_is_safe(&home, &path) => return Err("Could not validate automatic Claude Code config".into()),
+                Ok(_) => {},
+            }
+        }
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.is_file() => paths.push(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Ok(_) => return Err("Claude Code config is not an ordinary file".into()),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(paths)
+}
+
+/// Name-first, shallow discovery. Symlink directories are excluded so automatic
+/// discovery never follows a profile outside home. Config contents are not read.
+fn claude_profile_name(name: &str) -> bool {
+    if name == ".claude" { return true; }
+    let Some(suffix) = name.strip_prefix(".claude") else { return false; };
+    if !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()) { return true; }
+    let Some(label) = suffix.strip_prefix('-').filter(|label| !label.is_empty()) else { return false; };
+    let lower = label.to_ascii_lowercase();
+    !["backup", "bak", "old", "orig", "save", "saved", "tmp", "temp"]
+        .iter().any(|word| lower.split(['-', '.', '_']).any(|part| part == *word))
+}
+
+fn legacy_claude_profile_name(name: &str) -> bool {
+    name == ".claude" || name.starts_with(".claude-")
+}
+
+fn legacy_claude_profile_dirs(home: &Path) -> Result<Vec<String>, String> {
+    let mut names = Vec::new();
+    let entries = match std::fs::read_dir(home) {
+        Ok(entries) => entries,
+        // An absent home has no sibling profiles. The caller still checks the
+        // default config and any explicit override; real scan errors stay fatal.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(names),
+        Err(error) => return Err(error.to_string()),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !legacy_claude_profile_name(&name) && !claude_profile_name(&name) { continue; }
+        if !legacy_claude_profile_name(&name) && entry.file_type().map_err(|error| error.to_string())?.is_symlink() { continue; }
+        match std::fs::metadata(entry.path()) {
+            Ok(meta) if meta.is_dir() => names.push(name),
+            Ok(_) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(names)
+}
+
+/// Settings upkeep is best-effort per profile. A broken sibling must not hide
+/// healthy settings before startup cleanup writes its run-once markers.
+fn legacy_claude_settings_dirs(home: &Path) -> Result<Vec<String>, String> {
+    let entries = std::fs::read_dir(home).map_err(|error| error.to_string())?;
+    Ok(entries.filter_map(Result::ok).filter_map(|entry| {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !legacy_claude_profile_name(&name) && !claude_profile_name(&name) { return None; }
+        if !legacy_claude_profile_name(&name) && entry.file_type().ok()?.is_symlink() { return None; }
+        entry.path().is_dir().then_some(name)
+    }).collect())
+}
+
 fn claude_profile_dirs(home: &Path) -> Result<Vec<String>, String> {
+    claude_profile_dirs_with_links(home, false)
+}
+
+fn claude_profile_dirs_with_links(home: &Path, follow_links: bool) -> Result<Vec<String>, String> {
     let entries = std::fs::read_dir(home).map_err(|e| e.to_string())?;
-    Ok(entries
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect())
+    Ok(entries.filter_map(Result::ok).filter_map(|entry| {
+        let name = entry.file_name().into_string().ok()?;
+        if !claude_profile_name(&name) { return None; }
+        let kind = entry.file_type().ok()?;
+        if !kind.is_dir() && !(follow_links && kind.is_symlink() && entry.path().is_dir()) { return None; }
+        Some(name)
+    }).collect())
 }
 
 /// The env- and filesystem-free half of [`claude_code_config_paths`], so ordering and
@@ -633,7 +838,7 @@ fn claude_code_config_paths_from(
     push(home.join(".claude.json"), &mut out);
     let mut siblings: Vec<&String> = home_dirs
         .iter()
-        .filter(|name| *name == ".claude" || name.starts_with(".claude-"))
+        .filter(|name| legacy_claude_profile_name(name) || claude_profile_name(name))
         .collect();
     // read_dir order is unspecified; sort so the log and any diagnostics are stable.
     siblings.sort();
@@ -670,7 +875,7 @@ pub(crate) fn claude_settings_paths() -> Vec<PathBuf> {
     let Some(home) = home() else {
         return Vec::new();
     };
-    let dirs = match claude_profile_dirs(&home) {
+    let dirs = match legacy_claude_settings_dirs(&home) {
         Ok(dirs) => dirs,
         Err(error) => {
             let msg = format!(
@@ -707,7 +912,7 @@ fn claude_settings_paths_from(
     push(claude_settings_path(&home.join(".claude")), &mut out);
     let mut siblings: Vec<&String> = home_dirs
         .iter()
-        .filter(|name| *name == ".claude" || name.starts_with(".claude-"))
+        .filter(|name| legacy_claude_profile_name(name) || claude_profile_name(name))
         .collect();
     // read_dir order is unspecified; sort so the log and any diagnostics are stable.
     siblings.sort();
@@ -859,7 +1064,7 @@ fn client_config_path_with_home(client_id: &str, home: Option<PathBuf>) -> Optio
     // path in step with `client_rules_target`: without it Connect could write Goose Team
     // Instructions under the root but fail to find the config beside them (SBS-899).
     if client_id == "goose" {
-        if let Some(root) = goose_path_root_from(std::env::var_os("GOOSE_PATH_ROOT")) {
+        if let Some(root) = goose_path_root_from(client_path_env("GOOSE_PATH_ROOT")) {
             return Some(goose_config_under_root(&root));
         }
     }
@@ -879,8 +1084,8 @@ fn client_config_path_with_home(client_id: &str, home: Option<PathBuf>) -> Optio
 /// Linux production paths honor `XDG_CONFIG_HOME` / `XDG_DATA_HOME` via `dirs`.
 #[cfg(all(unix, not(target_os = "macos")))]
 fn resolve_client_config_path_linux(client_id: &str, home: &std::path::Path) -> Option<PathBuf> {
-    let config = dirs::config_dir().unwrap_or_else(|| home.join(".config"));
-    let data = dirs::data_dir().unwrap_or_else(|| home.join(".local").join("share"));
+    let config = client_config_dir().unwrap_or_else(|| home.join(".config"));
+    let data = client_data_dir().unwrap_or_else(|| home.join(".local").join("share"));
     let path = match client_id {
         "claude-desktop" => config.join("Claude").join("claude_desktop_config.json"),
         "cursor" => home.join(".cursor").join("mcp.json"),
@@ -1091,27 +1296,43 @@ pub fn client_rules_target(
     client_id: &str,
     scope: crate::instructions::Scope,
 ) -> Option<crate::instructions::Target> {
+    if let Some(location) = locations::lookup(client_id) {
+        locations::validate(&location).ok()?;
+        let folder = location.config_path.parent()?;
+        return match location.client_type.as_str() {
+            "claude-code" => Some(crate::instructions::Target {
+                path: folder.join("rules").join(scope.owned_file_name()),
+                strategy: crate::instructions::Strategy::OwnedFile, scope,
+                char_cap: None, blocked_if_present: None,
+            }),
+            "codex" => Some(codex_rules_target(folder, scope)),
+            "gemini-cli" => Some(gemini_cli_rules_target(folder, scope)),
+            "goose" => Some(rules_sentinel_block(folder.join(".goosehints"), scope)),
+            "zed" | "devin-cli" | "pi" | "omp" | "command-code" => Some(rules_sentinel_block(folder.join("AGENTS.md"), scope)),
+            _ => None,
+        };
+    }
     // Honor relocate envs even when `$HOME` is unset: the live file is under
     // the override, not the default home table (SBS-885, SBS-899).
     if client_id == "goose" {
-        if let Some(root) = goose_path_root_from(std::env::var_os("GOOSE_PATH_ROOT")) {
+        if let Some(root) = goose_path_root_from(client_path_env("GOOSE_PATH_ROOT")) {
             return Some(rules_sentinel_block(goose_hints_under_root(&root), scope));
         }
     }
     if client_id == "codex" {
-        if let Some(dir) = codex_home_from(std::env::var_os("CODEX_HOME")) {
+        if let Some(dir) = codex_home_from(client_path_env("CODEX_HOME")) {
             return Some(codex_rules_target(&dir, scope));
         }
     }
     if client_id == "gemini-cli" {
-        if let Some(dir) = gemini_cli_home_from(std::env::var_os("GEMINI_CLI_HOME")) {
+        if let Some(dir) = gemini_cli_home_from(client_path_env("GEMINI_CLI_HOME")) {
             return Some(gemini_cli_rules_target(&dir, scope));
         }
     }
     let home = home()?;
     #[cfg(all(unix, not(target_os = "macos")))]
     if matches!(client_id, "goose" | "zed" | "devin-cli") {
-        let config = dirs::config_dir().unwrap_or_else(|| home.join(".config"));
+        let config = client_config_dir().unwrap_or_else(|| home.join(".config"));
         let path = match client_id {
             "goose" => config.join("goose").join(".goosehints"),
             "zed" => config.join("zed").join("AGENTS.md"),
@@ -1133,7 +1354,7 @@ fn claude_desktop_path() -> Option<PathBuf> {
     if real.exists() {
         return Some(real);
     }
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home() {
         let packages = home.join("AppData").join("Local").join("Packages");
         if let Ok(entries) = std::fs::read_dir(&packages) {
             for entry in entries.flatten() {
@@ -1183,13 +1404,13 @@ fn resolve_crush_path(
 /// used LocalAppData, so retain that path only when it already contains a file.
 fn crush_path() -> Option<PathBuf> {
     let home = home()?;
-    if let Some(path) = crush_override_path(std::env::var_os("CRUSH_GLOBAL_CONFIG")) {
+    if let Some(path) = crush_override_path(client_path_env("CRUSH_GLOBAL_CONFIG")) {
         return Some(path);
     }
-    let current = resolve_crush_path(&home, None, std::env::var_os("XDG_CONFIG_HOME"));
+    let current = resolve_crush_path(&home, None, client_path_env("XDG_CONFIG_HOME"));
     #[cfg(windows)]
     if !current.exists() {
-        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA").filter(|p| !p.is_empty()) {
+        if let Some(local_app_data) = client_path_env("LOCALAPPDATA").filter(|p| !p.is_empty()) {
             let legacy = PathBuf::from(local_app_data)
                 .join("crush")
                 .join("crush.json");
@@ -1202,7 +1423,7 @@ fn crush_path() -> Option<PathBuf> {
 }
 
 fn amp_path() -> Option<PathBuf> {
-    std::env::var_os("AMP_SETTINGS_FILE")
+    client_path_env("AMP_SETTINGS_FILE")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .or_else(|| client_config_path("amp"))
@@ -1221,7 +1442,7 @@ fn codex_config_path(codex_home: &Path) -> PathBuf {
 }
 
 fn codex_path() -> Option<PathBuf> {
-    if let Some(dir) = codex_home_from(std::env::var_os("CODEX_HOME")) {
+    if let Some(dir) = codex_home_from(client_path_env("CODEX_HOME")) {
         return Some(codex_config_path(&dir));
     }
     client_config_path("codex")
@@ -1230,7 +1451,7 @@ fn codex_path() -> Option<PathBuf> {
 /// GitHub Copilot CLI stores user-level MCP servers under `COPILOT_HOME`,
 /// defaulting to `~/.copilot/mcp-config.json` on every supported platform.
 fn github_copilot_cli_path() -> Option<PathBuf> {
-    std::env::var_os("COPILOT_HOME")
+    client_path_env("COPILOT_HOME")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .map(|home| home.join("mcp-config.json"))
@@ -1252,7 +1473,7 @@ fn grok_config_path(grok_home: &Path) -> PathBuf {
 }
 
 fn grok_path() -> Option<PathBuf> {
-    if let Some(dir) = grok_home_from(std::env::var_os("GROK_HOME")) {
+    if let Some(dir) = grok_home_from(client_path_env("GROK_HOME")) {
         return Some(grok_config_path(&dir));
     }
     client_config_path("grok")
@@ -1271,7 +1492,7 @@ fn gemini_cli_settings_path(cli_home: &Path) -> PathBuf {
 }
 
 fn gemini_cli_path() -> Option<PathBuf> {
-    if let Some(dir) = gemini_cli_home_from(std::env::var_os("GEMINI_CLI_HOME")) {
+    if let Some(dir) = gemini_cli_home_from(client_path_env("GEMINI_CLI_HOME")) {
         return Some(gemini_cli_settings_path(&dir));
     }
     client_config_path("gemini-cli")
@@ -1300,7 +1521,7 @@ fn qwen_settings_path(qwen_home: &Path) -> PathBuf {
 }
 
 fn qwen_code_path() -> Option<PathBuf> {
-    if let Some(dir) = qwen_home_from(std::env::var_os("QWEN_HOME")) {
+    if let Some(dir) = qwen_home_from(client_path_env("QWEN_HOME")) {
         return Some(qwen_settings_path(&dir));
     }
     client_config_path("qwen-code")
@@ -1341,7 +1562,9 @@ fn resolve_opencode_config_path(json_path: PathBuf) -> Result<PathBuf, String> {
 }
 
 fn resolved_definition_path(def: &ClientDef) -> Result<PathBuf, String> {
-    let path = (def.path)().ok_or("Could not resolve a config path on this OS")?;
+    if let Some(location) = &def.location { locations::validate(location)?; }
+    let path = def.location.as_ref().map(|location| location.config_path.clone())
+        .or_else(|| (def.path)()).ok_or("Could not resolve a config path on this OS")?;
     if def.id == "opencode" {
         resolve_opencode_config_path(path)
     } else {
@@ -1356,7 +1579,7 @@ fn resolved_definition_path(def: &ClientDef) -> Result<PathBuf, String> {
 /// included. The data root is created by the CLI itself, so the default
 /// parent-dir presence check detects the install.
 fn kimi_code_path() -> Option<PathBuf> {
-    std::env::var_os("KIMI_CODE_HOME")
+    client_path_env("KIMI_CODE_HOME")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .map(|root| root.join("mcp.json"))
@@ -1388,7 +1611,7 @@ fn hermes_path() -> Option<PathBuf> {
     // Only the Windows build uses the platform data dir. Passing None elsewhere
     // keeps macOS and Linux on the home-anchored path with no probing at all.
     let local = if cfg!(windows) {
-        dirs::data_local_dir()
+        client_local_data_dir()
     } else {
         None
     };
@@ -1513,6 +1736,9 @@ fn scan_roo_code_plugins() -> Vec<McpServer> {
 /// Resolve display identity from configured names, never clientInfo.
 /// Recorded friendly names remain authoritative for historical Activity rows.
 pub fn known_adapter_name(id: &str) -> Option<String> {
+    if let Some(location) = locations::lookup(id) {
+        return Some(location.name);
+    }
     if id == "claude-code-secondary" {
         return Some("Claude Code (secondary)".into());
     }
@@ -1534,10 +1760,28 @@ impl CallerNames {
         entries: &[serde_json::Value],
         load: impl FnOnce() -> Option<crate::registry::Registry>,
     ) -> Self {
+        Self::for_entries_with_adapter(entries, load, known_adapter_name)
+    }
+
+    fn for_entries_with_adapter(
+        entries: &[serde_json::Value],
+        load: impl FnOnce() -> Option<crate::registry::Registry>,
+        mut adapter_name: impl FnMut(&str) -> Option<String>,
+    ) -> Self {
         let mut names: HashMap<String, String> = defs()
             .into_iter()
             .map(|def| (format!("adapter:{}", def.id), def.name.to_string()))
             .collect();
+        let mut resolved = std::collections::HashSet::new();
+        for id in entries.iter().filter_map(|entry| entry["client"].as_str()) {
+            if let Some(adapter) = id.strip_prefix("adapter:").filter(|id| id.contains('@')) {
+                // Remember misses too, so deleted locations do not reread the
+                // location store and filesystem for every historical row.
+                if resolved.insert(adapter) {
+                    if let Some(name) = adapter_name(adapter) { names.insert(id.into(), name); }
+                }
+            }
+        }
         names.insert(
             "adapter:claude-code-secondary".into(),
             "Claude Code (secondary)".into(),
@@ -1582,6 +1826,9 @@ pub fn trusted_client_name(client: Option<&str>, recorded_name: Option<&str>) ->
 /// Write-time fallback uses only identity already in the request context.
 /// Registered labels are resolved at session setup or when reading Activity.
 pub(crate) fn unresolved_client_name(client: Option<&str>) -> String {
+    if client.and_then(|id| id.strip_prefix("adapter:")).is_some_and(|id| id.contains('@')) {
+        return "Unknown client".into();
+    }
     trusted_client_name_with(client, None, |_| None)
 }
 
@@ -1685,6 +1932,7 @@ pub fn resolve_launch_profile(
 fn defs() -> Vec<ClientDef> {
     vec![
         ClientDef {
+            location: None,
             id: "claude-desktop",
             discovery: discovery::capabilities("claude-desktop"),
             combined_tool_name_budget: None,
@@ -1695,6 +1943,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "cursor",
             discovery: discovery::capabilities("cursor"),
             combined_tool_name_budget: Some(CombinedToolNameBudget {
@@ -1708,6 +1957,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: Some(scan_cursor_plugins),
         },
         ClientDef {
+            location: None,
             id: "droid",
             discovery: discovery::capabilities("droid"),
             combined_tool_name_budget: None,
@@ -1718,6 +1968,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "crush",
             discovery: discovery::capabilities("crush"),
             combined_tool_name_budget: None,
@@ -1728,6 +1979,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "anythingllm",
             discovery: discovery::capabilities("anythingllm"),
             combined_tool_name_budget: None,
@@ -1738,6 +1990,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "vscode",
             discovery: discovery::capabilities("vscode"),
             combined_tool_name_budget: None,
@@ -1748,6 +2001,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "amp",
             discovery: discovery::capabilities("amp"),
             combined_tool_name_budget: None,
@@ -1758,6 +2012,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "windsurf",
             discovery: discovery::capabilities("windsurf"),
             combined_tool_name_budget: None,
@@ -1768,6 +2023,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "devin-cli",
             discovery: discovery::capabilities("devin-cli"),
             combined_tool_name_budget: None,
@@ -1778,6 +2034,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "opencode",
             discovery: discovery::capabilities("opencode"),
             combined_tool_name_budget: None,
@@ -1790,6 +2047,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "kilo-code",
             discovery: discovery::capabilities("kilo-code"),
             combined_tool_name_budget: None,
@@ -1802,6 +2060,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             // Grok Build (xAI's terminal coding agent): ~/.grok/config.toml,
             // [mcp_servers.<name>] - same TOML shape as Codex.
             id: "grok",
@@ -1814,6 +2073,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             // The Codex CLI and the Codex desktop app share config.toml under
             // `CODEX_HOME` (default ~/.codex).
             id: "codex",
@@ -1826,6 +2086,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "github-copilot-cli",
             discovery: discovery::capabilities("github-copilot-cli"),
             combined_tool_name_budget: None,
@@ -1836,6 +2097,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "antigravity",
             discovery: discovery::capabilities("antigravity"),
             combined_tool_name_budget: None,
@@ -1846,6 +2108,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "claude-code",
             discovery: discovery::capabilities("claude-code"),
             combined_tool_name_budget: None,
@@ -1856,6 +2119,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "gemini-cli",
             discovery: discovery::capabilities("gemini-cli"),
             combined_tool_name_budget: None,
@@ -1866,6 +2130,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "qwen-code",
             discovery: discovery::capabilities("qwen-code"),
             combined_tool_name_budget: None,
@@ -1876,6 +2141,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "junie",
             discovery: discovery::capabilities("junie"),
             combined_tool_name_budget: None,
@@ -1888,6 +2154,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "cline",
             discovery: discovery::capabilities("cline"),
             combined_tool_name_budget: None,
@@ -1898,6 +2165,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "roo-code",
             discovery: discovery::capabilities("roo-code"),
             combined_tool_name_budget: None,
@@ -1908,6 +2176,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: Some(scan_roo_code_plugins),
         },
         ClientDef {
+            location: None,
             id: "warp",
             discovery: discovery::capabilities("warp"),
             combined_tool_name_budget: None,
@@ -1920,6 +2189,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "amazon-q",
             discovery: discovery::capabilities("amazon-q"),
             combined_tool_name_budget: None,
@@ -1933,6 +2203,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "kiro",
             discovery: discovery::capabilities("kiro"),
             combined_tool_name_budget: None,
@@ -1945,6 +2216,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "kimi-code",
             discovery: discovery::capabilities("kimi-code"),
             combined_tool_name_budget: None,
@@ -1955,6 +2227,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "zcode",
             discovery: discovery::capabilities("zcode"),
             combined_tool_name_budget: None,
@@ -1965,6 +2238,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "command-code",
             discovery: discovery::capabilities("command-code"),
             combined_tool_name_budget: None,
@@ -1979,6 +2253,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "zed",
             discovery: discovery::capabilities("zed"),
             combined_tool_name_budget: None,
@@ -1992,6 +2267,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "lm-studio",
             discovery: discovery::capabilities("lm-studio"),
             combined_tool_name_budget: None,
@@ -2004,6 +2280,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "jan",
             discovery: discovery::capabilities("jan"),
             combined_tool_name_budget: None,
@@ -2018,6 +2295,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "boltai",
             discovery: discovery::capabilities("boltai"),
             combined_tool_name_budget: None,
@@ -2028,6 +2306,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "pi",
             discovery: discovery::capabilities("pi"),
             combined_tool_name_budget: None,
@@ -2041,6 +2320,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "omp",
             discovery: discovery::capabilities("omp"),
             combined_tool_name_budget: None,
@@ -2053,6 +2333,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "goose",
             discovery: discovery::capabilities("goose"),
             combined_tool_name_budget: None,
@@ -2063,6 +2344,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "hermes",
             discovery: discovery::capabilities("hermes"),
             combined_tool_name_budget: None,
@@ -2073,6 +2355,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "continue",
             discovery: discovery::capabilities("continue"),
             combined_tool_name_budget: None,
@@ -2083,6 +2366,7 @@ fn defs() -> Vec<ClientDef> {
             plugin_scan: None,
         },
         ClientDef {
+            location: None,
             id: "witsy",
             discovery: discovery::capabilities("witsy"),
             combined_tool_name_budget: None,
@@ -3196,10 +3480,10 @@ fn app_present_with_override(
 /// Per-user location, so the all-users-vs-just-me install choice doesn't matter.
 fn warp_data_dir() -> Option<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
-    if let Some(d) = dirs::data_local_dir() {
+    if let Some(d) = client_local_data_dir() {
         roots.push(d); // Windows %LOCALAPPDATA%, macOS App Support, Linux ~/.local/share
     }
-    if let Some(d) = dirs::data_dir() {
+    if let Some(d) = client_data_dir() {
         roots.push(d);
     }
     if let Some(h) = home() {
@@ -3243,15 +3527,13 @@ fn install_override(id: &str) -> Option<PathBuf> {
 }
 
 fn read_client(def: &ClientDef) -> DetectedClient {
-    let plugin_servers = def.plugin_scan.map(|scan| scan()).unwrap_or_default();
+    let plugin_servers = if def.location.is_none() { def.plugin_scan.map(|scan| scan()).unwrap_or_default() } else { Vec::new() };
 
     let build = |config_path: String,
                  config_exists: bool,
                  servers: Vec<McpServer>,
                  error: Option<String>| {
-        let gateway_installed = servers.iter().any(|server| {
-            gateway_identity_matches(&server.name, &server.name, server.command.as_deref())
-        });
+        let gateway_installed = gateway_entry_for_client(def.client_id(), &servers).is_some();
         // Ownership is filled in later via [`apply_entry_states`] once the registry
         // record is available. Until then: identity match → Managed (legacy), none → Absent.
         let entry_state = if gateway_installed {
@@ -3266,13 +3548,14 @@ fn read_client(def: &ClientDef) -> DetectedClient {
         // Clients with an explicit install dir use it (and ignore the config-parent
         // heuristic, which for them is wrong); everyone else uses the parent of
         // their resolved config path (which is their data dir, e.g. ~/.codex).
-        let install_marker = install_override(def.id);
+        let install_marker = if def.location.is_none() { install_override(def.id) } else { None };
         let app_present =
             app_present_with_override(&config_path, config_exists, install_marker.as_deref());
         DetectedClient {
-            id: def.id.to_string(),
-            name: def.name.to_string(),
+            id: def.location.as_ref().map(|location| location.id.clone()).unwrap_or_else(|| def.id.to_string()),
+            name: def.location.as_ref().map(|location| location.name.clone()).unwrap_or_else(|| def.name.to_string()),
             uses_connectors: def.uses_connectors,
+            location_removable: def.location.as_ref().is_some_and(|row| row.manual || locations::automatic_path_is_missing(row)),
             discovery: def.discovery,
             config_path,
             config_exists,
@@ -3288,18 +3571,18 @@ fn read_client(def: &ClientDef) -> DetectedClient {
     let path = match resolved_definition_path(def) {
         Ok(path) => path,
         Err(error) => {
-            let fallback = (def.path)();
+            let fallback = def.location.as_ref().map(|row| row.config_path.clone()).or_else(|| (def.path)());
             let config_path = fallback
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_default();
-            let config_exists = fallback
+            let config_exists = def.location.is_none() && fallback
                 .as_ref()
                 .is_some_and(|path| mutation::exists(&path));
             return build(config_path, config_exists, Vec::new(), Some(error));
         }
     };
-    let config_path = path.display().to_string();
+    let config_path = locations::display_path(&path).display().to_string();
 
     if matches!(def.format, Format::JsonZCodeMcp) {
         return match zcode::detect(&path) {
@@ -3313,7 +3596,14 @@ fn read_client(def: &ClientDef) -> DetectedClient {
         };
     }
 
-    if !mutation::exists(&path) {
+    if mutation::read(&path).is_none() {
+        match std::fs::metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
+                return build(config_path, false, Vec::new(), None),
+            Err(error) => return build(config_path, true, Vec::new(), Some(format!("Could not inspect config: {error}"))),
+            Ok(_) => {},
+        }
+    } else if !mutation::exists(&path) {
         return build(config_path, false, Vec::new(), None);
     }
 
@@ -3348,7 +3638,151 @@ fn read_client(def: &ClientDef) -> DetectedClient {
 
 /// Probe every supported client and return what each currently has configured.
 pub fn detect_clients() -> Vec<DetectedClient> {
-    defs().iter().map(read_client).collect()
+    // Background upkeep handles saved locations. Newly discovered config files
+    // are read only when the user opens Clients.
+    let mut clients: Vec<_> = machine_defs(false).iter().map(read_client).collect();
+    append_client_scan_errors(&mut clients);
+    clients
+}
+
+fn config_error_row(id: &str, name: &str, path: String, error: String) -> DetectedClient {
+    DetectedClient {
+        id: id.into(), name: name.into(), uses_connectors: false, location_removable: false,
+        discovery: discovery::capabilities("claude-code"), config_path: path, config_exists: true,
+        app_present: true, servers: Vec::new(), plugin_servers: Vec::new(),
+        gateway_installed: false, entry_state: GatewayEntryState::Absent, error: Some(error),
+    }
+}
+
+fn append_client_scan_errors(clients: &mut Vec<DetectedClient>) {
+    if let Some(error) = locations::store_error() {
+        clients.push(config_error_row("client-locations", "Saved client locations", locations::store_display_path(), error));
+    }
+    let paths = match try_claude_code_config_paths() {
+        Ok(paths) => paths,
+        Err(error) => {
+            clients.push(config_error_row("claude-code-profiles", "Claude Code profiles", home().map(|path| path.display().to_string()).unwrap_or_default(), error));
+            return;
+        }
+    };
+    for path in paths {
+        // New unsaved locations are inspected only on Clients. Legacy profiles
+        // were already maintained by v1 and must expose unreadable configs too.
+        if !path.parent().and_then(|folder| folder.file_name()).and_then(|name| name.to_str()).is_some_and(legacy_claude_profile_name)
+            || clients.iter().any(|client| locations::same_path(Path::new(&client.config_path), &path)) { continue; }
+        if let Err(error) = read_config_file(&path).and_then(|text| parse_client_content(Format::JsonMcpServers, &text)) {
+            let key = crate::registry::sha256_hex(&path.to_string_lossy());
+            clients.push(config_error_row(&format!("claude-code@legacy-{}", &key[..16]), "Claude Code profile", path.display().to_string(), error));
+        }
+    }
+}
+
+pub fn detect_clients_with_inspection(inspect_configs: bool) -> Result<Vec<DetectedClient>, String> {
+    if inspect_configs { detect_clients_for_display() } else { Ok(detect_clients()) }
+}
+
+pub fn detect_clients_for_display() -> Result<Vec<DetectedClient>, String> {
+    detect_clients_for_display_with_gateway(resolve_gateway_path)
+}
+
+fn detect_clients_for_display_with_gateway(
+    resolve: impl FnOnce() -> Result<Option<PathBuf>, String>,
+) -> Result<Vec<DetectedClient>, String> {
+    let definitions = machine_defs(true);
+    let current = crate::registry::load()?;
+    let gateway = resolve().unwrap_or_else(|error| {
+        let message = format!("toolport: skipping client gateway adoption: {error}");
+        eprintln!("{message}");
+        crate::gatewaylog::append(&message);
+        None
+    });
+    let mut clients = detect_clients_for_display_in(definitions, current, gateway)?;
+    append_client_scan_errors(&mut clients);
+    Ok(clients)
+}
+
+fn detect_clients_for_display_in(
+    definitions: Vec<ClientDef>, current: crate::registry::Registry, gateway: Option<PathBuf>,
+) -> Result<Vec<DetectedClient>, String> {
+    let detected: Vec<_> = definitions.iter().map(read_client).collect();
+    let targets: Vec<_> = detected.iter().filter(|client| client.id.contains('@')).cloned().collect();
+    let mut failures = HashMap::new();
+    let mut changed = false;
+    if let Some(path) = gateway.filter(|path| path.is_file()) {
+        let repoint = repoint_stale_gateways_in(&path.to_string_lossy(), targets, &current.client_managed_entries);
+        if !repoint.repointed.is_empty() {
+            changed = true;
+            if let Err(error) = crate::registry::update(|registry| {
+                for (id, entry) in &repoint.repointed {
+                    registry.set_client_managed_entry(id, entry.clone());
+                }
+                Ok(())
+            }) {
+                for (id, _) in &repoint.repointed { failures.insert(id.clone(), error.clone()); }
+            }
+        }
+        failures.extend(repoint.failed);
+    }
+    for def in &definitions {
+        if let Some(location) = &def.location {
+            if let Err(error) = locations::remember(location) {
+                failures.insert(def.client_id().to_string(), error);
+            }
+        }
+    }
+    let mut detected: Vec<_> = if changed { definitions.iter().map(read_client).collect() } else { detected };
+    for client in &mut detected {
+        if let Some(error) = failures.remove(&client.id) { client.error = Some(error); }
+    }
+    Ok(detected)
+}
+
+fn location_launch_id(format: Format, name: &str, text: &str) -> Result<Option<String>, String> {
+    let value = mutation::value(format, Some(text))?;
+    let container = moved::server_container(format, &value);
+    let entry = if matches!(format, Format::YamlMcpServersList) {
+        container.as_array().and_then(|entries| entries.iter().find(|entry| entry["name"] == name))
+    } else { container.get(name) };
+    let env_key = match format {
+        Format::JsonOpenCodeMcp => "environment",
+        Format::YamlExtensions => "envs",
+        _ => "env",
+    };
+    Ok(entry.and_then(|entry| entry[env_key].get(crate::brand::CLIENT_ID)
+        .or_else(|| entry[env_key].get(crate::brand::CLIENT_ID_LEGACY)))
+        .and_then(|value| value.as_str()).map(str::to_string))
+}
+
+fn inherit_location_access(id: &str, format: Format, name: &str, text: &str) -> Result<(), String> {
+    if !id.contains('@') { return Ok(()); }
+    let Some(prior) = location_launch_id(format, name, text)? else { return Ok(()); };
+    let current = crate::registry::load()?;
+    if prior == id || current.client_scopes.contains_key(id) || !current.client_scopes.contains_key(&prior) {
+        return Ok(());
+    }
+    crate::registry::update(|registry| {
+        if let Some(scope) = registry.client_scopes.get(&prior).cloned() {
+            registry.client_scopes.entry(id.into()).or_insert(scope);
+        }
+        Ok(())
+    }).map(|_| ())
+}
+
+/// A lightweight initial inventory: metadata only, no config or plugin reads.
+pub fn client_metadata() -> Vec<DetectedClient> {
+    machine_defs(true).iter().map(|def| {
+        let path = resolved_definition_path(def).ok();
+        let config_path = path.as_ref().map(|path| path.display().to_string()).unwrap_or_default();
+        let config_exists = path.is_some_and(|path| path.is_file());
+        DetectedClient {
+            id: def.client_id().into(), name: def.location.as_ref().map(|row| row.name.clone()).unwrap_or_else(|| def.name.into()),
+            uses_connectors: def.uses_connectors,
+            location_removable: def.location.as_ref().is_some_and(|row| row.manual), discovery: def.discovery,
+            app_present: app_present_for(&config_path, config_exists), config_path, config_exists,
+            servers: Vec::new(), plugin_servers: Vec::new(), gateway_installed: false,
+            entry_state: GatewayEntryState::Absent, error: None,
+        }
+    }).collect()
 }
 
 /// Validate behavior the redacted inventory cannot carry before a ZCode import.
@@ -3367,7 +3801,7 @@ pub(crate) fn validate_client_import(
     names: &[String],
     migration: bool,
 ) -> Result<(), String> {
-    if client.id == "zcode" {
+    if client.id.split('@').next() == Some("zcode") {
         zcode::validate_import(Path::new(&client.config_path), names, migration)?;
     }
     Ok(())
@@ -3456,9 +3890,10 @@ pub fn resolve_entry_state(
     servers: &[McpServer],
     record: Option<&ManagedEntry>,
 ) -> GatewayEntryState {
-    let entry = servers
-        .iter()
-        .find(|s| gateway_identity_matches(&s.name, &s.name, s.command.as_deref()));
+    entry_state_for(owned_gateway_entry(servers), record)
+}
+
+fn entry_state_for(entry: Option<&McpServer>, record: Option<&ManagedEntry>) -> GatewayEntryState {
     let Some(entry) = entry else {
         return GatewayEntryState::Absent;
     };
@@ -3478,7 +3913,7 @@ pub fn resolve_entry_state(
 /// Fill [`DetectedClient::entry_state`] from the registry ownership map.
 pub fn apply_entry_states(clients: &mut [DetectedClient], managed: &HashMap<String, ManagedEntry>) {
     for client in clients.iter_mut() {
-        client.entry_state = resolve_entry_state(&client.servers, managed.get(&client.id));
+        client.entry_state = entry_state_for(gateway_entry_for_client(&client.id, &client.servers), managed.get(&client.id));
         // Keep gateway_installed aligned with identity presence (not ownership).
         client.gateway_installed = client.entry_state != GatewayEntryState::Absent;
     }
@@ -3562,54 +3997,133 @@ pub struct RepointOutcome {
     /// UI. Six clients on this developer's machine sat on a superseded gateway
     /// for days with nothing anywhere recording why.
     pub failed: Vec<(String, String)>,
-    /// Claude Code configs other than the one Toolport resolves, repaired by
-    /// [`repoint_other_claude_configs`]. Paths rather than client ids, because they
-    /// all belong to the same `claude-code` client and carry no ownership record of
-    /// their own - the registry keys ownership by client id, and a sibling must not
-    /// overwrite the resolved config's snapshot.
+    /// Legacy secondary-repair reporting fields, retained for callers. Locations
+    /// now report their own IDs in `repointed` and `failed`.
     pub extra_claude_repointed: Vec<PathBuf>,
     /// Sibling Claude configs that needed a repair and could not be written.
     pub extra_claude_failed: Vec<(PathBuf, String)>,
 }
 
 fn find_def(client_id: &str) -> Option<ClientDef> {
-    defs().into_iter().find(|d| d.id == client_id)
+    if let Some(def) = defs().into_iter().find(|d| d.id == client_id) { return Some(def); }
+    let location = locations::lookup(client_id)?;
+    let mut def = defs().into_iter().find(|d| d.id == location.client_type)?;
+    def.location = Some(location);
+    Some(def)
 }
 
-/// Only client ids from the same definitions that create backup folders.
-pub(crate) fn purge_backup_client_id(client_id: &str) -> bool {
-    defs().iter().any(|client| client.id == client_id)
+/// Snapshot the exact writer basenames before purge can remove the location store.
+pub(crate) fn purge_backup_inventory() -> HashMap<String, PurgeBackupClient> {
+    let mut clients = HashMap::new();
+    for def in defs() {
+        clients.insert(def.id.to_owned(), PurgeBackupClient::from_def(&def));
+    }
+    for location in locations::all() {
+        let Some(mut def) = defs().into_iter().find(|def| def.id == location.client_type) else { continue; };
+        let id = location.id.clone();
+        def.location = Some(location);
+        let client = PurgeBackupClient::from_def(&def);
+        if id.len() <= 255 { clients.insert(id.clone(), client.clone()); }
+        if id.len() > 200 { clients.insert(bounded_backup_component(&id), client); }
+    }
+    // Forgetting a location leaves its recovery copies behind. A valid snapshot
+    // can recover a long Claude ID without reading the original profile or store.
+    if let Some(root) = crate::registry::conduit_dir().map(|dir| dir.join("backups")) {
+        let entries = std::fs::symlink_metadata(&root).ok()
+            .filter(|metadata| metadata.is_dir() && !crate::purge::is_link(metadata))
+            .and_then(|_| std::fs::read_dir(root).ok());
+        for entry in entries.into_iter().flatten().filter_map(Result::ok) {
+            let component = entry.file_name().to_string_lossy().into_owned();
+            if clients.contains_key(&component) || !bounded_backup_name(&component) { continue; }
+            let path = entry.path();
+            if !std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir() && !crate::purge::is_link(&metadata)) { continue; }
+            for config in restore::purge_backup_config_paths(&path) {
+                let Some(id) = locations::claude_id_for_backup_path(&config) else { continue; };
+                let expected = if id.len() <= 200 { id.clone() } else { bounded_backup_component(&id) };
+                if expected != component { continue; }
+                let def = defs().into_iter().find(|def| def.id == "claude-code").unwrap();
+                clients.insert(component.clone(), PurgeBackupClient::from_def(&def));
+                break;
+            }
+        }
+    }
+    clients
 }
 
-/// Match the basenames used by backup_file and the two named Claude writers.
-pub(crate) fn purge_backup_name(client_id: &str, basename: &str) -> bool {
-    let Some(def) = find_def(client_id) else { return false; };
-    let named_prefixes: &[&str] = match client_id {
-        "claude-code" => &["claude-", "claude-settings-"],
-        "cursor" => &["claude-settings-"], // write_settings_key_for uses the same writer.
-        _ => &[],
-    };
-    if named_prefixes.iter().any(|prefix| {
-        basename.strip_prefix(prefix).and_then(|name| name.strip_suffix(".json"))
-            .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
-    }) { return true; }
-    let matches = |path: PathBuf| path.file_name().and_then(|name| name.to_str()) == Some(basename);
-    if resolved_definition_path(&def).is_ok_and(matches) { return true; }
-    // Also recognize copies from the client's standard config on another OS.
-    [Platform::Windows, Platform::MacOs, Platform::Linux].into_iter().any(|platform| {
-        resolve_client_config_path(client_id, Path::new("/"), platform).is_some_and(matches)
-    }) || client_id == "opencode" && basename == "opencode.jsonc"
+#[derive(Clone)]
+pub(crate) struct PurgeBackupClient {
+    basenames: std::collections::HashSet<String>,
+    named_prefixes: &'static [&'static str],
+}
+
+impl PurgeBackupClient {
+    fn from_def(def: &ClientDef) -> Self {
+        let mut basenames = std::collections::HashSet::new();
+        let mut add = |path: PathBuf| {
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                basenames.insert(name.to_owned());
+            }
+        };
+        if let Ok(path) = resolved_definition_path(def) { add(path); }
+        for platform in [Platform::Windows, Platform::MacOs, Platform::Linux] {
+            if let Some(path) = resolve_client_config_path(def.id, Path::new("/"), platform) { add(path); }
+        }
+        if def.id == "opencode" { basenames.insert("opencode.jsonc".into()); }
+        Self { basenames, named_prefixes: match def.id {
+            "claude-code" => &["claude-", "claude-settings-"],
+            "cursor" => &["claude-settings-"],
+            _ => &[],
+        } }
+    }
+
+    pub(crate) fn owns_basename(&self, basename: &str) -> bool {
+        self.basenames.contains(basename) || self.named_prefixes.iter().any(|prefix| {
+            basename.strip_prefix(prefix).and_then(|name| name.strip_suffix(".json"))
+                .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        })
+    }
+}
+
+/// Removed short and legacy locations still have generated IDs. Bounded names
+/// need the full saved ID so a similar prefix with a different digest stays alone.
+pub(crate) fn purge_backup_short_location(component: &str) -> Option<PurgeBackupClient> {
+    if let Some(def) = defs().into_iter().find(|def| def.id == component) {
+        return Some(PurgeBackupClient::from_def(&def));
+    }
+    if component.len() > 255 { return None; }
+    let kind = locations::generated_id_type(component)?;
+    // A bounded component also resembles a legal short Claude profile ID. Only
+    // the snapshot may select that ambiguous spelling, using its full-ID digest.
+    if bounded_backup_name(component) { return None; }
+    let def = defs().into_iter().find(|def| def.id == kind && !def.uses_connectors)?;
+    Some(PurgeBackupClient::from_def(&def))
+}
+
+fn bounded_backup_name(component: &str) -> bool {
+    component.len() == 185 && component.starts_with("claude-code@")
+        && component.is_ascii() && component.as_bytes()[120] == b'-'
+        && component[121..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn bounded_backup_component(client_id: &str) -> String {
+    let digest = crate::registry::sha256_hex(client_id);
+    let prefix: String = client_id.chars().take(120).collect();
+    format!("{prefix}-{digest}")
 }
 
 pub(crate) fn backup_dir(client_id: &str) -> Option<PathBuf> {
-    // Anchor to the same home-based dir as the registry (see registry::conduit_dir)
-    // so config backups land in one place regardless of whether a packaged or
-    // unpackaged process wrote them.
-    Some(
-        crate::registry::conduit_dir()?
-            .join("backups")
-            .join(client_id),
-    )
+    // Keep the public location ID stable without making a long encoded profile
+    // name a filesystem component. Existing legal legacy directories stay in use
+    // so move records and original snapshots remain findable.
+    let root = crate::registry::conduit_dir()?.join("backups");
+    if client_id.len() <= 200 { return Some(root.join(client_id)); }
+    let bounded = root.join(bounded_backup_component(client_id));
+    let legacy = root.join(client_id);
+    if !bounded.exists() && client_id.len() <= 255 && legacy.is_dir() {
+        Some(legacy)
+    } else {
+        Some(bounded)
+    }
 }
 
 fn epoch_millis() -> u128 {
@@ -5461,14 +5975,7 @@ fn edit_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(), Str
     let (original, mut root) = read_existing_yaml_with_source(path)?;
     let exts = yaml_extensions_mut(&mut root);
     let key = serde_yaml::Value::String(GATEWAY_ENTRY_NAME.into());
-    exts.retain(|name, definition| {
-        let name = name.as_str().unwrap_or_default();
-        let command = definition
-            .as_mapping()
-            .and_then(|mapping| mapping.get("cmd"))
-            .and_then(|value| value.as_str());
-        !gateway_identity_matches(name, name, command)
-    });
+    exts.retain(|name, value| !name.as_str().is_some_and(|name| gateway_edit_matches(name, value.get("cmd").and_then(|value| value.as_str()))));
     if let Some(entry) = entry {
         exts.insert(key, entry_to_goose_yaml(entry));
     }
@@ -5664,17 +6171,7 @@ fn edit_continue_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Resul
 
     let servers = continue_servers_mut(&mut root);
 
-    servers.retain(|server| {
-        let Some(mapping) = server.as_mapping() else {
-            return true;
-        };
-        let name = mapping
-            .get("name")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let command = mapping.get("command").and_then(|value| value.as_str());
-        !gateway_identity_matches(name, name, command)
-    });
+    servers.retain(|server| !server.get("name").and_then(|name| name.as_str()).is_some_and(|name| gateway_edit_matches(name, server.get("command").and_then(|value| value.as_str()))));
 
     if let Some(entry) = entry {
         servers.push(entry_to_continue_yaml(entry));
@@ -5844,14 +6341,7 @@ fn edit_hermes_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<
     let (original, mut root) = read_existing_yaml_with_source(path)?;
     let mcp_servers = hermes_mcp_servers_mut(&mut root);
     let key = serde_yaml::Value::String(GATEWAY_ENTRY_NAME.into());
-    mcp_servers.retain(|name, definition| {
-        let name = name.as_str().unwrap_or_default();
-        let command = definition
-            .as_mapping()
-            .and_then(|mapping| mapping.get("command"))
-            .and_then(|value| value.as_str());
-        !gateway_identity_matches(name, name, command)
-    });
+    mcp_servers.retain(|name, value| !name.as_str().is_some_and(|name| gateway_edit_matches(name, value.get("command").and_then(|value| value.as_str()))));
     if let Some(entry) = entry {
         mcp_servers.insert(key, entry_to_hermes_yaml(entry));
     }
@@ -5863,6 +6353,7 @@ fn edit_hermes_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<
 pub fn write_servers(client_id: &str, servers: &[ServerEntry]) -> Result<WriteOutcome, String> {
     let def = find_def(client_id).ok_or_else(|| format!("Unknown client '{client_id}'"))?;
     let path = resolved_definition_path(&def)?;
+    if let Some(location) = &def.location { locations::remember(location)?; }
     mutation::run(client_id, &path, def.format, || {
         revision_outcome(client_id, write_servers_inner(client_id, servers))
     })
@@ -6251,6 +6742,10 @@ fn gateway_entry(profile: Option<&str>, client_id: &str) -> Result<ServerEntry, 
     })
 }
 
+fn main_location_identity_changed(id: &str, prior: Option<&str>) -> bool {
+    !id.contains('@') && prior.is_some_and(|prior| prior.starts_with(&format!("{id}@")))
+}
+
 /// Preserve the launch's scope identity when replacing a stale command.
 fn repair_gateway_entry(
     format: Format,
@@ -6274,12 +6769,14 @@ fn repair_gateway_entry(
         Format::YamlExtensions => "envs",
         _ => "env",
     };
+    let reclaim_main = main_location_identity_changed(id, location_launch_id(format, name, &text)?.as_deref());
     let mut entry = gateway_entry(None, id)?;
-    entry.env.retain(|env| env.key != crate::brand::CLIENT_ID);
+    if !reclaim_main && !id.contains('@') { entry.env.retain(|env| env.key != crate::brand::CLIENT_ID); }
     for (key, legacy) in [
         (crate::brand::CLIENT_ID, crate::brand::CLIENT_ID_LEGACY),
         (crate::brand::PROFILE, crate::brand::PROFILE_LEGACY),
     ] {
+        if (id.contains('@') || reclaim_main) && key == crate::brand::CLIENT_ID { continue; }
         for candidate in [key, legacy] {
             if prior[env_key]
                 .get(candidate)
@@ -6436,10 +6933,7 @@ fn edit_json_gateway_body(
         );
     }
     let servers = obj.get_mut(key).unwrap().as_object_mut().unwrap();
-    servers.retain(|name, definition| {
-        let command = definition.get("command").and_then(|value| value.as_str());
-        !gateway_identity_matches(name, name, command)
-    });
+    servers.retain(|name, value| !gateway_edit_matches(name, value["command"].as_str()));
     if let Some(entry) = entry {
         // Default is the standard `url`/`command` shape. Qwen's `httpUrl` remap
         // used to fire for every remote whose map key was not VS Code `"servers"`,
@@ -6473,14 +6967,7 @@ fn edit_opencode_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(),
         None => serde_json::Value::Object(serde_json::Map::new()),
     };
     let mcp = opencode_mcp_mut(&mut root)?;
-    mcp.retain(|name, definition| {
-        let command = definition
-            .get("command")
-            .and_then(|value| value.as_array())
-            .and_then(|parts| parts.first())
-            .and_then(|value| value.as_str());
-        !gateway_identity_matches(name, name, command)
-    });
+    mcp.retain(|name, value| !gateway_edit_matches(name, value["command"].as_array().and_then(|argv| argv.first()).and_then(|value| value.as_str())));
     if let Some(entry) = entry {
         mcp.insert(GATEWAY_ENTRY_NAME.into(), entry_to_opencode_json(entry));
     }
@@ -6491,17 +6978,8 @@ fn edit_toml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(), Str
     let mut doc = load_toml_document(path)?;
     let keep_header = toml_keeps_servers_header(&doc);
     let servers = toml_mcp_servers_mut(&mut doc);
-    let doomed: Vec<String> = servers
-        .iter()
-        .filter(|(name, definition)| {
-            let command = definition.get("command").and_then(|value| value.as_str());
-            gateway_identity_matches(name, name, command)
-        })
-        .map(|(name, _)| name.to_string())
-        .collect();
-    for name in doomed {
-        servers.remove(&name);
-    }
+    let remove: Vec<_> = servers.iter().filter(|(name, value)| gateway_edit_matches(name, value.get("command").and_then(|value| value.as_str()))).map(|(name, _)| name.to_string()).collect();
+    for name in remove { servers.remove(&name); }
     if let Some(entry) = entry {
         servers.insert(
             GATEWAY_ENTRY_NAME,
@@ -6533,6 +7011,7 @@ fn edit_toml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(), Str
 /// harmless start-fresh behavior. (Zed's whole-editor `settings.json` is already
 /// lenient via its JsonContextServers format.)
 fn config_is_whole_app_state(client_id: &str) -> bool {
+    let client_id = client_id.split('@').next().unwrap_or(client_id);
     matches!(
         client_id,
         "claude-code" | "crush" | "gemini-cli" | "qwen-code" | "opencode" | "kilo-code" | "amp"
@@ -6542,6 +7021,7 @@ fn config_is_whole_app_state(client_id: &str) -> bool {
 fn install_or_remove(client_id: &str, entry: Option<&ServerEntry>) -> Result<WriteOutcome, String> {
     let def = find_def(client_id).ok_or_else(|| format!("Unknown client '{client_id}'"))?;
     let path = resolved_definition_path(&def)?;
+    if let Some(location) = &def.location { locations::remember(location)?; }
     mutation::run(client_id, &path, def.format, || {
         revision_outcome(client_id, install_or_remove_inner(client_id, entry))
     })
@@ -6603,7 +7083,7 @@ fn backfill_gateway_identity(
     entry_name: &str,
     id: &str,
 ) -> Result<(), String> {
-    backup_file(def.id, path)?;
+    backup_file(id, path)?;
     moved::backfill_identity(def.format, path, entry_name, id)
 }
 
@@ -6620,6 +7100,7 @@ pub fn install_gateway(client_id: &str, profile: Option<&str>) -> Result<WriteOu
 pub fn uninstall_gateway(client_id: &str) -> Result<WriteOutcome, String> {
     let def = find_def(client_id).ok_or_else(|| format!("Unknown client '{client_id}'"))?;
     let path = resolved_definition_path(&def)?;
+    if let Some(location) = &def.location { locations::remember(location)?; }
     mutation::run(client_id, &path, def.format, || {
         let mut outcome = revision_outcome(client_id, uninstall_gateway_inner(client_id))?;
         outcome.warnings.extend(disconnect_warnings(def.format, &path)?);
@@ -6734,6 +7215,7 @@ pub(crate) fn migrate_reviewed(
 ) -> Result<WriteOutcome, String> {
     let def = find_def(client_id).ok_or("Unknown client")?;
     let path = resolved_definition_path(&def)?;
+    if let Some(location) = &def.location { locations::remember(location)?; }
     mutation::run(client_id, &path, def.format, || {
         if setup_revision(client_id)? != revision {
             return Err(
@@ -6961,45 +7443,25 @@ fn read_gateway_profile(client_id: &str) -> Option<String> {
 /// never be re-pointed onto a current binary. Deleting one out from under a plugin
 /// entry leaves a reference nothing will ever repair.
 pub fn referenced_gateway_paths() -> Option<Vec<PathBuf>> {
-    let mut out = referenced_gateway_paths_in(&detect_clients())?;
-    // Secondary Claude Code configs are invisible to detect_clients(), which probes
-    // one path per client. Their gateway commands are still live references: pruning
-    // a binary one of them names is what strands that profile on a missing gateway.
-    // Keep-paths must be a superset of what any config can spawn, not of what we
-    // happen to resolve today.
-    for path in extra_claude_gateway_references() {
-        if !out.contains(&path) {
-            out.push(path);
-        }
-    }
-    Some(out)
+    locations::saved().ok()?;
+    referenced_gateway_paths_for(&detect_clients(), &try_claude_code_config_paths().ok()?)
 }
 
-/// Gateway binaries named by Claude Code configs other than the resolved one.
-///
-/// Unreadable or unparseable files yield nothing rather than failing the whole scan:
-/// [`referenced_gateway_paths`] already fails closed on a client it could not probe,
-/// and these are best-effort extras discovered by directory scan, so one unreadable
-/// sibling must not suppress pruning across the machine forever.
-fn extra_claude_gateway_references() -> Vec<PathBuf> {
-    let primary = client_config_path("claude-code");
-    let mut out = Vec::new();
-    for path in claude_code_config_paths() {
-        if primary.as_deref() == Some(path.as_path()) {
-            continue;
-        }
-        let Ok(text) = read_config_file(&path) else {
-            continue;
-        };
-        let Some((_, command)) = claude_gateway_entry_in(&text) else {
-            continue;
-        };
-        let command = command.trim();
-        if !command.is_empty() {
-            out.push(PathBuf::from(command));
+fn referenced_gateway_paths_for(clients: &[DetectedClient], claude_paths: &[PathBuf]) -> Option<Vec<PathBuf>> {
+    let mut paths = referenced_gateway_paths_in(clients)?;
+    for path in claude_paths {
+        let text = read_config_file(&path).ok()?;
+        let servers = parse_client_content(Format::JsonMcpServers, &text).ok()?;
+        for server in servers {
+            if detected_is_gateway(&server) {
+                if let Some(command) = server.command.filter(|command| !command.trim().is_empty()) {
+                    let path = PathBuf::from(command);
+                    if !paths.contains(&path) { paths.push(path); }
+                }
+            }
         }
     }
-    out
+    Some(paths)
 }
 
 /// The pure half of [`referenced_gateway_paths`], over an already-probed client list so
@@ -7240,16 +7702,13 @@ fn repoint_stale_gateways_in(
         }
         // Find our entry by identity (recognizes the legacy `conduit` name too), so
         // a pre-rename entry is migrated rather than missed.
-        let entry = client
-            .servers
-            .iter()
-            .find(|s| gateway_identity_matches(&s.name, &s.name, s.command.as_deref()));
+        let entry = gateway_entry_for_client(&client.id, &client.servers);
         let Some(entry) = entry else {
             continue;
         };
         let stored = entry.command.as_deref().unwrap_or("");
         let entry_name = entry.name.as_str();
-        let state = resolve_entry_state(&client.servers, managed.get(&client.id));
+        let state = entry_state_for(gateway_entry_for_client(&client.id, &client.servers), managed.get(&client.id));
         if state == GatewayEntryState::Customized {
             eprintln!(
                 "toolport: leaving {}'s '{}' entry alone - custom configuration (not managed \
@@ -7265,7 +7724,15 @@ fn repoint_stale_gateways_in(
         let config_text = find_def(&client.id)
             .and_then(|def| resolved_definition_path(&def).ok())
             .and_then(|path| read_config_file(&path).ok());
-        if !gateway_entry_needs_rewrite(entry_name, stored, current, config_text.as_deref())
+        let prior_id = find_def(&client.id).and_then(|def| config_text.as_deref()
+            .and_then(|text| location_launch_id(def.format, entry_name, text).ok().flatten()));
+        let reclaim_main = main_location_identity_changed(&client.id, prior_id.as_deref());
+        let location_identity_changed = (client.id.contains('@') && prior_id.as_deref() != Some(client.id.as_str())) || reclaim_main;
+        let legacy_ownership = locations::legacy_gateway_ownership(&client.id);
+        let duplicate_gateways = client.servers.iter().filter(|server|
+            if legacy_ownership { detected_is_gateway(server) }
+            else { gateway_identity_matches(&server.name, &server.name, None) }).count() > 1;
+        if !duplicate_gateways && !location_identity_changed && !gateway_entry_needs_rewrite(entry_name, stored, current, config_text.as_deref())
             && entry
                 .env_keys
                 .iter()
@@ -7279,14 +7746,19 @@ fn repoint_stale_gateways_in(
                 let path = resolved_definition_path(&def)?;
                 mutation::run(&client.id, &path, def.format, || {
                     let fresh = read_client(&def);
-                    if resolve_entry_state(&fresh.servers, managed.get(&client.id))
+                    if entry_state_for(gateway_entry_for_client(&client.id, &fresh.servers), managed.get(&client.id))
                         != GatewayEntryState::Managed
                     {
                         return Err(
                             "Client gateway changed during repoint; leaving it untouched".into(),
                         );
                     }
-                    if !gateway_entry_needs_rewrite(
+                    // Copy access under the config lock, before changing its
+                    // identity. A failed registry write must stop adoption.
+                    if def.location.is_some() {
+                        inherit_location_access(&client.id, def.format, entry_name, &read_config_file(&path)?)?;
+                    }
+                    if !duplicate_gateways && !gateway_entry_needs_rewrite(
                         entry_name,
                         stored,
                         current,
@@ -7300,7 +7772,7 @@ fn repoint_stale_gateways_in(
                         let server = detected
                             .servers
                             .iter()
-                            .find(|s| detected_is_gateway(s))
+                            .find(|s| s.name == entry_name)
                             .ok_or("Gateway disappeared during identity repair")?;
                         let mut managed = managed.get(&client.id).cloned().unwrap_or_else(|| ManagedEntry::from_gateway_entry(&updated));
                         managed.command = current.to_string();
@@ -7308,9 +7780,10 @@ fn repoint_stale_gateways_in(
                         for key in &server.env_keys {
                             managed.env.entry(key.clone()).or_default();
                         }
-                        managed
-                            .env
-                            .insert(crate::brand::ATTRIBUTION_ID.into(), client.id.clone());
+                        managed.env.insert(crate::brand::ATTRIBUTION_ID.into(), client.id.clone());
+                        if client.id.contains('@') || reclaim_main {
+                            managed.env.insert(crate::brand::CLIENT_ID.into(), client.id.clone());
+                        }
 
                         Ok(WriteOutcome {
                             path: path.display().to_string(),
@@ -7323,8 +7796,9 @@ fn repoint_stale_gateways_in(
                             recovery_path: None,
                         })
                     } else {
-                        let entry =
+                        let mut entry =
                             repair_gateway_entry(def.format, &path, entry_name, &client.id)?;
+                        entry.command = Some(current.to_string());
                         install_or_remove(&client.id, Some(&entry))
                     }
                 })
@@ -7373,12 +7847,19 @@ fn repoint_stale_gateways_in(
 /// overwrite the resolved config's snapshot and make the next pass read that one as
 /// Customized - i.e. we would stop maintaining the config we actually manage.
 fn repoint_other_claude_configs(current: &str, outcome: &mut RepointOutcome) {
-    let primary = client_config_path("claude-code");
+    let Ok(saved) = locations::saved() else { return; };
+    let mut maintained: Vec<_> = machine_defs(false).iter()
+        .filter_map(|def| resolved_definition_path(def).ok()).collect();
+    maintained.extend(saved.into_iter().map(|row| row.config_path));
     let others: Vec<PathBuf> = claude_code_config_paths()
         .into_iter()
-        .filter(|path| primary.as_deref() != Some(path.as_path()))
+        .filter(|path| !maintained.iter().any(|known| locations::same_path(known, path)))
         .collect();
-    for repair in claude_configs_needing_repair(&others, current) {
+    repoint_other_claude_configs_in(current, &others, outcome);
+}
+
+fn repoint_other_claude_configs_in(current: &str, others: &[PathBuf], outcome: &mut RepointOutcome) {
+    for repair in claude_configs_needing_repair(others, current) {
         let ClaudeRepair {
             path,
             stored,
@@ -7424,12 +7905,13 @@ fn repair_secondary_claude_config(path: &Path, current: &str) -> Result<(), Stri
                 "claude-code-secondary",
             );
         }
-        let entry = repair_gateway_entry(
+        let mut entry = repair_gateway_entry(
             Format::JsonMcpServers,
             path,
             &entry_name,
             "claude-code-secondary",
         )?;
+        entry.command = Some(current.to_string());
         edit_json_gateway(path, "mcpServers", Some(&entry), true)
     })
 }
@@ -7448,7 +7930,7 @@ struct ClaudeRepair {
 
 /// Decide which of `paths` need repair, reading but never writing.
 ///
-/// Split out from [`repoint_other_claude_configs`] so the rules are testable against
+/// Legacy secondary repair selection, retained for regression tests against
 /// real files without a home directory, a `CLAUDE_CONFIG_DIR`, or an installed gateway
 /// binary to resolve. The caller does the writing.
 fn claude_configs_needing_repair(paths: &[PathBuf], current: &str) -> Vec<ClaudeRepair> {
@@ -7497,11 +7979,9 @@ fn claude_configs_needing_repair(paths: &[PathBuf], current: &str) -> Vec<Claude
 fn claude_gateway_entry_in(text: &str) -> Option<(String, String)> {
     let value: serde_json::Value = serde_json::from_str(text).ok()?;
     let servers = value.get("mcpServers")?.as_object()?;
-    servers.iter().find_map(|(name, entry)| {
-        let command = entry.get("command").and_then(|c| c.as_str());
-        gateway_identity_matches(name, name, command)
-            .then(|| (name.clone(), command.unwrap_or_default().to_string()))
-    })
+    let name = owned_gateway_name(servers.keys().map(String::as_str)).or_else(||
+        servers.iter().find(|(_, value)| value["command"].as_str().is_some_and(command_is_gateway_binary)).map(|(name, _)| name.as_str()))?;
+    Some((name.to_string(), servers[name].get("command").and_then(|c| c.as_str()).unwrap_or_default().to_string()))
 }
 
 /// Record a re-point pass in the gateway log.
@@ -7573,29 +8053,58 @@ pub(crate) fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Sets a process env var and puts the old value back when the guard drops. Only valid while
-/// [`env_test_lock`] is held. Lives beside the lock so other modules' tests use both.
+/// Client path overrides stay thread-local so parallel child launchers retain the
+/// runner's OS paths. Other keys still use the process environment and require
+/// [`env_test_lock`]. Lives beside the lock so other modules' tests use both.
 #[cfg(test)]
 pub(crate) struct EnvRestore {
     key: &'static str,
-    previous: Option<std::ffi::OsString>,
+    previous: Option<Option<std::ffi::OsString>>,
+    client_previous: Option<std::ffi::OsString>,
 }
 
 #[cfg(test)]
 impl EnvRestore {
     pub(crate) fn set(key: &'static str, value: &Path) -> Self {
-        let previous = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, previous }
+        let previous = if test_paths::is_client_path_key(key) {
+            None
+        } else {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Some(previous)
+        };
+        let client_previous = test_paths::set(key, Some(value.as_os_str().to_owned()));
+        Self { key, previous, client_previous }
     }
+}
+
+/// Isolate every ambient client override and OS directory input. Hold env_test_lock.
+#[cfg(test)]
+fn isolated_client_env(root: &Path) -> Vec<EnvRestore> {
+    let mut env: Vec<_> = [
+        "CLAUDE_CONFIG_DIR", "GOOSE_PATH_ROOT", "CODEX_HOME", "GEMINI_CLI_HOME",
+        "CRUSH_GLOBAL_CONFIG", "AMP_SETTINGS_FILE", "COPILOT_HOME", "GROK_HOME",
+        "QWEN_HOME", "KIMI_CODE_HOME",
+    ].into_iter().map(|key| EnvRestore::set(key, Path::new(""))).collect();
+    for (key, suffix) in [
+        ("HOME", "home"), ("USERPROFILE", "home"),
+        ("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"), ("XDG_STATE_HOME", "state"),
+        ("APPDATA", "roaming"), ("LOCALAPPDATA", "local"),
+    ] {
+        env.push(EnvRestore::set(key, &root.join(suffix)));
+    }
+    env
 }
 
 #[cfg(test)]
 impl Drop for EnvRestore {
     fn drop(&mut self) {
+        test_paths::set(self.key, self.client_previous.take());
         match &self.previous {
-            Some(value) => std::env::set_var(self.key, value),
-            None => std::env::remove_var(self.key),
+            Some(Some(value)) => std::env::set_var(self.key, value),
+            Some(None) => std::env::remove_var(self.key),
+            None => {},
         }
     }
 }
@@ -7649,6 +8158,172 @@ mod tests {
 
     use super::*;
     use crate::registry::EnvVar;
+
+    #[test]
+    fn location_display_adoption_preserves_foreign_gateway_and_inherits_owned_access() {
+        let data = crate::registry::DataDirTestEnv::new("location-adoption-foreign-r2");
+        for (mode, stale, recorded) in [("identity", false, false), ("stale", true, false), ("recorded", true, true)] {
+            let folder = data.dir.join(mode);
+            std::fs::create_dir(&folder).unwrap();
+            let gateway = data.dir.join("toolport-gateway");
+            std::fs::write(&gateway, "fixture").unwrap();
+            let stored = if stale { "/missing/toolport-gateway" } else { gateway.to_str().unwrap() };
+            let original = serde_json::json!({"mcpServers": {
+                "foreign": {"command": stored, "args": ["--http", "9999"], "env": {"TOOLPORT_CLIENT_ID": "foreign-client", "KEEP": "foreign"}},
+                "toolport": {"command": stored, "env": {"TOOLPORT_CLIENT_ID": "claude-code"}},
+                "notes": {"command": "notes"}
+            }});
+            std::fs::write(folder.join(".claude.json"), original.to_string()).unwrap();
+            let id = add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
+            let mut registry = crate::registry::Registry::default();
+            for scope in ["work", "foreign-access"] {
+                registry.profiles.push(serde_json::from_value(serde_json::json!({"id":scope,"name":scope})).unwrap());
+            }
+            registry.client_scopes.insert("claude-code".into(), "work".into());
+            registry.client_scopes.insert("foreign-client".into(), "foreign-access".into());
+            if recorded {
+                let entry: ServerEntry = serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport", "transport":"stdio", "command":stored,
+                    "env":[{"key":"TOOLPORT_CLIENT_ID", "value":"claude-code", "secret":false}]})).unwrap();
+                registry.set_client_managed_entry(&id, ManagedEntry::from_gateway_entry(&entry));
+            }
+            crate::registry::save(&registry).unwrap();
+            let rows = detect_clients_for_display_in(vec![find_def(&id).unwrap()], registry, Some(gateway.clone())).unwrap();
+            assert!(rows[0].error.is_none(), "{mode}: {:?}", rows[0].error);
+            let after = mutation::value(Format::JsonMcpServers, Some(&std::fs::read_to_string(&rows[0].config_path).unwrap())).unwrap();
+            assert_eq!(after["mcpServers"]["foreign"], original["mcpServers"]["foreign"], "{mode}");
+            assert_eq!(after["mcpServers"]["notes"], original["mcpServers"]["notes"]);
+            assert_eq!(after["mcpServers"]["toolport"]["env"]["TOOLPORT_CLIENT_ID"], id, "{mode}");
+            assert_eq!(after["mcpServers"]["toolport"]["command"], gateway.to_str().unwrap());
+            let registry = crate::registry::load().unwrap();
+            assert_eq!(registry.client_scopes.get(&id).map(String::as_str), Some("work"), "{mode}");
+            assert_eq!(resolve_entry_state(&rows[0].servers, registry.client_managed_entries.get(&id)), GatewayEntryState::Managed);
+        }
+    }
+
+    #[test]
+    fn location_display_does_not_adopt_a_foreign_only_gateway() {
+        let data = crate::registry::DataDirTestEnv::new("location-foreign-only-r2");
+        let folder = data.dir.join("foreign-only");
+        std::fs::create_dir(&folder).unwrap();
+        let original = r#"{"mcpServers":{"foreign":{"command":"/old/toolport-gateway","env":{"TOOLPORT_CLIENT_ID":"claude-code"}}}}"#;
+        std::fs::write(folder.join(".claude.json"), original).unwrap();
+        let id = add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
+        let gateway = data.dir.join("toolport-gateway");
+        std::fs::write(&gateway, "fixture").unwrap();
+        let rows = detect_clients_for_display_in(vec![find_def(&id).unwrap()], crate::registry::Registry::default(), Some(gateway)).unwrap();
+        assert!(rows[0].error.is_none());
+        assert_eq!(std::fs::read_to_string(&rows[0].config_path).unwrap(), original);
+        assert_eq!(resolve_entry_state(&rows[0].servers, None), GatewayEntryState::Absent);
+    }
+
+    #[test]
+    fn unsaved_secondary_claude_configs_are_repaired_and_keep_gateway_references() {
+        let data = crate::registry::DataDirTestEnv::new("location-startup-upkeep");
+        let home = data.dir.join("home");
+        std::fs::create_dir(&home).unwrap();
+        let old = data.dir.join("toolport-gateway-1.19.0");
+        let current = data.dir.join("Toolport/bin/toolport-gateway-2.0.0-preview.9");
+        std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+        std::fs::write(&old, "old fixture").unwrap();
+        std::fs::write(&current, "current fixture").unwrap();
+        let original = serde_json::json!({"mcpServers":{"toolport":{"command":old.to_str().unwrap(),"env":{"TOOLPORT_CLIENT_ID":"claude-code", "TOOLPORT_PROFILE":"work"}}}}).to_string();
+        for folder in [".claude2", ".claude-backup-2026", ".claude.bak", ".claudesync"] {
+            std::fs::create_dir(home.join(folder)).unwrap();
+            std::fs::write(home.join(folder).join(".claude.json"), &original).unwrap();
+        }
+        let dirs = legacy_claude_profile_dirs(&home).unwrap();
+        let paths: Vec<_> = claude_code_config_paths_from(&home, None, &dirs).into_iter().filter(|path| path.is_file()).collect();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(referenced_gateway_paths_for(&[], &paths), Some(vec![old]));
+        let mut outcome = RepointOutcome::default();
+        repoint_other_claude_configs_in(current.to_str().unwrap(), &paths, &mut outcome);
+        assert_eq!(outcome.extra_claude_repointed, paths);
+        assert!(outcome.extra_claude_failed.is_empty());
+        assert_eq!(referenced_gateway_paths_for(&[], &paths), Some(vec![current.clone()]));
+        let after: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&paths[0]).unwrap()).unwrap();
+        assert_eq!(after["mcpServers"]["toolport"]["command"], current.to_str().unwrap());
+        assert_eq!(after["mcpServers"]["toolport"]["env"]["TOOLPORT_PROFILE"], "work");
+        for folder in [".claude.bak", ".claudesync"] {
+            assert_eq!(std::fs::read_to_string(home.join(folder).join(".claude.json")).unwrap(), original);
+        }
+        assert!(locations::saved().unwrap().is_empty());
+    }
+
+    #[test]
+    fn one_location_repoint_error_does_not_hide_or_block_a_healthy_location() {
+        let data = crate::registry::DataDirTestEnv::new("location-repoint-row-error");
+        let mut definitions = Vec::new();
+        for name in ["bad", "good"] {
+            let folder = data.dir.join(name);
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(folder.join(".claude.json"), r#"{"mcpServers":{"toolport":{"command":"/old/toolport-gateway","env":{"TOOLPORT_CLIENT_ID":"claude-code"}}}}"#).unwrap();
+            let id = add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
+            let def = find_def(&id).unwrap();
+            if name == "bad" {
+                let config_path = resolved_definition_path(&def).unwrap();
+                let record = restore::record_path(&id, &config_path).unwrap();
+                std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+                std::fs::write(record, "broken snapshot").unwrap();
+            }
+            definitions.push(def);
+        }
+        let gateway = data.dir.join("toolport-gateway");
+        std::fs::write(&gateway, "fixture").unwrap();
+        let rows = detect_clients_for_display_in(definitions, crate::registry::Registry::default(), Some(gateway)).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].error.is_some());
+        assert!(rows[1].error.is_none());
+        assert!(rows[1].gateway_installed);
+        let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&rows[1].config_path).unwrap()).unwrap();
+        assert_eq!(config["mcpServers"]["toolport"]["env"]["TOOLPORT_CLIENT_ID"], rows[1].id);
+    }
+
+    #[test]
+    fn display_scan_keeps_healthy_rows_when_another_location_cannot_be_saved() {
+        let data = crate::registry::DataDirTestEnv::new("location-row-error");
+        // A directory in place of the location store makes remembering fail.
+        std::fs::create_dir(data.dir.join("client-locations.json")).unwrap();
+        let config = data.dir.join(".claude.json");
+        std::fs::write(&config, r#"{"mcpServers":{"notes":{"command":"notes"}}}"#).unwrap();
+        let mut bad = defs().into_iter().find(|def| def.id == "claude-code").unwrap();
+        bad.location = Some(locations::ClientLocation { id: "claude-code@fixture".into(), manual: true,
+            client_type: "claude-code".into(), name: "Claude Code (fixture)".into(), config_path: config });
+        let good = defs().into_iter().find(|def| def.id == "codex").unwrap();
+        let rows = detect_clients_for_display_in(vec![bad, good], crate::registry::Registry::default(), None).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].error.is_some());
+        assert!(rows[1].error.is_none());
+        assert_eq!(rows[0].servers[0].name, "notes");
+    }
+
+    #[test]
+    fn configured_claude_path_keeps_the_main_identity_and_registry_settings() {
+        let data = crate::registry::DataDirTestEnv::new("location-main-identity");
+        let _env_lock = env_test_lock();
+        let _home = TestHome::set(&data.dir);
+        let default = data.dir.join(".claude.json");
+        std::fs::write(&default, "{}").unwrap();
+        let folder = data.dir.join(".claude-work");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(".claude.json"), r#"{"mcpServers":{"toolport":{"command":"/usr/bin/toolport-gateway", "env":{"TOOLPORT_CLIENT_ID":"claude-code"}},"notes":{"command":"notes"}}}"#).unwrap();
+        let _override = EnvRestore::set("CLAUDE_CONFIG_DIR", &folder);
+        let paths = claude_code_config_paths();
+        assert!(paths.contains(&default));
+        assert!(paths.contains(&folder.join(".claude.json")));
+        let mut registry = crate::registry::Registry::default();
+        registry.client_discovery.insert("claude-code".into(), "full".into());
+        crate::registry::save(&registry).unwrap();
+        locations::remember(&locations::ClientLocation { id: "claude-code@claude-work".into(), manual: false,
+            client_type: "claude-code".into(), name: "Claude Code (claude-work)".into(), config_path: folder.join(".claude.json") }).unwrap();
+        assert_eq!(machine_defs(true).iter().filter(|def| resolved_definition_path(def).ok().as_deref() == Some(folder.join(".claude.json").as_path())).count(), 1);
+        assert_eq!(add_client_location("claude-code", folder.to_str().unwrap()).unwrap(), "claude-code");
+        let rows = detect_clients_with_inspection(false).unwrap();
+        let main = rows.iter().find(|client| client.id == "claude-code").unwrap();
+        assert!(main.gateway_installed);
+        assert!(main.servers.iter().any(|server| server.name == "notes"));
+        assert_eq!(crate::registry::load().unwrap().client_discovery["claude-code"], "full");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 
     #[test]
     fn legacy_bearer_detection_accepts_whitespace_and_requires_a_token_boundary() {
@@ -7735,9 +8410,7 @@ mod tests {
         let dirs = [
             ".claude-work".to_string(),
             ".claude".to_string(),
-            // These share the `.claude` prefix but are not profiles. A plain
-            // starts_with(".claude") would sweep them in and write a gateway entry
-            // into a backup directory or another tool's state.
+            // Backup-like folders must not become repair targets.
             ".claude.bak".to_string(),
             ".claudesync".to_string(),
             "Documents".to_string(),
@@ -7755,10 +8428,7 @@ mod tests {
             "expected the override first, then the default, then sorted siblings"
         );
         for impostor in [".claude.bak", ".claudesync"] {
-            assert!(
-                !paths.iter().any(|p| p.starts_with(home.join(impostor))),
-                "{impostor} is not a Claude Code profile and must not be written"
-            );
+            assert!(!paths.iter().any(|path| path.starts_with(home.join(impostor))));
         }
     }
 
@@ -7858,7 +8528,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn symlinked_claude_profile_directories_are_discovered() {
+    fn symlinked_claude_profiles_remain_in_hook_and_guard_upkeep() {
         use std::os::unix::fs::symlink;
 
         let root = temp_path("claude-symlink-profile");
@@ -7870,8 +8540,10 @@ mod tests {
         std::fs::write(target.join(".claude.json"), "{}").unwrap();
         symlink(&target, home.join(".claude-work")).unwrap();
 
-        let dirs = claude_profile_dirs(&home).unwrap();
+        let dirs = claude_profile_dirs_with_links(&home, true).unwrap();
         assert!(dirs.iter().any(|name| name == ".claude-work"));
+        assert!(claude_settings_paths_from(&home, None, &dirs).contains(&home.join(".claude-work/settings.json")));
+        assert!(claude_profile_dirs(&home).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -9661,6 +10333,7 @@ bad = "not-a-table"
             id: id.into(),
             name: id.into(),
             uses_connectors: false,
+            location_removable: false,
             discovery: discovery::capabilities(id),
             config_path: format!("/tmp/{id}.json"),
             config_exists: true,
@@ -10087,7 +10760,7 @@ bad = "not-a-table"
     }
 
     #[test]
-    fn gateway_edits_replace_all_legacy_entries_across_formats() {
+    fn gateway_edits_preserve_foreign_binary_entries_across_formats() {
         assert!(is_gateway_server(&stdio("toolport")));
 
         let json_path = temp_path("dedupe-json");
@@ -10111,7 +10784,7 @@ bad = "not-a-table"
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
         let json_servers = json["mcpServers"].as_object().unwrap();
-        assert_eq!(json_servers.len(), 2);
+        assert_eq!(json_servers.len(), 3);
         assert!(json_servers.contains_key(GATEWAY_ENTRY_NAME));
         assert!(json_servers.contains_key("existing"));
         assert_eq!(
@@ -10122,7 +10795,7 @@ bad = "not-a-table"
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
         let json_servers = json["mcpServers"].as_object().unwrap();
-        assert_eq!(json_servers.keys().collect::<Vec<_>>(), vec!["existing"]);
+        assert_eq!(json_servers.keys().collect::<Vec<_>>(), vec!["existing", "stale"]);
 
         let toml_path = temp_path("dedupe-toml");
         std::fs::write(
@@ -10148,14 +10821,14 @@ command = "npx"
         let toml: toml::Value =
             toml::from_str(&std::fs::read_to_string(&toml_path).unwrap()).unwrap();
         let toml_servers = toml["mcp_servers"].as_table().unwrap();
-        assert_eq!(toml_servers.len(), 2);
+        assert_eq!(toml_servers.len(), 3);
         assert!(toml_servers.contains_key(GATEWAY_ENTRY_NAME));
         assert!(toml_servers.contains_key("existing"));
         edit_toml_gateway(&toml_path, None).unwrap();
         let toml: toml::Value =
             toml::from_str(&std::fs::read_to_string(&toml_path).unwrap()).unwrap();
         let toml_servers = toml["mcp_servers"].as_table().unwrap();
-        assert_eq!(toml_servers.keys().collect::<Vec<_>>(), vec!["existing"]);
+        assert_eq!(toml_servers.keys().collect::<Vec<_>>(), vec!["existing", "stale"]);
 
         let goose_path = temp_path("dedupe-goose-yaml");
         std::fs::write(
@@ -10171,14 +10844,15 @@ command = "npx"
         let goose: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&goose_path).unwrap()).unwrap();
         let goose_servers = goose["extensions"].as_mapping().unwrap();
-        assert_eq!(goose_servers.len(), 2);
+        assert_eq!(goose_servers.len(), 3);
         assert!(goose_servers.contains_key(GATEWAY_ENTRY_NAME));
         assert!(goose_servers.contains_key("fetch"));
         edit_yaml_gateway(&goose_path, None).unwrap();
         let goose: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&goose_path).unwrap()).unwrap();
         let goose_servers = goose["extensions"].as_mapping().unwrap();
-        assert_eq!(goose_servers.len(), 1);
+        assert_eq!(goose_servers.len(), 2);
+        assert!(goose_servers.contains_key("stale"));
         assert!(goose_servers.contains_key("fetch"));
 
         let hermes_path = temp_path("dedupe-hermes-yaml");
@@ -10195,14 +10869,15 @@ command = "npx"
         let hermes: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&hermes_path).unwrap()).unwrap();
         let hermes_servers = hermes["mcp_servers"].as_mapping().unwrap();
-        assert_eq!(hermes_servers.len(), 2);
+        assert_eq!(hermes_servers.len(), 3);
         assert!(hermes_servers.contains_key(GATEWAY_ENTRY_NAME));
         assert!(hermes_servers.contains_key("fetch"));
         edit_hermes_yaml_gateway(&hermes_path, None).unwrap();
         let hermes: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&hermes_path).unwrap()).unwrap();
         let hermes_servers = hermes["mcp_servers"].as_mapping().unwrap();
-        assert_eq!(hermes_servers.len(), 1);
+        assert_eq!(hermes_servers.len(), 2);
+        assert!(hermes_servers.contains_key("stale"));
         assert!(hermes_servers.contains_key("fetch"));
 
         let continue_path = temp_path("dedupe-continue-yaml");
@@ -10219,7 +10894,7 @@ command = "npx"
         let continue_yaml: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&continue_path).unwrap()).unwrap();
         let continue_servers = continue_yaml["mcpServers"].as_sequence().unwrap();
-        assert_eq!(continue_servers.len(), 2);
+        assert_eq!(continue_servers.len(), 3);
         assert!(continue_servers
             .iter()
             .any(|server| server["name"].as_str() == Some(GATEWAY_ENTRY_NAME)));
@@ -10230,8 +10905,9 @@ command = "npx"
         let continue_yaml: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&continue_path).unwrap()).unwrap();
         let continue_servers = continue_yaml["mcpServers"].as_sequence().unwrap();
-        assert_eq!(continue_servers.len(), 1);
-        assert_eq!(continue_servers[0]["name"].as_str(), Some("fetch"));
+        assert_eq!(continue_servers.len(), 2);
+        assert_eq!(continue_servers[0]["name"].as_str(), Some("stale"));
+        assert_eq!(continue_servers[1]["name"].as_str(), Some("fetch"));
 
         for path in [json_path, toml_path, goose_path, hermes_path, continue_path] {
             std::fs::remove_file(path).ok();
@@ -13068,8 +13744,8 @@ rules:
         std::fs::create_dir_all(&xdg_config).unwrap();
         std::fs::create_dir_all(&xdg_data).unwrap();
 
-        std::env::set_var("XDG_CONFIG_HOME", &xdg_config);
-        std::env::set_var("XDG_DATA_HOME", &xdg_data);
+        let _config = EnvRestore::set("XDG_CONFIG_HOME", &xdg_config);
+        let _data = EnvRestore::set("XDG_DATA_HOME", &xdg_data);
         // Absolute GOOSE_PATH_ROOT wins over XDG; neutralize it so this test
         // pins the XDG branch (SBS-899).
         let _goose_root = EnvRestore::set("GOOSE_PATH_ROOT", Path::new(""));
@@ -13085,8 +13761,8 @@ rules:
         let opencode = client_config_path("opencode").unwrap();
         let kilo_code = client_config_path("kilo-code").unwrap();
 
-        std::env::remove_var("XDG_CONFIG_HOME");
-        std::env::remove_var("XDG_DATA_HOME");
+        drop(_config);
+        drop(_data);
         let _ = std::fs::remove_dir_all(&base);
 
         assert_eq!(
