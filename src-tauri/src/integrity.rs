@@ -5768,6 +5768,33 @@ mod tests {
     }
 
     #[test]
+    fn pending_review_logs_once_even_after_the_dedup_window() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("pending-review-log-once");
+        let tools = vec![destructive_tool("srv__wipe", "Captured definition.")];
+        check(None, &tools).unwrap();
+        let old = json!({"tool":"srv__wipe", "change":"changed"});
+        save_quarantine(None, &BTreeMap::from([("srv__wipe".into(), old.clone())])).unwrap();
+        release_record(None, "srv__wipe", &quarantine_record_id(&old)).unwrap();
+        let events = check_staged(None, &tools).unwrap();
+        apply_quarantine(None, &tools, &events).unwrap();
+        accept_quarantined_pins(None).unwrap();
+        let path = security_path().unwrap();
+        let first = read_recent(20).unwrap();
+        assert_eq!(first.len(), 1);
+        let mut aged = first[0].clone();
+        aged["ts"] = json!(epoch_millis() - DEDUP_WINDOW_MS - 1);
+        std::fs::write(&path, format!("{aged}\n")).unwrap();
+        for _ in 0..3 {
+            let events = check_staged(None, &tools).unwrap();
+            assert!(events.iter().any(|event| event["review_required"] == true));
+            apply_quarantine(None, &tools, &events).unwrap();
+            accept_quarantined_pins(None).unwrap();
+        }
+        assert_eq!(read_recent(20).unwrap().len(), 1, "pending review logged repeatedly after ten minutes");
+    }
+
+    #[test]
     fn pending_review_survives_all_unreviewed_pin_merges() {
         let _lock = crate::registry::data_dir_test_lock();
         let _data = TestDataDir::new("pending-review-pin-merges");

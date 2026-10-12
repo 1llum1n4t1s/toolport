@@ -39268,6 +39268,32 @@ mod tests {
     }
 
     #[test]
+    fn integrity_pending_review_retires_removed_catalog_entries_without_approving_return() {
+        let _data = DataDirTestEnv::new("pending-review-catalog-removal");
+        let tools = vec![json!({"name":"srv__read", "description":"Unseen definition.", "inputSchema":{"type":"object"}})];
+        for level in [registry::SafetyLevel::Ask, registry::SafetyLevel::Off] {
+            for profile in [None, Some("removed-review")] {
+                integrity::check(profile, &tools).unwrap();
+                let path = integrity::quarantine_path(profile).unwrap();
+                std::fs::write(&path, json!({"srv__read":{"tool":"srv__read", "change":"changed"}}).to_string()).unwrap();
+                let old = integrity::quarantine_list(profile).remove(0);
+                integrity::release_record(profile, "srv__read", &integrity::quarantine_record_id(&old)).unwrap();
+                let mut reg = Registry::default();
+                reg.set_safety_level(level);
+                let registry = Arc::new(Mutex::new(reg));
+                assert!(maybe_check_integrity(&registry, &tools, profile).unwrap().is_some());
+                let mut removed = Router::default();
+                let published = requarantine_if_needed(&registry, &mut removed, Vec::<Value>::new(), profile);
+                assert!(published.is_empty());
+                assert!(!integrity::pending_definition_review(profile), "absent review keeps {level:?} pending");
+                assert!(integrity::review_quarantined(profile).unwrap().is_empty());
+                // Absence cancels the active review, never approval of an unseen return.
+                assert_eq!(maybe_check_integrity(&registry, &tools, profile).unwrap(), Some(set_of(&["srv__read"])));
+            }
+        }
+    }
+
+    #[test]
     fn integrity_off_baseline_tamper_records_without_blocking() {
         let _data_lock = registry::data_dir_test_lock();
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
