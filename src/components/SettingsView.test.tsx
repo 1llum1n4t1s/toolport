@@ -802,3 +802,12 @@ it("shows the baseline corruption cause at Off even without quarantined tools", 
   expect(await screen.findByText(`Last baseline warning: ${detail}`)).toBeInTheDocument();
   expect(screen.queryByText("Quarantined tools")).not.toBeInTheDocument();
 });
+
+ it("does not show a baseline warning from another profile", async () => {
+  vi.mocked(getSecurityEvents).mockResolvedValue([
+    { ts: 123, type: "pins_load_failed", change: "tamper", profile: "other", detail: "Other profile failed" },
+  ]);
+  renderSettings("safety");
+  await waitFor(() => expect(getSecurityEvents).toHaveBeenCalled());
+  expect(screen.queryByText(/Last baseline warning/)).not.toBeInTheDocument();
+});
