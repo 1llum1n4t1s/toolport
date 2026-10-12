@@ -1,3 +1,5 @@
+#[cfg(feature = "desktop")]
+mod activity_revision_ipc;
 pub mod approval;
 #[cfg(any(feature = "desktop", feature = "gtk-desktop"))]
 pub(crate) mod approval_broker;

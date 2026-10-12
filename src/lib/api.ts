@@ -38,6 +38,23 @@ export function searchCatalog(query: string): Promise<CatalogSearch> {
   return invoke<CatalogSearch>("search_catalog", { query });
 }
 
+/** Content revision of Activity stores, cached behind notifications where supported. */
+export function getActivityRevision(): Promise<string> {
+  return invoke<string>("activity_revision");
+}
+
+/** Release the cached revision and native watch when Activity hides. */
+export function releaseActivityRevision(): Promise<void> {
+  return invoke("release_activity_revision");
+}
+
+/** Bounded live health probe, independent of retained Activity stores. */
+export function getActivityHealth(): Promise<
+  Pick<AuditStats, "telemetry" | "gatewayNotes">
+> {
+  return invoke("activity_health");
+}
+
 /** Recent tool-call audit entries (newest first). */
 export function getAuditLog(limit = 200): Promise<AuditEntry[]> {
   return invoke<AuditEntry[]>("get_audit_log", { limit });

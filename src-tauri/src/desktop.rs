@@ -1084,6 +1084,18 @@ async fn has_client_secret(server_id: String) -> Result<bool, String> {
     .map_err(|e| format!("keychain task join failed: {e}"))?
 }
 
+#[tauri::command]
+fn release_activity_revision() {
+    crate::observability_controller::release_activity_revision();
+}
+
+#[tauri::command]
+async fn activity_health() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(crate::observability_controller::activity_health)
+        .await
+        .map_err(|error| format!("Activity health task failed: {error}"))
+}
+
 /// The most recent tool-call audit entries (newest first).
 #[tauri::command]
 async fn get_audit_log(limit: usize) -> Result<Vec<serde_json::Value>, String> {
@@ -4240,7 +4252,7 @@ pub fn run() {
         .manage(PendingShare::default())
         .manage(PendingTrayApprovals::default())
         .manage(RestartAdvice::default())
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(crate::activity_revision_ipc::handler(tauri::generate_handler![
             detect_clients,
             client_location_types,
             add_client_location,
@@ -4282,6 +4294,8 @@ pub fn run() {
             clear_client_credentials,
             has_client_secret,
             secret_status,
+            release_activity_revision,
+            activity_health,
             get_audit_log,
             get_client_sessions,
             audit_stats,
@@ -4376,7 +4390,7 @@ pub fn run() {
             disable_launch_at_login,
             is_launch_at_login_enabled,
             open_external,
-        ])
+        ]))
         // Only a usable tray can keep a closed window reachable. Without one,
         // close exits through the normal run-loop cleanup.
         .on_window_event(|window, event| {

@@ -76,14 +76,16 @@ function ClientRow({
     <button
       type="button"
       onClick={onSelect}
-      className={`grid min-h-14 w-full grid-cols-[32px_minmax(0,1fr)_auto_16px] items-center gap-3 border-b border-border/60 px-1 py-3 text-left transition-colors last:border-b-0 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
+      className={`grid min-h-14 w-full grid-cols-[32px_minmax(0,1fr)_16px] sm:grid-cols-[32px_minmax(0,1fr)_auto_16px] items-center gap-3 border-b border-border/60 px-1 py-3 text-left transition-colors last:border-b-0 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
         status === "missing" ? "opacity-60" : ""
       }`}
     >
       <ClientLogo id={client.id} name={client.name} size={32} />
       <span className="min-w-0">
         <span className="flex items-center gap-1.5">
-          <span className="truncate text-sm font-medium">{client.name}</span>
+          <span className="break-words text-sm font-medium sm:truncate">
+            {client.name}
+          </span>
           {client.usesConnectors && (
             <Puzzle
               className="size-3.5 shrink-0 text-info"
@@ -95,7 +97,7 @@ function ClientRow({
           {detail}
         </span>
       </span>
-      <span className="flex items-center gap-2">
+      <span className="col-start-2 row-start-2 flex min-w-0 flex-wrap items-center gap-2 sm:col-auto sm:row-auto">
         {importCount > 0 && status !== "error" && status !== "missing" && (
           <Badge variant="owned">
             <Download />
@@ -104,7 +106,10 @@ function ClientRow({
         )}
         <StatusBadge status={status} />
       </span>
-      <ChevronRight className="size-4 text-muted-foreground/50" aria-hidden="true" />
+      <ChevronRight
+        className="col-start-3 row-start-1 size-4 text-muted-foreground/50 sm:col-auto sm:row-auto"
+        aria-hidden="true"
+      />
     </button>
   );
 }

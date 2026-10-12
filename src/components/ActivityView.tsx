@@ -48,6 +48,9 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   clearActivityLogs,
   exportAuditToPath,
+  getActivityRevision,
+  releaseActivityRevision,
+  getActivityHealth,
   getAuditLog,
   getAuditStats,
   getInspectLog,
@@ -875,7 +878,11 @@ const UNKNOWN_APPROVAL = {
   className: "border-border text-muted-foreground",
 };
 
-export function TelemetryNotice({ stats }: { stats: AuditStats | null }) {
+export function TelemetryNotice({
+  stats,
+}: {
+  stats: Pick<AuditStats, "telemetry" | "gatewayNotes"> | null;
+}) {
   const health = stats?.telemetry;
   const messages = [...(stats?.gatewayNotes ?? [])];
   if (
@@ -1767,21 +1774,95 @@ export function ActivityView({
     }
   }
 
-  // Native visibility also covers a window hidden to the tray, where the
-  // webview may keep reporting "visible". Pause file reads and rerenders while
-  // the user is elsewhere; resume within one tick when they return.
+  // Poll a cached content revision. Idle pages keep rows, stats and open panels;
+  // native visibility also pauses this cheap check while hidden to the tray.
   const windowVisible = useWindowVisible();
   const [liveTick, setLiveTick] = useState(0);
+  const [revisionUnavailable, setRevisionUnavailable] = useState(false);
+  const revisionChecking = useRef(false);
   useEffect(() => {
     if (!windowVisible) return;
-    const id = setInterval(() => setLiveTick((t) => t + 1), 3000);
-    return () => clearInterval(id);
+    let alive = true;
+    let previous: string | undefined;
+    async function checkRevision() {
+      if (revisionChecking.current) return;
+      revisionChecking.current = true;
+      try {
+        const revision = await getActivityRevision();
+        if (!alive) return;
+        setRevisionUnavailable(false);
+        // Initial panel reads can precede a delayed digest. Reconcile once after
+        // the first successful baseline, then leave genuinely idle rows alone.
+        if (previous !== revision) setLiveTick((t) => t + 1);
+        previous = revision;
+      } catch {
+        // Let panel readers surface an unreadable store rather than masking it
+        // with a successful old revision.
+        if (alive) {
+          setRevisionUnavailable(true);
+          setLiveTick((t) => t + 1);
+        }
+      } finally {
+        revisionChecking.current = false;
+      }
+    }
+    void checkRevision();
+    const id = setInterval(() => void checkRevision(), 3000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+      void releaseActivityRevision().catch(() => {});
+    };
   }, [windowVisible]);
+  const [liveHealth, setLiveHealth] = useState<Pick<
+    AuditStats,
+    "telemetry" | "gatewayNotes"
+  > | null>(null);
+  const [healthUnavailable, setHealthUnavailable] = useState(false);
+  const healthChecking = useRef(false);
+  useEffect(() => {
+    if (!windowVisible) return;
+    let alive = true;
+    async function checkHealth() {
+      if (healthChecking.current) return;
+      healthChecking.current = true;
+      try {
+        const health = await getActivityHealth();
+        if (alive) {
+          setLiveHealth(health);
+          setHealthUnavailable(false);
+        }
+      } catch {
+        if (alive) setHealthUnavailable(true);
+      } finally {
+        healthChecking.current = false;
+      }
+    }
+    const id = setInterval(() => void checkHealth(), 15_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [windowVisible]);
+  const noticeHealth = liveHealth ?? stats;
+  const noticeStats = {
+    gatewayNotes: noticeHealth?.gatewayNotes,
+    telemetry: {
+      queueDropped: 0,
+      writeFailedRecords: 0,
+      writeFailures: 0,
+      incompleteFlushes: 0,
+      ...noticeHealth?.telemetry,
+      retainedDropped: stats?.telemetry?.retainedDropped,
+      ...(healthUnavailable ? { unavailable: true } : {}),
+    },
+  };
   // Combined so panels refetch on either a registry change or a live tick. Both counters
   // only increase, so the sum always changes when either does (no collisions).
   const liveKey = refreshKey + liveTick;
 
   useEffect(() => {
+    if (!windowVisible) return;
     let alive = true;
     const generation = auditGeneration.current;
     getAuditLog(200)
@@ -1831,7 +1912,7 @@ export function ActivityView({
     return () => {
       alive = false;
     };
-  }, [liveKey, reloadTick]);
+  }, [liveKey, reloadTick, windowVisible]);
 
   // Export the full retained audit log. The save dialog offers CSV and JSON; the
   // chosen extension picks the format. CSV is formula-injection-safe in the backend.
@@ -1898,7 +1979,12 @@ export function ActivityView({
 
   const banner = (
     <>
-      <TelemetryNotice stats={stats} />
+      <TelemetryNotice stats={noticeStats} />
+      {revisionUnavailable ? (
+        <p role="status" className="mb-4 text-sm text-destructive">
+          Activity change checks are unavailable. Displayed activity may be stale.
+        </p>
+      ) : null}
       {/* Loud lane: the only thing here that may need a decision. */}
       {securityLoadStatus !== "ready" ? (
         <SecurityLoadNotice status={securityLoadStatus} onRetry={retryLoads} />

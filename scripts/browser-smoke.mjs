@@ -706,6 +706,33 @@ try {
   });
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   expect((await page.evaluate(() => window.toolportFixture)).missing).toEqual([]);
+  await page.setViewportSize({ width: 480, height: 360 });
+  await page.goto(`${baseURL}/fixtures/?dogfood`);
+  await page.getByRole("button", { name: "Clients", exact: true }).click();
+  const clientRows = page.locator(".toolport-list > button");
+  await expect(clientRows.first()).toBeVisible();
+  expect(
+    await clientRows.evaluateAll((rows) =>
+      rows.every((row) => row.scrollWidth <= row.clientWidth),
+    ),
+  ).toBe(true);
+  await page.screenshot({ path: path.join(output, "clients-narrow.png") });
+  await page.getByRole("button", { name: "Activity", exact: true }).click();
+  await expect(page.getByText("Protection active.", { exact: true })).toBeVisible();
+  const activityReads = await page.evaluate(
+    () => window.toolportFixture.calls.get_audit_log,
+  );
+  const revisionReads = await page.evaluate(
+    () => window.toolportFixture.calls.activity_revision,
+  );
+  await expect
+    .poll(() => page.evaluate(() => window.toolportFixture.calls.activity_revision))
+    .toBeGreaterThan(revisionReads);
+  expect(await page.evaluate(() => window.toolportFixture.calls.get_audit_log)).toBe(
+    activityReads,
+  );
+  await page.screenshot({ path: path.join(output, "activity-narrow-idle.png") });
+  await page.setViewportSize({ width: 1240, height: 900 });
   await page.goto(`${baseURL}/fixtures/?logos`);
   await expect(page.getByText("Dark logo fixture")).toBeVisible();
   await page.evaluate(() => document.fonts.ready);

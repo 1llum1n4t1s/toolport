@@ -490,8 +490,7 @@ fn build_window(
     {
         let settings = settings_page.clone();
         io::while_mapped(&settings_page.root, 15, move || settings.refresh_quietly());
-        let activity = activity_page.clone();
-        io::while_mapped(&activity_page.root, 3, move || activity.refresh_quietly());
+        activity_page.attach(&window);
     }
     split.set_sidebar(Some(&adw::NavigationPage::new(&sidebar, "Navigation")));
     let content_with_notice = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1125,7 +1124,11 @@ fn build_sidebar(
             }
             for (index, child) in subbuttons.iter().enumerate() {
                 let page = settings_page.clone();
-                child.connect_clicked(move |_| page.select_page(index));
+                let split = split.clone();
+                child.connect_clicked(move |_| {
+                    page.select_page(index);
+                    split.set_show_content(true);
+                });
             }
             subbuttons[0].add_css_class("selected");
             stack.connect_visible_child_name_notify(move |stack| {
@@ -1801,7 +1804,7 @@ fn show_native_page(
     } else if target == "clients" {
         client_page.refresh();
     } else if target == "activity" {
-        activity_page.refresh();
+        activity_page.refresh_quietly();
     } else if target == "catalog" {
         catalog_page.refresh();
     } else if target == "teams" {
@@ -2293,11 +2296,9 @@ impl ClientPage {
             .build();
         header.pack_end(&refresh_button);
         let add_location = gtk::Button::with_label("Add client location");
-        header.pack_start(&add_location);
         let import_button = gtk::Button::with_label("Import");
         import_button.set_tooltip_text(Some("Review servers found in client configurations"));
         import_button.add_css_class("toolport-secondary-action");
-        header.pack_end(&import_button);
         root.append(&header);
 
         let scroller = gtk::ScrolledWindow::builder()
@@ -2310,6 +2311,10 @@ impl ClientPage {
         page.set_margin_bottom(20);
         page.set_margin_start(20);
         page.set_margin_end(20);
+        let page_actions = wrapping_actions();
+        page_actions.insert(&add_location, -1);
+        page_actions.insert(&import_button, -1);
+        page.append(&page_actions);
         page.append(
             &gtk::Label::builder()
                 .label("Your AI clients, one Toolport gateway")
@@ -2803,18 +2808,33 @@ fn toolport_menu_choice_button(label: &str, selected: bool) -> gtk::Button {
         .build()
 }
 
+fn wrapping_actions() -> gtk::FlowBox {
+    gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .min_children_per_line(1)
+        .max_children_per_line(8)
+        .column_spacing(8)
+        .row_spacing(6)
+        .build()
+}
+
 fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
-    let card = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 10);
     card.add_css_class("toolport-card");
+    let heading = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    card.append(&heading);
     let icon = branding::client_logo(&client.id);
-    card.append(&icon);
+    icon.set_valign(gtk::Align::Start);
+    heading.append(&icon);
     let copy = gtk::Box::new(gtk::Orientation::Vertical, 3);
     copy.set_hexpand(true);
     copy.append(
         &gtk::Label::builder()
             .label(&client.name)
-            .halign(gtk::Align::Start)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .halign(gtk::Align::Fill)
+            .xalign(0.0)
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
             .tooltip_text(format!("{}\nClient id: {}", client.name, client.id))
             .css_classes(["heading"])
             .build(),
@@ -2912,18 +2932,16 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
                 .build(),
         );
     }
-    card.append(&copy);
+    heading.append(&copy);
     if client.gateway_state == state::ClientGatewayState::Customized {
         let badge = gtk::Label::new(Some("Customized"));
         badge.add_css_class("toolport-badge");
         badge.set_valign(gtk::Align::Center);
         badge.set_halign(gtk::Align::Start);
         badge.add_css_class("review");
-        card.append(&badge);
+        copy.append(&badge);
     }
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    actions.set_halign(gtk::Align::End);
-    actions.set_valign(gtk::Align::Center);
+    let actions = wrapping_actions();
     if client.legacy_bearer_argv {
         let warning = gtk::Label::new(Some("This older HTTP connection exposes a bearer credential in process arguments. Review migration to stdio; it stays unchanged until you confirm."));
         warning.set_wrap(true);
@@ -2935,7 +2953,7 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
         migrate.connect_clicked(move |button| {
             confirm_client_reset(&reviewed_client, button.clone(), reviewed_page.clone());
         });
-        actions.append(&migrate);
+        actions.insert(&migrate, -1);
     }
     if client.location_removable {
         let remove = gtk::Button::with_label("Remove location");
@@ -2962,7 +2980,7 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
             });
             dialog.present();
         });
-        actions.append(&remove);
+        actions.insert(&remove, -1);
     }
     match client.gateway_state {
         state::ClientGatewayState::Disconnected => {
@@ -2973,7 +2991,7 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
             connect.connect_clicked(move |_| {
                 confirm_client_migrate(&client_for_connect, page_for_connect.clone());
             });
-            actions.append(&connect);
+            actions.insert(&connect, -1);
         }
         state::ClientGatewayState::Customized if client_needs_reset_action(client) => {
             let reset = gtk::Button::with_label("Reset");
@@ -2983,12 +3001,12 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
             reset.connect_clicked(move |button| {
                 confirm_client_reset(&client_for_reset, button.clone(), page_for_reset.clone());
             });
-            actions.append(&reset);
+            actions.insert(&reset, -1);
         }
         state::ClientGatewayState::Customized => {}
         state::ClientGatewayState::Connected => {
-            actions.append(&client_scope_menu(client.clone(), page.clone()));
-            actions.append(&connected_client_actions_menu(client.clone(), page));
+            actions.insert(&client_scope_menu(client.clone(), page.clone()), -1);
+            actions.insert(&connected_client_actions_menu(client.clone(), page), -1);
         }
     }
     if actions.first_child().is_some() {
@@ -3146,8 +3164,17 @@ fn client_scope_menu(client: state::ClientView, page: ClientPage) -> gtk::MenuBu
         format!("Access: {label}")
     };
     let menu = gtk::MenuButton::builder()
-        .label(label)
-        .tooltip_text("Choose this client's access to enabled servers")
+        .always_show_arrow(true)
+        .child(
+            &gtk::Label::builder()
+                .label(&label)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .max_width_chars(24)
+                .build(),
+        )
+        .tooltip_text(format!(
+            "Choose this client's access to enabled servers: {label}"
+        ))
         .build();
     menu.add_css_class("toolport-secondary-action");
     let popover = toolport_menu_popover();
@@ -3316,6 +3343,44 @@ fn run_client_mutation(
     });
 }
 
+type RetainedRows<T> = std::rc::Rc<std::cell::RefCell<Vec<(T, gtk::Widget)>>>;
+
+fn reconcile_rows<T: Clone + PartialEq>(
+    list: &gtk::Box,
+    retained: &RetainedRows<T>,
+    values: &[T],
+    build: impl Fn(&T) -> gtk::Widget,
+) {
+    let mut rows = retained.borrow_mut();
+    if rows.iter().map(|(value, _)| value).eq(values.iter()) {
+        return;
+    }
+    if rows.is_empty() {
+        while let Some(child) = list.first_child() {
+            list.remove(&child);
+        }
+    }
+    let mut previous = std::mem::take(&mut *rows);
+    let mut sibling = None::<gtk::Widget>;
+    for value in values {
+        let row = if let Some(index) = previous.iter().position(|(old, _)| old == value) {
+            previous.remove(index).1
+        } else {
+            let row = build(value);
+            list.append(&row);
+            row
+        };
+        if row.prev_sibling() != sibling.clone() {
+            list.reorder_child_after(&row, sibling.as_ref());
+        }
+        sibling = Some(row.clone());
+        rows.push((value.clone(), row));
+    }
+    for (_, row) in previous {
+        list.remove(&row);
+    }
+}
+
 const RECENT_CALL_PREVIEW_LIMIT: usize = 10;
 
 #[derive(Clone)]
@@ -3336,6 +3401,7 @@ struct ActivityPage {
     search_list: gtk::Box,
     inspect_list: gtk::Box,
     feedback: gtk::Label,
+    telemetry_feedback: gtk::Label,
     call_count: gtk::Label,
     success_rate: gtk::Label,
     average_latency: gtk::Label,
@@ -3343,6 +3409,14 @@ struct ActivityPage {
     refresh_button: gtk::Button,
     clear_button: gtk::Button,
     loading: std::rc::Rc<std::cell::Cell<bool>>,
+    dirty: std::rc::Rc<std::cell::Cell<bool>>,
+    revision: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    revision_error: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    revision_loading: std::rc::Rc<std::cell::Cell<bool>>,
+    health_loading: std::rc::Rc<std::cell::Cell<bool>>,
+    health_generation: std::rc::Rc<std::cell::Cell<u64>>,
+    recent_rows: RetainedRows<state::ActivityView>,
+    stat_rows: RetainedRows<serde_json::Value>,
     /// The last successfully loaded snapshot. Kept so a failed refresh shows a
     /// stale notice over real rows instead of replacing them with "all clear",
     /// and so filter changes re-render without another disk read.
@@ -3449,8 +3523,16 @@ impl ActivityPage {
             .wrap(true)
             .css_classes(["toolport-feedback"])
             .build();
-        feedback.set_label("Open Activity to load saved activity.");
+        feedback.set_label("Loading retained activity…");
         page.append(&feedback);
+        let telemetry_feedback = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .xalign(0.0)
+            .wrap(true)
+            .visible(false)
+            .css_classes(["toolport-feedback"])
+            .build();
+        page.append(&telemetry_feedback);
 
         let summary = gtk::FlowBox::new();
         summary.add_css_class("toolport-summary");
@@ -3462,10 +3544,10 @@ impl ActivityPage {
         summary.set_selection_mode(gtk::SelectionMode::None);
         let mut values = Vec::new();
         for (value, label) in [
-            ("–", "Calls recorded"),
-            ("–", "Success rate"),
-            ("–", "Average latency"),
-            ("–", "Tokens saved"),
+            ("…", "Calls recorded"),
+            ("…", "Success rate"),
+            ("…", "Average latency"),
+            ("…", "Tokens saved"),
         ] {
             let (item, value) = summary_item(value, label);
             values.push(value);
@@ -3483,14 +3565,14 @@ impl ActivityPage {
         let security_status_copy = gtk::Box::new(gtk::Orientation::Vertical, 1);
         security_status_copy.set_hexpand(true);
         let security_status_title = gtk::Label::builder()
-            .label("Protection active")
+            .label("Checking protection…")
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .css_classes(["heading"])
             .build();
         security_status_copy.append(&security_status_title);
         let security_status_detail = gtk::Label::builder()
-            .label("No changes need review.")
+            .label("Loading saved review state.")
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -3574,25 +3656,52 @@ impl ActivityPage {
                 .css_classes(["heading"])
                 .build(),
         );
-        let filter_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let filter_row = wrapping_actions();
         let filter_server = gtk::DropDown::from_strings(&["All servers"]);
         filter_server.add_css_class("toolport-input");
         filter_server.add_css_class("toolport-activity-filter");
         filter_server.set_valign(gtk::Align::Center);
         filter_server.set_tooltip_text(Some("Show events from one server"));
-        filter_row.append(&filter_server);
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_setup(|_, item| {
+            let item = item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("a dropdown list item");
+            item.set_child(Some(
+                &gtk::Label::builder()
+                    .xalign(0.0)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .max_width_chars(24)
+                    .build(),
+            ));
+        });
+        factory.connect_bind(|_, item| {
+            let item = item
+                .downcast_ref::<gtk::ListItem>()
+                .expect("a dropdown list item");
+            if let (Some(value), Some(label)) = (
+                item.item().and_downcast::<gtk::StringObject>(),
+                item.child().and_downcast::<gtk::Label>(),
+            ) {
+                label.set_label(&value.string());
+                label.set_tooltip_text(Some(&value.string()));
+            }
+        });
+        filter_server.set_factory(Some(&factory));
+        filter_row.insert(&filter_server, -1);
         let errors_only = gtk::ToggleButton::with_label("Errors only");
         errors_only.add_css_class("toolport-secondary-action");
         errors_only.add_css_class("toolport-activity-filter");
         errors_only.set_valign(gtk::Align::Center);
-        filter_row.append(&errors_only);
+        filter_row.insert(&errors_only, -1);
         let filter_count = gtk::Label::builder()
-            .halign(gtk::Align::End)
-            .hexpand(true)
+            .halign(gtk::Align::Fill)
+            .xalign(0.0)
+            .wrap(true)
             .css_classes(["toolport-muted", "caption"])
             .build();
-        filter_row.append(&filter_count);
         page.append(&filter_row);
+        page.append(&filter_count);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 10);
         page.append(&list);
         let show_more_calls = gtk::Button::with_label("Show more events");
@@ -3697,6 +3806,7 @@ impl ActivityPage {
             search_list,
             inspect_list,
             feedback,
+            telemetry_feedback,
             call_count: values.remove(0),
             success_rate: values.remove(0),
             average_latency: values.remove(0),
@@ -3704,6 +3814,14 @@ impl ActivityPage {
             refresh_button,
             clear_button,
             loading: std::rc::Rc::new(std::cell::Cell::new(false)),
+            dirty: std::rc::Rc::new(std::cell::Cell::new(true)),
+            revision: Default::default(),
+            revision_error: Default::default(),
+            revision_loading: Default::default(),
+            health_loading: Default::default(),
+            health_generation: Default::default(),
+            recent_rows: Default::default(),
+            stat_rows: Default::default(),
             last_snapshot: std::rc::Rc::new(std::cell::RefCell::new(None)),
             filter_server,
             filter_server_options: std::rc::Rc::new(std::cell::RefCell::new(vec![
@@ -3851,37 +3969,224 @@ impl ActivityPage {
         self.refresh_with_feedback(true)
     }
 
-    /// The 3-second background cadence: no "Loading" flash, and identical data
-    /// is dropped without a re-render so open expanders stay open.
+    fn attach(&self, window: &adw::ApplicationWindow) {
+        let page = self.clone();
+        io::watch_data(
+            window,
+            15,
+            false,
+            crate::observability_controller::activity_file,
+            move || {
+                if !page.root.is_mapped() {
+                    page.dirty.set(true);
+                    return;
+                }
+                page.check_revision();
+            },
+        );
+        let page = self.clone();
+        io::while_mapped(&self.root, 15, move || {
+            // Also audit the content revision when the GIO monitor is active:
+            // remote/symlink writes and missed events still need the fallback.
+            page.check_revision();
+            page.refresh_health();
+        });
+        let page = self.clone();
+        self.root.connect_map(move |_| page.refresh_quietly());
+        let page = self.clone();
+        self.root.connect_unmap(move |_| page.release_rows());
+    }
+
+    fn release_rows(&self) {
+        crate::observability_controller::release_activity_revision();
+        self.revision.borrow_mut().take();
+        self.revision_error.borrow_mut().take();
+        self.health_generation
+            .set(self.health_generation.get().wrapping_add(1));
+        self.dirty.set(true);
+        self.last_snapshot.borrow_mut().take();
+        self.recent_rows.borrow_mut().clear();
+        self.stat_rows.borrow_mut().clear();
+        for list in [
+            &self.list,
+            &self.stats_list,
+            &self.security_list,
+            &self.identity_list,
+            &self.search_list,
+            &self.inspect_list,
+        ] {
+            while let Some(child) = list.first_child() {
+                list.remove(&child);
+            }
+        }
+        self.feedback.set_label("Loading retained activity…");
+        self.feedback.set_visible(true);
+        self.security_status_title.set_label("Checking protection…");
+        self.security_status_detail
+            .set_label("Loading saved review state.");
+        self.security_status.remove_css_class("attention");
+        self.security_status.remove_css_class("review");
+        for value in [
+            &self.call_count,
+            &self.success_rate,
+            &self.average_latency,
+            &self.tokens_saved,
+        ] {
+            value.set_label("…");
+        }
+        self.savings_banner.set_visible(false);
+        self.telemetry_feedback.set_label("");
+        self.telemetry_feedback.set_visible(false);
+    }
+
+    fn refresh_health(&self) {
+        if self.loading.get()
+            || self.last_snapshot.borrow().is_none()
+            || self.health_loading.replace(true)
+        {
+            return;
+        }
+        let generation = self.health_generation.get();
+        let page = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(|| {
+                crate::telemetry::activity_notices(&crate::telemetry::activity_health())
+            })
+            .await;
+            page.health_loading.set(false);
+            if !page.root.is_mapped() || page.health_generation.get() != generation {
+                return;
+            }
+            let notices = result.unwrap_or_else(|_| vec![
+                "Gateway telemetry health is unavailable. Activity and savings may be incomplete.".into(),
+            ]);
+            page.apply_health_notices(notices);
+        });
+    }
+
+    fn apply_health_notices(&self, notices: Vec<String>) {
+        let mut snapshot = self.last_snapshot.borrow_mut();
+        let Some(snapshot) = snapshot.as_mut() else {
+            return;
+        };
+        if snapshot.telemetry_notices == notices {
+            return;
+        }
+        snapshot.telemetry_notices = notices;
+        self.render_activity_notices(&snapshot.telemetry_notices);
+    }
+
+    fn check_revision(&self) {
+        if self.loading.get() || self.revision_loading.replace(true) {
+            return;
+        }
+        let generation = self.health_generation.get();
+        let revision_generation = crate::observability_controller::activity_revision_generation();
+        let page = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(move || {
+                crate::observability_controller::activity_revision_for(revision_generation)
+            })
+            .await;
+            page.revision_loading.set(false);
+            if !page.root.is_mapped() {
+                return;
+            }
+            if generation != page.health_generation.get() {
+                return;
+            }
+            let revision =
+                result.unwrap_or_else(|_| Err("Activity change check stopped unexpectedly".into()));
+            page.set_revision_error(revision.as_ref().err().cloned());
+            let revision = revision.ok();
+            if revision.is_none() || *page.revision.borrow() != revision {
+                page.dirty.set(true);
+                page.refresh_quietly();
+            }
+        });
+    }
+
+    fn set_revision_error(&self, error: Option<String>) {
+        *self.revision_error.borrow_mut() = error;
+        let snapshot = self.last_snapshot.borrow();
+        self.render_activity_notices(
+            snapshot
+                .as_ref()
+                .map_or(&[], |snapshot| snapshot.telemetry_notices.as_slice()),
+        );
+    }
+
+    fn render_activity_notices(&self, health: &[String]) {
+        let mut notices = health.to_vec();
+        if let Some(error) = self.revision_error.borrow().as_ref() {
+            notices.push(format!(
+                "Activity change checks are unavailable. Displayed activity may be stale. {error}"
+            ));
+        }
+        self.telemetry_feedback.set_label(&notices.join("\n"));
+        self.telemetry_feedback.set_visible(!notices.is_empty());
+    }
+
     fn refresh_quietly(&self) {
-        self.refresh_with_feedback(false)
+        if self.dirty.get() {
+            self.refresh_with_feedback(false);
+        }
     }
 
     fn refresh_with_feedback(&self, announce: bool) {
+        self.health_generation
+            .set(self.health_generation.get().wrapping_add(1));
         if self.loading.replace(true) {
+            if announce {
+                self.dirty.set(true);
+            }
             return;
         }
-        self.refresh_button.set_sensitive(false);
-        if announce {
+        if announce || self.last_snapshot.borrow().is_none() {
+            self.refresh_button.set_sensitive(false);
             self.feedback.set_label("Loading retained activity…");
             self.feedback.remove_css_class("error");
             self.feedback.set_visible(true);
         }
+        let mut revision_generation =
+            crate::observability_controller::activity_revision_generation();
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
-            let result = gtk::gio::spawn_blocking(state::load_activity_snapshot).await;
+            loop {
+                if !page.root.is_mapped() {
+                    break;
+                }
+                page.dirty.set(false);
+                let result = gtk::gio::spawn_blocking(move || {
+                    let revision =
+                        crate::observability_controller::activity_revision_for(revision_generation);
+                    (revision, state::load_activity_snapshot())
+                })
+                .await;
+                if !page.root.is_mapped() {
+                    page.dirty.set(true);
+                    break;
+                }
+                if page.dirty.get() {
+                    revision_generation =
+                        crate::observability_controller::activity_revision_generation();
+                    continue;
+                }
+                match result {
+                    Ok((revision, Ok(snapshot))) => {
+                        page.set_revision_error(revision.as_ref().err().cloned());
+                        *page.revision.borrow_mut() = revision.ok();
+                        if announce || page.last_snapshot.borrow().as_ref() != Some(&snapshot) {
+                            page.render(snapshot);
+                        }
+                    }
+                    Ok((_, Err(error))) => page.show_error(&error),
+                    Err(_) => page.show_error("the activity read stopped unexpectedly"),
+                }
+                break;
+            }
             page.loading.set(false);
             page.refresh_button.set_sensitive(true);
-            match result {
-                Ok(Ok(snapshot)) => {
-                    if !announce && page.last_snapshot.borrow().as_ref() == Some(&snapshot) {
-                        return;
-                    }
-                    page.render(snapshot)
-                }
-                Ok(Err(error)) => page.show_error(&error),
-                Err(_) => page.show_error("the activity read stopped unexpectedly"),
-            }
         });
     }
 
@@ -3909,9 +4214,6 @@ impl ActivityPage {
                 ),
             )
         };
-        while let Some(child) = self.stats_list.first_child() {
-            self.stats_list.remove(&child);
-        }
         if traces_changed {
             while let Some(child) = self.search_list.first_child() {
                 self.search_list.remove(&child);
@@ -3952,10 +4254,8 @@ impl ActivityPage {
         self.feedback.set_label("");
         self.feedback.remove_css_class("error");
         self.feedback.remove_css_class("success");
-        self.feedback
-            .set_label(&snapshot.telemetry_notices.join("\n"));
-        self.feedback
-            .set_visible(!snapshot.telemetry_notices.is_empty());
+        self.feedback.set_visible(false);
+        self.render_activity_notices(&snapshot.telemetry_notices);
         self.clear_button.set_sensitive(
             snapshot.call_count > 0
                 || snapshot.savings_list_loads > 0
@@ -4003,6 +4303,10 @@ impl ActivityPage {
             .expect("the snapshot was stored above");
 
         if snapshot.server_stats.is_empty() {
+            self.stat_rows.borrow_mut().clear();
+            while let Some(child) = self.stats_list.first_child() {
+                self.stats_list.remove(&child);
+            }
             self.expanded_stat_servers.borrow_mut().clear();
             self.server_stat_order.borrow_mut().clear();
             self.stats_list.append(&empty_activity_label(
@@ -4031,10 +4335,9 @@ impl ActivityPage {
                     .copied()
                     .unwrap_or(usize::MAX)
             });
-            for stat in &stats {
-                self.stats_list
-                    .append(&server_stat_row(stat, self.expanded_stat_servers.clone()));
-            }
+            reconcile_rows(&self.stats_list, &self.stat_rows, &stats, |stat| {
+                server_stat_row(stat, self.expanded_stat_servers.clone()).upcast()
+            });
         }
         if traces_changed {
             if snapshot.search_traces.is_empty() {
@@ -4350,10 +4653,8 @@ impl ActivityPage {
         let Some(snapshot) = borrowed.as_ref() else {
             return;
         };
-        while let Some(child) = self.list.first_child() {
-            self.list.remove(&child);
-        }
         if snapshot.recent.is_empty() {
+            self.clear_recent_rows();
             self.filter_count.set_label("");
             self.show_more_calls.set_visible(false);
             self.list.append(&state_card(
@@ -4368,6 +4669,7 @@ impl ActivityPage {
         let errors_only = self.errors_only.is_active();
         let filtered = filter_calls(&snapshot.recent, server.as_deref(), errors_only);
         if filtered.is_empty() {
+            self.clear_recent_rows();
             self.filter_count.set_label("0 matching rows");
             self.show_more_calls.set_visible(false);
             self.list.append(&state_card(
@@ -4393,8 +4695,20 @@ impl ActivityPage {
             format!("Show all {match_count} rows")
         };
         self.show_more_calls.set_label(&show_more_label);
-        for activity in filtered.into_iter().take(visible_count) {
-            self.list.append(&activity_card(activity));
+        let visible = filtered
+            .into_iter()
+            .take(visible_count)
+            .cloned()
+            .collect::<Vec<_>>();
+        reconcile_rows(&self.list, &self.recent_rows, &visible, |row| {
+            activity_card(row).upcast()
+        });
+    }
+
+    fn clear_recent_rows(&self) {
+        self.recent_rows.borrow_mut().clear();
+        while let Some(child) = self.list.first_child() {
+            self.list.remove(&child);
         }
     }
 
@@ -4462,6 +4776,10 @@ impl ActivityPage {
         } else {
             self.feedback
                 .set_label(&format!("Could not load activity: {error}"));
+            self.security_status_title
+                .set_label("Protection state unavailable");
+            self.security_status_detail
+                .set_label("Retry Activity to check saved reviews.");
         }
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
@@ -11926,6 +12244,266 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     use super::*;
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn activity_revision_worker_refreshes_rewrites_and_releases_hidden_state() {
+        adw::init().unwrap();
+        let data = crate::registry::DataDirTestEnv::new("activity-revision-worker");
+        let path = data.dir.join("audit.jsonl");
+        let first = "{\"ts\":1,\"tool\":\"server__first\",\"server\":\"server\",\"ok\":true}\n";
+        let second = first.replace("first", "other");
+        assert_eq!(first.len(), second.len());
+        std::fs::write(&path, first).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.tsout.ActivityRevisionTest")
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let page = ActivityPage::new(&app);
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .content(&page.root)
+            .build();
+        page.attach(&window);
+        window.present();
+        let settle = || {
+            gtk::glib::MainContext::default().block_on(async {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    gtk::glib::timeout_future(std::time::Duration::from_millis(10)).await;
+                    if !page.loading.get() && !page.revision_loading.get() && !page.dirty.get() {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "Activity worker did not settle"
+                    );
+                }
+            });
+        };
+        settle();
+        assert_eq!(
+            page.last_snapshot.borrow().as_ref().unwrap().recent[0].tool,
+            "server__first"
+        );
+        let before = page.revision.borrow().clone();
+        std::fs::write(&path, second).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        page.check_revision();
+        settle();
+        assert_ne!(*page.revision.borrow(), before);
+        assert_eq!(
+            page.last_snapshot.borrow().as_ref().unwrap().recent[0].tool,
+            "server__other"
+        );
+        // Begin another worker then hide before its UI completion is delivered.
+        page.check_revision();
+        window.set_visible(false);
+        gtk::glib::MainContext::default().block_on(async {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while page.revision_loading.get() || page.loading.get() || page.health_loading.get() {
+                gtk::glib::timeout_future(std::time::Duration::from_millis(10)).await;
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "Hidden workers did not finish"
+                );
+            }
+        });
+        assert!(page.revision.borrow().is_none());
+        assert!(page.last_snapshot.borrow().is_none());
+        assert!(page.list.first_child().is_none());
+        window.close();
+        crate::observability_controller::release_activity_revision();
+    }
+
+    #[test]
+    #[ignore = "requires isolated GTK and the disposable read-gate interposer; run in omabox"]
+    fn activity_unmap_during_real_digest_io_is_nonblocking() {
+        adw::init().unwrap();
+        let data = crate::registry::DataDirTestEnv::new("activity-slow-digest");
+        crate::observability_controller::release_activity_revision();
+        let watches = || {
+            std::fs::read_dir("/proc/self/fd")
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    std::fs::read_link(entry.path())
+                        .is_ok_and(|path| path.to_string_lossy().contains("inotify"))
+                })
+                .count()
+        };
+        let path = data.dir.join("audit.jsonl");
+        std::fs::write(
+            &path,
+            "{\"ts\":1,\"tool\":\"server__first\",\"server\":\"server\",\"ok\":true}\n",
+        )
+        .unwrap();
+        let entered = data.dir.join("entered");
+        let permit = data.dir.join("permit");
+        assert!(std::env::var("LD_PRELOAD")
+            .unwrap_or_default()
+            .contains("read-gate"));
+        std::env::set_var("REVIEW_HOOK_TARGET", &path);
+        std::env::set_var("REVIEW_HOOK_ENTERED", &entered);
+        std::env::set_var("REVIEW_HOOK_PERMIT", &permit);
+        let app = adw::Application::builder()
+            .application_id("com.tsout.ActivitySlowDigestTest")
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let page = ActivityPage::new(&app);
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .content(&page.root)
+            .build();
+        page.attach(&window);
+        window.present();
+        gtk::glib::MainContext::default().block_on(async {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !entered.exists() {
+                gtk::glib::timeout_future(std::time::Duration::from_millis(10)).await;
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "real digest read did not enter gate"
+                );
+            }
+        });
+        let in_flight_watches = watches();
+        // An independent supervisor prevents a broken implementation hanging the
+        // test forever. It does not open the gate until the UI has had one second.
+        let proceeded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = proceeded.clone();
+        let supervisor = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let before_io_returned = observed.load(std::sync::atomic::Ordering::SeqCst);
+            std::fs::write(permit, "go").unwrap();
+            before_io_returned
+        });
+        let start = std::time::Instant::now();
+        window.set_visible(false);
+        let unmap = start.elapsed();
+        assert!(page.last_snapshot.borrow().is_none());
+        assert!(page.list.first_child().is_none());
+        gtk::glib::MainContext::default().block_on(async {
+            gtk::glib::timeout_future(std::time::Duration::from_millis(10)).await;
+            proceeded.store(true, std::sync::atomic::Ordering::SeqCst);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while page.loading.get() || page.revision_loading.get() {
+                gtk::glib::timeout_future(std::time::Duration::from_millis(10)).await;
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "hidden worker did not finish"
+                );
+            }
+        });
+        assert!(
+            supervisor.join().unwrap(),
+            "UI stalled until digest IO returned"
+        );
+        assert!(
+            unmap < std::time::Duration::from_millis(100),
+            "unmap waited {unmap:?}"
+        );
+        assert_eq!(
+            watches(),
+            in_flight_watches - 1,
+            "cancelled owner must close its watch"
+        );
+        assert!(page.revision.borrow().is_none());
+        assert!(page.last_snapshot.borrow().is_none());
+        assert!(page.list.first_child().is_none());
+        println!(
+            "slow real digest: unmap={unmap:?}, UI proceeded before read permit, watch closed"
+        );
+        window.close();
+        for key in [
+            "REVIEW_HOOK_TARGET",
+            "REVIEW_HOOK_ENTERED",
+            "REVIEW_HOOK_PERMIT",
+        ] {
+            std::env::remove_var(key);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn activity_updates_retain_widgets_and_release_hidden_rows() {
+        adw::init().unwrap();
+        let data = crate::registry::DataDirTestEnv::new("activity-retained-rows");
+        let app = adw::Application::builder()
+            .application_id("com.tsout.ActivityRowsTest")
+            .build();
+        let page = ActivityPage::new(&app);
+        assert_eq!(page.security_status_title.text(), "Checking protection…");
+        assert!(!page.security_status_detail.text().contains("No changes"));
+        std::fs::write(
+            data.dir.join("audit.jsonl"),
+            "{\"ts\":1,\"tool\":\"server__first\",\"server\":\"server\",\"ok\":true}\n",
+        )
+        .unwrap();
+        page.render(state::load_activity_snapshot().unwrap());
+        let old = page.list.first_child().unwrap();
+        let stats = page.stats_list.first_child().unwrap();
+        assert!(
+            page.root.measure(gtk::Orientation::Horizontal, -1).0 <= 480,
+            "Activity must fit a 480px window with loaded counts"
+        );
+        page.apply_health_notices(vec![
+            "Gateway telemetry health is unavailable. Activity and savings may be incomplete."
+                .into(),
+        ]);
+        assert!(page
+            .telemetry_feedback
+            .text()
+            .contains("health is unavailable"));
+        assert_eq!(page.list.first_child().unwrap(), old);
+        assert_eq!(page.stats_list.first_child().unwrap(), stats);
+        page.show_error("retained store unreadable");
+        assert!(page.feedback.text().contains("Could not refresh"));
+        page.set_revision_error(Some("revision read failed".into()));
+        page.apply_health_notices(Vec::new());
+        assert!(page
+            .telemetry_feedback
+            .text()
+            .contains("Activity change checks are unavailable"));
+        page.render(state::load_activity_snapshot().unwrap());
+        assert!(page
+            .telemetry_feedback
+            .text()
+            .contains("revision read failed"));
+        page.set_revision_error(None);
+        assert!(!page.telemetry_feedback.is_visible());
+        page.render(state::load_activity_snapshot().unwrap());
+        assert_eq!(page.list.first_child().unwrap(), old);
+        assert_eq!(page.stats_list.first_child().unwrap(), stats);
+        std::fs::write(data.dir.join("audit.jsonl"), "{\"ts\":1,\"tool\":\"server__first\",\"server\":\"server\",\"ok\":true}\n{\"ts\":2,\"tool\":\"server__next\",\"server\":\"server\",\"ok\":true}\n").unwrap();
+        page.render(state::load_activity_snapshot().unwrap());
+        assert_eq!(
+            page.list.first_child().unwrap().next_sibling().unwrap(),
+            old
+        );
+        assert_eq!(page.recent_rows.borrow().len(), 2);
+        page.errors_only.set_active(true);
+        assert!(page.recent_rows.borrow().is_empty());
+        page.errors_only.set_active(false);
+        assert_eq!(page.recent_rows.borrow().len(), 2);
+        page.release_rows();
+        assert!(page.last_snapshot.borrow().is_none());
+        assert!(page.recent_rows.borrow().is_empty());
+        assert!(page.stat_rows.borrow().is_empty());
+        assert!(page.list.first_child().is_none());
+        assert_eq!(page.security_status_title.text(), "Checking protection…");
+        page.show_error("unreadable");
+        assert_eq!(
+            page.security_status_title.text(),
+            "Protection state unavailable"
+        );
+    }
 
     #[test]
     fn unchanged_activity_sections_do_not_rebuild_open_rows() {

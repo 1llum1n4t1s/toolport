@@ -51,7 +51,7 @@ desktop = [
 # enable in a shipped binary. `cargo test --release --bin toolport-gateway`
 # needs it because the library is compiled without `cfg(test)` when linked
 # into the binary; docker-publish rebuilds without this feature before upload.
-test-support = []
+test-support = ["tauri?/test"]
 # Additive Linux-native shell. This is deliberately not a default feature: the
 # current Tauri app remains the shipping desktop while the GTK shell reaches
 # behavioral parity.
@@ -63,6 +63,10 @@ gtk-desktop = ["dep:gtk", "dep:adw", "dep:image", "dep:ksni", "dep:futures-chann
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "conduit_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dev-dependencies.tokio]
+version = "1"
+features = ["rt", "sync"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }
