@@ -1717,15 +1717,6 @@ pub fn definition_review_names(profile: Option<&str>) -> BTreeSet<String> {
     }
 }
 
-pub fn retired_definition_review_names(profile: Option<&str>) -> BTreeSet<String> {
-    match load_pins(profile) {
-        PinsLoad::Loaded(pins) => pins.into_iter()
-            .filter(|(_, pin)| pin.review_retired && (pin.review_on_upgrade || pin.review_pending))
-            .map(|(name, _)| name).collect(),
-        _ => BTreeSet::new(),
-    }
-}
-
 fn active_definition_review_names(profile: Option<&str>) -> BTreeSet<String> {
     match load_pins(profile) {
         PinsLoad::Loaded(pins) => pins.into_iter()
@@ -5894,8 +5885,8 @@ mod tests {
             assert!(matches!(load_pins(profile), PinsLoad::Loaded(pins) if pins["srv__wipe"].review_pending), "pin acceptance must not consume user review");
             let captured = load_quarantine(profile).unwrap();
             std::fs::write(&path, "corrupt").unwrap();
-            assert!(review_quarantined(profile).is_err(), "pending review must fail closed even at Off");
-            assert!(review_quarantined_checked(profile).is_err());
+            assert_eq!(review_quarantined(profile).unwrap(), BTreeSet::from(["srv__wipe".into()]), "Off store failures must still enforce the review pin alone");
+            assert_eq!(review_quarantined_checked(profile).unwrap(), BTreeSet::from(["srv__wipe".into()]));
             save_quarantine(profile, &captured).unwrap();
             let id = quarantine_record_id(&captured["srv__wipe"]);
             assert!(release_record(profile, "srv__wipe", &id).unwrap());
@@ -6039,6 +6030,9 @@ mod tests {
         let next = check_staged(None, &tools).unwrap();
         assert!(next.iter().any(|e| e["change"] == "changed" && e["log_suppressed"] == true));
         assert!(next.iter().any(|e| e["type"] == "tool_poison_flag" && e["log_suppressed"] != true), "a failed poison log write must be retried");
+        assert_eq!(read_recent(20).unwrap().len(), 2);
+        let steady = check_staged(None, &tools).unwrap();
+        assert!(steady.iter().all(|event| event["log_suppressed"] == true));
         assert_eq!(read_recent(20).unwrap().len(), 2);
     }
 

@@ -10393,11 +10393,19 @@ fn requarantine_if_needed(
     tools: impl Into<SharedTools>,
     profile: Option<&str>,
 ) -> SharedTools {
-    let tools = tools.into();
-    let cleanup = integrity::reconcile_definition_reviews(
-        profile, &registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-        &built.indexed_policy_names(),
-    );
+    let mut tools = tools.into();
+    let reviews = integrity::definition_review_names(profile);
+    let mut checking = built.quarantined().clone();
+    checking.retain(|name| !reviews.contains(name));
+    if &checking != built.quarantined() {
+        // This router is private until the gate finishes. Include pending reviews
+        // in the check so lost rows can be recaptured and changed definitions can
+        // invalidate an open approval without ever exposing the candidate.
+        built.requarantine_from_store(checking);
+        tools = built.shared_tools();
+    }
+    let snapshot = registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let cleanup = integrity::reconcile_definition_reviews(profile, &snapshot, &built.indexed_policy_names());
     if let Err(error) = cleanup {
         glog(&format!("SECURITY: deleted review cleanup failed: {error}"));
         // Cleanup does not establish trust. Always run the integrity check below.
@@ -10530,9 +10538,8 @@ fn fail_closed_integrity_catalog(
         // checked reconciliation establish what may be published.
         Err(_) => router.fail_closed_catalog(),
     }
-    // Never `requarantine_from_store` here: this is the integrity-store FAILURE path,
-    // so a fail-closed catalog stays hidden. `reconcile_quarantine` lifts it on the
-    // next watcher tick that actually reads the store (SBS-871).
+    // Ask and Strict retain a fail-closed catalog until checked reconciliation
+    // establishes what may be restored (SBS-871).
     if off {
         // Off keeps v1 exposure for ordinary rows, while review pins fail closed
         // for their names alone, including after a failed reactivation write.
@@ -12585,18 +12592,16 @@ impl HostState {
             }
         };
         let mut checking = checked_quarantine.clone();
-        let mut returning = integrity::retired_definition_review_names(None);
-        returning.extend(integrity::retired_definition_review_names(Some(scope)));
+        let mut returning = integrity::definition_review_names(None);
+        returning.extend(integrity::definition_review_names(Some(scope)));
         checking.retain(|name| !returning.contains(name));
-        // Restore retired names only on this private candidate so their definitions
+        // Restore review names only on this private candidate so their definitions
         // can be captured. The checked set below keeps them hidden on any failure.
         view.requarantine_from_store(checking);
         let rooted_ids: HashSet<&str> = keys.iter().map(|key| key.server.as_str()).collect();
         let present = view.indexed_policy_names_for(|server| rooted_ids.contains(server));
-        let cleanup = integrity::reconcile_definition_reviews(
-            Some(scope), &self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-            &present,
-        );
+        let snapshot = self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let cleanup = integrity::reconcile_definition_reviews(Some(scope), &snapshot, &present);
         if let Err(error) = cleanup {
             glog(&format!("SECURITY: rooted deleted review cleanup failed: {error}"));
         }
