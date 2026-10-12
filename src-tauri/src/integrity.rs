@@ -762,14 +762,14 @@ fn preserve_unreadable_pins(path: &Path) -> Result<Option<PathBuf>, String> {
 /// failures; the log remains available in Activity. Policy text is current.
 pub fn baseline_notice(registry: &crate::registry::Registry) -> Result<Option<Value>, String> {
     let profile = registry.active_profile_id();
+    // Log order stays newest first even after a wall-clock correction.
     let event = read_recent(KEEP_LINES)
         .map_err(|error| error.to_string())?
         .into_iter()
-        .filter(|event| {
+        .find(|event| {
             event["type"] == "pins_load_failed"
                 && event["profile"].as_str().unwrap_or("") == profile
-        })
-        .max_by_key(|event| event["ts"].as_u64().unwrap_or(0));
+        });
     let Some(event) = event else {
         return Ok(None);
     };
@@ -6411,8 +6411,11 @@ mod tests {
         );
         // The relevant failure must not disappear after 100 unrelated events.
         for ts in 21..=125 {
-            record_event(&json!({"type":"tool_drift", "ts":ts}));
+            record_event(
+                &json!({"type":"tool_drift", "tool":format!("other__read_{ts}"), "server":"other", "ts":ts}),
+            );
         }
+        assert!(read_recent(KEEP_LINES).unwrap().len() > 100);
         for (level, wording) in [
             (crate::registry::SafetyLevel::Ask, "Safety is Ask"),
             (crate::registry::SafetyLevel::Strict, "Safety is Strict"),
@@ -6558,8 +6561,7 @@ mod tests {
         let mut ask_warning = pins_tamper_event();
         ask_warning["profile"] = json!(profile.unwrap());
         assert!(record_event(&ask_warning));
-        recover_unreadable_baseline_at_off(profile, &vec![tool("srv__read", "Current")])
-            .unwrap();
+        recover_unreadable_baseline_at_off(profile, &vec![tool("srv__read", "Current")]).unwrap();
         let event = read_recent(10).unwrap().remove(0);
         assert!(event["detail"].as_str().unwrap().contains("Safety is Off"));
         assert!(event["detail"]
