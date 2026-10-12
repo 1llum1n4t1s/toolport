@@ -290,10 +290,10 @@ async function fullCatalog(fx, count) {
   throw new Error("full catalog incomplete");
 }
 
-async function rss(pid) {
+async function rss(pid, field = "VmHWM") {
   const status = await readFile(`/proc/${pid}/status`, "utf8");
-  const match = /^VmHWM:\s+(\d+) kB$/m.exec(status);
-  assert(match, "Linux VmHWM unavailable");
+  const match = new RegExp(`^${field}:\\s+(\\d+) kB$`, "m").exec(status);
+  assert(match, `Linux ${field} unavailable`);
   return Number(match[1]);
 }
 
@@ -344,6 +344,7 @@ async function warm(fx, catalog, queries, calls) {
   const daemons = await fx.daemonPids();
   assert.equal(daemons.length, 1, "expected one fixture daemon");
   const daemonPeakKiB = await rss(daemons[0]);
+  const daemonSteadyKiB = await rss(daemons[0], "VmRSS");
   const adapterPeakKiB = await rss(lazy.proc.pid);
   const downstreamCalls = (await readFile(fx.trace, "utf8"))
     .trim()
@@ -361,6 +362,7 @@ async function warm(fx, catalog, queries, calls) {
     raw,
     searchFirstMs: first.ms,
     daemonPeakKiB,
+    daemonSteadyKiB,
     adapterPeakKiB,
     lazyListBytes: bytes(listed),
     downstreamCalls: downstreamCalls.length,
@@ -485,6 +487,7 @@ async function main() {
         ]),
       ),
       daemon_peak_kib: summary(result.warm.map((round) => round.daemonPeakKiB)),
+      daemon_steady_kib: summary(result.warm.map((round) => round.daemonSteadyKiB)),
       lazy_list_bytes: result.warm[0].lazyListBytes,
     };
     assert(
@@ -514,7 +517,7 @@ async function main() {
       latency:
         "sequential RPC wall time including Node JSON parsing; pooled nearest-rank percentiles",
       bytes: "compact JSON result payload, excluding JSON-RPC envelope",
-      rss: "daemon Linux VmHWM after warm metrics; excludes adapter and mocks",
+      rss: "daemon Linux VmHWM (peak) and VmRSS (steady) after warm metrics; excludes adapter and mocks",
     },
     results,
   };
