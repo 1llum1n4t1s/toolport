@@ -6272,6 +6272,53 @@ mod tests {
     }
 
     #[test]
+    fn review_r4_corrupt_pin_cache_has_no_retry_cost_between_deadlines() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("review-corrupt-cache-cost");
+        let path = pins_path(None).unwrap();
+        std::fs::write(&path, "{ corrupt primary").unwrap();
+        std::fs::write(pins_backup_path(&path), "{ corrupt backup").unwrap();
+        assert!(cached_review_pins(None).unreadable);
+        PINS_REVIEW_READ_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+        let start = std::time::Instant::now();
+        for _ in 0..20 {
+            assert!(cached_review_pins(None).unreadable);
+        }
+        assert_eq!(PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(start.elapsed() < std::time::Duration::from_millis(100), "cached calls repeated the read retry sleeps");
+    }
+
+    #[test]
+    fn review_r4_off_recovery_preserves_unreadable_primary_and_bounds_copies() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("review-off-saved-primary");
+        for profile in [None, Some("work")] {
+            let path = pins_path(profile).unwrap();
+            let prefix = format!("{}.unreadable-", path.file_name().unwrap().to_str().unwrap());
+            for timestamp in 1..=5 {
+                std::fs::write(path.parent().unwrap().join(format!("{prefix}{timestamp}")), "old").unwrap();
+            }
+            let unrelated = path.parent().unwrap().join(format!("{prefix}notes"));
+            std::fs::write(&unrelated, "user bytes").unwrap();
+            std::fs::write(&path, "{ original unreadable bytes").unwrap();
+            std::fs::write(pins_backup_path(&path), "{ corrupt backup").unwrap();
+            recover_unreadable_baseline_at_off(profile, &vec![tool("srv__read", "Current")]).unwrap();
+            let copies: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.file_name().unwrap().to_str().unwrap().strip_prefix(&prefix)
+                    .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())))
+                .collect();
+            assert!(copies.iter().any(|path| std::fs::read_to_string(path).unwrap() == "{ original unreadable bytes"), "Off overwrote the only recoverable copy");
+            assert_eq!(copies.len(), 3);
+            assert_eq!(std::fs::read_to_string(unrelated).unwrap(), "user bytes");
+            let events = read_recent(100).unwrap();
+            let event = events.iter().find(|event| event["profile"] == profile.unwrap_or("")).unwrap();
+            assert!(event["detail"].as_str().unwrap().contains("Definition reviews recorded only in the unreadable baseline could not be recovered"));
+            assert!(event["saved_path"].as_str().is_some_and(|path| std::path::Path::new(path).exists()));
+        }
+    }
+
+    #[test]
     fn review_r3_transient_pin_read_failure_recovers_without_file_changes() {
         let _lock = crate::registry::data_dir_test_lock();
         let _data = TestDataDir::new("review-transient-pin-read");

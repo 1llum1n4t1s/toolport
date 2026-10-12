@@ -1015,6 +1015,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn review_r4_purge_removes_only_exact_unreadable_pin_copies() {
+        let env = crate::registry::DataDirTestEnv::new("purge-unreadable-pins");
+        let profile = format!("tool-pins-v2-{}.json", "a".repeat(64));
+        let owned = ["tool-pins.json.unreadable-123".to_string(), format!("{profile}.unreadable-456")];
+        let preserved = ["tool-pins.json.unreadable-notes".to_string(), "tool-pins.json.unreadable-123.txt".to_string(), "tool-pins-user.json.unreadable-789".to_string(), format!("tool-pins-v2-{}.json.unreadable-1", "g".repeat(64))];
+        for name in owned.iter().chain(&preserved) {
+            std::fs::write(env.dir.join(name), "bytes").unwrap();
+        }
+        let mut report = Report::default();
+        remove_data_contents(&env.dir, &[], &mut report);
+        for name in owned { assert!(!env.dir.join(name).exists()); }
+        for name in preserved { assert!(env.dir.join(name).exists()); }
+    }
+
+    #[test]
     fn purge_r7_location_backups_use_writer_names_and_preserve_collisions() {
         let env = crate::registry::DataDirTestEnv::new("purge_r7_locations");
         let home = env.dir.join("home");
