@@ -356,9 +356,12 @@ pub fn detected_is_gateway(server: &McpServer) -> bool {
     gateway_identity_matches(&server.name, &server.name, server.command.as_deref())
 }
 
-fn home() -> Option<PathBuf> {
+pub(crate) fn home() -> Option<PathBuf> {
     #[cfg(test)]
     if let Some(path) = TEST_HOME.with(|slot| slot.borrow().clone()) { return Some(path); }
+    #[cfg(test)]
+    { return Some(test_paths::home()); }
+    #[cfg(not(test))]
     dirs::home_dir()
 }
 
@@ -376,6 +379,37 @@ impl TestHome {
 #[cfg(test)]
 impl Drop for TestHome {
     fn drop(&mut self) { TEST_HOME.with(|slot| { slot.replace(self.0.take()); }); }
+}
+
+#[cfg(test)]
+mod test_paths;
+
+fn client_path_env(key: &str) -> Option<std::ffi::OsString> {
+    #[cfg(test)]
+    { return test_paths::env(key); }
+    #[cfg(not(test))]
+    std::env::var_os(key)
+}
+
+fn client_config_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    { return test_paths::dir("XDG_CONFIG_HOME", || home().unwrap().join(".config")); }
+    #[cfg(not(test))]
+    dirs::config_dir()
+}
+
+fn client_data_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    { return test_paths::dir("XDG_DATA_HOME", || home().unwrap().join(".local/share")); }
+    #[cfg(not(test))]
+    dirs::data_dir()
+}
+
+fn client_local_data_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    { return test_paths::dir("LOCALAPPDATA", || home().unwrap().join("AppData/Local")); }
+    #[cfg(not(test))]
+    dirs::data_local_dir()
 }
 
 /// OS family for cross-platform path expectations. Production code uses
@@ -560,7 +594,7 @@ fn resolve_client_config_path(
 /// child process it spawns - Toolport cannot see that, and such a config stays
 /// stale. Kept split from the pure path table so tests stay env-free.
 fn claude_config_dir_override() -> Option<PathBuf> {
-    claude_config_dir_from(std::env::var_os("CLAUDE_CONFIG_DIR"))
+    claude_config_dir_from(client_path_env("CLAUDE_CONFIG_DIR"))
 }
 
 /// An env-supplied directory is only used when it is an absolute path.
@@ -1021,7 +1055,7 @@ fn client_config_path_with_home(client_id: &str, home: Option<PathBuf>) -> Optio
     // path in step with `client_rules_target`: without it Connect could write Goose Team
     // Instructions under the root but fail to find the config beside them (SBS-899).
     if client_id == "goose" {
-        if let Some(root) = goose_path_root_from(std::env::var_os("GOOSE_PATH_ROOT")) {
+        if let Some(root) = goose_path_root_from(client_path_env("GOOSE_PATH_ROOT")) {
             return Some(goose_config_under_root(&root));
         }
     }
@@ -1041,8 +1075,8 @@ fn client_config_path_with_home(client_id: &str, home: Option<PathBuf>) -> Optio
 /// Linux production paths honor `XDG_CONFIG_HOME` / `XDG_DATA_HOME` via `dirs`.
 #[cfg(all(unix, not(target_os = "macos")))]
 fn resolve_client_config_path_linux(client_id: &str, home: &std::path::Path) -> Option<PathBuf> {
-    let config = dirs::config_dir().unwrap_or_else(|| home.join(".config"));
-    let data = dirs::data_dir().unwrap_or_else(|| home.join(".local").join("share"));
+    let config = client_config_dir().unwrap_or_else(|| home.join(".config"));
+    let data = client_data_dir().unwrap_or_else(|| home.join(".local").join("share"));
     let path = match client_id {
         "claude-desktop" => config.join("Claude").join("claude_desktop_config.json"),
         "cursor" => home.join(".cursor").join("mcp.json"),
@@ -1272,24 +1306,24 @@ pub fn client_rules_target(
     // Honor relocate envs even when `$HOME` is unset: the live file is under
     // the override, not the default home table (SBS-885, SBS-899).
     if client_id == "goose" {
-        if let Some(root) = goose_path_root_from(std::env::var_os("GOOSE_PATH_ROOT")) {
+        if let Some(root) = goose_path_root_from(client_path_env("GOOSE_PATH_ROOT")) {
             return Some(rules_sentinel_block(goose_hints_under_root(&root), scope));
         }
     }
     if client_id == "codex" {
-        if let Some(dir) = codex_home_from(std::env::var_os("CODEX_HOME")) {
+        if let Some(dir) = codex_home_from(client_path_env("CODEX_HOME")) {
             return Some(codex_rules_target(&dir, scope));
         }
     }
     if client_id == "gemini-cli" {
-        if let Some(dir) = gemini_cli_home_from(std::env::var_os("GEMINI_CLI_HOME")) {
+        if let Some(dir) = gemini_cli_home_from(client_path_env("GEMINI_CLI_HOME")) {
             return Some(gemini_cli_rules_target(&dir, scope));
         }
     }
     let home = home()?;
     #[cfg(all(unix, not(target_os = "macos")))]
     if matches!(client_id, "goose" | "zed" | "devin-cli") {
-        let config = dirs::config_dir().unwrap_or_else(|| home.join(".config"));
+        let config = client_config_dir().unwrap_or_else(|| home.join(".config"));
         let path = match client_id {
             "goose" => config.join("goose").join(".goosehints"),
             "zed" => config.join("zed").join("AGENTS.md"),
@@ -1311,7 +1345,7 @@ fn claude_desktop_path() -> Option<PathBuf> {
     if real.exists() {
         return Some(real);
     }
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home() {
         let packages = home.join("AppData").join("Local").join("Packages");
         if let Ok(entries) = std::fs::read_dir(&packages) {
             for entry in entries.flatten() {
@@ -1361,13 +1395,13 @@ fn resolve_crush_path(
 /// used LocalAppData, so retain that path only when it already contains a file.
 fn crush_path() -> Option<PathBuf> {
     let home = home()?;
-    if let Some(path) = crush_override_path(std::env::var_os("CRUSH_GLOBAL_CONFIG")) {
+    if let Some(path) = crush_override_path(client_path_env("CRUSH_GLOBAL_CONFIG")) {
         return Some(path);
     }
-    let current = resolve_crush_path(&home, None, std::env::var_os("XDG_CONFIG_HOME"));
+    let current = resolve_crush_path(&home, None, client_path_env("XDG_CONFIG_HOME"));
     #[cfg(windows)]
     if !current.exists() {
-        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA").filter(|p| !p.is_empty()) {
+        if let Some(local_app_data) = client_path_env("LOCALAPPDATA").filter(|p| !p.is_empty()) {
             let legacy = PathBuf::from(local_app_data)
                 .join("crush")
                 .join("crush.json");
@@ -1380,7 +1414,7 @@ fn crush_path() -> Option<PathBuf> {
 }
 
 fn amp_path() -> Option<PathBuf> {
-    std::env::var_os("AMP_SETTINGS_FILE")
+    client_path_env("AMP_SETTINGS_FILE")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .or_else(|| client_config_path("amp"))
@@ -1399,7 +1433,7 @@ fn codex_config_path(codex_home: &Path) -> PathBuf {
 }
 
 fn codex_path() -> Option<PathBuf> {
-    if let Some(dir) = codex_home_from(std::env::var_os("CODEX_HOME")) {
+    if let Some(dir) = codex_home_from(client_path_env("CODEX_HOME")) {
         return Some(codex_config_path(&dir));
     }
     client_config_path("codex")
@@ -1408,7 +1442,7 @@ fn codex_path() -> Option<PathBuf> {
 /// GitHub Copilot CLI stores user-level MCP servers under `COPILOT_HOME`,
 /// defaulting to `~/.copilot/mcp-config.json` on every supported platform.
 fn github_copilot_cli_path() -> Option<PathBuf> {
-    std::env::var_os("COPILOT_HOME")
+    client_path_env("COPILOT_HOME")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .map(|home| home.join("mcp-config.json"))
@@ -1430,7 +1464,7 @@ fn grok_config_path(grok_home: &Path) -> PathBuf {
 }
 
 fn grok_path() -> Option<PathBuf> {
-    if let Some(dir) = grok_home_from(std::env::var_os("GROK_HOME")) {
+    if let Some(dir) = grok_home_from(client_path_env("GROK_HOME")) {
         return Some(grok_config_path(&dir));
     }
     client_config_path("grok")
@@ -1449,7 +1483,7 @@ fn gemini_cli_settings_path(cli_home: &Path) -> PathBuf {
 }
 
 fn gemini_cli_path() -> Option<PathBuf> {
-    if let Some(dir) = gemini_cli_home_from(std::env::var_os("GEMINI_CLI_HOME")) {
+    if let Some(dir) = gemini_cli_home_from(client_path_env("GEMINI_CLI_HOME")) {
         return Some(gemini_cli_settings_path(&dir));
     }
     client_config_path("gemini-cli")
@@ -1478,7 +1512,7 @@ fn qwen_settings_path(qwen_home: &Path) -> PathBuf {
 }
 
 fn qwen_code_path() -> Option<PathBuf> {
-    if let Some(dir) = qwen_home_from(std::env::var_os("QWEN_HOME")) {
+    if let Some(dir) = qwen_home_from(client_path_env("QWEN_HOME")) {
         return Some(qwen_settings_path(&dir));
     }
     client_config_path("qwen-code")
@@ -1536,7 +1570,7 @@ fn resolved_definition_path(def: &ClientDef) -> Result<PathBuf, String> {
 /// included. The data root is created by the CLI itself, so the default
 /// parent-dir presence check detects the install.
 fn kimi_code_path() -> Option<PathBuf> {
-    std::env::var_os("KIMI_CODE_HOME")
+    client_path_env("KIMI_CODE_HOME")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .map(|root| root.join("mcp.json"))
@@ -1568,7 +1602,7 @@ fn hermes_path() -> Option<PathBuf> {
     // Only the Windows build uses the platform data dir. Passing None elsewhere
     // keeps macOS and Linux on the home-anchored path with no probing at all.
     let local = if cfg!(windows) {
-        dirs::data_local_dir()
+        client_local_data_dir()
     } else {
         None
     };
@@ -3437,10 +3471,10 @@ fn app_present_with_override(
 /// Per-user location, so the all-users-vs-just-me install choice doesn't matter.
 fn warp_data_dir() -> Option<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
-    if let Some(d) = dirs::data_local_dir() {
+    if let Some(d) = client_local_data_dir() {
         roots.push(d); // Windows %LOCALAPPDATA%, macOS App Support, Linux ~/.local/share
     }
-    if let Some(d) = dirs::data_dir() {
+    if let Some(d) = client_data_dir() {
         roots.push(d);
     }
     if let Some(h) = home() {
@@ -7944,6 +7978,7 @@ static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub(crate) struct EnvRestore {
     key: &'static str,
     previous: Option<std::ffi::OsString>,
+    client_previous: Option<std::ffi::OsString>,
 }
 
 #[cfg(test)]
@@ -7951,7 +7986,8 @@ impl EnvRestore {
     pub(crate) fn set(key: &'static str, value: &Path) -> Self {
         let previous = std::env::var_os(key);
         std::env::set_var(key, value);
-        Self { key, previous }
+        let client_previous = test_paths::set(key, Some(value.as_os_str().to_owned()));
+        Self { key, previous, client_previous }
     }
 }
 
@@ -7977,6 +8013,7 @@ fn isolated_client_env(root: &Path) -> Vec<EnvRestore> {
 #[cfg(test)]
 impl Drop for EnvRestore {
     fn drop(&mut self) {
+        test_paths::set(self.key, self.client_previous.take());
         match &self.previous {
             Some(value) => std::env::set_var(self.key, value),
             None => std::env::remove_var(self.key),
@@ -13619,8 +13656,8 @@ rules:
         std::fs::create_dir_all(&xdg_config).unwrap();
         std::fs::create_dir_all(&xdg_data).unwrap();
 
-        std::env::set_var("XDG_CONFIG_HOME", &xdg_config);
-        std::env::set_var("XDG_DATA_HOME", &xdg_data);
+        let _config = EnvRestore::set("XDG_CONFIG_HOME", &xdg_config);
+        let _data = EnvRestore::set("XDG_DATA_HOME", &xdg_data);
         // Absolute GOOSE_PATH_ROOT wins over XDG; neutralize it so this test
         // pins the XDG branch (SBS-899).
         let _goose_root = EnvRestore::set("GOOSE_PATH_ROOT", Path::new(""));
@@ -13636,8 +13673,8 @@ rules:
         let opencode = client_config_path("opencode").unwrap();
         let kilo_code = client_config_path("kilo-code").unwrap();
 
-        std::env::remove_var("XDG_CONFIG_HOME");
-        std::env::remove_var("XDG_DATA_HOME");
+        drop(_config);
+        drop(_data);
         let _ = std::fs::remove_dir_all(&base);
 
         assert_eq!(

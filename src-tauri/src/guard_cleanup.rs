@@ -56,7 +56,7 @@ pub fn run_no_op_hook() -> String {
 }
 
 fn cursor_hooks_path() -> Option<PathBuf> {
-    Some(dirs::home_dir()?.join(".cursor").join("hooks.json"))
+    Some(crate::clients::home()?.join(".cursor").join("hooks.json"))
 }
 
 fn is_ours(entry: &Value) -> bool {
