@@ -337,7 +337,7 @@ jobs:
       - name: Install Linux build dependencies
         # Same set as the release workflow: WebKitGTK + the Secret Service
         # (libdbus) deps the Tauri lib needs to compile on Linux.
-        run: scripts/ci-apt-install.sh libwebkit2gtk-4.1-dev libsoup-3.0-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf pkg-config libdbus-1-dev
+        run: scripts/ci-apt-install.sh libwebkit2gtk-4.1-dev libsoup-3.0-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf pkg-config libdbus-1-dev dbus-daemon
 
       - name: Give the runner headroom (a cold build links WebKitGTK)
         run: |
@@ -359,7 +359,8 @@ jobs:
       # Keeping all three flags prevents any test class from silently dropping
       # out of CI when the command is updated.
       - name: Rust tests (lib + binaries + integration)
-        run: npm run test:rust
+        # Notification fixtures register a mock endpoint on this private bus.
+        run: dbus-run-session -- npm run test:rust
 
       - name: Build headless gateway for smoke tests
         run: npm run build:gateway

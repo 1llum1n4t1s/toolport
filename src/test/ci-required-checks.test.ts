@@ -250,6 +250,9 @@ describe("CI required merge gate (SBS-874)", () => {
       'base="$(git rev-parse HEAD^)"',
     );
     expect(runScripts(jobs.rustfmt).join("\n")).not.toContain("--max-parents=0");
+    expect(runScripts(jobs["build-test"]).join("\n")).toContain(
+      "dbus-run-session -- npm run test:rust",
+    );
     const manifest = JSON.parse(
       readFileSync(join(process.cwd(), "package.json"), "utf8"),
     );
