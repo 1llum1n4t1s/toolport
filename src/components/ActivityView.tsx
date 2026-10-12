@@ -481,33 +481,84 @@ function SavingsBanner({ savings }: { savings: SavingsSummary }) {
       <div className="flex items-center gap-2">
         <Sparkles className="size-4 text-success" />
         <span className="text-sm font-medium text-muted-foreground">
-          {hasCatalog ? "Net tool description savings" : discovered ? "Discovery payload returned" : "Savings history"}
+          {hasCatalog
+            ? "Net tool description savings"
+            : discovered
+              ? "Discovery payload returned"
+              : "Savings history"}
         </span>
       </div>
       <div className="mt-2 flex flex-wrap items-end gap-x-6 gap-y-1">
         <span className="text-3xl font-semibold tabular-nums text-success" title={method}>
-          {hasCatalog ? fmtTokens(savings.tokensSaved) : discovered ? fmtBytes(savings.discoveryResponseBytes ?? 0) : "Not measured yet"}{" "}
+          {hasCatalog
+            ? fmtTokens(savings.tokensSaved)
+            : discovered
+              ? fmtBytes(savings.discoveryResponseBytes ?? 0)
+              : "Not measured yet"}{" "}
           <span className="text-base font-normal text-muted-foreground">
             {hasCatalog ? "net tokens saved" : discovered ? "discovery text" : ""}
           </span>
         </span>
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
-        {hasCatalog ? "Full catalog baselines minus all catalog and search responses. Counted locally; not a billing figure." : "Older records remain available below. Comparable session measurements start with this version."}
+        {hasCatalog
+          ? "Full catalog baselines minus all catalog and search responses. Counted locally; not a billing figure."
+          : "Older records remain available below. Comparable session measurements start with this version."}
       </p>
-      {hasCatalog && <button onClick={share} className="mt-3 inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition hover:text-foreground"><Share2 className="size-3.5" /> Share</button>}
+      {hasCatalog && (
+        <button
+          onClick={share}
+          className="mt-3 inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition hover:text-foreground"
+        >
+          <Share2 className="size-3.5" /> Share
+        </button>
+      )}
       <details className="mt-3 text-xs text-muted-foreground">
         <summary className="cursor-pointer">How this is measured</summary>
         <div className="mt-2 space-y-2">
           <p>{method}</p>
-          {hasCatalog && <p>{exact(savings.fullTokens)} baseline tokens − {exact(savings.exposedTokens)} catalog response tokens − {exact(savings.discoveryTokens)} search response tokens = {exact(savings.tokensSaved)} net tokens saved.</p>}
-          {(hasCatalog || discovered) && <>
-            <p>{exact(savings.tokenizedLoads)} client sessions; {exact(savings.listLoads)} catalog responses; {exact(savings.discoveryCount)} search responses.</p>
-            <p>{fmtBytes(savings.fullSurfaceBytes ?? 0)} baseline catalog text; {fmtBytes(savings.exposedSurfaceBytes ?? 0)} catalog text sent; {fmtBytes(savings.discoveryResponseBytes ?? 0)} search text sent.</p>
-          </>}
-          {(savings.historicalListLoads ?? 0) > 0 && <p>Excluded history: {exact(savings.historicalListLoads)} catalog records ({exact(savings.historicalMeasuredLoads)} with byte measurements). Session identity and repeat loads cannot be verified.</p>}
-          {(savings.previousReportedTokensSaved ?? 0) !== 0 && <p>Previous tokenized total: {exact(savings.previousReportedTokensSaved)} tokens, excluded from the headline.</p>}
-          {((savings.legacyEstimatedTokensAvoided ?? 0) > 0 || (savings.estimatedTokensAvoided ?? 0) > 0) && <p>Older estimated records: {exact(savings.legacyEstimatedTokensAvoided)} legacy tokens and {exact(savings.estimatedTokensAvoided)} size-based tokens, excluded.</p>}
+          {hasCatalog && (
+            <p>
+              {exact(savings.fullTokens)} baseline tokens − {exact(savings.exposedTokens)}{" "}
+              catalog response tokens − {exact(savings.discoveryTokens)} search response
+              tokens = {exact(savings.tokensSaved)} net tokens saved.
+            </p>
+          )}
+          {(hasCatalog || discovered) && (
+            <>
+              <p>
+                {exact(savings.tokenizedLoads)} client sessions;{" "}
+                {exact(savings.listLoads)} catalog responses;{" "}
+                {exact(savings.discoveryCount)} search responses.
+              </p>
+              <p>
+                {fmtBytes(savings.fullSurfaceBytes ?? 0)} baseline catalog text;{" "}
+                {fmtBytes(savings.exposedSurfaceBytes ?? 0)} catalog text sent;{" "}
+                {fmtBytes(savings.discoveryResponseBytes ?? 0)} search text sent.
+              </p>
+            </>
+          )}
+          {(savings.historicalListLoads ?? 0) > 0 && (
+            <p>
+              Excluded history: {exact(savings.historicalListLoads)} catalog records (
+              {exact(savings.historicalMeasuredLoads)} with byte measurements). Session
+              identity and repeat loads cannot be verified.
+            </p>
+          )}
+          {(savings.previousReportedTokensSaved ?? 0) !== 0 && (
+            <p>
+              Previous tokenized total: {exact(savings.previousReportedTokensSaved)}{" "}
+              tokens, excluded from the headline.
+            </p>
+          )}
+          {((savings.legacyEstimatedTokensAvoided ?? 0) > 0 ||
+            (savings.estimatedTokensAvoided ?? 0) > 0) && (
+            <p>
+              Older estimated records: {exact(savings.legacyEstimatedTokensAvoided)}{" "}
+              legacy tokens and {exact(savings.estimatedTokensAvoided)} size-based tokens,
+              excluded.
+            </p>
+          )}
         </div>
       </details>
     </div>
@@ -1895,7 +1946,9 @@ export function ActivityView({
         </p>
       )}
       {savings &&
-      ((savings.tokenizedLoads ?? 0) > 0 || (savings.discoveryCount ?? 0) > 0 || (savings.historicalListLoads ?? 0) > 0) ? (
+      ((savings.tokenizedLoads ?? 0) > 0 ||
+        (savings.discoveryCount ?? 0) > 0 ||
+        (savings.historicalListLoads ?? 0) > 0) ? (
         <SavingsBanner savings={savings} />
       ) : null}
       <DiscoveryTraces

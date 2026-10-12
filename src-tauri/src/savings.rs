@@ -40,7 +40,10 @@ impl Default for CatalogSession {
 
 impl CatalogSession {
     pub fn unmeasured() -> Self {
-        Self { measurable: false, ..Self::default() }
+        Self {
+            measurable: false,
+            ..Self::default()
+        }
     }
 }
 
@@ -92,7 +95,10 @@ pub fn try_clear() -> std::io::Result<()> {
         ));
     }
     let mut first_error = None;
-    for path in [savings_path(), v2_path(), v3_path(), v4_path()].into_iter().flatten() {
+    for path in [savings_path(), v2_path(), v3_path(), v4_path()]
+        .into_iter()
+        .flatten()
+    {
         let _lock = match crate::registry::lock_at(&path) {
             Ok(lock) => lock,
             Err(error) => {
@@ -329,7 +335,10 @@ pub fn record_catalog_surfaces(
     if !session.measurable {
         return;
     }
-    let mut loaded = session.loaded.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut loaded = session
+        .loaded
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let first = !*loaded;
     let mut by_server_bytes = BTreeMap::<String, u64>::new();
     for (name, bytes) in full.tools.iter().filter(|_| first) {
@@ -745,8 +754,12 @@ fn fold_verified(entries: &[Value]) -> Value {
     for entry in entries {
         let carry = &entry["verified"];
         let row = if carry.is_object() { carry } else { entry };
-        if !carry.is_object() && (row["v"] != 4 || row["accounting"] != ACCOUNTING_METHOD
-            || row["tokenizer"] != TOKENIZER || row["sessionId"].as_str().is_none_or(str::is_empty)) {
+        if !carry.is_object()
+            && (row["v"] != 4
+                || row["accounting"] != ACCOUNTING_METHOD
+                || row["tokenizer"] != TOKENIZER
+                || row["sessionId"].as_str().is_none_or(str::is_empty))
+        {
             continue;
         }
         let kind = row["kind"].as_str().unwrap_or("");
@@ -756,20 +769,38 @@ fn fold_verified(entries: &[Value]) -> Value {
         if !carry.is_object() && !response && !discovery {
             continue;
         }
-        for key in ["fullTokens", "exposedTokens", "discoveryTokens", "fullSurfaceBytes",
-            "exposedSurfaceBytes", "responseContentBytes"] {
+        for key in [
+            "fullTokens",
+            "exposedTokens",
+            "discoveryTokens",
+            "fullSurfaceBytes",
+            "exposedSurfaceBytes",
+            "responseContentBytes",
+        ] {
             let value = row[key].as_u64().unwrap_or(0);
             let total = totals.entry(key.to_string()).or_default();
             *total = total.saturating_add(value);
         }
-        for (key, increment) in [("tokenizedLoads", catalog), ("listLoads", response), ("discoveryCount", discovery)] {
-            let value = if carry.is_object() { row[key].as_u64().unwrap_or(0) } else { u64::from(increment) };
+        for (key, increment) in [
+            ("tokenizedLoads", catalog),
+            ("listLoads", response),
+            ("discoveryCount", discovery),
+        ] {
+            let value = if carry.is_object() {
+                row[key].as_u64().unwrap_or(0)
+            } else {
+                u64::from(increment)
+            };
             let total = totals.entry(key.to_string()).or_default();
             *total = total.saturating_add(value);
         }
-        peak = peak.max(row["fullToolCount"].as_u64().unwrap_or(0)).max(row["peakCatalog"].as_u64().unwrap_or(0));
+        peak = peak
+            .max(row["fullToolCount"].as_u64().unwrap_or(0))
+            .max(row["peakCatalog"].as_u64().unwrap_or(0));
         let ts = row["ts"].as_u64().unwrap_or(0);
-        if ts > 0 && (since == 0 || ts < since) { since = ts; }
+        if ts > 0 && (since == 0 || ts < since) {
+            since = ts;
+        }
     }
     let mut result = json!(totals);
     result["ts"] = json!(since);
@@ -1146,7 +1177,14 @@ mod tests {
     fn sessionless_http_records_no_comparison() {
         let data = crate::registry::DataDirTestEnv::new("savings-sessionless");
         let session = CatalogSession::unmeasured();
-        record_catalog(&session, "lazy", None, &[json!({"name":"big"})], &[], |_| None);
+        record_catalog(
+            &session,
+            "lazy",
+            None,
+            &[json!({"name":"big"})],
+            &[],
+            |_| None,
+        );
         record_discovery(&session, "some search text", 0);
         assert_eq!(summary()["tokensSaved"], 0);
         assert_eq!(summary()["listLoads"], 0);

@@ -7566,7 +7566,11 @@ fn handle_request_with_cancel(
                     .unwrap_or("");
                 if let Err(message) = validate_search_query(query) {
                     if mode != DiscoveryMode::Full {
-                        savings::record_discovery(&guard.catalog, &message, savings::surface_bytes(&[]));
+                        savings::record_discovery(
+                            &guard.catalog,
+                            &message,
+                            savings::surface_bytes(&[]),
+                        );
                     }
                     return Some(success(
                         id,
@@ -7823,7 +7827,8 @@ fn handle_request_with_cancel(
                             },
                         );
                 if mode != DiscoveryMode::Full {
-                    savings::record_discovery(&guard.catalog,
+                    savings::record_discovery(
+                        &guard.catalog,
                         search_result["content"][0]["text"].as_str().unwrap_or(""),
                         matched_schema_bytes,
                     );
@@ -19580,7 +19585,9 @@ fn serve_daemon(state: GatewayState, private: bool) -> ! {
         "daemon: host runtime on http://127.0.0.1:{port} for {}",
         compat.fingerprint()
     ));
-    let search = Arc::new(SearchGuard { catalog: savings::CatalogSession::unmeasured() });
+    let search = Arc::new(SearchGuard {
+        catalog: savings::CatalogSession::unmeasured(),
+    });
     state.touch_activity();
     let inflight = Arc::clone(&state.http_inflight);
     spawn_daemon_idle_watchdog(

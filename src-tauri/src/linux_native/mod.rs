@@ -3543,7 +3543,11 @@ impl ActivityPage {
             .build();
         let savings_summary = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["toolport-muted", "caption"]).build();
         savings_banner.append(&savings_summary);
-        let savings_counting = gtk::Expander::builder().label("How this is measured").expanded(false).child(&savings_detail).build();
+        let savings_counting = gtk::Expander::builder()
+            .label("How this is measured")
+            .expanded(false)
+            .child(&savings_detail)
+            .build();
         savings_banner.append(&savings_counting);
         performance.append(&savings_banner);
 
@@ -4265,12 +4269,25 @@ impl ActivityPage {
         };
         let has_catalog = snapshot.savings_tokenized_loads > 0;
         let discovered = snapshot.savings_discovery_count > 0;
-        self.savings_banner.set_visible(has_catalog || discovered || snapshot.savings_historical_loads > 0);
-        self.savings_title.set_label(if has_catalog { "Net tool description savings" } else if discovered { "Discovery payload returned" } else { "Savings history" });
+        self.savings_banner
+            .set_visible(has_catalog || discovered || snapshot.savings_historical_loads > 0);
+        self.savings_title.set_label(if has_catalog {
+            "Net tool description savings"
+        } else if discovered {
+            "Discovery payload returned"
+        } else {
+            "Savings history"
+        });
         self.savings_summary.set_label(if has_catalog { "Full catalog baselines minus all catalog and search responses. Counted locally; not a billing figure." } else { "Older records remain available below. Comparable session measurements start with this version." });
         let (primary, unit) = if has_catalog || discovered {
-            savings_primary_display(snapshot.tokens_saved, snapshot.savings_tokenized_loads, snapshot.savings_discovery_bytes)
-        } else { ("Not measured yet".to_string(), "") };
+            savings_primary_display(
+                snapshot.tokens_saved,
+                snapshot.savings_tokenized_loads,
+                snapshot.savings_discovery_bytes,
+            )
+        } else {
+            ("Not measured yet".to_string(), "")
+        };
         self.savings_share.set_visible(has_catalog);
         self.savings_value.set_label(&primary);
         self.savings_unit.set_label(unit);
@@ -4285,10 +4302,17 @@ impl ActivityPage {
             detail.push_str(&format!("\nExcluded history: {} catalog records ({} with byte measurements). Session identity and repeat loads cannot be verified.", grouped_number(snapshot.savings_historical_loads), grouped_number(snapshot.savings_historical_measured)));
         }
         if snapshot.savings_previous_tokens != 0 {
-            detail.push_str(&format!("\nPrevious tokenized total: {} tokens, excluded from the headline.", snapshot.savings_previous_tokens));
+            detail.push_str(&format!(
+                "\nPrevious tokenized total: {} tokens, excluded from the headline.",
+                snapshot.savings_previous_tokens
+            ));
         }
         if snapshot.savings_legacy_tokens > 0 || snapshot.savings_old_v2_tokens > 0 {
-            detail.push_str(&format!("\nOlder estimated records: {} legacy tokens and {} size-based tokens, excluded.", grouped_number(snapshot.savings_legacy_tokens), grouped_number(snapshot.savings_old_v2_tokens)));
+            detail.push_str(&format!(
+                "\nOlder estimated records: {} legacy tokens and {} size-based tokens, excluded.",
+                grouped_number(snapshot.savings_legacy_tokens),
+                grouped_number(snapshot.savings_old_v2_tokens)
+            ));
         }
         self.savings_detail.set_label(&detail);
     }
@@ -5439,8 +5463,6 @@ fn format_byte_count(bytes: u64) -> String {
     }
 }
 
-/// "Mar 4"-style date for the savings detail line, or `None` for epoch 0.
-#[cfg(test)]
 fn savings_since_date(since_ts_ms: u64) -> Option<String> {
     if since_ts_ms == 0 {
         return None;
