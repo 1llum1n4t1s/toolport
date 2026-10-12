@@ -14,12 +14,15 @@ fn passthrough() -> &'static str {
     "unchanged"
 }
 
-fn request(command: &str) -> tauri::webview::InvokeRequest {
+fn request(
+    window: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+    command: &str,
+) -> tauri::webview::InvokeRequest {
     tauri::webview::InvokeRequest {
         cmd: command.into(),
         callback: tauri::ipc::CallbackFn(0),
         error: tauri::ipc::CallbackFn(1),
-        url: "tauri://localhost".parse().unwrap(),
+        url: window.url().unwrap(),
         body: tauri::ipc::InvokeBody::default(),
         headers: Default::default(),
         invoke_key: tauri::test::INVOKE_KEY.into(),
@@ -31,7 +34,7 @@ fn revision(
 ) -> tokio::sync::oneshot::Receiver<tauri::ipc::InvokeResponse> {
     let (send, receive) = tokio::sync::oneshot::channel();
     window.as_ref().clone().on_message(
-        request("activity_revision"),
+        request(window, "activity_revision"),
         Box::new(move |_, _, response, _, _| {
             send.send(response).unwrap();
         }),
@@ -79,7 +82,8 @@ fn dispatch_cancels_before_response_poll_and_preserves_new_visible_callers() {
         .build()
         .unwrap();
     let release = || {
-        tauri::test::get_ipc_response(&window, request("release_activity_revision")).unwrap();
+        tauri::test::get_ipc_response(&window, request(&window, "release_activity_revision"))
+            .unwrap();
     };
     release();
     #[cfg(target_os = "linux")]
@@ -157,7 +161,7 @@ fn dispatch_cancels_before_response_poll_and_preserves_new_visible_callers() {
     assert_eq!(watches(), baseline);
 
     assert_eq!(
-        tauri::test::get_ipc_response(&window, request("passthrough"))
+        tauri::test::get_ipc_response(&window, request(&window, "passthrough"))
             .unwrap()
             .deserialize::<String>()
             .unwrap(),
