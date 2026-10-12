@@ -426,7 +426,7 @@ fn build_window(
 
     let (content, server_page, approval_page) = build_content(app, broker.clone());
     let share_requests = server_page.share_requests.clone();
-    window.connect_destroy(move |_| share_requests.stop());
+    io::on_window_closed(&window, move || share_requests.stop());
     let bridge_for_reap = bridge.clone();
     let server_page_for_reap = server_page.clone();
     let client_page = ClientPage::new(app, server_page.clone());
@@ -876,6 +876,11 @@ fn show_registry_startup_failure(app: &adw::Application, error: &str) {
             .css_classes(["dim-label"])
             .build(),
     );
+    let app_for_close = app.clone();
+    window.connect_close_request(move |_| {
+        app_for_close.quit();
+        gtk::glib::Propagation::Proceed
+    });
     let app_for_destroy = app.clone();
     window.connect_destroy(move |_| app_for_destroy.quit());
     let close = gtk::Button::with_label("Close Toolport");
@@ -6078,7 +6083,7 @@ impl ApprovalPage {
 
     fn attach(&self, window: &adw::ApplicationWindow) {
         let stopped = self.stopped.clone();
-        window.connect_destroy(move |_| stopped.set(true));
+        io::on_window_closed(window, move || stopped.set(true));
         // A request can arrive before the window finishes building. Publish its
         // initial snapshot to both the panel and the sidebar badge.
         if let Some(action) = window
@@ -10964,7 +10969,7 @@ mod tests {
             .content(&root)
             .build();
         let requests = page.share_requests.clone();
-        window.connect_destroy(move |_| requests.stop());
+        io::on_window_closed(&window, move || requests.stop());
         let lock = crate::registry::lock_at(&data.dir.join("registry.json")).unwrap();
         open_shared_setup(
             "toolport://teams/connect?origin=https%3A%2F%2Fteam.invalid&team=fixture",

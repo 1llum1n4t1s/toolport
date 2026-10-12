@@ -67,6 +67,28 @@ pub(super) fn track_hidden_memory(window: &adw::ApplicationWindow) {
     let _ = window;
 }
 
+/// GTK's destroy signal can wait for the last reference. Removing the window
+/// from its application ends ownership immediately, even if a worker holds UI.
+/// Hiding to the tray keeps the window registered and does not cancel requests.
+pub(super) fn on_window_closed(window: &adw::ApplicationWindow, closed: impl Fn() + 'static) {
+    let closed: Rc<dyn Fn()> = Rc::new(closed);
+    let on_destroy = closed.clone();
+    window.connect_destroy(move |_| on_destroy());
+    if let Some(app) = window.application() {
+        let owner = window.downgrade();
+        let on_removed = closed.clone();
+        app.connect_window_removed(move |_, removed| {
+            if owner
+                .upgrade()
+                .is_some_and(|window| window.upcast_ref::<gtk::Window>() == removed)
+            {
+                on_removed();
+            }
+        });
+        app.connect_shutdown(move |_| closed());
+    }
+}
+
 /// Share requests replace earlier requests; destroyed owners reject completion.
 #[derive(Default)]
 pub(super) struct RequestGuard {
