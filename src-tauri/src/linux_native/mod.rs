@@ -490,8 +490,7 @@ fn build_window(
     {
         let settings = settings_page.clone();
         io::while_mapped(&settings_page.root, 15, move || settings.refresh_quietly());
-        let activity = activity_page.clone();
-        io::while_mapped(&activity_page.root, 3, move || activity.refresh_quietly());
+        activity_page.attach(&window);
     }
     split.set_sidebar(Some(&adw::NavigationPage::new(&sidebar, "Navigation")));
     let content_with_notice = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1801,7 +1800,7 @@ fn show_native_page(
     } else if target == "clients" {
         client_page.refresh();
     } else if target == "activity" {
-        activity_page.refresh();
+        activity_page.refresh_quietly();
     } else if target == "catalog" {
         catalog_page.refresh();
     } else if target == "teams" {
@@ -3316,6 +3315,44 @@ fn run_client_mutation(
     });
 }
 
+type RetainedRows<T> = std::rc::Rc<std::cell::RefCell<Vec<(T, gtk::Box)>>>;
+
+fn reconcile_rows<T: Clone + PartialEq>(
+    list: &gtk::Box,
+    retained: &RetainedRows<T>,
+    values: &[T],
+    build: impl Fn(&T) -> gtk::Box,
+) {
+    let mut rows = retained.borrow_mut();
+    if rows.iter().map(|(value, _)| value).eq(values.iter()) {
+        return;
+    }
+    if rows.is_empty() {
+        while let Some(child) = list.first_child() {
+            list.remove(&child);
+        }
+    }
+    let mut previous = std::mem::take(&mut *rows);
+    let mut sibling = None::<gtk::Box>;
+    for value in values {
+        let row = if let Some(index) = previous.iter().position(|(old, _)| old == value) {
+            previous.remove(index).1
+        } else {
+            let row = build(value);
+            list.append(&row);
+            row
+        };
+        if row.prev_sibling() != sibling.as_ref().map(|widget| widget.clone().upcast()) {
+            list.reorder_child_after(&row, sibling.as_ref());
+        }
+        sibling = Some(row.clone());
+        rows.push((value.clone(), row));
+    }
+    for (_, row) in previous {
+        list.remove(&row);
+    }
+}
+
 const RECENT_CALL_PREVIEW_LIMIT: usize = 10;
 
 #[derive(Clone)]
@@ -3343,6 +3380,10 @@ struct ActivityPage {
     refresh_button: gtk::Button,
     clear_button: gtk::Button,
     loading: std::rc::Rc<std::cell::Cell<bool>>,
+    dirty: std::rc::Rc<std::cell::Cell<bool>>,
+    revision: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    recent_rows: RetainedRows<state::ActivityView>,
+    stat_rows: RetainedRows<serde_json::Value>,
     /// The last successfully loaded snapshot. Kept so a failed refresh shows a
     /// stale notice over real rows instead of replacing them with "all clear",
     /// and so filter changes re-render without another disk read.
@@ -3447,7 +3488,7 @@ impl ActivityPage {
             .wrap(true)
             .css_classes(["toolport-feedback"])
             .build();
-        feedback.set_label("Open Activity to load saved activity.");
+        feedback.set_label("Loading retained activity…");
         page.append(&feedback);
 
         let summary = gtk::FlowBox::new();
@@ -3481,14 +3522,14 @@ impl ActivityPage {
         let security_status_copy = gtk::Box::new(gtk::Orientation::Vertical, 1);
         security_status_copy.set_hexpand(true);
         let security_status_title = gtk::Label::builder()
-            .label("Protection active")
+            .label("Checking protection…")
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .css_classes(["heading"])
             .build();
         security_status_copy.append(&security_status_title);
         let security_status_detail = gtk::Label::builder()
-            .label("No changes need review.")
+            .label("Loading saved review state.")
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -3692,6 +3733,10 @@ impl ActivityPage {
             refresh_button,
             clear_button,
             loading: std::rc::Rc::new(std::cell::Cell::new(false)),
+            dirty: std::rc::Rc::new(std::cell::Cell::new(true)),
+            revision: Default::default(),
+            recent_rows: Default::default(),
+            stat_rows: Default::default(),
             last_snapshot: std::rc::Rc::new(std::cell::RefCell::new(None)),
             filter_server,
             filter_server_options: std::rc::Rc::new(std::cell::RefCell::new(vec![
@@ -3837,37 +3882,96 @@ impl ActivityPage {
         self.refresh_with_feedback(true)
     }
 
-    /// The 3-second background cadence: no "Loading" flash, and identical data
-    /// is dropped without a re-render so open expanders stay open.
+    fn attach(&self, window: &adw::ApplicationWindow) {
+        let page = self.clone();
+        io::watch_data(window, 15, false, crate::observability_controller::activity_file, move || {
+            if !page.root.is_mapped() {
+                page.dirty.set(true);
+                return;
+            }
+            let revision = crate::observability_controller::activity_revision().ok();
+            if revision.is_none() || *page.revision.borrow() != revision {
+                page.dirty.set(true);
+                page.refresh_quietly();
+            }
+        });
+        let page = self.clone();
+        self.root.connect_map(move |_| page.refresh_quietly());
+        let page = self.clone();
+        self.root.connect_unmap(move |_| page.release_rows());
+    }
+
+    fn release_rows(&self) {
+        self.dirty.set(true);
+        self.last_snapshot.borrow_mut().take();
+        self.recent_rows.borrow_mut().clear();
+        self.stat_rows.borrow_mut().clear();
+        for list in [&self.list, &self.stats_list, &self.security_list, &self.identity_list,
+            &self.search_list, &self.inspect_list] {
+            while let Some(child) = list.first_child() {
+                list.remove(&child);
+            }
+        }
+        self.feedback.set_label("Loading retained activity…");
+        self.feedback.set_visible(true);
+        self.security_status_title.set_label("Checking protection…");
+        self.security_status_detail.set_label("Loading saved review state.");
+        self.security_status.remove_css_class("attention");
+        self.security_status.remove_css_class("review");
+        for value in [&self.call_count, &self.success_rate, &self.average_latency, &self.tokens_saved] {
+            value.set_label("…");
+        }
+        self.savings_banner.set_visible(false);
+    }
+
     fn refresh_quietly(&self) {
-        self.refresh_with_feedback(false)
+        if self.dirty.get() {
+            self.refresh_with_feedback(false);
+        }
     }
 
     fn refresh_with_feedback(&self, announce: bool) {
         if self.loading.replace(true) {
+            if announce {
+                self.dirty.set(true);
+            }
             return;
         }
-        self.refresh_button.set_sensitive(false);
-        if announce {
+        if announce || self.last_snapshot.borrow().is_none() {
+            self.refresh_button.set_sensitive(false);
             self.feedback.set_label("Loading retained activity…");
             self.feedback.remove_css_class("error");
             self.feedback.set_visible(true);
         }
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
-            let result = gtk::gio::spawn_blocking(state::load_activity_snapshot).await;
+            loop {
+                page.dirty.set(false);
+                let result = gtk::gio::spawn_blocking(|| {
+                    let revision = crate::observability_controller::activity_revision().ok();
+                    (revision, state::load_activity_snapshot())
+                }).await;
+                if !page.root.is_mapped() {
+                    page.dirty.set(true);
+                    break;
+                }
+                if page.dirty.get() {
+                    continue;
+                }
+                match result {
+                    Ok((revision, Ok(snapshot))) => {
+                        *page.revision.borrow_mut() = revision;
+                        if announce || page.last_snapshot.borrow().as_ref() != Some(&snapshot) {
+                            page.render(snapshot);
+                        }
+                    }
+                    Ok((_, Err(error))) => page.show_error(&error),
+                    Err(_) => page.show_error("the activity read stopped unexpectedly"),
+                }
+                break;
+            }
             page.loading.set(false);
             page.refresh_button.set_sensitive(true);
-            match result {
-                Ok(Ok(snapshot)) => {
-                    if !announce && page.last_snapshot.borrow().as_ref() == Some(&snapshot) {
-                        return;
-                    }
-                    page.render(snapshot)
-                }
-                Ok(Err(error)) => page.show_error(&error),
-                Err(_) => page.show_error("the activity read stopped unexpectedly"),
-            }
         });
     }
 
@@ -3895,9 +3999,6 @@ impl ActivityPage {
                 ),
             )
         };
-        while let Some(child) = self.stats_list.first_child() {
-            self.stats_list.remove(&child);
-        }
         if traces_changed {
             while let Some(child) = self.search_list.first_child() {
                 self.search_list.remove(&child);
@@ -3984,6 +4085,10 @@ impl ActivityPage {
             .expect("the snapshot was stored above");
 
         if snapshot.server_stats.is_empty() {
+            self.stat_rows.borrow_mut().clear();
+            while let Some(child) = self.stats_list.first_child() {
+                self.stats_list.remove(&child);
+            }
             self.expanded_stat_servers.borrow_mut().clear();
             self.server_stat_order.borrow_mut().clear();
             self.stats_list.append(&empty_activity_label(
@@ -4012,10 +4117,9 @@ impl ActivityPage {
                     .copied()
                     .unwrap_or(usize::MAX)
             });
-            for stat in &stats {
-                self.stats_list
-                    .append(&server_stat_row(stat, self.expanded_stat_servers.clone()));
-            }
+            reconcile_rows(&self.stats_list, &self.stat_rows, &stats, |stat| {
+                server_stat_row(stat, self.expanded_stat_servers.clone())
+            });
         }
         if traces_changed {
             if snapshot.search_traces.is_empty() {
@@ -4363,10 +4467,8 @@ impl ActivityPage {
         let Some(snapshot) = borrowed.as_ref() else {
             return;
         };
-        while let Some(child) = self.list.first_child() {
-            self.list.remove(&child);
-        }
         if snapshot.recent.is_empty() {
+            self.clear_recent_rows();
             self.filter_count.set_label("");
             self.show_more_calls.set_visible(false);
             self.list.append(&state_card(
@@ -4381,6 +4483,7 @@ impl ActivityPage {
         let errors_only = self.errors_only.is_active();
         let filtered = filter_calls(&snapshot.recent, server.as_deref(), errors_only);
         if filtered.is_empty() {
+            self.clear_recent_rows();
             self.filter_count.set_label("0 matching rows");
             self.show_more_calls.set_visible(false);
             self.list.append(&state_card(
@@ -4406,8 +4509,14 @@ impl ActivityPage {
             format!("Show all {match_count} rows")
         };
         self.show_more_calls.set_label(&show_more_label);
-        for activity in filtered.into_iter().take(visible_count) {
-            self.list.append(&activity_card(activity));
+        let visible = filtered.into_iter().take(visible_count).cloned().collect::<Vec<_>>();
+        reconcile_rows(&self.list, &self.recent_rows, &visible, activity_card);
+    }
+
+    fn clear_recent_rows(&self) {
+        self.recent_rows.borrow_mut().clear();
+        while let Some(child) = self.list.first_child() {
+            self.list.remove(&child);
         }
     }
 
@@ -4475,6 +4584,8 @@ impl ActivityPage {
         } else {
             self.feedback
                 .set_label(&format!("Could not load activity: {error}"));
+            self.security_status_title.set_label("Protection state unavailable");
+            self.security_status_detail.set_label("Retry Activity to check saved reviews.");
         }
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
@@ -11864,6 +11975,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     use super::*;
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn activity_updates_retain_widgets_and_release_hidden_rows() {
+        adw::init().unwrap();
+        let data = crate::registry::DataDirTestEnv::new("activity-retained-rows");
+        let app = adw::Application::builder().application_id("com.tsout.ActivityRowsTest").build();
+        let page = ActivityPage::new(&app);
+        assert_eq!(page.security_status_title.text(), "Checking protection…");
+        assert!(!page.security_status_detail.text().contains("No changes"));
+        std::fs::write(data.dir.join("audit.jsonl"), "{\"ts\":1,\"tool\":\"server__first\",\"server\":\"server\",\"ok\":true}\n").unwrap();
+        page.render(state::load_activity_snapshot().unwrap());
+        let old = page.list.first_child().unwrap();
+        let stats = page.stats_list.first_child().unwrap();
+        page.render(state::load_activity_snapshot().unwrap());
+        assert_eq!(page.list.first_child().unwrap(), old);
+        assert_eq!(page.stats_list.first_child().unwrap(), stats);
+        std::fs::write(data.dir.join("audit.jsonl"), "{\"ts\":1,\"tool\":\"server__first\",\"server\":\"server\",\"ok\":true}\n{\"ts\":2,\"tool\":\"server__next\",\"server\":\"server\",\"ok\":true}\n").unwrap();
+        page.render(state::load_activity_snapshot().unwrap());
+        assert_eq!(page.list.first_child().unwrap().next_sibling().unwrap(), old);
+        assert_eq!(page.recent_rows.borrow().len(), 2);
+        page.errors_only.set_active(true);
+        assert!(page.recent_rows.borrow().is_empty());
+        page.errors_only.set_active(false);
+        assert_eq!(page.recent_rows.borrow().len(), 2);
+        page.release_rows();
+        assert!(page.last_snapshot.borrow().is_none());
+        assert!(page.recent_rows.borrow().is_empty());
+        assert!(page.stat_rows.borrow().is_empty());
+        assert!(page.list.first_child().is_none());
+        assert_eq!(page.security_status_title.text(), "Checking protection…");
+        page.show_error("unreadable");
+        assert_eq!(page.security_status_title.text(), "Protection state unavailable");
+    }
 
     #[test]
     fn unchanged_activity_sections_do_not_rebuild_open_rows() {
