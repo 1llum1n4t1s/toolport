@@ -931,6 +931,7 @@ dependencies = [
  "tiktoken-rs",
  "tiny_http",
  "tokenizers",
+ "tokio",
  "toml 0.8.2",
  "toml_edit 0.22.27",
  "unicode-normalization",

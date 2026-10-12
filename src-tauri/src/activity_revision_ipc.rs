@@ -3,7 +3,8 @@
 pub(super) fn handler<R: tauri::Runtime>(
     next: impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
-    let revision = tauri::generate_handler![activity_revision];
+    let revision: fn(tauri::ipc::Invoke<R>) -> bool =
+        tauri::generate_handler![activity_revision];
     move |invoke| {
         if invoke.message.command() == "activity_revision" {
             revision(invoke)
