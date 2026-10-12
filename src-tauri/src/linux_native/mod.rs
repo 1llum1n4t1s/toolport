@@ -11419,6 +11419,45 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn captured_activity_review_routes_to_settings_without_release() {
+        let _data = crate::registry::DataDirTestEnv::new("gtk-captured-activity-routing");
+        adw::init().unwrap();
+        let app = adw::Application::builder().application_id("com.toolport.DriftReviewTest").build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+        let reviewed = std::rc::Rc::new(std::cell::Cell::new(0));
+        let calls = reviewed.clone();
+        let action = gtk::gio::SimpleAction::new("review-quarantine", None);
+        action.connect_activate(move |_, _| calls.set(calls.get() + 1));
+        app.add_action(&action);
+        let page = ActivityPage::new(&app);
+        let event = serde_json::json!({"type":"tool_drift", "server":"srv", "tool":"srv__update", "ts":100, "change":"changed", "blocked":true, "blocked_profiles":["work"], "new_fp":"v3:captured", "review_required":true});
+        let group = crate::integrity::group_tool_changes(&[event.clone()]).remove(0);
+        let card = tool_change_group_card(&group, page.clone());
+        let window = adw::ApplicationWindow::builder().application(&app).content(&card).build();
+        let mut child = card.first_child();
+        let mut found = false;
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            if let Ok(button) = widget.downcast::<gtk::Button>() {
+                if button.label().as_deref() == Some("Accept all for this server") {
+                    assert!(!button.is_sensitive());
+                }
+                if button.label().as_deref() == Some("Review in Settings") {
+                    button.emit_clicked();
+                    found = true;
+                }
+            }
+        }
+        assert!(found);
+        assert_eq!(reviewed.get(), 1);
+        // Guard the callback too: an accidental direct invocation must only navigate.
+        page.accept_security(vec![event]);
+        assert_eq!(reviewed.get(), 2);
+        window.close();
+    }
+
+    #[test]
     fn captured_activity_review_requires_settings_instead_of_summary_acceptance() {
         let event = serde_json::json!({"type":"tool_drift", "server":"srv", "tool":"srv__update", "ts":100, "change":"changed", "blocked":true, "blocked_profiles":["work"], "new_fp":"v3:captured", "review_required":true});
         assert!(!change_can_be_accepted(&event));

@@ -75,6 +75,9 @@ struct Pin {
     /// The captured definition still awaits the user's bound second approval.
     #[serde(default, skip_serializing_if = "bool_is_false")]
     review_pending: bool,
+    /// An absent tool still needs review if it returns, but does not hold its scope pending.
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    review_retired: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parameters: Option<BTreeMap<String, String>>,
     /// `readOnlyHint` at pin time, if the tool advertised one.
@@ -130,6 +133,7 @@ impl From<PinRepr> for Pin {
                 fp,
                 review_on_upgrade: false,
                 review_pending: false,
+                review_retired: false,
                 parameters: None,
                 ro: None,
                 dh: None,
@@ -165,6 +169,7 @@ fn pin_with_source(tool: &Value, source_input_schema: Option<&str>) -> Pin {
         fp: pin_fingerprint(tool, &parts),
         review_on_upgrade: false,
         review_pending: false,
+        review_retired: false,
         parameters: Some(input_parameters(tool)),
         ro: read_hint(tool, "readOnlyHint"),
         dh: read_hint(tool, "destructiveHint"),
@@ -1590,6 +1595,42 @@ pub fn mandatory_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<S
     Ok(quarantined_sets_checked_at(&path, profile)?.1)
 }
 
+/// Cancel active reviews for absent tools without approving their definitions. Call only
+/// with indexed upstream identities, including tools hidden by quarantine or other policy.
+/// Retained pins reassert the review before a returning definition can be published.
+pub fn retire_absent_reviews(profile: Option<&str>, present: &BTreeSet<String>) -> Result<(), String> {
+    let quarantine_path = quarantine_path(profile).ok_or("Could not resolve the quarantine store")?;
+    let pin_path = pins_path(profile).ok_or("Could not resolve the integrity pin store")?;
+    // Match the release lock order: quarantine, then pins.
+    with_store_lock(&quarantine_path, || {
+        with_store_lock(&pin_path, || {
+            let mut pins = match load_pins(profile) {
+                PinsLoad::Loaded(pins) => pins,
+                PinsLoad::Fresh | PinsLoad::Corrupt => return Ok(()),
+            };
+            let absent: BTreeSet<_> = pins.iter()
+                .filter(|(name, pin)| !pin.review_retired && (pin.review_pending || pin.review_on_upgrade) && !present.contains(*name))
+                .map(|(name, _)| name.clone())
+                .collect();
+            if absent.is_empty() { return Ok(()); }
+            let mut quarantine = match load_quarantine(profile) {
+                Ok(records) => records,
+                Err(error) if is_absent_quarantine_not_fresh(&error) => Quarantine::new(),
+                Err(error) => return Err(error),
+            };
+            for name in &absent {
+                let pin = pins.get_mut(name).expect("absent pins exist");
+                pin.review_retired = true;
+                quarantine.remove(name);
+            }
+            // Persist an empty store too, so removing the last review repairs a missing store.
+            save_quarantine(profile, &quarantine)?;
+            save_pins(profile, &pins)?;
+            Ok(())
+        })
+    })
+}
+
 /// Explicit definition reviews survive every safety level, including Off.
 pub fn review_quarantined(profile: Option<&str>) -> Result<BTreeSet<String>, String> {
     off_review_read(profile, load_quarantine(profile).map(|q| review_quarantine_set(&q)))
@@ -1608,7 +1649,7 @@ pub fn review_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<Stri
 /// A release awaiting its captured definition stays pending until bound approval.
 pub fn pending_definition_review(profile: Option<&str>) -> bool {
     match load_pins(profile) {
-        PinsLoad::Loaded(pins) => pins.values().any(|pin| pin.review_on_upgrade || pin.review_pending),
+        PinsLoad::Loaded(pins) => pins.values().any(|pin| !pin.review_retired && (pin.review_on_upgrade || pin.review_pending)),
         _ => false,
     }
 }
@@ -2089,6 +2130,9 @@ pub fn release_definition(
     with_store_lock(&path, || {
         let quarantine = load_quarantine(profile)?;
         if let Some(record) = quarantine.get(tool) {
+            if record["review_required"] == true {
+                return Err("Review the captured definition in Settings before accepting it.".into());
+            }
             let captured = record["pending_pin"]["fp"]
                 .as_str()
                 .or_else(|| record["definition_fp"].as_str());
@@ -2185,6 +2229,7 @@ fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, reviewed
         fp: "released-without-baseline".to_string(),
         review_on_upgrade: true,
         review_pending: true,
+        review_retired: false,
         parameters: None,
         ro: None,
         dh: None,
@@ -2194,6 +2239,7 @@ fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, reviewed
     });
     pin.review_on_upgrade = !reviewed || fp_version(&pin.fp) != PIN_FP_VERSION;
     pin.review_pending = !reviewed;
+    pin.review_retired = false;
 }
 
 /// How a bulk re-approval went: how many blocks were lifted, and the tools that
@@ -4251,6 +4297,15 @@ fn review_events_uncached(limit: usize) -> std::io::Result<Vec<Value>> {
                                     )))
                     )
                 };
+                if records.iter().any(|record| {
+                    record["review_required"] == true && record["tool"] == event["tool"]
+                        && event_matches_profile(event, record["profile"].as_str().unwrap_or(""))
+                        && event["new_fp"].as_str().is_some_and(|fp| {
+                            record["pending_pin"]["fp"].as_str().or_else(|| record["definition_fp"].as_str()) == Some(fp)
+                        })
+                }) {
+                    event["review_required"] = json!(true);
+                }
                 event["blocked_profiles"] = json!(profiles);
             }
             Err(_) => {
@@ -5763,6 +5818,58 @@ mod tests {
                     assert!(!pending_definition_review(profile));
                     assert!(check_staged(profile, &tools).unwrap().is_empty(), "one bound approval must end the review");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn deleting_a_profile_retires_its_pending_review() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("pending-review-profile-removal");
+        let mut registry = crate::registry::Registry::default();
+        let profile = registry.add_profile("Removed review");
+        crate::registry::save(&registry).unwrap();
+        let tools = vec![destructive_tool("srv__wipe", "Unseen definition.")];
+        let mut pin = pin_of(&tools[0]);
+        pin.review_pending = true;
+        save_pins(Some(&profile), &BTreeMap::from([("srv__wipe".into(), pin)])).unwrap();
+        let events = check_staged(Some(&profile), &tools).unwrap();
+        apply_quarantine(Some(&profile), &tools, &events).unwrap();
+        accept_quarantined_pins(Some(&profile)).unwrap();
+        crate::registry_controller::delete_profile(&profile).unwrap();
+        assert!(!pending_definition_review(Some(&profile)));
+        assert!(review_quarantined(Some(&profile)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn absent_reviews_retain_unseen_return_markers_and_ignore_policy_hiding() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("pending-review-retirement");
+        for profile in [None, Some("removed-profile")] {
+            for missing in [false, true] {
+                let tools = vec![destructive_tool("srv__wipe", "Unseen definition.")];
+                let mut pin = pin_of(&tools[0]);
+                pin.review_pending = true;
+                save_pins(profile, &BTreeMap::from([("srv__wipe".into(), pin)])).unwrap();
+                let events = check_staged(profile, &tools).unwrap();
+                apply_quarantine(profile, &tools, &events).unwrap();
+                accept_quarantined_pins(profile).unwrap();
+                retire_absent_reviews(profile, &BTreeSet::from(["srv__wipe".into()])).unwrap();
+                assert!(pending_definition_review(profile), "policy-hidden tool must retain its active review");
+                if missing { std::fs::remove_file(quarantine_path(profile).unwrap()).unwrap(); }
+                retire_absent_reviews(profile, &BTreeSet::new()).unwrap();
+                assert!(!pending_definition_review(profile));
+                assert!(review_quarantined(profile).unwrap().is_empty());
+                assert!(matches!(load_pins(profile), PinsLoad::Loaded(pins) if pins["srv__wipe"].review_pending && pins["srv__wipe"].review_retired));
+                let events = check_staged(profile, &tools).unwrap();
+                assert!(events.iter().any(|event| event["review_required"] == true));
+                apply_quarantine(profile, &tools, &events).unwrap();
+                accept_quarantined_pins(profile).unwrap();
+                assert!(pending_definition_review(profile), "return must reactivate the review");
+                let captured = load_quarantine(profile).unwrap()["srv__wipe"].clone();
+                assert!(release_definition(profile, "srv__wipe", captured["definition_fp"].as_str().unwrap()).is_err(), "Activity summaries cannot approve a captured review");
+                release_record(profile, "srv__wipe", &quarantine_record_id(&captured)).unwrap();
+                assert!(!pending_definition_review(profile));
             }
         }
     }
@@ -8404,6 +8511,7 @@ mod tests {
             fp: "v1:old".into(),
             review_on_upgrade: false,
             review_pending: false,
+            review_retired: false,
             parameters: None,
             ro: Some(true),
             dh: None,
@@ -8887,6 +8995,7 @@ mod tests {
             fp: fp.to_string(),
             review_on_upgrade: false,
             review_pending: false,
+            review_retired: false,
             parameters: None,
             ro: None,
             dh: None,

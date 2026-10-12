@@ -1119,6 +1119,7 @@ pub fn create_profile(name: &str) -> Result<Registry, String> {
 
 pub fn delete_profile(profile_id: &str) -> Result<Registry, String> {
     let (registry, ()) = registry::update(|registry| apply_delete_profile(registry, profile_id))?;
+    crate::integrity::retire_absent_reviews(Some(profile_id), &Default::default())?;
     Ok(registry)
 }
 

@@ -10388,6 +10388,10 @@ fn requarantine_if_needed(
     profile: Option<&str>,
 ) -> SharedTools {
     let tools = tools.into();
+    if let Err(error) = integrity::retire_absent_reviews(profile, &built.indexed_policy_names()) {
+        glog(&format!("SECURITY: absent review cleanup failed: {error}"));
+        return fail_closed_integrity_catalog(built, profile, BTreeSet::new());
+    }
     let policy_tools = built.policy_catalog(&tools);
     match maybe_check_integrity(registry, &policy_tools, profile) {
         Ok(Some(mut pending)) => {
@@ -12557,6 +12561,12 @@ impl HostState {
         };
         view.requarantine_from_store(checked_quarantine.clone());
         let rooted_ids: HashSet<&str> = keys.iter().map(|key| key.server.as_str()).collect();
+        let present = view.indexed_policy_names_for(|server| rooted_ids.contains(server));
+        if let Err(error) = integrity::retire_absent_reviews(Some(scope), &present) {
+            glog(&format!("SECURITY: rooted absent review cleanup failed: {error}"));
+            view.fail_closed_catalog();
+            return;
+        }
         let all_tools = view.shared_tools();
         let mut pending = BTreeSet::new();
         // A rooted view can restore ordinary tools before the base watcher runs.
@@ -39269,12 +39279,15 @@ mod tests {
 
     #[test]
     fn integrity_pending_review_retires_removed_catalog_entries_without_approving_return() {
-        let _data = DataDirTestEnv::new("pending-review-catalog-removal");
+        let data = DataDirTestEnv::new("pending-review-catalog-removal");
         let tools = vec![json!({"name":"srv__read", "description":"Unseen definition.", "inputSchema":{"type":"object"}})];
         for level in [registry::SafetyLevel::Ask, registry::SafetyLevel::Off] {
             for profile in [None, Some("removed-review")] {
                 integrity::check(profile, &tools).unwrap();
-                let path = integrity::quarantine_path(profile).unwrap();
+                let path = match profile {
+                    Some(id) => data.dir.join(format!("quarantine-v2-{}.json", registry::profile_store_key(id))),
+                    None => data.dir.join("quarantine.json"),
+                };
                 std::fs::write(&path, json!({"srv__read":{"tool":"srv__read", "change":"changed"}}).to_string()).unwrap();
                 let old = integrity::quarantine_list(profile).remove(0);
                 integrity::release_record(profile, "srv__read", &integrity::quarantine_record_id(&old)).unwrap();
