@@ -7,9 +7,10 @@ use tokenizers::Tokenizer;
 const WEIGHTS: &[u8] = include_bytes!("../../assets/search/model-q8.bin");
 const TOKENIZER: &[u8] = include_bytes!("../../assets/search/tokenizer.json");
 
-pub const DOCUMENT_REPRESENTATION: &str = "search-document-full-description-v2";
+pub const DOCUMENT_REPRESENTATION: &str = "search-document-v1";
 pub const ENCODE_CHAR_LIMIT: usize = 2048;
 pub const ENCODE_TOKEN_LIMIT: usize = 256;
+pub const DESCRIPTION_CHAR_LIMIT: usize = 512;
 
 pub struct Model {
     tokenizer: Tokenizer,
@@ -161,8 +162,10 @@ pub fn source(tool: &Value) -> Source<'_> {
     }
 }
 
-/// One general candidate: readable name plus complete description, subject to
-/// the encoder's existing 2048-character/256-token limits. Schemas stay lexical.
+/// Selected baseline projection: readable name and first description sentence,
+/// capped at DESCRIPTION_CHAR_LIMIT. Full-description expansion exceeded the
+/// native cold budget; later prose and schemas remain available through source().
+/// This projection must not be treated as complete capability evidence.
 pub fn document(tool: &Value) -> String {
     let evidence = source(tool);
     let name = evidence.name;
@@ -175,10 +178,20 @@ pub fn document(tool: &Value) -> String {
         readable.push(if c == '_' || c == '-' { ' ' } else { c });
         previous_lower = c.is_lowercase();
     }
-    readable.push_str(" . ");
-    let remaining = ENCODE_CHAR_LIMIT.saturating_sub(readable.chars().count());
-    readable.extend(evidence.description.chars().take(remaining));
-    readable.chars().take(ENCODE_CHAR_LIMIT).collect()
+    let description = evidence.description;
+    let end = description
+        .char_indices()
+        .find_map(|(i, c)| {
+            (['.', '!', '?'].contains(&c)
+                && description[i + c.len_utf8()..].starts_with(char::is_whitespace))
+            .then_some(i)
+        })
+        .unwrap_or(description.len());
+    let description: String = description[..end]
+        .chars()
+        .take(DESCRIPTION_CHAR_LIMIT)
+        .collect();
+    format!("{readable} . {description}")
 }
 
 #[cfg(test)]
@@ -194,7 +207,9 @@ pub fn document_status(tool: &Value) -> Value {
         "description_complete_before_token_cap":text.ends_with(evidence.description),
         "schema_embedded":false,"schema_retained":evidence.input_schema.is_some(),
         "complete_source_retained":true,
-        "representation":DOCUMENT_REPRESENTATION,"char_limit":ENCODE_CHAR_LIMIT,"token_limit":ENCODE_TOKEN_LIMIT
+        "representation":DOCUMENT_REPRESENTATION,"char_limit":ENCODE_CHAR_LIMIT,"token_limit":ENCODE_TOKEN_LIMIT,
+        "description_policy":"first_sentence","description_char_limit":DESCRIPTION_CHAR_LIMIT,
+        "character_truncated_by_encoder":text.chars().count() > ENCODE_CHAR_LIMIT
     })
 }
 
@@ -270,7 +285,7 @@ mod tests {
             document(
                 &serde_json::json!({"name":"agenda__createEvent","description":"Create an event. Extra fields."})
             ),
-            "agenda  create Event . Create an event. Extra fields."
+            "agenda  create Event . Create an event"
         );
     }
 }

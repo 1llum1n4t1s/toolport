@@ -73,28 +73,43 @@ fn search_ambiguity_uses_the_declared_menu_depth() {
 }
 
 #[test]
-fn search_semantic_document_retains_later_capabilities() {
+fn search_complete_source_retains_later_capabilities() {
     let tool = json!({"name":"sample__inspect","description":"Inspect a record. Include historical changes. Fail when the destination exists."});
     let text = search_static::document(&tool);
-    assert!(text.contains("historical changes"), "{text}");
-    assert!(text.contains("destination exists"), "{text}");
+    let source = search_static::source(&tool);
+    assert!(source.description.contains("historical changes"));
+    assert!(source.description.contains("destination exists"));
+    assert!(!text.contains("historical changes"));
+    assert_eq!(
+        search_static::document_status(&tool)["description_complete_before_token_cap"],
+        false
+    );
 }
 
 #[test]
 fn search_complete_catalog_evidence_is_retained_and_semantic_caps_are_explicit() {
-    let description = format!(
-        "Inspect a record. {} Final constraint.",
-        "word ".repeat(1000)
-    );
+    let description = format!("{} Final constraint.", "word ".repeat(1000));
     let schema = json!({"type":"object","properties":{"mode":{"enum":["read","write"]}}});
     let tool = json!({"name":"sample__inspect","description":description,"inputSchema":schema});
     let source = search_static::source(&tool);
     assert_eq!(source.description, description);
     assert_eq!(source.input_schema, Some(&schema));
     let status = search_static::document_status(&tool);
-    assert_eq!(status["semantic_chars"], 2048);
+    assert!(status["semantic_chars"].as_u64().unwrap() <= search_static::ENCODE_CHAR_LIMIT as u64);
+    assert_eq!(
+        status["description_char_limit"],
+        search_static::DESCRIPTION_CHAR_LIMIT
+    );
     assert_eq!(status["description_complete_before_token_cap"], false);
-    assert_eq!(status["token_truncated"], true);
+    assert_eq!(status["token_truncated"], false);
+    assert!(
+        search_static::model()
+            .encode_input(&description)
+            .unwrap()
+            .get_ids()
+            .len()
+            > search_static::ENCODE_TOKEN_LIMIT
+    );
     assert_eq!(status["schema_embedded"], false);
     let index = CatalogSearchIndex::build_lexical(&vec![tool]);
     assert!(index.documents[0].description_tokens.contains("constraint"));
