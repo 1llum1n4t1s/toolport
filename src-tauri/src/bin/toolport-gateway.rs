@@ -10326,7 +10326,7 @@ fn maybe_check_integrity(
             let pending = integrity::quarantine_candidates(tools, &events);
             integrity::accept_quarantined_pins(profile).map_err(|e| (e, pending))?;
         }
-        for d in &events {
+        for d in events.iter().filter(|event| event["log_suppressed"] != true) {
             let server = d.get("server").and_then(Value::as_str).unwrap_or("?");
             let tool = d.get("tool").and_then(Value::as_str).unwrap_or("?");
             let change = d.get("change").and_then(Value::as_str).unwrap_or("?");

@@ -78,6 +78,9 @@ struct Pin {
     /// An absent tool still needs review if it returns, but does not hold its scope pending.
     #[serde(default, skip_serializing_if = "bool_is_false")]
     review_retired: bool,
+    /// Durable log suppression for one captured definition while its review is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    review_logged_fp: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parameters: Option<BTreeMap<String, String>>,
     /// `readOnlyHint` at pin time, if the tool advertised one.
@@ -134,6 +137,7 @@ impl From<PinRepr> for Pin {
                 review_on_upgrade: false,
                 review_pending: false,
                 review_retired: false,
+                review_logged_fp: None,
                 parameters: None,
                 ro: None,
                 dh: None,
@@ -170,6 +174,7 @@ fn pin_with_source(tool: &Value, source_input_schema: Option<&str>) -> Pin {
         review_on_upgrade: false,
         review_pending: false,
         review_retired: false,
+        review_logged_fp: None,
         parameters: Some(input_parameters(tool)),
         ro: read_hint(tool, "readOnlyHint"),
         dh: read_hint(tool, "destructiveHint"),
@@ -858,6 +863,7 @@ fn check_inner_with(
                 first_seen,
                 last_changed,
                 review_pending: pins.get(name).is_some_and(|old| old.review_pending),
+                review_logged_fp: pins.get(name).and_then(|old| old.review_logged_fp.clone()),
                 ..fresh.clone()
             },
         );
@@ -876,9 +882,28 @@ fn check_inner_with(
     }
     // Record the detected drift even when the pin-store update fails. The gateway will
     // fail closed on that error, and the security log must still explain why it did so.
+    let review_tools: BTreeSet<String> = events
+        .iter()
+        .filter(|event| event["review_required"] == true)
+        .filter_map(|event| event["tool"].as_str().map(str::to_string))
+        .collect();
     for e in &mut events {
         e["profile"] = json!(profile.unwrap_or(""));
-        record_event(e);
+        let tool = e["tool"].as_str().unwrap_or("");
+        let fp = e["new_fp"].as_str();
+        let review = review_tools.contains(tool);
+        if review
+            && fp.is_some()
+            && pins.get(tool).and_then(|pin| pin.review_logged_fp.as_deref()) == fp
+        {
+            // Keep returning the mandatory event for enforcement and recapture. Only its
+            // repeated security-log/stderr output is suppressed, across gateway restarts too.
+            e["log_suppressed"] = json!(true);
+        } else if record_event(e) && review {
+            if let Some(pin) = updated.get_mut(tool) {
+                pin.review_logged_fp = fp.map(str::to_string);
+            }
+        }
     }
     if updated != pins {
         save(profile, &updated)?;
@@ -955,6 +980,8 @@ fn merge_pending_pin(previous: Option<&Pin>, fresh: Pin, stamp: u64) -> Pin {
         first_seen,
         last_changed,
         review_pending: fresh.review_pending || previous.is_some_and(|old| old.review_pending),
+        review_logged_fp: fresh.review_logged_fp.clone()
+            .or_else(|| previous.and_then(|old| old.review_logged_fp.clone())),
         ..fresh
     }
 }
@@ -1609,10 +1636,16 @@ pub fn retire_absent_reviews(profile: Option<&str>, present: &BTreeSet<String>) 
                 PinsLoad::Fresh | PinsLoad::Corrupt => return Ok(()),
             };
             let absent: BTreeSet<_> = pins.iter()
-                .filter(|(name, pin)| !pin.review_retired && (pin.review_pending || pin.review_on_upgrade) && !present.contains(*name))
+                .filter(|(name, pin)| {
+                    !pin.review_retired
+                        && (pin.review_pending || pin.review_on_upgrade)
+                        && !present.contains(*name)
+                })
                 .map(|(name, _)| name.clone())
                 .collect();
-            if absent.is_empty() { return Ok(()); }
+            if absent.is_empty() {
+                return Ok(());
+            }
             let mut quarantine = match load_quarantine(profile) {
                 Ok(records) => records,
                 Err(error) if is_absent_quarantine_not_fresh(&error) => Quarantine::new(),
@@ -1621,6 +1654,7 @@ pub fn retire_absent_reviews(profile: Option<&str>, present: &BTreeSet<String>) 
             for name in &absent {
                 let pin = pins.get_mut(name).expect("absent pins exist");
                 pin.review_retired = true;
+                pin.review_logged_fp = None;
                 quarantine.remove(name);
             }
             // Persist an empty store too, so removing the last review repairs a missing store.
@@ -1649,7 +1683,9 @@ pub fn review_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<Stri
 /// A release awaiting its captured definition stays pending until bound approval.
 pub fn pending_definition_review(profile: Option<&str>) -> bool {
     match load_pins(profile) {
-        PinsLoad::Loaded(pins) => pins.values().any(|pin| !pin.review_retired && (pin.review_on_upgrade || pin.review_pending)),
+        PinsLoad::Loaded(pins) => pins.values().any(|pin| {
+            !pin.review_retired && (pin.review_on_upgrade || pin.review_pending)
+        }),
         _ => false,
     }
 }
@@ -2230,6 +2266,7 @@ fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, reviewed
         review_on_upgrade: true,
         review_pending: true,
         review_retired: false,
+        review_logged_fp: None,
         parameters: None,
         ro: None,
         dh: None,
@@ -2240,6 +2277,7 @@ fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, reviewed
     pin.review_on_upgrade = !reviewed || fp_version(&pin.fp) != PIN_FP_VERSION;
     pin.review_pending = !reviewed;
     pin.review_retired = false;
+    pin.review_logged_fp = None;
 }
 
 /// How a bulk re-approval went: how many blocks were lifted, and the tools that
@@ -4015,7 +4053,7 @@ fn record_definition_change(event: &Value, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn record_event(event: &Value) {
+fn record_event(event: &Value) -> bool {
     if let Some(path) = security_path() {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -4023,26 +4061,25 @@ fn record_event(event: &Value) {
         if event["type"] == "tool_drift"
             || (event["type"] == "tool_poison_flag" && event["new_fp"].is_string())
         {
-            let _ = record_definition_change(event, &path);
-            return;
+            return record_definition_change(event, &path).is_ok();
         }
         let Ok(_lock) = crate::registry::lock_at(&path) else {
-            return;
+            return false;
         };
         // Collapse the concurrent multi-gateway burst before it hits disk (see
         // `recently_recorded`), so the shared log carries one line per real change.
         if recently_recorded(event, &path) {
-            return;
+            return true;
         }
         // Owner-only from creation (SBS-868): drift events carry injection
         // signatures and evidence snippets.
-        if let Ok(mut file) = crate::registry::open_append_private(&path) {
-            // Single write_all (not writeln!, which issues several syscalls) so the many
-            // client-spawned gateways sharing this file can't interleave into corrupt JSON.
-            let _ = file.write_all(format!("{event}\n").as_bytes());
-        }
+        let logged = crate::registry::open_append_private(&path)
+            .and_then(|mut file| file.write_all(format!("{event}\n").as_bytes()))
+            .is_ok();
         rotate_if_large(&path);
+        return logged;
     }
+    false
 }
 
 fn rotate_if_large(path: &Path) {
@@ -5895,10 +5932,36 @@ mod tests {
         for _ in 0..3 {
             let events = check_staged(None, &tools).unwrap();
             assert!(events.iter().any(|event| event["review_required"] == true));
+            assert!(events.iter().all(|event| event["log_suppressed"] == true));
             apply_quarantine(None, &tools, &events).unwrap();
             accept_quarantined_pins(None).unwrap();
         }
         assert_eq!(read_recent(20).unwrap().len(), 1, "pending review logged repeatedly after ten minutes");
+    }
+
+    #[test]
+    fn pending_review_log_suppression_does_not_hide_new_definitions_or_failed_writes() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("pending-review-log-retry");
+        let tools = vec![destructive_tool("srv__wipe", "First captured definition.")];
+        let mut pin = pin_of(&tools[0]);
+        pin.review_pending = true;
+        save_pins(None, &BTreeMap::from([("srv__wipe".into(), pin)])).unwrap();
+        let path = security_path().unwrap();
+        std::fs::create_dir(&path).unwrap();
+        check_staged(None, &tools).unwrap();
+        assert!(matches!(load_pins(None), PinsLoad::Loaded(pins) if pins["srv__wipe"].review_logged_fp.is_none()));
+        std::fs::remove_dir(&path).unwrap();
+        let events = check_staged(None, &tools).unwrap();
+        assert!(events.iter().all(|event| event["log_suppressed"] != true));
+        apply_quarantine(None, &tools, &events).unwrap();
+        accept_quarantined_pins(None).unwrap();
+        assert_eq!(read_recent(20).unwrap().len(), 1);
+        let changed = vec![destructive_tool("srv__wipe", "Second unseen definition.")];
+        let events = check_staged(None, &changed).unwrap();
+        assert!(events.iter().all(|event| event["log_suppressed"] != true));
+        assert_eq!(read_recent(20).unwrap().len(), 2);
+        assert!(review_quarantined(None).unwrap().contains("srv__wipe"));
     }
 
     #[test]
@@ -8512,6 +8575,7 @@ mod tests {
             review_on_upgrade: false,
             review_pending: false,
             review_retired: false,
+            review_logged_fp: None,
             parameters: None,
             ro: Some(true),
             dh: None,
@@ -8996,6 +9060,7 @@ mod tests {
             review_on_upgrade: false,
             review_pending: false,
             review_retired: false,
+            review_logged_fp: None,
             parameters: None,
             ro: None,
             dh: None,
