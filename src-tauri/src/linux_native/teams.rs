@@ -2045,6 +2045,38 @@ fn connect_member_decisions(
 mod tests {
     #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn review_rows_use_the_supplied_snapshot_even_when_disk_is_unreadable() {
+        adw::init().unwrap();
+        let data = crate::registry::DataDirTestEnv::new("gtk-review-snapshot");
+        let app = adw::Application::builder()
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let (_, servers, _) =
+            super::super::build_content(&app, crate::approval_broker::start_native());
+        let page = TeamsPage::new(&app, servers);
+        let registry: crate::registry::Registry = serde_json::from_value(serde_json::json!({
+            "version": 3,
+            "servers": [
+                {"id":"enabled", "name":"Enabled team server", "source":"team:fixture", "transport":"http", "url":"https://example.invalid/mcp", "env":[], "enabled":true},
+                {"id":"review", "name":"Review team server", "source":"team:fixture", "transport":"http", "url":"https://example.invalid/mcp", "env":[], "enabled":false}
+            ],
+            "team": {"teamId":"fixture", "role":"member", "serverUrl":"http://127.0.0.1:1"}
+        })).unwrap();
+        let snapshot = super::super::state::RegistrySnapshot::from_registry(registry.clone());
+        std::fs::write(data.path.join("registry.json"), "{broken").unwrap();
+        for server in &registry.servers {
+            let row = review_server_row(server.clone(), &registry, &snapshot, page.clone());
+            assert!(row.first_child().is_some());
+        }
+        assert_eq!(
+            std::fs::read_to_string(data.path.join("registry.json")).unwrap(),
+            "{broken"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn personal_review_widgets_have_plain_fields_full_definition_and_scroll() {
         adw::init().unwrap();
         let mut server: crate::registry::ServerEntry = serde_json::from_value(serde_json::json!({
