@@ -39277,6 +39277,19 @@ mod tests {
         }
     }
 
+    // Exercise the Settings path for captured reviews, retaining the displayed fingerprint
+    // assertion while binding approval to the full definition's current record identity.
+    fn approve_captured_review(profile: Option<&str>, tool: &str, expected_fp: &str) -> bool {
+        assert!(integrity::release_definition(profile, tool, expected_fp).is_err());
+        let record = integrity::quarantine_list(profile).into_iter()
+            .find(|record| record["tool"] == tool).unwrap();
+        assert_eq!(record["pending_pin"]["fp"].as_str().or_else(|| record["definition_fp"].as_str()), Some(expected_fp));
+        let id = integrity::quarantine_record_id(&record);
+        let definition = integrity::quarantine_definition(profile, tool, &id).unwrap();
+        assert_eq!(definition["name"], tool);
+        integrity::release_record(profile, tool, &id).unwrap()
+    }
+
     #[test]
     fn integrity_pending_review_retires_removed_catalog_entries_without_approving_return() {
         let data = DataDirTestEnv::new("pending-review-catalog-removal");
@@ -40294,7 +40307,7 @@ mod tests {
         assert!(!state.router.lock().unwrap().aggregated_tools().iter()
             .any(|tool| tool["name"] == "other__read"));
         let fp = integrity::baselines(None)["other__read"].fingerprint.clone();
-        assert!(integrity::release_definition(None, "other__read", &fp).unwrap());
+        assert!(approve_captured_review(None, "other__read", &fp));
         assert!(reconcile_quarantine(
             &state.registry, &state.router, &state.stdio_upstream,
             None, None, &AtomicBool::new(false),
@@ -40356,7 +40369,7 @@ mod tests {
             assert!(!state.router.lock().unwrap().aggregated_tools().iter()
                 .any(|tool| tool["name"] == "srv__read"));
             let fp = integrity::baselines(profile)["srv__read"].fingerprint.clone();
-            integrity::release_definition(profile, "srv__read", &fp).unwrap();
+            approve_captured_review(profile, "srv__read", &fp);
             assert!(reconcile_quarantine(&state.registry, &state.router, &state.stdio_upstream,
                 profile, None, &AtomicBool::new(false)));
             assert!(state.router.lock().unwrap().aggregated_tools().iter()
@@ -40422,7 +40435,7 @@ mod tests {
                         .any(|tool| tool["name"] == "srv__read"));
                     let fp = integrity::baselines(profile)["srv__read"].fingerprint.clone();
                     assert!(fp.starts_with("v3:"));
-                    assert!(integrity::release_definition(profile, "srv__read", &fp).unwrap());
+                    assert!(approve_captured_review(profile, "srv__read", &fp));
                     assert!(reconcile_quarantine(
                         &state.registry, &state.router, &state.stdio_upstream,
                         profile, None, &AtomicBool::new(false),
@@ -40498,7 +40511,7 @@ mod tests {
                 let fp = integrity::baselines(profile)["srv__read"]
                     .fingerprint
                     .clone();
-                assert!(integrity::release_definition(profile, "srv__read", &fp).unwrap());
+                assert!(approve_captured_review(profile, "srv__read", &fp));
                 assert!(reconcile_quarantine(
                     &state.registry,
                     &state.router,
@@ -40557,7 +40570,7 @@ mod tests {
             let fp = integrity::baselines(Some(&scope))["srv__read"]
                 .fingerprint
                 .clone();
-            assert!(integrity::release_definition(Some(&scope), "srv__read", &fp).unwrap());
+            assert!(approve_captured_review(Some(&scope), "srv__read", &fp));
             let accepted = state.reconcile_rooted_view(&keys, checked);
             assert!(accepted
                 .aggregated_tools()
@@ -40808,7 +40821,7 @@ mod tests {
         }}), DiscoveryMode::Full);
         assert!(!called["error"].is_null() || called["result"]["isError"] == true, "{called}");
         let fp = global["srv__read"].fingerprint.clone();
-        assert!(integrity::release_definition(None, "srv__read", &fp).unwrap());
+        assert!(approve_captured_review(None, "srv__read", &fp));
         let accepted = request(json!({"jsonrpc":"2.0","id":4,"method":"tools/list"}), DiscoveryMode::Full);
         assert!(
             accepted["result"]["tools"].as_array().unwrap().iter()

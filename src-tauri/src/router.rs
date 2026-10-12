@@ -7221,10 +7221,13 @@ for line in sys.stdin:
                     .unwrap()["new_fp"]
                     .as_str()
                     .unwrap();
-                assert!(
-                    crate::integrity::release_definition(profile, "srv__echo", reviewed_fp)
-                        .unwrap()
-                );
+                assert!(crate::integrity::release_definition(profile, "srv__echo", reviewed_fp).is_err());
+                let captured = crate::integrity::quarantine_list(profile).into_iter()
+                    .find(|record| record["tool"] == "srv__echo").unwrap();
+                let id = crate::integrity::quarantine_record_id(&captured);
+                let definition = crate::integrity::quarantine_definition(profile, "srv__echo", &id).unwrap();
+                assert_eq!(definition["name"], "srv__echo");
+                assert!(crate::integrity::release_record(profile, "srv__echo", &id).unwrap());
                 router.requarantine(crate::integrity::quarantined(profile).unwrap());
                 assert!(crate::integrity::check_staged(
                     profile,
