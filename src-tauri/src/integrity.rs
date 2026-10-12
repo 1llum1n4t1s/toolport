@@ -6454,6 +6454,26 @@ mod tests {
             start.elapsed() < std::time::Duration::from_millis(100),
             "cached calls repeated the read retry sleeps"
         );
+        REVIEW_PINS_CACHE
+            .lock()
+            .unwrap()
+            .get_mut(&path)
+            .unwrap()
+            .unreadable_read_at = Some(std::time::Instant::now() - UNREADABLE_PINS_RETRY);
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    assert!(cached_review_pins(None).unreadable);
+                });
+            }
+        });
+        assert_eq!(
+            PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst),
+            2 * PINS_READ_ATTEMPTS,
+            "concurrent calls must share one primary-and-backup retry budget"
+        );
     }
 
     #[test]
