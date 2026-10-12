@@ -10315,7 +10315,9 @@ fn maybe_check_integrity(
             // Off re-baselines ordinary tools, while known reviews still require
             // bound approval. Unknown names alone do not create a review at Off.
             review_names = integrity::definition_review_names(profile)
-                .intersection(&all_names).cloned().collect();
+                .intersection(&all_names)
+                .cloned()
+                .collect();
             review_required = !review_names.is_empty();
             integrity::recover_unreadable_baseline_at_off(profile, tools)
                 .map_err(|error| (error, review_names.clone()))?;
@@ -39582,8 +39584,10 @@ mod tests {
             for level in [registry::SafetyLevel::Ask, registry::SafetyLevel::Strict, registry::SafetyLevel::Off] {
                 seed_legacy_review(&data.dir, None, "v2");
                 integrity::release(None, "srv__read").unwrap();
-                let mut reg = Registry::default();
-                reg.servers = vec![stub_server("srv", "Source")];
+                let mut reg = Registry {
+                    servers: vec![stub_server("srv", "Source")],
+                    ..Default::default()
+                };
                 reg.set_safety_level(level);
                 let registry = Arc::new(Mutex::new(reg));
                 let mut built = readonly_router("srv", "Unseen definition.");
@@ -39778,8 +39782,10 @@ mod tests {
         seed_legacy_review(&data.dir, None, "v2");
         integrity::release(None, "srv__read").unwrap();
         let source = readonly_router("srv", "Unseen definition.");
-        let mut reg = Registry::default();
-        reg.servers = vec![stub_server("srv", "Source"), stub_server("other", "Other")];
+        let mut reg = Registry {
+            servers: vec![stub_server("srv", "Source"), stub_server("other", "Other")],
+            ..Default::default()
+        };
         reg.set_safety_level(registry::SafetyLevel::Off);
         let registry = Arc::new(Mutex::new(reg));
         maybe_check_integrity(&registry, &source.shared_tools(), None).unwrap();

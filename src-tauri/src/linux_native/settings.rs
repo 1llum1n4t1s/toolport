@@ -600,8 +600,11 @@ impl SettingsPage {
             .build();
         safety_section.append(&pending);
         let baseline_notice = gtk::Label::builder()
-            .xalign(0.0).wrap(true).visible(false)
-            .css_classes(["toolport-muted"]).build();
+            .xalign(0.0)
+            .wrap(true)
+            .visible(false)
+            .css_classes(["toolport-muted"])
+            .build();
         safety_section.append(&baseline_notice);
         safety_section.append(&listed_section(&approvals_heading, &allowed_list));
         safety_section.append(&listed_section(&quarantine_heading, &quarantine_list));
@@ -1826,7 +1829,8 @@ impl SettingsPage {
                     page.render_endpoint(page.bridge.status());
                     page.render_quarantine(quarantined);
                     if let Ok(notice) = baseline_notice {
-                        page.baseline_notice.set_label(notice.as_deref().unwrap_or(""));
+                        page.baseline_notice
+                            .set_label(notice.as_deref().unwrap_or(""));
                         page.baseline_notice.set_visible(notice.is_some());
                     }
                     page.render_allowed(allowed);
@@ -2084,10 +2088,15 @@ fn wait_for_captured_quarantines(
 }
 
 fn read_baseline_notice() -> std::io::Result<Option<String>> {
-    Ok(crate::integrity::read_recent(100)?.iter()
+    Ok(crate::integrity::read_recent(100)?
+        .iter()
         .find(|event| event["type"] == "pins_load_failed")
-        .map(|event| format!("Last baseline warning: {}", event["detail"].as_str()
-            .unwrap_or("Toolport could not read the integrity baseline because it was unreadable or corrupt. See Activity for details."))))
+        .map(|event| {
+            format!(
+                "Last baseline warning: {}",
+                event["detail"].as_str().unwrap_or("Toolport could not read the integrity baseline because it was unreadable or corrupt. See Activity for details.")
+            )
+        }))
 }
 
 fn read_quarantined_tools() -> Result<Vec<QuarantinedTool>, String> {

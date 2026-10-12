@@ -602,7 +602,8 @@ fn cached_review_pins(profile: Option<&str>) -> std::sync::Arc<ReviewPins> {
     let entry = cache.entry(path).or_default();
     let fresh = matches!(loaded, PinsLoad::Fresh);
     let same_failed_read = matches!(loaded, PinsLoad::Corrupt)
-        && entry.state.unreadable && entry.stamp == stable;
+        && entry.state.unreadable
+        && entry.stamp == stable;
     let state = match loaded {
         PinsLoad::Loaded(pins) => ReviewPins::from_pins(&pins),
         PinsLoad::Fresh => ReviewPins::default(),
@@ -644,7 +645,8 @@ pub fn definition_review_names_for_catalog(
 /// Off restores ordinary v1 exposure after baseline loss. Remembered pending pins
 /// survive the reset; durable quarantine reviews are recovered by the normal gate.
 pub fn recover_unreadable_baseline_at_off(
-    profile: Option<&str>, current: &(impl ToolCatalog + ?Sized),
+    profile: Option<&str>,
+    current: &(impl ToolCatalog + ?Sized),
 ) -> Result<(), String> {
     let remembered = cached_review_pins(profile).reviews.clone();
     let path = pins_path(profile).ok_or("Could not resolve the integrity pin store")?;
@@ -656,8 +658,13 @@ pub fn recover_unreadable_baseline_at_off(
         event["profile"] = json!(profile.unwrap_or(""));
         event["detail"] = json!("Toolport could not read the integrity baseline because it was unreadable or corrupt. Safety is Off, so ordinary tools remain available.");
         record_event(&event);
-        let mut pins: Pins = current.pin_values()
-            .filter_map(|(tool, schema)| tool["name"].as_str().map(|name| (name.to_string(), pin_with_source(tool, schema))))
+        let mut pins: Pins = current
+            .pin_values()
+            .filter_map(|(tool, schema)| {
+                tool["name"]
+                    .as_str()
+                    .map(|name| (name.to_string(), pin_with_source(tool, schema)))
+            })
             .collect();
         pins.extend(remembered);
         save_pins(profile, &pins)
@@ -6141,7 +6148,10 @@ mod tests {
         assert_eq!(definition_review_names_for_catalog(None, &present), Err(present));
         PINS_REVIEW_READ_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
         assert!(definition_review_names(None).contains("srv__read"));
-        assert!(PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst) > 0, "unreadable pins must be retried without a metadata change");
+        assert!(
+            PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "unreadable pins must be retried without a metadata change"
+        );
         std::fs::write(&path, &original).unwrap();
         assert_eq!(definition_review_names(None), BTreeSet::from(["srv__wipe".into()]));
         std::fs::write(pins_backup_path(&path), original.replace("srv__wipe", "srv__read")).unwrap();
@@ -6166,9 +6176,18 @@ mod tests {
         let failed = definition_review_names_for_catalog(None, &present);
         PINS_REVIEW_FORCE_UNREADABLE.with(|flag| flag.set(false));
         assert_eq!(failed, Err(present.clone()));
-        assert!(mandatory_quarantined_checked(None).is_ok(), "the next tick must recover the readable pin state");
-        assert_eq!(definition_review_names_for_catalog(None, &present), Ok(BTreeSet::new()));
-        assert!(review_pins_stamp(&path) == stamp, "fixture changed the pin stamp");
+        assert!(
+            mandatory_quarantined_checked(None).is_ok(),
+            "the next tick must recover the readable pin state"
+        );
+        assert_eq!(
+            definition_review_names_for_catalog(None, &present),
+            Ok(BTreeSet::new())
+        );
+        assert!(
+            review_pins_stamp(&path) == stamp,
+            "fixture changed the pin stamp"
+        );
     }
 
     #[test]
