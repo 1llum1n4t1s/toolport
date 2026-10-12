@@ -6851,8 +6851,7 @@ fn request_pairing(origin: String, team: String, page: ServerPage) {
             window.close();
         }
     }
-    let (parent_app, connected_app, feedback) =
-        (page.app.clone(), page.app.clone(), page.clone());
+    let (parent_app, connected_app, feedback) = (page.app.clone(), page.app.clone(), page.clone());
     let hooks = pairing::PairingHooks {
         parent: Box::new(move || parent_app.active_window()),
         feedback: Box::new(move |message, error| feedback.show_feedback(message, error)),
