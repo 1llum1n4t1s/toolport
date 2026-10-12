@@ -10327,12 +10327,15 @@ fn maybe_check_integrity(
                 .collect();
             (e, all)
         })?;
-        review_required |= events.iter().any(|event| event["review_required"] == true);
+        let recapture_review = events.iter().any(|event| event["review_required"] == true);
+        review_required |= recapture_review;
         // A previous cycle may have persisted quarantine and then failed (or exited) before
         // advancing the corresponding pins. Recover from those durable records without depending on
         // the filtered catalog. Do this after `check_staged` so a corrupt pin store still takes the
         // mandatory baseline-tamper path instead of returning early from ordinary recovery.
-        if !integrity::baseline_tamper_detected(&events) {
+        // An explicit review may be rebuilding a deleted store. Persist that captured
+        // record first, then recover its pin below; reads still fail closed on missing stores.
+        if !integrity::baseline_tamper_detected(&events) && !recapture_review {
             let pending = integrity::quarantine_candidates(tools, &events);
             integrity::accept_quarantined_pins(profile).map_err(|e| (e, pending))?;
         }
