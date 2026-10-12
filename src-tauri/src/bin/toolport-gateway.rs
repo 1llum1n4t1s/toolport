@@ -39234,8 +39234,8 @@ mod tests {
                         None => dir.join("quarantine.json"),
                     };
                     std::fs::write(&path, json!({"srv__read":{"tool":"srv__read", "change":"changed"}}).to_string()).unwrap();
-                    let displayed = integrity::all_quarantined_summaries().unwrap().into_iter().find(|r| r["profile"] == profile.unwrap_or("")).unwrap();
-                    integrity::release_record(profile, "srv__read", displayed["record_id"].as_str().unwrap()).unwrap();
+                    let displayed = integrity::quarantine_list(profile).remove(0);
+                    integrity::release_record(profile, "srv__read", &integrity::quarantine_record_id(&displayed)).unwrap();
                     let mut reg = Registry::default();
                     reg.set_safety_level(level);
                     let registry = Arc::new(Mutex::new(reg));
@@ -39243,10 +39243,10 @@ mod tests {
                     if deleted { std::fs::remove_file(&path).unwrap(); } else { std::fs::write(&path, "{}").unwrap(); }
                     assert_eq!(maybe_check_integrity(&registry, &tools, profile).unwrap(), Some(set_of(&["srv__read"])), "lost review at {level:?}");
                     assert_eq!(effective_quarantine(&registry, profile, &AtomicBool::new(false)), Some(set_of(&["srv__read"])));
-                    let captured = integrity::all_quarantined_summaries().unwrap().into_iter().find(|r| r["profile"] == profile.unwrap_or("")).unwrap();
-                    let id = captured["record_id"].as_str().unwrap();
-                    assert_eq!(integrity::quarantine_definition(profile, "srv__read", id).unwrap(), tools[0]);
-                    integrity::release_record(profile, "srv__read", id).unwrap();
+                    let captured = integrity::quarantine_list(profile).remove(0);
+                    let id = integrity::quarantine_record_id(&captured);
+                    assert_eq!(integrity::quarantine_definition(profile, "srv__read", &id).unwrap(), tools[0]);
+                    integrity::release_record(profile, "srv__read", &id).unwrap();
                     assert_eq!(maybe_check_integrity(&registry, &tools, profile).unwrap(), None);
                 }
             }
