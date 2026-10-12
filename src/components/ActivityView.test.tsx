@@ -1249,6 +1249,45 @@ it("discards a late revision without evicting a newer visibility session", async
   expect(releaseActivityRevision).toHaveBeenCalledTimes(releases + 1);
 });
 
+it.each(["success", "cancellation"] as const)(
+  "preserves a fresh mounted session when an old revision returns %s",
+  async (completion) => {
+    let finish!: (revision: string) => void;
+    let cancel!: (error: string) => void;
+    getActivityRevision.mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve, reject) => {
+          finish = resolve;
+          cancel = reject;
+        }),
+    );
+    getActivityRevision.mockResolvedValue("fresh");
+    const old = render(<ActivityView refreshKey={0} registry={null} />);
+    await act(async () => {});
+    old.unmount();
+    const releases = releaseActivityRevision.mock.calls.length;
+    getAuditLog.mockResolvedValue(refreshedLog);
+    const fresh = render(<ActivityView refreshKey={0} registry={null} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: /recent calls/i }));
+    expect(screen.getByText("list_issues")).toBeInTheDocument();
+    const reads = getAuditLog.mock.calls.length;
+    await act(async () => {
+      if (completion === "success") finish("obsolete");
+      else cancel("Activity change check cancelled");
+    });
+    expect(releaseActivityRevision).toHaveBeenCalledTimes(releases);
+    expect(screen.getByText("list_issues")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Activity change checks are unavailable/),
+    ).not.toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(getAuditLog).toHaveBeenCalledTimes(reads);
+    fresh.unmount();
+    expect(releaseActivityRevision).toHaveBeenCalledTimes(releases + 1);
+  },
+);
+
 it("reconciles a write between initial panel snapshot and first revision baseline", async () => {
   let finish!: (revision: string) => void;
   getActivityRevision.mockImplementationOnce(

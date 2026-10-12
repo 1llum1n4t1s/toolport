@@ -19,7 +19,7 @@ fn request(command: &str) -> tauri::webview::InvokeRequest {
         cmd: command.into(),
         callback: tauri::ipc::CallbackFn(0),
         error: tauri::ipc::CallbackFn(1),
-        url: "http://tauri.localhost".parse().unwrap(),
+        url: "tauri://localhost".parse().unwrap(),
         body: tauri::ipc::InvokeBody::default(),
         headers: Default::default(),
         invoke_key: tauri::test::INVOKE_KEY.into(),
@@ -95,6 +95,8 @@ fn dispatch_cancels_before_response_poll_and_preserves_new_visible_callers() {
     let result = runtime.block_on(async { value(old.await.unwrap()) });
     #[cfg(target_os = "linux")]
     let hidden_watches = watches() - baseline;
+    #[cfg(target_os = "linux")]
+    println!("pre-poll release: {result:?}, hidden watches={hidden_watches}");
     release(); // Clean up even when running this regression against old code.
     assert_eq!(result, Err(serde_json::json!("Activity change check cancelled")));
     #[cfg(target_os = "linux")]
@@ -114,12 +116,27 @@ fn dispatch_cancels_before_response_poll_and_preserves_new_visible_callers() {
 
     // A response completed before hide may reach the renderer after a fresh
     // response. Consuming it must not trigger any native cache release.
-    let completed = revision(&window);
-    runtime.block_on(async { tauri::async_runtime::spawn(async {}).await.unwrap() });
+    let completed = runtime.block_on(async { revision(&window).await.unwrap() });
     release();
     let fresh = revision(&window);
     runtime.block_on(async { value(fresh.await.unwrap()).unwrap() });
-    runtime.block_on(async { value(completed.await.unwrap()) });
+    assert!(value(completed).is_ok());
+    #[cfg(target_os = "linux")]
+    assert_eq!(watches() - baseline, 1);
+    release();
+    #[cfg(target_os = "linux")]
+    assert_eq!(watches(), baseline);
+
+    // A visible read error retains one retry watch, recovers normally, and is
+    // still released by the same synchronous command when the page hides.
+    std::fs::remove_file(data.dir.join("audit.jsonl")).unwrap();
+    std::fs::create_dir(data.dir.join("audit.jsonl")).unwrap();
+    let failed = revision(&window);
+    assert!(runtime.block_on(async { value(failed.await.unwrap()) }).is_err());
+    std::fs::remove_dir(data.dir.join("audit.jsonl")).unwrap();
+    std::fs::write(data.dir.join("audit.jsonl"), "recovered").unwrap();
+    let recovered = revision(&window);
+    assert!(runtime.block_on(async { value(recovered.await.unwrap()) }).is_ok());
     #[cfg(target_os = "linux")]
     assert_eq!(watches() - baseline, 1);
     release();
