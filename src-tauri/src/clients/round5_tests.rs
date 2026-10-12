@@ -1,5 +1,43 @@
 use super::*;
 
+#[test]
+fn round5_absent_or_empty_home_has_no_disconnect_failures() {
+    let data = crate::registry::DataDirTestEnv::new("round5-empty-home");
+    let root = data.dir.join("home");
+    let _home = TestHome::set(&root);
+    crate::registry::save(&crate::registry::Registry::default()).unwrap();
+    for create_home in [false, true] {
+        if create_home { std::fs::create_dir(&root).unwrap(); }
+        assert!(try_claude_code_config_paths().unwrap().is_empty());
+        assert!(detect_clients().iter().all(|client| client.error.is_none()));
+        for dry_run in [true, false] {
+            assert!(disconnect_all(dry_run).unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn round5_absent_home_still_checks_config_override_and_blocks_bad_client() {
+    let data = crate::registry::DataDirTestEnv::new("round5-absent-home-override");
+    let _home = TestHome::set(&data.dir.join("absent-home"));
+    let _env_lock = env_test_lock();
+    let folder = data.dir.join("override");
+    std::fs::create_dir(&folder).unwrap();
+    let _config_dir = EnvRestore::set("CLAUDE_CONFIG_DIR", &folder);
+    let path = claude_code_config_path(&folder);
+    let broken = "{ interrupted client save";
+    std::fs::write(&path, broken).unwrap();
+    crate::registry::save(&crate::registry::Registry::default()).unwrap();
+    assert_eq!(try_claude_code_config_paths().unwrap(), vec![path.clone()]);
+    for dry_run in [true, false] {
+        let results = disconnect_all(dry_run).unwrap();
+        assert!(results.iter().any(|row| row.client_id == "claude-code" && row.error.is_some()));
+        assert!(!results.iter().any(|row| row.client_id == "claude-code-profiles"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+        assert!(data.dir.join("registry.json").is_file());
+    }
+}
+
 fn exercise_manual_v1_profile(data: &crate::registry::DataDirTestEnv, folder: &Path) {
     let path = folder.join(".claude.json");
     let original = serde_json::json!({"mcpServers": {
