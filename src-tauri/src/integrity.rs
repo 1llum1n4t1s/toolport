@@ -1710,6 +1710,14 @@ fn load_quarantine(profile: Option<&str>) -> Result<Quarantine, String> {
     let Some(path) = quarantine_path(profile) else {
         return Ok(Quarantine::new());
     };
+    // A real first run has no quarantine file to recover from a rename window.
+    // Keep the legacy and pin-store guards, and retry every established store.
+    if matches!(std::fs::metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
+        if let Ok(empty) = missing_quarantine_store(profile, &path) {
+            return Ok(empty);
+        }
+    }
     match read_quarantine_file(&path) {
         QuarantineFileRead::Raw(raw) => parse_quarantine_raw(&raw, &path),
         QuarantineFileRead::Missing => missing_quarantine_store(profile, &path),
@@ -7702,6 +7710,40 @@ mod tests {
             .expect("cached first-run path is also Ok empty")
             .is_empty());
         assert!(load_quarantine(profile).expect("load first run").is_empty());
+    }
+
+    #[test]
+    fn cold_start_review_reads_skip_retries_only_for_fresh_missing_stores() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("cold-start-review-stores");
+        for profile in [None, Some("cold-start")] {
+            reset_sbs871_read_hooks();
+            for _ in 0..18 {
+                assert!(review_quarantined(profile).unwrap().is_empty());
+                assert!(!pending_definition_review(profile));
+            }
+            assert_eq!(
+                QUARANTINE_READ_IO_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "fresh catalog arrivals must not enter the quarantine retry loop"
+            );
+
+            // An empty first-run read must not hide a later explicit review.
+            let mut q = Quarantine::new();
+            q.insert("srv__wipe".into(), json!({"review_required": true}));
+            save_quarantine(profile, &q).unwrap();
+            assert!(review_quarantined(profile).unwrap().contains("srv__wipe"));
+            std::fs::remove_file(quarantine_path(profile).unwrap()).unwrap();
+            write_loaded_pin_store(profile);
+            reset_sbs871_read_hooks();
+            assert!(load_quarantine(profile).is_err());
+            assert_eq!(
+                QUARANTINE_READ_IO_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst),
+                PINS_READ_ATTEMPTS as usize,
+                "an established baseline must retain the full missing-store retry budget"
+            );
+        }
+        reset_sbs871_read_hooks();
     }
 
     /// SBS-871: a missing quarantine file while pins are Loaded is not "nothing
