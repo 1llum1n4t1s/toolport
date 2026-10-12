@@ -75,12 +75,12 @@ struct Pin {
     /// The captured definition still awaits the user's bound second approval.
     #[serde(default, skip_serializing_if = "bool_is_false")]
     review_pending: bool,
-    /// An absent tool still needs review if it returns, but does not hold its scope pending.
+    /// A deleted registry identity still needs review if it returns, without holding its scope pending.
     #[serde(default, skip_serializing_if = "bool_is_false")]
     review_retired: bool,
-    /// Durable log suppression for one captured definition while its review is pending.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    review_logged_fp: Option<String>,
+    /// Successful log writes, keyed by event type and captured definition fingerprint.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    review_logged_events: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parameters: Option<BTreeMap<String, String>>,
     /// `readOnlyHint` at pin time, if the tool advertised one.
@@ -137,7 +137,7 @@ impl From<PinRepr> for Pin {
                 review_on_upgrade: false,
                 review_pending: false,
                 review_retired: false,
-                review_logged_fp: None,
+                review_logged_events: BTreeMap::new(),
                 parameters: None,
                 ro: None,
                 dh: None,
@@ -174,7 +174,7 @@ fn pin_with_source(tool: &Value, source_input_schema: Option<&str>) -> Pin {
         review_on_upgrade: false,
         review_pending: false,
         review_retired: false,
-        review_logged_fp: None,
+        review_logged_events: BTreeMap::new(),
         parameters: Some(input_parameters(tool)),
         ro: read_hint(tool, "readOnlyHint"),
         dh: read_hint(tool, "destructiveHint"),
@@ -863,7 +863,7 @@ fn check_inner_with(
                 first_seen,
                 last_changed,
                 review_pending: pins.get(name).is_some_and(|old| old.review_pending),
-                review_logged_fp: pins.get(name).and_then(|old| old.review_logged_fp.clone()),
+                review_logged_events: pins.get(name).map(|old| old.review_logged_events.clone()).unwrap_or_default(),
                 ..fresh.clone()
             },
         );
@@ -891,17 +891,18 @@ fn check_inner_with(
         e["profile"] = json!(profile.unwrap_or(""));
         let tool = e["tool"].as_str().unwrap_or("");
         let fp = e["new_fp"].as_str();
+        let kind = e["type"].as_str().unwrap_or("");
         let review = review_tools.contains(tool);
         if review
             && fp.is_some()
-            && pins.get(tool).and_then(|pin| pin.review_logged_fp.as_deref()) == fp
+            && pins.get(tool).and_then(|pin| pin.review_logged_events.get(kind).map(String::as_str)) == fp
         {
             // Keep returning the mandatory event for enforcement and recapture. Only its
             // repeated security-log/stderr output is suppressed, across gateway restarts too.
             e["log_suppressed"] = json!(true);
         } else if record_event(e) && review {
-            if let Some(pin) = updated.get_mut(tool) {
-                pin.review_logged_fp = fp.map(str::to_string);
+            if let (Some(pin), Some(fp)) = (updated.get_mut(tool), fp) {
+                pin.review_logged_events.insert(kind.to_string(), fp.to_string());
             }
         }
     }
@@ -980,8 +981,8 @@ fn merge_pending_pin(previous: Option<&Pin>, fresh: Pin, stamp: u64) -> Pin {
         first_seen,
         last_changed,
         review_pending: fresh.review_pending || previous.is_some_and(|old| old.review_pending),
-        review_logged_fp: fresh.review_logged_fp.clone()
-            .or_else(|| previous.and_then(|old| old.review_logged_fp.clone())),
+        review_logged_events: previous.map(|old| old.review_logged_events.clone()).unwrap_or_default()
+            .into_iter().chain(fresh.review_logged_events.clone()).collect(),
         ..fresh
     }
 }
@@ -1622,15 +1623,24 @@ pub fn mandatory_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<S
     Ok(quarantined_sets_checked_at(&path, profile)?.1)
 }
 
-/// Cancel active reviews for absent tools without approving their definitions. Call only
-/// with indexed upstream identities, including tools hidden by quarantine or other policy.
-/// Retained pins reassert the review before a returning definition can be published.
-pub fn retire_absent_reviews(profile: Option<&str>, present: &BTreeSet<String>) -> Result<(), String> {
-    // Ordinary Off operation must not depend on a writable quarantine store. A
-    // returning retired review is reactivated by the definition check itself.
-    if !pending_definition_review(profile) {
+/// Retire only identities deleted from the registry. Catalog gaps, disabled tools,
+/// profile filtering and reconnects are not deletion. Reactivate returning names
+/// before their definition check; callers still enforce their pins if this write fails.
+pub fn reconcile_definition_reviews(
+    profile: Option<&str>,
+    registry: &crate::registry::Registry,
+    present: &BTreeSet<String>,
+) -> Result<(), String> {
+    if !pending_definition_review(profile)
+        && definition_review_names(profile).is_disjoint(present)
+    {
         return Ok(());
     }
+    let removed_profile = profile.is_some_and(|id| {
+        !valid_root_scope(id)
+            && registry.default_access_context_id.as_deref() != Some(id)
+            && !registry.profiles.iter().any(|profile| profile.id == id)
+    });
     let quarantine_path = quarantine_path(profile).ok_or("Could not resolve the quarantine store")?;
     let pin_path = pins_path(profile).ok_or("Could not resolve the integrity pin store")?;
     // Match the release lock order: quarantine, then pins.
@@ -1645,29 +1655,84 @@ pub fn retire_absent_reviews(profile: Option<&str>, present: &BTreeSet<String>) 
                     !pin.review_retired
                         && (pin.review_pending || pin.review_on_upgrade)
                         && !present.contains(*name)
+                        && (removed_profile || !registry_has_tool_identity(registry, name))
                 })
                 .map(|(name, _)| name.clone())
                 .collect();
-            if absent.is_empty() {
+            let returned: Vec<_> = pins.iter()
+                .filter(|(name, pin)| pin.review_retired && present.contains(*name))
+                .map(|(name, _)| name.clone())
+                .collect();
+            if absent.is_empty() && returned.is_empty() {
                 return Ok(());
             }
-            let mut quarantine = match load_quarantine(profile) {
-                Ok(records) => records,
-                Err(error) if is_absent_quarantine_not_fresh(&error) => Quarantine::new(),
-                Err(error) => return Err(error),
-            };
-            for name in &absent {
-                let pin = pins.get_mut(name).expect("absent pins exist");
-                pin.review_retired = true;
-                pin.review_logged_fp = None;
-                quarantine.remove(name);
+            if !absent.is_empty() {
+                let mut quarantine = match load_quarantine(profile) {
+                    Ok(records) => records,
+                    Err(error) if is_absent_quarantine_not_fresh(&error) => Quarantine::new(),
+                    Err(error) => return Err(error),
+                };
+                for name in &absent {
+                    let pin = pins.get_mut(name).expect("absent pins exist");
+                    pin.review_retired = true;
+                    pin.review_logged_events.clear();
+                    quarantine.remove(name);
+                }
+                save_quarantine(profile, &quarantine)?;
             }
-            // Persist an empty store too, so removing the last review repairs a missing store.
-            save_quarantine(profile, &quarantine)?;
+            for name in returned {
+                pins.get_mut(&name).expect("returned pins exist").review_retired = false;
+            }
             save_pins(profile, &pins)?;
             Ok(())
         })
     })
+}
+
+fn registry_has_tool_identity(registry: &crate::registry::Registry, name: &str) -> bool {
+    registry.servers.iter().any(|server| {
+        let prefix = format!("{}__", crate::router::sanitize_segment(&server.id));
+        // The registry has no authoritative upstream tool inventory. Any identity
+        // owned by a retained server survives a temporary tools/list omission.
+        name.starts_with(&prefix)
+            || registry.tool_overrides.get(&server.id).is_some_and(|tools| {
+                tools.values().filter_map(|tool| tool.name.as_deref()).any(|alias| {
+                    let alias = crate::router::sanitize_segment(alias);
+                    name == alias || name.strip_prefix(&alias)
+                        .and_then(|suffix| suffix.strip_prefix('_'))
+                        .is_some_and(|suffix| suffix.parse::<usize>().is_ok())
+                })
+            })
+    })
+}
+
+/// Every unapproved review pin, including retired identities. Retirement is not
+/// approval: a returning name stays behind the gate even if its stores cannot be written.
+pub fn definition_review_names(profile: Option<&str>) -> BTreeSet<String> {
+    match load_pins(profile) {
+        PinsLoad::Loaded(pins) => pins.into_iter()
+            .filter(|(_, pin)| pin.review_on_upgrade || pin.review_pending)
+            .map(|(name, _)| name).collect(),
+        _ => BTreeSet::new(),
+    }
+}
+
+pub fn retired_definition_review_names(profile: Option<&str>) -> BTreeSet<String> {
+    match load_pins(profile) {
+        PinsLoad::Loaded(pins) => pins.into_iter()
+            .filter(|(_, pin)| pin.review_retired && (pin.review_on_upgrade || pin.review_pending))
+            .map(|(name, _)| name).collect(),
+        _ => BTreeSet::new(),
+    }
+}
+
+fn active_definition_review_names(profile: Option<&str>) -> BTreeSet<String> {
+    match load_pins(profile) {
+        PinsLoad::Loaded(pins) => pins.into_iter()
+            .filter(|(_, pin)| !pin.review_retired && (pin.review_on_upgrade || pin.review_pending))
+            .map(|(name, _)| name).collect(),
+        _ => BTreeSet::new(),
+    }
 }
 
 /// Explicit definition reviews survive every safety level, including Off.
@@ -1675,14 +1740,16 @@ pub fn review_quarantined(profile: Option<&str>) -> Result<BTreeSet<String>, Str
     off_review_read(profile, load_quarantine(profile).map(|q| review_quarantine_set(&q)))
 }
 
+/// Watcher enforcement also retains retired review names in case they return.
 pub fn review_quarantined_checked(profile: Option<&str>) -> Result<BTreeSet<String>, String> {
     let Some(path) = quarantine_path(profile) else {
         return Ok(BTreeSet::new());
     };
     if profile.is_some_and(|id| crate::registry::unmigrated_legacy_profile_store(id, false)) {
-        return off_review_read(profile, Err("The quarantine store was not migrated; retaining pending reviews".into()));
+        return Ok(definition_review_names(profile));
     }
     off_review_read(profile, quarantined_sets_checked_at(&path, profile).map(|sets| sets.2))
+        .map(|mut names| { names.extend(definition_review_names(profile)); names })
 }
 
 /// A release awaiting its captured definition stays pending until bound approval.
@@ -1700,7 +1767,7 @@ fn off_review_read(
     profile: Option<&str>, read: Result<BTreeSet<String>, String>,
 ) -> Result<BTreeSet<String>, String> {
     match read {
-        Err(_) if !pending_definition_review(profile) => Ok(BTreeSet::new()),
+        Err(_) => Ok(active_definition_review_names(profile)),
         result => result,
     }
 }
@@ -2271,7 +2338,7 @@ fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, reviewed
         review_on_upgrade: true,
         review_pending: true,
         review_retired: false,
-        review_logged_fp: None,
+        review_logged_events: BTreeMap::new(),
         parameters: None,
         ro: None,
         dh: None,
@@ -2282,7 +2349,7 @@ fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, reviewed
     pin.review_on_upgrade = !reviewed || fp_version(&pin.fp) != PIN_FP_VERSION;
     pin.review_pending = !reviewed;
     pin.review_retired = false;
-    pin.review_logged_fp = None;
+    pin.review_logged_events.clear();
 }
 
 /// How a bulk re-approval went: how many blocks were lifted, and the tools that
@@ -5882,7 +5949,7 @@ mod tests {
         let path = quarantine_path(None).unwrap();
         std::fs::create_dir(path.with_extension("json.lock")).unwrap();
         assert!(crate::registry::lock_at(&path).is_err(), "fixture must refuse a store lock");
-        assert!(retire_absent_reviews(None, &BTreeSet::new()).is_ok());
+        assert!(reconcile_definition_reviews(None, &crate::registry::Registry::default(), &BTreeSet::new()).is_ok());
         assert!(!pending_definition_review(None));
     }
 
@@ -5906,7 +5973,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_reviews_retain_unseen_return_markers_and_ignore_policy_hiding() {
+    fn deleted_registry_reviews_retain_unseen_return_markers_and_ignore_policy_hiding() {
         let _lock = crate::registry::data_dir_test_lock();
         let _data = TestDataDir::new("pending-review-retirement");
         for profile in [None, Some("removed-profile")] {
@@ -5918,10 +5985,10 @@ mod tests {
                 let events = check_staged(profile, &tools).unwrap();
                 apply_quarantine(profile, &tools, &events).unwrap();
                 accept_quarantined_pins(profile).unwrap();
-                retire_absent_reviews(profile, &BTreeSet::from(["srv__wipe".into()])).unwrap();
+                reconcile_definition_reviews(profile, &crate::registry::Registry::default(), &BTreeSet::from(["srv__wipe".into()])).unwrap();
                 assert!(pending_definition_review(profile), "policy-hidden tool must retain its active review");
                 if missing { std::fs::remove_file(quarantine_path(profile).unwrap()).unwrap(); }
-                retire_absent_reviews(profile, &BTreeSet::new()).unwrap();
+                reconcile_definition_reviews(profile, &crate::registry::Registry::default(), &BTreeSet::new()).unwrap();
                 assert!(!pending_definition_review(profile));
                 assert!(review_quarantined(profile).unwrap().is_empty());
                 assert!(matches!(load_pins(profile), PinsLoad::Loaded(pins) if pins["srv__wipe"].review_pending && pins["srv__wipe"].review_retired));
@@ -6014,7 +6081,7 @@ mod tests {
         let path = security_path().unwrap();
         std::fs::create_dir(&path).unwrap();
         check_staged(None, &tools).unwrap();
-        assert!(matches!(load_pins(None), PinsLoad::Loaded(pins) if pins["srv__wipe"].review_logged_fp.is_none()));
+        assert!(matches!(load_pins(None), PinsLoad::Loaded(pins) if pins["srv__wipe"].review_logged_events.is_empty()));
         std::fs::remove_dir(&path).unwrap();
         let events = check_staged(None, &tools).unwrap();
         assert!(events.iter().all(|event| event["log_suppressed"] != true));
@@ -8639,7 +8706,7 @@ mod tests {
             review_on_upgrade: false,
             review_pending: false,
             review_retired: false,
-            review_logged_fp: None,
+            review_logged_events: BTreeMap::new(),
             parameters: None,
             ro: Some(true),
             dh: None,
@@ -9124,7 +9191,7 @@ mod tests {
             review_on_upgrade: false,
             review_pending: false,
             review_retired: false,
-            review_logged_fp: None,
+            review_logged_events: BTreeMap::new(),
             parameters: None,
             ro: None,
             dh: None,

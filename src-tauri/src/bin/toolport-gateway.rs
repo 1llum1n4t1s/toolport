@@ -10298,23 +10298,28 @@ fn maybe_check_integrity(
             r.quarantine_on_drift_effective(),
         )
     };
-    let mut review_required = integrity::pending_definition_review(profile);
+    let all_names: BTreeSet<_> = tools.iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    // Include retired pins before any fallible store work. A failed reactivation
+    // or definition check cannot turn a returning unseen definition into approval.
+    let mut review_names: BTreeSet<_> = integrity::definition_review_names(profile)
+        .intersection(&all_names).cloned().collect();
+    let mut review_required = !review_names.is_empty();
     let result = (|| {
         #[cfg(test)]
         observe_integrity_gate();
         integrity::ensure_quarantine_store_for_fresh_pins(profile)
-            .map_err(|error| (error, BTreeSet::new()))?;
+            .map_err(|error| (error, all_names.clone()))?;
         let events = integrity::check_staged(profile, tools).map_err(|e| {
             // Without a trustworthy pin-store update we cannot identify which definitions are
             // safely baselined. Keep the whole live catalog behind the integrity gate until a
             // later rebuild can acquire/persist the store.
-            let all = tools
-                .iter()
-                .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
-                .collect();
-            (e, all)
+            (e, all_names.clone())
         })?;
         let recapture_review = events.iter().any(|event| event["review_required"] == true);
+        review_names.extend(events.iter().filter(|event| event["review_required"] == true)
+            .filter_map(|event| event["tool"].as_str().map(str::to_string)));
         review_required |= recapture_review;
         // A previous cycle may have persisted quarantine and then failed (or exited) before
         // advancing the corresponding pins. Recover from those durable records without depending on
@@ -10372,6 +10377,7 @@ fn maybe_check_integrity(
             glog(&format!("SECURITY: integrity recording failed: {error}"));
             Ok(None)
         }
+        Err((error, _)) if !blocking && !quarantine_on => Err((error, review_names)),
         other => other,
     }
 }
@@ -10388,9 +10394,13 @@ fn requarantine_if_needed(
     profile: Option<&str>,
 ) -> SharedTools {
     let tools = tools.into();
-    if let Err(error) = integrity::retire_absent_reviews(profile, &built.indexed_policy_names()) {
-        glog(&format!("SECURITY: absent review cleanup failed: {error}"));
-        return fail_closed_integrity_catalog(built, profile, BTreeSet::new());
+    let cleanup = integrity::reconcile_definition_reviews(
+        profile, &registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        &built.indexed_policy_names(),
+    );
+    if let Err(error) = cleanup {
+        glog(&format!("SECURITY: deleted review cleanup failed: {error}"));
+        // Cleanup does not establish trust. Always run the integrity check below.
     }
     let policy_tools = built.policy_catalog(&tools);
     match maybe_check_integrity(registry, &policy_tools, profile) {
@@ -10398,7 +10408,9 @@ fn requarantine_if_needed(
             // Definitions still filtered during the gate cannot be released by
             // a racing store update, even when another tool just changed.
             pending.extend(built.quarantined().iter().cloned());
-            requarantine_after_integrity_change(built, pending, integrity::quarantined(profile))
+            let stored = effective_quarantine(registry, profile, &AtomicBool::new(false))
+                .ok_or_else(|| "Could not read the effective quarantine set".to_string());
+            requarantine_after_integrity_change(built, pending, stored)
         }
         Ok(None) => {
             // An earlier gate can have saved a block and advanced its pin before
@@ -10429,7 +10441,7 @@ fn requarantine_if_needed(
                 "SECURITY: integrity store update failed: {e}; keeping the live blocked set"
             ));
             eprintln!("toolport: integrity store update failed: {e}; keeping the live blocked set");
-            fail_closed_integrity_catalog(built, profile, pending)
+            fail_closed_integrity_catalog(registry, built, profile, pending)
         }
     }
 }
@@ -10494,16 +10506,23 @@ fn requarantine_after_integrity_change(
 }
 
 fn fail_closed_integrity_catalog(
+    registry: &Arc<Mutex<Registry>>,
     router: &mut Router,
     profile: Option<&str>,
     pending: BTreeSet<String>,
 ) -> SharedTools {
-    let mut fail_closed = router.quarantined().clone();
+    let off = {
+        let registry = registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        registry.safety_level_effective() == registry::SafetyLevel::Off
+            && !registry.quarantine_on_drift_effective()
+    };
+    let mut fail_closed = if off { BTreeSet::new() } else { router.quarantined().clone() };
     fail_closed.extend(pending);
     // If the quarantine write succeeded but the subsequent pin write failed, the durable
     // store contains the new block. If the store itself is unreadable, retain the current set
     // plus the candidates above rather than weakening either one.
-    match integrity::quarantined(profile) {
+    let stored = if off { integrity::review_quarantined_checked(profile) } else { integrity::quarantined(profile) };
+    match stored {
         Ok(persisted) => fail_closed.extend(persisted),
         // A prior gate can persist a block and advance its pin, then lose the
         // swap. The retry has no drift candidates, so its old blocked set cannot
@@ -10514,7 +10533,13 @@ fn fail_closed_integrity_catalog(
     // Never `requarantine_from_store` here: this is the integrity-store FAILURE path,
     // so a fail-closed catalog stays hidden. `reconcile_quarantine` lifts it on the
     // next watcher tick that actually reads the store (SBS-871).
-    router.requarantine(fail_closed);
+    if off {
+        // Off keeps v1 exposure for ordinary rows, while review pins fail closed
+        // for their names alone, including after a failed reactivation write.
+        router.requarantine_from_store(fail_closed);
+    } else {
+        router.requarantine(fail_closed);
+    }
     router.shared_tools()
 }
 
@@ -12559,13 +12584,21 @@ impl HostState {
                 return;
             }
         };
-        view.requarantine_from_store(checked_quarantine.clone());
+        let mut checking = checked_quarantine.clone();
+        let mut returning = integrity::retired_definition_review_names(None);
+        returning.extend(integrity::retired_definition_review_names(Some(scope)));
+        checking.retain(|name| !returning.contains(name));
+        // Restore retired names only on this private candidate so their definitions
+        // can be captured. The checked set below keeps them hidden on any failure.
+        view.requarantine_from_store(checking);
         let rooted_ids: HashSet<&str> = keys.iter().map(|key| key.server.as_str()).collect();
         let present = view.indexed_policy_names_for(|server| rooted_ids.contains(server));
-        if let Err(error) = integrity::retire_absent_reviews(Some(scope), &present) {
-            glog(&format!("SECURITY: rooted absent review cleanup failed: {error}"));
-            view.fail_closed_catalog();
-            return;
+        let cleanup = integrity::reconcile_definition_reviews(
+            Some(scope), &self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+            &present,
+        );
+        if let Err(error) = cleanup {
+            glog(&format!("SECURITY: rooted deleted review cleanup failed: {error}"));
         }
         let all_tools = view.shared_tools();
         let mut pending = BTreeSet::new();
@@ -12585,12 +12618,12 @@ impl HostState {
             let policy_tools = view.policy_catalog(&tools);
             match maybe_check_integrity(&self.registry, &policy_tools, profile) {
                 Ok(found) => pending.extend(found.unwrap_or_default()),
-                Err((error, _)) => {
+                Err((error, found)) => {
                     glog(&format!(
                         "SECURITY: rooted catalog integrity check failed: {error}"
                     ));
-                    view.fail_closed_catalog();
-                    return;
+                    fail_closed_integrity_catalog(&self.registry, view, profile, found.clone());
+                    pending.extend(found);
                 }
             }
         }
@@ -38722,7 +38755,7 @@ mod tests {
             (**guard).clone()
         };
 
-        fail_closed_integrity_catalog(&mut live, Some("sbs714-gateway"), set_of(&["srv__new_drift"]));
+        fail_closed_integrity_catalog(&Arc::new(Mutex::new(Registry::default())), &mut live, Some("sbs714-gateway"), set_of(&["srv__new_drift"]));
 
         assert_eq!(
             live.quarantined(),
@@ -39341,7 +39374,9 @@ mod tests {
             let path = data.dir.join("quarantine.json");
             let mut rows: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             if lost_row { rows.as_object_mut().unwrap().remove("srv__read"); }
-            rows["other__wipe"] = json!({"tool":"other__wipe", "change":"changed"});
+            if level == registry::SafetyLevel::Off {
+                rows["other__wipe"] = json!({"tool":"other__wipe", "change":"changed"});
+            }
             std::fs::write(&path, rows.to_string()).unwrap();
             let held = registry::lock_at(&path).unwrap();
             assert!(registry::lock_at(&path).err().unwrap().contains("locked by another"));
@@ -39353,13 +39388,14 @@ mod tests {
             let published = requarantine_if_needed(&registry, &mut built, offered, None);
             drop(held);
             assert!(!published.iter().any(|t| t["name"] == "srv__read"), "pending review published at {level:?}, lost={lost_row}");
-            if level == registry::SafetyLevel::Strict {
+            if level != registry::SafetyLevel::Off {
                 assert!(!published.iter().any(|t| t["name"] == "other__wipe"), "unchecked destructive drift published after cleanup failed");
             } else if level == registry::SafetyLevel::Off {
                 assert!(published.iter().any(|t| t["name"] == "other__wipe"), "ordinary Off rows must retain v1 exposure");
             }
             // The quarantine lock also blocks the check's initial ensure step. Once
             // it becomes available, this same candidate must run a real drift check.
+            built.requarantine_from_store(BTreeSet::new());
             let offered = built.shared_tools();
             requarantine_if_needed(&registry, &mut built, offered, None);
             assert!(integrity::read_recent(100).unwrap().iter().any(|e| e["tool"] == "other__wipe" && e["change"] == "changed"));
@@ -39391,7 +39427,7 @@ mod tests {
             let registry = Arc::new(Mutex::new(reg));
             let mut built = readonly_router("srv", "Unseen definition.");
             maybe_check_integrity(&registry, &built.shared_tools(), profile).unwrap();
-            integrity::retire_absent_reviews(profile, &BTreeSet::new()).unwrap();
+            integrity::reconcile_definition_reviews(profile, &Registry::default(), &BTreeSet::new()).unwrap();
             assert!(!integrity::pending_definition_review(profile));
             let quarantine = profile.map(|p| format!("quarantine-v2-{}.json", registry::profile_store_key(p))).unwrap_or_else(|| "quarantine.json".into());
             let pins = profile.map(|p| format!("tool-pins-v2-{}.json", registry::profile_store_key(p))).unwrap_or_else(|| "tool-pins.json".into());
@@ -39445,8 +39481,8 @@ mod tests {
     }
 
     #[test]
-    fn integrity_pending_review_retires_removed_catalog_entries_without_approving_return() {
-        let data = DataDirTestEnv::new("pending-review-catalog-removal");
+    fn integrity_pending_review_retires_deleted_registry_entries_without_approving_return() {
+        let data = DataDirTestEnv::new("pending-review-registry-removal");
         let tools = vec![json!({"name":"srv__read", "description":"Unseen definition.", "inputSchema":{"type":"object"}})];
         for level in [registry::SafetyLevel::Ask, registry::SafetyLevel::Off] {
             for profile in [None, Some("removed-review")] {
@@ -39469,7 +39505,7 @@ mod tests {
                 assert_eq!(published.iter().next().unwrap()["name"], "other__read");
                 assert!(!integrity::pending_definition_review(profile), "absent review keeps {level:?} pending");
                 assert!(integrity::review_quarantined(profile).unwrap().is_empty());
-                // Absence cancels the active review, never approval of an unseen return.
+                // Registry deletion cancels the active review, never approval of an unseen return.
                 assert_eq!(maybe_check_integrity(&registry, &tools, profile).unwrap(), Some(set_of(&["srv__read"])));
             }
         }

@@ -1119,7 +1119,9 @@ pub fn create_profile(name: &str) -> Result<Registry, String> {
 
 pub fn delete_profile(profile_id: &str) -> Result<Registry, String> {
     let (registry, ()) = registry::update(|registry| apply_delete_profile(registry, profile_id))?;
-    crate::integrity::retire_absent_reviews(Some(profile_id), &Default::default())?;
+    if let Err(error) = crate::integrity::reconcile_definition_reviews(Some(profile_id), &registry, &Default::default()) {
+        eprintln!("toolport: profile deleted, but pending review cleanup failed: {error}");
+    }
     Ok(registry)
 }
 
