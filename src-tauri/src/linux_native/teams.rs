@@ -1259,6 +1259,10 @@ fn sync_background_step(page: TeamsPage, runtime: Rc<SyncLoop>) {
         if runtime.stopped.get() {
             return;
         }
+        let unpaired = matches!(&result, Ok(Ok((None, _))));
+        if !unpaired {
+            page.app.activate_action("hidden-sync-finished", None);
+        }
         let delay = match result {
             Ok(Ok((None, delay))) => {
                 runtime.unpaired.set(true);

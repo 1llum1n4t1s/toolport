@@ -37,6 +37,11 @@ const APP_ID: &str = "com.tsout.Toolport";
 const LEGACY_PREVIEW_APP_ID: &str = "com.tsout.Toolport.NativePreview";
 
 pub fn run() {
+    #[cfg(target_env = "gnu")]
+    // SAFETY: this process-wide glibc setting is applied before GTK workers start.
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
     let raw_args = std::env::args().collect::<Vec<_>>();
     if let Some(text) = single_instance::information(&raw_args) {
         println!("{text}");
@@ -121,6 +126,7 @@ pub fn run() {
         crate::telemetry::shutdown();
     });
     app.run_with_args(&args);
+    finish_allow_saves();
     if let Some(tray) = tray.borrow_mut().take() {
         tray.shutdown().wait();
     }
@@ -6221,13 +6227,26 @@ impl ApprovalPage {
                     self.broker.add_session_allow(key.clone());
                     if scope == "always" {
                         let page = self.clone();
+                        let save = persist_always_allow(key);
                         gtk::glib::spawn_future_local(async move {
-                            let result = persist_always_allow(key).await;
+                            let result = save.await;
                             if page.stopped.get() {
                                 return;
                             }
                             if let Err(error) = result {
                                 eprintln!("toolport-gtk: approved the call but could not save its allow rule: {error}");
+                                if let Some(parent) = page.root.root().and_downcast::<gtk::Window>() {
+                                    #[allow(deprecated)]
+                                    let dialog = adw::MessageDialog::new(
+                                        Some(&parent),
+                                        Some("Could not save Always allow"),
+                                        Some(&format!("This call was approved for this session. Try Always allow again to keep the rule after restarting. {error}")),
+                                    );
+                                    dialog.add_response("close", "Close");
+                                    dialog.set_close_response("close");
+                                    dialog.connect_response(None, |dialog, _| dialog.close());
+                                    dialog.present();
+                                }
                             }
                         });
                     }
@@ -6239,10 +6258,38 @@ impl ApprovalPage {
     }
 }
 
-async fn persist_always_allow(key: String) -> Result<(), String> {
-    gtk::gio::spawn_blocking(move || save_always_allow(key))
-        .await
-        .map_err(|_| "The allow-rule worker stopped unexpectedly".to_string())?
+type AllowSave = std::sync::mpsc::Receiver<()>;
+static ALLOW_SAVES: std::sync::Mutex<Vec<AllowSave>> = std::sync::Mutex::new(Vec::new());
+
+// Start before returning a future: immediate quit must not cancel scheduling.
+fn persist_always_allow(key: String) -> impl std::future::Future<Output = Result<(), String>> {
+    let (done, pending) = std::sync::mpsc::channel();
+    let (send, result) = futures_channel::oneshot::channel();
+    let mut saves = ALLOW_SAVES.lock().unwrap_or_else(|error| error.into_inner());
+    saves.retain(|save| matches!(save.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+    saves.push(pending);
+    drop(saves);
+    std::thread::spawn(move || {
+        let saved = save_always_allow(key);
+        if let Err(error) = &saved {
+            eprintln!("toolport-gtk: could not save the allow rule: {error}");
+        }
+        let _ = send.send(saved);
+        let _ = done.send(());
+    });
+    async move {
+        result.await.map_err(|_| "The allow-rule worker stopped unexpectedly".to_string())?
+    }
+}
+
+fn finish_allow_saves() {
+    let saves = std::mem::take(&mut *ALLOW_SAVES.lock().unwrap_or_else(|error| error.into_inner()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    for save in saves {
+        if save.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).is_err() {
+            eprintln!("toolport-gtk: an allow-rule save did not finish before shutdown");
+        }
+    }
 }
 
 async fn read_pair_target(origin: String, team: String) -> Result<bool, String> {
@@ -10861,6 +10908,24 @@ fn state_card(icon_name: &str, title: &str, body: &str, error: bool) -> gtk::Box
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn immediate_shutdown_drains_allow_save_without_polling_future() {
+        use super::*;
+        let data = crate::registry::DataDirTestEnv::new("gtk-immediate-allow-save");
+        let lock = crate::registry::lock_at(&data.dir.join("registry.json")).unwrap();
+        let save = persist_always_allow("fixture/read@hash".into());
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(lock);
+        });
+        // No GTK iteration and no poll of the completion future before shutdown.
+        finish_allow_saves();
+        release.join().unwrap();
+        drop(save);
+        let registry = crate::registry::load().unwrap();
+        assert!(registry.tool_allow.contains(&"fixture/read@hash".to_string()));
+    }
+
     #[test]
     fn approval_persistence_and_pair_reads_do_not_block_main_context() {
         use super::*;

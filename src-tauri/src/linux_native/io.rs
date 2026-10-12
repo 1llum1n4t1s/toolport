@@ -5,8 +5,7 @@ use std::sync::Arc;
 
 use adw::prelude::*;
 
-/// Trim once per hidden period, after a short debounce. Mapping or destroying
-/// the window cancels the timer; reads and syncs never trigger allocator work.
+/// Debounce hidden allocator work. Mapping or closing cancels pending trims.
 pub(super) fn track_hidden_memory(window: &adw::ApplicationWindow) {
     #[cfg(target_env = "gnu")]
     {
@@ -39,12 +38,28 @@ pub(super) fn track_hidden_memory(window: &adw::ApplicationWindow) {
                                 unsafe {
                                     libc::malloc_trim(0);
                                 }
+                                // A show can arrive while glibc is trimming. Do
+                                // not carry stale hidden work back to the UI.
+                                if epoch.load(Ordering::SeqCst) != generation {
+                                    return;
+                                }
                             }
                         }));
                     },
                 ));
             }
         };
+        let schedule_after_sync = schedule.clone();
+        if let Some(app) = window.application() {
+            let action = gtk::gio::SimpleAction::new("hidden-sync-finished", None);
+            let owner = window.downgrade();
+            action.connect_activate(move |_, _| {
+                if let Some(window) = owner.upgrade().filter(|window| !window.is_mapped()) {
+                    schedule_after_sync(&window);
+                }
+            });
+            app.add_action(&action);
+        }
         schedule(window);
         window.connect_unmap(move |window| schedule(window));
         for destroy in [false, true] {
