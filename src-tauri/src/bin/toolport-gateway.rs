@@ -36655,6 +36655,7 @@ mod tests {
 
     #[test]
     fn tools_list_always_includes_status() {
+        let _data = DataDirTestEnv::new("tools_list_always_includes_status");
         let host = dispatch_host(false);
         let reg = Registry::default();
         let req = json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/list" });
@@ -37338,6 +37339,8 @@ mod tests {
     /// reach the model verbatim otherwise.
     #[test]
     fn full_tools_list_neutralizes_spoofs_outside_the_description() {
+        let _data =
+            DataDirTestEnv::new("full_tools_list_neutralizes_spoofs_outside_the_description");
         let host = dispatch_host(false);
         host.set_discovery_mode(DiscoveryMode::Full);
         let poisoned = vec![spoofed_tool("resend__send_email")];
