@@ -722,7 +722,14 @@ fn legacy_claude_profile_name(name: &str) -> bool {
 
 fn legacy_claude_profile_dirs(home: &Path) -> Result<Vec<String>, String> {
     let mut names = Vec::new();
-    for entry in std::fs::read_dir(home).map_err(|error| error.to_string())? {
+    let entries = match std::fs::read_dir(home) {
+        Ok(entries) => entries,
+        // An absent home has no sibling profiles. The caller still checks the
+        // default config and any explicit override; real scan errors stay fatal.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(names),
+        Err(error) => return Err(error.to_string()),
+    };
+    for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if !legacy_claude_profile_name(&name) && !claude_profile_name(&name) { continue; }
