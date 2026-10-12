@@ -39579,7 +39579,7 @@ mod tests {
             }
             for _ in 0..3 {
                 let next = state.reconcile_rooted_view(&keys, cached.clone());
-                assert!(Arc::ptr_eq(&next, &cached), "review outside the checked rooted catalog caused a swap");
+                assert!(Arc::ptr_eq(&next, &cached), "review outside the checked rooted catalog caused a swap, hidden={hidden}, wanted={:?}, current={:?}", state.rooted_quarantine(&scope), cached.quarantined());
             }
         }
     }
@@ -39709,7 +39709,7 @@ mod tests {
         assert_eq!(pending, set_of(&["srv__read"]), "a cold corrupt store has no readable review state for this tool");
         assert_eq!(
             effective_quarantine(&registry, profile, &AtomicBool::new(false)),
-            None
+            Some(set_of(&["srv__read"]))
         );
         assert!(integrity::read_recent(20)
             .unwrap()
