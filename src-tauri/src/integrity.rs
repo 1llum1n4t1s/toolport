@@ -7055,10 +7055,7 @@ mod tests {
                 1,
                 "an established primary must still be read for its backup"
             );
-            assert_eq!(
-                read_pins_at(&backup).unwrap()["srv__a"].fp,
-                "deadbeef"
-            );
+            assert_eq!(read_pins_at(&backup).unwrap()["srv__a"].fp, "deadbeef");
             let previous_backup = std::fs::read_to_string(&backup).unwrap();
 
             std::fs::remove_file(&path).unwrap();
