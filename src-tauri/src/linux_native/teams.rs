@@ -174,7 +174,7 @@ impl TeamsPage {
                 }
             },
         );
-        window.connect_destroy(move |_| {
+        super::io::on_window_closed(window, move || {
             runtime.stopped.set(true);
             if let Some(timer) = runtime.timer.borrow_mut().take() {
                 timer.remove();

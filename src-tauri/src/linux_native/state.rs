@@ -849,9 +849,11 @@ impl RegistryController {
         Self::reload_in_background(self);
 
         let controller = Rc::clone(self);
-        window.connect_destroy(move |_| {
-            controller.monitors.borrow_mut().clear();
+        super::io::on_window_closed(window, move || {
             controller.reader.stop();
+            for monitor in controller.monitors.borrow_mut().drain(..) {
+                monitor.cancel();
+            }
         });
     }
 

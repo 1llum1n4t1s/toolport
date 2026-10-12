@@ -1677,7 +1677,7 @@ fn start_security_event_watch(
     });
     reader.refresh();
     let reader_for_destroy = reader.clone();
-    window.connect_destroy(move |_| reader_for_destroy.stop());
+    io::on_window_closed(window, move || reader_for_destroy.stop());
     io::watch_data(
         window,
         5,
@@ -1751,7 +1751,7 @@ fn start_quarantine_watch(
         });
     reader.refresh();
     let reader_for_destroy = reader.clone();
-    window.connect_destroy(move |_| reader_for_destroy.stop());
+    io::on_window_closed(window, move || reader_for_destroy.stop());
     io::watch_data(
         window,
         15,
@@ -10915,6 +10915,11 @@ mod tests {
         gtk::glib::MainContext::default().block_on(async {
             for activate_first in [true, false] {
                 let app = adw::Application::builder()
+                    .application_id(if activate_first {
+                        "com.tsout.Toolport.TestStartupEarly"
+                    } else {
+                        "com.tsout.Toolport.TestStartupLate"
+                    })
                     .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
                     .build();
                 app.register(gtk::gio::Cancellable::NONE).unwrap();

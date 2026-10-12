@@ -50,16 +50,16 @@ pub(super) fn track_hidden_memory(window: &adw::ApplicationWindow) {
         for destroy in [false, true] {
             let source = source.clone();
             let epoch = epoch.clone();
-            let cancel = move |_: &adw::ApplicationWindow| {
+            let cancel = move || {
                 epoch.fetch_add(1, Ordering::SeqCst);
                 if let Some(timer) = source.borrow_mut().take() {
                     timer.remove();
                 }
             };
             if destroy {
-                window.connect_destroy(cancel);
+                on_window_closed(window, cancel);
             } else {
-                window.connect_map(cancel);
+                window.connect_map(move |_| cancel());
             }
         }
     }
@@ -203,9 +203,7 @@ pub(super) fn watch_data(
                 callback();
             });
         });
-        window.connect_destroy(move |_| {
-            monitor.cancel();
-        });
+        on_window_closed(window, move || monitor.cancel());
     } else {
         start_fallback_poll(window, fallback_seconds, hidden_alerts, changed);
     }
@@ -249,7 +247,7 @@ fn start_fallback_poll(
             }
         });
     }
-    window.connect_destroy(move |_| {
+    on_window_closed(window, move || {
         if let Some(timer) = source.borrow_mut().take() {
             timer.remove();
         }
