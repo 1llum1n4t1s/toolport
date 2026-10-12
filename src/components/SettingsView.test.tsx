@@ -793,11 +793,16 @@ describe("SettingsView explicit data removal", () => {
 });
 
 it("shows the current unresolved baseline warning with its time", async () => {
-  const detail = "Toolport could not read the integrity baseline. Safety is Off. Definition reviews recorded only in the unreadable baseline cannot be recovered.";
+  const detail =
+    "Toolport could not read the integrity baseline. Safety is Off. Definition reviews recorded only in the unreadable baseline cannot be recovered.";
   const ts = 1791790000000;
   vi.mocked(getBaselineNotice).mockResolvedValueOnce({ ts, detail });
   renderSettings("safety");
-  expect(await screen.findByText(`Last baseline warning: ${new Date(ts).toLocaleString()}: ${detail}`)).toBeInTheDocument();
+  expect(
+    await screen.findByText(
+      `Last baseline warning: ${new Date(ts).toLocaleString()}: ${detail}`,
+    ),
+  ).toBeInTheDocument();
   expect(screen.queryByText("Quarantined tools")).not.toBeInTheDocument();
 });
 

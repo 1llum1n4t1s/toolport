@@ -814,7 +814,12 @@ export function SettingsView({
       current = false;
       clearInterval(id);
     };
-  }, [registry?.activeProfileId, effectiveLevel, registry?.quarantineOnDrift, registry?.teamForcedQuarantineOnDrift]);
+  }, [
+    registry?.activeProfileId,
+    effectiveLevel,
+    registry?.quarantineOnDrift,
+    registry?.teamForcedQuarantineOnDrift,
+  ]);
 
   const reapprove = async (q: QuarantinedTool) => {
     try {

@@ -599,7 +599,9 @@ fn cached_review_pins(profile: Option<&str>) -> std::sync::Arc<ReviewPins> {
             if entry.stamp == stamp
                 && ((!entry.state.unreadable && stamp.is_some())
                     || (entry.state.unreadable
-                        && entry.unreadable_read_at.is_some_and(|at| at.elapsed() < UNREADABLE_PINS_RETRY)))
+                        && entry
+                            .unreadable_read_at
+                            .is_some_and(|at| at.elapsed() < UNREADABLE_PINS_RETRY)))
             {
                 return entry.state.clone();
             }
@@ -699,27 +701,49 @@ pub fn recover_unreadable_baseline_at_off(
 /// Preserve the exact unreadable bytes before Off replaces its primary. Only
 /// numeric timestamp siblings belong to this writer; keep the three newest.
 fn preserve_unreadable_pins(path: &Path) -> Result<Option<PathBuf>, String> {
-    let prefix = format!("{}.unreadable-", path.file_name().and_then(|name| name.to_str()).ok_or("Invalid pin-store filename")?);
+    let prefix = format!(
+        "{}.unreadable-",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("Invalid pin-store filename")?
+    );
     let parent = path.parent().ok_or("Invalid pin-store directory")?;
-    let timestamp = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error| error.to_string())?.as_nanos();
+    let timestamp = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
     let saved = parent.join(format!("{prefix}{timestamp}"));
     match std::fs::rename(path, &saved) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("Could not save the unreadable baseline at {}: {error}", saved.display())),
+        Err(error) => {
+            return Err(format!(
+                "Could not save the unreadable baseline at {}: {error}",
+                saved.display()
+            ))
+        }
     }
-    let mut copies: Vec<_> = std::fs::read_dir(parent).map_err(|error| error.to_string())?
+    let mut copies: Vec<_> = std::fs::read_dir(parent)
+        .map_err(|error| error.to_string())?
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let name = entry.file_name();
             let suffix = name.to_str()?.strip_prefix(&prefix)?;
-            if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) { return None; }
+            if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
             Some((suffix.parse::<u128>().ok()?, entry.path()))
-        }).collect();
+        })
+        .collect();
     copies.sort_by_key(|(timestamp, _)| *timestamp);
     let remove = copies.len().saturating_sub(3);
     for (_, old) in copies.into_iter().take(remove) {
-        std::fs::remove_file(&old).map_err(|error| format!("Could not remove the old unreadable baseline at {}: {error}", old.display()))?;
+        std::fs::remove_file(&old).map_err(|error| {
+            format!(
+                "Could not remove the old unreadable baseline at {}: {error}",
+                old.display()
+            )
+        })?;
     }
     Ok(Some(saved))
 }
@@ -728,19 +752,29 @@ fn preserve_unreadable_pins(path: &Path) -> Result<Option<PathBuf>, String> {
 /// failures; the log remains available in Activity. Policy text is current.
 pub fn baseline_notice(registry: &crate::registry::Registry) -> Result<Option<Value>, String> {
     let profile = registry.active_profile_id();
-    let event = read_recent(KEEP_LINES).map_err(|error| error.to_string())?
+    let event = read_recent(KEEP_LINES)
+        .map_err(|error| error.to_string())?
         .into_iter()
-        .filter(|event| event["type"] == "pins_load_failed" && event["profile"].as_str().unwrap_or("") == profile)
+        .filter(|event| {
+            event["type"] == "pins_load_failed"
+                && event["profile"].as_str().unwrap_or("") == profile
+        })
         .max_by_key(|event| event["ts"].as_u64().unwrap_or(0));
-    let Some(event) = event else { return Ok(None); };
-    if !cached_review_pins(Some(&profile)).unreadable { return Ok(None); }
+    let Some(event) = event else {
+        return Ok(None);
+    };
+    if !cached_review_pins(Some(&profile)).unreadable {
+        return Ok(None);
+    }
     let policy = match registry.safety_level_effective() {
         crate::registry::SafetyLevel::Off if !registry.quarantine_on_drift_effective() => "Safety is Off. Ordinary tools can be re-baselined; definition reviews recorded only in the unreadable baseline cannot be recovered.",
         crate::registry::SafetyLevel::Off => "Safety is Off, but risky tool changes remain blocked by the current drift protection until the baseline is restored.",
         crate::registry::SafetyLevel::Ask => "Safety is Ask. Tools stay blocked until the baseline is restored.",
         crate::registry::SafetyLevel::Strict => "Safety is Strict. Tools stay blocked until the baseline is restored.",
     };
-    Ok(Some(json!({"ts": event["ts"], "detail": format!("Toolport could not read the integrity baseline. {policy}")})))
+    Ok(Some(
+        json!({"ts": event["ts"], "detail": format!("Toolport could not read the integrity baseline. {policy}")}),
+    ))
 }
 
 /// Record corruption once per failed stamped read without repeating its I/O
@@ -6312,10 +6346,21 @@ mod tests {
         );
         PINS_REVIEW_READ_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
         assert!(definition_review_names(None).contains("srv__read"));
-        assert_eq!(PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst), 0);
-        REVIEW_PINS_CACHE.lock().unwrap().get_mut(&path).unwrap().unreadable_read_at = Some(std::time::Instant::now() - UNREADABLE_PINS_RETRY);
+        assert_eq!(
+            PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        REVIEW_PINS_CACHE
+            .lock()
+            .unwrap()
+            .get_mut(&path)
+            .unwrap()
+            .unreadable_read_at = Some(std::time::Instant::now() - UNREADABLE_PINS_RETRY);
         assert!(definition_review_names(None).contains("srv__read"));
-        assert!(PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst) > 0, "deadline must retry even with the same stamp");
+        assert!(
+            PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "deadline must retry even with the same stamp"
+        );
         std::fs::write(&path, &original).unwrap();
         assert_eq!(
             definition_review_names(None),
@@ -6341,12 +6386,24 @@ mod tests {
         let profile = registry.active_profile_id();
         let path = pins_path(Some(&profile)).unwrap();
         std::fs::write(&path, "{ unreadable pins").unwrap();
-        record_event(&json!({"type":"pins_load_failed", "ts":10, "profile":profile, "detail":"Old Ask text"}));
-        record_event(&json!({"type":"pins_load_failed", "ts":20, "profile":"other", "detail":"Other profile"}));
-        record_event(&json!({"type":"pins_load_failed", "ts":700015, "profile":profile, "detail":"Latest failure"}));
+        record_event(
+            &json!({"type":"pins_load_failed", "ts":10, "profile":profile, "detail":"Old Ask text"}),
+        );
+        record_event(
+            &json!({"type":"pins_load_failed", "ts":20, "profile":"other", "detail":"Other profile"}),
+        );
+        record_event(
+            &json!({"type":"pins_load_failed", "ts":700015, "profile":profile, "detail":"Latest failure"}),
+        );
         // The relevant failure must not disappear after 100 unrelated events.
-        for ts in 21..=125 { record_event(&json!({"type":"tool_drift", "ts":ts})); }
-        for (level, wording) in [(crate::registry::SafetyLevel::Ask, "Safety is Ask"), (crate::registry::SafetyLevel::Strict, "Safety is Strict"), (crate::registry::SafetyLevel::Off, "Safety is Off")] {
+        for ts in 21..=125 {
+            record_event(&json!({"type":"tool_drift", "ts":ts}));
+        }
+        for (level, wording) in [
+            (crate::registry::SafetyLevel::Ask, "Safety is Ask"),
+            (crate::registry::SafetyLevel::Strict, "Safety is Strict"),
+            (crate::registry::SafetyLevel::Off, "Safety is Off"),
+        ] {
             registry.set_safety_level(level);
             let notice = baseline_notice(&registry).unwrap().unwrap();
             assert_eq!(notice["ts"], 700015);
@@ -6354,10 +6411,19 @@ mod tests {
             assert!(!notice["detail"].as_str().unwrap().contains("Old Ask text"));
         }
         registry.team_forced_quarantine_on_drift = true;
-        assert!(baseline_notice(&registry).unwrap().unwrap()["detail"].as_str().unwrap().contains("remain blocked"));
+        assert!(baseline_notice(&registry).unwrap().unwrap()["detail"]
+            .as_str()
+            .unwrap()
+            .contains("remain blocked"));
         std::fs::write(&path, "{}").unwrap();
-        assert!(baseline_notice(&registry).unwrap().is_none(), "successful read must resolve the notice without deleting history");
-        assert!(read_recent(KEEP_LINES).unwrap().iter().any(|event| event["type"] == "pins_load_failed"));
+        assert!(
+            baseline_notice(&registry).unwrap().is_none(),
+            "successful read must resolve the notice without deleting history"
+        );
+        assert!(read_recent(KEEP_LINES)
+            .unwrap()
+            .iter()
+            .any(|event| event["type"] == "pins_load_failed"));
         registry.active_profile_id = Some("other-clean".into());
         assert!(baseline_notice(&registry).unwrap().is_none());
     }
@@ -6375,8 +6441,14 @@ mod tests {
         for _ in 0..20 {
             assert!(cached_review_pins(None).unreadable);
         }
-        assert_eq!(PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert!(start.elapsed() < std::time::Duration::from_millis(100), "cached calls repeated the read retry sleeps");
+        assert_eq!(
+            PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(100),
+            "cached calls repeated the read retry sleeps"
+        );
     }
 
     #[test]
@@ -6385,27 +6457,55 @@ mod tests {
         let _data = TestDataDir::new("review-off-saved-primary");
         for profile in [None, Some("work")] {
             let path = pins_path(profile).unwrap();
-            let prefix = format!("{}.unreadable-", path.file_name().unwrap().to_str().unwrap());
+            let prefix = format!(
+                "{}.unreadable-",
+                path.file_name().unwrap().to_str().unwrap()
+            );
             for timestamp in 1..=5 {
-                std::fs::write(path.parent().unwrap().join(format!("{prefix}{timestamp}")), "old").unwrap();
+                std::fs::write(
+                    path.parent().unwrap().join(format!("{prefix}{timestamp}")),
+                    "old",
+                )
+                .unwrap();
             }
             let unrelated = path.parent().unwrap().join(format!("{prefix}notes"));
             std::fs::write(&unrelated, "user bytes").unwrap();
             std::fs::write(&path, "{ original unreadable bytes").unwrap();
             std::fs::write(pins_backup_path(&path), "{ corrupt backup").unwrap();
-            recover_unreadable_baseline_at_off(profile, &vec![tool("srv__read", "Current")]).unwrap();
-            let copies: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap()
+            recover_unreadable_baseline_at_off(profile, &vec![tool("srv__read", "Current")])
+                .unwrap();
+            let copies: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+                .unwrap()
                 .map(|entry| entry.unwrap().path())
-                .filter(|path| path.file_name().unwrap().to_str().unwrap().strip_prefix(&prefix)
-                    .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())))
+                .filter(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .strip_prefix(&prefix)
+                        .is_some_and(|suffix| {
+                            !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+                        })
+                })
                 .collect();
-            assert!(copies.iter().any(|path| std::fs::read_to_string(path).unwrap() == "{ original unreadable bytes"), "Off overwrote the only recoverable copy");
+            assert!(
+                copies
+                    .iter()
+                    .any(|path| std::fs::read_to_string(path).unwrap()
+                        == "{ original unreadable bytes"),
+                "Off overwrote the only recoverable copy"
+            );
             assert_eq!(copies.len(), 3);
             assert_eq!(std::fs::read_to_string(unrelated).unwrap(), "user bytes");
             let events = read_recent(100).unwrap();
-            let event = events.iter().find(|event| event["profile"] == profile.unwrap_or("")).unwrap();
+            let event = events
+                .iter()
+                .find(|event| event["profile"] == profile.unwrap_or(""))
+                .unwrap();
             assert!(event["detail"].as_str().unwrap().contains("Definition reviews recorded only in the unreadable baseline could not be recovered"));
-            assert!(event["saved_path"].as_str().is_some_and(|path| std::path::Path::new(path).exists()));
+            assert!(event["saved_path"]
+                .as_str()
+                .is_some_and(|path| std::path::Path::new(path).exists()));
         }
     }
 
@@ -6426,9 +6526,20 @@ mod tests {
         let failed = definition_review_names_for_catalog(None, &present);
         PINS_REVIEW_FORCE_UNREADABLE.with(|flag| flag.set(false));
         assert_eq!(failed, Err(present.clone()));
-        assert!(definition_review_names_for_catalog(None, &present).is_err(), "failed reads are cached before the retry deadline");
-        REVIEW_PINS_CACHE.lock().unwrap().get_mut(&path).unwrap().unreadable_read_at = Some(std::time::Instant::now() - UNREADABLE_PINS_RETRY);
-        assert!(mandatory_quarantined_checked(None).is_ok(), "the first tick after the deadline must recover the readable pin state");
+        assert!(
+            definition_review_names_for_catalog(None, &present).is_err(),
+            "failed reads are cached before the retry deadline"
+        );
+        REVIEW_PINS_CACHE
+            .lock()
+            .unwrap()
+            .get_mut(&path)
+            .unwrap()
+            .unreadable_read_at = Some(std::time::Instant::now() - UNREADABLE_PINS_RETRY);
+        assert!(
+            mandatory_quarantined_checked(None).is_ok(),
+            "the first tick after the deadline must recover the readable pin state"
+        );
         assert_eq!(
             definition_review_names_for_catalog(None, &present),
             Ok(BTreeSet::new())
@@ -6456,10 +6567,19 @@ mod tests {
             std::fs::write(pins_backup_path(&path), "{ corrupt backup").unwrap();
             recover_unreadable_baseline_at_off(None, &tools).unwrap();
             // Exercise the production staged gate as well as the non-staged guard.
-            let run_check = || if staged { check_staged(None, &tools) } else { check(None, &tools) };
+            let run_check = || {
+                if staged {
+                    check_staged(None, &tools)
+                } else {
+                    check(None, &tools)
+                }
+            };
             let events = run_check().unwrap();
             assert!(events.iter().any(|event| event["review_required"] == true));
-            assert!(definition_review_names(None).contains("srv__wipe"), "the staged gate must retain the upgrade marker before acceptance");
+            assert!(
+                definition_review_names(None).contains("srv__wipe"),
+                "the staged gate must retain the upgrade marker before acceptance"
+            );
             apply_quarantine(None, &tools, &events).unwrap();
             if staged {
                 accept_staged_pins(None, &tools, &events).unwrap();
@@ -6470,7 +6590,10 @@ mod tests {
                 "upgrade-only review was consumed"
             );
             assert!(definition_review_names(None).contains("srv__wipe"));
-            assert!(run_check().unwrap().iter().any(|event| event["review_required"] == true));
+            assert!(run_check()
+                .unwrap()
+                .iter()
+                .any(|event| event["review_required"] == true));
             apply_quarantine(None, &tools, &events).unwrap();
             accept_quarantined_pins(None).unwrap();
             let record = load_quarantine(None).unwrap()["srv__wipe"].clone();

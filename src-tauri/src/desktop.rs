@@ -1139,11 +1139,9 @@ async fn get_security_events(limit: usize) -> Result<Vec<serde_json::Value>, Str
 /// Most recent unresolved baseline warning for the current profile and policy.
 #[tauri::command]
 async fn get_baseline_notice() -> Result<Option<serde_json::Value>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        integrity::baseline_notice(&registry::load_resolved()?)
-    })
-    .await
-    .map_err(|error| format!("baseline notice task join failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(|| integrity::baseline_notice(&registry::load_resolved()?))
+        .await
+        .map_err(|error| format!("baseline notice task join failed: {error}"))?
 }
 
 /// Catalog exposure measurements plus legacy estimated token equivalents from

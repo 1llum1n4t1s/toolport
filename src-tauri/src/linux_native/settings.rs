@@ -2095,7 +2095,10 @@ fn read_baseline_notice() -> Result<Option<String>, String> {
             .and_then(|time| time.format("%c"))
             .map(|time| time.to_string())
             .unwrap_or_else(|_| timestamp.to_string());
-        format!("Last baseline warning: {time}: {}", event["detail"].as_str().unwrap_or_default())
+        format!(
+            "Last baseline warning: {time}: {}",
+            event["detail"].as_str().unwrap_or_default()
+        )
     }))
 }
 
