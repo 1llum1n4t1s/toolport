@@ -155,6 +155,9 @@ pub fn run() {
         tray.shutdown().wait();
     }
     if let Some(Ok(startup)) = startup.borrow_mut().take() {
+        for writer in startup.window.writers {
+            writer.finish();
+        }
         startup.bridge.shutdown();
         startup.broker.clear_endpoint();
     };
@@ -166,6 +169,20 @@ struct WindowStartup {
     removed: Vec<String>,
     access_notice: bool,
     recovery: Option<crate::registry::RegistryRecoveryNotice>,
+    writers: Vec<WindowWriter>,
+}
+
+/// Writes are ordered while GTK runs and drained after the event loop exits.
+struct WindowWriter {
+    sender: std::sync::mpsc::Sender<Option<WindowState>>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl WindowWriter {
+    fn finish(self) {
+        let _ = self.sender.send(None);
+        let _ = self.thread.join();
+    }
 }
 
 struct NativeStartup {
@@ -188,6 +205,7 @@ fn load_native_startup(
         removed: registry.removed_features_notice(),
         access_notice: registry.access_upgrade_notice_pending(),
         recovery: crate::registry::take_recovery_notice(),
+        writers: Vec::new(),
     };
     let broker = crate::approval_broker::start_native_with_events(move || {
         let app = app.clone();
@@ -356,9 +374,9 @@ fn build_window(
     // to remember the geometry the user chose.
     {
         let app_for_hint: gtk::glib::SendWeakRef<adw::Application> = app.downgrade().into();
-        let (saved, receiver) = std::sync::mpsc::channel::<WindowState>();
-        std::thread::spawn(move || {
-            while let Ok(state) = receiver.recv() {
+        let (saved, receiver) = std::sync::mpsc::channel::<Option<WindowState>>();
+        let thread = std::thread::spawn(move || {
+            while let Ok(Some(state)) = receiver.recv() {
                 save_window_state(state);
                 if mark_tray_hint_shown() {
                     let app = app_for_hint.clone();
@@ -370,11 +388,15 @@ fn build_window(
                 }
             }
         });
+        startup.writers.push(WindowWriter {
+            sender: saved.clone(),
+            thread,
+        });
         window.connect_close_request(move |window| {
-            let _ = saved.send(WindowState {
+            let _ = saved.send(Some(WindowState {
                 width: window.width(),
                 height: window.height(),
-            });
+            }));
             gtk::glib::Propagation::Proceed
         });
     }
