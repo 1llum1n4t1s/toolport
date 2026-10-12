@@ -3401,6 +3401,7 @@ struct ActivityPage {
     search_list: gtk::Box,
     inspect_list: gtk::Box,
     feedback: gtk::Label,
+    telemetry_feedback: gtk::Label,
     call_count: gtk::Label,
     success_rate: gtk::Label,
     average_latency: gtk::Label,
@@ -3520,6 +3521,14 @@ impl ActivityPage {
             .build();
         feedback.set_label("Loading retained activity…");
         page.append(&feedback);
+        let telemetry_feedback = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .xalign(0.0)
+            .wrap(true)
+            .visible(false)
+            .css_classes(["toolport-feedback"])
+            .build();
+        page.append(&telemetry_feedback);
 
         let summary = gtk::FlowBox::new();
         summary.add_css_class("toolport-summary");
@@ -3783,6 +3792,7 @@ impl ActivityPage {
             search_list,
             inspect_list,
             feedback,
+            telemetry_feedback,
             call_count: values.remove(0),
             success_rate: values.remove(0),
             average_latency: values.remove(0),
@@ -4003,6 +4013,8 @@ impl ActivityPage {
             value.set_label("…");
         }
         self.savings_banner.set_visible(false);
+        self.telemetry_feedback.set_label("");
+        self.telemetry_feedback.set_visible(false);
     }
 
     fn refresh_health(&self) {
@@ -4039,16 +4051,10 @@ impl ActivityPage {
             return;
         }
         snapshot.telemetry_notices = notices;
-        // Keep loading, stale-read and action feedback until its owner clears it.
-        if !self.loading.get()
-            && !self.feedback.has_css_class("error")
-            && !self.feedback.has_css_class("success")
-        {
-            self.feedback
-                .set_label(&snapshot.telemetry_notices.join("\n"));
-            self.feedback
-                .set_visible(!snapshot.telemetry_notices.is_empty());
-        }
+        self.telemetry_feedback
+            .set_label(&snapshot.telemetry_notices.join("\n"));
+        self.telemetry_feedback
+            .set_visible(!snapshot.telemetry_notices.is_empty());
     }
 
     fn refresh_quietly(&self) {
@@ -4165,9 +4171,10 @@ impl ActivityPage {
         self.feedback.set_label("");
         self.feedback.remove_css_class("error");
         self.feedback.remove_css_class("success");
-        self.feedback
+        self.feedback.set_visible(false);
+        self.telemetry_feedback
             .set_label(&snapshot.telemetry_notices.join("\n"));
-        self.feedback
+        self.telemetry_feedback
             .set_visible(!snapshot.telemetry_notices.is_empty());
         self.clear_button.set_sensitive(
             snapshot.call_count > 0
@@ -12141,11 +12148,15 @@ mod tests {
             "Gateway telemetry health is unavailable. Activity and savings may be incomplete."
                 .into(),
         ]);
-        assert!(page.feedback.text().contains("health is unavailable"));
+        assert!(page
+            .telemetry_feedback
+            .text()
+            .contains("health is unavailable"));
         assert_eq!(page.list.first_child().unwrap(), old);
         assert_eq!(page.stats_list.first_child().unwrap(), stats);
         page.show_error("retained store unreadable");
         page.apply_health_notices(Vec::new());
+        assert!(!page.telemetry_feedback.is_visible());
         assert!(page.feedback.text().contains("Could not refresh"));
         page.render(state::load_activity_snapshot().unwrap());
         assert_eq!(page.list.first_child().unwrap(), old);

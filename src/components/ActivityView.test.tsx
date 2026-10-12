@@ -237,6 +237,39 @@ it("refreshes live health without rereading unchanged stores and preserves retai
   expect(getActivityHealth).toHaveBeenCalledTimes(probes);
 });
 
+it("keeps health probes single-flight and rejects a completion after hiding", async () => {
+  getActivityRevision.mockResolvedValue("same");
+  let finish!: (value: unknown) => void;
+  getActivityHealth.mockReturnValue(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  const view = render(<ActivityView refreshKey={0} registry={null} />);
+  await act(() => vi.advanceTimersByTimeAsync(45_000));
+  expect(getActivityHealth).toHaveBeenCalledTimes(1);
+  windowVisible = false;
+  view.rerender(<ActivityView refreshKey={0} registry={null} />);
+  await act(() => vi.advanceTimersByTimeAsync(30_000));
+  expect(getActivityHealth).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    finish({ telemetry: { unavailable: true }, gatewayNotes: [] });
+  });
+  expect(
+    screen.queryByText(/Gateway telemetry health is unavailable/),
+  ).not.toBeInTheDocument();
+  getActivityHealth.mockResolvedValue({
+    telemetry: { unavailable: true },
+    gatewayNotes: [],
+  });
+  windowVisible = true;
+  view.rerender(<ActivityView refreshKey={0} registry={null} />);
+  await act(() => vi.advanceTimersByTimeAsync(15_000));
+  expect(getActivityHealth).toHaveBeenCalledTimes(2);
+  expect(screen.getByText(/Gateway telemetry health is unavailable/)).toBeInTheDocument();
+  view.unmount();
+});
+
 describe("ActivityView trust-state loading", () => {
   it("shows initial loading without claiming protection is clear", () => {
     getAuditLog.mockReturnValue(new Promise(() => {}));
