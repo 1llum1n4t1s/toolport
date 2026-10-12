@@ -6300,6 +6300,38 @@ mod tests {
     }
 
     #[test]
+    fn review_r3_off_recovery_keeps_upgrade_only_review_until_bound_approval() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("off-upgrade-only-review");
+        for retired in [false, true] {
+            let tools = vec![destructive_tool("srv__wipe", "Unseen definition.")];
+            let mut pin = pin_of(&tools[0]);
+            pin.review_on_upgrade = true;
+            pin.review_pending = false;
+            pin.review_retired = retired;
+            save_quarantine(None, &Quarantine::new()).unwrap();
+            save_pins(None, &BTreeMap::from([("srv__wipe".into(), pin)])).unwrap();
+            let path = pins_path(None).unwrap();
+            std::fs::write(&path, "{ corrupt pins").unwrap();
+            std::fs::write(pins_backup_path(&path), "{ corrupt backup").unwrap();
+            recover_unreadable_baseline_at_off(None, &tools).unwrap();
+            // Non-staged checks must not turn an older upgrade-only marker into
+            // approval when advancing its captured fingerprint.
+            let events = check(None, &tools).unwrap();
+            assert!(events.iter().any(|event| event["review_required"] == true));
+            assert!(pending_definition_review(None), "upgrade-only review was consumed");
+            assert!(definition_review_names(None).contains("srv__wipe"));
+            assert!(check(None, &tools).unwrap().iter().any(|event| event["review_required"] == true));
+            apply_quarantine(None, &tools, &events).unwrap();
+            accept_quarantined_pins(None).unwrap();
+            let record = load_quarantine(None).unwrap()["srv__wipe"].clone();
+            assert!(release_record(None, "srv__wipe", &quarantine_record_id(&record)).unwrap());
+            assert!(!pending_definition_review(None));
+            assert!(check(None, &tools).unwrap().is_empty());
+        }
+    }
+
+    #[test]
     fn review_r2_cold_corrupt_review_state_does_not_imply_approval() {
         let _lock = crate::registry::data_dir_test_lock();
         let _data = TestDataDir::new("review-cold-corrupt");
