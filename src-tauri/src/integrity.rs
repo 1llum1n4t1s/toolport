@@ -688,7 +688,7 @@ pub fn recover_unreadable_baseline_at_off(
             |path| format!("The old file was saved at {}.", path.display()),
         );
         event["saved_path"] = json!(saved);
-        event["detail"] = json!(format!("Toolport could not read the integrity baseline. Safety is Off, so ordinary tools were re-baselined. Definition reviews recorded only in the unreadable baseline could not be recovered. {location}"));
+        event["detail"] = json!(format!("Toolport could not read the integrity baseline. Safety is Off. Definition reviews recorded only in the unreadable baseline could not be recovered. {location}"));
         record_event(&event);
         let mut pins: Pins = current
             .pin_values()
@@ -704,7 +704,8 @@ pub fn recover_unreadable_baseline_at_off(
 }
 
 /// Preserve the exact unreadable bytes before Off replaces its primary. Only
-/// numeric timestamp siblings belong to this writer; keep the three newest.
+/// numeric timestamp siblings belong to this writer. Always keep this copy and
+/// the two newest older copies, including after a clock correction.
 fn preserve_unreadable_pins(path: &Path) -> Result<Option<PathBuf>, String> {
     let prefix = format!(
         "{}.unreadable-",
@@ -737,11 +738,15 @@ fn preserve_unreadable_pins(path: &Path) -> Result<Option<PathBuf>, String> {
             if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
                 return None;
             }
-            Some((suffix.parse::<u128>().ok()?, entry.path()))
+            let copy = entry.path();
+            if copy == saved {
+                return None;
+            }
+            Some((suffix.parse::<u128>().ok()?, copy))
         })
         .collect();
     copies.sort_by_key(|(timestamp, _)| *timestamp);
-    let remove = copies.len().saturating_sub(3);
+    let remove = copies.len().saturating_sub(2);
     for (_, old) in copies.into_iter().take(remove) {
         std::fs::remove_file(&old).map_err(|error| {
             format!(
@@ -6540,6 +6545,24 @@ mod tests {
                 .as_str()
                 .is_some_and(|path| std::path::Path::new(path).exists()));
         }
+    }
+
+    #[test]
+    fn review_r4_off_recovery_without_primary_keeps_its_notice() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("review-off-missing-primary");
+        let profile = Some("missing-primary");
+        let path = pins_path(profile).unwrap();
+        std::fs::write(pins_backup_path(&path), "{ unreadable backup").unwrap();
+        let mut ask_warning = pins_tamper_event();
+        ask_warning["profile"] = json!(profile.unwrap());
+        assert!(record_event(&ask_warning));
+        recover_unreadable_baseline_at_off(profile, &vec![tool("srv__read", "Current")])
+            .unwrap();
+        let event = read_recent(10).unwrap().remove(0);
+        assert!(event["detail"].as_str().unwrap().contains("Safety is Off"));
+        assert!(event["detail"].as_str().unwrap().contains("No primary baseline file was present to save"));
+        assert!(event["saved_path"].is_null());
     }
 
     #[test]
