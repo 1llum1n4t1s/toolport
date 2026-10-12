@@ -39549,11 +39549,11 @@ mod tests {
 
     #[test]
     fn review_r2_rooted_hidden_and_wrong_store_reviews_do_not_retry_per_request() {
-        let data = DataDirTestEnv::new("rooted-hidden-review-retry");
         let scope = format!("root:{}", registry::sha256_hex("/fixture/project"));
-        integrity::register_root_scope(&scope).unwrap();
         let keys = vec![LaunchKey { server: "srv".into(), kind: "stdio", digest: "fixture".into() }];
         for (profile, hidden) in [(Some(scope.as_str()), true), (None, false)] {
+            let data = DataDirTestEnv::new("rooted-hidden-review-retry");
+            integrity::register_root_scope(&scope).unwrap();
             seed_legacy_review(&data.dir, profile, "v2");
             integrity::release(profile, "srv__read").unwrap();
             let state = http_state(false);
