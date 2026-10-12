@@ -44,11 +44,9 @@ export default tseslint.config(
       // Dialogs and command surfaces intentionally move focus to the primary
       // input when they open.
       "jsx-a11y/no-autofocus": "off",
-      // React 19's hooks plugin added set-state-in-effect and refs-during-render
-      // as errors. In a Tauri desktop app there's no Suspense or RSC, so loading
-      // data from the Rust backend via setState-in-useEffect is the standard
-      // pattern. These are legitimate code-quality signals, not bugs — downgrade
-      // to warnings so they surface without blocking the build.
+      // Keep these hooks diagnostics visible as warnings. The lint command uses
+      // --max-warnings 0, so they still block CI. A retained backend-loading or
+      // event-callback pattern needs a reason at the specific expression.
       "react-hooks/set-state-in-effect": "warn",
       "react-hooks/refs": "warn",
     },

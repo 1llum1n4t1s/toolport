@@ -310,11 +310,13 @@ jobs:
   merge-gate:
     name: Build + test
     if: always()
-    needs: [build-test, cross-platform-rust, installer-script, installer-script-bash, pinned-install-urls]
+    needs: [clippy, rustfmt, build-test, cross-platform-rust, installer-script, installer-script-bash, pinned-install-urls]
     runs-on: ubuntu-22.04
     steps:
       - name: Require everything
         run: |
+          echo "clippy=\${{ needs.clippy.result }}"
+          echo "rustfmt=\${{ needs.rustfmt.result }}"
           echo "build-test=\${{ needs.build-test.result }}"
           echo "cross-platform-rust=\${{ needs.cross-platform-rust.result }}"
           echo "installer-script=\${{ needs.installer-script.result }}"
@@ -372,6 +374,8 @@ jobs:
   it("rejects comparisons run by a shell where test is not the POSIX builtin", () => {
     const script = `
         run: |
+          test "\${{ needs.clippy.result }}" = "success"
+          test "\${{ needs.rustfmt.result }}" = "success"
           test "\${{ needs.build-test.result }}" = "success"
           test "\${{ needs.cross-platform-rust.result }}" = "success"
           test "\${{ needs.installer-script.result }}" = "success"
@@ -383,7 +387,7 @@ jobs:
   merge-gate:
     name: Build + test
     if: always()
-    needs: [build-test, cross-platform-rust, installer-script, installer-script-bash, pinned-install-urls]
+    needs: [clippy, rustfmt, build-test, cross-platform-rust, installer-script, installer-script-bash, pinned-install-urls]
     runs-on: ${runsOn}
     steps:
       - name: Require everything${extra}${script}
