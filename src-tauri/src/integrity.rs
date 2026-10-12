@@ -4416,6 +4416,7 @@ fn recently_recorded(event: &Value, path: &Path) -> bool {
             // Off recovery must publish the saved file path even if Ask just
             // recorded the same baseline failure within the dedup window.
             && prev["saved_path"] == event["saved_path"]
+            && (ty != "pins_load_failed" || prev["detail"] == event["detail"])
         {
             let prev_ts = prev.get("ts").and_then(Value::as_u64).unwrap_or(0);
             return now_ts.saturating_sub(prev_ts) <= DEDUP_WINDOW_MS;
@@ -6561,7 +6562,10 @@ mod tests {
             .unwrap();
         let event = read_recent(10).unwrap().remove(0);
         assert!(event["detail"].as_str().unwrap().contains("Safety is Off"));
-        assert!(event["detail"].as_str().unwrap().contains("No primary baseline file was present to save"));
+        assert!(event["detail"]
+            .as_str()
+            .unwrap()
+            .contains("No primary baseline file was present to save"));
         assert!(event["saved_path"].is_null());
     }
 
