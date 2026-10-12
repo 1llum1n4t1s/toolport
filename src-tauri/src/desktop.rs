@@ -450,6 +450,7 @@ fn delete_profile(state: State<RegistryState>, id: String) -> Result<Registry, S
     let (reg, _) = write_registry(state.inner(), |reg| {
         crate::registry_controller::apply_delete_profile(reg, &id)
     })?;
+    crate::registry_controller::cleanup_deleted_profile_reviews(&id, &reg);
     Ok(reg)
 }
 
@@ -1133,6 +1134,14 @@ async fn get_security_events(limit: usize) -> Result<Vec<serde_json::Value>, Str
     })
     .await
     .map_err(|e| format!("security events task join failed: {e}"))?
+}
+
+/// Most recent unresolved baseline warning for the current profile and policy.
+#[tauri::command]
+async fn get_baseline_notice() -> Result<Option<serde_json::Value>, String> {
+    tauri::async_runtime::spawn_blocking(|| integrity::baseline_notice(&registry::load_resolved()?))
+        .await
+        .map_err(|error| format!("baseline notice task join failed: {error}"))?
 }
 
 /// Catalog exposure measurements plus legacy estimated token equivalents from
@@ -4277,6 +4286,7 @@ pub fn run() {
             get_client_sessions,
             audit_stats,
             get_security_events,
+            get_baseline_notice,
             savings_summary,
             gather_diagnostics,
             probe_servers,

@@ -77,15 +77,18 @@ export function ToolChanges({
   events,
   registry,
   onAccept,
+  onReview,
 }: {
   events: SecurityEvent[];
   registry: Registry | null;
   onAccept: (events: SecurityEvent[]) => void;
+  onReview?: () => void;
 }) {
   const groups = useMemo(() => groupToolChanges(events), [events]);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   async function accept(events: SecurityEvent[]) {
+    if (events.some((event) => event.review_required)) return;
     setBusy(true);
     try {
       for (const event of events) {
@@ -112,6 +115,7 @@ export function ToolChanges({
       <div className="space-y-3">
         {groups.map((group) => {
           const blocked = group.tools.filter((tool) => tool.blocked === true).length;
+          const reviewRequired = group.tools.some((tool) => tool.review_required);
           const unknown = group.tools.some((tool) => tool.blocked == null);
           const server =
             registry?.servers.find(
@@ -120,6 +124,7 @@ export function ToolChanges({
             )?.name || group.server;
           const canAccept =
             !unknown &&
+            !reviewRequired &&
             !group.tools.some((tool) => tool.signatures !== undefined) &&
             group.tools.every(
               (tool) => !tool.blocked || (tool.blocked_profiles?.length && tool.new_fp),
@@ -156,12 +161,22 @@ export function ToolChanges({
               </button>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
                 <p className={blocked ? "text-destructive" : "text-muted-foreground"}>
-                  {blocked
-                    ? `${blocked} ${blocked === 1 ? "tool is" : "tools are"} blocked. Review the changes or accept them.`
-                    : unknown
-                      ? "Blocking status unavailable. Review in Settings > Quarantined tools."
-                      : "Not blocked. Review the changes or accept them."}
+                  {reviewRequired
+                    ? "Review the captured definition in Settings before accepting it."
+                    : blocked
+                      ? `${blocked} ${blocked === 1 ? "tool is" : "tools are"} blocked. Review the changes or accept them.`
+                      : unknown
+                        ? "Blocking status unavailable. Review in Settings > Quarantined tools."
+                        : "Not blocked. Review the changes or accept them."}
                 </p>
+                {reviewRequired && (
+                  <button
+                    onClick={onReview}
+                    className="rounded border border-border px-2 py-1 text-foreground"
+                  >
+                    Review in Settings
+                  </button>
+                )}
                 <button
                   disabled={busy || !canAccept}
                   onClick={() => void accept(group.tools)}
@@ -226,18 +241,27 @@ export function ToolChanges({
                             {event.signatures.join(", ") || "details unavailable"}.
                           </p>
                         )}
-                        <button
-                          disabled={
-                            busy ||
-                            event.blocked == null ||
-                            (event.blocked &&
-                              (!event.blocked_profiles?.length || !event.new_fp))
-                          }
-                          onClick={() => void accept([event])}
-                          className="mt-1 rounded border border-border px-2 py-1 text-foreground disabled:opacity-50"
-                        >
-                          Accept this tool
-                        </button>
+                        {event.review_required ? (
+                          <button
+                            onClick={onReview}
+                            className="mt-1 rounded border border-border px-2 py-1 text-foreground"
+                          >
+                            Review in Settings
+                          </button>
+                        ) : (
+                          <button
+                            disabled={
+                              busy ||
+                              event.blocked == null ||
+                              (event.blocked &&
+                                (!event.blocked_profiles?.length || !event.new_fp))
+                            }
+                            onClick={() => void accept([event])}
+                            className="mt-1 rounded border border-border px-2 py-1 text-foreground disabled:opacity-50"
+                          >
+                            Accept this tool
+                          </button>
+                        )}
                       </div>
                     </details>
                   ))}

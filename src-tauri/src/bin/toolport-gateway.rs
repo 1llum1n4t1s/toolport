@@ -10298,23 +10298,46 @@ fn maybe_check_integrity(
             r.quarantine_on_drift_effective(),
         )
     };
-    let mut review_required = integrity::pending_definition_review(profile);
+    let all_names: BTreeSet<_> = tools
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    // Include retired pins before any fallible store work. A failed reactivation
+    // or definition check cannot turn a returning unseen definition into approval.
+    let review_state = integrity::definition_review_names_for_catalog(profile, &all_names);
+    let mut review_names = match &review_state {
+        Ok(names) | Err(names) => names.clone(),
+    };
+    let mut review_required = !review_names.is_empty();
     let result = (|| {
         #[cfg(test)]
         observe_integrity_gate();
+        if review_state.is_err() && !blocking && !quarantine_on {
+            // Off re-baselines ordinary tools, while known reviews still require
+            // bound approval. Unknown names alone do not create a review at Off.
+            review_names = integrity::definition_review_names(profile)
+                .intersection(&all_names)
+                .cloned()
+                .collect();
+            review_required = !review_names.is_empty();
+            integrity::recover_unreadable_baseline_at_off(profile, tools)
+                .map_err(|error| (error, review_names.clone()))?;
+        }
         integrity::ensure_quarantine_store_for_fresh_pins(profile)
-            .map_err(|error| (error, BTreeSet::new()))?;
+            .map_err(|error| (error, all_names.clone()))?;
         let events = integrity::check_staged(profile, tools).map_err(|e| {
             // Without a trustworthy pin-store update we cannot identify which definitions are
             // safely baselined. Keep the whole live catalog behind the integrity gate until a
             // later rebuild can acquire/persist the store.
-            let all = tools
-                .iter()
-                .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
-                .collect();
-            (e, all)
+            (e, all_names.clone())
         })?;
         let recapture_review = events.iter().any(|event| event["review_required"] == true);
+        review_names.extend(
+            events
+                .iter()
+                .filter(|event| event["review_required"] == true)
+                .filter_map(|event| event["tool"].as_str().map(str::to_string)),
+        );
         review_required |= recapture_review;
         // A previous cycle may have persisted quarantine and then failed (or exited) before
         // advancing the corresponding pins. Recover from those durable records without depending on
@@ -10326,7 +10349,10 @@ fn maybe_check_integrity(
             let pending = integrity::quarantine_candidates(tools, &events);
             integrity::accept_quarantined_pins(profile).map_err(|e| (e, pending))?;
         }
-        for d in &events {
+        for d in events
+            .iter()
+            .filter(|event| event["log_suppressed"] != true)
+        {
             let server = d.get("server").and_then(Value::as_str).unwrap_or("?");
             let tool = d.get("tool").and_then(Value::as_str).unwrap_or("?");
             let change = d.get("change").and_then(Value::as_str).unwrap_or("?");
@@ -10372,6 +10398,7 @@ fn maybe_check_integrity(
             glog(&format!("SECURITY: integrity recording failed: {error}"));
             Ok(None)
         }
+        Err((error, _)) if !blocking && !quarantine_on => Err((error, review_names)),
         other => other,
     }
 }
@@ -10387,14 +10414,36 @@ fn requarantine_if_needed(
     tools: impl Into<SharedTools>,
     profile: Option<&str>,
 ) -> SharedTools {
-    let tools = tools.into();
+    let mut tools = tools.into();
+    let reviews = integrity::definition_review_names(profile);
+    let mut checking = built.quarantined().clone();
+    checking.retain(|name| !reviews.contains(name));
+    if &checking != built.quarantined() {
+        // This router is private until the gate finishes. Include pending reviews
+        // in the check so lost rows can be recaptured and changed definitions can
+        // invalidate an open approval without ever exposing the candidate.
+        built.requarantine_from_store(checking);
+        tools = built.shared_tools();
+    }
+    let snapshot = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let cleanup =
+        integrity::reconcile_definition_reviews(profile, &snapshot, &built.indexed_policy_names());
+    if let Err(error) = cleanup {
+        glog(&format!("SECURITY: deleted review cleanup failed: {error}"));
+        // Cleanup does not establish trust. Always run the integrity check below.
+    }
     let policy_tools = built.policy_catalog(&tools);
     match maybe_check_integrity(registry, &policy_tools, profile) {
         Ok(Some(mut pending)) => {
             // Definitions still filtered during the gate cannot be released by
             // a racing store update, even when another tool just changed.
             pending.extend(built.quarantined().iter().cloned());
-            requarantine_after_integrity_change(built, pending, integrity::quarantined(profile))
+            let stored = effective_quarantine(registry, profile, &AtomicBool::new(false))
+                .ok_or_else(|| "Could not read the effective quarantine set".to_string());
+            requarantine_after_integrity_change(built, profile, pending, stored)
         }
         Ok(None) => {
             // An earlier gate can have saved a block and advanced its pin before
@@ -10425,7 +10474,7 @@ fn requarantine_if_needed(
                 "SECURITY: integrity store update failed: {e}; keeping the live blocked set"
             ));
             eprintln!("toolport: integrity store update failed: {e}; keeping the live blocked set");
-            fail_closed_integrity_catalog(built, profile, pending)
+            fail_closed_integrity_catalog(registry, built, profile, pending)
         }
     }
 }
@@ -10460,6 +10509,7 @@ fn publish_built_router(
 
 fn requarantine_after_integrity_change(
     router: &mut Router,
+    profile: Option<&str>,
     pending: BTreeSet<String>,
     persisted: Result<BTreeSet<String>, String>,
 ) -> SharedTools {
@@ -10474,7 +10524,9 @@ fn requarantine_after_integrity_change(
             eprintln!(
                 "toolport: {e}; keeping the live quarantine set plus newly quarantined tools"
             );
-            router.quarantined().clone()
+            let mut names = router.quarantined().clone();
+            names.extend(integrity::definition_review_names(profile));
+            names
         }
     };
     // Even after a successful quarantine write, a post-write read may fail or race. The names
@@ -10490,16 +10542,34 @@ fn requarantine_after_integrity_change(
 }
 
 fn fail_closed_integrity_catalog(
+    registry: &Arc<Mutex<Registry>>,
     router: &mut Router,
     profile: Option<&str>,
     pending: BTreeSet<String>,
 ) -> SharedTools {
-    let mut fail_closed = router.quarantined().clone();
+    let off = {
+        let registry = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        registry.safety_level_effective() == registry::SafetyLevel::Off
+            && !registry.quarantine_on_drift_effective()
+    };
+    let mut fail_closed = if off {
+        BTreeSet::new()
+    } else {
+        router.quarantined().clone()
+    };
     fail_closed.extend(pending);
+    fail_closed.extend(integrity::definition_review_names(profile));
     // If the quarantine write succeeded but the subsequent pin write failed, the durable
     // store contains the new block. If the store itself is unreadable, retain the current set
     // plus the candidates above rather than weakening either one.
-    match integrity::quarantined(profile) {
+    let stored = if off {
+        integrity::review_quarantined_checked(profile)
+    } else {
+        integrity::quarantined(profile)
+    };
+    match stored {
         Ok(persisted) => fail_closed.extend(persisted),
         // A prior gate can persist a block and advance its pin, then lose the
         // swap. The retry has no drift candidates, so its old blocked set cannot
@@ -10507,10 +10577,15 @@ fn fail_closed_integrity_catalog(
         // checked reconciliation establish what may be published.
         Err(_) => router.fail_closed_catalog(),
     }
-    // Never `requarantine_from_store` here: this is the integrity-store FAILURE path,
-    // so a fail-closed catalog stays hidden. `reconcile_quarantine` lifts it on the
-    // next watcher tick that actually reads the store (SBS-871).
-    router.requarantine(fail_closed);
+    // Ask and Strict retain a fail-closed catalog until checked reconciliation
+    // establishes what may be restored (SBS-871).
+    if off {
+        // Off keeps v1 exposure for ordinary rows, while review pins fail closed
+        // for their names alone, including after a failed reactivation write.
+        router.requarantine_from_store(fail_closed);
+    } else {
+        router.requarantine(fail_closed);
+    }
     router.shared_tools()
 }
 
@@ -10539,7 +10614,10 @@ fn effective_quarantine(
         integrity::review_quarantined_checked(profile)
     };
     match stored {
-        Ok(set) => {
+        Ok(mut set) => {
+            // A rowless legacy review may be disabled or outside the checked
+            // catalog. Keep its pin enforced before a policy edit can enable it.
+            set.extend(integrity::definition_review_names(profile));
             // Recovered: let a future failure warn again.
             read_failed.store(false, Ordering::SeqCst);
             Some(set)
@@ -10604,7 +10682,13 @@ fn reconcile_to_checked(
     profile: Option<&str>,
     want: BTreeSet<String>,
 ) -> bool {
-    reconcile_to_with(router, stdio, mcp_sessions, want, |next| {
+    let current = router
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let retry_capture =
+        integrity::definition_reviews_need_capture(profile, &current.integrity_candidate_names());
+    reconcile_to_with(router, stdio, mcp_sessions, want, retry_capture, |next| {
         let tools = next.shared_tools();
         requarantine_if_needed(registry, next, tools, profile);
     })
@@ -10615,6 +10699,7 @@ fn reconcile_to_with(
     stdio: &SessionState,
     mcp_sessions: Option<&McpSessions>,
     want: BTreeSet<String>,
+    retry_capture: bool,
     gate: impl Fn(&mut Router),
 ) -> bool {
     for _ in 0..LIVE_ROUTER_EDIT_ATTEMPTS {
@@ -10622,13 +10707,13 @@ fn reconcile_to_with(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        if current.quarantined() == &want && !current.catalog_fail_closed() {
+        if current.quarantined() == &want && !current.catalog_fail_closed() && !retry_capture {
             return false;
         }
         let restored = !current.quarantined().is_subset(&want) || current.catalog_fail_closed();
         let mut next = (*current).clone();
         next.requarantine_from_store(want.clone());
-        if restored {
+        if restored || retry_capture {
             gate(&mut next);
         }
         let mut live = router
@@ -10710,7 +10795,7 @@ fn reconcile_to(
     mcp_sessions: Option<&McpSessions>,
     want: BTreeSet<String>,
 ) -> bool {
-    reconcile_to_with(router, stdio, mcp_sessions, want, |_| {})
+    reconcile_to_with(router, stdio, mcp_sessions, want, false, |_| {})
 }
 
 /// A fail-closed catalog serves nothing, so the last-good cache must go too
@@ -12555,8 +12640,26 @@ impl HostState {
                 return;
             }
         };
-        view.requarantine_from_store(checked_quarantine.clone());
+        let mut checking = checked_quarantine.clone();
+        let mut returning = integrity::definition_review_names(None);
+        returning.extend(integrity::definition_review_names(Some(scope)));
+        checking.retain(|name| !returning.contains(name));
+        // Restore review names only on this private candidate so their definitions
+        // can be captured. The checked set below keeps them hidden on any failure.
+        view.requarantine_from_store(checking);
         let rooted_ids: HashSet<&str> = keys.iter().map(|key| key.server.as_str()).collect();
+        let present = view.indexed_policy_names_for(|server| rooted_ids.contains(server));
+        let snapshot = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let cleanup = integrity::reconcile_definition_reviews(Some(scope), &snapshot, &present);
+        if let Err(error) = cleanup {
+            glog(&format!(
+                "SECURITY: rooted deleted review cleanup failed: {error}"
+            ));
+        }
         let all_tools = view.shared_tools();
         let mut pending = BTreeSet::new();
         // A rooted view can restore ordinary tools before the base watcher runs.
@@ -12575,12 +12678,12 @@ impl HostState {
             let policy_tools = view.policy_catalog(&tools);
             match maybe_check_integrity(&self.registry, &policy_tools, profile) {
                 Ok(found) => pending.extend(found.unwrap_or_default()),
-                Err((error, _)) => {
+                Err((error, found)) => {
                     glog(&format!(
                         "SECURITY: rooted catalog integrity check failed: {error}"
                     ));
-                    view.fail_closed_catalog();
-                    return;
+                    fail_closed_integrity_catalog(&self.registry, view, profile, found.clone());
+                    pending.extend(found);
                 }
             }
         }
@@ -12638,10 +12741,19 @@ impl HostState {
             let wanted = scope
                 .as_ref()
                 .and_then(|scope| self.rooted_quarantine(scope));
-            if wanted
-                .as_ref()
-                .is_some_and(|set| set == cached.quarantined() && !cached.catalog_fail_closed())
-                || wanted.is_none() && cached.catalog_fail_closed()
+            let rooted_ids: HashSet<_> = keys.iter().map(|key| key.server.as_str()).collect();
+            let base_names =
+                cached.integrity_candidate_names_for(|server| !rooted_ids.contains(server));
+            let rooted_names =
+                cached.integrity_candidate_names_for(|server| rooted_ids.contains(server));
+            let retry_capture = integrity::definition_reviews_need_capture(None, &base_names)
+                || scope.as_ref().is_some_and(|scope| {
+                    integrity::definition_reviews_need_capture(Some(scope), &rooted_names)
+                });
+            if !retry_capture
+                && (wanted.as_ref().is_some_and(|set| {
+                    set == cached.quarantined() && !cached.catalog_fail_closed()
+                }) || wanted.is_none() && cached.catalog_fail_closed())
             {
                 return cached;
             }
@@ -12650,7 +12762,7 @@ impl HostState {
                 let restored =
                     !cached.quarantined().is_subset(&set) || cached.catalog_fail_closed();
                 updated.requarantine_from_store(set);
-                if restored {
+                if restored || retry_capture {
                     if let Some(scope) = &scope {
                         self.check_rooted_integrity(&mut updated, scope, keys);
                     }
@@ -38617,6 +38729,7 @@ mod tests {
 
         requarantine_after_integrity_change(
             &mut live,
+            None,
             set_of(&["srv__new_drift"]),
             Err("quarantine store unreadable".into()),
         );
@@ -38641,7 +38754,12 @@ mod tests {
             (**guard).clone()
         };
 
-        requarantine_after_integrity_change(&mut live, BTreeSet::new(), Ok(set_of(&["srv__wipe"])));
+        requarantine_after_integrity_change(
+            &mut live,
+            None,
+            BTreeSet::new(),
+            Ok(set_of(&["srv__wipe"])),
+        );
 
         assert!(!live.catalog_fail_closed());
         assert_eq!(live.quarantined(), &set_of(&["srv__wipe"]));
@@ -38712,7 +38830,12 @@ mod tests {
             (**guard).clone()
         };
 
-        fail_closed_integrity_catalog(&mut live, Some("sbs714-gateway"), set_of(&["srv__new_drift"]));
+        fail_closed_integrity_catalog(
+            &Arc::new(Mutex::new(Registry::default())),
+            &mut live,
+            Some("sbs714-gateway"),
+            set_of(&["srv__new_drift"]),
+        );
 
         assert_eq!(
             live.quarantined(),
@@ -38739,6 +38862,7 @@ mod tests {
 
         requarantine_after_integrity_change(
             &mut live,
+            None,
             set_of(&["srv__new_drift"]),
             Err("injected post-write read failure".to_string()),
         );
@@ -39112,7 +39236,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let _data_dir = conduit_lib::registry::DataDirOverride::set(&dir);
-        let profile = Some("corrupt-pins-live-q");
+        let profile_id = "corrupt-pins-live-q";
+        let profile = Some(profile_id);
         std::fs::write(
             dir.join(format!(
                 "tool-pins-v2-{}.json",
@@ -39132,7 +39257,9 @@ mod tests {
             let mut guard = router.lock().unwrap();
             // Simulate fail_closed_integrity_catalog after the mandatory tamper quarantine write
             // failed. The watcher must not clear this live set from an empty durable ordinary set.
-            Arc::make_mut(&mut guard).requarantine(set_of(&["srv__wipe"]));
+            let mut candidate = readonly_router("srv", "Ordinary definition.");
+            candidate.requarantine(set_of(&["srv__read"]));
+            *guard = Arc::new(candidate);
         }
 
         assert_eq!(
@@ -39149,7 +39276,7 @@ mod tests {
         ));
         assert_eq!(
             router.lock().unwrap().quarantined(),
-            &set_of(&["srv__wipe"]),
+            &set_of(&["srv__read"]),
             "Ask preserves the live blocks while the trust root is corrupt"
         );
         registry
@@ -39158,7 +39285,8 @@ mod tests {
             .set_safety_level(registry::SafetyLevel::Off);
         assert_eq!(
             effective_quarantine(&registry, profile, &AtomicBool::new(false)),
-            Some(BTreeSet::new())
+            Some(BTreeSet::new()),
+            "Off ignores baseline loss for ordinary tools"
         );
         assert!(reconcile_quarantine(
             &registry,
@@ -39169,6 +39297,12 @@ mod tests {
             &AtomicBool::new(false)
         ));
         assert!(router.lock().unwrap().quarantined().is_empty());
+        assert!(std::fs::read_to_string(dir.join(format!(
+            "tool-pins-v2-{}.json",
+            registry::profile_store_key(profile_id)
+        )))
+        .unwrap()
+        .contains("srv__read"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -39267,8 +39401,606 @@ mod tests {
         }
     }
 
+    // Exercise the Settings path for captured reviews, retaining the displayed fingerprint
+    // assertion while binding approval to the full definition's current record identity.
+    fn approve_captured_review(profile: Option<&str>, tool: &str, expected_fp: &str) -> bool {
+        assert!(integrity::release_definition(profile, tool, expected_fp).is_err());
+        let record = integrity::quarantine_list(profile)
+            .into_iter()
+            .find(|record| record["tool"] == tool)
+            .unwrap();
+        assert_eq!(
+            record["pending_pin"]["fp"]
+                .as_str()
+                .or_else(|| record["definition_fp"].as_str()),
+            Some(expected_fp)
+        );
+        let id = integrity::quarantine_record_id(&record);
+        let definition = integrity::quarantine_definition(profile, tool, &id).unwrap();
+        assert_eq!(definition["name"], tool);
+        integrity::release_record(profile, tool, &id).unwrap()
+    }
+
     #[test]
-    fn integrity_off_baseline_tamper_records_without_blocking() {
+    fn review_cleanup_lock_timeout_still_checks_at_strict() {
+        review_cleanup_lock_timeout_still_checks(registry::SafetyLevel::Strict);
+    }
+
+    #[test]
+    fn review_cleanup_lock_timeout_still_checks_at_ask() {
+        review_cleanup_lock_timeout_still_checks(registry::SafetyLevel::Ask);
+    }
+
+    #[test]
+    fn review_cleanup_lock_timeout_preserves_ordinary_off_exposure() {
+        review_cleanup_lock_timeout_still_checks(registry::SafetyLevel::Off);
+    }
+
+    struct ShortReviewLockTimeout(Option<std::ffi::OsString>);
+
+    impl ShortReviewLockTimeout {
+        fn new() -> Self {
+            let previous = std::env::var_os("TOOLPORT_LOCK_TIMEOUT_MS");
+            std::env::set_var("TOOLPORT_LOCK_TIMEOUT_MS", "1");
+            Self(previous)
+        }
+    }
+
+    impl Drop for ShortReviewLockTimeout {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(value) => std::env::set_var("TOOLPORT_LOCK_TIMEOUT_MS", value),
+                None => std::env::remove_var("TOOLPORT_LOCK_TIMEOUT_MS"),
+            }
+        }
+    }
+
+    fn review_cleanup_lock_timeout_still_checks(level: registry::SafetyLevel) {
+        let data = DataDirTestEnv::new("review-cleanup-lock-timeout");
+        let _timeout = ShortReviewLockTimeout::new();
+        for lost_row in [false, true] {
+            seed_legacy_review(&data.dir, None, "v2");
+            integrity::release(None, "srv__read").unwrap();
+            let srv = readonly_router("srv", "Captured read definition.");
+            let mut reg = Registry {
+                servers: vec![stub_server("srv", "Source"), stub_server("other", "Other")],
+                ..Default::default()
+            };
+            reg.set_safety_level(level);
+            let registry = Arc::new(Mutex::new(reg));
+            maybe_check_integrity(&registry, &srv.shared_tools(), None).unwrap();
+            let baseline = vec![
+                json!({"name":"other__wipe", "description":"Accepted definition.", "inputSchema":{"type":"object"}, "annotations":{"destructiveHint":true}}),
+            ];
+            integrity::check(None, &baseline).unwrap();
+            let path = data.dir.join("quarantine.json");
+            let mut rows: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            if lost_row {
+                rows.as_object_mut().unwrap().remove("srv__read");
+            }
+            if level == registry::SafetyLevel::Off {
+                rows["other__wipe"] = json!({"tool":"other__wipe", "change":"changed"});
+            }
+            std::fs::write(&path, rows.to_string()).unwrap();
+            let held = registry::lock_at(&path).unwrap();
+            assert!(registry::lock_at(&path)
+                .err()
+                .unwrap()
+                .contains("locked by another"));
+            let mut built = srv.clone();
+            built.add(DownstreamServer::connect("other".into(), Box::new(MockRoute {
+                tools: vec![json!({"name":"wipe", "description":"Changed destructive definition.", "inputSchema":{"type":"object"}, "annotations":{"destructiveHint":true}})],
+            })).unwrap());
+            let offered = built.shared_tools();
+            let published = requarantine_if_needed(&registry, &mut built, offered, None);
+            drop(held);
+            assert!(
+                !published.iter().any(|t| t["name"] == "srv__read"),
+                "pending review published at {level:?}, lost={lost_row}"
+            );
+            if level != registry::SafetyLevel::Off {
+                assert!(
+                    !published.iter().any(|t| t["name"] == "other__wipe"),
+                    "unchecked destructive drift published after cleanup failed"
+                );
+            } else if level == registry::SafetyLevel::Off {
+                assert!(
+                    published.iter().any(|t| t["name"] == "other__wipe"),
+                    "ordinary Off rows must retain v1 exposure"
+                );
+            }
+            // The quarantine lock also blocks the check's initial ensure step. Once
+            // it becomes available, this same candidate must run a real drift check.
+            built.requarantine_from_store(BTreeSet::new());
+            let offered = built.shared_tools();
+            requarantine_if_needed(&registry, &mut built, offered, None);
+            assert!(integrity::read_recent(100)
+                .unwrap()
+                .iter()
+                .any(|e| e["tool"] == "other__wipe" && e["change"] == "changed"));
+        }
+    }
+
+    #[test]
+    fn off_returning_retired_review_fails_closed_on_check_staged_error() {
+        off_returning_retired_review_fails_closed("pins");
+    }
+
+    #[test]
+    fn off_returning_retired_review_fails_closed_on_ensure_store_error() {
+        off_returning_retired_review_fails_closed("quarantine");
+    }
+
+    fn off_returning_retired_review_fails_closed(failed_store: &str) {
+        let data = DataDirTestEnv::new("off-retired-review-store-failure");
+        for profile in [None, Some("returning-review")] {
+            seed_legacy_review(&data.dir, profile, "v2");
+            integrity::release(profile, "srv__read").unwrap();
+            let mut reg = Registry {
+                servers: vec![stub_server("srv", "Source"), stub_server("other", "Other")],
+                ..Default::default()
+            };
+            if let Some(profile) = profile {
+                let id = reg.add_profile("Return review");
+                reg.profiles.iter_mut().find(|p| p.id == id).unwrap().id = profile.into();
+            }
+            reg.set_safety_level(registry::SafetyLevel::Off);
+            let registry = Arc::new(Mutex::new(reg));
+            let mut built = readonly_router("srv", "Unseen definition.");
+            maybe_check_integrity(&registry, &built.shared_tools(), profile).unwrap();
+            integrity::reconcile_definition_reviews(
+                profile,
+                &Registry::default(),
+                &BTreeSet::new(),
+            )
+            .unwrap();
+            assert!(!integrity::pending_definition_review(profile));
+            let quarantine = profile
+                .map(|p| format!("quarantine-v2-{}.json", registry::profile_store_key(p)))
+                .unwrap_or_else(|| "quarantine.json".into());
+            let pins = profile
+                .map(|p| format!("tool-pins-v2-{}.json", registry::profile_store_key(p)))
+                .unwrap_or_else(|| "tool-pins.json".into());
+            std::fs::write(
+                data.dir.join(&quarantine),
+                json!({"other__read":{"tool":"other__read", "change":"changed"}}).to_string(),
+            )
+            .unwrap();
+            let lock = data
+                .dir
+                .join(if failed_store == "pins" {
+                    pins
+                } else {
+                    quarantine
+                })
+                .with_extension("json.lock");
+            std::fs::remove_file(&lock).unwrap();
+            std::fs::create_dir(&lock).unwrap();
+            built.add(
+                DownstreamServer::connect(
+                    "other".into(),
+                    Box::new(MockRoute {
+                        tools: vec![
+                            json!({"name":"read", "description":"Ordinary Off definition."}),
+                        ],
+                    }),
+                )
+                .unwrap(),
+            );
+            let offered = built.shared_tools();
+            let published = requarantine_if_needed(&registry, &mut built, offered, profile);
+            assert!(
+                !published.iter().any(|t| t["name"] == "srv__read"),
+                "unseen return published after {failed_store} failure"
+            );
+            assert!(
+                published.iter().any(|t| t["name"] == "other__read"),
+                "ordinary Off exposure changed"
+            );
+            assert!(
+                effective_quarantine(&registry, profile, &AtomicBool::new(false))
+                    .unwrap()
+                    .contains("srv__read"),
+                "watcher must not lift a returning review after a failed gate"
+            );
+            std::fs::remove_dir(lock).unwrap();
+        }
+    }
+
+    #[test]
+    fn transient_catalog_absence_keeps_the_review_record_and_log_marker() {
+        let data = DataDirTestEnv::new("review-transient-catalog-absence");
+        let mut reg = Registry::default();
+        let fresh = reg.clone();
+        reg.version = 1;
+        reg.servers = vec![stub_server("srv", "Source"), stub_server("other", "Other")];
+        reg.profiles[0].enabled_server_ids = vec!["srv".into(), "other".into()];
+        let migration_path = data.dir.join("v1-access-registry.json");
+        std::fs::write(&migration_path, serde_json::to_string(&reg).unwrap()).unwrap();
+        let upgraded = registry::load_from(&migration_path).unwrap();
+        assert!(
+            upgraded.default_access_profile_id.is_none(),
+            "the v1 active set equals the union"
+        );
+        assert!(upgraded.default_access_context_id.is_some());
+        for mut reg in [fresh, upgraded] {
+            assert!(reg.default_access_profile_id.is_none());
+            let ids = [reg.default_access_id(), reg.all_access_id()];
+            for profile in [None, Some(ids[0].as_str()), Some(ids[1].as_str())] {
+                seed_legacy_review(&data.dir, profile, "v2");
+                integrity::release(profile, "srv__read").unwrap();
+                reg.servers = vec![stub_server("srv", "Source"), stub_server("other", "Other")];
+                let registry = Arc::new(Mutex::new(reg.clone()));
+                let mut source = readonly_router("srv", "Unseen definition.");
+                let offered = source.shared_tools();
+                requarantine_if_needed(&registry, &mut source, offered, profile);
+                let record = integrity::quarantine_list(profile).remove(0);
+                let id = integrity::quarantine_record_id(&record);
+                let path = data.dir.join("security.jsonl");
+                let aged: Vec<_> = integrity::read_recent(100)
+                    .unwrap()
+                    .into_iter()
+                    .map(|mut e| {
+                        e["ts"] = json!(1);
+                        e.to_string()
+                    })
+                    .collect();
+                std::fs::write(&path, format!("{}\n", aged.join("\n"))).unwrap();
+                let logged = std::fs::read_to_string(&path).unwrap();
+                registry.lock().unwrap().servers[0].enabled = false;
+                let mut degraded = readonly_router("other", "Healthy server.");
+                let offered = degraded.shared_tools();
+                requarantine_if_needed(&registry, &mut degraded, offered, profile);
+                assert!(
+                    integrity::pending_definition_review(profile),
+                    "temporary catalog gaps must not retire shared reviews"
+                );
+                registry.lock().unwrap().servers[0].enabled = true;
+                let mut returning = readonly_router("srv", "Unseen definition.");
+                let offered = returning.shared_tools();
+                assert!(
+                    requarantine_if_needed(&registry, &mut returning, offered, profile).is_empty()
+                );
+                let after = integrity::quarantine_list(profile).remove(0);
+                assert_eq!(integrity::quarantine_record_id(&after), id);
+                assert_eq!(
+                    std::fs::read_to_string(path).unwrap(),
+                    logged,
+                    "catalog flaps must not relog a pending review"
+                );
+                assert!(
+                    integrity::release_record(profile, "srv__read", &id).unwrap(),
+                    "the open Settings approval must stay valid"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn review_r2_hidden_legacy_reviews_do_not_swap_the_router_every_tick() {
+        let data = DataDirTestEnv::new("hidden-review-tick");
+        for scope_hidden in [false, true] {
+            seed_legacy_review(&data.dir, None, "v2");
+            integrity::release(None, "srv__read").unwrap();
+            let reg = Registry {
+                servers: vec![stub_server("srv", "Source")],
+                ..Default::default()
+            };
+            let registry = Arc::new(Mutex::new(reg));
+            let mut built = readonly_router("srv", "Unseen definition.");
+            let policy = if scope_hidden {
+                RegistryPolicy {
+                    allow: HashMap::from([("srv".into(), HashSet::from(["other".into()]))]),
+                    ..Default::default()
+                }
+            } else {
+                RegistryPolicy {
+                    disabled: HashMap::from([("srv".into(), HashSet::from(["read".into()]))]),
+                    ..Default::default()
+                }
+            };
+            built.apply_registry_policy(policy);
+            let offered = built.shared_tools();
+            requarantine_if_needed(&registry, &mut built, offered, None);
+            let router = Arc::new(Mutex::new(Arc::new(built)));
+            let stdio = test_stdio_session();
+            let before = router.lock().unwrap().clone();
+            for _ in 0..3 {
+                assert!(
+                    !reconcile_quarantine(
+                        &registry,
+                        &router,
+                        &stdio,
+                        None,
+                        None,
+                        &AtomicBool::new(false)
+                    ),
+                    "hidden review retried every tick, scope={scope_hidden}"
+                );
+                assert!(Arc::ptr_eq(&before, &router.lock().unwrap()));
+            }
+        }
+    }
+
+    #[test]
+    fn review_r2_enabling_a_hidden_legacy_review_keeps_it_blocked_before_rebuild() {
+        let data = DataDirTestEnv::new("review-enable-before-rebuild");
+        for level in [
+            registry::SafetyLevel::Ask,
+            registry::SafetyLevel::Strict,
+            registry::SafetyLevel::Off,
+        ] {
+            seed_legacy_review(&data.dir, None, "v2");
+            integrity::release(None, "srv__read").unwrap();
+            let mut reg = Registry {
+                servers: vec![stub_server("srv", "Source")],
+                ..Default::default()
+            };
+            reg.set_safety_level(level);
+            let registry = Arc::new(Mutex::new(reg));
+            let mut built = readonly_router("srv", "Unseen definition.");
+            built.apply_registry_policy(RegistryPolicy {
+                disabled: HashMap::from([("srv".into(), HashSet::from(["read".into()]))]),
+                ..Default::default()
+            });
+            let offered = built.shared_tools();
+            requarantine_if_needed(&registry, &mut built, offered, None);
+            let live = Arc::new(Mutex::new(Arc::new(built)));
+            assert!(republish_registry_policy(&live, RegistryPolicy::default()));
+            assert!(
+                live.lock().unwrap().shared_tools().is_empty(),
+                "enabling a pending legacy review exposed its unchecked definition at {level:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn review_r3_failed_gate_keeps_disabled_rowless_review_blocked() {
+        let data = DataDirTestEnv::new("review-failed-gate-enable");
+        for post_write in [false, true] {
+            for level in [
+                registry::SafetyLevel::Ask,
+                registry::SafetyLevel::Strict,
+                registry::SafetyLevel::Off,
+            ] {
+                seed_legacy_review(&data.dir, None, "v2");
+                integrity::release(None, "srv__read").unwrap();
+                let mut reg = Registry {
+                    servers: vec![stub_server("srv", "Source")],
+                    ..Default::default()
+                };
+                reg.set_safety_level(level);
+                let registry = Arc::new(Mutex::new(reg));
+                let mut built = readonly_router("srv", "Unseen definition.");
+                built.apply_registry_policy(RegistryPolicy {
+                    disabled: HashMap::from([("srv".into(), HashSet::from(["read".into()]))]),
+                    ..Default::default()
+                });
+                // No row can rescue the pending pin if this gate or its re-read fails.
+                std::fs::write(data.dir.join("quarantine.json"), "{ failing store").unwrap();
+                assert!(integrity::quarantined(None).is_err());
+                if post_write {
+                    requarantine_after_integrity_change(
+                        &mut built,
+                        None,
+                        BTreeSet::new(),
+                        Err("failed re-read".into()),
+                    );
+                } else {
+                    let offered = built.shared_tools();
+                    requarantine_if_needed(&registry, &mut built, offered, None);
+                }
+                let live = Arc::new(Mutex::new(Arc::new(built)));
+                assert!(republish_registry_policy(&live, RegistryPolicy::default()));
+                assert!(
+                    live.lock().unwrap().shared_tools().is_empty(),
+                    "unchecked review exposed, post_write={post_write}, level={level:?}"
+                );
+                assert!(
+                    live.lock().unwrap().quarantined().contains("srv__read"),
+                    "pending pin was lost from the enforced set"
+                );
+                for _ in 0..2 {
+                    reconcile_quarantine(
+                        &registry,
+                        &live,
+                        &test_stdio_session(),
+                        None,
+                        None,
+                        &AtomicBool::new(false),
+                    );
+                    assert!(live.lock().unwrap().shared_tools().is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn review_r2_rooted_hidden_and_wrong_store_reviews_do_not_retry_per_request() {
+        let scope = format!("root:{}", registry::sha256_hex("/fixture/project"));
+        let keys = vec![LaunchKey {
+            server: "srv".into(),
+            kind: "stdio",
+            digest: "fixture".into(),
+        }];
+        for (profile, hidden) in [(Some(scope.as_str()), true), (None, false)] {
+            let data = DataDirTestEnv::new("rooted-hidden-review-retry");
+            integrity::register_root_scope(&scope).unwrap();
+            seed_legacy_review(&data.dir, profile, "v2");
+            integrity::release(profile, "srv__read").unwrap();
+            let state = http_state(false);
+            state.registry.lock().unwrap().servers = vec![stub_server("srv", "Source")];
+            let mut built = readonly_router("srv", "Unseen definition.");
+            if hidden {
+                built.apply_registry_policy(RegistryPolicy {
+                    allow: HashMap::from([("srv".into(), HashSet::from(["other".into()]))]),
+                    ..Default::default()
+                });
+            }
+            built.requarantine(state.rooted_quarantine(&scope).unwrap());
+            let cached = Arc::new(built);
+            {
+                let mut pool = state.root_launch_pool.lock().unwrap();
+                pool.views.insert(keys.clone(), cached.clone());
+                pool.root_scopes.insert(keys.clone(), scope.clone());
+            }
+            for _ in 0..3 {
+                let next = state.reconcile_rooted_view(&keys, cached.clone());
+                assert!(Arc::ptr_eq(&next, &cached), "review outside the checked rooted catalog caused a swap, hidden={hidden}, wanted={:?}, current={:?}", state.rooted_quarantine(&scope), cached.quarantined());
+            }
+        }
+    }
+
+    #[test]
+    fn review_r2_off_returning_review_with_corrupt_pins_keeps_ordinary_rows_exposed() {
+        let data = DataDirTestEnv::new("off-corrupt-retired-review");
+        seed_legacy_review(&data.dir, None, "v2");
+        integrity::release(None, "srv__read").unwrap();
+        let mut reg = Registry {
+            servers: vec![stub_server("srv", "Source"), stub_server("other", "Other")],
+            ..Default::default()
+        };
+        reg.set_safety_level(registry::SafetyLevel::Off);
+        let registry = Arc::new(Mutex::new(reg));
+        let source = readonly_router("srv", "Unseen definition.");
+        let ordinary = readonly_router("other", "Ordinary definition.");
+        maybe_check_integrity(&registry, &source.shared_tools(), None).unwrap();
+        maybe_check_integrity(&registry, &ordinary.shared_tools(), None).unwrap();
+        integrity::reconcile_definition_reviews(None, &Registry::default(), &BTreeSet::new())
+            .unwrap();
+        assert!(!integrity::pending_definition_review(None));
+        std::fs::write(
+            data.dir.join("quarantine.json"),
+            json!({"other__read":{"tool":"other__read", "change":"changed"}}).to_string(),
+        )
+        .unwrap();
+        for filename in ["tool-pins.json", "tool-pins.json.bak"] {
+            std::fs::write(data.dir.join(filename), "{ corrupt pins").unwrap();
+        }
+        let unknown = readonly_router("unknown", "Definition with unreadable review state.");
+        let mut built = source
+            .with_shared_server_slot(&ordinary.server_slot("other").unwrap())
+            .with_shared_server_slot(&unknown.server_slot("unknown").unwrap());
+        let offered = built.shared_tools();
+        let published = requarantine_if_needed(&registry, &mut built, offered, None);
+        assert!(!published.iter().any(|tool| tool["name"] == "srv__read"));
+        assert!(published.iter().any(|tool| tool["name"] == "other__read"));
+        assert!(
+            published.iter().any(|tool| tool["name"] == "unknown__read"),
+            "Off re-baselines ordinary unknown names"
+        );
+        let router = Arc::new(Mutex::new(Arc::new(built)));
+        let before = router.lock().unwrap().clone();
+        for _ in 0..3 {
+            assert!(!reconcile_quarantine(
+                &registry,
+                &router,
+                &test_stdio_session(),
+                None,
+                None,
+                &AtomicBool::new(false)
+            ));
+            assert!(Arc::ptr_eq(&before, &router.lock().unwrap()));
+        }
+        assert!(!router
+            .lock()
+            .unwrap()
+            .shared_tools()
+            .iter()
+            .any(|tool| tool["name"] == "srv__read"));
+    }
+
+    #[test]
+    #[ignore = "manual watcher performance measurement"]
+    fn review_r2_pending_watcher_tick_cost() {
+        let data = DataDirTestEnv::new("review-watcher-cost");
+        seed_legacy_review(&data.dir, None, "v2");
+        integrity::release(None, "srv__read").unwrap();
+        let reg = Registry {
+            servers: vec![stub_server("srv", "Source")],
+            ..Default::default()
+        };
+        let registry = Arc::new(Mutex::new(reg));
+        let mut built = readonly_router("srv", "Pending definition.");
+        let offered = built.shared_tools();
+        requarantine_if_needed(&registry, &mut built, offered, None);
+        let extra: Vec<_> = (0..1706).map(|i| json!({"name":format!("srv__ordinary_{i}"), "description":"Accepted definition.", "inputSchema":{"type":"object"}})).collect();
+        integrity::check(None, &extra).unwrap();
+        let router = Arc::new(Mutex::new(Arc::new(built)));
+        let stdio = test_stdio_session();
+        let failed = AtomicBool::new(false);
+        reconcile_quarantine(&registry, &router, &stdio, None, None, &failed);
+        let start = Instant::now();
+        for _ in 0..200 {
+            assert!(!reconcile_quarantine(
+                &registry, &router, &stdio, None, None, &failed
+            ));
+        }
+        eprintln!(
+            "REVIEW_TICK profile=debug pins=1707 pending=1 iterations=200 us_per_tick={:.2}",
+            start.elapsed().as_secs_f64() * 1e6 / 200.0
+        );
+    }
+
+    #[test]
+    fn integrity_pending_review_retires_deleted_registry_entries_without_approving_return() {
+        let data = DataDirTestEnv::new("pending-review-registry-removal");
+        let tools = vec![
+            json!({"name":"srv__read", "description":"Unseen definition.", "inputSchema":{"type":"object"}}),
+        ];
+        for level in [registry::SafetyLevel::Ask, registry::SafetyLevel::Off] {
+            for profile in [None, Some("removed-review")] {
+                integrity::check(profile, &tools).unwrap();
+                let path = match profile {
+                    Some(id) => data.dir.join(format!(
+                        "quarantine-v2-{}.json",
+                        registry::profile_store_key(id)
+                    )),
+                    None => data.dir.join("quarantine.json"),
+                };
+                std::fs::write(
+                    &path,
+                    json!({"srv__read":{"tool":"srv__read", "change":"changed"}}).to_string(),
+                )
+                .unwrap();
+                let old = integrity::quarantine_list(profile).remove(0);
+                integrity::release_record(
+                    profile,
+                    "srv__read",
+                    &integrity::quarantine_record_id(&old),
+                )
+                .unwrap();
+                let mut reg = Registry::default();
+                reg.set_safety_level(level);
+                let registry = Arc::new(Mutex::new(reg));
+                assert!(maybe_check_integrity(&registry, &tools, profile)
+                    .unwrap()
+                    .is_some());
+                let mut removed = readonly_router("other", "Unrelated accepted tool.");
+                let offered = removed.shared_tools();
+                let published = requarantine_if_needed(&registry, &mut removed, offered, profile);
+                assert_eq!(
+                    published.len(),
+                    1,
+                    "removed review must not hide unrelated tools"
+                );
+                assert_eq!(published.iter().next().unwrap()["name"], "other__read");
+                assert!(
+                    !integrity::pending_definition_review(profile),
+                    "absent review keeps {level:?} pending"
+                );
+                assert!(integrity::review_quarantined(profile).unwrap().is_empty());
+                // Registry deletion cancels the active review, never approval of an unseen return.
+                assert_eq!(
+                    maybe_check_integrity(&registry, &tools, profile).unwrap(),
+                    Some(set_of(&["srv__read"]))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn integrity_off_cold_baseline_tamper_restores_v1_behavior() {
         let _data_lock = registry::data_dir_test_lock();
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir =
@@ -39296,9 +40028,16 @@ mod tests {
         reg.set_safety_level(registry::SafetyLevel::Off);
         reg.quarantine_on_drift = false;
         let registry = Arc::new(Mutex::new(reg));
-        assert!(maybe_check_integrity(&registry, &tools, profile)
-            .unwrap()
-            .is_none());
+        assert_eq!(
+            maybe_check_integrity(&registry, &tools, profile).unwrap(),
+            None
+        );
+        assert!(std::fs::read_to_string(dir.join(format!(
+            "tool-pins-v2-{}.json",
+            registry::profile_store_key("off-baseline-tamper")
+        )))
+        .unwrap()
+        .contains("srv__read"));
         assert_eq!(
             effective_quarantine(&registry, profile, &AtomicBool::new(false)),
             Some(BTreeSet::new())
@@ -39308,6 +40047,73 @@ mod tests {
             .iter()
             .any(|event| event["change"] == "tamper"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn review_r3_off_corrupt_pins_retains_pending_store_review() {
+        let data = DataDirTestEnv::new("off-corrupt-pending-store");
+        seed_legacy_review(&data.dir, None, "v2");
+        integrity::release(None, "srv__read").unwrap();
+        let source = readonly_router("srv", "Unseen definition.");
+        let mut reg = Registry {
+            servers: vec![stub_server("srv", "Source"), stub_server("other", "Other")],
+            ..Default::default()
+        };
+        reg.set_safety_level(registry::SafetyLevel::Off);
+        let registry = Arc::new(Mutex::new(reg));
+        maybe_check_integrity(&registry, &source.shared_tools(), None).unwrap();
+        let record = integrity::all_quarantined().unwrap()[0].clone();
+        assert_eq!(record["review_required"], true);
+        // Use a new store path so this is a cold pin read with only the durable
+        // quarantine row preserving the review.
+        let id = "off-cold-pending-store";
+        let profile = Some(id);
+        let key = registry::profile_store_key(id);
+        std::fs::copy(
+            data.dir.join("quarantine.json"),
+            data.dir.join(format!("quarantine-v2-{key}.json")),
+        )
+        .unwrap();
+        for suffix in ["", ".bak"] {
+            std::fs::write(
+                data.dir.join(format!("tool-pins-v2-{key}.json{suffix}")),
+                "{ corrupt pins",
+            )
+            .unwrap();
+        }
+        assert!(integrity::definition_review_names(profile).is_empty());
+        let ordinary = readonly_router("other", "Ordinary definition.");
+        let mut built = source.with_shared_server_slot(&ordinary.server_slot("other").unwrap());
+        let offered = built.shared_tools();
+        let published = requarantine_if_needed(&registry, &mut built, offered, profile);
+        assert_eq!(published.len(), 1, "Off must expose the ordinary tool");
+        assert_eq!(published[0]["name"], "other__read");
+        assert!(
+            built.quarantined().contains("srv__read"),
+            "the persisted review must remain blocked"
+        );
+        assert!(integrity::quarantine_list(profile)
+            .iter()
+            .any(|row| row["tool"] == "srv__read" && row["review_required"] == true));
+        let live = Arc::new(Mutex::new(Arc::new(built)));
+        reconcile_quarantine(
+            &registry,
+            &live,
+            &test_stdio_session(),
+            profile,
+            None,
+            &AtomicBool::new(false),
+        );
+        assert_eq!(
+            live.lock().unwrap().shared_tools()[0]["name"],
+            "other__read"
+        );
+        let events = integrity::read_recent(20).unwrap();
+        let tamper = events
+            .iter()
+            .find(|event| event["change"] == "tamper")
+            .unwrap();
+        assert!(tamper["detail"].as_str().unwrap().contains("Off"));
     }
 
     #[test]
@@ -40253,7 +41059,7 @@ mod tests {
         assert!(!state.router.lock().unwrap().aggregated_tools().iter()
             .any(|tool| tool["name"] == "other__read"));
         let fp = integrity::baselines(None)["other__read"].fingerprint.clone();
-        assert!(integrity::release_definition(None, "other__read", &fp).unwrap());
+        assert!(approve_captured_review(None, "other__read", &fp));
         assert!(reconcile_quarantine(
             &state.registry, &state.router, &state.stdio_upstream,
             None, None, &AtomicBool::new(false),
@@ -40315,7 +41121,7 @@ mod tests {
             assert!(!state.router.lock().unwrap().aggregated_tools().iter()
                 .any(|tool| tool["name"] == "srv__read"));
             let fp = integrity::baselines(profile)["srv__read"].fingerprint.clone();
-            integrity::release_definition(profile, "srv__read", &fp).unwrap();
+            approve_captured_review(profile, "srv__read", &fp);
             assert!(reconcile_quarantine(&state.registry, &state.router, &state.stdio_upstream,
                 profile, None, &AtomicBool::new(false)));
             assert!(state.router.lock().unwrap().aggregated_tools().iter()
@@ -40381,7 +41187,13 @@ mod tests {
                         .any(|tool| tool["name"] == "srv__read"));
                     let fp = integrity::baselines(profile)["srv__read"].fingerprint.clone();
                     assert!(fp.starts_with("v3:"));
-                    assert!(integrity::release_definition(profile, "srv__read", &fp).unwrap());
+                    if version == "v3" {
+                        // Ordinary drift has an already-reviewed baseline and retains
+                        // fingerprint-bound Activity approval.
+                        assert!(integrity::release_definition(profile, "srv__read", &fp).unwrap());
+                    } else {
+                        assert!(approve_captured_review(profile, "srv__read", &fp));
+                    }
                     assert!(reconcile_quarantine(
                         &state.registry, &state.router, &state.stdio_upstream,
                         profile, None, &AtomicBool::new(false),
@@ -40457,7 +41269,7 @@ mod tests {
                 let fp = integrity::baselines(profile)["srv__read"]
                     .fingerprint
                     .clone();
-                assert!(integrity::release_definition(profile, "srv__read", &fp).unwrap());
+                assert!(approve_captured_review(profile, "srv__read", &fp));
                 assert!(reconcile_quarantine(
                     &state.registry,
                     &state.router,
@@ -40516,7 +41328,7 @@ mod tests {
             let fp = integrity::baselines(Some(&scope))["srv__read"]
                 .fingerprint
                 .clone();
-            assert!(integrity::release_definition(Some(&scope), "srv__read", &fp).unwrap());
+            assert!(approve_captured_review(Some(&scope), "srv__read", &fp));
             let accepted = state.reconcile_rooted_view(&keys, checked);
             assert!(accepted
                 .aggregated_tools()
@@ -40767,7 +41579,11 @@ mod tests {
         }}), DiscoveryMode::Full);
         assert!(!called["error"].is_null() || called["result"]["isError"] == true, "{called}");
         let fp = global["srv__read"].fingerprint.clone();
-        assert!(integrity::release_definition(None, "srv__read", &fp).unwrap());
+        if legacy.is_some() {
+            assert!(approve_captured_review(None, "srv__read", &fp));
+        } else {
+            assert!(integrity::release_definition(None, "srv__read", &fp).unwrap());
+        }
         let accepted = request(json!({"jsonrpc":"2.0","id":4,"method":"tools/list"}), DiscoveryMode::Full);
         assert!(
             accepted["result"]["tools"].as_array().unwrap().iter()

@@ -3967,6 +3967,12 @@ impl ActivityPage {
     }
 
     fn accept_security(&self, events: Vec<serde_json::Value>) {
+        if events.iter().any(|event| event["review_required"] == true) {
+            if let Some(action) = self.app.lookup_action("review-quarantine") {
+                action.activate(None);
+            }
+            return;
+        }
         let keys = events.iter().map(security_dismissal_key).collect();
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
@@ -4509,12 +4515,13 @@ fn security_status_detail(events: &[serde_json::Value]) -> &'static str {
 }
 
 fn change_can_be_accepted(event: &serde_json::Value) -> bool {
-    event["blocked"] == false
-        || (event["blocked"] == true
-            && event["new_fp"].is_string()
-            && event["blocked_profiles"]
-                .as_array()
-                .is_some_and(|profiles| !profiles.is_empty()))
+    event["review_required"] != true
+        && (event["blocked"] == false
+            || (event["blocked"] == true
+                && event["new_fp"].is_string()
+                && event["blocked_profiles"]
+                    .as_array()
+                    .is_some_and(|profiles| !profiles.is_empty())))
 }
 
 fn group_can_be_accepted(group: &crate::integrity::ToolChangeGroup) -> bool {
@@ -4602,7 +4609,13 @@ fn tool_change_group_card(
         .filter(|event| event["blocked"] == true)
         .count();
     let unknown = group.tools.iter().any(|event| event["blocked"].is_null());
-    let status = if blocked > 0 {
+    let review_required = group
+        .tools
+        .iter()
+        .any(|event| event["review_required"] == true);
+    let status = if review_required {
+        "Review the captured definition in Settings before accepting it.".to_string()
+    } else if blocked > 0 {
         format!(
             "{blocked} {} blocked. Review the changes or accept them.",
             if blocked == 1 { "tool is" } else { "tools are" }
@@ -4635,6 +4648,12 @@ fn tool_change_group_card(
         page.accept_security(events.clone());
     });
     card.append(&accept);
+    if review_required {
+        let review = gtk::Button::with_label("Review in Settings");
+        review.set_halign(gtk::Align::Start);
+        review.set_action_name(Some("app.review-quarantine"));
+        card.append(&review);
+    }
     card.append(&reveal);
     card
 }
@@ -4715,8 +4734,11 @@ fn security_notice_card(
             .build(),
     );
     let is_change = event["type"] == "tool_drift";
+    let review_required = is_change && event["review_required"] == true;
     let dismiss = gtk::Button::builder()
-        .label(if is_change {
+        .label(if review_required {
+            "Review in Settings"
+        } else if is_change {
             "Accept this tool"
         } else {
             "Reviewed"
@@ -4724,7 +4746,7 @@ fn security_notice_card(
         .tooltip_text("Accept this occurrence; a later change will reappear")
         .css_classes(["flat"])
         .build();
-    dismiss.set_sensitive(!is_change || change_can_be_accepted(event));
+    dismiss.set_sensitive(review_required || !is_change || change_can_be_accepted(event));
     let accepted_event = event.clone();
     let key = security_dismissal_key(event);
     let expansion_key = format!("security:{key}");
@@ -4735,7 +4757,11 @@ fn security_notice_card(
             .expanded_activity_rows
             .borrow_mut()
             .remove(&expansion_key_for_dismiss);
-        if is_change {
+        if review_required {
+            if let Some(action) = page_for_dismiss.app.lookup_action("review-quarantine") {
+                action.activate(None);
+            }
+        } else if is_change {
             page_for_dismiss.accept_security(vec![accepted_event.clone()]);
         } else {
             page_for_dismiss.dismiss_security(vec![key.clone()]);
@@ -4823,7 +4849,9 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
             lines.push("The tool definition matched suspicious instruction patterns.".to_string())
         }
         ("pins_load_failed", _) => lines.push(
-            "Toolport could not read the trusted definition baseline and failed closed."
+            event["detail"]
+                .as_str()
+                .unwrap_or("Toolport could not read the integrity baseline because it was unreadable or corrupt. See Settings for the current safety policy.")
                 .to_string(),
         ),
         ("sync_change_refused", _) => lines.push(
@@ -4837,6 +4865,11 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
     }
 
     if event_type == "tool_drift" {
+        if event["review_required"] == true {
+            lines.push(
+                "Review the captured definition in Settings before accepting it.".to_string(),
+            );
+        }
         if let Some(parameters) = event.get("parameters") {
             for (key, label) in [
                 ("added", "Added"),
@@ -11394,6 +11427,61 @@ mod tests {
         assert!(change_can_be_accepted(&blocked));
         blocked["blocked"] = serde_json::Value::Null;
         assert!(!change_can_be_accepted(&blocked));
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn captured_activity_review_routes_to_settings_without_release() {
+        let _data = crate::registry::DataDirTestEnv::new("gtk-captured-activity-routing");
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.toolport.DriftReviewTest")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+        let reviewed = std::rc::Rc::new(std::cell::Cell::new(0));
+        let calls = reviewed.clone();
+        let action = gtk::gio::SimpleAction::new("review-quarantine", None);
+        action.connect_activate(move |_, _| calls.set(calls.get() + 1));
+        app.add_action(&action);
+        let page = ActivityPage::new(&app);
+        let event = serde_json::json!({"type":"tool_drift", "server":"srv", "tool":"srv__update", "ts":100, "change":"changed", "blocked":true, "blocked_profiles":["work"], "new_fp":"v3:captured", "review_required":true});
+        let group = crate::integrity::group_tool_changes(std::slice::from_ref(&event)).remove(0);
+        let card = tool_change_group_card(&group, page.clone());
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .content(&card)
+            .build();
+        let mut child = card.first_child();
+        let mut found = false;
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            if let Ok(button) = widget.downcast::<gtk::Button>() {
+                if button.label().as_deref() == Some("Accept all for this server") {
+                    assert!(!button.is_sensitive());
+                }
+                if button.label().as_deref() == Some("Review in Settings") {
+                    button.emit_clicked();
+                    found = true;
+                }
+            }
+        }
+        assert!(found);
+        assert_eq!(reviewed.get(), 1);
+        // Guard the callback too: an accidental direct invocation must only navigate.
+        page.accept_security(vec![event]);
+        assert_eq!(reviewed.get(), 2);
+        window.close();
+    }
+
+    #[test]
+    fn captured_activity_review_requires_settings_instead_of_summary_acceptance() {
+        let event = serde_json::json!({"type":"tool_drift", "server":"srv", "tool":"srv__update", "ts":100, "change":"changed", "blocked":true, "blocked_profiles":["work"], "new_fp":"v3:captured", "review_required":true});
+        assert!(!change_can_be_accepted(&event));
+        let group = crate::integrity::group_tool_changes(std::slice::from_ref(&event)).remove(0);
+        assert!(!group_can_be_accepted(&group));
+        assert!(security_review_lines(&event)
+            .iter()
+            .any(|line| line.contains("Review the captured definition in Settings")));
     }
 
     #[test]

@@ -57,6 +57,7 @@ pub(super) struct SettingsPage {
     folder_list: gtk::Box,
     folder_button: gtk::Button,
     quarantine_list: gtk::Box,
+    baseline_notice: gtk::Label,
     allowed_list: gtk::Box,
     refresh_button: gtk::Button,
     /// True only while switches are being set programmatically, so their
@@ -598,6 +599,13 @@ impl SettingsPage {
             .css_classes(["toolport-muted"])
             .build();
         safety_section.append(&pending);
+        let baseline_notice = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .visible(false)
+            .css_classes(["toolport-muted"])
+            .build();
+        safety_section.append(&baseline_notice);
         safety_section.append(&listed_section(&approvals_heading, &allowed_list));
         safety_section.append(&listed_section(&quarantine_heading, &quarantine_list));
         let access = settings_section(
@@ -669,6 +677,7 @@ impl SettingsPage {
             folder_list,
             folder_button,
             quarantine_list,
+            baseline_notice,
             allowed_list,
             refresh_button,
             updating: Rc::new(Cell::new(false)),
@@ -1778,6 +1787,7 @@ impl SettingsPage {
                     crate::registry_controller::essential_settings()?,
                     crate::autostart::is_enabled_linux(NATIVE_AUTOSTART_NAME)?,
                     read_quarantined_tools(),
+                    read_baseline_notice(),
                     read_allowed_tools(&broker)?,
                     crate::registry_controller::folder_routing_settings()?,
                     crate::registry_controller::http_client_settings()?,
@@ -1793,6 +1803,7 @@ impl SettingsPage {
                     settings,
                     launch_at_login,
                     quarantined,
+                    baseline_notice,
                     allowed,
                     folder_routing,
                     http_clients,
@@ -1817,6 +1828,11 @@ impl SettingsPage {
                     page.updating.set(false);
                     page.render_endpoint(page.bridge.status());
                     page.render_quarantine(quarantined);
+                    if let Ok(notice) = baseline_notice {
+                        page.baseline_notice
+                            .set_label(notice.as_deref().unwrap_or(""));
+                        page.baseline_notice.set_visible(notice.is_some());
+                    }
                     page.render_allowed(allowed);
                     page.render_folder_routing(folder_routing);
                     page.render_http_clients(http_clients);
@@ -2069,6 +2085,21 @@ fn wait_for_captured_quarantines(
             deadline.saturating_duration_since(std::time::Instant::now()),
         ));
     }
+}
+
+fn read_baseline_notice() -> Result<Option<String>, String> {
+    let registry = crate::registry::load_resolved()?;
+    Ok(crate::integrity::baseline_notice(&registry)?.map(|event| {
+        let timestamp = event["ts"].as_i64().unwrap_or(0);
+        let time = gtk::glib::DateTime::from_unix_local(timestamp / 1000)
+            .and_then(|time| time.format("%c"))
+            .map(|time| time.to_string())
+            .unwrap_or_else(|_| timestamp.to_string());
+        format!(
+            "Last baseline warning: {time}: {}",
+            event["detail"].as_str().unwrap_or_default()
+        )
+    }))
 }
 
 fn read_quarantined_tools() -> Result<Vec<QuarantinedTool>, String> {

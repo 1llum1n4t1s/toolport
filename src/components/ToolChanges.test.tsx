@@ -137,6 +137,41 @@ describe("server tool changes", () => {
       expect(release).toHaveBeenCalledWith("work", events[0].tool, "v2:reviewed"),
     );
   });
+  it("routes captured reviews to Settings without accepting a field summary", () => {
+    release.mockClear();
+    const event = {
+      ...securityFixture()[0],
+      blocked: true,
+      blocked_profiles: ["work"],
+      new_fp: "v3:captured",
+      review_required: true,
+      changed_fields: [],
+    };
+    const accept = vi.fn();
+    const review = vi.fn();
+    render(
+      <ToolChanges
+        events={[event]}
+        registry={registry}
+        onAccept={accept}
+        onReview={review}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Accept all for this server" }),
+    ).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /Cloudflare \(Full API\):/ }));
+    expect(
+      screen.queryByRole("button", { name: "Accept this tool" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: "Review in Settings" }).length,
+    ).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByRole("button", { name: "Review in Settings" })[0]);
+    expect(review).toHaveBeenCalledOnce();
+    expect(release).not.toHaveBeenCalled();
+    expect(accept).not.toHaveBeenCalled();
+  });
   it("keeps unknown blocking state visible and disables acceptance", () => {
     render(
       <ToolChanges

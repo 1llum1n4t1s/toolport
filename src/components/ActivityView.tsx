@@ -1701,9 +1701,11 @@ function LiveInspector({ refreshKey }: { refreshKey: number }) {
 export function ActivityView({
   refreshKey,
   registry,
+  onReviewQuarantine,
 }: {
   refreshKey: number;
   registry: Registry | null;
+  onReviewQuarantine?: () => void;
 }) {
   const [entries, setEntries] = useState<AuditEntry[] | null>(null);
   const [stats, setStats] = useState<AuditStats | null>(null);
@@ -1900,6 +1902,7 @@ export function ActivityView({
           events={toolChanges}
           registry={registry}
           onAccept={dismissAllSecurity}
+          onReview={onReviewQuarantine}
         />
       ) : null}
       {olderToolChanges.length > 0 ? (
@@ -1912,6 +1915,7 @@ export function ActivityView({
             events={olderToolChanges}
             registry={registry}
             onAccept={dismissAllSecurity}
+            onReview={onReviewQuarantine}
           />
         </details>
       ) : null}

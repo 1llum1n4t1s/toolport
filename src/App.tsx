@@ -1035,7 +1035,14 @@ function App() {
                       />
                     )
                   ) : view === "activity" ? (
-                    <ActivityView refreshKey={activityKey} registry={registry} />
+                    <ActivityView
+                      refreshKey={activityKey}
+                      registry={registry}
+                      onReviewQuarantine={() => {
+                        setSettingsPage("safety");
+                        setView("settings");
+                      }}
+                    />
                   ) : view === "catalog" ? (
                     <CatalogView registry={registry} onAdded={applyRegistryChange} />
                   ) : view === "teams" ? (

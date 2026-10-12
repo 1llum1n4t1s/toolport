@@ -44,6 +44,7 @@ import {
   dataRemovalPlan,
   removeToolportData,
   getRegistry,
+  getBaselineNotice,
   type DisconnectResult,
   disableAutostart,
   enableAutostart,
@@ -662,6 +663,16 @@ export function SettingsView({
   }
   const [quarantined, setQuarantined] = useState<QuarantinedTool[]>([]);
   const [quarantineError, setQuarantineError] = useState(false);
+  const baselineContext = JSON.stringify([
+    registry?.activeProfileId,
+    effectiveLevel,
+    registry?.quarantineOnDrift,
+    registry?.teamForcedQuarantineOnDrift,
+  ]);
+  const [baselineNotice, setBaselineNotice] = useState<{
+    context: string;
+    text: string;
+  } | null>(null);
   const [allowedTools, setAllowedTools] = useState<AllowedTool[]>([]);
   const [allowedError, setAllowedError] = useState(false);
   const [bridge, setBridge] = useState<HttpBridgeStatus | null>(null);
@@ -784,20 +795,40 @@ export function SettingsView({
   }, [loadBridge]);
 
   useEffect(() => {
-    const load = () =>
-      listQuarantined()
-        .then((q) => {
-          setQuarantined(q);
-          setQuarantineError(false);
+    let current = true;
+    const load = () => {
+      void getBaselineNotice()
+        .then((notice) => {
+          if (!current) return;
+          setBaselineNotice(
+            notice
+              ? {
+                  context: baselineContext,
+                  text: `${new Date(notice.ts).toLocaleString()}: ${notice.detail}`,
+                }
+              : null,
+          );
         })
-        // A failed poll must not read as "nothing quarantined": keep any prior
-        // list and flag the error so the panel can say the status is stale.
-        .catch(() => setQuarantineError(true));
+        .catch(() => {});
+      return (
+        listQuarantined()
+          .then((q) => {
+            setQuarantined(q);
+            setQuarantineError(false);
+          })
+          // A failed poll must not read as "nothing quarantined": keep any prior
+          // list and flag the error so the panel can say the status is stale.
+          .catch(() => setQuarantineError(true))
+      );
+    };
     load();
     // Quarantine happens asynchronously in the gateway, so poll to keep the list fresh.
     const id = setInterval(load, 15000);
-    return () => clearInterval(id);
-  }, []);
+    return () => {
+      current = false;
+      clearInterval(id);
+    };
+  }, [baselineContext]);
 
   const reapprove = async (q: QuarantinedTool) => {
     try {
@@ -1154,6 +1185,14 @@ export function SettingsView({
                 .filter(Boolean)
                 .join(", ")}
               . These protections do not raise your safety level.
+            </p>
+          )}
+          {baselineNotice && baselineNotice.context === baselineContext && (
+            <p
+              role="status"
+              className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
+            >
+              Last baseline warning: {baselineNotice.text}
             </p>
           )}
           {quarantined.length === 0 && quarantineError && (

@@ -1849,6 +1849,63 @@ impl Router {
         }
     }
 
+    /// Indexed upstream identities, including quarantined and disabled tools. This
+    /// distinguishes catalog removal from policy filtering during review cleanup.
+    pub fn indexed_policy_names(&self) -> BTreeSet<String> {
+        self.indexed_policy_names_for(|_| true)
+    }
+
+    pub fn indexed_policy_names_for(&self, visible: impl Fn(&str) -> bool) -> BTreeSet<String> {
+        self.policy_by_original
+            .iter()
+            .filter(|(server, _)| visible(server))
+            .flat_map(|(server, tools)| {
+                tools.iter().map(move |(original, name)| {
+                    self.canonical_policy
+                        .get(server)
+                        .and_then(|tools| tools.get(original))
+                        .unwrap_or(name)
+                        .clone()
+                })
+            })
+            .chain(
+                self.restored_candidates
+                    .iter()
+                    .filter(|tool| visible(&tool.server))
+                    .map(|tool| {
+                        tool.policy_name
+                            .clone()
+                            .unwrap_or_else(|| tool.exposed.clone())
+                    }),
+            )
+            .collect()
+    }
+
+    /// Names available to a private integrity candidate after removing only
+    /// quarantine. Disabled, server-filtered and tool-scope-hidden tools stay out.
+    pub fn integrity_candidate_names(&self) -> BTreeSet<String> {
+        self.integrity_candidate_names_for(|_| true)
+    }
+
+    pub fn integrity_candidate_names_for(
+        &self,
+        visible: impl Fn(&str) -> bool,
+    ) -> BTreeSet<String> {
+        self.tool_owners
+            .iter()
+            .filter(|(name, server)| {
+                visible(server)
+                    && self.blocked.get(*name).is_none_or(|reason| {
+                        matches!(reason.as_str(),
+                "quarantined after a high-risk change; re-approve to restore" |
+                "quarantine store unreadable; catalog blocked until the store reads"
+            )
+                    })
+            })
+            .map(|(name, _)| self.policy_name(name).to_string())
+            .collect()
+    }
+
     pub fn policy_catalog(&self, tools: &SharedTools) -> SharedTools {
         SharedTools(
             tools
@@ -7198,8 +7255,17 @@ for line in sys.stdin:
                     .unwrap();
                 assert!(
                     crate::integrity::release_definition(profile, "srv__echo", reviewed_fp)
-                        .unwrap()
+                        .is_err()
                 );
+                let captured = crate::integrity::quarantine_list(profile)
+                    .into_iter()
+                    .find(|record| record["tool"] == "srv__echo")
+                    .unwrap();
+                let id = crate::integrity::quarantine_record_id(&captured);
+                let definition =
+                    crate::integrity::quarantine_definition(profile, "srv__echo", &id).unwrap();
+                assert_eq!(definition["name"], "srv__echo");
+                assert!(crate::integrity::release_record(profile, "srv__echo", &id).unwrap());
                 router.requarantine(crate::integrity::quarantined(profile).unwrap());
                 assert!(crate::integrity::check_staged(
                     profile,
@@ -8522,6 +8588,25 @@ for line in sys.stdin:
         assert!(err.contains("turned off"), "unexpected: {err}");
         // The allowed tool still routes.
         assert!(router.route_call("github__add", json!({})).is_ok());
+    }
+
+    #[test]
+    fn indexed_review_presence_includes_quarantined_and_disabled_tools() {
+        let _data = crate::registry::DataDirTestEnv::new("review-presence-policy-hidden");
+        let mut policy = ToolPolicy::default();
+        policy.quarantined.insert("github__echo".into());
+        policy
+            .disabled
+            .insert("github".into(), ["add".into()].into_iter().collect());
+        let mut router = Router::with_policy(policy);
+        router.add(mock_server("github"));
+        assert!(router.shared_tools().is_empty());
+        assert_eq!(
+            router.indexed_policy_names(),
+            ["github__echo".into(), "github__add".into()]
+                .into_iter()
+                .collect()
+        );
     }
 
     #[test]

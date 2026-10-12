@@ -64,6 +64,8 @@ export interface SecurityEvent {
   change: string;
   changed_fields?: string[];
   new_fp?: string;
+  /** Captured definition requires review in Settings before bound approval. */
+  review_required?: boolean;
   /** Older unblocked records without a captured fingerprint, shown in history. */
   historical?: boolean;
   parameters?: { added: string[]; removed: string[]; changed: string[] };
@@ -84,6 +86,11 @@ export interface SecurityEvent {
    * the quiet history. Absent on events written before severity tiering; classified
    * by type on read. */
   severity?: "high" | "warn" | "info";
+}
+
+/** Current profile's most recent unresolved baseline warning, with current policy. */
+export function getBaselineNotice(): Promise<{ ts: number; detail: string } | null> {
+  return invoke("get_baseline_notice");
 }
 
 /** Recent tool-definition integrity events (newest first). */
