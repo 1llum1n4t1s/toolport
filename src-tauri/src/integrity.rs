@@ -590,7 +590,7 @@ fn cached_review_pins(profile: Option<&str>) -> std::sync::Arc<ReviewPins> {
     {
         let cache = REVIEW_PINS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(entry) = cache.get(&path) {
-            if stamp.is_some() && entry.stamp == stamp {
+            if stamp.is_some() && entry.stamp == stamp && !entry.state.unreadable {
                 return entry.state.clone();
             }
         }
@@ -601,13 +601,18 @@ fn cached_review_pins(profile: Option<&str>) -> std::sync::Arc<ReviewPins> {
     let mut cache = REVIEW_PINS_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let entry = cache.entry(path).or_default();
     let fresh = matches!(loaded, PinsLoad::Fresh);
+    let same_failed_read = matches!(loaded, PinsLoad::Corrupt)
+        && entry.state.unreadable && entry.stamp == stable;
     let state = match loaded {
         PinsLoad::Loaded(pins) => ReviewPins::from_pins(&pins),
         PinsLoad::Fresh => ReviewPins::default(),
         PinsLoad::Corrupt => ReviewPins { unreadable: true, ..(*entry.state).clone() },
     };
     entry.state = std::sync::Arc::new(state);
-    entry.tamper_logged = false;
+    if !same_failed_read {
+        entry.tamper_logged = false;
+    }
+    // Unreadable results retain review metadata but retry on the next call.
     // Fresh stores still need the legacy-migration guard on the next read.
     entry.stamp = if fresh { None } else { stable };
     entry.state.clone()
@@ -6125,8 +6130,10 @@ mod tests {
         assert_eq!(PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst), 0);
         let path = pins_path(None).unwrap();
         let original = std::fs::read_to_string(&path).unwrap();
-        // Equal-length external rewrites must not preserve cached tool names.
-        std::fs::write(&path, original.replace("srv__wipe", "srv__read")).unwrap();
+        // Production replaces pins atomically, including equal-length rewrites.
+        let replacement = path.with_extension("replacement");
+        std::fs::write(&replacement, original.replace("srv__wipe", "srv__read")).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
         assert_eq!(definition_review_names(None), BTreeSet::from(["srv__read".into()]));
         std::fs::write(&path, "{ corrupt pins").unwrap();
         std::fs::write(pins_backup_path(&path), "{ corrupt backup").unwrap();
@@ -6134,7 +6141,7 @@ mod tests {
         assert_eq!(definition_review_names_for_catalog(None, &present), Err(present));
         PINS_REVIEW_READ_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
         assert!(definition_review_names(None).contains("srv__read"));
-        assert_eq!(PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst), 0, "unchanged corruption must not repeat the read backoff");
+        assert!(PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst) > 0, "unreadable pins must be retried without a metadata change");
         std::fs::write(&path, &original).unwrap();
         assert_eq!(definition_review_names(None), BTreeSet::from(["srv__wipe".into()]));
         std::fs::write(pins_backup_path(&path), original.replace("srv__wipe", "srv__read")).unwrap();

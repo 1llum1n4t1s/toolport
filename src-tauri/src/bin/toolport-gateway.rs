@@ -39208,7 +39208,9 @@ mod tests {
             let mut guard = router.lock().unwrap();
             // Simulate fail_closed_integrity_catalog after the mandatory tamper quarantine write
             // failed. The watcher must not clear this live set from an empty durable ordinary set.
-            Arc::make_mut(&mut guard).requarantine(set_of(&["srv__wipe"]));
+            let mut candidate = readonly_router("srv", "Ordinary definition.");
+            candidate.requarantine(set_of(&["srv__read"]));
+            *guard = Arc::new(candidate);
         }
 
         assert_eq!(
@@ -39225,7 +39227,7 @@ mod tests {
         ));
         assert_eq!(
             router.lock().unwrap().quarantined(),
-            &set_of(&["srv__wipe"]),
+            &set_of(&["srv__read"]),
             "Ask preserves the live blocks while the trust root is corrupt"
         );
         registry
@@ -39239,7 +39241,7 @@ mod tests {
         );
         assert!(reconcile_quarantine(&registry, &router, &stdio, profile, None, &AtomicBool::new(false)));
         assert!(router.lock().unwrap().quarantined().is_empty());
-        assert!(std::fs::read_to_string(dir.join(format!("tool-pins-v2-{}.json", registry::profile_store_key(profile.unwrap())))).unwrap().contains("srv__wipe"));
+        assert!(std::fs::read_to_string(dir.join(format!("tool-pins-v2-{}.json", registry::profile_store_key(profile.unwrap())))).unwrap().contains("srv__read"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
