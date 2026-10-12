@@ -6235,7 +6235,8 @@ impl ApprovalPage {
                             }
                             if let Err(error) = result {
                                 eprintln!("toolport-gtk: approved the call but could not save its allow rule: {error}");
-                                if let Some(parent) = page.root.root().and_downcast::<gtk::Window>() {
+                                if let Some(parent) = page.root.root().and_downcast::<gtk::Window>()
+                                {
                                     #[allow(deprecated)]
                                     let dialog = adw::MessageDialog::new(
                                         Some(&parent),
@@ -6265,7 +6266,9 @@ static ALLOW_SAVES: std::sync::Mutex<Vec<AllowSave>> = std::sync::Mutex::new(Vec
 fn persist_always_allow(key: String) -> impl std::future::Future<Output = Result<(), String>> {
     let (done, pending) = std::sync::mpsc::channel();
     let (send, result) = futures_channel::oneshot::channel();
-    let mut saves = ALLOW_SAVES.lock().unwrap_or_else(|error| error.into_inner());
+    let mut saves = ALLOW_SAVES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     saves.retain(|save| matches!(save.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
     saves.push(pending);
     drop(saves);
@@ -6278,15 +6281,24 @@ fn persist_always_allow(key: String) -> impl std::future::Future<Output = Result
         let _ = done.send(());
     });
     async move {
-        result.await.map_err(|_| "The allow-rule worker stopped unexpectedly".to_string())?
+        result
+            .await
+            .map_err(|_| "The allow-rule worker stopped unexpectedly".to_string())?
     }
 }
 
 fn finish_allow_saves() {
-    let saves = std::mem::take(&mut *ALLOW_SAVES.lock().unwrap_or_else(|error| error.into_inner()));
+    let saves = std::mem::take(
+        &mut *ALLOW_SAVES
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()),
+    );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     for save in saves {
-        if save.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).is_err() {
+        if save
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .is_err()
+        {
             eprintln!("toolport-gtk: an allow-rule save did not finish before shutdown");
         }
     }
