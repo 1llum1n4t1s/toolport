@@ -35082,6 +35082,8 @@ mod tests {
 
     #[test]
     fn server_discover_aggregates_only_relayable_extensions_in_scope() {
+        let _data =
+            DataDirTestEnv::new("server_discover_aggregates_only_relayable_extensions_in_scope");
         let host = dispatch_host(false);
         struct ExtensionServer;
 
@@ -35776,6 +35778,9 @@ mod tests {
 
     #[test]
     fn modern_cacheable_results_preserve_hints_and_scoping_fails_private() {
+        let _data = DataDirTestEnv::new(
+            "modern_cacheable_results_preserve_hints_and_scoping_fails_private",
+        );
         let host = dispatch_host(false);
         let reg = Registry::default();
         let router = cache_router();
