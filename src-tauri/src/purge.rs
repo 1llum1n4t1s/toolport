@@ -581,9 +581,27 @@ fn run_with(
         return Ok(report);
     }
     let registry_path = dir.join("registry.json");
-    remove_data_contents(&dir, &[owner_path.clone(), registry_path.clone()], &mut report);
+    let locations_path = dir.join("client-locations.json");
+    remove_data_contents(
+        &dir,
+        &[
+            owner_path.clone(),
+            registry_path.clone(),
+            locations_path.clone(),
+        ],
+        &mut report,
+    );
     if team_token_in_file && report.removed.contains(&dir.join("secrets.enc").display().to_string()) {
         report.notes.push("Team tokens deleted from this machine were removed locally only; no server-side revoke endpoint is available in the Teams client.".into());
+    }
+    // Bounded long-ID backup names need the location inventory on the next pass.
+    if report.leftovers.is_empty() {
+        remove_path(&locations_path, &mut report);
+    } else if locations_path.exists() {
+        report.leftovers.push(Leftover {
+            path: locations_path.display().to_string(),
+            error: "Retained as backup ownership evidence for retry.".into(),
+        });
     }
     if report.leftovers.is_empty() {
         remove_path(&registry_path, &mut report);
@@ -607,7 +625,20 @@ pub(crate) fn is_link(metadata: &std::fs::Metadata) -> bool {
     { metadata.file_type().is_symlink() }
 }
 
+#[cfg(test)]
+thread_local! {
+    static REMOVE_FAILURE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 fn remove_path(path: &Path, report: &mut Report) {
+    #[cfg(test)]
+    if REMOVE_FAILURE.with(|slot| slot.borrow().as_deref() == Some(path)) {
+        report.leftovers.push(Leftover {
+            path: path.display().to_string(),
+            error: "simulated locked file".into(),
+        });
+        return;
+    }
     let result = std::fs::symlink_metadata(path).and_then(|metadata| {
         // Windows reports directory junctions as links, so is_dir() is false.
         // RemoveDirectory unlinks them without traversing their target.
@@ -1032,6 +1063,61 @@ mod tests {
         assert_eq!(std::fs::read(wrong_hash.join("123-.claude.json")).unwrap(), b"user bytes");
         assert_eq!(std::fs::read(lookalike).unwrap(), b"user bytes");
         for (config, bytes) in configs { assert_eq!(std::fs::read(config).unwrap(), bytes); }
+    }
+
+    #[test]
+    fn purge_long_location_backup_failure_retains_inventory_for_retry() {
+        let env = crate::registry::DataDirTestEnv::new("purge_long_location_retry");
+        crate::registry::save(&crate::registry::Registry::default()).unwrap();
+        let home = env.dir.join("home");
+        let folder = home.join(format!(".claude-{}", "x".repeat(210)));
+        std::fs::create_dir_all(&folder).unwrap();
+        let _home = crate::clients::TestHome::set(&home);
+        let config = folder.join(".claude.json");
+        std::fs::write(&config, "{}").unwrap();
+        let id =
+            crate::clients::add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
+        let write = crate::clients::write_servers(&id, &[]).unwrap();
+        let backup = PathBuf::from(write.backup.unwrap());
+        let backup_dir = backup.parent().unwrap();
+        assert_eq!(backup_dir.file_name().unwrap().to_str().unwrap().len(), 185);
+        let user_file = backup_dir.join("2024-taxes.pdf");
+        std::fs::write(&user_file, "user bytes").unwrap();
+        let store = env.dir.join("client-locations.json");
+        let inventory = std::fs::read(&store).unwrap();
+        let purge = || {
+            run_with(
+                |_| Vec::new(),
+                || Ok(Vec::new()),
+                |_| Vec::new(),
+                || Ok(crate::secrets::purge::Removal::default()),
+                |_| Ok(()),
+                |_| Ok(()),
+            )
+            .unwrap()
+        };
+        REMOVE_FAILURE.with(|slot| slot.replace(Some(backup.clone())));
+        let first = purge();
+        REMOVE_FAILURE.with(|slot| slot.replace(None));
+        assert!(first
+            .leftovers
+            .iter()
+            .any(|leftover| leftover.path == backup.display().to_string()));
+        assert!(backup.exists());
+        assert_eq!(
+            std::fs::read(&store).unwrap(),
+            inventory,
+            "retry needs the location inventory"
+        );
+        assert!(env.dir.join("registry.json").exists());
+        let retry = purge();
+        assert!(retry.leftovers.is_empty(), "{:?}", retry.leftovers);
+        assert!(!backup.exists());
+        assert!(!store.exists());
+        assert!(!env.dir.join("registry.json").exists());
+        assert_eq!(std::fs::read_dir(backup_dir).unwrap().count(), 1);
+        assert_eq!(std::fs::read(user_file).unwrap(), b"user bytes");
+        assert!(config.exists());
     }
 
     #[test]

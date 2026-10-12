@@ -356,7 +356,26 @@ pub fn detected_is_gateway(server: &McpServer) -> bool {
     gateway_identity_matches(&server.name, &server.name, server.command.as_deref())
 }
 
+// Cargo puts integration-test executables under deps; shipped test-support
+// binaries remain usable without fixture roots. Guard before any host resolver
+// or ambient client-path override can read outside an in-process fixture.
+#[cfg(all(not(test), feature = "test-support"))]
+fn assert_integration_test_root() {
+    static INTEGRATION_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let integration_test = INTEGRATION_TEST.get_or_init(|| {
+        std::env::current_exe().ok().is_some_and(|exe| {
+            exe.parent().and_then(Path::file_name) == Some(std::ffi::OsStr::new("deps"))
+        })
+    });
+    assert!(
+        !integration_test || crate::fixture_paths::dir("home").is_some(),
+        "in-process integration tests require TOOLPORT_TEST_ROOT before client discovery"
+    );
+}
+
 pub(crate) fn home() -> Option<PathBuf> {
+    #[cfg(all(not(test), feature = "test-support"))]
+    assert_integration_test_root();
     #[cfg(test)]
     if let Some(path) = TEST_HOME.with(|slot| slot.borrow().clone()) { return Some(path); }
     #[cfg(test)]
@@ -389,6 +408,8 @@ impl Drop for TestHome {
 mod test_paths;
 
 fn client_path_env(key: &str) -> Option<std::ffi::OsString> {
+    #[cfg(all(not(test), feature = "test-support"))]
+    assert_integration_test_root();
     #[cfg(test)]
     {
         test_paths::env(key)
@@ -399,6 +420,8 @@ fn client_path_env(key: &str) -> Option<std::ffi::OsString> {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn client_config_dir() -> Option<PathBuf> {
+    #[cfg(all(not(test), feature = "test-support"))]
+    assert_integration_test_root();
     #[cfg(test)]
     {
         test_paths::dir("XDG_CONFIG_HOME", || home().unwrap().join(".config"))
@@ -410,6 +433,8 @@ fn client_config_dir() -> Option<PathBuf> {
 }
 
 fn client_data_dir() -> Option<PathBuf> {
+    #[cfg(all(not(test), feature = "test-support"))]
+    assert_integration_test_root();
     #[cfg(test)]
     {
         test_paths::dir("XDG_DATA_HOME", || home().unwrap().join(".local/share"))
@@ -421,6 +446,8 @@ fn client_data_dir() -> Option<PathBuf> {
 }
 
 fn client_local_data_dir() -> Option<PathBuf> {
+    #[cfg(all(not(test), feature = "test-support"))]
+    assert_integration_test_root();
     #[cfg(test)]
     {
         test_paths::dir("LOCALAPPDATA", || home().unwrap().join("AppData/Local"))
