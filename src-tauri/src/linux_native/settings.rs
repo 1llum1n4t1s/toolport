@@ -2087,16 +2087,16 @@ fn wait_for_captured_quarantines(
     }
 }
 
-fn read_baseline_notice() -> std::io::Result<Option<String>> {
-    Ok(crate::integrity::read_recent(100)?
-        .iter()
-        .find(|event| event["type"] == "pins_load_failed")
-        .map(|event| {
-            format!(
-                "Last baseline warning: {}",
-                event["detail"].as_str().unwrap_or("Toolport could not read the integrity baseline because it was unreadable or corrupt. See Activity for details.")
-            )
-        }))
+fn read_baseline_notice() -> Result<Option<String>, String> {
+    let registry = crate::registry::load_resolved()?;
+    Ok(crate::integrity::baseline_notice(&registry)?.map(|event| {
+        let timestamp = event["ts"].as_i64().unwrap_or(0);
+        let time = gtk::glib::DateTime::from_unix_local(timestamp / 1000)
+            .and_then(|time| time.format("%c"))
+            .map(|time| time.to_string())
+            .unwrap_or_else(|_| timestamp.to_string());
+        format!("Last baseline warning: {time}: {}", event["detail"].as_str().unwrap_or_default())
+    }))
 }
 
 fn read_quarantined_tools() -> Result<Vec<QuarantinedTool>, String> {

@@ -88,6 +88,11 @@ export interface SecurityEvent {
   severity?: "high" | "warn" | "info";
 }
 
+/** Current profile's most recent unresolved baseline warning, with current policy. */
+export function getBaselineNotice(): Promise<{ ts: number; detail: string } | null> {
+  return invoke("get_baseline_notice");
+}
+
 /** Recent tool-definition integrity events (newest first). */
 export function getSecurityEvents(limit = 100): Promise<SecurityEvent[]> {
   return invoke<SecurityEvent[]>("get_security_events", { limit });

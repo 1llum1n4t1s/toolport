@@ -44,7 +44,7 @@ import {
   dataRemovalPlan,
   removeToolportData,
   getRegistry,
-  getSecurityEvents,
+  getBaselineNotice,
   type DisconnectResult,
   disableAutostart,
   enableAutostart,
@@ -787,14 +787,10 @@ export function SettingsView({
 
   useEffect(() => {
     const load = () => {
-      void getSecurityEvents()
-        .then((events) => {
-          const event = events.find((event) => event.type === "pins_load_failed");
+      void getBaselineNotice()
+        .then((notice) => {
           setBaselineNotice(
-            event
-              ? event.detail ||
-                  "Toolport could not read the integrity baseline because it was unreadable or corrupt. See Activity for details."
-              : null,
+            notice ? `${new Date(notice.ts).toLocaleString()}: ${notice.detail}` : null,
           );
         })
         .catch(() => {});
@@ -813,7 +809,7 @@ export function SettingsView({
     // Quarantine happens asynchronously in the gateway, so poll to keep the list fresh.
     const id = setInterval(load, 15000);
     return () => clearInterval(id);
-  }, []);
+  }, [registry?.activeProfileId, effectiveLevel, registry?.quarantineOnDrift, registry?.teamForcedQuarantineOnDrift]);
 
   const reapprove = async (q: QuarantinedTool) => {
     try {

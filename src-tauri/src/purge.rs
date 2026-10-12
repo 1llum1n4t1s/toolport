@@ -719,6 +719,10 @@ fn generated_file_name(name: &str, owned: impl Fn(&str) -> bool) -> bool {
 
 fn owned_data_name(name: &str, legacy: &std::collections::HashSet<String>) -> bool {
     generated_file_name(name, |name| owned_data_file(name) || legacy.contains(name))
+        || name.rsplit_once(".unreadable-").is_some_and(|(base, timestamp)| {
+            decimal(timestamp) && (base == "tool-pins.json"
+                || base.strip_prefix("tool-pins-v2-").and_then(|key| key.strip_suffix(".json")).is_some_and(|key| hex_name(key, 64)))
+        })
         || matches!(name, "secret-service.lock" | "task-handle-key.lock" | "client-config-mutation.lock")
         || name.strip_prefix("daemon-").and_then(|s| s.strip_suffix(".lock")).is_some_and(|s| hex_name(s, 64))
         || name.strip_prefix("oauth-refresh-").and_then(|s| s.strip_suffix(".lock"))

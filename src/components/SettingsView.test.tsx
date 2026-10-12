@@ -12,7 +12,7 @@ import {
   dataRemovalPlan,
   removeToolportData,
   getRegistry,
-  getSecurityEvents,
+  getBaselineNotice,
   isAutostartEnabled,
   listServerTools,
   listQuarantined,
@@ -38,7 +38,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     dataRemovalPlan: vi.fn(),
     removeToolportData: vi.fn(),
     getRegistry: vi.fn(),
-    getSecurityEvents: vi.fn().mockResolvedValue([]),
+    getBaselineNotice: vi.fn().mockResolvedValue(null),
     listServerTools: vi.fn(),
     listQuarantined: vi.fn().mockResolvedValue([]),
     releaseQuarantine: vi.fn(),
@@ -792,22 +792,18 @@ describe("SettingsView explicit data removal", () => {
   });
 });
 
-it("shows the baseline corruption cause at Off even without quarantined tools", async () => {
-  const detail =
-    "The integrity baseline was unreadable or corrupt. Safety is Off, so ordinary tools remain available.";
-  vi.mocked(getSecurityEvents).mockResolvedValueOnce([
-    { ts: 1, type: "pins_load_failed", change: "tamper", detail },
-  ]);
+it("shows the current unresolved baseline warning with its time", async () => {
+  const detail = "Toolport could not read the integrity baseline. Safety is Off. Definition reviews recorded only in the unreadable baseline cannot be recovered.";
+  const ts = 1791790000000;
+  vi.mocked(getBaselineNotice).mockResolvedValueOnce({ ts, detail });
   renderSettings("safety");
-  expect(await screen.findByText(`Last baseline warning: ${detail}`)).toBeInTheDocument();
+  expect(await screen.findByText(`Last baseline warning: ${new Date(ts).toLocaleString()}: ${detail}`)).toBeInTheDocument();
   expect(screen.queryByText("Quarantined tools")).not.toBeInTheDocument();
 });
 
- it("does not show a baseline warning from another profile", async () => {
-  vi.mocked(getSecurityEvents).mockResolvedValue([
-    { ts: 123, type: "pins_load_failed", change: "tamper", profile: "other", detail: "Other profile failed" },
-  ]);
+it("does not show a resolved or other-profile baseline warning", async () => {
+  vi.mocked(getBaselineNotice).mockResolvedValue(null);
   renderSettings("safety");
-  await waitFor(() => expect(getSecurityEvents).toHaveBeenCalled());
+  await waitFor(() => expect(getBaselineNotice).toHaveBeenCalled());
   expect(screen.queryByText(/Last baseline warning/)).not.toBeInTheDocument();
 });

@@ -907,6 +907,8 @@ mockIPC(
       case "decide_approval":
         pendingApproval = pendingApproval.filter((approval) => approval.id !== args.id);
         return null;
+      case "get_baseline_notice":
+        return null;
       case "get_security_events":
         return driftEvents;
       case "release_quarantine": {
