@@ -630,8 +630,8 @@ it("keeps contradictory pre-session history outside all measured totals", async 
   expect(screen.getByText(/Excluded history:/)).toHaveTextContent(
     "3,019 catalog records",
   );
-  expect(screen.getByText(/Previous tokenized total:/)).toHaveTextContent(
-    "188,100,000 tokens, excluded",
+  expect(screen.getByText(/Old estimate:/)).toHaveTextContent(
+    "Old estimate: 188,100,000 tokens",
   );
   expect(screen.queryByText(/18.4 GB/)).not.toBeInTheDocument();
 });
@@ -644,13 +644,38 @@ it("shows preserved history without a shareable savings headline", async () => {
     sinceTs: 0,
     historicalListLoads: 3019,
     historicalMeasuredLoads: 3019,
-    previousReportedTokensSaved: 188_100_000,
+    previousReportedTokensSaved: 195_640_064,
+    legacyEstimatedTokensAvoided: 3_861_119_161,
+    estimatedTokensAvoided: 4_387_380_774,
   });
   render(<ActivityView refreshKey={0} registry={null} />);
   await act(async () => {});
   expect(screen.getByText("Not measured yet")).toBeInTheDocument();
-  expect(screen.getByText(/Previous tokenized total:/)).toBeInTheDocument();
+  expect(screen.getByText(/Old estimate:/)).toBeVisible();
+  expect(screen.getByText(/Old estimate:/)).toHaveTextContent("195,640,064 tokens");
   expect(screen.queryByRole("button", { name: "Share" })).not.toBeInTheDocument();
+});
+
+it("preserves a negative old estimate separately from new measured savings", async () => {
+  getSavingsSummary.mockResolvedValue({
+    tokensSaved: 42,
+    tokenizedLoads: 1,
+    listLoads: 1,
+    peakCatalog: 1,
+    sinceTs: 1,
+    previousReportedTokensSaved: -291,
+  });
+  render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  expect(screen.getByText(/Old estimate:/)).toBeVisible();
+  expect(screen.getByText(/Old estimate:/)).toHaveTextContent("-291 tokens");
+  expect(screen.getByText(/42/, { selector: "span.text-3xl" })).toHaveTextContent(
+    "net tokens saved",
+  );
+  expect(
+    screen.getByText("From previous versions; excluded from new savings."),
+  ).toBeVisible();
+  expect(screen.getByRole("button", { name: "Share" })).toBeInTheDocument();
 });
 
 it("shares a token savings statement without a billing claim", async () => {
@@ -662,6 +687,7 @@ it("shares a token savings statement without a billing claim", async () => {
   });
   getSavingsSummary.mockResolvedValue({
     tokensSaved: -123,
+    previousReportedTokensSaved: 195_640_064,
     tokenizedLoads: 1,
     listLoads: 2751,
     peakCatalog: 1725,
@@ -675,7 +701,9 @@ it("shares a token savings statement without a billing claim", async () => {
   );
   expect(writeText.mock.calls[0][0]).toContain("not a billing figure");
   expect(writeText.mock.calls[0][0]).toContain("cl100k_base");
-  expect(writeText.mock.calls[0][0]).not.toMatch(/billed tokens|money saved/i);
+  expect(writeText.mock.calls[0][0]).not.toMatch(
+    /billed tokens|money saved|195|Old estimate/i,
+  );
 });
 
 it("shows discovery bytes without a catalog load or a zero-token savings claim", async () => {

@@ -3361,6 +3361,7 @@ struct ActivityPage {
     savings_unit: gtk::Label,
     savings_detail: gtk::Label,
     savings_summary: gtk::Label,
+    savings_old_estimate: gtk::Label,
     savings_share: gtk::Button,
     expanded_stat_servers: std::rc::Rc<std::cell::RefCell<std::collections::HashSet<String>>>,
     server_stat_order: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
@@ -3543,6 +3544,12 @@ impl ActivityPage {
             .build();
         let savings_summary = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["toolport-muted", "caption"]).build();
         savings_banner.append(&savings_summary);
+        let savings_old_estimate = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["toolport-muted", "caption"])
+            .build();
+        savings_banner.append(&savings_old_estimate);
         let savings_counting = gtk::Expander::builder()
             .label("How this is measured")
             .expanded(false)
@@ -3714,6 +3721,7 @@ impl ActivityPage {
             savings_unit,
             savings_detail,
             savings_summary,
+            savings_old_estimate,
             savings_share: savings_share.clone(),
             expanded_stat_servers: std::rc::Rc::new(std::cell::RefCell::new(
                 std::collections::HashSet::new(),
@@ -4274,8 +4282,12 @@ impl ActivityPage {
         };
         let has_catalog = snapshot.savings_tokenized_loads > 0;
         let discovered = snapshot.savings_discovery_count > 0;
-        self.savings_banner
-            .set_visible(has_catalog || discovered || snapshot.savings_historical_loads > 0);
+        self.savings_banner.set_visible(
+            has_catalog
+                || discovered
+                || snapshot.savings_historical_loads > 0
+                || snapshot.savings_previous_tokens != 0,
+        );
         self.savings_title.set_label(if has_catalog {
             "Net tool description savings"
         } else if discovered {
@@ -4296,6 +4308,10 @@ impl ActivityPage {
         self.savings_share.set_visible(has_catalog);
         self.savings_value.set_label(&primary);
         self.savings_unit.set_label(unit);
+        let old = savings_old_estimate_display(snapshot.savings_previous_tokens);
+        self.savings_old_estimate.set_visible(old.is_some());
+        self.savings_old_estimate
+            .set_label(old.as_deref().unwrap_or(""));
         let mut detail = String::from("The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. Compact JSON and search response text are counted with cl100k_base. Every tools/list and search response is subtracted. Sessionless HTTP, initial catalogs above known client limits, and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.");
         if has_catalog || discovered {
             detail.push_str(&format!("\n{} baseline tokens − {} catalog response tokens − {} search response tokens = {} net tokens saved.\n{} client sessions; {} catalog responses; {} search responses.\n{} baseline catalog text; {} catalog text sent; {} search text sent.",
@@ -4305,12 +4321,6 @@ impl ActivityPage {
         }
         if snapshot.savings_historical_loads > 0 {
             detail.push_str(&format!("\nExcluded history: {} catalog records ({} with byte measurements). Session identity and repeat loads cannot be verified.", grouped_number(snapshot.savings_historical_loads), grouped_number(snapshot.savings_historical_measured)));
-        }
-        if snapshot.savings_previous_tokens != 0 {
-            detail.push_str(&format!(
-                "\nPrevious tokenized total: {} tokens, excluded from the headline.",
-                snapshot.savings_previous_tokens
-            ));
         }
         if snapshot.savings_legacy_tokens > 0 || snapshot.savings_old_v2_tokens > 0 {
             detail.push_str(&format!(
@@ -5431,6 +5441,16 @@ fn format_saved_tokens(tokens_saved: i64) -> String {
         if tokens_saved < 0 { "-" } else { "" },
         state::format_token_count(tokens_saved.unsigned_abs())
     )
+}
+
+fn savings_old_estimate_display(tokens: i64) -> Option<String> {
+    (tokens != 0).then(|| {
+        let sign = if tokens < 0 { "-" } else { "" };
+        format!(
+            "Old estimate: {sign}{} tokens\nFrom previous versions; excluded from new savings.",
+            grouped_number(tokens.unsigned_abs())
+        )
+    })
 }
 
 fn savings_primary_display(
@@ -11258,6 +11278,80 @@ mod tests {
     }
     #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn savings_old_estimate_visual_fixture() {
+        use super::*;
+        let _data = crate::registry::DataDirTestEnv::new("savings-old-estimate-visual");
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.SavingsFixture")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+        let page = ActivityPage::new(&app);
+        let mut history = state::load_activity_snapshot().unwrap();
+        history.savings_historical_loads = 5884;
+        history.savings_previous_tokens = 195_640_064;
+        page.render(history.clone());
+        assert_eq!(page.savings_value.text(), "Not measured yet");
+        assert!(page.savings_old_estimate.is_visible());
+        assert!(page
+            .savings_old_estimate
+            .text()
+            .contains("195,640,064 tokens"));
+        assert!(!page.savings_share.is_visible());
+        let mut mixed = history.clone();
+        mixed.tokens_saved = -10;
+        mixed.savings_tokenized_loads = 1;
+        mixed.savings_list_loads = 2;
+        mixed.savings_previous_tokens = -291;
+        page.render(mixed.clone());
+        assert_eq!(page.savings_value.text(), "-10");
+        assert!(page.savings_old_estimate.text().contains("-291 tokens"));
+        assert!(page.savings_share.is_visible());
+        page.render(
+            if std::env::var("TOOLPORT_SAVINGS_FIXTURE").as_deref() == Ok("mixed") {
+                mixed
+            } else {
+                history
+            },
+        );
+        let parent = page
+            .savings_banner
+            .parent()
+            .unwrap()
+            .downcast::<gtk::Box>()
+            .unwrap();
+        parent.remove(&page.savings_banner);
+        let panel = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        panel.set_margin_top(20);
+        panel.set_margin_bottom(20);
+        panel.set_margin_start(20);
+        panel.set_margin_end(20);
+        panel.append(&page.savings_banner);
+        let counting = page
+            .savings_banner
+            .last_child()
+            .unwrap()
+            .downcast::<gtk::Expander>()
+            .unwrap();
+        assert!(!counting.is_expanded());
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .title("Toolport savings fixture")
+            .default_width(1000)
+            .default_height(400)
+            .content(&panel)
+            .build();
+        theme::ThemeController::new().attach(&window);
+        window.present();
+        let main_loop = gtk::glib::MainLoop::new(None, false);
+        let stop = main_loop.clone();
+        gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(30), move || stop.quit());
+        main_loop.run();
+        window.close();
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn activity_polish_visual_fixture() {
         use super::*;
         let data = crate::registry::DataDirTestEnv::new("activity-polish-visual");
@@ -12190,6 +12284,21 @@ mod tests {
         assert_eq!(activity_count_summary(5225, 5, 5, false), "5,225 calls recorded on this computer. Showing the latest 5.");
         assert_eq!(activity_count_summary(5225, 10, 100, false), "5,225 calls recorded on this computer. Showing 10 of the latest 100.");
         assert_eq!(activity_count_summary(5225, 2, 5, true), "5,225 calls recorded on this computer. Showing 2 matching rows from the latest 5.");
+    }
+
+    #[test]
+    fn old_savings_estimate_preserves_signed_history() {
+        assert_eq!(savings_old_estimate_display(0), None);
+        assert_eq!(
+            savings_old_estimate_display(195_640_064).unwrap(),
+            "Old estimate: 195,640,064 tokens\nFrom previous versions; excluded from new savings."
+        );
+        assert!(savings_old_estimate_display(-291)
+            .unwrap()
+            .starts_with("Old estimate: -291 tokens"));
+        assert!(savings_old_estimate_display(i64::MIN)
+            .unwrap()
+            .starts_with("Old estimate: -9,223,372,036,854,775,808 tokens"));
     }
 
     #[test]

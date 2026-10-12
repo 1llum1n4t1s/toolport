@@ -505,6 +505,14 @@ function SavingsBanner({ savings }: { savings: SavingsSummary }) {
           ? "Full catalog baselines minus all catalog and search responses. Counted locally; not a billing figure."
           : "Older records remain available below. Comparable session measurements start with this version."}
       </p>
+      {(savings.previousReportedTokensSaved ?? 0) !== 0 && (
+        <div className="mt-3 border-t border-success/20 pt-3 text-xs text-muted-foreground">
+          <p className="font-medium">
+            Old estimate: {exact(savings.previousReportedTokensSaved)} tokens
+          </p>
+          <p className="mt-1">From previous versions; excluded from new savings.</p>
+        </div>
+      )}
       {hasCatalog && (
         <button
           onClick={share}
@@ -543,12 +551,6 @@ function SavingsBanner({ savings }: { savings: SavingsSummary }) {
               Excluded history: {exact(savings.historicalListLoads)} catalog records (
               {exact(savings.historicalMeasuredLoads)} with byte measurements). Session
               identity and repeat loads cannot be verified.
-            </p>
-          )}
-          {(savings.previousReportedTokensSaved ?? 0) !== 0 && (
-            <p>
-              Previous tokenized total: {exact(savings.previousReportedTokensSaved)}{" "}
-              tokens, excluded from the headline.
             </p>
           )}
           {((savings.legacyEstimatedTokensAvoided ?? 0) > 0 ||
@@ -1948,7 +1950,8 @@ export function ActivityView({
       {savings &&
       ((savings.tokenizedLoads ?? 0) > 0 ||
         (savings.discoveryCount ?? 0) > 0 ||
-        (savings.historicalListLoads ?? 0) > 0) ? (
+        (savings.historicalListLoads ?? 0) > 0 ||
+        (savings.previousReportedTokensSaved ?? 0) !== 0) ? (
         <SavingsBanner savings={savings} />
       ) : null}
       <DiscoveryTraces

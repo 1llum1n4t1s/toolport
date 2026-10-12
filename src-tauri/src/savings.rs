@@ -22,8 +22,13 @@ pub const TOKENIZER: &str = "cl100k_base";
 /// even when its catalog is identical. Sessionless HTTP cannot supply a baseline.
 pub struct CatalogSession {
     id: String,
-    loaded: Mutex<bool>,
-    measurable: std::sync::atomic::AtomicBool,
+    accounting: Mutex<SessionAccounting>,
+}
+
+#[derive(Default)]
+struct SessionAccounting {
+    loaded: bool,
+    eligible: Option<bool>,
 }
 
 impl Default for CatalogSession {
@@ -32,29 +37,29 @@ impl Default for CatalogSession {
         getrandom::getrandom(&mut bytes).expect("CSPRNG unavailable");
         Self {
             id: bytes.iter().map(|byte| format!("{byte:02x}")).collect(),
-            loaded: Mutex::new(false),
-            measurable: std::sync::atomic::AtomicBool::new(true),
+            accounting: Mutex::new(SessionAccounting::default()),
         }
     }
 }
 
 impl CatalogSession {
-    /// A client that would reject its initial full catalog has no usable baseline.
-    /// Once credited, later growth must still subtract every response.
-    pub fn exclude_unloadable_baseline(&self) {
-        let loaded = self
-            .loaded
+    /// Decide from the full catalog at the first measured request, including a
+    /// search before tools/list. Freeze that decision so later catalog growth
+    /// cannot invalidate already queued or durable costs. No pending rows needed.
+    pub fn resolve_baseline_eligibility(&self, usable: impl FnOnce() -> bool) {
+        let mut accounting = self
+            .accounting
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !*loaded {
-            self.measurable
-                .store(false, std::sync::atomic::Ordering::Relaxed);
-        }
+        accounting.eligible.get_or_insert_with(usable);
     }
 
     pub fn unmeasured() -> Self {
         Self {
-            measurable: std::sync::atomic::AtomicBool::new(false),
+            accounting: Mutex::new(SessionAccounting {
+                loaded: false,
+                eligible: Some(false),
+            }),
             ..Self::default()
         }
     }
@@ -349,17 +354,14 @@ pub fn record_catalog_surfaces(
     full_text: impl FnOnce() -> String,
     route: impl Fn(&str) -> Option<String>,
 ) {
-    let mut loaded = session
-        .loaded
+    let mut accounting = session
+        .accounting
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !session
-        .measurable
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
+    if !*accounting.eligible.get_or_insert(true) {
         return;
     }
-    let first = !*loaded;
+    let first = !accounting.loaded;
     let mut by_server_bytes = BTreeMap::<String, u64>::new();
     if first {
         for (name, bytes) in &full.tools {
@@ -390,15 +392,17 @@ pub fn record_catalog_surfaces(
         row["client"] = json!(client);
     }
     append_line(&row);
-    *loaded = true;
+    accounting.loaded = true;
 }
 
 /// Search content is measured after composing the text returned by tools/call.
 pub fn record_discovery(session: &CatalogSession, text: &str, matched_schema_bytes: u64) {
-    if !session
-        .measurable
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
+    let accounting = session
+        .accounting
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Fail closed until the gateway has checked this client's full baseline.
+    if accounting.eligible != Some(true) {
         return;
     }
     append_line(&json!({
@@ -1086,7 +1090,7 @@ mod tests {
         });
         let full_count = count_tokens(&serde_json::to_string(&full).unwrap());
         let exposed_count = count_tokens(&serde_json::to_string(&exposed).unwrap());
-        record_discovery(&CatalogSession::default(), "hello world", 0);
+        record_discovery(&eligible_session(), "hello world", 0);
         let first = summary();
         assert_eq!(first["tokenizedLoads"], 1);
         assert_eq!(
@@ -1158,7 +1162,7 @@ mod tests {
         let v2 = v2_path().unwrap();
         let old = "{\"v\":2,\"kind\":\"catalog_exposure\",\"estimatedTokensAvoided\":1000}\n";
         std::fs::write(&v2, old).unwrap();
-        record_discovery(&CatalogSession::default(), "hello world", 0);
+        record_discovery(&eligible_session(), "hello world", 0);
         assert_eq!(summary()["tokensSaved"], -2);
         assert_eq!(summary()["estimatedTokensAvoided"], 1000);
         assert_eq!(std::fs::read_to_string(&v2).unwrap(), old);
@@ -1200,16 +1204,43 @@ mod tests {
         assert_eq!(aggregate(&[fold(&[fold(&rows)])]), summary);
     }
 
+    fn eligible_session() -> CatalogSession {
+        let session = CatalogSession::default();
+        session.resolve_baseline_eligibility(|| true);
+        session
+    }
+
+    #[test]
+    fn discovery_requires_eligibility_and_freezes_it_before_first_list() {
+        let _data = crate::registry::DataDirTestEnv::new("savings-prelist-eligibility");
+        let session = CatalogSession::default();
+        record_discovery(&session, "hello world", 0);
+        assert!(entries().is_empty());
+        session.resolve_baseline_eligibility(|| true);
+        record_discovery(&session, "hello world", 0);
+        session.resolve_baseline_eligibility(|| false); // later growth
+        record_discovery(&session, "hello world", 0);
+        assert_eq!(summary()["tokenizedLoads"], 0); // legitimate search-only session
+        assert_eq!(summary()["discoveryCount"], 2);
+        assert_eq!(summary()["tokensSaved"], -4);
+        record_catalog(&session, "lazy", None, &[], &[], |_| None);
+        record_catalog(&session, "lazy", None, &[], &[], |_| None);
+        assert_eq!(summary()["tokenizedLoads"], 1);
+        assert_eq!(summary()["discoveryCount"], 2);
+        assert_eq!(summary()["listLoads"], 2);
+        assert_eq!(summary()["tokensSaved"], -4 - count_tokens("[]") as i64);
+    }
+
     #[test]
     fn an_unloadable_first_baseline_is_excluded_but_later_growth_keeps_costs() {
         let _data = crate::registry::DataDirTestEnv::new("savings-unloadable-baseline");
         let excluded = CatalogSession::default();
-        excluded.exclude_unloadable_baseline();
+        excluded.resolve_baseline_eligibility(|| false);
         record_catalog(&excluded, "lazy", None, &[], &[], |_| None);
         assert_eq!(summary()["tokenizedLoads"], 0);
         let valid = CatalogSession::default();
         record_catalog(&valid, "lazy", None, &[], &[], |_| None);
-        valid.exclude_unloadable_baseline();
+        valid.resolve_baseline_eligibility(|| false);
         record_catalog(&valid, "lazy", None, &[], &[], |_| None);
         assert_eq!(summary()["tokenizedLoads"], 1);
         assert_eq!(summary()["listLoads"], 2);
@@ -1424,7 +1455,7 @@ mod tests {
             &[json!({"name":"toolport_status"})],
             |_| Some("alpha".into()),
         );
-        record_discovery(&CatalogSession::default(), "hello world", 50);
+        record_discovery(&eligible_session(), "hello world", 50);
         // The background writer owns the append now: land it before reading v2 directly.
         // A slow runner can exceed the default flush budget; a late append would
         // then land after the checks below and look like a v2 history change.
@@ -1488,7 +1519,7 @@ mod tests {
         assert_eq!(try_summary().unwrap()["tokensSaved"], 0);
         assert!(!legacy.exists());
         assert!(!v2.exists());
-        record_discovery(&CatalogSession::default(), "hello world", 12);
+        record_discovery(&eligible_session(), "hello world", 12);
         assert_eq!(try_summary().unwrap()["discoveryCount"], 1);
         assert_eq!(try_summary().unwrap()["listLoads"], 0);
         assert!(v2.exists());

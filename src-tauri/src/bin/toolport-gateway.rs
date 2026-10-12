@@ -7467,9 +7467,9 @@ fn handle_request_with_cancel(
                 if full_discovery_fallback(client) {
                     full.splice(2..2, [search_tool_def(), call_tool_def()]);
                 }
-                if over_client_tool_limit(client, full.len()) {
-                    guard.catalog.exclude_unloadable_baseline();
-                }
+                guard
+                    .catalog
+                    .resolve_baseline_eligibility(|| !over_client_tool_limit(client, full.len()));
                 savings::record_catalog(
                     &guard.catalog,
                     mode.as_str(),
@@ -7567,6 +7567,22 @@ fn handle_request_with_cancel(
             }
 
             if name == "toolport_search_tools" {
+                // Search can precede tools/list. Check the same policy/client full
+                // catalog before either a successful or rejected response is queued.
+                // Cached dispatch also reaches this path with its request snapshot.
+                guard.catalog.resolve_baseline_eligibility(|| {
+                    let catalog = if cached.is_empty() {
+                        router.shared_tools()
+                    } else {
+                        drop_blocked_from_cache(cached.shared(), router, reg)
+                    };
+                    let mut full =
+                        tool_surface(host, reg, router, &catalog, allowed, DiscoveryMode::Full);
+                    if full_discovery_fallback(client) {
+                        full.splice(2..2, [search_tool_def(), call_tool_def()]);
+                    }
+                    !over_client_tool_limit(client, full.len())
+                });
                 let query = arguments
                     .get("query")
                     .and_then(|v| v.as_str())
@@ -16589,9 +16605,9 @@ fn process_request_wire_inner(
             discovery
         };
         {
-            if over_client_tool_limit(client, full.summary.tool_count()) {
-                guard.catalog.exclude_unloadable_baseline();
-            }
+            guard.catalog.resolve_baseline_eligibility(|| {
+                !over_client_tool_limit(client, full.summary.tool_count())
+            });
             savings::record_catalog_surfaces(
                 &guard.catalog,
                 discovery.as_str(),
@@ -37200,6 +37216,99 @@ mod tests {
             savings::surface_bytes(reply["result"]["tools"].as_array().unwrap())
         );
         assert_eq!(savings::summary()["tokensSaved"], 0);
+    }
+
+    // Exercise the real dispatch and durable writer, including both list paths.
+    fn savings_prelist_limit_fixture(wire: bool, concurrent: bool) {
+        let _data = DataDirTestEnv::new("savings-prelist-limit");
+        let state = http_state(true);
+        let tools: Vec<_> = (0..2049)
+            .map(|i| json!({"name":format!("fixture__work_{i}"), "inputSchema":{}}))
+            .collect();
+        let snapshot = Arc::new(CatalogSnapshot::new(tools.clone()));
+        *state.cached_tools.lock().unwrap() = Arc::clone(&snapshot);
+        let reg = Registry::default();
+        let router = Router::new();
+        let guard = SearchGuard::default();
+        let search = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"toolport_search_tools","arguments":{"query":"work"}}});
+        let invalid = json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"toolport_search_tools","arguments":{"query":"x".repeat(MAX_SEARCH_QUERY_CHARS + 1)}}});
+        let list = json!({"jsonrpc":"2.0","id":3,"method":"tools/list"});
+        let run = |req: &Value| {
+            if wire {
+                process_request_wire(
+                    &state,
+                    req,
+                    &guard,
+                    None,
+                    Some("codex"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    DiscoveryMode::Lazy,
+                )
+                .unwrap()
+                .envelope
+            } else {
+                handle_request(
+                    &state,
+                    req,
+                    &reg,
+                    &router,
+                    &tools,
+                    true,
+                    None,
+                    &guard,
+                    None,
+                    Some("codex"),
+                )
+                .unwrap()
+            }
+        };
+        if concurrent {
+            let barrier = std::sync::Barrier::new(3);
+            std::thread::scope(|scope| {
+                let search = scope.spawn(|| {
+                    barrier.wait();
+                    run(&search)
+                });
+                let list = scope.spawn(|| {
+                    barrier.wait();
+                    run(&list)
+                });
+                barrier.wait();
+                assert!(search.join().unwrap()["result"]["content"].is_array());
+                assert!(list.join().unwrap()["result"]["tools"].is_array());
+            });
+        } else {
+            assert!(run(&search)["result"]["content"].is_array());
+            assert_eq!(run(&invalid)["result"]["isError"], true);
+            assert!(run(&list)["result"]["tools"].is_array());
+        }
+        assert!(
+            savings::entries().is_empty(),
+            "excluded session must not write comparable rows"
+        );
+        let summary = savings::summary();
+        assert_eq!(summary["tokenizedLoads"], 0);
+        assert_eq!(summary["discoveryCount"], 0);
+        assert_eq!(summary["tokensSaved"], 0);
+    }
+
+    #[test]
+    fn savings_search_before_first_list_excludes_unloadable_baseline() {
+        for wire in [false, true] {
+            savings_prelist_limit_fixture(wire, false);
+        }
+    }
+
+    #[test]
+    fn savings_concurrent_search_and_first_list_exclude_unloadable_baseline() {
+        for wire in [false, true] {
+            savings_prelist_limit_fixture(wire, true);
+        }
     }
 
     #[test]
