@@ -2625,10 +2625,11 @@ pub fn quarantine_record_id(record: &Value) -> String {
     if let Some(object) = record.as_object() {
         let stored: BTreeMap<_, _> = object.iter()
             .filter(|(key, _)| !matches!(key.as_str(), "profile" | "record_id"))
+            .map(|(key, value)| (key, CanonicalValue(value)))
             .collect();
         serde_json::to_writer(&mut writer, &stored).expect("JSON values serialize");
     } else {
-        serde_json::to_writer(&mut writer, record).expect("JSON values serialize");
+        serde_json::to_writer(&mut writer, &CanonicalValue(record)).expect("JSON values serialize");
     }
     format!("{:x}", writer.0.finalize())
 }
@@ -5001,6 +5002,29 @@ pub fn tool_change_summary(events: &[Value]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quarantine_record_identity_preserves_legacy_hash_and_nested_key_order_invariance() {
+        let original: Value = serde_json::from_str(r#"{"tool":"vendor__inspect","change":"changed","definition":{"name":"vendor__inspect","inputSchema":{"type":"object","properties":{"z":{"type":"string"},"a":{"type":"integer"}}}}}"#).unwrap();
+        let reordered: Value = serde_json::from_str(r#"{"profile":"scope","record_id":"presentation","definition":{"inputSchema":{"properties":{"a":{"type":"integer"},"z":{"type":"string"}},"type":"object"},"name":"vendor__inspect"},"change":"changed","tool":"vendor__inspect"}"#).unwrap();
+        assert_eq!(
+            quarantine_record_id(&original),
+            "0b21d657e430f509f171d5aeb55dee8874c602421e5d33c8d605e98498fdc6c2"
+        );
+        assert_eq!(
+            quarantine_record_id(&original),
+            quarantine_record_id(&reordered)
+        );
+        assert_eq!(
+            original["definition"]["inputSchema"]["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["z", "a"]
+        );
+    }
+
     #[test]
     fn schema_order_preservation_keeps_legacy_integrity_hashes() {
         let schema: Value = serde_json::from_str(
