@@ -1615,11 +1615,91 @@ fn search_ready_catalog_falls_back_without_waiting_for_inflight_batch() {
                 started.elapsed() < Duration::from_millis(250),
                 "query waited for background inference"
             );
+            assert_eq!(result.ranking_mode, "lexical");
             assert_eq!(result.matches[0]["name"], "clock__record_working_hours");
             assert_eq!(result.matches, expected.matches);
             assert_eq!(result.low_confidence, expected.low_confidence);
         });
     });
+}
+
+#[test]
+fn search_long_catalog_job_gives_queries_regular_semantic_turns() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let tools = vec![
+        json!({"name":"clock__record_working_hours","description":"Record working hours"}),
+        json!({"name":"clock__delete_invoice","description":"Delete an invoice"}),
+    ];
+    let model = search_static::available_model();
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    index
+        .semantic_vectors
+        .0
+        .set(
+            model
+                .encode_documents(
+                    &tools
+                        .iter()
+                        .map(search_static::document)
+                        .collect::<Vec<_>>()
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+    let batches = Arc::new(AtomicUsize::new(0));
+    let progress = batches.clone();
+    let encoder = model.clone();
+    let worker = std::thread::spawn(move || {
+        for _ in 0..12 {
+            encoder
+                .encode_documents(&["catalog background document"; search_static::BATCH_SIZE])
+                .unwrap();
+            progress.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let mut semantic = 0;
+    let mut fallbacks = 0;
+    let mut last_semantic_batch = 0;
+    let mut max_batch_gap = 0;
+    search_static::with_query_model(model, || {
+        while !worker.is_finished() {
+            let started = Instant::now();
+            let result = search_catalog_indexed(
+                &tools,
+                "record working hours",
+                None,
+                10,
+                None,
+                Some(&index),
+            );
+            let batch = batches.load(Ordering::Relaxed);
+            assert_eq!(result.matches[0]["name"], "clock__record_working_hours");
+            if result.ranking_mode == "semantic" {
+                semantic += 1;
+                max_batch_gap = max_batch_gap.max(batch - last_semantic_batch);
+                last_semantic_batch = batch;
+            } else {
+                fallbacks += 1;
+                assert!(started.elapsed() < Duration::from_millis(250));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    });
+    worker.join().unwrap();
+    max_batch_gap = max_batch_gap.max(12 - last_semantic_batch);
+    eprintln!("search fairness: {semantic} semantic, {fallbacks} lexical fallbacks, maximum gap {max_batch_gap} batches");
+    assert!(fallbacks > 0, "test did not contend with catalog inference");
+    assert!(
+        semantic >= 6,
+        "only {semantic} semantic answers during 12 batches"
+    );
+    assert!(
+        max_batch_gap <= 3,
+        "semantic answers starved for {max_batch_gap} batches"
+    );
 }
 
 #[test]
@@ -1644,6 +1724,7 @@ fn search_populated_vectors_use_lexical_ranking_when_weights_are_unavailable() {
         None,
         Some(&lexical),
     );
+    let fusion_before = LOCAL_FUSION_CALLS.with(std::cell::Cell::get);
     search_static::with_query_model(search_static::unavailable_model(), || {
         for _ in 0..3 {
             let result = search_catalog_indexed(
@@ -1654,8 +1735,56 @@ fn search_populated_vectors_use_lexical_ranking_when_weights_are_unavailable() {
                 None,
                 Some(&index),
             );
+            assert_eq!(
+                LOCAL_FUSION_CALLS.with(std::cell::Cell::get),
+                fusion_before,
+                "unavailable query entered fusion"
+            );
+            assert_eq!(result.ranking_mode, "lexical");
             assert_eq!(result.matches, expected.matches);
             assert_eq!(result.low_confidence, expected.low_confidence);
         }
     });
+    assert_eq!(
+        LOCAL_FUSION_CALLS.with(std::cell::Cell::get),
+        fusion_before,
+        "unavailable query entered fusion"
+    );
+}
+
+#[test]
+fn search_trace_records_actual_ranker_for_busy_ready_and_unavailable_queries() {
+    let _env = DataDirTestEnv::new("search-actual-ranker");
+    let tools = vec![
+        json!({"name":"clock__record_working_hours","description":"Record working hours"}),
+        json!({"name":"clock__delete_invoice","description":"Delete an invoice"}),
+    ];
+    let index = CatalogSearchIndex::build(&tools);
+    let measure = |query: &str| {
+        let intents = vec![
+            json!({"id":"actual-ranker","query":query,"kind":"ranked","expected":["clock__record_working_hours"],"category":"ranker boundary"}),
+        ];
+        measure_handler_phase(&tools, &index, &intents, "ranker");
+    };
+    search_static::with_inflight_batch(|model| {
+        search_static::with_query_model(model, || measure("record working hours"));
+    });
+    search_static::with_query_model(search_static::available_model(), || {
+        measure("clock record working hours")
+    });
+    search_static::with_query_model(search_static::unavailable_model(), || {
+        measure("clock record working hours now")
+    });
+    assert!(conduit_lib::telemetry::flush_for_test(Duration::from_secs(
+        5
+    )));
+    let traces = searchtrace::read_recent(usize::MAX).unwrap();
+    for (query, mode) in [
+        ("record working hours", "lexical"),
+        ("clock record working hours", "semantic"),
+        ("clock record working hours now", "lexical"),
+    ] {
+        let trace = traces.iter().find(|trace| trace["query"] == query).unwrap();
+        assert_eq!(trace["mode"], mode, "{query}");
+    }
 }

@@ -5,7 +5,7 @@ use candle_transformers::models::bert::{BertModel, Config};
 use serde_json::Value;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Mutex, OnceLock, TryLockError,
+    Condvar, Mutex, OnceLock, TryLockError,
 };
 use std::time::{Duration, Instant};
 use tokenizers::{Tokenizer, TruncationParams};
@@ -26,6 +26,8 @@ pub const DIMENSIONS: usize = 384;
 pub const BATCH_SIZE: usize = 8;
 const QUERY_INSTRUCTION: &str = "Represent this sentence for searching relevant passages: ";
 const LOAD_BACKOFF: Duration = Duration::from_secs(60);
+// A busy query reserves the next inter-batch opportunity, without blocking its RPC.
+const QUERY_WINDOW: Duration = Duration::from_millis(200);
 const IDLE: Duration = Duration::from_secs(600);
 
 struct Session {
@@ -98,6 +100,8 @@ pub struct Model {
     session: Mutex<ModelState>,
     weights: &'static [u8],
     failure_logged: AtomicBool,
+    query_pending: Mutex<bool>,
+    query_wake: Condvar,
     #[cfg(test)]
     batch_barriers: Option<(
         std::sync::Arc<std::sync::Barrier>,
@@ -113,6 +117,8 @@ impl Model {
             session: Mutex::new(ModelState::default()),
             weights: WEIGHTS,
             failure_logged: AtomicBool::new(false),
+            query_pending: Mutex::new(false),
+            query_wake: Condvar::new(),
             #[cfg(test)]
             batch_barriers: None,
             #[cfg(test)]
@@ -243,6 +249,23 @@ impl Model {
         self.encode_batch_inner(texts, false)
     }
 
+    fn give_queries_turn(&self) {
+        let deadline = Instant::now() + QUERY_WINDOW;
+        let mut pending = self.query_pending.lock().unwrap_or_else(|e| e.into_inner());
+        while *pending {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                *pending = false;
+                break;
+            }
+            pending = self
+                .query_wake
+                .wait_timeout(pending, remaining)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+
     fn encode_batch_inner(&self, texts: &[&str], query: bool) -> Result<Vec<Vec<f32>>, String> {
         if texts.is_empty() {
             return Ok(Vec::new());
@@ -250,16 +273,26 @@ impl Model {
         if texts.len() > BATCH_SIZE {
             return Err("search batch exceeds eight documents".into());
         }
+        if !query {
+            self.give_queries_turn();
+        }
         // A ready query never queues behind catalog inference (or its Rayon job).
         let mut session = if query {
             match self.session.try_lock() {
                 Ok(guard) => guard,
                 Err(TryLockError::Poisoned(error)) => error.into_inner(),
-                Err(TryLockError::WouldBlock) => return Err("search encoder busy".into()),
+                Err(TryLockError::WouldBlock) => {
+                    *self.query_pending.lock().unwrap_or_else(|e| e.into_inner()) = true;
+                    return Err("search encoder busy".into());
+                }
             }
         } else {
             self.session.lock().unwrap_or_else(|e| e.into_inner())
         };
+        if query {
+            *self.query_pending.lock().unwrap_or_else(|e| e.into_inner()) = false;
+            self.query_wake.notify_one();
+        }
         let mut tokenizer = (*self.tokenizer(&mut session)?).clone();
         tokenizer
             .with_truncation(Some(TruncationParams {
@@ -645,6 +678,11 @@ pub fn with_inflight_batch<T>(run: impl FnOnce(std::sync::Arc<Model>) -> T) -> T
     release.wait();
     assert_eq!(worker.join().unwrap().unwrap().len(), BATCH_SIZE);
     result.unwrap_or_else(|error| std::panic::resume_unwind(error))
+}
+
+#[cfg(test)]
+pub fn available_model() -> std::sync::Arc<Model> {
+    std::sync::Arc::new(Model::load())
 }
 
 #[cfg(test)]

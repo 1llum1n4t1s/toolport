@@ -1990,6 +1990,8 @@ const DEPRECATED_PENALTY: f64 = 0.5;
 const CONFIDENCE_COMPETITOR_RATIO: f64 = 0.85;
 
 struct SearchOutcome {
+    /// The ranker actually used, including encoder-unavailable/busy fallbacks.
+    ranking_mode: &'static str,
     matches: Vec<Value>,
     /// A literal catalog identity, including a unique normalized variant.
     /// The caller must apply the existing describe paging budget.
@@ -2825,6 +2827,7 @@ fn search_catalog_filtered(
             let mut definition = tool.clone();
             neutralize_listed_tool(&mut definition);
             return SearchOutcome {
+                ranking_mode: "lexical",
                 matches: vec![definition],
                 exact_name: true,
                 total: 1,
@@ -2841,6 +2844,7 @@ fn search_catalog_filtered(
         let mut definition = cached.get(named_tools[0]).unwrap().clone();
         neutralize_listed_tool(&mut definition);
         return SearchOutcome {
+            ranking_mode: "lexical",
             matches: vec![definition],
             exact_name: true,
             total: 1,
@@ -2850,6 +2854,7 @@ fn search_catalog_filtered(
         };
     }
 
+    let mut ranking_mode = "lexical";
     // Select an ordered set of tool refs (ranking happens here; projection below).
     let (selected, total, low_confidence, broadened, direct_returned) = if terms.is_empty() {
         // Empty query: list the pool. With `server` set this enumerates that server.
@@ -3056,6 +3061,9 @@ fn search_catalog_filtered(
             None
         };
         let use_local_semantic = use_local_semantic && query_vector.is_some();
+        if remote_ranked.is_some() || use_local_semantic {
+            ranking_mode = "semantic";
+        }
         let similarities: Vec<f64> = pool
             .iter()
             .map(|position| {
@@ -3257,6 +3265,7 @@ fn search_catalog_filtered(
     };
 
     SearchOutcome {
+        ranking_mode,
         matches: project_search_results(&selected, true),
         exact_name: false,
         total,
@@ -3266,12 +3275,17 @@ fn search_catalog_filtered(
     }
 }
 
+#[cfg(test)]
+thread_local! { static LOCAL_FUSION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 /// Weighted reciprocal rank fusion needs no shared scale between IDF and cosine.
 /// Weak semantic similarities do not invent direct matches for an unknown request.
 fn local_search_fusion<'a>(
     lex: &[(f64, &'a Value)],
     similarities: &[f64],
 ) -> Vec<(f64, &'a Value)> {
+    #[cfg(test)]
+    LOCAL_FUSION_CALLS.with(|calls| calls.set(calls.get() + 1));
     let weight = 1.0;
     let floor = 0.60_f64;
     let minimum_similarity = 0.0;
@@ -8114,14 +8128,6 @@ fn handle_request_with_cancel(
                         })
                     })
                     .collect();
-                // Reflects the configured ranker (semantic re-rank falls back to lexical
-                // on any embedding failure, so this is the intended mode, not a per-call
-                // guarantee it succeeded).
-                let mode = if sem_cfg.is_active() || search_static::enabled() {
-                    "semantic"
-                } else {
-                    "lexical"
-                };
                 searchtrace::record_measured(
                     client,
                     query,
@@ -8138,7 +8144,7 @@ fn handle_request_with_cancel(
                     catalog_schema_bytes,
                     false,
                     &ranking,
-                    mode,
+                    outcome.ranking_mode,
                 );
                 return Some(success(id, search_result));
             }

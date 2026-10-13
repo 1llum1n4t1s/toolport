@@ -66,8 +66,14 @@ Catalog batches have at most eight documents. CPU work uses a private pool of
 at most two threads. Disk entries use the model/representation digest plus the
 rendered document hash, with the existing 32 MiB / 14 day limits. Searches use
 lexical answers while background vectors are pending or the encoder is busy/unavailable.
-Queries never queue behind catalog inference. Failed model loads back off for
-60 seconds and log once; unavailable queries do not participate in fusion.
+Queries never queue behind catalog inference. A busy query reserves a bounded
+200 ms opportunity between batches for the next query; the worker resumes when
+a query acquires the session or the window expires. Search traces record the
+ranker actually used. Failed model loads back off for 60 seconds and log once;
+unavailable queries do not participate in fusion. Failed catalog jobs retry after
+60 and 120 seconds. After three failed attempts they log once and retain their
+snapshot; the next search after a 240-second cooldown can start another retry
+cycle. Only a complete successful catalog is published.
 The session unloads after
 ten minutes idle. Unload also releases the tokenizer and joins the private CPU
 pool workers so their retained packing buffers are freed. Immutable catalog
