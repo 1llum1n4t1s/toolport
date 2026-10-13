@@ -3145,6 +3145,27 @@ fn search_catalog_filtered(
                 || next >= score * 0.98
                 || !((name_covered / weight >= 0.60 && explained_name >= 0.90)
                     || (explained_name >= 0.50 && next < score * CONFIDENCE_COMPETITOR_RATIO));
+            // A semantic preference cannot supply an omitted operation/resource
+            // distinction. If a strong lexical alternative explains the same
+            // name words, the user has not selected between those alternatives.
+            let matched_name: HashSet<_> = doc
+                .name_tokens
+                .iter()
+                .filter(|token| q_tokens.contains(token))
+                .collect();
+            let unresolved_alternative = !matched_name.is_empty()
+                && lex.iter().enumerate().any(|(other, (other_score, _))| {
+                    let alternative = &index.documents[pool[other]];
+                    other != position
+                        && *other_score >= score * CONFIDENCE_COMPETITOR_RATIO
+                        && alternative.name_tokens != doc.name_tokens
+                        && alternative
+                            .name_tokens
+                            .iter()
+                            .filter(|token| q_tokens.contains(token))
+                            .collect::<HashSet<_>>()
+                            == matched_name
+                });
             // One fixed round rule, chosen before confidence measurements. The
             // fused winner must also beat every semantic competitor; RRF score
             // gaps do not measure relevance or semantic separation.
@@ -3162,7 +3183,8 @@ fn search_catalog_filtered(
                 // uncertainty, but cannot certify missing absolute job evidence.
                 && weight > f64::EPSILON
                 && score > f64::EPSILON
-                && covered / weight >= 0.90;
+                && covered / weight >= 0.90
+                && !unresolved_alternative;
             !unique_name
                 && (unresolved_name
                     || named_tools.len() > 1

@@ -1435,3 +1435,46 @@ fn search_strong_semantic_similarity_cannot_certify_missing_job_evidence() {
     assert_eq!(result.matches[0]["name"], "other__first");
     assert!(result.low_confidence);
 }
+
+#[test]
+fn search_semantic_preference_cannot_supply_an_omitted_name_distinction() {
+    for (query, names, descriptions) in [
+        (
+            "confirm the customer's intent",
+            [
+                "stripe__confirm_payment_intent",
+                "stripe__confirm_setup_intent",
+            ],
+            [
+                "Confirm that your customer intends to pay.",
+                "Confirm that your customer intends to set up a payment method.",
+            ],
+        ),
+        (
+            "stop the subscription schedule",
+            [
+                "stripe__cancel_subscription_schedule",
+                "stripe__release_subscription_schedule",
+            ],
+            [
+                "Stop the subscription schedule and its subscription.",
+                "Stop scheduling subscription schedule phases, leaving the subscription in place.",
+            ],
+        ),
+    ] {
+        let tools: Vec<_> = names.iter().zip(descriptions).map(|(name, description)| {
+            json!({"name":name,"description":description,"inputSchema":{}})
+        }).collect();
+        let vector = search_static::query_vector(query);
+        let index = CatalogSearchIndex::build_lexical(&tools);
+        index
+            .semantic_vectors
+            .0
+            .set(vec![vector.clone(), vec![0.0; vector.len()]])
+            .unwrap();
+        let result = search_catalog_indexed(&tools, query, None, 10, None, Some(&index));
+        assert_eq!(result.matches[0]["name"], names[0]);
+        assert!(result.low_confidence, "{query}");
+        assert_eq!(result.matches.len(), 2);
+    }
+}
