@@ -424,6 +424,8 @@ jobs:
         with:
           node-version: 20
 
+      # BGE uses Candle CPU on all release targets. No ONNX Runtime shared
+      # library or execution-provider package is needed for search-static.
       # The headless build skips Tauri/WebKit, but the Linux keyring backend still
       # needs libdbus headers and pkg-config at compile time.
       - name: Install Linux build dependencies
