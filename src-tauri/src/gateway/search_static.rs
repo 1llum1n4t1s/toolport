@@ -400,11 +400,9 @@ pub fn tool_vector(tool: &Value) -> Vec<f32> {
 #[cfg(test)]
 pub fn export_query_fixture(queries: &[String], output: &std::path::Path) {
     use sha2::{Digest, Sha256};
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .append(true)
-        .open(output)
-        .unwrap();
+    // The fixture is bounded public test data. Rewrite its complete buffer;
+    // production append-mode sinks remain restricted to private_logs.
+    let mut bytes = std::fs::read(output).unwrap();
     for batch in queries.chunks(BATCH_SIZE) {
         let texts: Vec<String> = batch
             .iter()
@@ -417,12 +415,13 @@ pub fn export_query_fixture(queries: &[String], output: &std::path::Path) {
             let mut hash = Sha256::new();
             hash.update(asset_digest());
             hash.update(text.as_bytes());
-            file.write_all(&hash.finalize()).unwrap();
+            bytes.extend_from_slice(&hash.finalize());
             for value in vector {
-                file.write_all(&value.to_le_bytes()).unwrap();
+                bytes.extend_from_slice(&value.to_le_bytes());
             }
         }
     }
+    std::fs::write(output, bytes).unwrap();
 }
 
 #[cfg(test)]
