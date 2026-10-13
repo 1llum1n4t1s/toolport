@@ -44,14 +44,57 @@ impl Session {
     }
 }
 
+// Join retired workers before trimming: GEMM may retain packing buffers in TLS.
+struct CpuPool {
+    pool: Option<rayon::ThreadPool>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl CpuPool {
+    fn load() -> Result<Self, String> {
+        let mut cpu = Self {
+            pool: None,
+            workers: Vec::new(),
+        };
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .thread_name(|n| format!("search-cpu-{n}"))
+            .spawn_handler(|thread| {
+                let mut builder = std::thread::Builder::new();
+                if let Some(name) = thread.name() {
+                    builder = builder.name(name.to_owned());
+                }
+                if let Some(size) = thread.stack_size() {
+                    builder = builder.stack_size(size);
+                }
+                cpu.workers.push(builder.spawn(move || thread.run())?);
+                Ok(())
+            })
+            .build()
+            .map_err(|e| e.to_string())?;
+        cpu.pool = Some(pool);
+        Ok(cpu)
+    }
+}
+
+impl Drop for CpuPool {
+    fn drop(&mut self) {
+        drop(self.pool.take());
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
 #[derive(Default)]
 struct ModelState {
     session: Option<Session>,
     retry_after: Option<Instant>,
+    tokenizer: Option<std::sync::Arc<Tokenizer>>,
+    pool: Option<std::sync::Arc<CpuPool>>,
 }
 
 pub struct Model {
-    tokenizer: Tokenizer,
     session: Mutex<ModelState>,
     weights: &'static [u8],
     failure_logged: AtomicBool,
@@ -62,16 +105,11 @@ pub struct Model {
     )>,
     #[cfg(test)]
     load_attempts: std::sync::atomic::AtomicUsize,
-    pool: rayon::ThreadPool,
 }
 
 impl Model {
-    fn load() -> Result<Self, String> {
-        let mut tokenizer = Tokenizer::from_bytes(TOKENIZER).map_err(|e| e.to_string())?;
-        tokenizer.with_padding(None);
-        tokenizer.with_truncation(None).map_err(|e| e.to_string())?;
-        Ok(Self {
-            tokenizer,
+    fn load() -> Self {
+        Self {
             session: Mutex::new(ModelState::default()),
             weights: WEIGHTS,
             failure_logged: AtomicBool::new(false),
@@ -79,19 +117,19 @@ impl Model {
             batch_barriers: None,
             #[cfg(test)]
             load_attempts: std::sync::atomic::AtomicUsize::new(0),
-            pool: rayon::ThreadPoolBuilder::new()
-                .num_threads(2)
-                .thread_name(|n| format!("search-cpu-{n}"))
-                .build()
-                .map_err(|e| e.to_string())?,
-        })
+        }
     }
 
     #[cfg(test)]
     pub fn load_for_benchmark(&self) -> Result<(), String> {
         let mut guard = self.session.lock().unwrap_or_else(|e| e.into_inner());
         let state = &mut *guard;
-        self.pool.install(|| self.ensure_session(state)).map(|_| ())
+        let pool = self.pool(state)?;
+        pool.pool
+            .as_ref()
+            .unwrap()
+            .install(|| self.ensure_session(state))
+            .map(|_| ())
     }
 
     fn ensure_session<'a>(&self, state: &'a mut ModelState) -> Result<&'a mut Session, String> {
@@ -109,39 +147,76 @@ impl Model {
                     state.session = Some(session);
                     state.retry_after = None;
                 }
-                Err(error) => {
-                    state.retry_after = Some(Instant::now() + LOAD_BACKOFF);
-                    if !self.failure_logged.swap(true, Ordering::Relaxed) {
-                        eprintln!(
-                            "Toolport search model unavailable; using lexical ranking: {error}"
-                        );
-                    }
-                    return Err(error.to_string());
-                }
+                Err(error) => return Err(self.unavailable(state, error.to_string())),
             }
         }
         Ok(state.session.as_mut().unwrap())
+    }
+
+    fn unavailable(&self, state: &mut ModelState, error: String) -> String {
+        state.retry_after = Some(Instant::now() + LOAD_BACKOFF);
+        if !self.failure_logged.swap(true, Ordering::Relaxed) {
+            eprintln!("Toolport search model unavailable; using lexical ranking: {error}");
+        }
+        error
     }
 
     pub fn dimensions(&self) -> usize {
         DIMENSIONS
     }
 
+    fn tokenizer(&self, state: &mut ModelState) -> Result<std::sync::Arc<Tokenizer>, String> {
+        if state.tokenizer.is_none() {
+            if state
+                .retry_after
+                .is_some_and(|until| Instant::now() < until)
+            {
+                return Err("search model load is in backoff".into());
+            }
+            let mut tokenizer = Tokenizer::from_bytes(TOKENIZER)
+                .map_err(|e| self.unavailable(state, e.to_string()))?;
+            tokenizer.with_padding(None);
+            tokenizer
+                .with_truncation(None)
+                .map_err(|e| self.unavailable(state, e.to_string()))?;
+            state.tokenizer = Some(std::sync::Arc::new(tokenizer));
+        }
+        Ok(state.tokenizer.as_ref().unwrap().clone())
+    }
+
+    fn pool(&self, state: &mut ModelState) -> Result<std::sync::Arc<CpuPool>, String> {
+        if state.pool.is_none() {
+            if state
+                .retry_after
+                .is_some_and(|until| Instant::now() < until)
+            {
+                return Err("search model load is in backoff".into());
+            }
+            state.pool = Some(std::sync::Arc::new(
+                CpuPool::load().map_err(|error| self.unavailable(state, error))?,
+            ));
+        }
+        Ok(state.pool.as_ref().unwrap().clone())
+    }
+
+    #[cfg(test)]
     pub fn encode_input(&self, text: &str) -> Result<tokenizers::Encoding, String> {
-        self.tokenizer
-            .encode(text, false)
-            .map_err(|e| e.to_string())
+        let tokenizer =
+            self.tokenizer(&mut self.session.lock().unwrap_or_else(|e| e.into_inner()))?;
+        tokenizer.encode(text, false).map_err(|e| e.to_string())
     }
 
     /// Reproduce round 2's content-token truncation and decoded document text.
     fn document_input(&self, text: &str) -> Result<String, String> {
-        let mut encoded = self.encode_input(text)?;
+        let tokenizer =
+            self.tokenizer(&mut self.session.lock().unwrap_or_else(|e| e.into_inner()))?;
+        let mut encoded = tokenizer.encode(text, false).map_err(|e| e.to_string())?;
         encoded.truncate(
             ENCODE_TOKEN_LIMIT - 2,
             0,
             tokenizers::TruncationDirection::Right,
         );
-        self.tokenizer
+        tokenizer
             .decode(encoded.get_ids(), true)
             .map_err(|e| e.to_string())
     }
@@ -175,7 +250,17 @@ impl Model {
         if texts.len() > BATCH_SIZE {
             return Err("search batch exceeds eight documents".into());
         }
-        let mut tokenizer = self.tokenizer.clone();
+        // A ready query never queues behind catalog inference (or its Rayon job).
+        let mut session = if query {
+            match self.session.try_lock() {
+                Ok(guard) => guard,
+                Err(TryLockError::Poisoned(error)) => error.into_inner(),
+                Err(TryLockError::WouldBlock) => return Err("search encoder busy".into()),
+            }
+        } else {
+            self.session.lock().unwrap_or_else(|e| e.into_inner())
+        };
+        let mut tokenizer = (*self.tokenizer(&mut session)?).clone();
         tokenizer
             .with_truncation(Some(TruncationParams {
                 max_length: ENCODE_TOKEN_LIMIT,
@@ -194,50 +279,44 @@ impl Model {
             ids[n * width..n * width + encoding.len()].copy_from_slice(encoding.get_ids());
             mask[n * width..n * width + encoding.len()].fill(1);
         }
-        // A ready query never queues behind catalog inference (or its Rayon job).
-        let mut session = if query {
-            match self.session.try_lock() {
-                Ok(guard) => guard,
-                Err(TryLockError::Poisoned(error)) => error.into_inner(),
-                Err(TryLockError::WouldBlock) => return Err("search encoder busy".into()),
-            }
-        } else {
-            self.session.lock().unwrap_or_else(|e| e.into_inner())
-        };
         let state = &mut *session;
-        self.pool.install(|| -> Result<Vec<Vec<f32>>, String> {
-            let current = self.ensure_session(state)?;
-            #[cfg(test)]
-            if !query {
-                if let Some((started, release)) = &self.batch_barriers {
-                    started.wait();
-                    release.wait();
-                }
-            }
-            let infer = || -> candle_core::Result<Vec<Vec<f32>>> {
-                let shape = (texts.len(), width);
-                let input = Tensor::from_vec(ids, shape, &Device::Cpu)?;
-                let attention = Tensor::from_vec(mask, shape, &Device::Cpu)?;
-                let types = Tensor::zeros(shape, DType::U32, &Device::Cpu)?;
-                let output = current.model.forward(&input, &types, Some(&attention))?;
-                let mut vectors = Vec::with_capacity(texts.len());
-                for n in 0..texts.len() {
-                    let mut vector = output.i((n, 0))?.to_vec1::<f32>()?;
-                    let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
-                    if !norm.is_finite() || norm <= 0.0 {
-                        candle_core::bail!("non-finite search vector");
+        let pool = self.pool(state)?;
+        pool.pool
+            .as_ref()
+            .unwrap()
+            .install(|| -> Result<Vec<Vec<f32>>, String> {
+                let current = self.ensure_session(state)?;
+                #[cfg(test)]
+                if !query {
+                    if let Some((started, release)) = &self.batch_barriers {
+                        started.wait();
+                        release.wait();
                     }
-                    for value in &mut vector {
-                        *value /= norm;
-                    }
-                    vectors.push(vector);
                 }
-                Ok(vectors)
-            };
-            let vectors = infer().map_err(|e| e.to_string());
-            current.last_used = Instant::now();
-            vectors
-        })
+                let infer = || -> candle_core::Result<Vec<Vec<f32>>> {
+                    let shape = (texts.len(), width);
+                    let input = Tensor::from_vec(ids, shape, &Device::Cpu)?;
+                    let attention = Tensor::from_vec(mask, shape, &Device::Cpu)?;
+                    let types = Tensor::zeros(shape, DType::U32, &Device::Cpu)?;
+                    let output = current.model.forward(&input, &types, Some(&attention))?;
+                    let mut vectors = Vec::with_capacity(texts.len());
+                    for n in 0..texts.len() {
+                        let mut vector = output.i((n, 0))?.to_vec1::<f32>()?;
+                        let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
+                        if !norm.is_finite() || norm <= 0.0 {
+                            candle_core::bail!("non-finite search vector");
+                        }
+                        for value in &mut vector {
+                            *value /= norm;
+                        }
+                        vectors.push(vector);
+                    }
+                    Ok(vectors)
+                };
+                let vectors = infer().map_err(|e| e.to_string());
+                current.last_used = Instant::now();
+                vectors
+            })
     }
 
     fn unload_idle(&self, now: Instant) {
@@ -246,10 +325,15 @@ impl Model {
             .session
             .as_ref()
             .is_some_and(|s| now.saturating_duration_since(s.last_used) >= IDLE);
-        if dropped {
+        let retired = if dropped {
             session.session = None;
-        }
+            Some((session.tokenizer.take(), session.pool.take()))
+        } else {
+            None
+        };
         drop(session);
+        // Retire the vocabulary and join pool workers, releasing their TLS buffers.
+        drop(retired);
         if dropped {
             release_allocator_memory();
         }
@@ -268,7 +352,7 @@ pub fn release_allocator_memory() {
 
 static MODEL: OnceLock<Model> = OnceLock::new();
 pub fn model() -> &'static Model {
-    MODEL.get_or_init(|| Model::load().expect("validated bundled BGE tokenizer"))
+    MODEL.get_or_init(Model::load)
 }
 
 pub fn unload_idle() {
@@ -547,7 +631,7 @@ pub fn with_query_model<T>(model: std::sync::Arc<Model>, run: impl FnOnce() -> T
 
 #[cfg(test)]
 pub fn with_inflight_batch<T>(run: impl FnOnce(std::sync::Arc<Model>) -> T) -> T {
-    let mut model = Model::load().unwrap();
+    let mut model = Model::load();
     let started = std::sync::Arc::new(std::sync::Barrier::new(2));
     let release = std::sync::Arc::new(std::sync::Barrier::new(2));
     model.batch_barriers = Some((started.clone(), release.clone()));
@@ -565,7 +649,7 @@ pub fn with_inflight_batch<T>(run: impl FnOnce(std::sync::Arc<Model>) -> T) -> T
 
 #[cfg(test)]
 pub fn unavailable_model() -> std::sync::Arc<Model> {
-    let mut model = Model::load().unwrap();
+    let mut model = Model::load();
     model.weights = b"corrupted weight asset";
     std::sync::Arc::new(model)
 }
@@ -639,7 +723,7 @@ mod tests {
     }
     #[test]
     fn bge_session_is_lazy_and_unloads_after_idle() {
-        let m = Model::load().unwrap();
+        let m = Model::load();
         assert!(m.session.lock().unwrap().session.is_none());
         assert_eq!(m.dimensions(), DIMENSIONS);
         let v = m.encode("record working hours").unwrap();
@@ -647,6 +731,8 @@ mod tests {
         assert!(m.session.lock().unwrap().session.is_some());
         m.unload_idle(Instant::now() + IDLE + Duration::from_secs(1));
         assert!(m.session.lock().unwrap().session.is_none());
+        assert!(m.session.lock().unwrap().tokenizer.is_none());
+        assert!(m.session.lock().unwrap().pool.is_none());
         assert_eq!(v, m.encode("record working hours").unwrap());
     }
     #[test]

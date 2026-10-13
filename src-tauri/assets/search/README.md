@@ -69,7 +69,9 @@ lexical answers while background vectors are pending or the encoder is busy/unav
 Queries never queue behind catalog inference. Failed model loads back off for
 60 seconds and log once; unavailable queries do not participate in fusion.
 The session unloads after
-ten minutes idle; immutable catalog vectors and tokenizer can remain resident.
+ten minutes idle. Unload also releases the tokenizer and joins the private CPU
+pool workers so their retained packing buffers are freed. Immutable catalog
+vectors remain resident.
 Linux/glibc trims freed allocator pages after an actual unload and after a catalog
 job drops its rendered documents and inference buffers.
 
