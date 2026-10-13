@@ -3139,15 +3139,34 @@ fn search_catalog_filtered(
             // specific operation is not confident evidence for a different job.
             // RRF rank scores are not relevance margins.
             let unique_name = named_tools.len() == 1 && pool[position] == named_tools[0];
+            let lexical_low = weight <= f64::EPSILON
+                || score <= f64::EPSILON
+                || covered / weight < 0.90
+                || next >= score * 0.98
+                || !((name_covered / weight >= 0.60 && explained_name >= 0.90)
+                    || (explained_name >= 0.50 && next < score * CONFIDENCE_COMPETITOR_RATIO));
+            // One fixed round rule, chosen before confidence measurements. The
+            // fused winner must also beat every semantic competitor; RRF score
+            // gaps do not measure relevance or semantic separation.
+            let cosine = similarities[position];
+            let semantic_next = similarities
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != position)
+                .map(|(_, similarity)| *similarity)
+                .fold(0.0_f64, f64::max);
+            let semantic_confident = use_local_semantic
+                && cosine >= 0.75
+                && cosine - semantic_next >= 0.02
+                // Semantic separation can resolve a lexical tie or name-shape
+                // uncertainty, but cannot certify missing absolute job evidence.
+                && weight > f64::EPSILON
+                && score > f64::EPSILON
+                && covered / weight >= 0.90;
             !unique_name
                 && (unresolved_name
                     || named_tools.len() > 1
-                    || weight <= f64::EPSILON
-                    || score <= f64::EPSILON
-                    || covered / weight < 0.90
-                    || next >= score * 0.98
-                    || !((name_covered / weight >= 0.60 && explained_name >= 0.90)
-                        || (explained_name >= 0.50 && next < score * CONFIDENCE_COMPETITOR_RATIO)))
+                    || (lexical_low && !semantic_confident))
         });
 
         // A menu is a prefix of the same ranked list at every retrieval depth.

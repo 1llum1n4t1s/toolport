@@ -1334,6 +1334,7 @@ fn search_bge_resources() {
             conduit_lib::router::inline_refs(schema);
         }
     }
+    let tools: conduit_lib::tool_definitions::SharedTools = tools.into();
     let index = CatalogSearchIndex::build_lexical(&tools);
     let idle = rss();
     let start = Instant::now();
@@ -1354,7 +1355,7 @@ fn search_bge_resources() {
     let start = Instant::now();
     index
         .semantic_vectors
-        .start_background(tools.clone().into(), None, Some(send));
+        .start_background(tools.clone(), None, Some(send));
     receive.recv_timeout(Duration::from_secs(900)).unwrap();
     assert_eq!(index.semantic_vectors.0.get().unwrap().len(), tools.len());
     let encode_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -1389,4 +1390,48 @@ fn search_bge_resources() {
     )
     .unwrap();
     eprintln!("{summary}");
+}
+
+#[test]
+fn search_semantic_evidence_can_certify_a_winner_but_not_a_tie() {
+    let tools = vec![
+        json!({"name":"other__first","description":"Interpret an unusual capability","inputSchema":{}}),
+        json!({"name":"other__second","description":"Interpret an unusual capability too","inputSchema":{}}),
+    ];
+    let query = "interpret an unusual capability";
+    let vector = search_static::query_vector(query);
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    index
+        .semantic_vectors
+        .0
+        .set(vec![vector.clone(), vec![0.0; vector.len()]])
+        .unwrap();
+    let winner = search_catalog_indexed(&tools, query, None, 10, None, Some(&index));
+    assert_eq!(winner.matches[0]["name"], "other__first");
+    assert!(!winner.low_confidence);
+    let tied = CatalogSearchIndex::build_lexical(&tools);
+    tied.semantic_vectors
+        .0
+        .set(vec![vector.clone(), vector])
+        .unwrap();
+    assert!(search_catalog_indexed(&tools, query, None, 10, None, Some(&tied)).low_confidence);
+}
+
+#[test]
+fn search_strong_semantic_similarity_cannot_certify_missing_job_evidence() {
+    let tools = vec![
+        json!({"name":"other__first","description":"First unrelated document","inputSchema":{}}),
+        json!({"name":"other__second","description":"Second unrelated document","inputSchema":{}}),
+    ];
+    let query = "interpret an unusual capability";
+    let vector = search_static::query_vector(query);
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    index
+        .semantic_vectors
+        .0
+        .set(vec![vector.clone(), vec![0.0; vector.len()]])
+        .unwrap();
+    let result = search_catalog_indexed(&tools, query, None, 10, None, Some(&index));
+    assert_eq!(result.matches[0]["name"], "other__first");
+    assert!(result.low_confidence);
 }

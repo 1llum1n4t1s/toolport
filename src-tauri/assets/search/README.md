@@ -71,7 +71,9 @@ ten minutes idle; immutable catalog vectors and tokenizer can remain resident.
 Fusion uses RRF k=10, weights 1/1, while preserving literal-name and named-provider
 behavior. Semantic-only candidates require cosine at least 0.60 and at least 85%
 of the visible maximum. Non-name semantic confidence uses one fixed round rule:
-cosine at least 0.75 and top-to-runner-up cosine margin at least 0.02. No sweeps.
+cosine at least 0.75 and top-to-runner-up cosine margin at least 0.02. Existing
+absolute lexical job evidence and 90% coverage remain required for confidence;
+cosine can resolve a lexical tie or name-shape uncertainty. No threshold sweeps.
 Existing user-configured endpoint search remains supported.
 
 `search-static` is required for shipped gateways. Test-only lexical/prototype
