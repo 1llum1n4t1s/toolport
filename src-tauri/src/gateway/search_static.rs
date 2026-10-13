@@ -340,11 +340,15 @@ pub fn fixture_vector(text: &str) -> Option<Vec<f32>> {
         const RECORD_BYTES: usize = 32 + DIMENSIONS * 4;
         assert_eq!(bytes.len() % RECORD_BYTES, 0);
         bytes
-            .chunks_exact(RECORD_BYTES)
+            .as_chunks::<RECORD_BYTES>()
+            .0
+            .iter()
             .map(|record| {
                 let key: [u8; 32] = record[..32].try_into().unwrap();
                 let vector: Vec<f32> = record[32..]
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|v| f32::from_le_bytes(v.try_into().unwrap()))
                     .collect();
                 assert!(vector.iter().all(|v| v.is_finite()));

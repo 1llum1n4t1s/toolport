@@ -43,7 +43,7 @@ pub fn export_native_fixture(tools: &dyn ToolCatalog, directory: &Path, output: 
     );
     let mut bytes = Vec::new();
     for ((key, _), vector) in documents.iter().zip(vectors) {
-        for pair in key.as_bytes().chunks_exact(2) {
+        for pair in key.as_bytes().as_chunks::<2>().0 {
             bytes.push(u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap());
         }
         for value in vector {
