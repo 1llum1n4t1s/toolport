@@ -3066,8 +3066,10 @@ fn search_catalog_filtered(
         });
         // Fusion compresses lexical score margins. Carry literal identifiers and
         // named-provider evidence through fusion rather than letting it erase them.
+        // In a single-provider pool, identity is uniform evidence and must
+        // not change the ordering between that provider's own operations.
         for (score, tool) in &mut ranked {
-            if provider_supported.contains(&(*tool as *const Value)) {
+            if prefixes.len() > 1 && provider_supported.contains(&(*tool as *const Value)) {
                 *score *= 1.0 + SERVER_NAMED_BOOST;
             }
         }
@@ -43583,6 +43585,34 @@ mod tests {
             .any(|tool| tool["name"] == "stripe_full_api__update_card_description"));
         let alias = search_catalog_with(&cat, "vercel retrieve project", None, 10, None);
         assert_eq!(alias.matches[0]["name"], "vercel_full_api__get_project");
+    }
+
+    #[test]
+    fn search_provider_preference_does_not_reorder_a_scoped_pool() {
+        let cat = vec![
+            json!({"name":"svc__inspect_alpha", "description":"Inspect alpha", "inputSchema":{}}),
+            json!({"name":"svc__inspect_other", "description":"Inspect beta gamma", "inputSchema":{}}),
+        ];
+        let index = CatalogSearchIndex::build_lexical(&cat);
+        index.semantic_vectors.0.set(vec![vec![], vec![]]).unwrap();
+        let plain = search_catalog_indexed(
+            &cat,
+            "alpha beta gamma delta",
+            Some("svc"),
+            10,
+            None,
+            Some(&index),
+        );
+        let named = search_catalog_indexed(
+            &cat,
+            "svc alpha beta gamma delta",
+            Some("svc"),
+            10,
+            None,
+            Some(&index),
+        );
+        assert_eq!(plain.matches[0]["name"], "svc__inspect_alpha");
+        assert_eq!(named.matches, plain.matches);
     }
 
     #[test]
