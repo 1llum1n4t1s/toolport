@@ -33,7 +33,7 @@ required-features = ["test-support"]
 [features]
 default = ["desktop", "search-static"]
 # Required by every gateway build, including headless and bundled sidecars.
-search-static = ["dep:tokenizers"]
+search-static = ["dep:tokenizers", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:rayon"]
 desktop = [
     "dep:tauri",
     "dep:gio",
@@ -51,7 +51,7 @@ desktop = [
 # enable in a shipped binary. `cargo test --release --bin toolport-gateway`
 # needs it because the library is compiled without `cfg(test)` when linked
 # into the binary; docker-publish rebuilds without this feature before upload.
-test-support = []
+test-support = ["tauri?/test"]
 # Additive Linux-native shell. This is deliberately not a default feature: the
 # current Tauri app remains the shipping desktop while the GTK shell reaches
 # behavioral parity.
@@ -63,6 +63,10 @@ gtk-desktop = ["dep:gtk", "dep:adw", "dep:image", "dep:ksni", "dep:futures-chann
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "conduit_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dev-dependencies.tokio]
+version = "1"
+features = ["rt", "sync"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }
@@ -106,7 +110,11 @@ boa_gc = "0.21"
 base64 = "0.22"
 regex = "1"
 unicode-normalization = "0.1"
-# Pure Rust tokenizer for bundled static search embeddings, without native regex or HTTP.
+# Offline CPU BERT runtime and tokenizer; no model download or execution provider.
+candle-core = { version = "=0.11.0", optional = true }
+candle-nn = { version = "=0.11.0", optional = true }
+candle-transformers = { version = "=0.11.0", optional = true }
+rayon = { version = "1", optional = true }
 tokenizers = { version = "0.22", optional = true, default-features = false, features = ["fancy-regex"] }
 getrandom = "0.2"
 # OS advisory file locking (flock / LockFileEx) for the cross-process registry write
@@ -189,3 +197,22 @@ required-features = ["test-support"]
 [[example]]
 name = "client-locations-scan"
 required-features = ["test-support"]
+
+[[example]]
+name = "savings-report"
+required-features = ["test-support"]
+
+# Transformer kernels must remain usable in debug gateways and parity tests.
+# Keep application code debuggable; these profiles do not change assertions.
+[profile.dev.package.candle-core]
+opt-level = 3
+[profile.dev.package.candle-nn]
+opt-level = 3
+[profile.dev.package.candle-transformers]
+opt-level = 3
+[profile.dev.package.gemm]
+opt-level = 3
+[profile.dev.package.gemm-common]
+opt-level = 3
+[profile.dev.package.gemm-f32]
+opt-level = 3

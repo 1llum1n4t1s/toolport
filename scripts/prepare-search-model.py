@@ -1,35 +1,26 @@
 #!/usr/bin/env python3
-"""Quantize a pinned public Model2Vec download. No labels or task-specific training.
+"""Store the pinned BGE fallback as f16 safetensors; never train on search labels.
 
-Requires numpy and safetensors. Pass the upstream folder and output folder.
-The shipped tokenizer is preserved byte for byte; the MIT notice is embedded
-in the quantized data so every gateway binary retains it.
+Requires numpy and safetensors. Input is a local download of the README revision.
+CPU inference promotes the stored weights to f32 for BERT layer-norm stability.
 """
 import hashlib
 import pathlib
 import shutil
-import struct
 import sys
 
 import numpy as np
-from safetensors.numpy import load_file
+from safetensors.numpy import load_file, save_file
 
 source, output = map(pathlib.Path, sys.argv[1:])
 output.mkdir(parents=True, exist_ok=True)
-weights = load_file(str(source / "model.safetensors"))["embeddings"]
-assert weights.shape == (29528, 256)
-scales = np.max(np.abs(weights), axis=1) / 127
-scales[scales == 0] = 1
-quantized = np.round(weights / scales[:, None]).clip(-127, 127).astype(np.int8)
-license_path = pathlib.Path(__file__).resolve().parents[1] / "src-tauri/assets/search/LICENSE"
-payload = (
-    b"TPSEMQ01"
-    + struct.pack("<III", *weights.shape, 8)
-    + scales.astype("<f4").tobytes()
-    + quantized.tobytes()
-    + license_path.read_bytes()
+weights = load_file(str(source / "model.safetensors"))
+assert weights["embeddings.word_embeddings.weight"].shape == (30522, 384)
+save_file(
+    {name: tensor.astype(np.float16) for name, tensor in weights.items()},
+    str(output / "model-f16.safetensors"),
 )
-(output / "model-q8.bin").write_bytes(payload)
-shutil.copyfile(source / "tokenizer.json", output / "tokenizer.json")
-for path in [source / "model.safetensors", output / "model-q8.bin", output / "tokenizer.json"]:
+for name in ["tokenizer.json", "config.json"]:
+    shutil.copyfile(source / name, output / name)
+for path in [source / "model.safetensors", output / "model-f16.safetensors", output / "tokenizer.json", output / "config.json"]:
     print(hashlib.sha256(path.read_bytes()).hexdigest(), path.name)

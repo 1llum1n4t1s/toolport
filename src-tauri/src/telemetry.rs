@@ -829,6 +829,79 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn live_activity_health_changes_without_retained_store_changes() {
+        let data = crate::registry::DataDirTestEnv::new("live-health-revision");
+        std::fs::write(data.dir.join("audit.jsonl"), "{\"ts\":1}\n").unwrap();
+        let before = crate::observability_controller::activity_revision().unwrap();
+        let compat = crate::topology::CompatKey::new(
+            env!("CARGO_PKG_VERSION"),
+            data.dir.display().to_string(),
+        );
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        // An owned disposable process gives the mock descriptor a live foreign PID.
+        let mut process = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut descriptor = crate::daemon::DaemonDescriptor::new(
+            server.server_addr().to_ip().unwrap().to_string(),
+            "test-only-token",
+            &compat,
+        );
+        descriptor.pid = process.id();
+        crate::daemon::write_descriptor(
+            &crate::daemon::descriptor_path(&data.dir, &compat),
+            &descriptor,
+        )
+        .unwrap();
+        let pid = descriptor.pid;
+        let fingerprint = compat.fingerprint();
+        let responder = std::thread::spawn(move || {
+            for remote in [
+                Some(Health::default()),
+                Some(Health {
+                    write_failures: 1,
+                    write_failed_records: 2,
+                    ..Health::default()
+                }),
+                None,
+                Some(Health::default()),
+            ] {
+                let request = server
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(request.url(), crate::daemon::IDENTITY_PATH);
+                let body = serde_json::json!({"compat": fingerprint, "protocol": crate::daemon::PROTOCOL_GENERATION,
+                    "pid": pid, "gatewayVersion": env!("CARGO_PKG_VERSION"), "telemetry": remote});
+                request
+                    .respond(tiny_http::Response::from_string(body.to_string()))
+                    .unwrap();
+            }
+        });
+        let healthy = crate::observability_controller::activity_health();
+        let failed = crate::observability_controller::activity_health();
+        let unavailable = crate::observability_controller::activity_health();
+        let recovered = crate::observability_controller::activity_health();
+        process.kill().unwrap();
+        process.wait().unwrap();
+        responder.join().unwrap();
+        assert_eq!(
+            crate::observability_controller::activity_revision().unwrap(),
+            before
+        );
+        assert_eq!(
+            std::fs::read_to_string(data.dir.join("audit.jsonl")).unwrap(),
+            "{\"ts\":1}\n"
+        );
+        assert_ne!(healthy, failed);
+        assert!(failed["telemetry"]["writeFailures"].as_u64().unwrap() >= 1);
+        assert_eq!(unavailable["telemetry"]["unavailable"], true);
+        assert_ne!(recovered["telemetry"]["unavailable"], true);
+    }
+
     fn fixture_record(n: u64) -> Record {
         Record {
             path: PathBuf::from("unused/audit.jsonl"),

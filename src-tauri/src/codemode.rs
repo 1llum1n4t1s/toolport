@@ -869,6 +869,14 @@ pub(crate) fn run_script_indexed(
         }
     };
 
+    // Capture the intrinsic before the prelude or user code can replace it.
+    let original_stringify = context
+        .intrinsics()
+        .objects()
+        .json()
+        .get(js_string!("stringify"), &mut context)
+        .expect("built-in JSON.stringify");
+
     // Pure-JS runaway guards (a script that loops/recurses forever without calling a tool).
     context
         .runtime_limits_mut()
@@ -1079,7 +1087,7 @@ pub(crate) fn run_script_indexed(
         Err(e) => return fail(calls_made.get(), executed.take(), checkpoint.take(), e),
     };
 
-    match drive_to_completion(&mut context, &state, top) {
+    match drive_to_completion(&mut context, &state, top, &original_stringify) {
         Ok(value) => ScriptOutcome {
             final_result_bytes: serialized_len(&value),
             value,
@@ -1138,6 +1146,7 @@ fn drive_to_completion(
     context: &mut Context,
     state: &HostState,
     top: JsValue,
+    original_stringify: &JsValue,
 ) -> Result<Value, JsError> {
     // Bound the drive loop so a pure-JS pending Promise can't spin forever.
     const MAX_DRIVE_ITERS: usize = 1_000_000;
@@ -1153,12 +1162,12 @@ fn drive_to_completion(
         }
 
         let Some(obj) = top.as_object() else {
-            return json_from_js(context, &top);
+            return json_from_js(context, &top, original_stringify);
         };
         let promise = match JsPromise::from_object(obj.clone()) {
             Ok(p) => p,
             Err(_) => {
-                return json_from_js(context, &top);
+                return json_from_js(context, &top, original_stringify);
             }
         };
 
@@ -1171,7 +1180,7 @@ fn drive_to_completion(
                 )));
             }
             PromiseState::Fulfilled(value) => {
-                return json_from_js(context, &value);
+                return json_from_js(context, &value, original_stringify);
             }
             PromiseState::Rejected(reason) => {
                 let msg = reason
@@ -1203,12 +1212,28 @@ fn drive_to_completion(
 /// genuinely cannot be represented (`BigInt`, cyclic structures) into a thrown `TypeError`
 /// we surface as a script error. `undefined` — a script that returned nothing — stays
 /// `null`, matching [`ScriptOutcome::value`]'s contract.
-fn json_from_js(context: &mut Context, value: &JsValue) -> Result<Value, JsError> {
+fn json_from_js(
+    context: &mut Context,
+    value: &JsValue,
+    original_stringify: &JsValue,
+) -> Result<Value, JsError> {
     let json = context.global_object().get(js_string!("JSON"), context)?;
     let stringify = json
         .as_object()
         .ok_or_else(|| type_error("JSON is not an object"))?
-        .get(js_string!("stringify"), context)?
+        .get(js_string!("stringify"), context)?;
+    // Only the unchanged intrinsic guarantees this primitive will be encoded
+    // verbatim. A replacement serializer must run even for a large input.
+    if stringify.strict_equals(original_stringify)
+        && value.as_string().is_some_and(|text| {
+            text.len().saturating_add(2) > crate::codemode_worker::MAX_FRAME_BYTES
+        })
+    {
+        return Err(JsNativeError::range()
+            .with_message("script return value exceeds the IPC limit")
+            .into());
+    }
+    let stringify = stringify
         .as_callable()
         .ok_or_else(|| type_error("JSON.stringify is not callable"))?;
 
@@ -1218,6 +1243,12 @@ fn json_from_js(context: &mut Context, value: &JsValue) -> Result<Value, JsError
         return Ok(Value::Null);
     };
 
+    // Bound the serialized output, after the script-visible serializer runs.
+    if text.len() > crate::codemode_worker::MAX_FRAME_BYTES {
+        return Err(JsNativeError::range()
+            .with_message("script return value exceeds the IPC limit")
+            .into());
+    }
     serde_json::from_str(&text.to_std_string_escaped()).map_err(|e| {
         JsError::from_native(JsNativeError::typ().with_message(format!(
             "script return value could not be encoded as JSON: {e}"

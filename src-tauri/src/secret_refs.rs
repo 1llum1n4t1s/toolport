@@ -1132,6 +1132,18 @@ pub(crate) fn take_legacy_bearer(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn approval_identity_preserves_legacy_canonical_hash() {
+        let mut server: crate::registry::ServerEntry = serde_json::from_str(r#"{"id":"legacy","name":"Legacy","source":"fixture","transport":"stdio","command":"node","args":["one","two"],"inheritEnv":false,"env":[]}"#).unwrap();
+        let original = super::approval_identity(&server).unwrap();
+        assert_eq!(
+            original,
+            "0b4cbd10338ff49f8ccdb5fd15a0a059e248b571240f82f16013c895d495fe9c"
+        );
+        server.args.reverse();
+        assert_ne!(original, super::approval_identity(&server).unwrap());
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Scratch(PathBuf);

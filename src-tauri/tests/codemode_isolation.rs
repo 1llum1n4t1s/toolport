@@ -736,3 +736,12 @@ fn code_mode_env_override_lists_and_executes_with_registry_off() {
     assert_eq!(allowed["isError"], false);
     assert_eq!(allowed["structuredContent"]["result"], 42);
 }
+
+#[test]
+fn worker_allows_small_replacement_serialization_of_large_primitive() {
+    let mut gateway = Gateway::start();
+    let result = gateway
+        .run(json!({"script":"JSON.stringify = () => '0'; return 'x'.repeat(16 * 1024 * 1024);"}));
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(result["structuredContent"]["result"], 0);
+}

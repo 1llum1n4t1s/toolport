@@ -267,8 +267,8 @@ jobs:
     # Without this the job inherits GitHub's 6-hour default. A flaky Ubuntu mirror
     # hung `apt-get update` here for 34 minutes with no compiler ever reached, and
     # because the job never ended the whole run stayed in progress - which also
-    # blocks `gh run rerun --failed` on the jobs that DID fail. 30 matches
-    # cross-platform-rust, the other job that compiles this crate from cold.
+    # blocks `gh run rerun --failed` on the jobs that DID fail. 30 bounds this
+    # cold compilation job; cross-platform-rust also needs time to run tests.
     timeout-minutes: 30
     runs-on: ubuntu-24.04
     strategy:
@@ -404,7 +404,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     name: Headless Rust tests (${{ matrix.os }})
-    timeout-minutes: 30
+    # 30 minutes covered macOS runs of 27:11 (626c17d6) and 27:25 (644a8199),
+    # but a35863c7 hit the cap at 30:10 as test compilation rose to 4:58.
+    # The test-only idle timer saves about five minutes, leaving about 25 minutes
+    # on that slower runner. Keep cold compilation margin on all three OSes.
+    timeout-minutes: 35
     env:
       TOOLPORT_TEST_FAILURE_LOG_DIR: ${{ github.workspace }}/.verify/one-gateway-failures
     strategy:
@@ -424,6 +428,8 @@ jobs:
         with:
           node-version: 20
 
+      # BGE uses Candle CPU on all release targets. No ONNX Runtime shared
+      # library or execution-provider package is needed for search-static.
       # The headless build skips Tauri/WebKit, but the Linux keyring backend still
       # needs libdbus headers and pkg-config at compile time.
       - name: Install Linux build dependencies
@@ -436,7 +442,9 @@ jobs:
           workspaces: src-tauri
           key: ci-headless
           cache-bin: "false"
-          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next/2.0') }}
+          # macOS PRs otherwise repeatedly restore the base cache without Candle
+          # and GEMM. PR caches are scoped to the PR ref, preserving base caches.
+          save-if: ${{ matrix.os == 'macos-latest' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next/2.0')) }}
       - name: Compile Rust tests and record build timings
         if: matrix.os != 'windows-latest'
         run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-support,search-static --lib --bins --tests --no-run --timings

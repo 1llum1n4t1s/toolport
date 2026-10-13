@@ -3845,11 +3845,12 @@ mod tests {
     #[cfg(all(unix, not(target_os = "macos")))]
     impl SpawnedGateway {
         /// Copy the stand-in binary to `exe`, run it, and block until the exec has
-        /// actually happened.
+        /// actually happened and the process role can be inspected.
         ///
         /// `spawn()` returns before exec completes, so `/proc/<pid>` is not populated
-        /// yet; polling the exe symlink is what makes the enumeration assertions
-        /// deterministic rather than racy.
+        /// yet. During exec, the new exe symlink can be visible before the command
+        /// line is populated. The reaper correctly keeps an unknown role, so wait
+        /// for both parts of the stand-in's identity before testing its verdict.
         fn at(exe: PathBuf) -> Self {
             use std::os::unix::fs::PermissionsExt as _;
 
@@ -3906,12 +3907,16 @@ mod tests {
                 if std::fs::read_link(&link)
                     .map(|p| p == me.exe)
                     .unwrap_or(false)
+                    && gateway_daemon_role(me.pid()) == Some(false)
                 {
                     return me;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            panic!("child never exec'd into {}", me.exe.display());
+            panic!(
+                "child never became an inspectable gateway at {}",
+                me.exe.display()
+            );
         }
 
         fn pid(&self) -> u32 {

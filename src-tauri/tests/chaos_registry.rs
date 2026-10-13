@@ -253,7 +253,12 @@ fn a_cached_server_stays_lazy_then_stops_when_idle_and_restarts_on_use() {
         });
     }
     std::fs::remove_file(&pids).unwrap();
-    let _daemon = start_daemon(scratch.path());
+    // Only this child daemon gets the shorter idle timer. Keep the production
+    // deadline below and all lazy discovery, shutdown and restart assertions.
+    let _daemon = chaos_support::start_daemon_with_env(
+        scratch.path(),
+        &[("TOOLPORT_TEST_SERVER_IDLE_TIMEOUT_MS", "2000")],
+    );
     let mut client = Client::start(scratch.path(), "lazy-client");
     assert!(client.wait_for_tool("lazy__echo", CATALOG));
     // Exercise another full list after startup publication. Neither list may

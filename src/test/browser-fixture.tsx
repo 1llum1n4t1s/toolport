@@ -396,6 +396,11 @@ if (dogfoodFixture) {
 
 const savingsSummary: SavingsSummary = {
   tokensSaved: 35_000,
+  fullTokens: 40_000,
+  exposedTokens: 3_400,
+  historicalListLoads: 5_884,
+  historicalMeasuredLoads: 3_027,
+  previousReportedTokensSaved: 195_640_064,
   tokenizedLoads: 12,
   catalogTokenDelta: 36_600,
   discoveryTokens: 1_600,
@@ -820,6 +825,20 @@ mockIPC(
         }
         return [...grouped.values()];
       }
+      case "activity_health":
+        return {
+          telemetry: {
+            queueDropped: 0,
+            writeFailedRecords: 0,
+            writeFailures: 0,
+            incompleteFlushes: 0,
+          },
+          gatewayNotes: [],
+        };
+      case "release_activity_revision":
+        return null;
+      case "activity_revision":
+        return JSON.stringify([auditRows, driftEvents]);
       case "get_audit_log":
         return auditRows;
       case "audit_stats":

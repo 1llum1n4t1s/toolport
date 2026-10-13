@@ -2028,8 +2028,16 @@ fn matrix_retired_legacy_override_uses_shared_daemon() {
         "retired legacy must use the daemon"
     );
     assert_eq!(transcript_initialize_count(&transcript), 1);
-    let log = std::fs::read_to_string(dir.join("gateway.log")).unwrap();
-    assert!(log.contains("Legacy gateway topology was retired in 2.0"));
+    // RPC completion does not flush the daemon's asynchronous telemetry writer.
+    wait_until(
+        || {
+            std::fs::read_to_string(dir.join("gateway.log"))
+                .unwrap_or_default()
+                .contains("Legacy gateway topology was retired in 2.0")
+        },
+        "the legacy topology retirement notice",
+        RESPONSE_TIMEOUT,
+    );
 }
 
 #[test]

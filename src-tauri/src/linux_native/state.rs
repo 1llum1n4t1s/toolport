@@ -47,6 +47,12 @@ pub(super) struct ActivitySnapshot {
     pub(super) tokens_saved: i64,
     pub(super) savings_list_loads: u64,
     pub(super) savings_tokenized_loads: u64,
+    pub(super) savings_full_tokens: u64,
+    pub(super) savings_exposed_tokens: u64,
+    pub(super) savings_discovery_tokens: u64,
+    pub(super) savings_historical_loads: u64,
+    pub(super) savings_historical_measured: u64,
+    pub(super) savings_previous_tokens: i64,
     pub(super) savings_peak_catalog: u64,
     pub(super) savings_since_ts: u64,
     pub(super) savings_full_bytes: u64,
@@ -161,6 +167,12 @@ impl ActivitySnapshot {
             tokens_saved: 0,
             savings_list_loads: 0,
             savings_tokenized_loads: 0,
+            savings_full_tokens: 0,
+            savings_exposed_tokens: 0,
+            savings_discovery_tokens: 0,
+            savings_historical_loads: 0,
+            savings_historical_measured: 0,
+            savings_previous_tokens: 0,
             savings_peak_catalog: 0,
             savings_since_ts: 0,
             savings_full_bytes: 0,
@@ -320,6 +332,12 @@ pub(super) fn load_activity_snapshot() -> Result<ActivitySnapshot, String> {
         .unwrap_or(0);
     snapshot.savings_list_loads = savings_number("listLoads");
     snapshot.savings_tokenized_loads = savings_number("tokenizedLoads");
+    snapshot.savings_full_tokens = savings_number("fullTokens");
+    snapshot.savings_exposed_tokens = savings_number("exposedTokens");
+    snapshot.savings_discovery_tokens = savings_number("discoveryTokens");
+    snapshot.savings_historical_loads = savings_number("historicalListLoads");
+    snapshot.savings_historical_measured = savings_number("historicalMeasuredLoads");
+    snapshot.savings_previous_tokens = savings["previousReportedTokensSaved"].as_i64().unwrap_or(0);
     snapshot.savings_peak_catalog = savings_number("peakCatalog");
     snapshot.savings_since_ts = savings_number("sinceTs");
     snapshot.savings_full_bytes = savings_number("fullSurfaceBytes");

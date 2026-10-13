@@ -9,14 +9,225 @@ const DEV_V2_SPLIT: &str = include_str!("../../tests/fixtures/search-eval-scale/
 const OLD_HELD_OUT: &str = include_str!("../../tests/fixtures/search-eval-scale/held_out.json");
 
 fn scale_catalog() -> Vec<Value> {
-    let mut tools: Vec<Value> = serde_json::from_str(SCALE_CATALOG).unwrap();
-    for tool in &mut tools {
-        if let Some(schema) = tool.get_mut("inputSchema") {
-            conduit_lib::router::normalize_tool_schema(schema);
-            conduit_lib::router::inline_refs(schema);
+    static CATALOG: std::sync::OnceLock<Vec<Value>> = std::sync::OnceLock::new();
+    CATALOG
+        .get_or_init(|| {
+            let mut tools: Vec<Value> = serde_json::from_str(SCALE_CATALOG).unwrap();
+            for tool in &mut tools {
+                if let Some(schema) = tool.get_mut("inputSchema") {
+                    conduit_lib::router::normalize_tool_schema(schema);
+                    conduit_lib::router::inline_refs(schema);
+                }
+            }
+            tools
+        })
+        .clone()
+}
+
+fn scale_fixture() -> (&'static Vec<Value>, &'static CatalogSearchIndex) {
+    static FIXTURE: std::sync::OnceLock<(Vec<Value>, CatalogSearchIndex)> =
+        std::sync::OnceLock::new();
+    let (tools, index) = FIXTURE.get_or_init(|| {
+        let tools = scale_catalog();
+        let index = CatalogSearchIndex::build(&tools);
+        (tools, index)
+    });
+    (tools, index)
+}
+
+fn menu_candidate_coverage(names: &[&str], expected: &[&str], menu_limit: usize) -> usize {
+    names
+        .iter()
+        .take(menu_limit)
+        .filter(|name| expected.contains(name))
+        .count()
+}
+
+fn assert_handler_menu(row: &mut Value) {
+    let text = row["response_text"].as_str().unwrap();
+    let payload: Value = serde_json::from_str(text.split_once("\n\n").unwrap().1).unwrap();
+    let names: Vec<&str> = payload
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            if entry.is_array() {
+                entry[0].as_str().unwrap()
+            } else {
+                entry["name"].as_str().unwrap()
+            }
+        })
+        .collect();
+    assert_eq!(
+        json!(names),
+        row["menu_names"],
+        "actual handler menu differs from the declared menu"
+    );
+    assert_eq!(row["handler_low_confidence"], row["menu_low_confidence"]);
+    row["handler_names"] = json!(names);
+}
+
+#[test]
+fn search_ambiguity_uses_the_declared_menu_depth() {
+    let _env = DataDirTestEnv::new("search-ambiguity-menu-depth");
+    let names = [
+        "first", "2", "3", "4", "5", "6", "7", "8", "9", "10", "second",
+    ];
+    assert_eq!(menu_candidate_coverage(&names, &["first", "second"], 10), 1);
+    assert_eq!(menu_candidate_coverage(&names, &["first", "second"], 25), 2);
+    let tools: Vec<Value> = (1..=25).map(|n| json!({"name":format!("records__read_record_{n:02}"),"description":"Read a record","inputSchema":{}})).collect();
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    let intents = vec![
+        json!({"id":"menu-depth","query":"read record","kind":"ambiguous","expected":[tools[0]["name"],tools[10]["name"]],"category":"synthetic depth regression"}),
+    ];
+    let default = measure_handler_phase(&tools, &index, &intents, "pending");
+    assert_eq!(default["ambiguity_honesty"], 0.0);
+    assert_eq!(default["rows"][0]["candidate_coverage"], 1);
+    assert_eq!(default["rows"][0]["names"][10], tools[10]["name"]);
+    let explicit = evaluate_at_menu_depth("explicit 25", &intents, &tools, &index, 25, 25);
+    assert_eq!(explicit["ambiguity_honesty"], 1.0);
+}
+
+#[test]
+fn search_complete_source_retains_later_capabilities() {
+    let tool = json!({"name":"sample__inspect","description":"Inspect a record. Include historical changes. Fail when the destination exists."});
+    let text = search_static::document(&tool);
+    let source = search_static::source(&tool);
+    assert!(source.description.contains("historical changes"));
+    assert!(source.description.contains("destination exists"));
+    assert!(text.contains("historical changes"));
+    assert_eq!(
+        search_static::document_status(&tool)["description_complete_before_token_cap"],
+        true
+    );
+}
+
+#[test]
+fn search_complete_catalog_evidence_is_retained_and_semantic_caps_are_explicit() {
+    let description = format!("{} Final constraint.", "word ".repeat(1000));
+    let schema = json!({"type":"object","properties":{"mode":{"enum":["read","write"]}}});
+    let tool = json!({"name":"sample__inspect","description":description,"inputSchema":schema});
+    let source = search_static::source(&tool);
+    assert_eq!(source.description, description);
+    assert_eq!(source.input_schema, Some(&schema));
+    let status = search_static::document_status(&tool);
+    assert!(status["semantic_chars"].as_u64().unwrap() >= description.chars().count() as u64);
+    assert_eq!(status["description_complete_before_token_cap"], true);
+    assert_eq!(status["token_truncated"], true);
+    assert!(
+        search_static::model()
+            .encode_input(&description)
+            .unwrap()
+            .get_ids()
+            .len()
+            > search_static::ENCODE_TOKEN_LIMIT
+    );
+    assert_eq!(status["schema_embedded"], true);
+    let index = CatalogSearchIndex::build_lexical(&vec![tool]);
+    assert!(index.documents[0].description_tokens.contains("constraint"));
+}
+
+fn measure_handler_phase(
+    tools: &dyn ToolCatalog,
+    index: &CatalogSearchIndex,
+    intents: &[Value],
+    phase: &str,
+) -> Value {
+    let mut report = evaluate(phase, intents, tools, index, 25);
+    report["latency_scope"] = json!(format!("direct_{phase}_ranker"));
+    report["vector_state"] = json!(phase);
+    for (row, intent) in report["rows"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .zip(intents)
+    {
+        let mut arguments = json!({"query":intent["query"]});
+        if let Some(server) = intent["server"].as_str() {
+            arguments["server"] = json!(server);
         }
+        let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"toolport_search_tools","arguments":arguments}});
+        let started = Instant::now();
+        let response = handle_request_with_cancel(
+            &dispatch_host(false),
+            &request,
+            &Registry::default(),
+            &router(),
+            tools,
+            DiscoveryMode::Lazy,
+            None,
+            &SearchGuard::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(index),
+            None,
+            None,
+        )
+        .unwrap();
+        row["handler_latency_us"] = json!(started.elapsed().as_secs_f64() * 1e6);
+        row["response_text"] = response["result"]["content"][0]["text"].clone();
+        row["handler_low_confidence"] = response["result"]["low_confidence"].clone();
+        assert_handler_menu(row);
     }
-    tools
+    report
+}
+
+#[test]
+fn search_pending_and_ready_handler_menus_match_indexed_results() {
+    let _env = DataDirTestEnv::new("search-pending-ready-handler");
+    let tools = scale_catalog();
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    let intents = vec![
+        json!({"id":"boundary","query":"list records without deleting them","kind":"ambiguous","expected":[],"category":"synthetic boundary"}),
+    ];
+    assert!(index.semantic_vectors.0.get().is_none());
+    let _pending = measure_handler_phase(&tools, &index, &intents, "pending");
+    // Full-catalog cold BGE encoding is measured by search_bge_resources. This
+    // parity boundary uses the production content cache and keeps its 30s bound.
+    let cache = registry::conduit_dir().unwrap().join("search-vectors");
+    search_cache::seed_native_cache_for_test(&tools, &cache);
+    let (send, receive) = std::sync::mpsc::channel();
+    index
+        .semantic_vectors
+        .start_background(tools.clone().into(), Some(cache), Some(send));
+    receive.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert_eq!(index.semantic_vectors.0.get().unwrap().len(), tools.len());
+    let _ready = measure_handler_phase(&tools, &index, &intents, "ready");
+}
+
+#[test]
+#[ignore = "explicit original-tune production-handler pending/ready boundary measurement"]
+fn search_scale_production_boundary_measure() {
+    let _env = DataDirTestEnv::new("search-scale-production-boundary");
+    let tools = scale_catalog();
+    let intents: Vec<Value> = serde_json::from_slice(
+        &std::fs::read(std::env::var_os("SEARCH_SCALE_INTENTS").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let started = Instant::now();
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    let lexical_build_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let pending = measure_handler_phase(&tools, &index, &intents, "pending");
+    let (send, receive) = std::sync::mpsc::channel();
+    let started = Instant::now();
+    index
+        .semantic_vectors
+        .start_background(tools.clone().into(), None, Some(send));
+    receive.recv_timeout(Duration::from_secs(30)).unwrap();
+    let background_ready_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let ready = measure_handler_phase(&tools, &index, &intents, "ready");
+    let documents: Vec<_> = tools
+        .iter()
+        .map(|tool| json!({"name":tool["name"],"status":search_static::document_status(tool)}))
+        .collect();
+    std::fs::write(std::env::var_os("SEARCH_BOUNDARY_OUTPUT").unwrap(), serde_json::to_vec_pretty(&json!({
+        "tools":tools.len(),"lexical_build_ms":lexical_build_ms,"background_ready_ms":background_ready_ms,
+        "boundary":"pending requests precede worker submission; ready requests follow actual worker publication",
+        "cache":"uncached","pending":pending,"ready":ready,"documents":documents
+    })).unwrap()).unwrap();
 }
 
 fn evaluate(
@@ -25,6 +236,17 @@ fn evaluate(
     tools: &dyn ToolCatalog,
     index: &CatalogSearchIndex,
     limit: usize,
+) -> Value {
+    evaluate_at_menu_depth(split, intents, tools, index, limit, DEFAULT_SEARCH_RESULTS)
+}
+
+fn evaluate_at_menu_depth(
+    split: &str,
+    intents: &[Value],
+    tools: &dyn ToolCatalog,
+    index: &CatalogSearchIndex,
+    limit: usize,
+    menu_limit: usize,
 ) -> Value {
     let mut rows = Vec::new();
     let (mut confident, mut confident_correct, mut uncertain_correct) = (0, 0, 0);
@@ -97,10 +319,17 @@ fn evaluate(
                 honest_negative += 1;
             }
         }
-        let candidates = names.iter().filter(|name| expected.contains(name)).count();
+        let menu_outcome =
+            search_catalog_indexed(tools, query, server, menu_limit, None, Some(index));
+        let menu_names: Vec<&str> = menu_outcome
+            .matches
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        let candidates = menu_candidate_coverage(&menu_names, &expected, menu_limit);
         if kind == "ambiguous" {
             ambiguous += 1;
-            if outcome.low_confidence && candidates >= 2 {
+            if menu_outcome.low_confidence && candidates >= 2 {
                 honest_ambiguous += 1;
             }
         }
@@ -108,7 +337,10 @@ fn evaluate(
             json!({"id":intent["id"],"kind":kind,"query":query,"server":server,
             "expected":expected,"category":intent["category"],"rank":rank,"names":names,
             "low_confidence":outcome.low_confidence,"direct_matches":outcome.total,
-            "candidate_coverage":candidates,"latency_us":micros,"returned":names.len()}),
+            "candidate_coverage":candidates,"menu_names":menu_names,
+            "menu_low_confidence":menu_outcome.low_confidence,"menu_limit":menu_limit,
+            "query_evidence":search_query::Query::parse(query),
+            "latency_us":micros,"returned":names.len()}),
         );
     }
     latencies.sort_by(f64::total_cmp);
@@ -130,12 +362,17 @@ fn evaluate(
         "correct_top1_uncertainty_rate":if top1 == 0 {Value::Null} else {json!(uncertain_correct as f64 / top1 as f64)},
         "split":split,"intents":intents.len(),"positives":positives,"top1":top1,
         "top3":top3,"recall_at": recall_at,"top1_rate":top1 as f64 / positives as f64,
-        "top3_rate":top3 as f64 / positives as f64,"mrr_at_25":reciprocal_rank / positives as f64,
+        "top3_rate":top3 as f64 / positives as f64,
+        "mrr_at_25":if limit == 25 {json!(reciprocal_rank / positives as f64)} else {Value::Null},
+        "mrr_at_ranking_limit":reciprocal_rank / positives as f64,
         "no_match_precision": if rejected == 0 { Value::Null } else {json!(true_rejected as f64 / rejected as f64)},
         "no_match_recall":true_rejected as f64 / negatives as f64,
         "no_match_honesty":honest_negative as f64 / negatives as f64,
         "no_match_count":negatives,"ambiguity_honesty":honest_ambiguous as f64 / ambiguous as f64,
-        "ambiguity_count":ambiguous,"latency_p50_us":percentile(0.50),"latency_p95_us":percentile(0.95),
+        "ambiguity_count":ambiguous,"ambiguity_menu_limit":menu_limit,
+        "ranking_limit":if limit == 0 {DEFAULT_SEARCH_RESULTS} else {limit},
+        "latency_scope":"direct_ready_ranker",
+        "latency_p50_us":percentile(0.50),"latency_p95_us":percentile(0.95),
         "rows":rows})
 }
 
@@ -172,7 +409,8 @@ fn search_scale_measure() {
             continue;
         }
         let intents: Vec<Value> = serde_json::from_str(text).unwrap();
-        let mut report = evaluate(name, &intents, &tools, &index, 25);
+        let menu_limit = requested_search_limit(&json!({"limit":limit}));
+        let mut report = evaluate_at_menu_depth(name, &intents, &tools, &index, 25, menu_limit);
         // Capture the actual first-search response, including all model guidance.
         // A fresh guard per intent prevents repeated searches from truncating results.
         for (row, intent) in report["rows"]
@@ -211,7 +449,9 @@ fn search_scale_measure() {
             .unwrap();
             row["dispatch_latency_us"] = json!(started.elapsed().as_secs_f64() * 1e6);
             row["response_text"] = response["result"]["content"][0]["text"].clone();
+            row["handler_low_confidence"] = response["result"]["low_confidence"].clone();
             assert!(row["response_text"].is_string(), "{response}");
+            assert_handler_menu(row);
             let entries = response["result"]["content"][0]["text"]
                 .as_str()
                 .unwrap()
@@ -360,11 +600,10 @@ fn assert_quality(report: &Value) {
 
 #[test]
 fn search_scale_legacy_development_measurement() {
-    let tools = scale_catalog();
+    let (tools, index) = scale_fixture();
     let mut intents: Vec<Value> = serde_json::from_str(DEV).unwrap();
     intents.extend(serde_json::from_str::<Vec<Value>>(OLD_HELD_OUT).unwrap());
-    let index = CatalogSearchIndex::build(&tools);
-    let mut report = evaluate("legacy development", &intents, &tools, &index, 0);
+    let mut report = evaluate("legacy development", &intents, tools, index, 0);
     report.as_object_mut().unwrap().remove("rows");
     eprintln!("{report}");
 }
@@ -377,11 +616,10 @@ fn search_scale_blind_quality_gate() {
         eprintln!("blind search gate skipped: TOOLPORT_SEARCH_BLIND_INTENTS is absent");
         return;
     };
-    let tools = scale_catalog();
+    let (tools, index) = scale_fixture();
     let intents: Vec<Value> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert!(!intents.is_empty(), "blind intents must not be empty");
-    let index = CatalogSearchIndex::build(&tools);
-    assert_quality(&evaluate("blind", &intents, &tools, &index, 0));
+    assert_quality(&evaluate("blind", &intents, tools, index, 0));
 }
 
 #[test]
@@ -722,9 +960,8 @@ fn dev_v2_self_check() -> Vec<Value> {
 
 #[test]
 fn search_dev_v2_quality_gate() {
-    let tools = scale_catalog();
-    let index = CatalogSearchIndex::build(&tools);
-    let report = evaluate("dev-v2 self-check", &dev_v2_self_check(), &tools, &index, 0);
+    let (tools, index) = scale_fixture();
+    let report = evaluate("dev-v2 self-check", &dev_v2_self_check(), tools, index, 0);
     // Recall floors are set below the measured baseline with room for general
     // retrieval tradeoffs. Confidence is informational, never an accuracy claim.
     assert!(
@@ -917,12 +1154,14 @@ fn search_schema_factoring_is_lossless_on_the_public_catalog() {
 #[test]
 fn search_menu_meets_o200k_context_budget() {
     let _data = DataDirTestEnv::new("search-menu-budget");
-    let tools = scale_catalog();
-    let index = CatalogSearchIndex::build(&tools);
+    let (tools, index) = scale_fixture();
     let intents: Vec<Value> = serde_json::from_str(DEV_V2).unwrap();
     let host = dispatch_host(false);
     let reg = Registry::default();
     let router = router();
+    // A real conversation retains its accounting guard across searches. Its
+    // immutable catalog eligibility is resolved once; ranking remains stateless.
+    let guard = SearchGuard::default();
     let tokenizer = tiktoken_rs::o200k_base().unwrap();
     let mut response_tokens = Vec::new();
     let mut menu_tokens = Vec::new();
@@ -938,15 +1177,15 @@ fn search_menu_meets_o200k_context_budget() {
             &request,
             &reg,
             &router,
-            &tools,
+            tools,
             DiscoveryMode::Lazy,
             None,
-            &SearchGuard::default(),
+            &guard,
             None,
             None,
             None,
             None,
-            Some(&index),
+            Some(index),
             None,
             None,
         )
@@ -1006,4 +1245,546 @@ fn search_menu_meets_o200k_context_budget() {
         "menu p95 {} > 600",
         p95(&menu_tokens)
     );
+}
+
+// Paired release benchmark transport. The controller alternates identical requests
+// across separately compiled revisions; no benchmark control ships in the gateway.
+#[test]
+#[ignore = "explicit interleaved benchmark controlled through stdin"]
+fn search_interleaved_measure() {
+    use std::io::BufRead;
+    let _env = DataDirTestEnv::new("search-interleaved-measure");
+    let tools = scale_catalog();
+    let index = CatalogSearchIndex::build(&tools);
+    let small = search_eval::catalog();
+    let small_index = CatalogSearchIndex::build(&small);
+    let tokenizer = tiktoken_rs::o200k_base().unwrap();
+    eprintln!("MEASURE_READY");
+    for line in std::io::stdin().lock().lines() {
+        let request: Value = serde_json::from_str(&line.unwrap()).unwrap();
+        let (catalog, index) = if request["catalog"] == "66" {
+            (&small, &small_index)
+        } else {
+            (&tools, &index)
+        };
+        let started = Instant::now();
+        let outcome = search_catalog_indexed(
+            catalog,
+            request["query"].as_str().unwrap(),
+            None,
+            25,
+            None,
+            Some(index),
+        );
+        let latency_us = started.elapsed().as_secs_f64() * 1e6;
+        let mut row = json!({"names":outcome.matches.iter().map(|t| &t["name"]).collect::<Vec<_>>(),
+            "low_confidence":outcome.low_confidence,"latency_us":latency_us,
+            "latency_scope":"direct_ready_ranker","vector_state":"ready",
+            "query_evidence":search_query::Query::parse(request["query"].as_str().unwrap())});
+        if request["payload"] == true {
+            let menu = search_catalog_indexed(
+                catalog,
+                request["query"].as_str().unwrap(),
+                None,
+                DEFAULT_SEARCH_RESULTS,
+                None,
+                Some(index),
+            );
+            row["menu_names"] = json!(menu.matches.iter().map(|t| &t["name"]).collect::<Vec<_>>());
+            row["menu_low_confidence"] = json!(menu.low_confidence);
+            row["menu_limit"] = json!(DEFAULT_SEARCH_RESULTS);
+            let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":"toolport_search_tools","arguments":{"query":request["query"]}}});
+            let started = Instant::now();
+            let response = handle_request_with_cancel(
+                &dispatch_host(false),
+                &req,
+                &Registry::default(),
+                &router(),
+                catalog,
+                DiscoveryMode::Lazy,
+                None,
+                &SearchGuard::default(),
+                None,
+                None,
+                None,
+                None,
+                Some(index),
+                None,
+                None,
+            )
+            .unwrap();
+            row["handler_latency_us"] = json!(started.elapsed().as_secs_f64() * 1e6);
+            let text = response["result"]["content"][0]["text"].as_str().unwrap();
+            row["response_tokens"] = json!(tokenizer.encode_ordinary(text).len());
+            row["response_text"] = json!(text);
+            row["handler_low_confidence"] = response["result"]["low_confidence"].clone();
+            assert_handler_menu(&mut row);
+        }
+        eprintln!("MEASURE {}", row);
+    }
+}
+
+// Native kernel/worker phases on an explicitly supplied public catalog, never the
+// legacy held-out resource fixture. Black-box daemon costs are measured separately.
+#[test]
+#[ignore = "explicit real-catalog BGE cost measurement"]
+#[cfg(target_os = "linux")]
+fn search_bge_resources() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    let rss = || -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .unwrap()
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("VmRSS:")
+                    .and_then(|s| s.split_whitespace().next())
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap()
+    };
+    let mut tools: Vec<Value> = serde_json::from_slice(
+        &std::fs::read(std::env::var_os("SEARCH_BGE_CATALOG").unwrap()).unwrap(),
+    )
+    .unwrap();
+    for tool in &mut tools {
+        if let Some(schema) = tool.get_mut("inputSchema") {
+            conduit_lib::router::normalize_tool_schema(schema);
+            conduit_lib::router::inline_refs(schema);
+        }
+    }
+    let tools: conduit_lib::tool_definitions::SharedTools = tools.into();
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    let idle = rss();
+    let start = Instant::now();
+    search_static::model().load_for_benchmark().unwrap();
+    let load_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let loaded = rss();
+    let running = Arc::new(AtomicBool::new(true));
+    let peak = Arc::new(AtomicU64::new(loaded));
+    let active = running.clone();
+    let maximum = peak.clone();
+    let sampler = std::thread::spawn(move || {
+        while active.load(Ordering::Relaxed) {
+            maximum.fetch_max(rss(), Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    });
+    let (send, receive) = std::sync::mpsc::channel();
+    let start = Instant::now();
+    index
+        .semantic_vectors
+        .start_background(tools.clone(), None, Some(send));
+    receive.recv_timeout(Duration::from_secs(900)).unwrap();
+    assert_eq!(index.semantic_vectors.0.get().unwrap().len(), tools.len());
+    let encode_ms = start.elapsed().as_secs_f64() * 1000.0;
+    running.store(false, Ordering::Relaxed);
+    sampler.join().unwrap();
+    let after = rss();
+    let intents: Vec<Value> = serde_json::from_slice(
+        &std::fs::read(std::env::var_os("SEARCH_BGE_INTENTS").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let mut times = Vec::new();
+    search_static::with_native_queries_for_measurement(|| {
+        for intent in intents {
+            let start = Instant::now();
+            let _ = search_catalog_indexed(
+                &tools,
+                intent["query"].as_str().unwrap(),
+                None,
+                10,
+                None,
+                Some(&index),
+            );
+            times.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+    });
+    times.sort_by(f64::total_cmp);
+    let summary = json!({"scope":"native gateway handler and production worker, separate from daemon RPC",
+        "catalog_tools":tools.len(),"model_load_ms":load_ms,"encode_ms":encode_ms,
+        "rss_idle_kib":idle,"rss_loaded_kib":loaded,"rss_encode_peak_kib":peak.load(Ordering::Relaxed),"rss_after_encode_kib":after,
+        "warm_p50_ms":times[times.len()/2],"warm_p95_ms":times[times.len()*95/100],"warm_n":times.len()});
+    std::fs::write(
+        std::env::var_os("SEARCH_BGE_RESOURCE_OUTPUT").unwrap(),
+        summary.to_string(),
+    )
+    .unwrap();
+    eprintln!("{summary}");
+}
+
+#[test]
+fn search_semantic_evidence_can_certify_a_winner_but_not_a_tie() {
+    let tools = vec![
+        json!({"name":"other__first","description":"Interpret an unusual capability","inputSchema":{}}),
+        json!({"name":"other__second","description":"Interpret an unusual capability too","inputSchema":{}}),
+    ];
+    let query = "interpret an unusual capability";
+    let vector = search_static::query_vector(query).unwrap();
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    index
+        .semantic_vectors
+        .0
+        .set(vec![vector.clone(), vec![0.0; vector.len()]])
+        .unwrap();
+    let winner = search_catalog_indexed(&tools, query, None, 10, None, Some(&index));
+    assert_eq!(winner.matches[0]["name"], "other__first");
+    assert!(!winner.low_confidence);
+    let tied = CatalogSearchIndex::build_lexical(&tools);
+    tied.semantic_vectors
+        .0
+        .set(vec![vector.clone(), vector])
+        .unwrap();
+    assert!(search_catalog_indexed(&tools, query, None, 10, None, Some(&tied)).low_confidence);
+}
+
+#[test]
+fn search_strong_semantic_similarity_cannot_certify_missing_job_evidence() {
+    let tools = vec![
+        json!({"name":"other__first","description":"First unrelated document","inputSchema":{}}),
+        json!({"name":"other__second","description":"Second unrelated document","inputSchema":{}}),
+    ];
+    let query = "interpret an unusual capability";
+    let vector = search_static::query_vector(query).unwrap();
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    index
+        .semantic_vectors
+        .0
+        .set(vec![vector.clone(), vec![0.0; vector.len()]])
+        .unwrap();
+    let result = search_catalog_indexed(&tools, query, None, 10, None, Some(&index));
+    assert_eq!(result.matches[0]["name"], "other__first");
+    assert!(result.low_confidence);
+}
+
+#[test]
+fn search_semantic_preference_cannot_supply_an_omitted_name_distinction() {
+    for (query, names, descriptions) in [
+        (
+            "confirm the customer's intent",
+            [
+                "stripe__confirm_payment_intent",
+                "stripe__confirm_setup_intent",
+            ],
+            [
+                "Confirm that your customer intends to pay.",
+                "Confirm that your customer intends to set up a payment method.",
+            ],
+        ),
+        (
+            "stop the subscription schedule",
+            [
+                "stripe__cancel_subscription_schedule",
+                "stripe__release_subscription_schedule",
+            ],
+            [
+                "Stop the subscription schedule and its subscription.",
+                "Stop scheduling subscription schedule phases, leaving the subscription in place.",
+            ],
+        ),
+        (
+            "reset a clerk user's password",
+            ["clerk__call_unset_user_password_compromised", "clerk__ban_user"],
+            [
+                "Clear a user's password compromised flag. The user will no longer be prompted to reset their password.",
+                "Ban a user.",
+            ],
+        ),
+    ] {
+        let tools: Vec<_> = names.iter().zip(descriptions).map(|(name, description)| {
+            json!({"name":name,"description":description,"inputSchema":{}})
+        }).collect();
+        let vector = search_static::query_vector(query).unwrap();
+        let index = CatalogSearchIndex::build_lexical(&tools);
+        index
+            .semantic_vectors
+            .0
+            .set(vec![vector.clone(), vec![0.0; vector.len()]])
+            .unwrap();
+        let result = search_catalog_indexed(&tools, query, None, 10, None, Some(&index));
+        assert_eq!(result.matches[0]["name"], names[0]);
+        assert!(result.low_confidence, "{query}");
+        assert_eq!(result.matches.len(), 2);
+    }
+}
+
+#[test]
+#[ignore = "explicit export of production native cache; no labels or fitting"]
+fn search_export_native_fixture() {
+    let mut tools = scale_catalog();
+    tools.extend(search_eval::catalog());
+    search_cache::export_native_fixture(
+        &tools,
+        std::path::Path::new(&std::env::var_os("SEARCH_NATIVE_CACHE").unwrap()),
+        std::path::Path::new(&std::env::var_os("SEARCH_NATIVE_FIXTURE_OUTPUT").unwrap()),
+    );
+    let mut queries: Vec<String> = [
+        DEV,
+        OLD_HELD_OUT,
+        DEV_V2,
+        include_str!("../../tests/fixtures/search-eval/intents.json"),
+    ]
+    .into_iter()
+    .flat_map(|text| serde_json::from_str::<Vec<Value>>(text).unwrap())
+    .map(|intent| intent["query"].as_str().unwrap().to_owned())
+    .collect();
+    queries.sort();
+    queries.dedup();
+    search_static::export_query_fixture(
+        &queries,
+        std::path::Path::new(&std::env::var_os("SEARCH_NATIVE_FIXTURE_OUTPUT").unwrap()),
+    );
+}
+
+#[test]
+fn search_native_fixture_covers_the_frozen_catalog_and_matches_native_samples() {
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(include_bytes!(
+                "../../tests/fixtures/search-eval-scale/bge-native-vectors.bin"
+            ))
+        ),
+        include_str!("../../tests/fixtures/search-eval-scale/bge-native-vectors.sha256").trim()
+    );
+    let mut tools = scale_catalog();
+    tools.extend(search_eval::catalog());
+    for tool in &tools {
+        assert!(
+            search_static::fixture_vector(&search_static::document(tool)).is_some(),
+            "stale native document fixture: {}",
+            tool["name"]
+        );
+    }
+    for position in [0, tools.len() / 2, tools.len() - 1] {
+        let text = search_static::document(&tools[position]);
+        let native = search_static::model().encode_documents(&[&text]).unwrap();
+        let cached = search_static::fixture_vector(&text).unwrap();
+        assert!(search_static::cosine(&native[0], &cached) >= 0.99999);
+    }
+    for text in [
+        DEV,
+        OLD_HELD_OUT,
+        DEV_V2,
+        include_str!("../../tests/fixtures/search-eval/intents.json"),
+    ] {
+        for intent in serde_json::from_str::<Vec<Value>>(text).unwrap() {
+            let input = format!(
+                "Represent this sentence for searching relevant passages: {}",
+                intent["query"].as_str().unwrap()
+            );
+            assert!(
+                search_static::fixture_vector(&input).is_some(),
+                "stale query fixture: {input}"
+            );
+        }
+    }
+    let intents: Vec<Value> = serde_json::from_str(DEV).unwrap();
+    for position in [0, intents.len() / 2, intents.len() - 1] {
+        let input = format!(
+            "Represent this sentence for searching relevant passages: {}",
+            intents[position]["query"].as_str().unwrap()
+        );
+        let native = search_static::model().encode(&input).unwrap();
+        let cached = search_static::fixture_vector(&input).unwrap();
+        assert!(search_static::cosine(&native, &cached) >= 0.99999);
+    }
+}
+
+#[test]
+fn search_ready_catalog_falls_back_without_waiting_for_inflight_batch() {
+    let tools = vec![
+        json!({"name":"clock__record_working_hours","description":"Record working hours"}),
+        json!({"name":"clock__delete_invoice","description":"Delete an invoice"}),
+    ];
+    let lexical = CatalogSearchIndex::build_lexical(&tools);
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    index
+        .semantic_vectors
+        .0
+        .set(vec![vec![0.0; search_static::DIMENSIONS]; tools.len()])
+        .unwrap();
+    let query = "record working hours";
+    let expected = search_catalog_indexed(&tools, query, None, 10, None, Some(&lexical));
+    search_static::with_inflight_batch(|model| {
+        search_static::with_query_model(model, || {
+            let started = Instant::now();
+            let result = search_catalog_indexed(&tools, query, None, 10, None, Some(&index));
+            assert!(
+                started.elapsed() < Duration::from_millis(250),
+                "query waited for background inference"
+            );
+            assert_eq!(result.ranking_mode, "lexical");
+            assert_eq!(result.matches[0]["name"], "clock__record_working_hours");
+            assert_eq!(result.matches, expected.matches);
+            assert_eq!(result.low_confidence, expected.low_confidence);
+        });
+    });
+}
+
+#[test]
+fn search_long_catalog_job_gives_queries_regular_semantic_turns() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let tools = vec![
+        json!({"name":"clock__record_working_hours","description":"Record working hours"}),
+        json!({"name":"clock__delete_invoice","description":"Delete an invoice"}),
+    ];
+    let model = search_static::available_model();
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    index
+        .semantic_vectors
+        .0
+        .set(
+            model
+                .encode_documents(
+                    &tools
+                        .iter()
+                        .map(search_static::document)
+                        .collect::<Vec<_>>()
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+    let batches = Arc::new(AtomicUsize::new(0));
+    let progress = batches.clone();
+    let encoder = model.clone();
+    let worker = std::thread::spawn(move || {
+        for _ in 0..12 {
+            encoder
+                .encode_documents(&["catalog background document"; search_static::BATCH_SIZE])
+                .unwrap();
+            progress.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let mut semantic = 0;
+    let mut fallbacks = 0;
+    let mut last_semantic_batch = 0;
+    let mut max_batch_gap = 0;
+    search_static::with_query_model(model, || {
+        while !worker.is_finished() {
+            let started = Instant::now();
+            let result = search_catalog_indexed(
+                &tools,
+                "record working hours",
+                None,
+                10,
+                None,
+                Some(&index),
+            );
+            let batch = batches.load(Ordering::Relaxed);
+            assert_eq!(result.matches[0]["name"], "clock__record_working_hours");
+            if result.ranking_mode == "semantic" {
+                semantic += 1;
+                max_batch_gap = max_batch_gap.max(batch - last_semantic_batch);
+                last_semantic_batch = batch;
+            } else {
+                fallbacks += 1;
+                assert!(started.elapsed() < Duration::from_millis(250));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    });
+    worker.join().unwrap();
+    max_batch_gap = max_batch_gap.max(12 - last_semantic_batch);
+    eprintln!("search fairness: {semantic} semantic, {fallbacks} lexical fallbacks, maximum gap {max_batch_gap} batches");
+    assert!(fallbacks > 0, "test did not contend with catalog inference");
+    assert!(
+        semantic >= 6,
+        "only {semantic} semantic answers during 12 batches"
+    );
+    assert!(
+        max_batch_gap <= 3,
+        "semantic answers starved for {max_batch_gap} batches"
+    );
+}
+
+#[test]
+fn search_populated_vectors_use_lexical_ranking_when_weights_are_unavailable() {
+    let tools = vec![
+        json!({"name":"clock__record_working_hours","description":"Record working hours"}),
+        json!({"name":"clock__delete_invoice","description":"Delete an invoice"}),
+    ];
+    let lexical = CatalogSearchIndex::build_lexical(&tools);
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    // Populated document vectors must not fuse against a synthetic zero query.
+    index
+        .semantic_vectors
+        .0
+        .set(vec![vec![1.0; search_static::DIMENSIONS]; tools.len()])
+        .unwrap();
+    let expected = search_catalog_indexed(
+        &tools,
+        "record working hours",
+        None,
+        10,
+        None,
+        Some(&lexical),
+    );
+    let fusion_before = LOCAL_FUSION_CALLS.with(std::cell::Cell::get);
+    search_static::with_query_model(search_static::unavailable_model(), || {
+        for _ in 0..3 {
+            let result = search_catalog_indexed(
+                &tools,
+                "record working hours",
+                None,
+                10,
+                None,
+                Some(&index),
+            );
+            assert_eq!(
+                LOCAL_FUSION_CALLS.with(std::cell::Cell::get),
+                fusion_before,
+                "unavailable query entered fusion"
+            );
+            assert_eq!(result.ranking_mode, "lexical");
+            assert_eq!(result.matches, expected.matches);
+            assert_eq!(result.low_confidence, expected.low_confidence);
+        }
+    });
+    assert_eq!(
+        LOCAL_FUSION_CALLS.with(std::cell::Cell::get),
+        fusion_before,
+        "unavailable query entered fusion"
+    );
+}
+
+#[test]
+fn search_trace_records_actual_ranker_for_busy_ready_and_unavailable_queries() {
+    let _env = DataDirTestEnv::new("search-actual-ranker");
+    let tools = vec![
+        json!({"name":"clock__record_working_hours","description":"Record working hours"}),
+        json!({"name":"clock__delete_invoice","description":"Delete an invoice"}),
+    ];
+    let index = CatalogSearchIndex::build(&tools);
+    let measure = |query: &str| {
+        let intents = vec![
+            json!({"id":"actual-ranker","query":query,"kind":"ranked","expected":["clock__record_working_hours"],"category":"ranker boundary"}),
+        ];
+        measure_handler_phase(&tools, &index, &intents, "ranker");
+    };
+    search_static::with_inflight_batch(|model| {
+        search_static::with_query_model(model, || measure("record working hours"));
+    });
+    search_static::with_query_model(search_static::available_model(), || {
+        measure("clock record working hours")
+    });
+    search_static::with_query_model(search_static::unavailable_model(), || {
+        measure("clock record working hours now")
+    });
+    assert!(conduit_lib::telemetry::flush_for_test(Duration::from_secs(
+        5
+    )));
+    let traces = searchtrace::read_recent(usize::MAX).unwrap();
+    for (query, mode) in [
+        ("record working hours", "lexical"),
+        ("clock record working hours", "semantic"),
+        ("clock record working hours now", "lexical"),
+    ] {
+        let trace = traces.iter().find(|trace| trace["query"] == query).unwrap();
+        assert_eq!(trace["mode"], mode, "{query}");
+    }
 }

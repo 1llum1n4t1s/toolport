@@ -59,41 +59,37 @@ servers, where the per-server tools approach the full catalog.
 
 ## Catalog exposure measurements
 
-The headline says **tokens saved**. Hover it for the method: offline
-`cl100k_base` tokenization of the serialized full and exposed MCP tool arrays
-under the same client scope and policy, minus every recorded discovery response.
-The signed total includes extra catalog exposure and can be negative on small
-catalogs or after many searches. It describes this MCP boundary, not provider
-billing, prompt-cache savings, or savings over a client's native tool search.
+The headline says **net tokens saved**. The expanded measurement panel shows
+an exact equation: full catalog baseline tokens minus all catalog response tokens
+minus search response tokens. Counts use the bundled `cl100k_base` tokenizer on
+compact JSON tool arrays and search text. This local comparison does not measure
+provider billing, prompt caching, or a client's native tool search.
 
-A distinct scoped full/exposed catalog hash is counted once per client session,
-even when `tools/list` is reloaded concurrently. A changed surface earns a new
-exposure; returning to a previously seen surface does not. Stdio connections and
-HTTP session records own their counters. Session expiry/reconnection starts a
-new counter. Sessionless modern HTTP conservatively counts once per listener
-lifetime and client label plus scoped catalog hash because it has no conversation
-session. This counts catalog exposure, not inferred conversation turns.
+Each stdio connection or stateful HTTP session receives one baseline: the full-mode
+tool array for the same allowed servers and policies at its first `tools/list`.
+Every list response is subtracted, including concurrent repeats, catalog changes,
+and a switch to full discovery. None earns another baseline. Search text is also
+subtracted, including its guidance. The result can be negative for small catalogs
+or repeated responses. Sessionless HTTP is excluded because it has no identifiable
+client session. Sessions whose initial full catalog exceeds a known client tool
+limit are also excluded. A cold first catalog stays a conservative baseline even if more
+tools become available later.
 
-Counts use the actual compact serialized arrays, including JSON punctuation;
-there is no fixed per-tool average. Tokenization and vocabulary initialization run on the existing background
-telemetry writer. The bundled vocabulary needs no runtime download. The request
-thread serializes and hashes the catalog, or queues the discovery text; repeated
-catalogs skip tokenization. The existing bounded queue's synchronous fallback
-also applies if the writer is unavailable or overloaded. Raw text used for
-tokenization is removed before persistence.
+Tokenization runs on the existing background telemetry writer, with no runtime
+vocabulary download. Only the first baseline queues full catalog text; subsequent
+responses queue their exposed array. Raw text is removed before persistence.
+The bounded queue and telemetry failure notices still apply.
 
-New rows have `v: 3` in `savings-v3.jsonl`. Exact byte measurements and signed
-token totals survive rotation. Old pre-2.0 `savings.jsonl` estimates and
-`savings-v2.jsonl` bytes/4 estimates still load, but are shown separately and
-excluded from the headline. They cannot be reconstructed as tokenizer measurements.
-Older gateways can rotate their historical files without touching new records.
-Clearing Activity removes all three files; it does not credit another reload in
-an existing session. Team server attribution remains a catalog-only allocation, not net savings.
-
-Discovery response text includes its lead and guidance text. Every response
-recorded by `record_discovery` is subtracted; a full-mode session does not incur
-lazy discovery costs. Tool-result retrieval is ordinary task output rather than
-catalog discovery and is not treated as avoided definitions.
+New rows have `v: 4`, a local random session ID and an accounting method in
+`savings-v4.jsonl`. Rotation preserves baseline, response and search totals in a
+separate aggregate. The headline and all measured breakdown values come from
+these same records. Pre-2.0 `savings.jsonl`, bytes/4 `savings-v2.jsonl` and tokenized
+`savings-v3.jsonl` remain readable without rewriting. They lack verifiable session
+accounting, so their prior totals and record counts appear as excluded history.
+Clearing Activity removes all four files; an existing session does not earn
+another baseline afterward. Team server attribution remains catalog-only, not
+net savings. Ordinary tool results are task output and are outside this catalog
+comparison.
 
 Prometheus exposes the headline as the signed `toolport_tokens_saved` gauge,
 with `tokenizer="cl100k_base"` and `method="net_of_discovery"` labels. Its

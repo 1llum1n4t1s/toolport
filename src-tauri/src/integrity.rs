@@ -947,9 +947,14 @@ fn save_pins_with(
     // the corrupt one; a save whose backup fails still proceeds, since refusing to
     // persist a fresh baseline would be the worse outcome. Callers hold the pin-store
     // lock, so this cannot race a peer gateway.
-    if let Some(previous) = read_pins_at(&path) {
-        if let Ok(encoded) = serde_json::to_string(&previous) {
-            let _ = crate::registry::atomic_write(&pins_backup_path(&path), &encoded);
+    // There is no outgoing primary to back up on its first write. Established
+    // files and metadata errors still use the full read/retry path.
+    if !matches!(std::fs::metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
+        if let Some(previous) = read_pins_at(&path) {
+            if let Ok(encoded) = serde_json::to_string(&previous) {
+                let _ = crate::registry::atomic_write(&pins_backup_path(&path), &encoded);
+            }
         }
     }
     write(&path, &serialized)
@@ -1700,7 +1705,7 @@ type QuarantineSets = (
 
 /// Load the quarantine map for `profile`.
 ///
-/// - Missing file after retries, pin store `Fresh` → empty set (honest first run).
+/// - Missing file, pin store `Fresh` → empty set without retries (honest first run).
 /// - Missing file after retries while pins are `Loaded`/`Corrupt` → `Err` (SBS-871).
 ///   A rename-window `NotFound` is not "nothing blocked".
 /// - Unreadable or corrupt → `Err` (fail closed). Never renames the file aside: moving a
@@ -1710,6 +1715,14 @@ fn load_quarantine(profile: Option<&str>) -> Result<Quarantine, String> {
     let Some(path) = quarantine_path(profile) else {
         return Ok(Quarantine::new());
     };
+    // A real first run has no quarantine file to recover from a rename window.
+    // Keep the legacy and pin-store guards, and retry every established store.
+    if matches!(std::fs::metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
+        if let Ok(empty) = missing_quarantine_store(profile, &path) {
+            return Ok(empty);
+        }
+    }
     match read_quarantine_file(&path) {
         QuarantineFileRead::Raw(raw) => parse_quarantine_raw(&raw, &path),
         QuarantineFileRead::Missing => missing_quarantine_store(profile, &path),
@@ -4963,6 +4976,62 @@ pub fn tool_change_summary(events: &[Value]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quarantine_record_identity_preserves_legacy_hash_and_nested_key_order_invariance() {
+        let original: Value = serde_json::from_str(r#"{"tool":"vendor__inspect","change":"changed","definition":{"name":"vendor__inspect","inputSchema":{"type":"object","properties":{"z":{"type":"string"},"a":{"type":"integer"}}}}}"#).unwrap();
+        let reordered: Value = serde_json::from_str(r#"{"profile":"scope","record_id":"presentation","definition":{"inputSchema":{"properties":{"a":{"type":"integer"},"z":{"type":"string"}},"type":"object"},"name":"vendor__inspect"},"change":"changed","tool":"vendor__inspect"}"#).unwrap();
+        assert_eq!(
+            quarantine_record_id(&original),
+            "0b21d657e430f509f171d5aeb55dee8874c602421e5d33c8d605e98498fdc6c2"
+        );
+        assert_eq!(
+            quarantine_record_id(&original),
+            quarantine_record_id(&reordered)
+        );
+        assert_eq!(
+            original["definition"]["inputSchema"]["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["a", "z"]
+        );
+    }
+
+    #[test]
+    fn sorted_schema_keeps_legacy_integrity_hashes() {
+        let schema: Value = serde_json::from_str(
+            r#"{"type":"object","properties":{"z":{"type":"string"},"a":{"type":"integer"}}}"#,
+        )
+        .unwrap();
+        let reordered: Value = serde_json::from_str(
+            r#"{"properties":{"a":{"type":"integer"},"z":{"type":"string"}},"type":"object"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            schema_part_hash(&schema),
+            "3b892cd0d638904a4c9473bf931b92b5bb3c361dbf1f88ba4dbd139578e4ea4b"
+        );
+        assert_eq!(schema_part_hash(&schema), schema_part_hash(&reordered));
+        let tool = serde_json::json!({"name":"vendor__inspect","description":"Inspect","inputSchema":schema});
+        assert_eq!(
+            fingerprint(&tool),
+            "v2:e4b8ad171c119b0ccfeb30119fe2bb1355bccf6dc7f9aeb670a881a81661fe3e"
+        );
+        let original_order: Vec<_> = tool["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(original_order, ["a", "z"]);
+        assert_eq!(
+            definition_parts(&tool, None).input_schema,
+            "3b892cd0d638904a4c9473bf931b92b5bb3c361dbf1f88ba4dbd139578e4ea4b"
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -7018,6 +7087,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cold_start_pin_write_skips_absent_primary_but_keeps_existing_backups() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("cold-start-pin-write");
+        for profile in [None, Some("cold-start")] {
+            let path = pins_path(profile).unwrap();
+            let backup = pins_backup_path(&path);
+            PINS_REVIEW_READ_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+            save_pins(profile, &Pins::new()).unwrap();
+            assert_eq!(
+                PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "the first pin write must not retry a nonexistent outgoing baseline"
+            );
+            assert!(!backup.exists());
+
+            write_loaded_pin_store(profile);
+            PINS_REVIEW_READ_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+            save_pins(profile, &Pins::new()).unwrap();
+            assert_eq!(
+                PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "an established primary must still be read for its backup"
+            );
+            assert_eq!(read_pins_at(&backup).unwrap()["srv__a"].fp, "deadbeef");
+            let previous_backup = std::fs::read_to_string(&backup).unwrap();
+
+            std::fs::remove_file(&path).unwrap();
+            PINS_REVIEW_READ_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+            save_pins(profile, &Pins::new()).unwrap();
+            assert_eq!(
+                PINS_REVIEW_READ_COUNT.load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+            assert_eq!(std::fs::read_to_string(&backup).unwrap(), previous_backup);
+        }
+    }
+
     /// The baseline had no backup at all, so a single unreadable read blocked every
     /// tool with nothing to recover from. The last file that parsed is now kept
     /// beside it and used before declaring the trust root lost.
@@ -7702,6 +7809,40 @@ mod tests {
             .expect("cached first-run path is also Ok empty")
             .is_empty());
         assert!(load_quarantine(profile).expect("load first run").is_empty());
+    }
+
+    #[test]
+    fn cold_start_review_reads_skip_retries_only_for_fresh_missing_stores() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let _data = TestDataDir::new("cold-start-review-stores");
+        for profile in [None, Some("cold-start")] {
+            reset_sbs871_read_hooks();
+            for _ in 0..18 {
+                assert!(review_quarantined(profile).unwrap().is_empty());
+                assert!(!pending_definition_review(profile));
+            }
+            assert_eq!(
+                QUARANTINE_READ_IO_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "fresh catalog arrivals must not enter the quarantine retry loop"
+            );
+
+            // An empty first-run read must not hide a later explicit review.
+            let mut q = Quarantine::new();
+            q.insert("srv__wipe".into(), json!({"review_required": true}));
+            save_quarantine(profile, &q).unwrap();
+            assert!(review_quarantined(profile).unwrap().contains("srv__wipe"));
+            std::fs::remove_file(quarantine_path(profile).unwrap()).unwrap();
+            write_loaded_pin_store(profile);
+            reset_sbs871_read_hooks();
+            assert!(load_quarantine(profile).is_err());
+            assert_eq!(
+                QUARANTINE_READ_IO_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst),
+                PINS_READ_ATTEMPTS as usize,
+                "an established baseline must retain the full missing-store retry budget"
+            );
+        }
+        reset_sbs871_read_hooks();
     }
 
     /// SBS-871: a missing quarantine file while pins are Loaded is not "nothing

@@ -2419,6 +2419,24 @@ pub fn record_error(error: Option<&str>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn conflict_version_preserves_legacy_canonical_hash() {
+        let original = serde_json::json!({"z":1,"a":{"y":2,"b":3}});
+        let reordered = serde_json::json!({"a":{"b":3,"y":2},"z":1});
+        assert_eq!(
+            super::conflict_version(&original),
+            "10d6b907e50339871355376854e16e87112120f63b9ce9bca2913907cd2a124d"
+        );
+        assert_eq!(
+            super::conflict_version(&original),
+            super::conflict_version(&reordered)
+        );
+        assert_ne!(
+            super::conflict_version(&original),
+            super::conflict_version(&serde_json::json!({"z":2,"a":{"y":2,"b":3}}))
+        );
+    }
+
     use super::*;
 
     #[test]
