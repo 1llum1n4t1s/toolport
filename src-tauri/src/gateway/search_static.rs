@@ -1,119 +1,194 @@
-//! Bundled, quantized Model2Vec inference. No endpoint, GPU or runtime transformer.
+//! Offline BGE CLS embeddings, with a lazy, idle-unloaded CPU session.
+use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_nn::VarBuilder;
+use candle_transformers::models::bert::{BertModel, Config};
 use serde_json::Value;
-use std::borrow::Cow;
-use std::sync::OnceLock;
-use tokenizers::Tokenizer;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+use tokenizers::{Tokenizer, TruncationParams};
 
-const WEIGHTS: &[u8] = include_bytes!("../../assets/search/model-q8.bin");
+const WEIGHTS: &[u8] = include_bytes!("../../assets/search/model-f16.safetensors");
 const TOKENIZER: &[u8] = include_bytes!("../../assets/search/tokenizer.json");
+const CONFIG: &[u8] = include_bytes!("../../assets/search/config.json");
+// Retain the model and tokenizer notices in each shipping gateway.
+const LICENSES: &str = concat!(
+    include_str!("../../assets/search/LICENSE"),
+    include_str!("../../assets/search/tokenizers-LICENSE")
+);
 
-pub const DOCUMENT_REPRESENTATION: &str = "search-document-v1";
-pub const ENCODE_CHAR_LIMIT: usize = 2048;
+pub const DOCUMENT_REPRESENTATION: &str = "bge-round2-cls-v1";
 pub const ENCODE_TOKEN_LIMIT: usize = 256;
-pub const DESCRIPTION_CHAR_LIMIT: usize = 512;
+pub const DIMENSIONS: usize = 384;
+pub const BATCH_SIZE: usize = 8;
+const QUERY_INSTRUCTION: &str = "Represent this sentence for searching relevant passages: ";
+const IDLE: Duration = Duration::from_secs(600);
+
+struct Session {
+    model: BertModel,
+    last_used: Instant,
+}
+
+impl Session {
+    fn load() -> candle_core::Result<Self> {
+        let config: Config = serde_json::from_slice(CONFIG).map_err(candle_core::Error::wrap)?;
+        let vb = VarBuilder::from_slice_safetensors(WEIGHTS, DType::F32, &Device::Cpu)?;
+        Ok(Self {
+            model: BertModel::load(vb, &config)?,
+            last_used: Instant::now(),
+        })
+    }
+}
 
 pub struct Model {
     tokenizer: Tokenizer,
-    weights: Cow<'static, [u8]>,
-    rows: usize,
-    dimensions: usize,
-    bits: usize,
+    session: Mutex<Option<Session>>,
+    pool: rayon::ThreadPool,
 }
 
 impl Model {
-    fn load(weights: Cow<'static, [u8]>, tokenizer: &[u8]) -> Result<Self, String> {
-        if weights.len() < 20 || &weights[..8] != b"TPSEMQ01" {
-            return Err("invalid static search model header".into());
-        }
-        let field =
-            |offset| u32::from_le_bytes(weights[offset..offset + 4].try_into().unwrap()) as usize;
-        let (rows, dimensions, bits) = (field(8), field(12), field(16));
-        if rows == 0 || dimensions == 0 || dimensions > 1024 || ![4, 8].contains(&bits) {
-            return Err("invalid static search model shape".into());
-        }
-        let size = rows
-            .checked_mul(dimensions)
-            .and_then(|n| n.checked_mul(bits))
-            .and_then(|n| n.checked_div(8))
-            .and_then(|n| n.checked_add(rows * 4 + 20));
-        if !size.is_some_and(|size| {
-            weights.len() >= size
-                && (weights.len() == size
-                    || weights[size..] == *include_bytes!("../../assets/search/LICENSE"))
-        }) || (bits == 4 && dimensions % 2 != 0)
-        {
-            return Err("invalid static search model length".into());
-        }
-        for bytes in weights[20..20 + rows * 4].as_chunks::<4>().0 {
-            let scale = f32::from_le_bytes(*bytes);
-            if !scale.is_finite() || scale <= 0.0 {
-                return Err("invalid static search model scale".into());
-            }
-        }
-        let tokenizer = Tokenizer::from_bytes(tokenizer).map_err(|e| e.to_string())?;
-        if tokenizer.get_vocab_size(false) != rows {
-            return Err("static search vocabulary mismatch".into());
-        }
+    fn load() -> Result<Self, String> {
+        let mut tokenizer = Tokenizer::from_bytes(TOKENIZER).map_err(|e| e.to_string())?;
+        tokenizer.with_padding(None);
+        tokenizer.with_truncation(None).map_err(|e| e.to_string())?;
         Ok(Self {
             tokenizer,
-            weights,
-            rows,
-            dimensions,
-            bits,
+            session: Mutex::new(None),
+            pool: rayon::ThreadPoolBuilder::new()
+                .num_threads(2)
+                .thread_name(|n| format!("search-cpu-{n}"))
+                .build()
+                .map_err(|e| e.to_string())?,
         })
     }
 
+    #[cfg(test)]
+    pub fn load_for_benchmark(&self) -> Result<(), String> {
+        let mut guard = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        let state = &mut *guard;
+        self.pool
+            .install(|| -> candle_core::Result<()> {
+                if state.is_none() {
+                    *state = Some(Session::load()?);
+                }
+                Ok(())
+            })
+            .map_err(|e| e.to_string())
+    }
+
     pub fn dimensions(&self) -> usize {
-        self.dimensions
+        DIMENSIONS
+    }
+
+    pub fn encode_input(&self, text: &str) -> Result<tokenizers::Encoding, String> {
+        self.tokenizer
+            .encode(text, false)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Reproduce round 2's content-token truncation and decoded document text.
+    fn document_input(&self, text: &str) -> Result<String, String> {
+        let mut encoded = self.encode_input(text)?;
+        encoded.truncate(
+            ENCODE_TOKEN_LIMIT - 2,
+            0,
+            tokenizers::TruncationDirection::Right,
+        );
+        self.tokenizer
+            .decode(encoded.get_ids(), true)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn encode_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
+        let texts: Vec<String> = texts
+            .iter()
+            .map(|s| self.document_input(s))
+            .collect::<Result<_, _>>()?;
+        self.encode_batch(&texts.iter().map(String::as_str).collect::<Vec<_>>())
     }
 
     pub fn encode(&self, text: &str) -> Vec<f32> {
-        let mut out = vec![0.0; self.dimensions];
-        let Ok(encoded) = self.encode_input(text) else {
-            return out;
-        };
-        for id in encoded
-            .get_ids()
-            .iter()
-            .take(ENCODE_TOKEN_LIMIT)
-            .map(|id| *id as usize)
-        {
-            if id >= self.rows {
-                continue;
-            }
-            let scale =
-                f32::from_le_bytes(self.weights[20 + id * 4..24 + id * 4].try_into().unwrap());
-            let width = self.dimensions * self.bits / 8;
-            let start = 20 + self.rows * 4 + id * width;
-            let row = &self.weights[start..start + width];
-            if self.bits == 8 {
-                for (value, byte) in out.iter_mut().zip(row) {
-                    *value += *byte as i8 as f32 * scale;
-                }
-            } else {
-                for (values, byte) in out.as_chunks_mut::<2>().0.iter_mut().zip(row) {
-                    values[0] += ((*byte & 15) as f32 - 8.0) * scale;
-                    values[1] += ((*byte >> 4) as f32 - 8.0) * scale;
-                }
-            }
-        }
-        let norm = out.iter().map(|v| v * v).sum::<f32>().sqrt();
-        if norm > 0.0 {
-            for v in &mut out {
-                *v /= norm;
-            }
-        }
-        out
+        self.encode_batch(&[text])
+            .ok()
+            .and_then(|mut vectors| vectors.pop())
+            .unwrap_or_else(|| vec![0.0; DIMENSIONS])
     }
 
-    /// One tokenizer pass for both pooled vectors and future ordered evidence.
-    /// IDs/offsets cover the character-bounded input; consumers of static vectors
-    /// must use the first ENCODE_TOKEN_LIMIT IDs. No ordered cache is built here.
-    pub fn encode_input(&self, text: &str) -> Result<tokenizers::Encoding, String> {
-        let bounded: String = text.chars().take(ENCODE_CHAR_LIMIT).collect();
-        self.tokenizer
-            .encode(bounded, false)
-            .map_err(|error| error.to_string())
+    fn encode_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        if texts.len() > BATCH_SIZE {
+            return Err("search batch exceeds eight documents".into());
+        }
+        let mut tokenizer = self.tokenizer.clone();
+        tokenizer
+            .with_truncation(Some(TruncationParams {
+                max_length: ENCODE_TOKEN_LIMIT,
+                ..Default::default()
+            }))
+            .map_err(|e| e.to_string())?;
+        // Sequential tokenization avoids the tokenizer's global Rayon pool.
+        let encoded = texts
+            .iter()
+            .map(|text| tokenizer.encode(*text, true).map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let width = encoded.iter().map(|e| e.len()).max().unwrap();
+        let mut ids = vec![0_u32; texts.len() * width];
+        let mut mask = vec![0_u32; ids.len()];
+        for (n, encoding) in encoded.iter().enumerate() {
+            ids[n * width..n * width + encoding.len()].copy_from_slice(encoding.get_ids());
+            mask[n * width..n * width + encoding.len()].fill(1);
+        }
+        let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        let state = &mut *session;
+        self.pool
+            .install(|| -> candle_core::Result<Vec<Vec<f32>>> {
+                if state.is_none() {
+                    *state = Some(Session::load()?);
+                }
+                let current = state.as_mut().unwrap();
+                let shape = (texts.len(), width);
+                let input = Tensor::from_vec(ids, shape, &Device::Cpu)?;
+                let attention = Tensor::from_vec(mask, shape, &Device::Cpu)?;
+                let types = Tensor::zeros(shape, DType::U32, &Device::Cpu)?;
+                let output = current.model.forward(&input, &types, Some(&attention))?;
+                let mut vectors = Vec::with_capacity(texts.len());
+                for n in 0..texts.len() {
+                    let mut vector = output.i((n, 0))?.to_vec1::<f32>()?;
+                    let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
+                    if !norm.is_finite() || norm <= 0.0 {
+                        candle_core::bail!("non-finite search vector");
+                    }
+                    for value in &mut vector {
+                        *value /= norm;
+                    }
+                    vectors.push(vector);
+                }
+                current.last_used = Instant::now();
+                Ok(vectors)
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    fn unload_idle(&self, now: Instant) {
+        let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        if session
+            .as_ref()
+            .is_some_and(|s| now.saturating_duration_since(s.last_used) >= IDLE)
+        {
+            *session = None;
+        }
+    }
+}
+
+static MODEL: OnceLock<Model> = OnceLock::new();
+pub fn model() -> &'static Model {
+    MODEL.get_or_init(|| Model::load().expect("validated bundled BGE tokenizer"))
+}
+
+pub fn unload_idle() {
+    if let Some(model) = MODEL.get() {
+        model.unload_idle(Instant::now());
     }
 }
 
@@ -125,29 +200,12 @@ pub fn asset_digest() -> &'static [u8] {
         hash.update(DOCUMENT_REPRESENTATION.as_bytes());
         hash.update(WEIGHTS);
         hash.update(TOKENIZER);
+        hash.update(CONFIG);
+        hash.update(LICENSES);
         hash.finalize().to_vec()
     })
 }
 
-pub fn model() -> &'static Model {
-    static MODEL: OnceLock<Model> = OnceLock::new();
-    MODEL.get_or_init(|| {
-        #[cfg(test)]
-        if let Some(path) = std::env::var_os("SEARCH_STATIC_MODEL_DIR") {
-            let path = std::path::PathBuf::from(path);
-            return Model::load(
-                Cow::Owned(std::fs::read(path.join("model.bin")).unwrap()),
-                &std::fs::read(path.join("tokenizer.json")).unwrap(),
-            )
-            .expect("benchmark static model");
-        }
-        Model::load(Cow::Borrowed(WEIGHTS), TOKENIZER)
-            .expect("validated bundled static search model")
-    })
-}
-
-/// Borrow complete evidence from the immutable catalog, without copying prose or
-/// schemas into the index. The semantic projection below is explicitly bounded.
 pub struct Source<'a> {
     pub name: &'a str,
     pub description: &'a str,
@@ -162,59 +220,104 @@ pub fn source(tool: &Value) -> Source<'_> {
     }
 }
 
-/// Selected baseline projection: readable name and first description sentence,
-/// capped at DESCRIPTION_CHAR_LIMIT. Full-description expansion exceeded the
-/// native cold budget; later prose and schemas remain available through source().
-/// This projection must not be treated as complete capability evidence.
+fn human(text: &str) -> String {
+    let mut out = String::new();
+    let mut previous = false;
+    for c in text.chars() {
+        if previous && c.is_ascii_uppercase() {
+            out.push(' ');
+        }
+        if c == '_' || c == '-' {
+            if !out.ends_with(' ') {
+                out.push(' ');
+            }
+        } else {
+            out.push(c);
+        }
+        previous = c.is_ascii_lowercase() || c.is_ascii_digit();
+    }
+    out.trim().to_owned()
+}
+
+fn provider_name(provider: &str) -> String {
+    match provider {
+        "aws_lambda" => "AWS Lambda".into(),
+        "google_workspace" => "Google Workspace".into(),
+        "vercel_full_api" | "vercel" => "Vercel".into(),
+        "github" => "GitHub".into(),
+        "gitlab" => "GitLab".into(),
+        "postgres" => "Postgres".into(),
+        _ => {
+            let text = human(provider);
+            let mut previous = false;
+            text.chars()
+                .flat_map(|c| {
+                    let result = if previous {
+                        c.to_lowercase().collect::<String>()
+                    } else {
+                        c.to_uppercase().collect::<String>()
+                    };
+                    previous = c.is_alphabetic();
+                    result.chars().collect::<Vec<_>>()
+                })
+                .collect()
+        }
+    }
+}
+
+/// Exactly the round-2 provider/name/full-description/ordered-parameter projection.
 pub fn document(tool: &Value) -> String {
     let evidence = source(tool);
-    let name = evidence.name;
-    let mut readable = String::new();
-    let mut previous_lower = false;
-    for c in name.chars() {
-        if previous_lower && c.is_uppercase() {
-            readable.push(' ');
-        }
-        readable.push(if c == '_' || c == '-' { ' ' } else { c });
-        previous_lower = c.is_lowercase();
-    }
-    let description = evidence.description;
-    let end = description
-        .char_indices()
-        .find_map(|(i, c)| {
-            (['.', '!', '?'].contains(&c)
-                && description[i + c.len_utf8()..].starts_with(char::is_whitespace))
-            .then_some(i)
+    let (provider, name) = evidence
+        .name
+        .split_once("__")
+        .unwrap_or((tool["server"].as_str().unwrap_or(""), evidence.name));
+    let parameters = evidence
+        .input_schema
+        .and_then(|s| s["properties"].as_object())
+        .map(|properties| {
+            properties
+                .iter()
+                .filter(|(_, value)| value.is_object())
+                .map(|(name, value)| {
+                    let mut text = human(name);
+                    if let Some(description) =
+                        value["description"].as_str().filter(|s| !s.is_empty())
+                    {
+                        text.push_str(": ");
+                        text.extend(description.chars().take(160));
+                    }
+                    text
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
         })
-        .unwrap_or(description.len());
-    let description: String = description[..end]
-        .chars()
-        .take(DESCRIPTION_CHAR_LIMIT)
-        .collect();
-    format!("{readable} . {description}")
+        .unwrap_or_default();
+    format!(
+        "Provider: {}\nTool: {}\nDescription: {}\nParameters: {}",
+        provider_name(provider),
+        human(name),
+        evidence.description,
+        parameters
+    )
 }
 
 #[cfg(test)]
 pub fn document_status(tool: &Value) -> Value {
-    let evidence = source(tool);
     let text = document(tool);
     let encoded = model().encode_input(&text).unwrap();
     serde_json::json!({
-        "source_description_chars":evidence.description.chars().count(),
+        "source_description_chars":source(tool).description.chars().count(),
         "semantic_chars":text.chars().count(),
         "semantic_tokens_before_cap":encoded.get_ids().len(),
-        "token_truncated":encoded.get_ids().len() > ENCODE_TOKEN_LIMIT,
-        "description_complete_before_token_cap":text.ends_with(evidence.description),
-        "schema_embedded":false,"schema_retained":evidence.input_schema.is_some(),
-        "complete_source_retained":true,
-        "representation":DOCUMENT_REPRESENTATION,"char_limit":ENCODE_CHAR_LIMIT,"token_limit":ENCODE_TOKEN_LIMIT,
-        "description_policy":"first_sentence","description_char_limit":DESCRIPTION_CHAR_LIMIT,
-        "character_truncated_by_encoder":text.chars().count() > ENCODE_CHAR_LIMIT
+        "token_truncated":encoded.get_ids().len() > ENCODE_TOKEN_LIMIT - 2,
+        "description_complete_before_token_cap":true,
+        "schema_embedded":true,"schema_retained":source(tool).input_schema.is_some(),
+        "complete_source_retained":true,"representation":DOCUMENT_REPRESENTATION,"token_limit":ENCODE_TOKEN_LIMIT,
+        "description_policy":"full","character_truncated_by_encoder":false
     })
 }
 
-// Explicit benchmark vectors are generated by the standalone in-process Rust
-// transformer harness. This loader is absent from production binaries.
 #[cfg(test)]
 fn benchmark_vectors() -> Option<&'static Value> {
     static VECTORS: OnceLock<Option<Value>> = OnceLock::new();
@@ -230,14 +333,17 @@ fn benchmark_vectors() -> Option<&'static Value> {
 
 #[cfg(test)]
 pub fn tool_vector(tool: &Value) -> Vec<f32> {
-    #[cfg(test)]
     if let Some(vectors) = benchmark_vectors() {
         return serde_json::from_value(
             vectors["documents"][tool["name"].as_str().unwrap()].clone(),
         )
         .expect("benchmark tool vector");
     }
-    model().encode(&document(tool))
+    model()
+        .encode_documents(&[&document(tool)])
+        .expect("bundled BGE document")
+        .pop()
+        .unwrap()
 }
 
 pub fn query_vector(query: &str) -> Vec<f32> {
@@ -246,14 +352,13 @@ pub fn query_vector(query: &str) -> Vec<f32> {
         return serde_json::from_value(vectors["queries_vectors"][query].clone())
             .expect("benchmark query vector");
     }
-    model().encode(query)
+    model().encode(&format!("{QUERY_INSTRUCTION}{query}"))
 }
 
 pub fn cosine(left: &[f32], right: &[f32]) -> f64 {
     left.iter().zip(right).map(|(a, b)| a * b).sum::<f32>() as f64
 }
 
-// Benchmark controls never enter the shipped gateway.
 pub fn enabled() -> bool {
     #[cfg(test)]
     if std::env::var_os("SEARCH_LEXICAL_ONLY").is_some() {
@@ -266,26 +371,52 @@ pub fn enabled() -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn static_search_vectors_are_normalized_and_deterministic() {
-        let m = model();
-        let v = m.encode("record working hours for a ticket");
-        assert_eq!(v, m.encode("record working hours for a ticket"));
-        assert!((cosine(&v, &v) - 1.0).abs() < 1e-5);
-        assert_eq!(cosine(&m.encode(""), &v), 0.0);
-        let time = m.encode("add an issue worklog");
-        assert!(cosine(&v, &time) > cosine(&v, &m.encode("purchase a website domain")));
+    fn bge_rendering_preserves_prose_and_schema_order() {
+        let tool:Value=serde_json::from_str(r#"{"name":"github__readIssue2Comments","description":"First sentence. Later constraint.","inputSchema":{"properties":{"zFlag":{"description":"last"},"a_id":{"description":"first"}}}}"#).unwrap();
+        assert_eq!(document(&tool), "Provider: GitHub\nTool: read Issue2 Comments\nDescription: First sentence. Later constraint.\nParameters: z Flag: last; a id: first");
+        let tool = serde_json::json!({"name":"aws_lambda__do_job","inputSchema":{"properties":{"long":{"description":"é".repeat(200)}}}});
+        assert!(document(&tool).ends_with(&"é".repeat(160)));
+        assert_eq!(provider_name("clerk_full_api"), "Clerk Full Api");
     }
     #[test]
-    fn static_search_loader_rejects_invalid_assets() {
-        assert!(Model::load(Cow::Borrowed(b"bad"), TOKENIZER).is_err());
-        let mut broken = WEIGHTS.to_vec();
-        broken[20..24].copy_from_slice(&f32::NAN.to_le_bytes());
-        assert!(Model::load(Cow::Owned(broken), TOKENIZER).is_err());
-        assert_eq!(
-            document(
-                &serde_json::json!({"name":"agenda__createEvent","description":"Create an event. Extra fields."})
-            ),
-            "agenda  create Event . Create an event"
-        );
+    fn bge_session_is_lazy_and_unloads_after_idle() {
+        let m = Model::load().unwrap();
+        assert!(m.session.lock().unwrap().is_none());
+        assert_eq!(m.dimensions(), DIMENSIONS);
+        let v = m.encode("record working hours");
+        assert!((cosine(&v, &v) - 1.0).abs() < 1e-5);
+        assert!(m.session.lock().unwrap().is_some());
+        m.unload_idle(Instant::now() + IDLE + Duration::from_secs(1));
+        assert!(m.session.lock().unwrap().is_none());
+        assert_eq!(v, m.encode("record working hours"));
+    }
+    #[test]
+    fn bge_python_parity_and_batch_padding() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/search-bge-parity.json"))
+                .unwrap();
+        let texts: Vec<_> = fixture
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect();
+        let vectors = model().encode_documents(&texts).unwrap();
+        for (row, vector) in fixture.as_array().unwrap().iter().zip(&vectors) {
+            assert_eq!(
+                model().document_input(&document(&row["tool"])).unwrap(),
+                row["text"].as_str().unwrap()
+            );
+            let expected: Vec<f32> = serde_json::from_value(row["vector"].clone()).unwrap();
+            assert!(cosine(&expected, vector) >= 0.999, "{}", row["name"]);
+            assert!((cosine(vector, vector) - 1.0).abs() < 1e-5);
+            let single = model()
+                .encode_documents(&[row["text"].as_str().unwrap()])
+                .unwrap();
+            assert!(cosine(&single[0], vector) >= 0.999);
+        }
+        assert!(model()
+            .encode_documents(&["overflow"; BATCH_SIZE + 1])
+            .is_err());
     }
 }

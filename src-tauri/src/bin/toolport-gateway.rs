@@ -2769,6 +2769,7 @@ fn search_catalog_filtered(
             &fallback_index
         }
     };
+    index.semantic_vectors.ensure_started();
     let vectors = index.semantic_vectors.0.get();
     let use_local_semantic = search_static::enabled() && vectors.is_some();
     let q = query.to_lowercase();
@@ -3209,27 +3210,9 @@ fn local_search_fusion<'a>(
     lex: &[(f64, &'a Value)],
     similarities: &[f64],
 ) -> Vec<(f64, &'a Value)> {
-    #[cfg(test)]
-    let weight = std::env::var("SEARCH_SENTENCE_WEIGHT")
-        .ok()
-        .map(|v| v.parse::<f64>().unwrap())
-        .unwrap_or(0.5);
-    #[cfg(not(test))]
-    let weight = 0.5;
-    #[cfg(test)]
-    let floor = std::env::var("SEARCH_SENTENCE_FLOOR")
-        .ok()
-        .map(|v| v.parse::<f64>().unwrap())
-        .unwrap_or(0.60);
-    #[cfg(not(test))]
+    let weight = 1.0;
     let floor = 0.60_f64;
-    #[cfg(test)]
-    let minimum_similarity = std::env::var("SEARCH_SENTENCE_MIN_SIM")
-        .ok()
-        .map(|v| v.parse::<f64>().unwrap())
-        .unwrap_or(0.35);
-    #[cfg(not(test))]
-    let minimum_similarity = 0.35;
+    let minimum_similarity = 0.0;
     let semantic_floor = floor.max(similarities.iter().copied().fold(0.0_f64, f64::max) * 0.85);
     let mut lexical_order: Vec<usize> = (0..lex.len()).collect();
     lexical_order.sort_by(|a, b| lex[*b].0.total_cmp(&lex[*a].0));
@@ -3242,7 +3225,7 @@ fn local_search_fusion<'a>(
         }
     }
     for (rank, position) in semantic_order.into_iter().enumerate() {
-        if similarities[position] >= minimum_similarity
+        if similarities[position] > minimum_similarity
             && (lex[position].0 > 0.0 || similarities[position] >= semantic_floor)
         {
             scores[position] += weight / (10.0 + (rank + 1) as f64);

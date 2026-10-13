@@ -79,15 +79,15 @@ The RevenueCat logomark is vendored from the official
 [RevenueCat press kit](https://www.revenuecat.com/press-kit). It is used only to
 identify the corresponding server. The mark remains the property of RevenueCat.
 
-## Model2Vec search vectors
+## BGE search embeddings
 
-The gateway bundles an int8 conversion of
-[MinishLab potion-base-8M](https://huggingface.co/minishlab/potion-base-8M),
-revision `bf8b056651a2c21b8d2565580b8569da283cab23`, under the MIT License.
-Model2Vec was developed by Stephan Tulkens and Thomas van Dongen.
-Copyright (c) 2024 Thomas van Dongen. The full notice is in
-`src-tauri/assets/search/LICENSE` and embedded in the model data in the binary.
-Toolport changes only numeric storage; no Toolport queries or labels train it.
+The gateway bundles an f16 storage conversion of
+[BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5),
+revision `5c38ec7c405ec4b44b94cc5a9bb96e735b38267a`, under the MIT License.
+Copyright (c) 2022 staoxiao. The full notice is retained in
+`src-tauri/assets/search/LICENSE` and in the gateway binary.
+Toolport changes numeric storage only; no Toolport queries or labels train it.
+Candle performs CPU inference with f32 arithmetic from these f16 stored weights.
 
-The pure-Rust loader uses Hugging Face tokenizers 0.22.2 under Apache-2.0.
+The loader uses Hugging Face tokenizers 0.22.2 under Apache-2.0.
 Its full license is retained in `src-tauri/assets/search/tokenizers-LICENSE`.

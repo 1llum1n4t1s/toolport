@@ -1,42 +1,79 @@
-# Offline static search model
+# Offline BGE search embeddings
 
-Source: [MinishLab potion-base-8M](https://huggingface.co/minishlab/potion-base-8M),
-revision `bf8b056651a2c21b8d2565580b8569da283cab23`, MIT.
-The upstream model has 29,528 WordPiece rows and 256 dimensions. Toolport stores
-symmetric int8 rows with one float32 scale per row. The full MIT notice is appended
-to the weights and therefore remains in every compiled gateway binary.
+Source: [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5),
+revision `5c38ec7c405ec4b44b94cc5a9bb96e735b38267a`, MIT.
+384 dimensions, CLS pooling, L2 normalization. No Toolport labels train the model.
+The full MIT notice and tokenizer license remain embedded in the gateway binary.
 
-The loader uses the original tokenizer with native regex, HTTP and progress features
-disabled. No training code runs during inference. Inference pools token vectors and normalizes the sum.
-Catalog embeddings use the readable operation name and the first description
-sentence, bounded to 512 characters. Queries and documents use at most 256 tokens.
-No transformer runs. The gateway makes no network request for these vectors and
-uses the same scalar CPU path on Linux, macOS and Windows.
+## Runtime decision
 
-Reproduce from a local download of that exact revision, on devbox with NumPy and
-safetensors installed:
+Candle 0.11 CPU is the brief's portable fallback. We store f16 safetensors and
+promote weights to f32 for inference: BERT's layer-norm epsilon `1e-12` produces
+non-finite vectors with pure f16 CPU arithmetic. On 20 round-2 documents, the
+fallback's minimum cosine against the Python fp32 prototype was `0.9999996`.
+
+ORT rc10 / 1.22 linked statically on Linux and has static archives for all four
+shipped targets, but failed the required parity gate against Python ORT 1.31:
+minimum cosine `0.9972795` (original int8), `0.99719054` (per-channel int8).
+ORT rc14 / 1.31 passed (`0.99999934`) but has no Intel macOS prebuilt archive;
+rc11 / 1.23, rc12 / 1.24 and rc13 / 1.28 also lack that target. Windows prebuilt archives
+add a DirectML DLL dependency. No ORT DLL is shipped or loaded by this fallback.
+
+The prescribed per-channel candidate uses ONNX Runtime `quantize_dynamic`,
+QInt8, `per_channel=True`, `reduce_range=False`. Its standalone dev-v3 top1 was
+175/255 (68.63%), versus source fp32 172/255 (67.45%); RRF top1 was 178/255.
+A per-channel reduce-range parity check also failed on ORT rc10 (minimum
+cosine `0.99776345`); it was not rescored or selected. The selected int8
+candidate is retained in external evidence, not
+bundled as a second semantic path.
+
+## Reproduction and hashes
+
+Run on devbox with NumPy and safetensors installed, from a local download of the
+pinned revision:
 
 ```bash
-python3 scripts/prepare-search-model.py /path/to/potion-base-8M src-tauri/assets/search
-sha256sum src-tauri/assets/search/model-q8.bin src-tauri/assets/search/tokenizer.json
+python3 scripts/prepare-search-model.py /path/to/bge-small-en-v1.5 src-tauri/assets/search
+sha256sum src-tauri/assets/search/model-f16.safetensors src-tauri/assets/search/tokenizer.json src-tauri/assets/search/config.json
 ```
 
-Weighted reciprocal rank fusion uses `1 / (10 + lexical_rank)` plus
-`0.5 / (10 + semantic_rank)`. Semantic contributions need cosine at least 0.35;
-semantic-only candidates need 0.60 and at least 85% of the strongest cosine in
-the visible pool. Confidence needs sufficient absolute lexical evidence and
-separation from the runner-up in both retrieval paths. Provider identity is a
-soft boost; explicit server filters and exact-name lookup remain scoped. Existing
-user-configured endpoint search is retained; it is separate from this local path.
-The model was not trained, pruned or distilled using Toolport labels or queries.
+The exact int8 export used the pinned source ONNX model:
 
-The explicit tests support benchmark-only model substitutions through
-`SEARCH_STATIC_MODEL_DIR` (files `model.bin` and `tokenizer.json`) and lexical-only
-measurements through `SEARCH_LEXICAL_ONLY`. Shipped binaries expose neither control.
+```python
+from onnxruntime.quantization import quantize_dynamic, QuantType
+quantize_dynamic('bge-int8/onnx/model.onnx', 'model.int8.onnx',
+                 weight_type=QuantType.QInt8, per_channel=True, reduce_range=False)
+```
 
-Every gateway requires `search-static`, including headless builds and bundled
-sidecars. Builds with `--no-default-features` must pass `--features search-static`;
-Cargo rejects a gateway build without it. Model-off gateways are unsupported.
-Production encoding uses one bounded
-worker and a private content cache capped at 32 MiB and 14 days. Scoped searches
-filter the main snapshot and cannot submit or replace worker jobs.
+| Asset | SHA256 |
+|---|---|
+| Source fp32 safetensors | `3c9f31665447c8911517620762200d2245a2518d6e7208acc78cd9db317e21ad` |
+| Bundled f16 safetensors | `1e2b41d9cd9cf8918c563847f68af3ac4c46085b60fd84fff985197057659cfa` |
+| Tokenizer | `d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66` |
+| Config | `094f8e891b932f2000c92cfc663bac4c62069f5d8af5b5278c4306aef3084750` |
+| Source fp32 ONNX | `828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35` |
+| Per-channel int8 ONNX (not bundled) | `f8b2217838ea27564f870f96e377cb6e5ca0fa37dec9599cf305d5de011d6b7f` |
+
+## Shipping behavior
+
+The session loads on first search, never at gateway startup or tools/list.
+One worker renders provider, humanized tool name, full description and schema
+parameters in insertion order (160 description characters per parameter).
+Documents use the round-2 tokenizer/decode projection with 254 content tokens;
+final inputs have at most 256 tokens. Queries prepend
+`Represent this sentence for searching relevant passages: `.
+Catalog batches have at most eight documents. CPU work uses a private pool of
+at most two threads. Disk entries use the model/representation digest plus the
+rendered document hash, with the existing 32 MiB / 14 day limits. Searches use
+lexical answers while background vectors are pending. The session unloads after
+ten minutes idle; immutable catalog vectors and tokenizer can remain resident.
+
+Fusion uses RRF k=10, weights 1/1, while preserving literal-name and named-provider
+behavior. Semantic-only candidates require cosine at least 0.60 and at least 85%
+of the visible maximum. Non-name semantic confidence uses one fixed round rule:
+cosine at least 0.75 and top-to-runner-up cosine margin at least 0.02. No sweeps.
+Existing user-configured endpoint search remains supported.
+
+`search-static` is required for shipped gateways. Test-only lexical/prototype
+controls are absent from production binaries. External integration evidence and
+runtime-spike commands live outside the repository.

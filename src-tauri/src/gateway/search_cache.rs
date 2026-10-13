@@ -1,6 +1,7 @@
 //! Bounded background indexing with a content-addressed, disposable vector cache.
 use super::search_static;
 use conduit_lib::tool_definitions::{SharedTools, ToolCatalog};
+#[cfg(test)]
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -9,25 +10,21 @@ use std::sync::{Arc, OnceLock};
 use std::sync::{Condvar, Mutex};
 
 #[derive(Debug, Default)]
-pub struct Vectors(pub Arc<OnceLock<Vec<Vec<f32>>>>);
+pub struct Vectors(
+    pub Arc<OnceLock<Vec<Vec<f32>>>>,
+    Mutex<Option<(SharedTools, Option<PathBuf>)>>,
+);
 
-struct HashWriter(Sha256);
-impl std::io::Write for HashWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.update(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
+#[cfg(test)]
+fn key(tool: &Value) -> String {
+    key_document(&search_static::document(tool))
 }
 
-fn key(tool: &Value) -> String {
-    let mut hash = HashWriter(Sha256::new());
-    hash.0.update(search_static::asset_digest());
-    // Include all metadata, including schemas, without allocating a second JSON.
-    serde_json::to_writer(&mut hash, tool).expect("JSON tool definition");
-    format!("{:x}", hash.0.finalize())
+fn key_document(text: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(search_static::asset_digest());
+    hash.update(text.as_bytes());
+    format!("{:x}", hash.finalize())
 }
 
 fn read(path: &Path, dimensions: usize) -> Option<Vec<f32>> {
@@ -82,7 +79,10 @@ fn write(path: &Path, vector: &[f32]) -> std::io::Result<()> {
     result
 }
 
-fn encode(documents: &[(String, String)], directory: Option<&Path>) -> (Vec<Vec<f32>>, usize) {
+fn encode(
+    documents: &[(String, String)],
+    directory: Option<&Path>,
+) -> Result<(Vec<Vec<f32>>, usize), String> {
     let model = search_static::model();
     let cache = directory.filter(|dir| std::fs::create_dir_all(dir).is_ok());
     if let Some(directory) = cache {
@@ -98,24 +98,27 @@ fn encode(documents: &[(String, String)], directory: Option<&Path>) -> (Vec<Vec<
         );
     }
     let mut embedded = 0;
-    let vectors = documents
-        .iter()
-        .map(|(digest, text)| {
-            let path = cache.map(|dir| dir.join(digest));
-            if let Some(vector) = path
-                .as_deref()
-                .and_then(|path| read(path, model.dimensions()))
-            {
-                return vector;
+    let mut vectors = vec![Vec::new(); documents.len()];
+    let mut missing = Vec::new();
+    for (n, (digest, _)) in documents.iter().enumerate() {
+        let vector = cache.and_then(|dir| read(&dir.join(digest), model.dimensions()));
+        if let Some(vector) = vector {
+            vectors[n] = vector;
+        } else {
+            missing.push(n);
+        }
+    }
+    for batch in missing.chunks(search_static::BATCH_SIZE) {
+        let texts: Vec<_> = batch.iter().map(|n| documents[*n].1.as_str()).collect();
+        let encoded = model.encode_documents(&texts)?;
+        for (n, vector) in batch.iter().zip(encoded) {
+            if let Some(directory) = cache {
+                let _ = write(&directory.join(&documents[*n].0), &vector);
             }
+            vectors[*n] = vector;
             embedded += 1;
-            let vector = model.encode(text);
-            if let Some(path) = path {
-                let _ = write(&path, &vector);
-            }
-            vector
-        })
-        .collect();
+        }
+    }
     if let Some(directory) = cache {
         evict(
             directory,
@@ -123,7 +126,7 @@ fn encode(documents: &[(String, String)], directory: Option<&Path>) -> (Vec<Vec<
             std::time::Duration::from_secs(14 * 86400),
         );
     }
-    (vectors, embedded)
+    Ok((vectors, embedded))
 }
 
 struct Job {
@@ -143,7 +146,15 @@ fn worker() -> Option<Queue> {
             let (lock, wake) = &*worker;
             let mut pending = lock.lock().unwrap_or_else(|e| e.into_inner());
             while pending.is_none() {
-                pending = wake.wait(pending).unwrap_or_else(|e| e.into_inner());
+                let (next, timeout) = wake
+                    .wait_timeout(pending, std::time::Duration::from_secs(60))
+                    .unwrap_or_else(|e| e.into_inner());
+                pending = next;
+                if timeout.timed_out() {
+                    drop(pending);
+                    search_static::unload_idle();
+                    pending = lock.lock().unwrap_or_else(|e| e.into_inner());
+                }
             }
             let job = pending.take().unwrap();
             drop(pending);
@@ -152,10 +163,17 @@ fn worker() -> Option<Queue> {
             let documents: Vec<_> = job
                 .tools
                 .iter()
-                .map(|tool| (key(tool), search_static::document(tool)))
+                .map(|tool| {
+                    let text = search_static::document(tool);
+                    (key_document(&text), text)
+                })
                 .collect();
-            let (vectors, _) = encode(&documents, job.directory.as_deref());
-            let _ = job.ready.set(vectors);
+            match encode(&documents, job.directory.as_deref()) {
+                Ok((vectors, _)) => {
+                    let _ = job.ready.set(vectors);
+                }
+                Err(error) => eprintln!("toolport: local search encoding failed: {error}"),
+            }
             if let Some(completed) = job.completed {
                 let _ = completed.send(());
             }
@@ -184,6 +202,14 @@ fn submit(
 }
 
 impl Vectors {
+    /// A catalog snapshot retains a job, but only the first search submits it.
+    pub fn ensure_started(&self) {
+        let job = self.1.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some((tools, directory)) = job {
+            self.start_background(tools, directory, None);
+        }
+    }
+
     /// The same asynchronous publication path used by shipping and boundary probes.
     pub fn start_background(
         &self,
@@ -211,7 +237,7 @@ impl Vectors {
         {
             let directory =
                 conduit_lib::registry::conduit_dir().map(|dir| dir.join("search-vectors"));
-            result.start_background(tools.shared(), directory, None);
+            *result.1.lock().unwrap_or_else(|e| e.into_inner()) = Some((tools.shared(), directory));
         }
         result
     }
@@ -294,6 +320,20 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn cache_keys_follow_rendered_text_and_lazy_jobs_do_not_encode() {
+        let first = serde_json::json!({"name":"sample__read","description":"Read","inputSchema":{"properties":{"id":{"type":"string"}}}});
+        let mut changed = first.clone();
+        changed["extraMetadata"] = serde_json::json!("ignored");
+        assert_eq!(key(&first), key(&changed));
+        changed["description"] = serde_json::json!("Read a different resource");
+        assert_ne!(key(&first), key(&changed));
+        assert_ne!(key_document("Read"), key_document("Write"));
+        let vectors = Vectors::default();
+        *vectors.1.lock().unwrap() = Some((vec![first].into(), None));
+        assert!(vectors.0.get().is_none());
+        assert!(vectors.1.lock().unwrap().is_some());
+    }
+    #[test]
     fn cache_reuses_content_and_recovers_corruption() {
         let root =
             std::env::temp_dir().join(format!("toolport-search-cache-{}", std::process::id()));
@@ -301,22 +341,22 @@ mod tests {
         let first = serde_json::json!({"name":"example__read_record","description":"Read a record","inputSchema":{"properties":{"id":{"type":"string"}}}});
         let document = |tool: &Value| (key(tool), search_static::document(tool));
         let docs = vec![document(&first)];
-        let (vectors, count) = encode(&docs, Some(&root));
+        let (vectors, count) = encode(&docs, Some(&root)).unwrap();
         assert_eq!(count, 1);
-        let (cached, count) = encode(&docs, Some(&root));
+        let (cached, count) = encode(&docs, Some(&root)).unwrap();
         assert_eq!(count, 0);
         assert_eq!(vectors, cached);
         let mut changed = first.clone();
         changed["inputSchema"]["properties"]["id"]["description"] =
             serde_json::json!("Resource identifier");
         assert_ne!(key(&first), key(&changed));
-        let (_, count) = encode(&[document(&first), document(&changed)], Some(&root));
+        let (_, count) = encode(&[document(&first), document(&changed)], Some(&root)).unwrap();
         assert_eq!(count, 1);
         std::fs::write(root.join(&docs[0].0), b"broken").unwrap();
-        let (recovered, count) = encode(&docs, Some(&root));
+        let (recovered, count) = encode(&docs, Some(&root)).unwrap();
         assert_eq!(count, 1);
         assert_eq!(vectors, recovered);
-        let (uncached, count) = encode(&docs, None);
+        let (uncached, count) = encode(&docs, None).unwrap();
         assert_eq!(count, 1);
         assert_eq!(vectors, uncached);
         std::fs::remove_dir_all(root).unwrap();

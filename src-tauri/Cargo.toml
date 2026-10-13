@@ -33,7 +33,7 @@ required-features = ["test-support"]
 [features]
 default = ["desktop", "search-static"]
 # Required by every gateway build, including headless and bundled sidecars.
-search-static = ["dep:tokenizers"]
+search-static = ["dep:tokenizers", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:rayon"]
 desktop = [
     "dep:tauri",
     "dep:gio",
@@ -80,7 +80,7 @@ tauri-plugin-notification = { version = "2", optional = true }
 tauri-plugin-autostart = { version = "2", optional = true }
 tauri-plugin-window-state = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["raw_value"] }
+serde_json = { version = "1", features = ["raw_value", "preserve_order"] }
 jsonschema = { version = "0.49", default-features = false }
 json5 = "0.4"
 # CST rewriter so install/write can keep comments + trailing commas in JSONC
@@ -110,7 +110,11 @@ boa_gc = "0.21"
 base64 = "0.22"
 regex = "1"
 unicode-normalization = "0.1"
-# Pure Rust tokenizer for bundled static search embeddings, without native regex or HTTP.
+# Offline CPU BERT runtime and tokenizer; no model download or execution provider.
+candle-core = { version = "=0.11.0", optional = true }
+candle-nn = { version = "=0.11.0", optional = true }
+candle-transformers = { version = "=0.11.0", optional = true }
+rayon = { version = "1", optional = true }
 tokenizers = { version = "0.22", optional = true, default-features = false, features = ["fancy-regex"] }
 getrandom = "0.2"
 # OS advisory file locking (flock / LockFileEx) for the cross-process registry write
@@ -197,3 +201,18 @@ required-features = ["test-support"]
 [[example]]
 name = "savings-report"
 required-features = ["test-support"]
+
+# Transformer kernels must remain usable in debug gateways and parity tests.
+# Keep application code debuggable; these profiles do not change assertions.
+[profile.dev.package.candle-core]
+opt-level = 3
+[profile.dev.package.candle-nn]
+opt-level = 3
+[profile.dev.package.candle-transformers]
+opt-level = 3
+[profile.dev.package.gemm]
+opt-level = 3
+[profile.dev.package.gemm-common]
+opt-level = 3
+[profile.dev.package.gemm-f32]
+opt-level = 3

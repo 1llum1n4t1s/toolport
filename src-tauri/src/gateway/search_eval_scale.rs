@@ -79,10 +79,10 @@ fn search_complete_source_retains_later_capabilities() {
     let source = search_static::source(&tool);
     assert!(source.description.contains("historical changes"));
     assert!(source.description.contains("destination exists"));
-    assert!(!text.contains("historical changes"));
+    assert!(text.contains("historical changes"));
     assert_eq!(
         search_static::document_status(&tool)["description_complete_before_token_cap"],
-        false
+        true
     );
 }
 
@@ -95,13 +95,9 @@ fn search_complete_catalog_evidence_is_retained_and_semantic_caps_are_explicit()
     assert_eq!(source.description, description);
     assert_eq!(source.input_schema, Some(&schema));
     let status = search_static::document_status(&tool);
-    assert!(status["semantic_chars"].as_u64().unwrap() <= search_static::ENCODE_CHAR_LIMIT as u64);
-    assert_eq!(
-        status["description_char_limit"],
-        search_static::DESCRIPTION_CHAR_LIMIT
-    );
-    assert_eq!(status["description_complete_before_token_cap"], false);
-    assert_eq!(status["token_truncated"], false);
+    assert!(status["semantic_chars"].as_u64().unwrap() >= description.chars().count() as u64);
+    assert_eq!(status["description_complete_before_token_cap"], true);
+    assert_eq!(status["token_truncated"], true);
     assert!(
         search_static::model()
             .encode_input(&description)
@@ -110,7 +106,7 @@ fn search_complete_catalog_evidence_is_retained_and_semantic_caps_are_explicit()
             .len()
             > search_static::ENCODE_TOKEN_LIMIT
     );
-    assert_eq!(status["schema_embedded"], false);
+    assert_eq!(status["schema_embedded"], true);
     let index = CatalogSearchIndex::build_lexical(&vec![tool]);
     assert!(index.documents[0].description_tokens.contains("constraint"));
 }
@@ -1308,4 +1304,89 @@ fn search_interleaved_measure() {
         }
         eprintln!("MEASURE {}", row);
     }
+}
+
+// Native kernel/worker phases on an explicitly supplied public catalog, never the
+// legacy held-out resource fixture. Black-box daemon costs are measured separately.
+#[test]
+#[ignore = "explicit real-catalog BGE cost measurement"]
+#[cfg(target_os = "linux")]
+fn search_bge_resources() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    let rss = || -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .unwrap()
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("VmRSS:")
+                    .and_then(|s| s.split_whitespace().next())
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap()
+    };
+    let mut tools: Vec<Value> = serde_json::from_slice(
+        &std::fs::read(std::env::var_os("SEARCH_BGE_CATALOG").unwrap()).unwrap(),
+    )
+    .unwrap();
+    for tool in &mut tools {
+        if let Some(schema) = tool.get_mut("inputSchema") {
+            conduit_lib::router::normalize_tool_schema(schema);
+            conduit_lib::router::inline_refs(schema);
+        }
+    }
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    let idle = rss();
+    let start = Instant::now();
+    search_static::model().load_for_benchmark().unwrap();
+    let load_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let loaded = rss();
+    let running = Arc::new(AtomicBool::new(true));
+    let peak = Arc::new(AtomicU64::new(loaded));
+    let active = running.clone();
+    let maximum = peak.clone();
+    let sampler = std::thread::spawn(move || {
+        while active.load(Ordering::Relaxed) {
+            maximum.fetch_max(rss(), Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    });
+    let (send, receive) = std::sync::mpsc::channel();
+    let start = Instant::now();
+    index
+        .semantic_vectors
+        .start_background(tools.clone().into(), None, Some(send));
+    receive.recv_timeout(Duration::from_secs(900)).unwrap();
+    assert_eq!(index.semantic_vectors.0.get().unwrap().len(), tools.len());
+    let encode_ms = start.elapsed().as_secs_f64() * 1000.0;
+    running.store(false, Ordering::Relaxed);
+    sampler.join().unwrap();
+    let after = rss();
+    let intents: Vec<Value> = serde_json::from_slice(
+        &std::fs::read(std::env::var_os("SEARCH_BGE_INTENTS").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let mut times = Vec::new();
+    for intent in intents {
+        let start = Instant::now();
+        let _ = search_catalog_indexed(
+            &tools,
+            intent["query"].as_str().unwrap(),
+            None,
+            10,
+            None,
+            Some(&index),
+        );
+        times.push(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    times.sort_by(f64::total_cmp);
+    let summary = json!({"scope":"native gateway handler and production worker, separate from daemon RPC",
+        "catalog_tools":tools.len(),"model_load_ms":load_ms,"encode_ms":encode_ms,
+        "rss_idle_kib":idle,"rss_loaded_kib":loaded,"rss_encode_peak_kib":peak.load(Ordering::Relaxed),"rss_after_encode_kib":after,
+        "warm_p50_ms":times[times.len()/2],"warm_p95_ms":times[times.len()*95/100],"warm_n":times.len()});
+    std::fs::write(
+        std::env::var_os("SEARCH_BGE_RESOURCE_OUTPUT").unwrap(),
+        summary.to_string(),
+    )
+    .unwrap();
+    eprintln!("{summary}");
 }
