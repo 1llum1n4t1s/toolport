@@ -3095,6 +3095,8 @@ fn search_catalog_filtered(
                 .filter(|(token, _)| !index.provider_tokens.contains(*token))
                 .map(|(_, weight)| weight)
                 .sum();
+            // Parameter names help retrieval, but do not establish the job:
+            // a projectId filter does not make a team-level tool project-level.
             let covered: f64 = q_tokens
                 .iter()
                 .zip(&query_weights)
@@ -3102,7 +3104,6 @@ fn search_catalog_filtered(
                 .filter(|(token, _)| {
                     doc.name_tokens.contains(*token)
                         || doc.description_tokens.contains(*token)
-                        || doc.parameter_tokens.contains(*token)
                 })
                 .map(|(_, weight)| weight)
                 .sum();
@@ -43558,6 +43559,20 @@ mod tests {
                 .iter()
                 .any(|why| why == "repo (name)")
         );
+    }
+
+    #[test]
+    fn search_parameter_only_entity_matches_do_not_claim_confidence() {
+        let cat = vec![json!({"name":"host__list_environment_variables",
+            "description":"List shared environment variables for a team",
+            "inputSchema":{"properties":{"projectId":{"type":"string"}}}})];
+        let outcome =
+            search_catalog_with(&cat, "list project environment variables", None, 10, None);
+        assert_eq!(
+            outcome.matches[0]["name"],
+            "host__list_environment_variables"
+        );
+        assert!(outcome.low_confidence);
     }
 
     #[test]
