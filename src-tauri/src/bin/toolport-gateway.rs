@@ -2655,6 +2655,17 @@ impl CatalogSnapshot {
         Self { tools, search }
     }
 
+    /// Cold lexical fixture for surface/accounting tests that do not assert
+    /// semantic retrieval. Quality tests keep the native-vector indexed path.
+    #[cfg(test)]
+    fn lexical_for_test(tools: impl Into<SharedTools>) -> Self {
+        let mut tools = tools.into();
+        tools.sort();
+        CATALOG_SNAPSHOT_BUILDS.with(|count| count.set(count.get() + 1));
+        let search = CatalogSearchIndex::build_lexical(&tools);
+        Self { tools, search }
+    }
+
     fn has_tool_prefix(&self, prefix: &str) -> bool {
         // Snapshot names are sorted. Discovery checks each server on every list,
         // so find its first possible name instead of scanning the whole catalog.
@@ -37450,7 +37461,11 @@ mod tests {
         let tools: Vec<_> = (0..2049)
             .map(|i| json!({"name":format!("fixture__work_{i}"), "inputSchema":{}}))
             .collect();
-        let snapshot = Arc::new(CatalogSnapshot::new(tools.clone()));
+        // This fixture checks the 2,048-definition accounting limit, not
+        // retrieval quality. Keep all definitions and use the production cold
+        // lexical state instead of encoding 2,049 synthetic names repeatedly.
+        let snapshot = Arc::new(CatalogSnapshot::lexical_for_test(tools.clone()));
+        let index = CatalogSearchIndex::build_lexical(&tools);
         *state.cached_tools.lock().unwrap() = Arc::clone(&snapshot);
         let reg = Registry::default();
         let router = Router::new();
@@ -37477,17 +37492,22 @@ mod tests {
                 .unwrap()
                 .envelope
             } else {
-                handle_request(
+                handle_request_with_cancel(
                     &state,
                     req,
                     &reg,
                     &router,
                     &tools,
-                    true,
+                    DiscoveryMode::Lazy,
                     None,
                     &guard,
                     None,
+                    None,
                     Some("codex"),
+                    None,
+                    Some(&index),
+                    None,
+                    None,
                 )
                 .unwrap()
             }
@@ -45033,7 +45053,7 @@ mod tests {
         cache.insert(oversized);
         assert_eq!(cache.bytes, bytes);
         drop(cache);
-        let large = Arc::new(CatalogSnapshot::new((0..10_000).map(|i| json!({
+        let large = Arc::new(CatalogSnapshot::lexical_for_test((0..10_000).map(|i| json!({
             "name":format!("alpha__read_{i}"),"description":"x".repeat(2700),"inputSchema":{"type":"object"}
         })).collect::<Vec<_>>()));
         *host.cached_tools.lock().unwrap() = Arc::clone(&large);
