@@ -1991,6 +1991,9 @@ const CONFIDENCE_COMPETITOR_RATIO: f64 = 0.85;
 
 struct SearchOutcome {
     matches: Vec<Value>,
+    /// A literal catalog identity, including a unique normalized variant.
+    /// The caller must apply the existing describe paging budget.
+    exact_name: bool,
     /// Number of candidates with a positive lexical or hybrid score.
     total: usize,
     /// Informational weak query evidence or close scores. Never changes payloads.
@@ -2811,6 +2814,7 @@ fn search_catalog_filtered(
             neutralize_listed_tool(&mut definition);
             return SearchOutcome {
                 matches: vec![definition],
+                exact_name: true,
                 total: 1,
                 low_confidence: false,
                 broadened: 0,
@@ -2826,6 +2830,7 @@ fn search_catalog_filtered(
         neutralize_listed_tool(&mut definition);
         return SearchOutcome {
             matches: vec![definition],
+            exact_name: true,
             total: 1,
             low_confidence: false,
             broadened: 0,
@@ -3188,6 +3193,7 @@ fn search_catalog_filtered(
 
     SearchOutcome {
         matches: project_search_results(&selected, true),
+        exact_name: false,
         total,
         low_confidence,
         broadened,
@@ -7944,7 +7950,7 @@ fn handle_request_with_cancel(
                 } else {
                     instruction.to_string()
                 };
-                let exact = total == 1 && top.eq_ignore_ascii_case(query.trim());
+                let exact = outcome.exact_name;
                 // Pins use the same visibility and explicit server scope as the menu,
                 // but never consume a ranked slot. Keep their complete definitions.
                 let pinned: Vec<Value> = if reg.pinned_tools.is_empty() {
@@ -43453,6 +43459,60 @@ mod tests {
         let outcome = search_catalog_with(&renamed, "linear__list_issues", None, 10, None);
         assert_eq!(outcome.matches[0]["name"], "team_linear_123__list_issues");
         assert!(!outcome.low_confidence);
+    }
+
+    #[test]
+    fn search_normalized_names_keep_describe_budget_and_cursor_ownership() {
+        let _env = DataDirTestEnv::new("normalized-search-describe");
+        let schema = json!({"type":"object","properties":{"payload":{
+            "type":"string","description":"Z".repeat(180_000)}}});
+        let tools = vec![json!({"name":"archive__put_payload",
+            "description":"Store payload","inputSchema":schema})];
+        let index = CatalogSearchIndex::build_lexical(&tools);
+        let host = dispatch_host(false);
+        for query in ["archive__put-payload", "putPayload"] {
+            let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+                "name":"toolport_search_tools","arguments":{"query":query}}});
+            let response = handle_request_with_cancel(
+                &host,
+                &request,
+                &Registry::default(),
+                &router(),
+                &tools,
+                DiscoveryMode::Lazy,
+                None,
+                &SearchGuard::default(),
+                None,
+                None,
+                Some("alice"),
+                None,
+                Some(&index),
+                None,
+                None,
+            )
+            .unwrap();
+            let text = response["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("Toolport shaped this result"), "{query}");
+            let start = text.find("\"cursor\":\"").unwrap() + "\"cursor\":\"".len();
+            let cursor = text[start..].split('"').next().unwrap();
+            assert_eq!(
+                shaping::fetch_result(cursor, 0, usize::MAX, Some("bob"), None)["isError"],
+                true
+            );
+            let full = shaping::fetch_result(cursor, 0, usize::MAX, Some("alice"), None);
+            assert_eq!(full["isError"], false);
+            let body = full["content"][0]["text"].as_str().unwrap();
+            let payload = body
+                .split_once("\n\n")
+                .unwrap()
+                .1
+                .split("\n\n[Toolport: end of result")
+                .next()
+                .unwrap();
+            let recovered: Vec<Value> = serde_json::from_str(payload).unwrap();
+            assert_eq!(recovered[0]["name"], "archive__put_payload");
+            assert_eq!(recovered[0]["inputSchema"], schema);
+        }
     }
 
     #[test]
