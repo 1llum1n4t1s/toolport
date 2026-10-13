@@ -4606,9 +4606,10 @@ mod tests {
             "conduit":{"command":"/old/conduit-gateway"}
         }));
         let mut registry = Registry::default();
-        let (imported, moved) =
+        let (imported, mut moved) =
             import_client_servers_for_migration(&mut registry, &fixture.client).unwrap();
         assert_eq!(imported, 2);
+        moved.sort();
         assert_eq!(moved, ["events", "supported"]);
         assert!(registry.enabled_servers().is_empty());
         let (imported, _) =

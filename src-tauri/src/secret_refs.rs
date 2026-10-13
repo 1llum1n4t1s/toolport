@@ -289,7 +289,6 @@ fn header_reference<'a>(server: &'a ServerEntry, h: &'a HeaderKey) -> Option<&'a
     })
 }
 fn approval_identity(server: &ServerEntry) -> Result<String, ResolveError> {
-    use sha2::{Digest, Sha256};
     let mut launch = server.launch.clone();
     for input in launch.iter_mut().flat_map(|l| &mut l.inputs) {
         if input.secret {
@@ -301,10 +300,7 @@ fn approval_identity(server: &ServerEntry) -> Result<String, ResolveError> {
         "args":server.args, "cwd":server.cwd, "inheritEnv":server.inherit_env,
         "launch":launch,
         "uses":reference_uses(server)?});
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(identity.to_string().as_bytes())
-    ))
+    Ok(crate::audit::args_hash(&identity))
 }
 static APPROVAL_LOCK: Mutex<()> = Mutex::new(());
 fn approval_path() -> Result<PathBuf, ResolveError> {
@@ -1132,6 +1128,18 @@ pub(crate) fn take_legacy_bearer(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn approval_identity_preserves_legacy_canonical_hash() {
+        let mut server: crate::registry::ServerEntry = serde_json::from_str(r#"{"id":"legacy","name":"Legacy","source":"fixture","transport":"stdio","command":"node","args":["one","two"],"inheritEnv":false,"env":[]}"#).unwrap();
+        let original = super::approval_identity(&server).unwrap();
+        assert_eq!(
+            original,
+            "0b4cbd10338ff49f8ccdb5fd15a0a059e248b571240f82f16013c895d495fe9c"
+        );
+        server.args.reverse();
+        assert_ne!(original, super::approval_identity(&server).unwrap());
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Scratch(PathBuf);

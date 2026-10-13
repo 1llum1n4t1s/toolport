@@ -3436,7 +3436,7 @@ fn comparable_item(key: &str, value: &Value) -> Value {
 }
 
 fn raw_item_hash(key: &str, value: &Value) -> String {
-    crate::registry::sha256_hex(&json!(["team-member-review-v1", key, value]).to_string())
+    crate::audit::args_hash(&json!(["team-member-review-v1", key, value]))
 }
 
 fn item_hash(key: &str, value: &Value) -> String {
@@ -10515,6 +10515,10 @@ mod member_review_tests {
 
     #[test]
     fn member_review_hash_is_full_content_and_stable_for_object_key_order() {
+        assert_eq!(
+            item_hash("server:s", &json!({"a":1,"b":2})),
+            "39a19e608154ffad20cc48d432a464924de7c6afce3108d138285a511556464e"
+        );
         assert_eq!(
             item_hash("server:s", &json!({"a":1,"b":2})),
             item_hash("server:s", &json!({"b":2,"a":1}))
