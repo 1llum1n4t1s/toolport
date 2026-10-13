@@ -2305,6 +2305,73 @@ fn query_names_server(query: &str, identity: &str) -> bool {
         })
 }
 
+/// Tool identifiers compare by literal letters/digits, not stems or vocabulary.
+/// This handles separators and camelCase without turning a capability into another.
+fn tool_name_key(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn identifier_shaped(text: &str) -> bool {
+    text.contains(['_', '-']) || split_camel(text).len() > 1
+}
+
+/// Resolve only visible catalog identifiers. An operation without a namespace
+/// may have several providers; retain all of them rather than claiming certainty.
+fn query_tool_names(index: &CatalogSearchIndex, pool: &[usize], query: &str) -> Vec<usize> {
+    let mut found = Vec::new();
+    let providers: HashSet<_> = index
+        .documents
+        .iter()
+        .map(|doc| doc.server_prefix.as_str())
+        .collect();
+    for span in query.split_whitespace() {
+        let span = span.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-');
+        if !identifier_shaped(span) {
+            continue;
+        }
+        let key = tool_name_key(span);
+        let mut positions = index.tool_names.get(&key).cloned().unwrap_or_default();
+        if positions.is_empty() {
+            if let Some((provider, operation)) = span.split_once("__") {
+                // A changed prefix can resolve within the same provider family,
+                // never to an unrelated server with a similarly named operation.
+                positions = index
+                    .tool_names
+                    .get(&tool_name_key(operation))
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|position| {
+                        let provider = provider.to_lowercase();
+                        let prefix = &index.documents[*position].server_prefix;
+                        prefix == &provider
+                            || prefix.starts_with(&format!("{provider}_"))
+                            || provider.starts_with(&format!("{prefix}_"))
+                            || search_tokens(&provider).iter().any(|token| {
+                                token.len() >= 3
+                                    && search_tokens(prefix).contains(token)
+                                    && providers
+                                        .iter()
+                                        .filter(|other| search_tokens(other).contains(token))
+                                        .count()
+                                        == 1
+                            })
+                    })
+                    .collect();
+            }
+        }
+        for position in positions {
+            if pool.contains(&position) && !found.contains(&position) {
+                found.push(position);
+            }
+        }
+    }
+    found
+}
+
 fn schema_search_tokens(schema: Option<&Value>) -> HashSet<String> {
     let mut tokens = HashSet::new();
     let mut pending: Vec<(&Value, usize)> = schema.into_iter().map(|value| (value, 0)).collect();
@@ -2373,6 +2440,7 @@ struct CatalogSearchIndex {
     document_frequency: HashMap<String, usize>,
     spelling_frequency: HashMap<String, usize>,
     provider_tokens: HashSet<String>,
+    tool_names: HashMap<String, Vec<usize>>,
     average_field_lengths: [f64; 3],
     catalog_address: usize,
     surface_bytes: u64,
@@ -2391,6 +2459,7 @@ impl CatalogSearchIndex {
         SEARCH_INDEX_BUILDS.with(|count| count.set(count.get() + 1));
         let mut documents = Vec::with_capacity(tools.len());
         let mut document_frequency = HashMap::new();
+        let mut tool_names: HashMap<String, Vec<usize>> = HashMap::new();
 
         for tool in tools.iter() {
             let source = search_static::source(tool);
@@ -2400,6 +2469,12 @@ impl CatalogSearchIndex {
             let operation = name
                 .split_once("__")
                 .map_or(name, |(_, operation)| operation);
+            for key in [tool_name_key(name), tool_name_key(operation)] {
+                let positions = tool_names.entry(key).or_default();
+                if positions.last() != Some(&documents.len()) {
+                    positions.push(documents.len());
+                }
+            }
             let mut operation_tokens = search_tokens(operation);
             // Some servers repeat their namespace inside every operation name.
             // It is provider identity, not an unexplained capability word.
@@ -2479,6 +2554,7 @@ impl CatalogSearchIndex {
             documents,
             average_field_lengths,
             document_frequency,
+            tool_names,
             spelling_frequency,
             provider_tokens: providers,
             catalog_address: tools.address(),
@@ -2521,7 +2597,17 @@ impl CatalogSearchIndex {
                 + std::mem::size_of::<usize>()
                 + 2 * std::mem::size_of::<usize>()
         });
-        document_bytes.sum::<usize>()
+        let name_bytes: usize = self
+            .tool_names
+            .iter()
+            .map(|(key, positions)| {
+                key.capacity()
+                    + positions.capacity() * std::mem::size_of::<usize>()
+                    + 2 * std::mem::size_of::<(String, Vec<usize>)>()
+            })
+            .sum();
+        name_bytes
+            + document_bytes.sum::<usize>()
             + df_bytes.sum::<usize>()
             + self
                 .spelling_frequency
@@ -2733,6 +2819,20 @@ fn search_catalog_filtered(
         }
     }
 
+    let evidence = search_query::Query::parse(query);
+    let named_tools = query_tool_names(index, &pool, &evidence.positive);
+    if named_tools.len() == 1 && evidence.positive.split_whitespace().count() == 1 {
+        let mut definition = cached.get(named_tools[0]).unwrap().clone();
+        neutralize_listed_tool(&mut definition);
+        return SearchOutcome {
+            matches: vec![definition],
+            total: 1,
+            low_confidence: false,
+            broadened: 0,
+            direct_returned: 1,
+        };
+    }
+
     // Select an ordered set of tool refs (ranking happens here; projection below).
     let (selected, total, low_confidence, broadened, direct_returned) = if terms.is_empty() {
         // Empty query: list the pool. With `server` set this enumerates that server.
@@ -2749,7 +2849,6 @@ fn search_catalog_filtered(
         let n = index.documents.len().max(1) as f64;
         let idf = |tok: &str| ((n + 1.0) / (*df.get(tok).unwrap_or(&0) as f64 + 1.0)).ln() + 1.0;
 
-        let evidence = search_query::Query::parse(query);
         let positive = evidence.positive.as_str();
         let mut q_tokens = query_tokens(positive, |token| {
             df.contains_key(token) || index.provider_tokens.contains(token)
@@ -2779,8 +2878,46 @@ fn search_catalog_filtered(
         let initialism_weights: Vec<f64> = initialisms.iter().map(|token| idf(token)).collect();
         // Per server: its prefix tokens, and whether the query names it.
         let mut servers: HashMap<&str, (Vec<String>, bool)> = HashMap::new();
+        let prefixes: HashSet<&str> = pool
+            .iter()
+            .map(|position| index.documents[*position].server_prefix.as_str())
+            .collect();
+        let names_provider = |prefix: &str| {
+            query_names_server(positive, prefix)
+                || identities
+                    .iter()
+                    .any(|(id, name)| id == prefix && query_names_server(positive, name))
+                || prefix.split_once('_').is_some_and(|(alias, suffix)| {
+                    alias.len() >= 3
+                        && suffix.contains('_')
+                        && prefixes
+                            .iter()
+                            .filter(|other| other.ends_with(&format!("_{suffix}")))
+                            .count()
+                            > 1
+                        && query_names_server(positive, alias)
+                })
+        };
+        // An identifier-only request that did not resolve is not a confident
+        // replacement recommendation, even when its stems overlap another name.
+        let requested_spans: Vec<_> = positive
+            .split_whitespace()
+            .filter(|span| {
+                !prefixes
+                    .iter()
+                    .any(|prefix| query_names_server(span, prefix))
+            })
+            .collect();
+        let unresolved_name = named_tools.is_empty()
+            && requested_spans.len() == 1
+            && identifier_shaped(requested_spans[0]);
         // Lexical score for EVERY doc (0 if no hit), kept so optional semantic
         // re-ranking can also surface tools the keywords missed entirely.
+        let mut provider_supported = HashSet::new();
+        let capabilities: Vec<_> = q_tokens
+            .iter()
+            .filter(|token| !index.provider_tokens.contains(*token))
+            .collect();
         let lex: Vec<(f64, &Value)> = pool
             .iter()
             .filter_map(|position| {
@@ -2790,10 +2927,7 @@ fn search_catalog_filtered(
                     .entry(doc.server_prefix.as_str())
                     .or_insert_with(|| {
                         let tokens = search_tokens(&doc.server_prefix);
-                        let named = query_names_server(positive, &doc.server_prefix)
-                            || identities.iter().any(|(id, name)| {
-                                id == &doc.server_prefix && query_names_server(positive, name)
-                            });
+                        let named = names_provider(&doc.server_prefix);
                         (tokens, named)
                     });
                 let mut score = 0.0_f64;
@@ -2805,6 +2939,13 @@ fn search_catalog_filtered(
                 for (qt, weight) in q_tokens.iter().zip(&query_weights) {
                     // BM25F-style field normalization and saturation over bounded
                     // distinct terms. Repeated boilerplate cannot inflate evidence.
+                    let abbreviated_name = !doc.name_tokens.contains(qt)
+                        && doc.description_tokens.contains(qt)
+                        && doc.name_tokens.iter().any(|token| {
+                            token.len() >= 3
+                                && qt.len() >= token.len() + 2
+                                && qt.starts_with(token.as_str())
+                        });
                     let fields = [
                         (&doc.name_tokens, NAME_W, 0.2),
                         (
@@ -2818,7 +2959,7 @@ fn search_catalog_filtered(
                         ),
                         (&doc.parameter_tokens, 0.8, 0.4),
                     ];
-                    let frequency: f64 = fields
+                    let mut frequency: f64 = fields
                         .iter()
                         .zip([
                             index.average_field_lengths[0],
@@ -2830,6 +2971,11 @@ fn search_catalog_filtered(
                             field_weight / (1.0 - b + b * tokens.len() as f64 / average).max(1.0)
                         })
                         .sum();
+                    // Abbreviations are corroborated by the same tool's prose
+                    // and earn partial name weight, never a vocabulary bridge.
+                    if abbreviated_name {
+                        frequency += 0.6 * NAME_W;
+                    }
                     let mut best = weight * frequency * 11.0 / (8.0 + frequency);
                     // Prefix fallback for partial words ("proj" -> "project").
                     if best == 0.0
@@ -2865,6 +3011,21 @@ fn search_catalog_filtered(
                         score *= DEPRECATED_PENALTY;
                     }
                 }
+                if *named && !capabilities.is_empty() {
+                    let covered = capabilities
+                        .iter()
+                        .filter(|token| {
+                            doc.name_tokens.contains(**token)
+                                || doc.description_tokens.contains(**token)
+                                || doc.parameter_tokens.contains(**token)
+                        })
+                        .count();
+                    // A provider that happens to be a verb cannot outweigh
+                    // another server unless it also supplies the requested job.
+                    if covered * 2 >= capabilities.len() {
+                        provider_supported.insert(tool as *const Value);
+                    }
+                }
                 Some((score, tool))
             })
             .collect();
@@ -2885,7 +3046,7 @@ fn search_catalog_filtered(
                     .map_or(0.0, |vector| search_static::cosine(&query_vector, vector))
             })
             .collect();
-        let ranked = remote_ranked.unwrap_or_else(|| {
+        let mut ranked = remote_ranked.unwrap_or_else(|| {
             if use_local_semantic {
                 local_search_fusion(&lex, &similarities)
             } else {
@@ -2898,17 +3059,46 @@ fn search_catalog_filtered(
                 rows
             }
         });
+        // Fusion compresses lexical score margins. Carry literal identifiers and
+        // named-provider evidence through fusion rather than letting it erase them.
+        for (score, tool) in &mut ranked {
+            if provider_supported.contains(&(*tool as *const Value)) {
+                *score *= 1.0 + SERVER_NAMED_BOOST;
+            }
+        }
+        ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for position in named_tools.iter().rev() {
+            let tool = cached.get(*position).unwrap();
+            if let Some(at) = ranked
+                .iter()
+                .position(|(_, candidate)| std::ptr::eq(*candidate, tool))
+            {
+                let row = ranked.remove(at);
+                ranked.insert(0, row);
+            } else {
+                // Literal identity remains evidence even if tokenization found
+                // no bag-of-words or semantic match for this operation.
+                ranked.insert(0, (0.0, tool));
+            }
+        }
         let total = ranked.len();
 
-        let low_confidence = ranked.first().is_none_or(|(score, top)| {
+        let low_confidence = ranked.first().is_none_or(|(_, top)| {
             let position = lex
                 .iter()
                 .position(|(_, tool)| std::ptr::eq(*tool, *top))
                 .unwrap();
             let doc = &index.documents[pool[position]];
+            let weight: f64 = q_tokens
+                .iter()
+                .zip(&query_weights)
+                .filter(|(token, _)| !index.provider_tokens.contains(*token))
+                .map(|(_, weight)| weight)
+                .sum();
             let covered: f64 = q_tokens
                 .iter()
                 .zip(&query_weights)
+                .filter(|(token, _)| !index.provider_tokens.contains(*token))
                 .filter(|(token, _)| {
                     doc.name_tokens.contains(*token)
                         || doc.description_tokens.contains(*token)
@@ -2916,13 +3106,39 @@ fn search_catalog_filtered(
                 })
                 .map(|(_, weight)| weight)
                 .sum();
-            let weight: f64 = query_weights.iter().sum();
-            *score <= f64::EPSILON
-                || weight <= f64::EPSILON
-                || covered / weight < 0.90
-                || ranked
-                    .get(1)
-                    .is_some_and(|(next, _)| *next >= *score * CONFIDENCE_COMPETITOR_RATIO)
+            let name_covered: f64 = q_tokens
+                .iter()
+                .zip(&query_weights)
+                .filter(|(token, _)| doc.name_tokens.contains(*token))
+                .map(|(_, weight)| weight)
+                .sum();
+            let explained_name = doc
+                .name_tokens
+                .iter()
+                .filter(|token| q_tokens.contains(*token))
+                .count() as f64
+                / doc.name_tokens.len().max(1) as f64;
+            let score = lex[position].0;
+            let next = lex
+                .iter()
+                .filter(|(_, tool)| !std::ptr::eq(*tool, *top))
+                .map(|(score, _)| *score)
+                .fold(0.0_f64, f64::max);
+            // Unique literal tool names are confident. Otherwise require strong
+            // token coverage and a specific name, or a lexical margin with
+            // at least half the name explained. Incidental prose on a more
+            // specific operation is not confident evidence for a different job.
+            // RRF rank scores are not relevance margins.
+            let unique_name = named_tools.len() == 1 && pool[position] == named_tools[0];
+            !unique_name
+                && (unresolved_name
+                    || named_tools.len() > 1
+                    || weight <= f64::EPSILON
+                    || score <= f64::EPSILON
+                    || covered / weight < 0.90
+                    || next >= score * 0.98
+                    || !((name_covered / weight >= 0.60 && explained_name >= 0.90)
+                        || (explained_name >= 0.50 && next < score * CONFIDENCE_COMPETITOR_RATIO)))
         });
 
         // A menu is a prefix of the same ranked list at every retrieval depth.
@@ -43183,6 +43399,176 @@ mod tests {
         }
         let (hits, _) = search_catalog(&cat, "list products", None, 12);
         assert_eq!(hits[0]["name"], "stripe__list_products");
+    }
+
+    #[test]
+    fn search_literal_operation_variants_are_confident_and_scoped() {
+        let cat = vec![
+            json!({"name":"linear__list_issues", "description":"List issues", "inputSchema":{}}),
+            json!({"name":"linear__get_issue", "description":"Get an issue", "inputSchema":{}}),
+            json!({"name":"trello__trelloWriteCard", "description":"Create and update a card", "inputSchema":{}}),
+            json!({"name":"revenuecat__list-projects", "description":"List projects", "inputSchema":{}}),
+            json!({"name":"stripe_full_api__list_prices", "description":"List prices", "inputSchema":{}}),
+        ];
+        for (query, expected) in [
+            ("list_issues", "linear__list_issues"),
+            ("linear__list-issues", "linear__list_issues"),
+            ("listIssues", "linear__list_issues"),
+            ("trello_write_card", "trello__trelloWriteCard"),
+            ("revenuecat__list_projects", "revenuecat__list-projects"),
+            ("stripe__list_prices", "stripe_full_api__list_prices"),
+            ("STRIPE__listPrices", "stripe_full_api__list_prices"),
+            ("+linear__list_issues", "linear__list_issues"),
+            ("\"trelloWriteCard\"", "trello__trelloWriteCard"),
+        ] {
+            let outcome = search_catalog_with(&cat, query, None, 10, None);
+            assert_eq!(outcome.matches[0]["name"], expected, "{query}");
+            assert!(!outcome.low_confidence, "{query}");
+        }
+        let index = CatalogSearchIndex::build_lexical(&cat);
+        let hidden = search_catalog_filtered(
+            &cat,
+            "list_issues",
+            None,
+            10,
+            None,
+            Some(&index),
+            |tool| tool["name"] != "linear__list_issues",
+            &[],
+        );
+        assert!(hidden
+            .matches
+            .iter()
+            .all(|tool| tool["name"] != "linear__list_issues"));
+        let scoped = search_catalog_with(&cat, "list_issues", Some("trello"), 10, None);
+        assert!(scoped
+            .matches
+            .iter()
+            .all(|tool| tool_prefix(tool) == "trello"));
+        assert!(query_tool_names(&index, &[0, 1, 2, 3, 4], "vercel__list_prices").is_empty());
+        let renamed = vec![
+            json!({"name":"team_linear_123__list_issues", "description":"List issues", "inputSchema":{}}),
+        ];
+        let outcome = search_catalog_with(&renamed, "linear__list_issues", None, 10, None);
+        assert_eq!(outcome.matches[0]["name"], "team_linear_123__list_issues");
+        assert!(!outcome.low_confidence);
+    }
+
+    #[test]
+    fn search_multi_identifiers_cover_each_intent_and_report_ambiguity() {
+        let cat = vec![
+            json!({"name":"billing__get_customer", "description":"Get customer", "inputSchema":{}}),
+            json!({"name":"billing__list_subscriptions", "description":"List subscriptions", "inputSchema":{}}),
+            json!({"name":"billing__list_customer_events", "description":"List customer events", "inputSchema":{}}),
+            json!({"name":"billing__list_customer_subscriptions", "description":"List customer subscriptions", "inputSchema":{}}),
+        ];
+        let outcome = search_catalog_with(
+            &cat,
+            "get_customer list_subscriptions list_customer_events",
+            None,
+            10,
+            None,
+        );
+        let names: Vec<_> = outcome
+            .matches
+            .iter()
+            .take(3)
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "billing__get_customer",
+                "billing__list_subscriptions",
+                "billing__list_customer_events"
+            ]
+        );
+        assert!(outcome.low_confidence);
+        let collision = vec![
+            cat[0].clone(),
+            json!({"name":"crm__get_customer", "description":"Get customer", "inputSchema":{}}),
+        ];
+        let outcome = search_catalog_with(&collision, "get_customer", None, 10, None);
+        assert_eq!(outcome.matches.len(), 2);
+        assert!(outcome.low_confidence);
+    }
+
+    #[test]
+    fn search_provider_evidence_survives_fusion_without_becoming_a_filter() {
+        let cat = vec![
+            json!({"name":"trello__trelloWriteCard", "description":"Create or update a card description", "inputSchema":{}}),
+            json!({"name":"stripe_full_api__update_card_description", "description":"Update payment card description", "inputSchema":{}}),
+            json!({"name":"vercel_full_api__get_project", "description":"Retrieve a project", "inputSchema":{}}),
+        ];
+        let index = CatalogSearchIndex::build_lexical(&cat);
+        // Equal semantic evidence exercises the fusion path without a model fixture.
+        index
+            .semantic_vectors
+            .0
+            .set(vec![vec![], vec![], vec![]])
+            .unwrap();
+        let outcome = search_catalog_indexed(
+            &cat,
+            "trello update card description",
+            None,
+            10,
+            None,
+            Some(&index),
+        );
+        assert_eq!(outcome.matches[0]["name"], "trello__trelloWriteCard");
+        assert!(outcome
+            .matches
+            .iter()
+            .any(|tool| tool["name"] == "stripe_full_api__update_card_description"));
+        let alias = search_catalog_with(&cat, "vercel retrieve project", None, 10, None);
+        assert_eq!(alias.matches[0]["name"], "vercel_full_api__get_project");
+    }
+
+    #[test]
+    fn search_name_abbreviations_require_corresponding_description_evidence() {
+        let cat = vec![
+            json!({"name":"host__filter_project_env", "description":"Retrieve project environment variables", "inputSchema":{}}),
+            json!({"name":"host__project_settings", "description":"List shared environment variables", "inputSchema":{}}),
+            json!({"name":"other__project_env", "description":"An envelope for a project", "inputSchema":{}}),
+        ];
+        let outcome = search_catalog_with(&cat, "project environment variables", None, 10, None);
+        assert_eq!(outcome.matches[0]["name"], "host__filter_project_env");
+        assert!(
+            search_catalog_with(&cat, "host__missing_operation", None, 10, None).low_confidence
+        );
+    }
+
+    #[test]
+    fn search_project_is_not_bridged_to_repository() {
+        let cat = vec![
+            json!({"name":"vercel__search_repo", "description":"List git repositories", "inputSchema":{}}),
+            json!({"name":"vercel__filter_project_env", "description":"List project environment variables", "inputSchema":{}}),
+        ];
+        let index = CatalogSearchIndex::build_lexical(&cat);
+        assert_eq!(query_tokens("project", |_| false), ["project"]);
+        assert_eq!(
+            corrected_query_token("project", &index.spelling_frequency),
+            None
+        );
+        let outcome =
+            search_catalog_with(&cat, "list project environment variables", None, 10, None);
+        assert_eq!(outcome.matches[0]["name"], "vercel__filter_project_env");
+        assert!(
+            !explain_match("list project environment variables", &cat[0])
+                .iter()
+                .any(|why| why == "repo (name)")
+        );
+    }
+
+    #[test]
+    fn search_confidence_uses_lexical_evidence_not_compressed_rank_margins() {
+        let cat = vec![
+            json!({"name":"fs__read_document", "description":"Read a document", "inputSchema":{}}),
+            json!({"name":"fs__read_document_metadata", "description":"Read document metadata", "inputSchema":{}}),
+        ];
+        let outcome = search_catalog_with(&cat, "read document", None, 10, None);
+        assert!(!outcome.low_confidence);
+        assert!(search_catalog_with(&cat, "astronaut nutrition", None, 10, None).low_confidence);
     }
 
     #[test]
