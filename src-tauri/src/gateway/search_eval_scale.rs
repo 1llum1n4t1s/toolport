@@ -1159,6 +1159,9 @@ fn search_menu_meets_o200k_context_budget() {
     let host = dispatch_host(false);
     let reg = Registry::default();
     let router = router();
+    // A real conversation retains its accounting guard across searches. Its
+    // immutable catalog eligibility is resolved once; ranking remains stateless.
+    let guard = SearchGuard::default();
     let tokenizer = tiktoken_rs::o200k_base().unwrap();
     let mut response_tokens = Vec::new();
     let mut menu_tokens = Vec::new();
@@ -1177,7 +1180,7 @@ fn search_menu_meets_o200k_context_budget() {
             tools,
             DiscoveryMode::Lazy,
             None,
-            &SearchGuard::default(),
+            &guard,
             None,
             None,
             None,

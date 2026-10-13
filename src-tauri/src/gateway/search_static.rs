@@ -349,7 +349,7 @@ pub fn fixture_vector(text: &str) -> Option<Vec<f32>> {
                     .as_chunks::<4>()
                     .0
                     .iter()
-                    .map(|v| f32::from_le_bytes(v.try_into().unwrap()))
+                    .map(|v| f32::from_le_bytes(*v))
                     .collect();
                 assert!(vector.iter().all(|v| v.is_finite()));
                 let norm: f32 = vector.iter().map(|v| v * v).sum();
