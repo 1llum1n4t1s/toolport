@@ -52,6 +52,8 @@ const mac = new Set([
   ].map((path) => `Contents/Helpers/ToolportGateway.app/Contents/${path}`),
   "Contents/Resources/icon.icns",
   "Contents/_CodeSignature/CodeResources",
+  // stapler writes the notarization ticket here.
+  "Contents/CodeResources",
 ]);
 function normalize(path) {
   return path
@@ -122,7 +124,8 @@ export function assertManifest(paths, kind) {
         parentOfAllowed(path, native) ||
         (kind === "pacman" && /^\.(?:PKGINFO|BUILDINFO|MTREE|INSTALL)$/.test(path));
     } else if (kind === "nsis") {
-      allowed = nsis.has(path) || parentOfAllowed(path, nsis);
+      // 7-Zip lists unnamed NSIS items as [N]; signed release builds have them.
+      allowed = nsis.has(path) || parentOfAllowed(path, nsis) || /^\[\d+\]$/.test(path);
     } else if (kind === "msi") {
       allowed = /^(?:conduit|toolport-gateway)\.exe$/.test(path);
     } else if (kind === "mac") {
@@ -150,7 +153,7 @@ export function assertManifest(paths, kind) {
         /^usr\/lib\/girepository-1\.0\/[A-Za-z0-9]+-[0-9]+(?:\.[0-9]+)?\.typelib$/.test(
           path,
         ) ||
-        /^usr\/lib\/im-(?:am-et|broadway|cedilla|cyrillic-translit|inuktitut|ipa|multipress|thai|ti-er|ti-et|viqr|wayland|xim)\.so$/.test(
+        /^usr\/lib\/im-(?:am-et|broadway|cedilla|cyrillic-translit|inuktitut|ipa|multipress|thai|ti-er|ti-et|viqr|wayland|waylandgtk|xim)\.so$/.test(
           path,
         ) ||
         /^usr\/share\/doc\/lib[A-Za-z0-9+.-]+\/copyright$/.test(path) ||

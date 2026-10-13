@@ -123,7 +123,8 @@ export function listContents(file) {
     const mount = `${process.env.RUNNER_TEMP}/toolport-payload-${process.pid}`;
     run("hdiutil", ["attach", "-readonly", "-nobrowse", "-mountpoint", mount, file]);
     try {
-      return run("find", [mount, "-type", "f"])
+      // Symlinks too: Contents/MacOS/toolport-gateway links to the helper bundle.
+      return run("find", [mount, "(", "-type", "f", "-o", "-type", "l", ")"])
         .split(/\r?\n/)
         .map((path) => path.slice(mount.length + 1));
     } finally {
