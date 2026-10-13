@@ -6,63 +6,52 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ## [Unreleased]
 
-## [2.0.0]
+## [2.0.0-rc.1] - 2026-10-13
 
-Sync your personal setup across machines with Pro, use password manager references,
-and find tools with local semantic search and a compact menu.
-Linux system packages now use the native GTK app; the AppImage stays available.
-Your 1.x Safety and Code Mode settings are kept. Read the
-[upgrade guide](https://github.com/btsouth/toolport/blob/next/2.0/docs/upgrading-to-2.md) before upgrading.
+Toolport 2.0 is a release candidate. Existing 1.24.x installs are not updated
+to it automatically. To try it, download and install the matching package from
+the [GitHub release assets](https://github.com/btsouth/toolport/releases/tag/v2.0.0-rc.1).
+Read the [upgrade guide](https://github.com/btsouth/toolport/blob/next/2.0/docs/migration.md)
+for preserved settings, removed features and rollback steps.
 
 ### Added
 
-- Personal sync across your machines with Pro.
-- [Password manager references](https://github.com/btsouth/toolport/blob/next/2.0/docs/secret-references.md)
-  for server credentials. Sync references, then sign in and approve them locally.
-- Local semantic tool search without an external endpoint. Search shows 10
-  candidates by default; agents can request up to 50.
-- Per-client server access and discovery settings, review before connecting,
-  and an option to restore original client configs when disconnecting.
-- Command Code support.
+- One local gateway shared by your AI clients, with supervised server lifecycles
+  and client access sets that control which servers each client can use.
+- Teams configuration sharing with member review of changes and team safety floors.
+- Personal sync across your machines with Pro, plus password manager references
+  for credentials that you approve locally on each machine.
+- A native GTK shell for Linux, shipped in `.deb` and `.rpm` packages. The AppImage
+  remains available for older distributions.
+- Local tool search that prioritizes literal tool names and uses bundled
+  bge-small semantic ranking on the CPU, with no model download or external service.
+  The model loads when needed and unloads while idle.
+- Command Code client support.
 
 ### Changed
 
-- 1.x Safety, Code Mode, discovery choices and server environment settings carry
-  over. New installs start with Safety Ask and Code Mode off; new local servers
-  receive basic environment variables plus the ones you set.
-- Tool results reach clients exactly as the server sent them. Injection findings
-  still appear in Activity; blocking stops flagged results instead of wrapping them.
-  Long tool names are shortened to each client's limit.
-- The sidebar is Servers, Clients, Activity and Settings. Catalog browsing is in
-  Servers; Playground is in each server's Tools tab. Number shortcuts follow the
-  new sidebar. Restart clients still using an old gateway after upgrading.
-- Windows installs and updates work while MCP clients are open. The installer
-  stops only Toolport's own gateway processes; restart your MCP clients afterward.
-- Linux `.deb` and `.rpm` packages use GTK. The deb needs Ubuntu 24.04+ or
-  Debian 13+; older distros, including Ubuntu 22.04 and Debian 12, use the
-  AppImage. AUR `toolport-bin` also becomes GTK. GTK has no in-app update check;
-  update through your package channel or install a newer package.
+- A simpler sidebar: Servers, Clients, Activity and Settings. Browse the catalog
+  in Servers and try tools in each server's Tools tab.
+- Code Mode is opt-in. New installs start with Safety Ask and Code Mode off;
+  upgrades keep your 1.x Safety, Code Mode and discovery choices.
+- Agents receive a compact tool menu instead of repeated full catalogs when
+  using lazy discovery. Activity shows callers, approval outcomes and tool changes
+  grouped by server; tokens saved reflect net savings per client session.
+- Tool results reach clients as the server sent them. Safety findings remain
+  visible in Activity, and blocking stops flagged results.
+- Agent rules, permissions, activity hooks, routines, Collections and the global
+  profile switcher are retired. The upgrade guide explains exports and rollback.
 
-### Removed
+### Fixed
 
-- Agent rules, agent permissions and their guard hook, agent activity hooks,
-  routines, agent control and confirm, `conduit_*` tool aliases, Collections and
-  stacks, the global profile switcher, and the picker for new Shared HTTP
-  connections. Existing Shared HTTP connections keep working.
-- If you used the removed agent features, a notice on each installation names
-  them and links to going back to 1.24. Rules, routines and permission rules are
-  saved in `<Toolport data folder>/exports/`; existing client files are left as
-  they were. Choose **I need this** to open a feature request.
-
-### Staying on 1.24 or rolling back
-
-- Install the latest 1.24.x release to keep using removed features. 1.24.x gets
-  security fixes for three months after 2.0.0.
-- On Arch/Omarchy, use `/usr/share/toolport/toolport-preview-rollback.sh` with
-  `--package` pointing to your saved 1.24 package. Elsewhere, quit Toolport and
-  its clients, restore `registry.json.v1-<time>.bak`, and reinstall 1.24.
-  [Rollback steps](https://github.com/btsouth/toolport/blob/next/2.0/docs/upgrading-to-2.md#go-back-to-124)
-  explain the data folder and backup. Changes made in 2.0 are not in that backup.
+- Faster cold starts and client connections without waiting for every server's
+  catalog, with more reliable initial discovery and recovery after upgrades.
+- GTK responsiveness during registry reads and Activity monitoring, plus idle
+  polling, gateway memory use and search resource cleanup.
+- Tokens saved history across sessions and Activity lifecycle updates.
+- Client configuration conflicts, disconnect restoration and retryable data removal.
+- Windows installs and updates while MCP clients are open, with guidance to
+  restart clients afterward.
 
 ## [1.24.0] - 2026-10-06
 
