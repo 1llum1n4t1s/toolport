@@ -725,6 +725,20 @@ impl ServerSlot {
 /// Discovery from an existing catalog does not count as use.
 pub const SERVER_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
+fn server_idle_timeout() -> Duration {
+    // Integration fixtures exercise the real watcher without waiting five minutes.
+    // Shipped builds never read this test-only override.
+    #[cfg(feature = "test-support")]
+    if let Some(millis) = std::env::var("TOOLPORT_TEST_SERVER_IDLE_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+    {
+        return Duration::from_millis(millis);
+    }
+    SERVER_IDLE_TIMEOUT
+}
+
 /// Counts supervisor startups that produced a connection, so the gateway can
 /// publish one without waiting for its next watcher tick.
 static SUPERVISOR_RESULTS: (Mutex<u64>, Condvar) = (Mutex::new(0), Condvar::new());
@@ -1094,7 +1108,7 @@ impl ServerSlot {
                                 .min(state.backoff.cap);
                         server.stop();
                         state.state = SupervisorState::Backoff;
-                    } else if now.saturating_duration_since(state.last_use) >= SERVER_IDLE_TIMEOUT
+                    } else if now.saturating_duration_since(state.last_use) >= server_idle_timeout()
                         && self.handle_calls.load(Ordering::Acquire) == 0
                         && server.suspended_calls() == 0
                         && !state.subscription_use.as_ref().is_some_and(|used| used())
