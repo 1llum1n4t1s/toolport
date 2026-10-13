@@ -339,11 +339,26 @@ pub fn tool_vector(tool: &Value) -> Vec<f32> {
         )
         .expect("benchmark tool vector");
     }
-    model()
-        .encode_documents(&[&document(tool)])
-        .expect("bundled BGE document")
-        .pop()
-        .unwrap()
+    // Ranking tests repeatedly rebuild the same immutable public catalog. Reuse
+    // exact document vectors within this test process; native parity, lazy-load
+    // and worker/cache tests still call the encoder directly.
+    static DOCUMENTS: OnceLock<Mutex<std::collections::HashMap<String, Vec<f32>>>> =
+        OnceLock::new();
+    let text = document(tool);
+    let mut documents = DOCUMENTS
+        .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    documents
+        .entry(text.clone())
+        .or_insert_with(|| {
+            model()
+                .encode_documents(&[&text])
+                .expect("bundled BGE document")
+                .pop()
+                .unwrap()
+        })
+        .clone()
 }
 
 pub fn query_vector(query: &str) -> Vec<f32> {
