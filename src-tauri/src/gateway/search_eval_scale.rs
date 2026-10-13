@@ -1465,6 +1465,14 @@ fn search_semantic_preference_cannot_supply_an_omitted_name_distinction() {
                 "Stop scheduling subscription schedule phases, leaving the subscription in place.",
             ],
         ),
+        (
+            "reset a clerk user's password",
+            ["clerk__call_unset_user_password_compromised", "clerk__ban_user"],
+            [
+                "Clear a user's password compromised flag. The user will no longer be prompted to reset their password.",
+                "Ban a user.",
+            ],
+        ),
     ] {
         let tools: Vec<_> = names.iter().zip(descriptions).map(|(name, description)| {
             json!({"name":name,"description":description,"inputSchema":{}})

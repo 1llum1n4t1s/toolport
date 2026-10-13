@@ -3153,6 +3153,12 @@ fn search_catalog_filtered(
                 .iter()
                 .filter(|token| q_tokens.contains(token))
                 .collect();
+            // Incidental prose can mention a broader job that this more specific
+            // operation does not perform (for example, clearing a password flag
+            // rather than resetting a password). Semantic preference cannot fill
+            // in unrequested name words, even when no strong alternative exists.
+            let unexplained_specificity =
+                !matched_name.is_empty() && matched_name.len() < doc.name_tokens.len();
             let unresolved_alternative = !matched_name.is_empty()
                 && lex.iter().enumerate().any(|(other, (other_score, _))| {
                     let alternative = &index.documents[pool[other]];
@@ -3184,6 +3190,7 @@ fn search_catalog_filtered(
                 && weight > f64::EPSILON
                 && score > f64::EPSILON
                 && covered / weight >= 0.90
+                && !unexplained_specificity
                 && !unresolved_alternative;
             !unique_name
                 && (unresolved_name
@@ -45189,17 +45196,14 @@ mod tests {
             })
             .collect();
         let started = Instant::now();
-        let index = CatalogSearchIndex::build(&catalog);
+        // Measure the cold index and its lexical fallback, as at gateway start.
+        // Native inference and publication use the real catalog in separate probes.
+        let index = CatalogSearchIndex::build_lexical(&catalog);
         let elapsed = started.elapsed();
-        let estimated = index.estimated_auxiliary_bytes();
+        assert!(index.semantic_vectors.0.get().is_none());
 
         assert_eq!(index.documents.len(), 10_000);
         assert_eq!(index.document_frequency.get("customer"), Some(&10_000));
-        assert!(
-            estimated < 64 * 1024 * 1024,
-            "auxiliary index estimate unexpectedly large: {estimated} bytes"
-        );
-
         let outcome = search_catalog_indexed(
             &catalog,
             "customer record 9876",
@@ -45211,6 +45215,19 @@ mod tests {
         assert_eq!(
             outcome.matches[0]["name"],
             "server26__lookup_customer_record_9876"
+        );
+        // The memory bound includes fully allocated, dimension-correct vector
+        // storage. Values do not affect its size; real vectors are checked by
+        // the native parity, full-catalog quality, cache and resource tests.
+        index
+            .semantic_vectors
+            .0
+            .set(vec![vec![0.0; search_static::DIMENSIONS]; catalog.len()])
+            .unwrap();
+        let estimated = index.estimated_auxiliary_bytes();
+        assert!(
+            estimated < 64 * 1024 * 1024,
+            "auxiliary index estimate unexpectedly large: {estimated} bytes"
         );
         eprintln!(
             "10k-tool search index: {:.2} ms build, {:.2} MiB estimated auxiliary memory",
