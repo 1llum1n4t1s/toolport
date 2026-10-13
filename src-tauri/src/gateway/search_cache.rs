@@ -28,10 +28,40 @@ fn key_document(text: &str) -> String {
 }
 
 #[cfg(test)]
+pub fn export_native_fixture(tools: &dyn ToolCatalog, directory: &Path, output: &Path) {
+    let documents: Vec<(String, String)> = tools
+        .iter()
+        .map(|tool| {
+            let text = search_static::document(tool);
+            (key_document(&text), text)
+        })
+        .collect();
+    let (vectors, encoded) = encode(&documents, Some(directory)).unwrap();
+    eprintln!(
+        "native fixture: {} documents, {encoded} cache misses encoded",
+        documents.len()
+    );
+    let mut bytes = Vec::new();
+    for ((key, _), vector) in documents.iter().zip(vectors) {
+        for pair in key.as_bytes().chunks_exact(2) {
+            bytes.push(u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap());
+        }
+        for value in vector {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    std::fs::write(output, bytes).unwrap();
+}
+
+#[cfg(test)]
 pub fn seed_native_cache_for_test(tools: &dyn ToolCatalog, directory: &Path) {
     std::fs::create_dir_all(directory).unwrap();
     for tool in tools.iter() {
-        write(&directory.join(key(tool)), &search_static::tool_vector(tool)).unwrap();
+        write(
+            &directory.join(key(tool)),
+            &search_static::tool_vector(tool),
+        )
+        .unwrap();
     }
 }
 

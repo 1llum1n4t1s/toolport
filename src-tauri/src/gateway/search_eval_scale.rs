@@ -9,14 +9,30 @@ const DEV_V2_SPLIT: &str = include_str!("../../tests/fixtures/search-eval-scale/
 const OLD_HELD_OUT: &str = include_str!("../../tests/fixtures/search-eval-scale/held_out.json");
 
 fn scale_catalog() -> Vec<Value> {
-    let mut tools: Vec<Value> = serde_json::from_str(SCALE_CATALOG).unwrap();
-    for tool in &mut tools {
-        if let Some(schema) = tool.get_mut("inputSchema") {
-            conduit_lib::router::normalize_tool_schema(schema);
-            conduit_lib::router::inline_refs(schema);
-        }
-    }
-    tools
+    static CATALOG: std::sync::OnceLock<Vec<Value>> = std::sync::OnceLock::new();
+    CATALOG
+        .get_or_init(|| {
+            let mut tools: Vec<Value> = serde_json::from_str(SCALE_CATALOG).unwrap();
+            for tool in &mut tools {
+                if let Some(schema) = tool.get_mut("inputSchema") {
+                    conduit_lib::router::normalize_tool_schema(schema);
+                    conduit_lib::router::inline_refs(schema);
+                }
+            }
+            tools
+        })
+        .clone()
+}
+
+fn scale_fixture() -> (&'static Vec<Value>, &'static CatalogSearchIndex) {
+    static FIXTURE: std::sync::OnceLock<(Vec<Value>, CatalogSearchIndex)> =
+        std::sync::OnceLock::new();
+    let (tools, index) = FIXTURE.get_or_init(|| {
+        let tools = scale_catalog();
+        let index = CatalogSearchIndex::build(&tools);
+        (tools, index)
+    });
+    (tools, index)
 }
 
 fn menu_candidate_coverage(names: &[&str], expected: &[&str], menu_limit: usize) -> usize {
@@ -584,11 +600,10 @@ fn assert_quality(report: &Value) {
 
 #[test]
 fn search_scale_legacy_development_measurement() {
-    let tools = scale_catalog();
+    let (tools, index) = scale_fixture();
     let mut intents: Vec<Value> = serde_json::from_str(DEV).unwrap();
     intents.extend(serde_json::from_str::<Vec<Value>>(OLD_HELD_OUT).unwrap());
-    let index = CatalogSearchIndex::build(&tools);
-    let mut report = evaluate("legacy development", &intents, &tools, &index, 0);
+    let mut report = evaluate("legacy development", &intents, tools, index, 0);
     report.as_object_mut().unwrap().remove("rows");
     eprintln!("{report}");
 }
@@ -601,11 +616,10 @@ fn search_scale_blind_quality_gate() {
         eprintln!("blind search gate skipped: TOOLPORT_SEARCH_BLIND_INTENTS is absent");
         return;
     };
-    let tools = scale_catalog();
+    let (tools, index) = scale_fixture();
     let intents: Vec<Value> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert!(!intents.is_empty(), "blind intents must not be empty");
-    let index = CatalogSearchIndex::build(&tools);
-    assert_quality(&evaluate("blind", &intents, &tools, &index, 0));
+    assert_quality(&evaluate("blind", &intents, tools, index, 0));
 }
 
 #[test]
@@ -946,9 +960,8 @@ fn dev_v2_self_check() -> Vec<Value> {
 
 #[test]
 fn search_dev_v2_quality_gate() {
-    let tools = scale_catalog();
-    let index = CatalogSearchIndex::build(&tools);
-    let report = evaluate("dev-v2 self-check", &dev_v2_self_check(), &tools, &index, 0);
+    let (tools, index) = scale_fixture();
+    let report = evaluate("dev-v2 self-check", &dev_v2_self_check(), tools, index, 0);
     // Recall floors are set below the measured baseline with room for general
     // retrieval tradeoffs. Confidence is informational, never an accuracy claim.
     assert!(
@@ -1141,8 +1154,7 @@ fn search_schema_factoring_is_lossless_on_the_public_catalog() {
 #[test]
 fn search_menu_meets_o200k_context_budget() {
     let _data = DataDirTestEnv::new("search-menu-budget");
-    let tools = scale_catalog();
-    let index = CatalogSearchIndex::build(&tools);
+    let (tools, index) = scale_fixture();
     let intents: Vec<Value> = serde_json::from_str(DEV_V2).unwrap();
     let host = dispatch_host(false);
     let reg = Registry::default();
@@ -1162,7 +1174,7 @@ fn search_menu_meets_o200k_context_budget() {
             &request,
             &reg,
             &router,
-            &tools,
+            tools,
             DiscoveryMode::Lazy,
             None,
             &SearchGuard::default(),
@@ -1170,7 +1182,7 @@ fn search_menu_meets_o200k_context_budget() {
             None,
             None,
             None,
-            Some(&index),
+            Some(index),
             None,
             None,
         )
@@ -1488,5 +1500,89 @@ fn search_semantic_preference_cannot_supply_an_omitted_name_distinction() {
         assert_eq!(result.matches[0]["name"], names[0]);
         assert!(result.low_confidence, "{query}");
         assert_eq!(result.matches.len(), 2);
+    }
+}
+
+#[test]
+#[ignore = "explicit export of production native cache; no labels or fitting"]
+fn search_export_native_fixture() {
+    let mut tools = scale_catalog();
+    tools.extend(search_eval::catalog());
+    search_cache::export_native_fixture(
+        &tools,
+        std::path::Path::new(&std::env::var_os("SEARCH_NATIVE_CACHE").unwrap()),
+        std::path::Path::new(&std::env::var_os("SEARCH_NATIVE_FIXTURE_OUTPUT").unwrap()),
+    );
+    let mut queries: Vec<String> = [
+        DEV,
+        OLD_HELD_OUT,
+        DEV_V2,
+        include_str!("../../tests/fixtures/search-eval/intents.json"),
+    ]
+    .into_iter()
+    .flat_map(|text| serde_json::from_str::<Vec<Value>>(text).unwrap())
+    .map(|intent| intent["query"].as_str().unwrap().to_owned())
+    .collect();
+    queries.sort();
+    queries.dedup();
+    search_static::export_query_fixture(
+        &queries,
+        std::path::Path::new(&std::env::var_os("SEARCH_NATIVE_FIXTURE_OUTPUT").unwrap()),
+    );
+}
+
+#[test]
+fn search_native_fixture_covers_the_frozen_catalog_and_matches_native_samples() {
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(include_bytes!(
+                "../../tests/fixtures/search-eval-scale/bge-native-vectors.bin"
+            ))
+        ),
+        include_str!("../../tests/fixtures/search-eval-scale/bge-native-vectors.sha256").trim()
+    );
+    let mut tools = scale_catalog();
+    tools.extend(search_eval::catalog());
+    for tool in &tools {
+        assert!(
+            search_static::fixture_vector(&search_static::document(tool)).is_some(),
+            "stale native document fixture: {}",
+            tool["name"]
+        );
+    }
+    for position in [0, tools.len() / 2, tools.len() - 1] {
+        let text = search_static::document(&tools[position]);
+        let native = search_static::model().encode_documents(&[&text]).unwrap();
+        let cached = search_static::fixture_vector(&text).unwrap();
+        assert!(search_static::cosine(&native[0], &cached) >= 0.99999);
+    }
+    for text in [
+        DEV,
+        OLD_HELD_OUT,
+        DEV_V2,
+        include_str!("../../tests/fixtures/search-eval/intents.json"),
+    ] {
+        for intent in serde_json::from_str::<Vec<Value>>(text).unwrap() {
+            let input = format!(
+                "Represent this sentence for searching relevant passages: {}",
+                intent["query"].as_str().unwrap()
+            );
+            assert!(
+                search_static::fixture_vector(&input).is_some(),
+                "stale query fixture: {input}"
+            );
+        }
+    }
+    let intents: Vec<Value> = serde_json::from_str(DEV).unwrap();
+    for position in [0, intents.len() / 2, intents.len() - 1] {
+        let input = format!(
+            "Represent this sentence for searching relevant passages: {}",
+            intents[position]["query"].as_str().unwrap()
+        );
+        let native = search_static::model().encode(&input);
+        let cached = search_static::fixture_vector(&input).unwrap();
+        assert!(search_static::cosine(&native, &cached) >= 0.99999);
     }
 }

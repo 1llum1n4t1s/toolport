@@ -332,6 +332,35 @@ fn benchmark_vectors() -> Option<&'static Value> {
 }
 
 #[cfg(test)]
+pub fn fixture_vector(text: &str) -> Option<Vec<f32>> {
+    use sha2::{Digest, Sha256};
+    static RECORDS: OnceLock<std::collections::HashMap<[u8; 32], Vec<f32>>> = OnceLock::new();
+    let records = RECORDS.get_or_init(|| {
+        let bytes = include_bytes!("../../tests/fixtures/search-eval-scale/bge-native-vectors.bin");
+        const RECORD_BYTES: usize = 32 + DIMENSIONS * 4;
+        assert_eq!(bytes.len() % RECORD_BYTES, 0);
+        bytes
+            .chunks_exact(RECORD_BYTES)
+            .map(|record| {
+                let key: [u8; 32] = record[..32].try_into().unwrap();
+                let vector: Vec<f32> = record[32..]
+                    .chunks_exact(4)
+                    .map(|v| f32::from_le_bytes(v.try_into().unwrap()))
+                    .collect();
+                assert!(vector.iter().all(|v| v.is_finite()));
+                let norm: f32 = vector.iter().map(|v| v * v).sum();
+                assert!((norm - 1.0).abs() < 0.001);
+                (key, vector)
+            })
+            .collect()
+    });
+    let mut hash = Sha256::new();
+    hash.update(asset_digest());
+    hash.update(text.as_bytes());
+    records.get(&<[u8; 32]>::from(hash.finalize())).cloned()
+}
+
+#[cfg(test)]
 pub fn tool_vector(tool: &Value) -> Vec<f32> {
     if let Some(vectors) = benchmark_vectors() {
         return serde_json::from_value(
@@ -345,6 +374,9 @@ pub fn tool_vector(tool: &Value) -> Vec<f32> {
     static DOCUMENTS: OnceLock<Mutex<std::collections::HashMap<String, Vec<f32>>>> =
         OnceLock::new();
     let text = document(tool);
+    if let Some(vector) = fixture_vector(&text) {
+        return vector;
+    }
     let mut documents = DOCUMENTS
         .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
         .lock()
@@ -361,12 +393,58 @@ pub fn tool_vector(tool: &Value) -> Vec<f32> {
         .clone()
 }
 
+#[cfg(test)]
+pub fn export_query_fixture(queries: &[String], output: &std::path::Path) {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(output)
+        .unwrap();
+    for batch in queries.chunks(BATCH_SIZE) {
+        let texts: Vec<String> = batch
+            .iter()
+            .map(|q| format!("{QUERY_INSTRUCTION}{q}"))
+            .collect();
+        let vectors = model()
+            .encode_batch(&texts.iter().map(String::as_str).collect::<Vec<_>>())
+            .unwrap();
+        for (text, vector) in texts.iter().zip(vectors) {
+            let mut hash = Sha256::new();
+            hash.update(asset_digest());
+            hash.update(text.as_bytes());
+            file.write_all(&hash.finalize()).unwrap();
+            for value in vector {
+                file.write_all(&value.to_le_bytes()).unwrap();
+            }
+        }
+    }
+}
+
 pub fn query_vector(query: &str) -> Vec<f32> {
     #[cfg(test)]
     if let Some(vectors) = benchmark_vectors() {
         return serde_json::from_value(vectors["queries_vectors"][query].clone())
             .expect("benchmark query vector");
     }
+    #[cfg(test)]
+    {
+        if let Some(vector) = fixture_vector(&format!("{QUERY_INSTRUCTION}{query}")) {
+            return vector;
+        }
+        // Each distinct query is still encoded by the native model. Quality and
+        // handler tests reuse that exact result rather than repeating inference.
+        static QUERIES: OnceLock<Mutex<std::collections::HashMap<String, Vec<f32>>>> =
+            OnceLock::new();
+        QUERIES
+            .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(query.to_owned())
+            .or_insert_with(|| model().encode(&format!("{QUERY_INSTRUCTION}{query}")))
+            .clone()
+    }
+    #[cfg(not(test))]
     model().encode(&format!("{QUERY_INSTRUCTION}{query}"))
 }
 
