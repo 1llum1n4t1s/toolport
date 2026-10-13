@@ -45,13 +45,13 @@ quantize_dynamic('bge-int8/onnx/model.onnx', 'model.int8.onnx',
                  weight_type=QuantType.QInt8, per_channel=True, reduce_range=False)
 ```
 
-| Asset | SHA256 |
-|---|---|
-| Source fp32 safetensors | `3c9f31665447c8911517620762200d2245a2518d6e7208acc78cd9db317e21ad` |
-| Bundled f16 safetensors | `1e2b41d9cd9cf8918c563847f68af3ac4c46085b60fd84fff985197057659cfa` |
-| Tokenizer | `d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66` |
-| Config | `094f8e891b932f2000c92cfc663bac4c62069f5d8af5b5278c4306aef3084750` |
-| Source fp32 ONNX | `828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35` |
+| Asset                               | SHA256                                                             |
+| ----------------------------------- | ------------------------------------------------------------------ |
+| Source fp32 safetensors             | `3c9f31665447c8911517620762200d2245a2518d6e7208acc78cd9db317e21ad` |
+| Bundled f16 safetensors             | `1e2b41d9cd9cf8918c563847f68af3ac4c46085b60fd84fff985197057659cfa` |
+| Tokenizer                           | `d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66` |
+| Config                              | `094f8e891b932f2000c92cfc663bac4c62069f5d8af5b5278c4306aef3084750` |
+| Source fp32 ONNX                    | `828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35` |
 | Per-channel int8 ONNX (not bundled) | `f8b2217838ea27564f870f96e377cb6e5ca0fa37dec9599cf305d5de011d6b7f` |
 
 ## Shipping behavior
