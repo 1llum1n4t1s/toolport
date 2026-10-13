@@ -73,3 +73,10 @@ fn nested_date_in_array_must_not_become_empty_object() {
         arr[0]
     );
 }
+
+#[test]
+fn replacement_serializer_can_encode_a_large_primitive_as_small_output() {
+    let outcome = run("JSON.stringify = () => '0'; return 'x'.repeat(16 * 1024 * 1024);");
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    assert_eq!(outcome.value, json!(0));
+}

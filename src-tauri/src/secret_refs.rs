@@ -289,6 +289,7 @@ fn header_reference<'a>(server: &'a ServerEntry, h: &'a HeaderKey) -> Option<&'a
     })
 }
 fn approval_identity(server: &ServerEntry) -> Result<String, ResolveError> {
+    use sha2::{Digest, Sha256};
     let mut launch = server.launch.clone();
     for input in launch.iter_mut().flat_map(|l| &mut l.inputs) {
         if input.secret {
@@ -300,7 +301,10 @@ fn approval_identity(server: &ServerEntry) -> Result<String, ResolveError> {
         "args":server.args, "cwd":server.cwd, "inheritEnv":server.inherit_env,
         "launch":launch,
         "uses":reference_uses(server)?});
-    Ok(crate::audit::args_hash(&identity))
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(identity.to_string().as_bytes())
+    ))
 }
 static APPROVAL_LOCK: Mutex<()> = Mutex::new(());
 fn approval_path() -> Result<PathBuf, ResolveError> {

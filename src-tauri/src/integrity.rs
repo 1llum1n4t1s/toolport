@@ -231,50 +231,17 @@ fn definition_parts(tool: &Value, source_input_schema: Option<&str>) -> Definiti
     }
 }
 
-/// Keep the established sorted JSON encoding for saved integrity pins while
-/// search rendering preserves the server's schema insertion order. This wrapper
-/// sorts borrowed keys, without cloning schema strings or changing the catalog.
-struct CanonicalValue<'a>(&'a Value);
-impl Serialize for CanonicalValue<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::{SerializeMap, SerializeSeq};
-        match self.0 {
-            Value::Object(object) => {
-                let mut entries: Vec<_> = object.iter().collect();
-                entries.sort_unstable_by_key(|(key, _)| *key);
-                let mut map = serializer.serialize_map(Some(entries.len()))?;
-                for (key, value) in entries {
-                    map.serialize_entry(key, &CanonicalValue(value))?;
-                }
-                map.end()
-            }
-            Value::Array(array) => {
-                let mut sequence = serializer.serialize_seq(Some(array.len()))?;
-                for value in array {
-                    sequence.serialize_element(&CanonicalValue(value))?;
-                }
-                sequence.end()
-            }
-            value => value.serialize(serializer),
-        }
-    }
-}
-
-fn canonical_json(value: &Value) -> String {
-    serde_json::to_string(&CanonicalValue(value)).expect("JSON value serializes")
-}
-
 /// The pin hash of one schema, in the same encoding [`definition_parts`] uses.
 pub(crate) fn schema_part_hash(schema: &Value) -> String {
     let mut hash = Sha256::new();
-    hash.update(canonical_json(schema).as_bytes());
+    hash.update(serde_json::to_string(schema).unwrap_or_default().as_bytes());
     to_hex(&hash.finalize())
 }
 
 fn definition_field_fingerprint(tool: &Value, key: &str) -> String {
     let encoded = tool
         .get(key)
-        .map(canonical_json)
+        .map(|value| serde_json::to_string(value).unwrap_or_default())
         .unwrap_or_else(|| "<absent>".to_string());
     let mut hash = Sha256::new();
     hash.update(encoded.as_bytes());
@@ -409,14 +376,18 @@ fn to_hex(bytes: &[u8]) -> String {
 const FP_VERSION: &str = "v2";
 
 /// Stable fingerprint of a tool definition, prefixed with the algorithm version.
-/// Explicit canonical serialization sorts object keys, so re-encoding the
+/// serde_json serializes object keys sorted (BTreeMap) by default, so re-encoding the
 /// same value is byte-stable and benign key reordering cannot false-positive. Covers
 /// the security-relevant surface: name, description, inputSchema, outputSchema, and
 /// annotations (readOnlyHint / destructiveHint / title). Hashing annotations is the
 /// point: silently flipping `readOnlyHint: true -> false` or slipping in a malicious
 /// `annotations.title` is a rug-pull the old name+desc+inputSchema hash never caught.
 pub fn fingerprint(tool: &Value) -> String {
-    let json_of = |k: &str| tool.get(k).map(canonical_json).unwrap_or_default();
+    let json_of = |k: &str| {
+        tool.get(k)
+            .map(|v| serde_json::to_string(v).unwrap_or_default())
+            .unwrap_or_default()
+    };
     let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
     let desc = tool
         .get("description")
@@ -2625,11 +2596,10 @@ pub fn quarantine_record_id(record: &Value) -> String {
     if let Some(object) = record.as_object() {
         let stored: BTreeMap<_, _> = object.iter()
             .filter(|(key, _)| !matches!(key.as_str(), "profile" | "record_id"))
-            .map(|(key, value)| (key, CanonicalValue(value)))
             .collect();
         serde_json::to_writer(&mut writer, &stored).expect("JSON values serialize");
     } else {
-        serde_json::to_writer(&mut writer, &CanonicalValue(record)).expect("JSON values serialize");
+        serde_json::to_writer(&mut writer, record).expect("JSON values serialize");
     }
     format!("{:x}", writer.0.finalize())
 }
@@ -3152,7 +3122,11 @@ fn scan_definition_scored(tool: &Value) -> (Vec<String>, f32, Option<String>) {
         .get("description")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let json_of = |k: &str| tool.get(k).map(canonical_json).unwrap_or_default();
+    let json_of = |k: &str| {
+        tool.get(k)
+            .map(|v| serde_json::to_string(v).unwrap_or_default())
+            .unwrap_or_default()
+    };
     // Scan the input AND output schema AND annotations: poisoning hides in an
     // annotations.title, an enum description, or an outputSchema property description,
     // not just the top-level description. outputSchema is drift-hashed by fingerprint(),
@@ -5021,12 +4995,12 @@ mod tests {
                 .keys()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            ["z", "a"]
+            ["a", "z"]
         );
     }
 
     #[test]
-    fn schema_order_preservation_keeps_legacy_integrity_hashes() {
+    fn sorted_schema_keeps_legacy_integrity_hashes() {
         let schema: Value = serde_json::from_str(
             r#"{"type":"object","properties":{"z":{"type":"string"},"a":{"type":"integer"}}}"#,
         )
@@ -5051,7 +5025,7 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect();
-        assert_eq!(original_order, ["z", "a"]);
+        assert_eq!(original_order, ["a", "z"]);
         assert_eq!(
             definition_parts(&tool, None).input_schema,
             "3b892cd0d638904a4c9473bf931b92b5bb3c361dbf1f88ba4dbd139578e4ea4b"
@@ -6221,8 +6195,6 @@ mod tests {
             let mut stored = record.clone();
             stored.as_object_mut().unwrap().remove("record_id");
             stored.as_object_mut().unwrap().remove("profile");
-            // The saved identity remains canonical when search preserves schema order.
-            stored.sort_all_objects();
             assert_eq!(record["record_id"], format!("{:x}", Sha256::digest(stored.to_string().as_bytes())));
             let profile = summary["profile"].as_str().unwrap();
             assert_eq!(quarantine_definition((!profile.is_empty()).then_some(profile), "srv__wipe", summary["record_id"].as_str().unwrap()).unwrap(), tools[0]);

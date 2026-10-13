@@ -58,15 +58,20 @@ quantize_dynamic('bge-int8/onnx/model.onnx', 'model.int8.onnx',
 
 The session loads on first search, never at gateway startup or tools/list.
 One worker renders provider, humanized tool name, full description and schema
-parameters in insertion order (160 description characters per parameter).
+parameters in canonical sorted key order (160 description characters per parameter).
 Documents use the round-2 tokenizer/decode projection with 254 content tokens;
 final inputs have at most 256 tokens. Queries prepend
 `Represent this sentence for searching relevant passages: `.
 Catalog batches have at most eight documents. CPU work uses a private pool of
 at most two threads. Disk entries use the model/representation digest plus the
 rendered document hash, with the existing 32 MiB / 14 day limits. Searches use
-lexical answers while background vectors are pending. The session unloads after
+lexical answers while background vectors are pending or the encoder is busy/unavailable.
+Queries never queue behind catalog inference. Failed model loads back off for
+60 seconds and log once; unavailable queries do not participate in fusion.
+The session unloads after
 ten minutes idle; immutable catalog vectors and tokenizer can remain resident.
+Linux/glibc trims freed allocator pages after an actual unload and after a catalog
+job drops its rendered documents and inference buffers.
 
 Fusion uses RRF k=10, weights 1/1, while preserving literal-name and named-provider
 behavior. Semantic-only candidates require cosine at least 0.60 and at least 85%

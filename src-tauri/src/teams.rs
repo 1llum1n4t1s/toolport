@@ -3436,7 +3436,7 @@ fn comparable_item(key: &str, value: &Value) -> Value {
 }
 
 fn raw_item_hash(key: &str, value: &Value) -> String {
-    crate::audit::args_hash(&json!(["team-member-review-v1", key, value]))
+    crate::registry::sha256_hex(&json!(["team-member-review-v1", key, value]).to_string())
 }
 
 fn item_hash(key: &str, value: &Value) -> String {
@@ -8839,6 +8839,38 @@ mod tests {
                 .as_deref(),
             Some("/home/member")
         );
+    }
+
+    #[test]
+    fn older_sorted_registry_keeps_consent_for_unchanged_team_credentials() {
+        let config: Value = serde_json::from_str(r#"{"servers":[{"id":"remote","name":"Remote","transport":"http","url":"https://1.2.3.4/mcp","clientCredentials":{"tokenEndpointAuthMethod":"client_secret_post","scope":"read","clientId":"client-a"}}]}"#).unwrap();
+        for version in [1, 4] {
+            let mut reg = base_registry();
+            reg.version = version;
+            apply_team_config(&mut reg, "t1", &config);
+            let id = member_id(&reg, "remote");
+            // v1.24.0 persisted all nested JSON objects in sorted order.
+            let mut persisted = serde_json::to_value(&reg).unwrap();
+            persisted.sort_all_objects();
+            let mut reg: Registry = serde_json::from_str(&persisted.to_string()).unwrap();
+            let before = consent_fingerprint(reg.servers.iter().find(|s| s.id == id).unwrap());
+            assert!(active_enabled(&reg).contains(&id));
+            let outcome = apply_team_config(&mut reg, "t1", &config);
+            assert_eq!(outcome.review, 0);
+            assert!(
+                active_enabled(&reg).contains(&id),
+                "access-set membership was removed"
+            );
+            let server = reg.servers.iter().find(|s| s.id == id).unwrap();
+            assert!(
+                reg.enabled_servers().iter().any(|server| server.id == id),
+                "unchanged legacy server was disabled"
+            );
+            assert_eq!(consent_fingerprint(server), before);
+            if version >= 3 {
+                assert!(server.enabled, "unchanged migrated server was disabled");
+            }
+        }
     }
 
     #[test]

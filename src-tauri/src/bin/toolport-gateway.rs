@@ -3053,14 +3053,17 @@ fn search_catalog_filtered(
         let query_vector = if use_local_semantic {
             search_static::query_vector(positive)
         } else {
-            Vec::new()
+            None
         };
+        let use_local_semantic = use_local_semantic && query_vector.is_some();
         let similarities: Vec<f64> = pool
             .iter()
             .map(|position| {
                 vectors
                     .and_then(|vectors| vectors.get(*position))
-                    .map_or(0.0, |vector| search_static::cosine(&query_vector, vector))
+                    .map_or(0.0, |vector| {
+                        search_static::cosine(query_vector.as_deref().unwrap_or_default(), vector)
+                    })
             })
             .collect();
         let mut ranked = remote_ranked.unwrap_or_else(|| {
@@ -24131,6 +24134,30 @@ mod tests {
             assert!(cached_field(json!({"version":version,"tools":[]}), "tools").is_none());
         }
         assert!(cached_field(json!({"version":TOOL_CACHE_VERSION}), "tools").is_none());
+    }
+
+    #[test]
+    fn version_four_base_cache_restores_all_tools_with_unchanged_launch_spec() {
+        let _env = DataDirTestEnv::new("base-v4-catalog-spec");
+        // Bytes serialized by 31eeb829's BTreeMap-backed JSON values.
+        let sorted_spec = r#"{"args":["-y","fixture"],"command":"node","env":{"A":"first","Z":"last"},"transport":"stdio"}"#;
+        let spec: Value = serde_json::from_str(r#"{"transport":"stdio","env":{"Z":"last","A":"first"},"command":"node","args":["-y","fixture"]}"#).unwrap();
+        let tools = vec![
+            json!({"name":"first","inputSchema":{"properties":{"z":{"type":"string"},"a":{"type":"integer"}},"type":"object"}}),
+            json!({"name":"second","inputSchema":{"type":"object"}}),
+        ];
+        std::fs::write(server_catalog_path(None).unwrap(), json!({
+            "version":4,"servers":{"cache":{"spec":registry::sha256_hex(sorted_spec),"tools":tools}}
+        }).to_string()).unwrap();
+        let restored = cached_server_tools(&load_server_catalogs(None), "cache", &spec);
+        assert_eq!(restored, tools);
+        assert_eq!(restored.len(), 2);
+        assert!(cached_server_tools(
+            &load_server_catalogs(None),
+            "cache",
+            &json!({"command":"changed"})
+        )
+        .is_empty());
     }
 
     #[test]

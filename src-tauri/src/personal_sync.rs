@@ -129,7 +129,11 @@ pub(crate) fn clear_sign_in_required(reg: &mut Registry) -> Result<(), String> {
     Ok(())
 }
 pub fn conflict_version(value: &Value) -> String {
-    crate::audit::args_hash(value)
+    use sha2::{Digest, Sha256};
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(value).expect("JSON conflict"))
+    )
 }
 
 /// Account status is the only mode authority. Private existing definitions are

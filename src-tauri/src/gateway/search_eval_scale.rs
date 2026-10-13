@@ -1420,7 +1420,7 @@ fn search_semantic_evidence_can_certify_a_winner_but_not_a_tie() {
         json!({"name":"other__second","description":"Interpret an unusual capability too","inputSchema":{}}),
     ];
     let query = "interpret an unusual capability";
-    let vector = search_static::query_vector(query);
+    let vector = search_static::query_vector(query).unwrap();
     let index = CatalogSearchIndex::build_lexical(&tools);
     index
         .semantic_vectors
@@ -1445,7 +1445,7 @@ fn search_strong_semantic_similarity_cannot_certify_missing_job_evidence() {
         json!({"name":"other__second","description":"Second unrelated document","inputSchema":{}}),
     ];
     let query = "interpret an unusual capability";
-    let vector = search_static::query_vector(query);
+    let vector = search_static::query_vector(query).unwrap();
     let index = CatalogSearchIndex::build_lexical(&tools);
     index
         .semantic_vectors
@@ -1494,7 +1494,7 @@ fn search_semantic_preference_cannot_supply_an_omitted_name_distinction() {
         let tools: Vec<_> = names.iter().zip(descriptions).map(|(name, description)| {
             json!({"name":name,"description":description,"inputSchema":{}})
         }).collect();
-        let vector = search_static::query_vector(query);
+        let vector = search_static::query_vector(query).unwrap();
         let index = CatalogSearchIndex::build_lexical(&tools);
         index
             .semantic_vectors
@@ -1586,8 +1586,76 @@ fn search_native_fixture_covers_the_frozen_catalog_and_matches_native_samples() 
             "Represent this sentence for searching relevant passages: {}",
             intents[position]["query"].as_str().unwrap()
         );
-        let native = search_static::model().encode(&input);
+        let native = search_static::model().encode(&input).unwrap();
         let cached = search_static::fixture_vector(&input).unwrap();
         assert!(search_static::cosine(&native, &cached) >= 0.99999);
     }
+}
+
+#[test]
+fn search_ready_catalog_falls_back_without_waiting_for_inflight_batch() {
+    let tools = vec![
+        json!({"name":"clock__record_working_hours","description":"Record working hours"}),
+        json!({"name":"clock__delete_invoice","description":"Delete an invoice"}),
+    ];
+    let lexical = CatalogSearchIndex::build_lexical(&tools);
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    index
+        .semantic_vectors
+        .0
+        .set(vec![vec![0.0; search_static::DIMENSIONS]; tools.len()])
+        .unwrap();
+    let query = "record working hours";
+    let expected = search_catalog_indexed(&tools, query, None, 10, None, Some(&lexical));
+    search_static::with_inflight_batch(|model| {
+        search_static::with_query_model(model, || {
+            let started = Instant::now();
+            let result = search_catalog_indexed(&tools, query, None, 10, None, Some(&index));
+            assert!(
+                started.elapsed() < Duration::from_millis(250),
+                "query waited for background inference"
+            );
+            assert_eq!(result.matches[0]["name"], "clock__record_working_hours");
+            assert_eq!(result.matches, expected.matches);
+            assert_eq!(result.low_confidence, expected.low_confidence);
+        });
+    });
+}
+
+#[test]
+fn search_populated_vectors_use_lexical_ranking_when_weights_are_unavailable() {
+    let tools = vec![
+        json!({"name":"clock__record_working_hours","description":"Record working hours"}),
+        json!({"name":"clock__delete_invoice","description":"Delete an invoice"}),
+    ];
+    let lexical = CatalogSearchIndex::build_lexical(&tools);
+    let index = CatalogSearchIndex::build_lexical(&tools);
+    // Populated document vectors must not fuse against a synthetic zero query.
+    index
+        .semantic_vectors
+        .0
+        .set(vec![vec![1.0; search_static::DIMENSIONS]; tools.len()])
+        .unwrap();
+    let expected = search_catalog_indexed(
+        &tools,
+        "record working hours",
+        None,
+        10,
+        None,
+        Some(&lexical),
+    );
+    search_static::with_query_model(search_static::unavailable_model(), || {
+        for _ in 0..3 {
+            let result = search_catalog_indexed(
+                &tools,
+                "record working hours",
+                None,
+                10,
+                None,
+                Some(&index),
+            );
+            assert_eq!(result.matches, expected.matches);
+            assert_eq!(result.low_confidence, expected.low_confidence);
+        }
+    });
 }

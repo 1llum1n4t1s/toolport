@@ -3,7 +3,10 @@ use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config};
 use serde_json::Value;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex, OnceLock, TryLockError,
+};
 use std::time::{Duration, Instant};
 use tokenizers::{Tokenizer, TruncationParams};
 
@@ -16,11 +19,12 @@ const LICENSES: &str = concat!(
     include_str!("../../assets/search/tokenizers-LICENSE")
 );
 
-pub const DOCUMENT_REPRESENTATION: &str = "bge-round2-cls-v1";
+pub const DOCUMENT_REPRESENTATION: &str = "bge-sorted-cls-v2";
 pub const ENCODE_TOKEN_LIMIT: usize = 256;
 pub const DIMENSIONS: usize = 384;
 pub const BATCH_SIZE: usize = 8;
 const QUERY_INSTRUCTION: &str = "Represent this sentence for searching relevant passages: ";
+const LOAD_BACKOFF: Duration = Duration::from_secs(60);
 const IDLE: Duration = Duration::from_secs(600);
 
 struct Session {
@@ -29,9 +33,9 @@ struct Session {
 }
 
 impl Session {
-    fn load() -> candle_core::Result<Self> {
+    fn load(weights: &[u8]) -> candle_core::Result<Self> {
         let config: Config = serde_json::from_slice(CONFIG).map_err(candle_core::Error::wrap)?;
-        let vb = VarBuilder::from_slice_safetensors(WEIGHTS, DType::F32, &Device::Cpu)?;
+        let vb = VarBuilder::from_slice_safetensors(weights, DType::F32, &Device::Cpu)?;
         Ok(Self {
             model: BertModel::load(vb, &config)?,
             last_used: Instant::now(),
@@ -39,9 +43,24 @@ impl Session {
     }
 }
 
+#[derive(Default)]
+struct ModelState {
+    session: Option<Session>,
+    retry_after: Option<Instant>,
+}
+
 pub struct Model {
     tokenizer: Tokenizer,
-    session: Mutex<Option<Session>>,
+    session: Mutex<ModelState>,
+    weights: &'static [u8],
+    failure_logged: AtomicBool,
+    #[cfg(test)]
+    batch_barriers: Option<(
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    )>,
+    #[cfg(test)]
+    load_attempts: std::sync::atomic::AtomicUsize,
     pool: rayon::ThreadPool,
 }
 
@@ -52,7 +71,13 @@ impl Model {
         tokenizer.with_truncation(None).map_err(|e| e.to_string())?;
         Ok(Self {
             tokenizer,
-            session: Mutex::new(None),
+            session: Mutex::new(ModelState::default()),
+            weights: WEIGHTS,
+            failure_logged: AtomicBool::new(false),
+            #[cfg(test)]
+            batch_barriers: None,
+            #[cfg(test)]
+            load_attempts: std::sync::atomic::AtomicUsize::new(0),
             pool: rayon::ThreadPoolBuilder::new()
                 .num_threads(2)
                 .thread_name(|n| format!("search-cpu-{n}"))
@@ -65,14 +90,36 @@ impl Model {
     pub fn load_for_benchmark(&self) -> Result<(), String> {
         let mut guard = self.session.lock().unwrap_or_else(|e| e.into_inner());
         let state = &mut *guard;
-        self.pool
-            .install(|| -> candle_core::Result<()> {
-                if state.is_none() {
-                    *state = Some(Session::load()?);
+        self.pool.install(|| self.ensure_session(state)).map(|_| ())
+    }
+
+    fn ensure_session<'a>(&self, state: &'a mut ModelState) -> Result<&'a mut Session, String> {
+        if state.session.is_none() {
+            if state
+                .retry_after
+                .is_some_and(|until| Instant::now() < until)
+            {
+                return Err("search model load is in backoff".into());
+            }
+            #[cfg(test)]
+            self.load_attempts.fetch_add(1, Ordering::Relaxed);
+            match Session::load(self.weights) {
+                Ok(session) => {
+                    state.session = Some(session);
+                    state.retry_after = None;
                 }
-                Ok(())
-            })
-            .map_err(|e| e.to_string())
+                Err(error) => {
+                    state.retry_after = Some(Instant::now() + LOAD_BACKOFF);
+                    if !self.failure_logged.swap(true, Ordering::Relaxed) {
+                        eprintln!(
+                            "Toolport search model unavailable; using lexical ranking: {error}"
+                        );
+                    }
+                    return Err(error.to_string());
+                }
+            }
+        }
+        Ok(state.session.as_mut().unwrap())
     }
 
     pub fn dimensions(&self) -> usize {
@@ -106,14 +153,21 @@ impl Model {
         self.encode_batch(&texts.iter().map(String::as_str).collect::<Vec<_>>())
     }
 
-    pub fn encode(&self, text: &str) -> Vec<f32> {
+    #[cfg(test)]
+    pub fn encode(&self, text: &str) -> Result<Vec<f32>, String> {
         self.encode_batch(&[text])
-            .ok()
-            .and_then(|mut vectors| vectors.pop())
-            .unwrap_or_else(|| vec![0.0; DIMENSIONS])
+            .map(|mut vectors| vectors.pop().unwrap())
+    }
+
+    fn encode_query(&self, text: &str) -> Option<Vec<f32>> {
+        self.encode_batch_inner(&[text], true).ok()?.pop()
     }
 
     fn encode_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
+        self.encode_batch_inner(texts, false)
+    }
+
+    fn encode_batch_inner(&self, texts: &[&str], query: bool) -> Result<Vec<Vec<f32>>, String> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -139,14 +193,27 @@ impl Model {
             ids[n * width..n * width + encoding.len()].copy_from_slice(encoding.get_ids());
             mask[n * width..n * width + encoding.len()].fill(1);
         }
-        let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        // A ready query never queues behind catalog inference (or its Rayon job).
+        let mut session = if query {
+            match self.session.try_lock() {
+                Ok(guard) => guard,
+                Err(TryLockError::Poisoned(error)) => error.into_inner(),
+                Err(TryLockError::WouldBlock) => return Err("search encoder busy".into()),
+            }
+        } else {
+            self.session.lock().unwrap_or_else(|e| e.into_inner())
+        };
         let state = &mut *session;
-        self.pool
-            .install(|| -> candle_core::Result<Vec<Vec<f32>>> {
-                if state.is_none() {
-                    *state = Some(Session::load()?);
+        self.pool.install(|| -> Result<Vec<Vec<f32>>, String> {
+            let current = self.ensure_session(state)?;
+            #[cfg(test)]
+            if !query {
+                if let Some((started, release)) = &self.batch_barriers {
+                    started.wait();
+                    release.wait();
                 }
-                let current = state.as_mut().unwrap();
+            }
+            let infer = || -> candle_core::Result<Vec<Vec<f32>>> {
                 let shape = (texts.len(), width);
                 let input = Tensor::from_vec(ids, shape, &Device::Cpu)?;
                 let attention = Tensor::from_vec(mask, shape, &Device::Cpu)?;
@@ -164,20 +231,37 @@ impl Model {
                     }
                     vectors.push(vector);
                 }
-                current.last_used = Instant::now();
                 Ok(vectors)
-            })
-            .map_err(|e| e.to_string())
+            };
+            let vectors = infer().map_err(|e| e.to_string());
+            current.last_used = Instant::now();
+            vectors
+        })
     }
 
     fn unload_idle(&self, now: Instant) {
         let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
-        if session
+        let dropped = session
+            .session
             .as_ref()
-            .is_some_and(|s| now.saturating_duration_since(s.last_used) >= IDLE)
-        {
-            *session = None;
+            .is_some_and(|s| now.saturating_duration_since(s.last_used) >= IDLE);
+        if dropped {
+            session.session = None;
         }
+        drop(session);
+        if dropped {
+            release_allocator_memory();
+        }
+    }
+}
+
+/// Reclaim freed tensor/batch allocations at lifecycle boundaries, not per query.
+pub fn release_allocator_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: glibc malloc_trim is thread-safe and only releases allocator-owned
+    // free pages. No live tensor, tokenizer or embedded asset is invalidated.
+    unsafe {
+        libc::malloc_trim(0);
     }
 }
 
@@ -443,36 +527,90 @@ pub fn with_native_queries_for_measurement<T>(measure: impl FnOnce() -> T) -> T 
     measure()
 }
 
-pub fn query_vector(query: &str) -> Vec<f32> {
+#[cfg(test)]
+std::thread_local! {
+    static QUERY_MODEL: std::cell::RefCell<Option<std::sync::Arc<Model>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub fn with_query_model<T>(model: std::sync::Arc<Model>, run: impl FnOnce() -> T) -> T {
+    struct Restore(Option<std::sync::Arc<Model>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            QUERY_MODEL.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(QUERY_MODEL.with(|slot| slot.replace(Some(model))));
+    run()
+}
+
+#[cfg(test)]
+pub fn with_inflight_batch<T>(run: impl FnOnce(std::sync::Arc<Model>) -> T) -> T {
+    let mut model = Model::load().unwrap();
+    let started = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+    model.batch_barriers = Some((started.clone(), release.clone()));
+    let model = std::sync::Arc::new(model);
+    let worker_model = model.clone();
+    let worker = std::thread::spawn(move || {
+        worker_model.encode_documents(&["catalog background document"; BATCH_SIZE])
+    });
+    started.wait();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(model)));
+    release.wait();
+    assert_eq!(worker.join().unwrap().unwrap().len(), BATCH_SIZE);
+    result.unwrap_or_else(|error| std::panic::resume_unwind(error))
+}
+
+#[cfg(test)]
+pub fn unavailable_model() -> std::sync::Arc<Model> {
+    let mut model = Model::load().unwrap();
+    model.weights = b"corrupted weight asset";
+    std::sync::Arc::new(model)
+}
+
+pub fn query_vector(query: &str) -> Option<Vec<f32>> {
+    #[cfg(test)]
+    if let Some(model) = QUERY_MODEL.with(|slot| slot.borrow().clone()) {
+        return model.encode_query(&format!("{QUERY_INSTRUCTION}{query}"));
+    }
     #[cfg(test)]
     if NATIVE_MEASUREMENT.with(std::cell::Cell::get) {
-        return model().encode(&format!("{QUERY_INSTRUCTION}{query}"));
+        return model().encode(&format!("{QUERY_INSTRUCTION}{query}")).ok();
     }
 
     #[cfg(test)]
     if let Some(vectors) = benchmark_vectors() {
-        return serde_json::from_value(vectors["queries_vectors"][query].clone())
-            .expect("benchmark query vector");
+        return Some(
+            serde_json::from_value(vectors["queries_vectors"][query].clone())
+                .expect("benchmark query vector"),
+        );
     }
     #[cfg(test)]
     {
         if let Some(vector) = fixture_vector(&format!("{QUERY_INSTRUCTION}{query}")) {
-            return vector;
+            return Some(vector);
         }
         // Each distinct query is still encoded by the native model. Quality and
         // handler tests reuse that exact result rather than repeating inference.
         static QUERIES: OnceLock<Mutex<std::collections::HashMap<String, Vec<f32>>>> =
             OnceLock::new();
-        QUERIES
-            .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(query.to_owned())
-            .or_insert_with(|| model().encode(&format!("{QUERY_INSTRUCTION}{query}")))
-            .clone()
+        Some(
+            QUERIES
+                .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(query.to_owned())
+                .or_insert_with(|| {
+                    model()
+                        .encode(&format!("{QUERY_INSTRUCTION}{query}"))
+                        .expect("bundled BGE query")
+                })
+                .clone(),
+        )
     }
     #[cfg(not(test))]
-    model().encode(&format!("{QUERY_INSTRUCTION}{query}"))
+    model().encode_query(&format!("{QUERY_INSTRUCTION}{query}"))
 }
 
 pub fn cosine(left: &[f32], right: &[f32]) -> f64 {
@@ -491,9 +629,9 @@ pub fn enabled() -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn bge_rendering_preserves_prose_and_schema_order() {
+    fn bge_rendering_preserves_prose_and_sorts_schema_parameters() {
         let tool:Value=serde_json::from_str(r#"{"name":"github__readIssue2Comments","description":"First sentence. Later constraint.","inputSchema":{"properties":{"zFlag":{"description":"last"},"a_id":{"description":"first"}}}}"#).unwrap();
-        assert_eq!(document(&tool), "Provider: GitHub\nTool: read Issue2 Comments\nDescription: First sentence. Later constraint.\nParameters: z Flag: last; a id: first");
+        assert_eq!(document(&tool), "Provider: GitHub\nTool: read Issue2 Comments\nDescription: First sentence. Later constraint.\nParameters: a id: first; z Flag: last");
         let tool = serde_json::json!({"name":"aws_lambda__do_job","inputSchema":{"properties":{"long":{"description":"é".repeat(200)}}}});
         assert!(document(&tool).ends_with(&"é".repeat(160)));
         assert_eq!(provider_name("clerk_full_api"), "Clerk Full Api");
@@ -501,14 +639,31 @@ mod tests {
     #[test]
     fn bge_session_is_lazy_and_unloads_after_idle() {
         let m = Model::load().unwrap();
-        assert!(m.session.lock().unwrap().is_none());
+        assert!(m.session.lock().unwrap().session.is_none());
         assert_eq!(m.dimensions(), DIMENSIONS);
-        let v = m.encode("record working hours");
+        let v = m.encode("record working hours").unwrap();
         assert!((cosine(&v, &v) - 1.0).abs() < 1e-5);
-        assert!(m.session.lock().unwrap().is_some());
+        assert!(m.session.lock().unwrap().session.is_some());
         m.unload_idle(Instant::now() + IDLE + Duration::from_secs(1));
-        assert!(m.session.lock().unwrap().is_none());
-        assert_eq!(v, m.encode("record working hours"));
+        assert!(m.session.lock().unwrap().session.is_none());
+        assert_eq!(v, m.encode("record working hours").unwrap());
+    }
+    #[test]
+    fn bge_failed_load_backs_off_and_recovers() {
+        let model = unavailable_model();
+        for _ in 0..10 {
+            assert!(model.encode_query("record working hours").is_none());
+        }
+        assert_eq!(model.load_attempts.load(Ordering::Relaxed), 1);
+        assert!(model.failure_logged.load(Ordering::Relaxed));
+        model.session.lock().unwrap().retry_after = Some(Instant::now() - Duration::from_secs(1));
+        assert!(model.encode_query("record working hours").is_none());
+        assert_eq!(model.load_attempts.load(Ordering::Relaxed), 2);
+        let mut model = std::sync::Arc::try_unwrap(model).ok().unwrap();
+        model.weights = WEIGHTS;
+        model.session.lock().unwrap().retry_after = None;
+        assert!(model.encode_query("record working hours").is_some());
+        assert!(model.session.lock().unwrap().retry_after.is_none());
     }
     #[test]
     fn bge_python_parity_and_batch_padding() {

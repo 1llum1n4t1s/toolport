@@ -212,6 +212,10 @@ fn worker() -> Option<Queue> {
                 }
                 Err(error) => eprintln!("toolport: local search encoding failed: {error}"),
             }
+            // All inference temporaries have dropped; release rendered documents
+            // before trimming the worker's freed catalog/batch allocations too.
+            drop(documents);
+            search_static::release_allocator_memory();
             if let Some(completed) = job.completed {
                 let _ = completed.send(());
             }

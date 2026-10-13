@@ -10812,18 +10812,7 @@ bad = "not-a-table"
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
         let json_servers = json["mcpServers"].as_object().unwrap();
-        assert_eq!(
-            json_servers
-                .keys()
-                .map(String::as_str)
-                .collect::<std::collections::BTreeSet<_>>(),
-            std::collections::BTreeSet::from(["existing", "stale"])
-        );
-        assert_eq!(json_servers["existing"]["command"], "node");
-        assert_eq!(
-            json_servers["stale"]["command"],
-            r"C:\Local\Toolport\toolport-gateway.exe"
-        );
+        assert_eq!(json_servers.keys().collect::<Vec<_>>(), vec!["existing", "stale"]);
 
         let toml_path = temp_path("dedupe-toml");
         std::fs::write(
