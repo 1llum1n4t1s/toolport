@@ -25,10 +25,11 @@ pub fn is_memory_termination(status: &std::process::ExitStatus) -> bool {
 #[cfg(all(unix, not(target_os = "macos")))]
 pub fn configure(command: &mut Command) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
-    // glibc otherwise reserves a large arena per host-call thread, consuming
-    // the address-space limit even for small, ordinary parallel scripts.
+    // Share one glibc arena across host-call threads. Reserved arenas count
+    // against the unchanged address-space limit alongside the gateway image,
+    // including bundled model assets that this worker never uses.
     #[cfg(target_os = "linux")]
-    command.env("MALLOC_ARENA_MAX", "2");
+    command.env("MALLOC_ARENA_MAX", "1");
     // SAFETY: only async-signal-safe resource-limit syscalls run after fork.
     unsafe {
         command.pre_exec(|| {
