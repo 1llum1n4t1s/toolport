@@ -1386,18 +1386,20 @@ fn search_bge_resources() {
     )
     .unwrap();
     let mut times = Vec::new();
-    for intent in intents {
-        let start = Instant::now();
-        let _ = search_catalog_indexed(
-            &tools,
-            intent["query"].as_str().unwrap(),
-            None,
-            10,
-            None,
-            Some(&index),
-        );
-        times.push(start.elapsed().as_secs_f64() * 1000.0);
-    }
+    search_static::with_native_queries_for_measurement(|| {
+        for intent in intents {
+            let start = Instant::now();
+            let _ = search_catalog_indexed(
+                &tools,
+                intent["query"].as_str().unwrap(),
+                None,
+                10,
+                None,
+                Some(&index),
+            );
+            times.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+    });
     times.sort_by(f64::total_cmp);
     let summary = json!({"scope":"native gateway handler and production worker, separate from daemon RPC",
         "catalog_tools":tools.len(),"model_load_ms":load_ms,"encode_ms":encode_ms,

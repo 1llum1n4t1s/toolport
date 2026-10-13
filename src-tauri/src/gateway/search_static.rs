@@ -425,7 +425,31 @@ pub fn export_query_fixture(queries: &[String], output: &std::path::Path) {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static NATIVE_MEASUREMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Resource probes must measure actual query inference, independent of the
+/// unit-only immutable ranking fixture and memoized query vectors.
+#[cfg(test)]
+pub fn with_native_queries_for_measurement<T>(measure: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            NATIVE_MEASUREMENT.with(|native| native.set(self.0));
+        }
+    }
+    let _restore = Restore(NATIVE_MEASUREMENT.with(|native| native.replace(true)));
+    measure()
+}
+
 pub fn query_vector(query: &str) -> Vec<f32> {
+    #[cfg(test)]
+    if NATIVE_MEASUREMENT.with(std::cell::Cell::get) {
+        return model().encode(&format!("{QUERY_INSTRUCTION}{query}"));
+    }
+
     #[cfg(test)]
     if let Some(vectors) = benchmark_vectors() {
         return serde_json::from_value(vectors["queries_vectors"][query].clone())
