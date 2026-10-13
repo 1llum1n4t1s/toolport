@@ -1204,6 +1204,17 @@ fn drive_to_completion(
 /// we surface as a script error. `undefined` — a script that returned nothing — stays
 /// `null`, matching [`ScriptOutcome::value`]'s contract.
 fn json_from_js(context: &mut Context, value: &JsValue) -> Result<Value, JsError> {
+    // A primitive string needs at least one JSON byte per UTF-16 code unit,
+    // plus its quotes. Reject a guaranteed oversized return before stringify
+    // duplicates it in the memory-limited worker.
+    if value
+        .as_string()
+        .is_some_and(|text| text.len().saturating_add(2) > crate::codemode_worker::MAX_FRAME_BYTES)
+    {
+        return Err(JsNativeError::range()
+            .with_message("script return value exceeds the IPC limit")
+            .into());
+    }
     let json = context.global_object().get(js_string!("JSON"), context)?;
     let stringify = json
         .as_object()
