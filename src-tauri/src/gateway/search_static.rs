@@ -10,7 +10,8 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use tokenizers::{Tokenizer, TruncationParams};
 
-const WEIGHTS: &[u8] = include_bytes!("../../assets/search/model-f16.safetensors");
+// One addressable asset avoids duplicating the payload across codegen units.
+static WEIGHTS: &[u8] = include_bytes!("../../assets/search/model-f16.safetensors");
 const TOKENIZER: &[u8] = include_bytes!("../../assets/search/tokenizer.json");
 const CONFIG: &[u8] = include_bytes!("../../assets/search/config.json");
 // Retain the model and tokenizer notices in each shipping gateway.
