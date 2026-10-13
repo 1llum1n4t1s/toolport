@@ -27,6 +27,14 @@ fn key_document(text: &str) -> String {
     format!("{:x}", hash.finalize())
 }
 
+#[cfg(test)]
+pub fn seed_native_cache_for_test(tools: &dyn ToolCatalog, directory: &Path) {
+    std::fs::create_dir_all(directory).unwrap();
+    for tool in tools.iter() {
+        write(&directory.join(key(tool)), &search_static::tool_vector(tool)).unwrap();
+    }
+}
+
 fn read(path: &Path, dimensions: usize) -> Option<Vec<f32>> {
     use std::io::Read;
     let mut bytes = Vec::new();

@@ -169,10 +169,14 @@ fn search_pending_and_ready_handler_menus_match_indexed_results() {
     ];
     assert!(index.semantic_vectors.0.get().is_none());
     let _pending = measure_handler_phase(&tools, &index, &intents, "pending");
+    // Full-catalog cold BGE encoding is measured by search_bge_resources. This
+    // parity boundary uses the production content cache and keeps its 30s bound.
+    let cache = registry::conduit_dir().unwrap().join("search-vectors");
+    search_cache::seed_native_cache_for_test(&tools, &cache);
     let (send, receive) = std::sync::mpsc::channel();
     index
         .semantic_vectors
-        .start_background(tools.clone().into(), None, Some(send));
+        .start_background(tools.clone().into(), Some(cache), Some(send));
     receive.recv_timeout(Duration::from_secs(30)).unwrap();
     assert_eq!(index.semantic_vectors.0.get().unwrap().len(), tools.len());
     let _ready = measure_handler_phase(&tools, &index, &intents, "ready");
