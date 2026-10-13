@@ -6197,6 +6197,8 @@ mod tests {
             let mut stored = record.clone();
             stored.as_object_mut().unwrap().remove("record_id");
             stored.as_object_mut().unwrap().remove("profile");
+            // The saved identity remains canonical when search preserves schema order.
+            stored.sort_all_objects();
             assert_eq!(record["record_id"], format!("{:x}", Sha256::digest(stored.to_string().as_bytes())));
             let profile = summary["profile"].as_str().unwrap();
             assert_eq!(quarantine_definition((!profile.is_empty()).then_some(profile), "srv__wipe", summary["record_id"].as_str().unwrap()).unwrap(), tools[0]);
