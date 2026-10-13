@@ -263,6 +263,7 @@ test("macOS manifest includes the signed gateway helper and provisioning profile
     "Toolport.app/Contents/Helpers/ToolportGateway.app/Contents/",
     "Toolport.app/Contents/Helpers/ToolportGateway.app/Contents/MacOS/toolport-gateway",
     "Toolport.app/Contents/Helpers/ToolportGateway.app/Contents/embedded.provisionprofile",
+    "Toolport.app/Contents/CodeResources",
   ];
   assertManifest(files, "mac");
   assert.throws(
@@ -289,6 +290,7 @@ test("AppImage permits its declared deep-link and GTK runtime resources", async 
     "squashfs-root/usr/lib/girepository-1.0/Gtk-3.0.typelib",
     "squashfs-root/usr/lib/girepository-1.0/Adw-1.typelib",
     "squashfs-root/usr/lib/im-xim.so",
+    "squashfs-root/usr/lib/im-waylandgtk.so",
     "squashfs-root/usr/share/doc/libglib2.0-0/copyright",
   ];
   assertContents(paths, { appImage: true });
@@ -334,6 +336,9 @@ test("NSIS manifest scopes standard wizard and dialog assets to the plugin direc
     () => assertManifest([...product, "$PLUGINSDIR/surprise.dll"], "nsis"),
     /Unexpected/,
   );
+  // Signed release installers list unnamed items as [N].
+  assertManifest([...product, "[0]", "[0]"], "nsis");
+  assert.throws(() => assertManifest([...product, "[0].exe"], "nsis"), /Unexpected/);
 });
 
 test("PR package fixtures exercise the pacman archive checker", () => {
