@@ -53,6 +53,22 @@ for preserved settings, removed features and rollback steps.
 - Windows installs and updates while MCP clients are open, with guidance to
   restart clients afterward.
 
+## [1.24.1] - 2026-10-14
+
+The last planned 1.x feature release before Toolport 2.0. The 1.24 line keeps
+getting security fixes for three months after 2.0.0.
+
+### Added
+
+- Command Code is a supported client. Toolport finds it, connects it through
+  `~/.commandcode/mcp.json`, imports the servers already set up there, and keeps
+  agent rules in `~/.commandcode/AGENTS.md` and project `AGENTS.md` files. (#1136)
+
+### Fixed
+
+- The Linux app starts in the tray after login instead of opening its window when it
+  starts before the desktop's tray is ready. (#1011)
+
 ## [1.24.0] - 2026-10-06
 
 ### Added

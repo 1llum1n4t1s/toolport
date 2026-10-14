@@ -74,7 +74,7 @@ scripts/test-linux-packages.sh .verify/native-packages/*.deb .verify/native-pack
 ```
 
 The reusable `linux-packages.yml` job runs these steps for relevant Rust, Cargo,
-packaging, package script and workflow changes on PRs and main/next/2.0 pushes.
+packaging, package script and workflow changes on PRs and `main` pushes.
 The merge gate accepts an intentional skip for unrelated changes. Release tags
 always run the job and attach only tested packages to a draft.
 Container tests install the published v1.24.0 `.deb` on Ubuntu 24.04, seed a

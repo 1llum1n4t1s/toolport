@@ -8,6 +8,12 @@ Want to ask a question, float an idea, or talk through a change before you build
 it? Join the [Discord](https://discord.gg/Xsn27MxdBA). New contributors welcome,
 and we merge community PRs regularly.
 
+## Which branch
+
+Open pull requests against `main`, which is Toolport 2.x. The 1.24 line gets
+security and breakage fixes only, on `release/1.x`. Target that branch only when
+the fix is for 1.24.
+
 ## Quick start
 
 Requires Node 20+ and the Rust toolchain.
@@ -170,8 +176,8 @@ commit, and manual runs against the checked commit's parent. Compare against
 your target branch, and format only affected hunks when needed:
 
 ```bash
-RUSTUP_TOOLCHAIN=1.99.0 python3 scripts/check-rustfmt.py --base origin/next/2.0
-RUSTUP_TOOLCHAIN=1.99.0 python3 scripts/check-rustfmt.py --base origin/next/2.0 --fix
+RUSTUP_TOOLCHAIN=1.99.0 python3 scripts/check-rustfmt.py --base origin/main
+RUSTUP_TOOLCHAIN=1.99.0 python3 scripts/check-rustfmt.py --base origin/main --fix
 ```
 
 If your editor formats Rust on save, turn it off for this repo:
