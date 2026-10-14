@@ -6,11 +6,11 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ## [Unreleased]
 
-## [2.0.0-rc.1] - 2026-10-13
+## [2.0.0] - 2026-10-14
 
-Toolport 2.0 is a release candidate. Existing 1.24.x installs are not updated
-to it automatically. To try it, download and install the matching package from
-the [GitHub release assets](https://github.com/btsouth/toolport/releases/tag/v2.0.0-rc.1).
+Toolport 2.0 is here. Existing 1.24.x installs are not updated to it
+automatically yet. To upgrade now, download and install the matching package from
+the [GitHub release assets](https://github.com/btsouth/toolport/releases/tag/v2.0.0).
 Read the [upgrade guide](https://github.com/btsouth/toolport/blob/next/2.0/docs/migration.md)
 for preserved settings, removed features and rollback steps.
 
