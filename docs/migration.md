@@ -125,8 +125,8 @@ Review them in the client if you want the old rules or hooks removed.
    `registry.json.v1-<time>.bak` over `registry.json` in the same data folder.
    This restores the pre-upgrade setup and excludes later changes made in 2.0.
    A v2 backup is not a substitute for the v1 backup.
-3. Install the 1.24 package for your platform from
-   [GitHub Releases](https://github.com/btsouth/toolport/releases/tag/v1.24.0).
+3. Install the 1.24.1 package for your platform from
+   [GitHub Releases](https://github.com/btsouth/toolport/releases/tag/v1.24.1).
    If you changed client connections in 2.0, review their config backups and
    restore or reconnect them with 1.24 as needed. Then restart Toolport and clients.
 
