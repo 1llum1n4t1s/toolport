@@ -697,6 +697,10 @@ l10n::bind_dialog_heading(&error_dialog, msg("Could not start data removal"));
                 }
                 match saved {
                     Ok(()) => {
+                        if let Some(feedback) = feedback.upgrade() {
+                            feedback.set_label("");
+                            feedback.remove_css_class("error");
+                        }
                         l10n::refresh_bindings();
                         super::tray::refresh_language();
                     }
