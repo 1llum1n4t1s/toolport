@@ -679,6 +679,11 @@ l10n::bind_dialog_heading(&error_dialog, msg("Could not start data removal"));
             let Some(choice) = crate::ui_settings::LANGUAGES.get(picker.selected() as usize) else {
                 return;
             };
+            // GTK can deliver a selected notification after the model refresh.
+            // An unchanged saved choice must not start another save/refresh cycle.
+            if *choice == crate::i18n::language() {
+                return;
+            }
             let choice = (*choice).to_owned();
             picker.set_sensitive(false);
             let picker = picker.downgrade();
