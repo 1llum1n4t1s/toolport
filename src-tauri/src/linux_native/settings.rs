@@ -691,7 +691,7 @@ l10n::bind_dialog_heading(&error_dialog, msg("Could not start data removal"));
             gtk::glib::MainContext::default().spawn_local(async move {
                 let saved = gtk::gio::spawn_blocking(move || crate::i18n::set_language(&choice))
                     .await
-                    .unwrap_or_else(|error| Err(error.to_string()));
+                    .unwrap_or_else(|_| Err("language preference worker stopped".to_owned()));
                 if let Some(picker) = picker.upgrade() {
                     picker.set_sensitive(true);
                 }
