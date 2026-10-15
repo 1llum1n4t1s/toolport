@@ -378,7 +378,7 @@ impl TeamsPage {
         );
         let group = gtk::Box::new(gtk::Orientation::Vertical, 10);
         group.add_css_class("toolport-settings-group");
-        group.append(&super::section_heading(&tr("Use a manual code"), &tr("If your browser cannot open Toolport, copy the manual code shown after approving this device.")));
+        group.append(&super::section_heading(crate::i18n::msg("Use a manual code"), crate::i18n::msg("If your browser cannot open Toolport, copy the manual code shown after approving this device.")));
         let url = gtk::Entry::builder()
             .text(crate::teams::HOSTED_TEAMS_URL)
             .build();

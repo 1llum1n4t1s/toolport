@@ -706,7 +706,7 @@ fn open_exposure_editor(
         )
         .build();
     root.append(&super::editor_field(
-        &crate::i18n::tr("Exposed name"),
+        crate::i18n::msg("Exposed name"),
         &name,
     ));
     let description = gtk::TextView::new();
@@ -723,7 +723,7 @@ fn open_exposure_editor(
         .child(&description)
         .build();
     root.append(&super::editor_field(
-        &crate::i18n::tr("Replacement description"),
+        crate::i18n::msg("Replacement description"),
         &description_scroll,
     ));
     root.append(&{

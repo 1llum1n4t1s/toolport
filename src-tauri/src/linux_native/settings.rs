@@ -2424,8 +2424,8 @@ fn open_access_tool_scope(
     content.add_css_class("toolport-editor-body");
     content.append(&super::editor_intro(
         "view-list-symbolic",
-        &tr("Tools available in this access set"),
-        &tr("Uncheck tools this access set should hide. Selecting every tool restores the server's default full scope."),
+        crate::i18n::msg("Tools available in this access set"),
+        crate::i18n::msg("Uncheck tools this access set should hide. Selecting every tool restores the server's default full scope."),
     ));
     let feedback = source_label(
         msg("Loading server tools…"),

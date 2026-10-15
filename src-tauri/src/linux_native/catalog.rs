@@ -512,8 +512,8 @@ impl CatalogPage {
         if entries.is_empty() {
             self.list.append(&super::state_card(
                 "edit-find-symbolic",
-                &crate::i18n::tr("No matching servers"),
-                &crate::i18n::tr("Try a broader name or capability."),
+                crate::i18n::msg("No matching servers"),
+                crate::i18n::msg("Try a broader name or capability."),
                 false,
             ));
             return;
