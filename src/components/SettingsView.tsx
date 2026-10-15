@@ -1160,9 +1160,9 @@ export function SettingsView({
             <div className="flex shrink-0 gap-0.5 rounded-md border bg-background p-0.5">
               {(
                 [
-                  ["light", Sun, "Light"],
-                  ["system", Monitor, "System"],
-                  ["dark", Moon, "Dark"],
+                  ["light", Sun, t("Light")],
+                  ["system", Monitor, t("System")],
+                  ["dark", Moon, t("Dark")],
                 ] as [Theme, typeof Sun, string][]
               ).map(([value, Icon, label]) => (
                 <button
