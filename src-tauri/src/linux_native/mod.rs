@@ -10939,7 +10939,7 @@ fn finish_credential_update(
         }
         Err(_) => {
             l10n::bind_text(
-                &feedback,
+                feedback,
                 "Could not update credential: the operation stopped",
             );
             feedback.set_visible(true);

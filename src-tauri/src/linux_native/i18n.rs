@@ -134,6 +134,12 @@ pub(super) fn bind_label_with(widget: &gtk::Label, formatter: impl Fn() -> Strin
     );
 }
 
+pub(super) fn formatted_label(source: &'static str, values: &[(&str, &str)]) -> gtk::Label {
+    let widget = gtk::Label::new(None);
+    bind_formatted_label(&widget, source, values);
+    widget
+}
+
 pub(super) fn bind_formatted_label(
     widget: &gtk::Label,
     source: &'static str,
