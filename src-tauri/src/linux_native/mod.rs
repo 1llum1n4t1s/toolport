@@ -2807,7 +2807,7 @@ impl ClientPage {
                     client["clientLabel"].as_str(),
                 );
                 let tooltip = if name == "Unrecorded client" {
-                    crate::clients::UNRECORDED_CLIENT_TOOLTIP.to_string()
+                    unrecorded_client_tooltip()
                 } else {
                     crate::i18n::trf(
                         "{value0} recorded sessions. Reports itself as: {value1}",
@@ -2818,14 +2818,21 @@ impl ClientPage {
                             ),
                             (
                                 "value1",
-                                client["clientLabel"].as_str().unwrap_or("not provided"),
+                                client["clientLabel"]
+                                    .as_str()
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| crate::i18n::tr("not provided"))
+                                    .as_str(),
                             ),
                         ],
                     )
                 };
                 row.append(
                     &gtk::Label::builder()
-                        .label(name)
+                        .label(localized_caller_name(
+                            client["clientName"].as_str(),
+                            client["clientLabel"].as_str(),
+                        ))
                         .tooltip_text(tooltip)
                         .halign(gtk::Align::Start)
                         .css_classes(["heading"])
@@ -3398,7 +3405,12 @@ fn client_scope_menu(client: state::ClientView, page: ClientPage) -> gtk::MenuBu
         .map(|scope| scope.to_string())
         .unwrap_or_else(|| crate::i18n::tr("Default access").to_string());
     // "Default access" and "All enabled servers" already say what they are.
-    let label = if label.starts_with("Default access") || label == "All enabled servers" {
+    let label = if client
+        .scope_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .is_none_or(|id| id == crate::registry::ALL_ENABLED_ACCESS)
+    {
         label
     } else {
         crate::i18n::trf("Access: {value0}", &[("value0", &label.to_string())])
@@ -4673,9 +4685,10 @@ impl ActivityPage {
             }
             self.expanded_stat_servers.borrow_mut().clear();
             self.server_stat_order.borrow_mut().clear();
-            self.stats_list.append(&empty_activity_label(
-                "Per-server statistics appear once calls are retained.",
-            ));
+            self.stats_list
+                .append(&empty_activity_source_label(crate::i18n::msg(
+                    "Per-server statistics appear once calls are retained.",
+                )));
         } else {
             let mut stats = snapshot.server_stats.clone();
             let current_servers = stats.iter().map(stat_server_name).collect::<Vec<_>>();
@@ -4705,9 +4718,7 @@ impl ActivityPage {
         }
         if traces_changed {
             if snapshot.search_traces.is_empty() {
-                self.search_list.append(&empty_activity_label(
-                    if snapshot.recent.iter().any(|row| row.internal && row.tool == "search") { "Recent activity includes tool searches; detailed search records are not available." } else { "Nothing searched yet." },
-                ));
+                self.search_list.append(&empty_activity_source_label(if snapshot.recent.iter().any(|row| row.internal && row.tool == "search") { crate::i18n::msg("Recent activity includes tool searches; detailed search records are not available.") } else { crate::i18n::msg("Nothing searched yet.") }));
             } else {
                 for trace in &snapshot.search_traces {
                     self.search_list.append(&search_trace_card(
@@ -4719,9 +4730,10 @@ impl ActivityPage {
         }
         if inspect_changed {
             if snapshot.inspect_calls.is_empty() {
-                self.inspect_list.append(&empty_activity_label(
-                    "Live inspection is off or has not captured a call.",
-                ));
+                self.inspect_list
+                    .append(&empty_activity_source_label(crate::i18n::msg(
+                        "Live inspection is off or has not captured a call.",
+                    )));
             } else {
                 for capture in &snapshot.inspect_calls {
                     self.inspect_list
@@ -4743,9 +4755,10 @@ impl ActivityPage {
             self.set_security_status(&[]);
             self.security_expander
                 .set_label(Some(&crate::i18n::tr("Protection history · Clear")));
-            self.security_list.append(&empty_activity_label(
-                "No tool changes or suspicious content to review.",
-            ));
+            self.security_list
+                .append(&empty_activity_source_label(crate::i18n::msg(
+                    "No tool changes or suspicious content to review.",
+                )));
             return;
         }
         let live: Vec<serde_json::Value> = {
@@ -4761,9 +4774,7 @@ impl ActivityPage {
                 .set_label(Some(&crate::i18n::tr("Protection history · Reviewed")));
             // The calm "you're protected" state: a protection the user never
             // sees builds no trust.
-            self.security_list.append(&empty_activity_label(
-                "Protection active. Toolport is watching tool definitions and results. Nothing needs your attention right now.",
-            ));
+            self.security_list.append(&empty_activity_source_label(crate::i18n::msg("Protection active. Toolport is watching tool definitions and results. Nothing needs your attention right now.")));
             return;
         }
         let (older, live): (Vec<_>, Vec<_>) = live
@@ -4998,12 +5009,12 @@ impl ActivityPage {
         };
         self.savings_share.set_visible(has_catalog);
         self.savings_value.set_label(&primary);
-        self.savings_unit.set_label(unit);
+        l10n::bind_label(&self.savings_unit, unit);
         let old = savings_old_estimate_display(snapshot.savings_previous_tokens);
         self.savings_old_estimate.set_visible(old.is_some());
         self.savings_old_estimate
             .set_label(old.as_deref().unwrap_or(""));
-        let mut detail = String::from("The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. Compact JSON and search response text are counted with cl100k_base. Every tools/list and search response is subtracted. Sessionless HTTP, initial catalogs above known client limits, and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.");
+        let mut detail = crate::i18n::tr("The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. We count compact JSON and search response text with cl100k_base, then subtract every tools/list and search response. Sessionless HTTP, initial catalogs above known client limits, and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.");
         if has_catalog || discovered {
             detail.push_str(&crate::i18n::trf("\n{value0} baseline tokens − {value1} catalog response tokens − {value2} search response tokens = {value3} net tokens saved.\n{value4} client sessions; {value5} catalog responses; {value6} search responses.\n{value7} baseline catalog text; {value8} catalog text sent; {value9} search text sent.", &[("value0", &grouped_number(snapshot.savings_full_tokens).to_string()), ("value1", &grouped_number(snapshot.savings_exposed_tokens).to_string()), ("value2", &grouped_number(snapshot.savings_discovery_tokens).to_string()), ("value3", &format!("{}", snapshot.tokens_saved)), ("value4", &format!("{}", snapshot.savings_tokenized_loads)), ("value5", &format!("{}", snapshot.savings_list_loads)), ("value6", &format!("{}", snapshot.savings_discovery_count)), ("value7", &format_byte_count(snapshot.savings_full_bytes).to_string()), ("value8", &format_byte_count(snapshot.savings_exposed_bytes).to_string()), ("value9", &format_byte_count(snapshot.savings_discovery_bytes).to_string())]));
         }
@@ -5121,16 +5132,16 @@ impl ActivityPage {
             return;
         }
         if snapshot.tool_identities.is_empty() {
-            self.identity_list.append(&empty_activity_label(
-                "No tool baselines pinned yet. Identities appear after a client lists tools through the gateway.",
-            ));
+            self.identity_list.append(&empty_activity_source_label(crate::i18n::msg("No tool baselines pinned yet. Identities appear after a client lists tools through the gateway.")));
             return;
         }
         let query = self.identity_search.text().to_lowercase();
         let filtered = filter_tool_identities(&snapshot.tool_identities, &query);
         if filtered.is_empty() {
             self.identity_list
-                .append(&empty_activity_label("No pinned tool matches the filter."));
+                .append(&empty_activity_source_label(crate::i18n::msg(
+                    "No pinned tool matches the filter.",
+                )));
             return;
         }
         let groups = state::group_tool_identities(&filtered);
@@ -5234,6 +5245,12 @@ impl ActivityPage {
             }
         });
     }
+}
+
+fn empty_activity_source_label(source: &'static str) -> gtk::Label {
+    let label = empty_activity_label(source);
+    l10n::bind_label(&label, source);
+    label
 }
 
 fn empty_activity_label(message: &str) -> gtk::Label {
@@ -5533,9 +5550,9 @@ fn tool_change_group_card(
         .iter()
         .any(|event| event.get("signatures").is_some())
     {
-        card.append(&empty_activity_label(
+        card.append(&empty_activity_source_label(crate::i18n::msg(
             "Suspicious content found. Review and accept each tool separately.",
-        ));
+        )));
     }
     let events = group.tools.clone();
     accept.connect_clicked(move |button| {
@@ -6054,7 +6071,9 @@ fn search_trace_card(
         list.set_margin_top(8);
         let lines = trace_ranking_lines(&trace_for_expand);
         if lines.is_empty() {
-            list.append(&empty_activity_label("No tools matched this query."));
+            list.append(&empty_activity_source_label(crate::i18n::msg(
+                "No tools matched this query.",
+            )));
         }
         for line in lines {
             list.append(
@@ -6273,10 +6292,13 @@ fn savings_primary_display(
     if loads == 0 {
         return (
             format_byte_count(discovery_bytes),
-            "discovery text returned",
+            crate::i18n::msg("discovery text returned"),
         );
     }
-    (format_saved_tokens(tokens_saved), "net tokens saved")
+    (
+        format_saved_tokens(tokens_saved),
+        crate::i18n::msg("net tokens saved"),
+    )
 }
 
 fn savings_share_line(tokens_saved: i64, loads: u64, searches: u64, bytes: u64) -> String {
@@ -6338,7 +6360,7 @@ fn pii_badge(
         return Some((
             crate::i18n::trf("{value0} values masked, incomplete", &[("value0", &format!("{}", replaced))]),
             "review",
-            "The pseudonymization pass did not fully apply - some values reached the model in the clear (the session map was full, or the result exceeded the scan cap).",
+            crate::i18n::msg("The pseudonymization pass did not fully apply - some values reached the model in the clear (the session map was full, or the result exceeded the scan cap)."),
         ));
     }
     if replaced == 0 {
@@ -6347,23 +6369,124 @@ fn pii_badge(
     Some((
         crate::i18n::trf(if replaced == 1 { crate::i18n::msg("{value0} value masked") } else { crate::i18n::msg("{value0} values masked") }, &[("value0", &format!("{}", replaced))]),
         "success",
-        "Personal values in this result were replaced before reaching the model. The values themselves are never logged.",
+        crate::i18n::msg("Personal values in this result were replaced before reaching the model. The values themselves are never logged."),
     ))
 }
 
 fn activity_title(activity: &state::ActivityView) -> String {
     if activity.internal {
         match activity.tool.as_str() {
-            "search" => "Searched tools",
-            "describe" => "Looked up a tool",
-            "status" => "Checked Toolport status",
-            "fetch" => "Retrieved a tool result",
-            _ => "Used Toolport",
+            "search" => crate::i18n::msg("Searched tools"),
+            "describe" => crate::i18n::msg("Looked up a tool"),
+            "status" => crate::i18n::msg("Checked Toolport status"),
+            "fetch" => crate::i18n::msg("Retrieved a tool result"),
+            _ => crate::i18n::msg("Used Toolport"),
         }
         .into()
     } else {
         format!("{} / {}", activity.server, activity.tool)
     }
+}
+
+// Canonical caller strings are identity/control data. Only these known fallback
+// cases are presentation sources; user-reported names are inserted verbatim.
+fn localized_caller_name(name: Option<&str>, label: Option<&str>) -> String {
+    let canonical = crate::clients::display_caller_name(name, label);
+    if name.is_some_and(|name| {
+        !name.is_empty()
+            && !matches!(
+                name,
+                "An AI client" | "Unknown client" | "Unrecorded client"
+            )
+    }) {
+        return canonical;
+    }
+    if let Some(name) = label.filter(|label| !label.is_empty()) {
+        return crate::i18n::trf("{name} (reported)", &[("name", name)]);
+    }
+    match canonical.as_str() {
+        "Unknown client" => crate::i18n::tr("Unknown client"),
+        "Unrecorded client" => crate::i18n::tr("Unrecorded client"),
+        _ => canonical,
+    }
+}
+fn unrecorded_client_tooltip() -> String {
+    crate::i18n::tr("Older Toolport versions did not record callers for these rows.")
+}
+fn activity_client_display(activity: &state::ActivityView) -> String {
+    let canonical = crate::clients::display_caller_name(
+        activity.client.as_deref(),
+        activity.client_label.as_deref(),
+    );
+    let display =
+        localized_caller_name(activity.client.as_deref(), activity.client_label.as_deref());
+    if canonical.ends_with(" (reported)") {
+        return display;
+    }
+    match activity
+        .client_label
+        .as_deref()
+        .filter(|label| !crate::clients::label_only_adds_version(&canonical, label))
+    {
+        Some(label) => crate::i18n::trf(
+            "{value0} (reports \"{value1}\")",
+            &[("value0", &display), ("value1", label)],
+        ),
+        None => display,
+    }
+}
+fn activity_detail(activity: &state::ActivityView) -> String {
+    let outcome = activity.approval_decision.as_deref().map(approval_outcome);
+    let mut detail = vec![
+        activity_client_display(activity),
+        relative_activity_time(activity.timestamp_ms),
+    ];
+
+    if let Some(kind) = &activity.failure_kind {
+        detail.push(kind.replace('_', " "));
+    }
+
+    if let Some(duration) = activity.duration_ms {
+        detail.push(if outcome.is_some() {
+            crate::i18n::trf(
+                "waited {value0}",
+                &[("value0", &format_duration(duration).to_string())],
+            )
+        } else {
+            format_duration(duration)
+        });
+    }
+    detail.join(" · ")
+}
+fn activity_detail_tooltip(activity: &state::ActivityView) -> String {
+    format!(
+        "{}{}{}{}",
+        if activity_client_name(activity) == "Unrecorded client" {
+            unrecorded_client_tooltip()
+        } else {
+            activity.client_id.as_deref().unwrap_or_default().to_owned()
+        },
+        activity
+            .run_id
+            .as_ref()
+            .map(|id| crate::i18n::trf("\nRun: {value0}", &[("value0", &id.to_string())]))
+            .unwrap_or_default(),
+        activity
+            .cold
+            .map(|cold| if cold {
+                crate::i18n::tr("\nCold catalog")
+            } else {
+                crate::i18n::tr("\nWarm catalog")
+            })
+            .unwrap_or_default(),
+        activity
+            .dispatch_ms
+            .map(|ms| crate::i18n::trf(
+                "\nDispatch: {value0}",
+                &[("value0", &format_duration(ms).to_string())]
+            ))
+            .unwrap_or_default()
+    )
 }
 
 fn activity_card(activity: &state::ActivityView) -> gtk::Box {
@@ -6401,73 +6524,37 @@ fn activity_card(activity: &state::ActivityView) -> gtk::Box {
 
     let copy = gtk::Box::new(gtk::Orientation::Vertical, 3);
     copy.set_hexpand(true);
-    copy.append(
-        &gtk::Label::builder()
-            .label(activity_title(activity))
-            .tooltip_text(format!("{} / {}", activity.server, activity.tool))
-            .halign(gtk::Align::Fill)
-            .xalign(0.0)
-            .wrap(true)
-            .css_classes(["heading"])
-            .build(),
-    );
-    let mut detail = vec![
-        activity_client_name(activity),
-        relative_activity_time(activity.timestamp_ms),
-    ];
-
-    if let Some(kind) = &activity.failure_kind {
-        detail.push(kind.replace('_', " "));
-    }
-
-    if let Some(duration) = activity.duration_ms {
-        detail.push(if outcome.is_some() {
-            crate::i18n::trf(
-                "waited {value0}",
-                &[("value0", &format_duration(duration).to_string())],
-            )
-        } else {
-            format_duration(duration)
+    let heading = gtk::Label::builder()
+        .label(activity_title(activity))
+        .tooltip_text(format!("{} / {}", activity.server, activity.tool))
+        .halign(gtk::Align::Fill)
+        .xalign(0.0)
+        .wrap(true)
+        .css_classes(["heading"])
+        .build();
+    if activity.internal {
+        let activity = activity.clone();
+        l10n::bind_label_with(&heading, move || {
+            crate::i18n::lookup(&activity_title(&activity))
         });
     }
-    copy.append(
-        &gtk::Label::builder()
-            .label(detail.join(" · "))
-            .tooltip_text(format!(
-                "{}{}{}{}",
-                if activity_client_name(activity) == "Unrecorded client" {
-                    crate::clients::UNRECORDED_CLIENT_TOOLTIP
-                } else {
-                    activity.client_id.as_deref().unwrap_or("")
-                },
-                activity
-                    .run_id
-                    .as_ref()
-                    .map(|id| crate::i18n::trf("\nRun: {value0}", &[("value0", &id.to_string())]))
-                    .unwrap_or_default(),
-                activity
-                    .cold
-                    .map(|cold| if cold {
-                        "\nCold catalog"
-                    } else {
-                        "\nWarm catalog"
-                    })
-                    .unwrap_or(""),
-                activity
-                    .dispatch_ms
-                    .map(|ms| crate::i18n::trf(
-                        "\nDispatch: {value0}",
-                        &[("value0", &format_duration(ms).to_string())]
-                    ))
-                    .unwrap_or_default()
-            ))
-            .halign(gtk::Align::Fill)
-            .xalign(0.0)
-            .single_line_mode(true)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .css_classes(["toolport-muted"])
-            .build(),
-    );
+    copy.append(&heading);
+    let detail_label = gtk::Label::builder()
+        .label(activity_detail(activity))
+        .tooltip_text(activity_detail_tooltip(activity))
+        .halign(gtk::Align::Fill)
+        .xalign(0.0)
+        .single_line_mode(true)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .css_classes(["toolport-muted"])
+        .build();
+    let activity_for_detail = activity.clone();
+    l10n::bind_label_with(&detail_label, move || activity_detail(&activity_for_detail));
+    let activity_for_tooltip = activity.clone();
+    l10n::bind_tooltip_with(&detail_label, move || {
+        activity_detail_tooltip(&activity_for_tooltip)
+    });
+    copy.append(&detail_label);
     if let Some(error) = activity.error.as_deref() {
         copy.append(
             &gtk::Label::builder()
@@ -6484,23 +6571,37 @@ fn activity_card(activity: &state::ActivityView) -> gtk::Box {
     if let Some((label, class, tooltip)) = pii_badge(activity.pii_replaced, activity.pii_incomplete)
     {
         let badge = gtk::Label::new(Some(&label));
+        l10n::bind_formatted_label(
+            &badge,
+            if activity.pii_incomplete {
+                crate::i18n::msg("{value0} values masked, incomplete")
+            } else if activity.pii_replaced == Some(1) {
+                crate::i18n::msg("{value0} value masked")
+            } else {
+                crate::i18n::msg("{value0} values masked")
+            },
+            &[(
+                "value0",
+                &activity.pii_replaced.unwrap_or_default().to_string(),
+            )],
+        );
         badge.add_css_class("toolport-badge");
         badge.set_valign(gtk::Align::Center);
         badge.set_halign(gtk::Align::Start);
         badge.add_css_class(class);
-        badge.set_tooltip_text(Some(tooltip));
+        l10n::bind_tooltip(&badge, tooltip);
         card.append(&badge);
     }
     let (status, class) = if let Some((label, _, tone, _)) = outcome {
         (label, tone)
     } else if activity.held {
-        ("Held", "review")
+        (crate::i18n::msg("Held"), "review")
     } else if activity.ok {
-        ("Succeeded", "success")
+        (crate::i18n::msg("Succeeded"), "success")
     } else {
-        ("Failed", "disabled")
+        (crate::i18n::msg("Failed"), "disabled")
     };
-    let badge = gtk::Label::new(Some(status));
+    let badge = l10n::label(status);
     badge.add_css_class("toolport-badge");
     badge.set_valign(gtk::Align::Center);
     badge.set_halign(gtk::Align::Start);
@@ -6520,38 +6621,43 @@ fn approval_outcome(
     // Adwaita symbolic icons, also available in Omarchy's inherited icon theme.
     match decision {
         "approved" => (
-            "Approved",
+            crate::i18n::msg("Approved"),
             "security-medium-symbolic",
             "success",
             Some("object-select-symbolic"),
         ),
         "denied" => (
-            "Denied",
+            crate::i18n::msg("Denied"),
             "security-medium-symbolic",
             "approval-denied",
             Some("window-close-symbolic"),
         ),
         "no_response" => (
-            "No answer",
+            crate::i18n::msg("No answer"),
             "preferences-system-time-symbolic",
             "approval-warning",
             None,
         ),
-        "withdrawn" => ("Withdrawn", "edit-undo-symbolic", "disabled", None),
+        "withdrawn" => (
+            crate::i18n::msg("Withdrawn"),
+            "edit-undo-symbolic",
+            "disabled",
+            None,
+        ),
         "stale_state" => (
-            "Changed after approval",
+            crate::i18n::msg("Changed after approval"),
             "dialog-warning-symbolic",
             "approval-warning",
             None,
         ),
         "unreachable" => (
-            "No approver available",
+            crate::i18n::msg("No approver available"),
             "dialog-warning-symbolic",
             "approval-warning",
             None,
         ),
         _ => (
-            "Approval event",
+            crate::i18n::msg("Approval event"),
             "dialog-information-symbolic",
             "disabled",
             None,
@@ -6670,7 +6776,17 @@ fn server_stat_row(
     let title = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     title.append(
         &gtk::Label::builder()
-            .label(&server)
+            .label(
+                if stat
+                    .get("server")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|name| !name.trim().is_empty())
+                {
+                    server.clone()
+                } else {
+                    crate::i18n::tr("Unknown server")
+                },
+            )
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .hexpand(true)
@@ -6711,13 +6827,16 @@ fn server_stat_row(
         let list = gtk::Box::new(gtk::Orientation::Vertical, 4);
         list.set_margin_top(8);
         if tools.is_empty() {
-            list.append(&empty_activity_label("No per-tool rows retained."));
+            list.append(&empty_activity_source_label(crate::i18n::msg(
+                "No per-tool rows retained.",
+            )));
         }
         for tool in tools {
             let name = tool
                 .get("tool")
                 .and_then(serde_json::Value::as_str)
-                .unwrap_or("Unknown tool");
+                .map(str::to_owned)
+                .unwrap_or_else(|| crate::i18n::tr("Unknown tool"));
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
             row.add_css_class("toolport-stat-row");
             row.append(
@@ -7306,9 +7425,9 @@ fn approval_card(
     card.append(&{
         let widget = gtk::Label::builder()
             .tooltip_text(if requester == "Unrecorded client" {
-                crate::clients::UNRECORDED_CLIENT_TOOLTIP
+                unrecorded_client_tooltip()
             } else {
-                view.client.as_deref().unwrap_or("")
+                view.client.as_deref().unwrap_or("").to_owned()
             })
             .label("")
             .halign(gtk::Align::Start)
@@ -7316,14 +7435,31 @@ fn approval_card(
             .wrap(true)
             .css_classes(["toolport-muted"])
             .build();
-        l10n::bind_formatted_label(
-            &widget,
-            "{value0} wants to run this · {value1}",
-            &[
-                ("value0", &requester.to_string()),
-                ("value1", &crate::i18n::lookup(approval_reason(view.reason))),
-            ],
-        );
+        let view_for_requester = view.clone();
+        l10n::bind_label_with(&widget, move || {
+            crate::i18n::trf(
+                "{value0} wants to run this · {value1}",
+                &[
+                    (
+                        "value0",
+                        &localized_caller_name(
+                            Some(&view_for_requester.client_name),
+                            view_for_requester.client_label.as_deref(),
+                        ),
+                    ),
+                    (
+                        "value1",
+                        &crate::i18n::lookup(approval_reason(view_for_requester.reason)),
+                    ),
+                ],
+            )
+        });
+        if requester == "Unrecorded client" {
+            l10n::bind_tooltip(
+                &widget,
+                "Older Toolport versions did not record callers for these rows.",
+            );
+        }
         widget
     });
 
@@ -7943,7 +8079,7 @@ fn open_shared_setup(url: &str, page: ServerPage) {
 
 fn request_pairing(origin: String, team: String, page: ServerPage) {
     for window in page.app.windows() {
-        if window.title().as_deref() == Some("Toolport setup") {
+        if window.widget_name() == "toolport-onboarding" {
             window.close();
         }
     }

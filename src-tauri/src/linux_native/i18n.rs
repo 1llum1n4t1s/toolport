@@ -39,6 +39,20 @@ fn text_property(object: &glib::Object, property: &str) -> Option<String> {
 }
 
 fn register(object: &impl IsA<glib::Object>, property: &str, refresh: Refresh) {
+    // Retire dead widgets during ordinary rerenders too, even if the language
+    // never changes. Drop observers after releasing the registry borrow.
+    let retired: Vec<_> = BINDINGS.with(|bindings| {
+        let mut bindings = bindings.borrow_mut();
+        let dead: Vec<_> = bindings
+            .iter()
+            .filter(|(_, binding)| binding.object.upgrade().is_none())
+            .map(|(key, _)| key.clone())
+            .collect();
+        dead.into_iter()
+            .filter_map(|key| bindings.remove(&key))
+            .collect()
+    });
+    drop(retired);
     let object = object.as_ref();
     let key = (object.as_ptr() as usize, property.to_owned());
     let token = Rc::new(());
@@ -571,4 +585,28 @@ pub(super) fn install_language_watch(
         });
     });
     Ok(monitor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registering_a_binding_prunes_destroyed_objects_without_a_language_change() {
+        let object = glib::Object::new::<glib::Object>();
+        let key = (object.as_ptr() as usize, "test-old".to_owned());
+        let weak = object.downgrade();
+        register(
+            &object,
+            "test-old",
+            Rc::new(move || weak.upgrade().is_some()),
+        );
+        assert!(BINDINGS.with(|bindings| bindings.borrow().contains_key(&key)));
+        drop(object);
+        let next = glib::Object::new::<glib::Object>();
+        let weak = next.downgrade();
+        register(&next, "test-new", Rc::new(move || weak.upgrade().is_some()));
+        assert!(!BINDINGS.with(|bindings| bindings.borrow().contains_key(&key)));
+        unbind(&next, "test-new");
+    }
 }

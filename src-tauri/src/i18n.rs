@@ -19,34 +19,94 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("pt-BR", "Português (Brasil)"),
 ];
 
-macro_rules! groups {
-    ($locale:literal) => {
-        [
-            include_str!(concat!("../../src/locales/shell/", $locale, ".json")),
-            include_str!(concat!("../../src/locales/connections/", $locale, ".json")),
-            include_str!(concat!("../../src/locales/workflows/", $locale, ".json")),
-            include_str!(concat!("../../src/locales/common/", $locale, ".json")),
-            include_str!(concat!("../../src/locales/native/", $locale, ".json")),
-        ]
-    };
+// Gate embedded UI assets out of headless builds, including Dockerfile.source.
+// Each locale is parsed at most once, only when selected or used as fallback.
+#[cfg(any(feature = "desktop", feature = "gtk-desktop"))]
+mod catalogs {
+    use super::{merge_catalog, Catalog};
+    use std::sync::OnceLock;
+
+    macro_rules! groups {
+        ($locale:literal) => {
+            [
+                include_str!(concat!("../../src/locales/shell/", $locale, ".json")),
+                include_str!(concat!("../../src/locales/connections/", $locale, ".json")),
+                include_str!(concat!("../../src/locales/workflows/", $locale, ".json")),
+                include_str!(concat!("../../src/locales/common/", $locale, ".json")),
+                include_str!(concat!("../../src/locales/native/", $locale, ".json")),
+            ]
+        };
+    }
+
+    struct CatalogEntry {
+        locale: &'static str,
+        groups: [&'static str; 5],
+        parsed: OnceLock<Result<Catalog, String>>,
+    }
+    impl CatalogEntry {
+        const fn new(locale: &'static str, groups: [&'static str; 5]) -> Self {
+            Self {
+                locale,
+                groups,
+                parsed: OnceLock::new(),
+            }
+        }
+        fn get(&self) -> Option<&Catalog> {
+            self.parsed
+                .get_or_init(|| merge_catalog(&self.groups))
+                .as_ref()
+                .ok()
+        }
+    }
+    static CATALOGS: [CatalogEntry; 9] = [
+        CatalogEntry::new("en", groups!("en")),
+        CatalogEntry::new("ja", groups!("ja")),
+        CatalogEntry::new("zh-CN", groups!("zh-CN")),
+        CatalogEntry::new("zh-TW", groups!("zh-TW")),
+        CatalogEntry::new("ko", groups!("ko")),
+        CatalogEntry::new("es", groups!("es")),
+        CatalogEntry::new("fr", groups!("fr")),
+        CatalogEntry::new("de", groups!("de")),
+        CatalogEntry::new("pt-BR", groups!("pt-BR")),
+    ];
+    pub(super) fn get(locale: &str) -> Option<&'static Catalog> {
+        CATALOGS.iter().find(|entry| entry.locale == locale)?.get()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn a_lookup_parses_only_its_selected_catalog() {
+            let first = CatalogEntry::new(
+                "first",
+                [r#"{"Language":"Sprache"}"#, "{}", "{}", "{}", "{}"],
+            );
+            let other = CatalogEntry::new("other", ["{}"; 5]);
+            assert!(first.parsed.get().is_none());
+            assert_eq!(first.get().unwrap()["Language"], "Sprache");
+            assert!(other.parsed.get().is_none());
+        }
+        #[test]
+        fn embedded_catalogs_are_valid() {
+            for entry in &CATALOGS {
+                assert!(entry.get().is_some(), "{}", entry.locale);
+            }
+        }
+    }
 }
 
-static CATALOGS: LazyLock<HashMap<&'static str, Result<Catalog, String>>> = LazyLock::new(|| {
-    [
-        ("en", groups!("en")),
-        ("ja", groups!("ja")),
-        ("zh-CN", groups!("zh-CN")),
-        ("zh-TW", groups!("zh-TW")),
-        ("ko", groups!("ko")),
-        ("es", groups!("es")),
-        ("fr", groups!("fr")),
-        ("de", groups!("de")),
-        ("pt-BR", groups!("pt-BR")),
-    ]
-    .into_iter()
-    .map(|(locale, groups)| (locale, merge_catalog(&groups)))
-    .collect()
-});
+fn catalog(locale: &str) -> Option<&'static Catalog> {
+    #[cfg(any(feature = "desktop", feature = "gtk-desktop"))]
+    {
+        catalogs::get(locale)
+    }
+    #[cfg(not(any(feature = "desktop", feature = "gtk-desktop")))]
+    {
+        let _ = locale;
+        None
+    }
+}
 
 struct LanguageState {
     choice: String,
@@ -66,6 +126,7 @@ pub const fn msg(source: &'static str) -> &'static str {
     source
 }
 
+#[cfg(any(feature = "desktop", feature = "gtk-desktop", test))]
 fn merge_catalog(groups: &[&str]) -> Result<Catalog, String> {
     let mut merged = Catalog::new();
     for group in groups {
@@ -120,7 +181,7 @@ fn update_language(choice: String) -> bool {
             .unwrap_or("en")
     };
     // Formatting callers must see English too when a dictionary cannot be used.
-    let effective = if CATALOGS.get(requested).is_some_and(Result::is_ok) {
+    let effective = if catalog(requested).is_some() {
         requested
     } else {
         "en"
@@ -183,10 +244,9 @@ pub fn lookup(source: &str) -> String {
 }
 
 fn lookup_for(locale: &str, source: &str) -> String {
-    CATALOGS
-        .get(locale)
-        .and_then(|catalog| catalog.as_ref().ok())
+    catalog(locale)
         .and_then(|catalog| catalog.get(source))
+        .or_else(|| catalog("en").and_then(|catalog| catalog.get(source)))
         .cloned()
         .unwrap_or_else(|| source.to_owned())
 }
@@ -272,11 +332,16 @@ mod tests {
         assert_eq!(lookup_for("unsupported", "command yes"), "command yes");
     }
 
+    #[cfg(any(feature = "desktop", feature = "gtk-desktop"))]
     #[test]
-    fn embedded_catalogs_are_valid_and_lookup_uses_the_requested_language() {
-        for (locale, result) in CATALOGS.iter() {
-            assert!(result.is_ok(), "{locale}: {:?}", result.as_ref().err());
-        }
+    fn lookup_uses_the_requested_language() {
         assert_eq!(lookup_for("de", "Language"), "Sprache");
+    }
+
+    #[cfg(not(any(feature = "desktop", feature = "gtk-desktop")))]
+    #[test]
+    fn headless_messages_stay_english_without_catalog_assets() {
+        assert!(catalog("de").is_none());
+        assert_eq!(lookup_for("de", "Language"), "Language");
     }
 }

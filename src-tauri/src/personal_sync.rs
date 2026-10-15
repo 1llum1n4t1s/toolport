@@ -526,22 +526,20 @@ pub fn review_display(server: &ServerEntry, line: &str) -> String {
         }
     }
     let mut out = localize_review_line(server, line);
-    // Secret placeholder presentation applies only to argument fields. Commands,
-    // paths and ordinary environment values remain exact, even if token-like.
-    if line.starts_with("Arguments: ") || line.starts_with("Argument values: ") {
-        out = out.replace("<launch-input>", "<secret>");
-        if let Some(launch) = &server.launch {
-            for input in launch
-                .inputs
-                .iter()
-                .filter(|input| input.secret && input.label.starts_with("Imported argument"))
-            {
-                let name = display_input_name(server, launch, &input.key);
-                out = out.replace(
-                    &format!("{{{}}}", visible_text(&input.key)),
-                    &format!("<{name}>"),
-                );
-            }
+    // Render placeholders readably on every review line, including changes.
+    // This affects presentation only; persisted review fields stay exact.
+    out = out.replace("<launch-input>", "<secret>");
+    if let Some(launch) = &server.launch {
+        for input in launch
+            .inputs
+            .iter()
+            .filter(|input| input.secret && input.label.starts_with("Imported argument"))
+        {
+            let name = display_input_name(server, launch, &input.key);
+            out = out.replace(
+                &format!("{{{}}}", visible_text(&input.key)),
+                &format!("<{name}>"),
+            );
         }
     }
     out
@@ -2483,6 +2481,22 @@ pub fn pending_review_count(reg: &Registry) -> usize {
         .count()
 }
 pub fn banner(reg: &Registry) -> (String, bool) {
+    banner_inner(reg, false)
+}
+
+/// Native presentation uses the same structured state as the canonical API.
+pub fn banner_display(reg: &Registry) -> (String, bool) {
+    banner_inner(reg, true)
+}
+
+fn banner_inner(reg: &Registry, localized: bool) -> (String, bool) {
+    let text = |canonical: &str, display: &str| {
+        if localized {
+            crate::i18n::lookup(display)
+        } else {
+            canonical.to_owned()
+        }
+    };
     let st = state(reg).unwrap_or_default();
     if reg
         .team
@@ -2490,7 +2504,10 @@ pub fn banner(reg: &Registry) -> (String, bool) {
         .is_some_and(|t| t.unknown_fields["accountStatus"]["canReceiveConfig"] == false)
     {
         return (
-            "Sync paused. Review this device in Your account.".into(),
+            text(
+                "Sync paused. Review this device in Your account.",
+                crate::i18n::msg("Last sync did not finish"),
+            ),
             false,
         );
     }
@@ -2507,18 +2524,37 @@ pub fn banner(reg: &Registry) -> (String, bool) {
     }
     if !st.conflicts.is_empty() {
         return (
-            "Changes need your choice. Resolve the conflicts below.".into(),
+            text(
+                "Changes need your choice. Resolve the conflicts below.",
+                crate::i18n::msg("Changes need your choice"),
+            ),
             false,
         );
     }
     if !st.publish_errors.is_empty() {
         return (
-            "Some servers could not sync. Review the details below.".into(),
+            text(
+                "Some servers could not sync. Review the details below.",
+                crate::i18n::msg("Last sync did not finish"),
+            ),
             false,
         );
     }
     let review = pending_review_count(reg);
     if review > 0 {
+        if localized {
+            return (
+                trf(
+                    if review == 1 {
+                        crate::i18n::msg("{count} server is waiting for review on this machine")
+                    } else {
+                        crate::i18n::msg("{count} servers are waiting for review on this machine")
+                    },
+                    &[("count", &review.to_string())],
+                ),
+                false,
+            );
+        }
         return (
             format!(
                 "{review} {} waiting for review on this machine.",
@@ -2532,12 +2568,30 @@ pub fn banner(reg: &Registry) -> (String, bool) {
         );
     }
     if !st.initialized || st.last_synced_at.is_none() {
-        return ("Waiting for first sync.".into(), false);
+        return (
+            text(
+                "Waiting for first sync.",
+                crate::i18n::msg("Waiting for first sync"),
+            ),
+            false,
+        );
     }
     if !st.pending.is_empty() {
-        return ("Changes waiting to sync.".into(), false);
+        return (
+            text(
+                "Changes waiting to sync.",
+                crate::i18n::msg("Changes waiting to sync"),
+            ),
+            false,
+        );
     }
-    ("Sync is up to date.".into(), true)
+    (
+        text(
+            "Sync is up to date.",
+            crate::i18n::msg("Sync is up to date"),
+        ),
+        true,
+    )
 }
 pub fn conflict_fields(value: Option<&Value>) -> BTreeMap<String, String> {
     let Some(value) = value.filter(|v| !v.is_null()) else {
@@ -4199,6 +4253,25 @@ mod tests {
         assert!(lines.iter().any(|s| s == "Choose this device"));
         assert!(lines.iter().any(|s| s == "Last synced just now"));
     }
+    #[test]
+    fn review_display_masks_placeholders_in_argument_change_lines() {
+        let mut server = local(command("tool"));
+        server.launch = Some(
+            serde_json::from_value(json!({
+                "inputs":[{"key":"token","label":"Imported argument 1","secret":true}],
+                "bindings":[{"index":0,"parts":[{"kind":"input","key":"token"}]}]
+            }))
+            .unwrap(),
+        );
+        let line = "Arguments changed: <launch-input> (was {token})";
+        let before = execution_review_fields(&server);
+        let rendered = review_display(&server, line);
+        assert!(!rendered.contains("<launch-input>"), "{rendered}");
+        assert!(!rendered.contains("{token}"), "{rendered}");
+        assert!(rendered.contains("<secret>"), "{rendered}");
+        assert_eq!(execution_review_fields(&server), before);
+    }
+
     #[test]
     fn review_names_only_the_arguments_that_changed() {
         let mut server = local(

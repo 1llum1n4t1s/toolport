@@ -701,6 +701,14 @@ l10n::bind_dialog_heading(&error_dialog, msg("Could not start data removal"));
                         super::tray::refresh_language();
                     }
                     Err(error) => {
+                        if let Some(picker) = picker.upgrade() {
+                            let saved = crate::i18n::language();
+                            let selected = crate::ui_settings::LANGUAGES
+                                .iter()
+                                .position(|code| *code == saved)
+                                .unwrap_or(0) as u32;
+                            picker.set_selected(selected);
+                        }
                         if let Some(feedback) = feedback.upgrade() {
                             l10n::bind_formatted_label(
                                 &feedback,

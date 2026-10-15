@@ -860,21 +860,22 @@ impl TeamsPage {
         let Some(line) = self.sync_line.borrow().clone() else {
             return;
         };
-        let (message, healthy) = crate::personal_sync::banner(registry);
+        let (message, healthy) = crate::personal_sync::banner_display(registry);
         let last = crate::personal_sync::status_lines(
             &serde_json::Value::Null,
             self.sync_state.borrow().last_synced_at,
         )
         .pop()
         .unwrap_or_default();
+        let waiting = crate::personal_sync::state(registry)
+            .map(|state| !state.initialized || state.last_synced_at.is_none())
+            .unwrap_or(true);
         let message = message.trim_end_matches('.');
-        line.set_label(
-            &if last.is_empty() || message.starts_with(&tr("Waiting for first sync")) {
-                message.to_string()
-            } else {
-                format!("{message} · {last}")
-            },
-        );
+        line.set_label(&if last.is_empty() || waiting {
+            message.to_string()
+        } else {
+            format!("{message} · {last}")
+        });
         if healthy {
             line.add_css_class("healthy");
         } else {
