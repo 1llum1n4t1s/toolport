@@ -525,6 +525,14 @@ pub fn review_display(server: &ServerEntry, line: &str) -> String {
             }
         }
     }
+    // Typed execution fields may contain literal placeholder-like user values.
+    // Preserve them before formatting free-form/multiline argument changes.
+    if fields.iter().any(|(key, value)| {
+        !matches!(key.as_str(), "Arguments" | "Argument values")
+            && line == review_field_line(key, value)
+    }) {
+        return localize_review_line(server, line);
+    }
     let mut out = localize_review_line(server, line);
     // Render placeholders readably on every review line, including changes.
     // This affects presentation only; persisted review fields stay exact.
@@ -4263,7 +4271,7 @@ mod tests {
             }))
             .unwrap(),
         );
-        let line = "Arguments changed: <launch-input> (was {token})";
+        let line = "Arguments changed:\n  1. <launch-input> (was {token})\n  2. {token}";
         let before = execution_review_fields(&server);
         let rendered = review_display(&server, line);
         assert!(!rendered.contains("<launch-input>"), "{rendered}");
