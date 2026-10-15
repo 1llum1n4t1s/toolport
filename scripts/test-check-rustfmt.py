@@ -49,6 +49,19 @@ class ChangedFormatting(unittest.TestCase):
         self.assertEqual(fixed, "old  bad\nkeep\nnew bad\n")
         self.assertFalse(whole)
 
+    def test_fix_falls_back_when_partial_result_does_not_parse(self):
+        source = "use b;\nuse a;\nfn f() {}\n"
+        formatted = "use a;\nuse b;\nfn f() {}\n"
+
+        def rejects_partial(text):
+            if text != source:
+                raise check.subprocess.CalledProcessError(1, "rustfmt")
+            return formatted
+
+        fixed, whole = check.fix_source(source, formatted, {1}, rejects_partial)
+        self.assertEqual(fixed, formatted)
+        self.assertTrue(whole)
+
     def test_renames_keep_both_paths(self):
         status = "M\0src-tauri/a.rs\0R087\0src-tauri/old.rs\0src-tauri/new.rs\0A\0src-tauri/b.rs\0"
         self.assertEqual(

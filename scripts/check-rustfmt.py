@@ -44,8 +44,12 @@ def fix_source(source, formatted, changed, rustfmt):
     for first, last, replacement in reversed(format_edits(source, formatted, changed)):
         lines[first:last] = replacement
     patched = "".join(lines)
-    if rustfmt(patched) == formatted:
-        return patched, False
+    try:
+        if rustfmt(patched) == formatted:
+            return patched, False
+    except subprocess.CalledProcessError:
+        # A partial edit that no longer parses is wrong by definition.
+        pass
     return formatted, True
 
 
