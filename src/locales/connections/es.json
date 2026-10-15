@@ -400,7 +400,7 @@
   "Dismiss this change": "Descartar cambio",
   "Dismiss this notice": "Descartar aviso",
   "dispatch {duration}": "despacho {duration}",
-  "Download the new .{packageType} from the release page, then run sudo {manager} install ./<file>.{packageType}.": "Descarga el nuevo. {packageType} desde la página de lanzamiento, luego ejecute sudo {manager} install ./<file>. {packageType}.",
+  "Download the new .{packageType} from the release page, then run sudo {manager} install ./<file>.{packageType}.": "Descargue el nuevo .{packageType} desde la página de lanzamiento, luego ejecute sudo {manager} install ./<file>.{packageType}.",
   "Downloading {value1} MB…": "Descargando {value1} MB…",
   "Downloading {value1}%": "Descargando {value1}%",
   "Downloading first; MCP clients stay connected until the installer is ready to replace files.": "Descargando primero; Los clientes MCP permanecen conectados hasta que el instalador esté listo para reemplazar archivos.",

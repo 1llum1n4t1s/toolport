@@ -400,7 +400,7 @@
   "Dismiss this change": "關閉此變更",
   "Dismiss this notice": "關閉此通知",
   "dispatch {duration}": "調度 {duration}",
-  "Download the new .{packageType} from the release page, then run sudo {manager} install ./<file>.{packageType}.": "下載新的 .從發布頁面獲取 {packageType}，然後運行 sudo {manager} install ./<file>。 {packageType} 。",
+  "Download the new .{packageType} from the release page, then run sudo {manager} install ./<file>.{packageType}.": "從發布頁面下載新的 .{packageType}，然後執行 sudo {manager} install ./<file>.{packageType}。",
   "Downloading {value1} MB…": "正在下載 {value1} MB...",
   "Downloading {value1}%": "下載{value1}%",
   "Downloading first; MCP clients stay connected until the installer is ready to replace files.": "先下載； MCP 用戶端保持連接，直到安裝程式準備好替換檔案。",

@@ -400,7 +400,7 @@
   "Dismiss this change": "이 변경 닫기",
   "Dismiss this notice": "이 알림 닫기",
   "dispatch {duration}": "파견 {duration}",
-  "Download the new .{packageType} from the release page, then run sudo {manager} install ./<file>.{packageType}.": "새로운 . 릴리스 페이지에서 {packageType}를 실행한 다음 sudo {manager} install ./<file>을 실행합니다. {packageType} .",
+  "Download the new .{packageType} from the release page, then run sudo {manager} install ./<file>.{packageType}.": "릴리스 페이지에서 새 .{packageType}를 다운로드한 다음 sudo {manager} install ./<file>.{packageType}를 실행합니다.",
   "Downloading {value1} MB…": "{value1} MB 다운로드 중…",
   "Downloading {value1}%": "{value1}% 다운로드 중",
   "Downloading first; MCP clients stay connected until the installer is ready to replace files.": "먼저 다운로드하세요. MCP 클라이언트는 설치 프로그램이 파일을 교체할 준비가 될 때까지 연결을 유지합니다.",
