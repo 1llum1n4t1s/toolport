@@ -165,7 +165,7 @@ export function checkCatalogs(catalogs, localeNames = languages, groupNames = gr
       }
       for (const key of Object.keys(english)) {
         if (!Object.hasOwn(catalog, key))
-          errors.push(`${group}/${language}: missing ${key}`);
+          errors.push(`${group}/${language}: missing translation ${key}`);
       }
     }
   }
@@ -598,12 +598,14 @@ export async function checkLocales(root) {
 
 // Coverage gaps fall back to English at runtime, so they never break the app.
 // Pull requests only warn about them; stable releases run with --complete.
+// Anchored to the diagnostic's position so text inside a message key, such as
+// "Error: missing token", can never turn a real error into a warning.
 const coverageGap = [
-  /: missing (?!catalog\b)/,
-  /: missing source message /,
-  /: unlocalized (UI|JSX|interpolated UI) text/,
-  /: dynamic source message must come from msg\(/,
-  /: native source message must be a string literal/,
+  /^[^\s:/]+\/[^\s:/]+: missing translation /,
+  /^[^\s:]+:\d+: missing source message /,
+  /^[^\s:]+:\d+: unlocalized (UI|JSX|interpolated UI) text/,
+  /^[^\s:]+:\d+: dynamic source message must come from msg\(/,
+  /^[^\s:]+:\d+: native source message must be a string literal/,
 ];
 
 export function isCoverageGap(message) {
