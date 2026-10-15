@@ -1,5 +1,7 @@
-export const UNRECORDED_CLIENT_TOOLTIP =
-  "Older Toolport versions did not record callers for these rows.";
+import { msg, translate } from "./i18n";
+export const UNRECORDED_CLIENT_TOOLTIP = msg(
+  "Older Toolport versions did not record callers for these rows.",
+);
 
 function hasTrustedName(name?: string | null): boolean {
   return (
@@ -14,17 +16,21 @@ export function trustedClientName(client: {
   client?: string | null;
 }): string {
   if (hasTrustedName(client.clientName) && client.clientName) return client.clientName;
-  if (client.clientLabel) return `${client.clientLabel} (reported)`;
+  if (client.clientLabel)
+    return translate("{name} (reported)", { name: client.clientLabel });
   return client.client || client.clientName === "Unknown client"
-    ? "Unknown client"
-    : "Unrecorded client";
+    ? translate("Unknown client")
+    : translate("Unrecorded client");
 }
 
 export function clientIdentityTooltip(
   client: Parameters<typeof trustedClientName>[0],
 ): string | undefined {
-  return trustedClientName(client) === "Unrecorded client"
-    ? UNRECORDED_CLIENT_TOOLTIP
+  return !hasTrustedName(client.clientName) &&
+    !client.clientLabel &&
+    !client.client &&
+    client.clientName !== "Unknown client"
+    ? translate(UNRECORDED_CLIENT_TOOLTIP)
     : undefined;
 }
 
@@ -42,7 +48,7 @@ export function activityClientName(
   if (!hasTrustedName(client.clientName) || !label || reportsOnlyVersion(name, label)) {
     return name;
   }
-  return `${name} (reports "${label}")`;
+  return translate('{name} (reports "{label}")', { name, label });
 }
 
 /** "inbox 1" or "Claude Code 2.1" adds nothing to the name it follows. */

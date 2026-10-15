@@ -1,3 +1,4 @@
+import { msg, Trans, translate, useI18n, type SourceMessage } from "@/lib/i18n";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, ExternalLink, Loader2, Plus, Search, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
@@ -17,13 +18,13 @@ import { ServerDialog } from "@/components/ServerDialog";
 import { ServerLogo } from "@/components/ServerLogo";
 
 /** Section order for the browse view; categories not listed fall to the end. */
-const CATEGORY_ORDER = [
-  "Code & infrastructure",
-  "Databases",
-  "Search & knowledge",
-  "Web & automation",
-  "Apps & productivity",
-  "Local tools",
+const CATEGORY_ORDER: SourceMessage[] = [
+  msg("Code & infrastructure"),
+  msg("Databases"),
+  msg("Search & knowledge"),
+  msg("Web & automation"),
+  msg("Apps & productivity"),
+  msg("Local tools"),
 ];
 
 interface Props {
@@ -32,6 +33,7 @@ interface Props {
 }
 
 export function CatalogView({ registry, onAdded }: Props) {
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [popular, setPopular] = useState<CatalogEntry[]>([]);
   const [results, setResults] = useState<CatalogEntry[] | null>(null);
@@ -128,11 +130,16 @@ export function CatalogView({ registry, onAdded }: Props) {
     setBusy(entry.name);
     try {
       onAdded(await addCatalogServer(entry));
-      toast.success(`Added ${entry.name}`, {
-        description: "Added and turned on. Check its status under Servers.",
+      toast.success(translate("Added {value0}", { value0: entry.name }), {
+        description: translate("Added and turned on. Check its status under Servers."),
       });
     } catch (e) {
-      toastError(`Couldn't add ${entry.name}: ${e}`);
+      toastError(
+        translate("Couldn't add {value1}: {value2}", {
+          value1: entry.name,
+          value2: String(e),
+        }),
+      );
     } finally {
       setBusy(null);
     }
@@ -152,7 +159,7 @@ export function CatalogView({ registry, onAdded }: Props) {
       else groups.set(cat, [e]);
     }
     const ord = (c: string) => {
-      const i = CATEGORY_ORDER.indexOf(c);
+      const i = CATEGORY_ORDER.findIndex((category) => category === c);
       return i === -1 ? 999 : i;
     };
     return [...groups.entries()].sort((a, b) => ord(a[0]) - ord(b[0]));
@@ -178,7 +185,9 @@ export function CatalogView({ registry, onAdded }: Props) {
         <Input
           autoFocus
           value={query}
-          placeholder="Search the MCP Registry (e.g. github, postgres, figma, slack)…"
+          placeholder={t(
+            "Search the MCP Registry (e.g. github, postgres, figma, slack)…",
+          )}
           className="h-11 pl-9 text-base"
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -188,15 +197,27 @@ export function CatalogView({ registry, onAdded }: Props) {
         <span>
           {!browsing
             ? loading
-              ? "Searching the MCP Registry…"
+              ? translate(msg("Searching the MCP Registry…"))
               : registryStatus === "unavailable" || registryStatus === "timedOut"
-                ? `${shown.length} curated match${shown.length === 1 ? "" : "es"}`
-                : `${shown.length} result${shown.length === 1 ? "" : "s"} (popular picks first, then the MCP Registry)`
-            : "Popular servers"}
+                ? translate(
+                    shown.length === 1
+                      ? msg("{count} curated match")
+                      : msg("{count} curated matches"),
+                    { count: shown.length },
+                  )
+                : t(
+                    shown.length === 1
+                      ? msg("{count} result (popular picks first, then the MCP Registry)")
+                      : msg(
+                          "{count} results (popular picks first, then the MCP Registry)",
+                        ),
+                    { count: shown.length },
+                  )
+            : translate("Popular servers")}
         </span>
         {results !== null && shown.length > 0 && (
           <button className="hover:text-foreground" onClick={() => setQuery("")}>
-            Clear search
+            {t("Clear search")}
           </button>
         )}
       </div>
@@ -210,16 +231,16 @@ export function CatalogView({ registry, onAdded }: Props) {
           >
             <p className="text-sm">
               {registryStatus === "timedOut"
-                ? "The live MCP Registry took too long to respond."
-                : "The live MCP Registry is unavailable."}{" "}
-              Showing curated matches only.
+                ? translate("The live MCP Registry took too long to respond.")
+                : translate("The live MCP Registry is unavailable.")}{" "}
+              {translate("Showing curated matches only.")}
             </p>
             <Button
               variant="outline"
               size="sm"
               onClick={() => setSearchNonce((n) => n + 1)}
             >
-              Try again
+              {translate("Try again")}
             </Button>
           </div>
         )}
@@ -238,13 +259,13 @@ export function CatalogView({ registry, onAdded }: Props) {
             className="flex flex-col items-center gap-3 py-20 text-center"
           >
             <div>
-              <p className="font-medium">Catalog couldn't load</p>
+              <p className="font-medium">{t("Catalog couldn't load")}</p>
               <p className="max-w-md text-sm text-muted-foreground">
-                Toolport couldn't load the curated picks. Try again in a moment.
+                {t("Toolport couldn't load the curated picks. Try again in a moment.")}
               </p>
             </div>
             <Button variant="outline" size="sm" onClick={reloadPopular}>
-              Try again
+              {t("Try again")}
             </Button>
           </div>
         ) : !browsing && searchError ? (
@@ -254,10 +275,11 @@ export function CatalogView({ registry, onAdded }: Props) {
             className="flex flex-col items-center gap-3 py-20 text-center"
           >
             <div>
-              <p className="font-medium">Search failed</p>
+              <p className="font-medium">{t("Search failed")}</p>
               <p className="max-w-md text-sm text-muted-foreground">
-                Toolport couldn't reach the MCP Registry. Check your connection, then
-                retry.
+                {t(
+                  "Toolport couldn't reach the MCP Registry. Check your connection, then retry.",
+                )}
               </p>
             </div>
             <Button
@@ -265,7 +287,7 @@ export function CatalogView({ registry, onAdded }: Props) {
               size="sm"
               onClick={() => setSearchNonce((n) => n + 1)}
             >
-              Try again
+              {t("Try again")}
             </Button>
           </div>
         ) : (
@@ -278,14 +300,18 @@ export function CatalogView({ registry, onAdded }: Props) {
               <p className="font-medium">
                 {results !== null
                   ? registryStatus === "unavailable" || registryStatus === "timedOut"
-                    ? `No curated matches for "${query}"`
-                    : `No catalog results for "${query}"`
-                  : "No popular servers available"}
+                    ? translate('No curated matches for "{value0}"', { value0: query })
+                    : translate('No catalog results for "{value0}"', { value0: query })
+                  : translate("No popular servers available")}
               </p>
               <p className="max-w-md text-sm text-muted-foreground">
                 {results !== null
-                  ? "Try a provider name, app name, or shorter query. You can also clear the search to browse popular servers."
-                  : "Use search to query the MCP Registry, or try again later if the browse list stays empty."}
+                  ? t(
+                      "Try a provider name, app name, or shorter query. You can also clear the search to browse popular servers.",
+                    )
+                  : t(
+                      "Use search to query the MCP Registry, or try again later if the browse list stays empty.",
+                    )}
               </p>
               {results !== null && (
                 <Button
@@ -294,7 +320,7 @@ export function CatalogView({ registry, onAdded }: Props) {
                   className="mt-2"
                   onClick={() => setQuery("")}
                 >
-                  Clear search
+                  {t("Clear search")}
                 </Button>
               )}
             </div>
@@ -305,7 +331,11 @@ export function CatalogView({ registry, onAdded }: Props) {
           {byCategory.map(([cat, entries]) => (
             <section key={cat}>
               <h2 className="mb-2 flex items-center gap-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                {cat}
+                {CATEGORY_ORDER.find((category) => category === cat)
+                  ? t(CATEGORY_ORDER.find((category) => category === cat)!)
+                  : cat === "Other"
+                    ? t("Other")
+                    : cat}
                 <span className="text-muted-foreground/60">{entries.length}</span>
               </h2>
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -349,12 +379,13 @@ export function CatalogView({ registry, onAdded }: Props) {
 /** Source-tier + publisher signal. Honest provenance: where the entry came
  * from and who published it, not a cryptographic attestation. */
 function Provenance({ entry }: { entry: CatalogEntry }) {
+  const { t } = useI18n();
   const tier =
     entry.source === "curated"
-      ? { label: "Toolport verified", cls: "text-success" }
+      ? { label: t("Toolport verified"), cls: "text-success" }
       : entry.source === "registry"
-        ? { label: "MCP Registry", cls: "text-info" }
-        : { label: "Your pick", cls: "text-owned" };
+        ? { label: translate("MCP Registry"), cls: "text-info" }
+        : { label: t("Your pick"), cls: "text-owned" };
   return (
     <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
       <ShieldCheck className={`size-3 shrink-0 ${tier.cls}`} />
@@ -377,6 +408,7 @@ function CatalogCard({
   busy: boolean;
   onAdd: () => void;
 }) {
+  const { t } = useI18n();
   const target = entry.command
     ? [entry.command, ...entry.args].join(" ")
     : (entry.url ?? "");
@@ -389,7 +421,7 @@ function CatalogCard({
           {entry.homepage && (
             <button
               onClick={() => openExternal(entry.homepage)}
-              aria-label="Open docs"
+              aria-label={t("Open docs")}
               className="shrink-0 text-muted-foreground/60 hover:text-foreground"
             >
               <ExternalLink className="size-3" />
@@ -407,8 +439,10 @@ function CatalogCard({
       <div className="mt-auto flex justify-end pt-1">
         {added ? (
           <span className="inline-flex items-center gap-1 text-xs text-success">
-            <Check className="size-3" />
-            in Toolport
+            <Trans
+              message={msg("{value1}in Toolport")}
+              values={{ value1: <Check className="size-3" /> }}
+            />
           </span>
         ) : (
           <Button
@@ -418,8 +452,10 @@ function CatalogCard({
             disabled={busy}
             onClick={onAdd}
           >
-            <Plus className="size-3" />
-            Add
+            <Trans
+              message={msg("{value1}Add")}
+              values={{ value1: <Plus className="size-3" /> }}
+            />
           </Button>
         )}
       </div>

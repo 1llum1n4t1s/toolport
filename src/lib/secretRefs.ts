@@ -1,3 +1,4 @@
+import { translate } from "./i18n";
 export const SECRET_PROVIDERS = [
   { scheme: "op://", name: "1Password", example: "op://Engineering/Docs/key" },
   { scheme: "doppler://", name: "Doppler", example: "doppler://docs/prod/TOKEN" },
@@ -57,12 +58,20 @@ function referenceUses(server: import("./types").ServerEntry) {
   return uses.filter((u): u is { field: string; ref: string } => !!u.ref);
 }
 function referenceLine(ref: string, destination: string, field: string): string {
-  return `${referenceProvider(ref)?.name ?? "Password manager"} entry ${JSON.stringify(ref)} will be sent to ${destination} (${field})`;
+  return translate(
+    "{provider} entry {reference} will be sent to {destination} ({field})",
+    {
+      provider: referenceProvider(ref)?.name ?? translate("Password manager"),
+      reference: JSON.stringify(ref),
+      destination,
+      field,
+    },
+  );
 }
 export function secretReferenceReview(server: import("./types").ServerEntry): string[] {
   const destination = server.command
     ? [server.command, ...server.args].join(" ")
-    : server.url || "unknown destination";
+    : server.url || translate("unknown destination");
   return referenceUses(server).map((u) => referenceLine(u.ref, destination, u.field));
 }
 /** Personal sync review: headers go to the URL, env and inputs to the command.
@@ -76,6 +85,10 @@ export function referenceDestinationLines(
       const [first, second] = u.field.startsWith("header:")
         ? [server.url, server.command]
         : [server.command, server.url];
-      return referenceLine(u.ref, first || second || "unknown destination", u.field);
+      return referenceLine(
+        u.ref,
+        first || second || translate("unknown destination"),
+        u.field,
+      );
     });
 }

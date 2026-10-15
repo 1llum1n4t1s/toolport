@@ -1,3 +1,4 @@
+import { useI18n } from "@/lib/i18n";
 import { useState } from "react";
 import { getQuarantineDefinition, type QuarantinedTool } from "@/lib/api";
 
@@ -8,6 +9,7 @@ export function QuarantineDefinition({ tool }: { tool: QuarantinedTool }) {
 }
 
 function Definition({ tool }: { tool: QuarantinedTool }) {
+  const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const [definition, setDefinition] = useState(tool.definition);
   const [loading, setLoading] = useState(false);
@@ -15,8 +17,9 @@ function Definition({ tool }: { tool: QuarantinedTool }) {
   if (!(tool.has_definition ?? Boolean(tool.definition))) {
     return (
       <p className="mt-1 text-xs text-muted-foreground">
-        No saved definition. Approving captures the current definition for one more
-        review. The tool stays blocked until then.
+        {t(
+          "No saved definition. Approving captures the current definition for one more review. The tool stays blocked until then.",
+        )}
       </p>
     );
   }
@@ -37,11 +40,13 @@ function Definition({ tool }: { tool: QuarantinedTool }) {
       }}
     >
       <summary className="cursor-pointer text-muted-foreground">
-        Captured definition
+        {t("Captured definition")}
       </summary>
       {expanded && (
         <>
-          {loading && <p className="mt-1 text-muted-foreground">Loading definition…</p>}
+          {loading && (
+            <p className="mt-1 text-muted-foreground">{t("Loading definition…")}</p>
+          )}
           {error && (
             <p role="alert" className="mt-1 text-destructive">
               {error}

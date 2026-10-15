@@ -1,3 +1,4 @@
+import { translate, useI18n } from "@/lib/i18n";
 import { useState } from "react";
 import { dismissRemovedFeaturesNotice, openExportsDir } from "@/lib/api";
 import { openExternal } from "@/lib/openUrl";
@@ -17,6 +18,7 @@ export function RemovedFeaturesNotice({
   registry: Registry | null;
   onRegistryChange: (registry: Registry) => void;
 }) {
+  const { t } = useI18n();
   const [busy, setBusy] = useState(false);
   const notice = registry?.removedFeaturesNotice;
   const features = notice && !notice.dismissed ? (notice.features ?? []) : [];
@@ -30,26 +32,26 @@ export function RemovedFeaturesNotice({
       <button
         onClick={() =>
           openExportsDir().catch((error) =>
-            toastError("Could not open the exports folder", {
+            toastError(translate("Could not open the exports folder"), {
               description: String(error),
             }),
           )
         }
         className="rounded border px-2 py-1"
       >
-        Open exports folder
+        {t("Open exports folder")}
       </button>
       <button
         onClick={() => void openExternal(removedFeaturesIssueUrl(features))}
         className="rounded border px-2 py-1"
       >
-        I need this
+        {t("I need this")}
       </button>
       <button
         onClick={() => void openExternal(GO_BACK_TO_1X_URL)}
         className="rounded border px-2 py-1"
       >
-        Go back to 1.24
+        {t("Go back to 1.24")}
       </button>
       <button
         disabled={busy}
@@ -58,14 +60,16 @@ export function RemovedFeaturesNotice({
           try {
             onRegistryChange(await dismissRemovedFeaturesNotice());
           } catch (error) {
-            toastError("Could not dismiss the notice", { description: String(error) });
+            toastError(translate("Could not dismiss the notice"), {
+              description: String(error),
+            });
           } finally {
             setBusy(false);
           }
         }}
         className="rounded border px-2 py-1"
       >
-        Dismiss
+        {t("Dismiss")}
       </button>
     </div>
   );

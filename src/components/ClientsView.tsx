@@ -1,3 +1,4 @@
+import { msg, Trans, translate, useI18n } from "@/lib/i18n";
 import { AddClientLocationDialog } from "@/components/AddClientLocationDialog";
 import { Button } from "@/components/ui/button";
 import { trustedClientName, clientIdentityTooltip } from "@/lib/clientIdentity";
@@ -42,17 +43,18 @@ function sortClients(clients: DetectedClient[]): DetectedClient[] {
 }
 
 function StatusBadge({ status }: { status: ClientStatus }) {
+  const { t } = useI18n();
   switch (status) {
     case "connected":
-      return <Badge variant="success">Connected</Badge>;
+      return <Badge variant="success">{t("Connected")}</Badge>;
     case "ready":
-      return <Badge variant="info">Ready to connect</Badge>;
+      return <Badge variant="info">{t("Ready to connect")}</Badge>;
     case "customized":
-      return <Badge variant="warning">Custom configuration</Badge>;
+      return <Badge variant="warning">{t("Custom configuration")}</Badge>;
     case "error":
-      return <Badge variant="warning">Couldn&apos;t read config</Badge>;
+      return <Badge variant="warning">{t("Couldn't read config")}</Badge>;
     case "missing":
-      return <Badge variant="outline">Not installed</Badge>;
+      return <Badge variant="outline">{t("Not installed")}</Badge>;
   }
 }
 
@@ -65,12 +67,15 @@ function ClientRow({
   importCount: number;
   onSelect: () => void;
 }) {
+  const { t } = useI18n();
   const status = statusOf(client);
   const detail =
     status === "missing"
-      ? "Install this client to configure it with Toolport"
+      ? t("Install this client to configure it with Toolport")
       : client.configPath ||
-        (client.usesConnectors ? "Uses account connectors" : "Config path unavailable");
+        (client.usesConnectors
+          ? t("Uses account connectors")
+          : t("Config path unavailable"));
 
   return (
     <button
@@ -89,7 +94,7 @@ function ClientRow({
           {client.usesConnectors && (
             <Puzzle
               className="size-3.5 shrink-0 text-info"
-              aria-label="Uses connectors"
+              aria-label={t("Uses connectors")}
             />
           )}
         </span>
@@ -100,8 +105,10 @@ function ClientRow({
       <span className="col-start-2 row-start-2 flex min-w-0 flex-wrap items-center gap-2 sm:col-auto sm:row-auto">
         {importCount > 0 && status !== "error" && status !== "missing" && (
           <Badge variant="owned">
-            <Download />
-            {importCount} to import
+            <Trans
+              message={msg("{value1}{value2} to import")}
+              values={{ value1: <Download />, value2: importCount }}
+            />
           </Badge>
         )}
         <StatusBadge status={status} />
@@ -127,6 +134,7 @@ export function ClientsView({
   onSelectClient: (id: string) => void;
   onChanged?: () => Promise<void>;
 }) {
+  const { t, locale } = useI18n();
   const [addingLocation, setAddingLocation] = useState(false);
   const [showMissing, setShowMissing] = useState(false);
   const [showRecent, setShowRecent] = useState(false);
@@ -156,7 +164,7 @@ export function ClientsView({
 
   if (loading && clients.length === 0) {
     return (
-      <div className="flex flex-col gap-2" aria-label="Loading AI clients">
+      <div className="flex flex-col gap-2" aria-label={t("Loading AI clients")}>
         {Array.from({ length: 4 }).map((_, i) => (
           <Skeleton key={i} className="h-14 w-full rounded-lg" />
         ))}
@@ -168,8 +176,10 @@ export function ClientsView({
     return (
       <EmptyState
         icon={<MonitorCog />}
-        title="No AI clients detected"
-        description="Install Claude Desktop, Cursor, VS Code, or another supported client, then refresh."
+        title={t("No AI clients detected")}
+        description={t(
+          "Install Claude Desktop, Cursor, VS Code, or another supported client, then refresh.",
+        )}
       />
     );
   }
@@ -183,7 +193,7 @@ export function ClientsView({
             className="self-start"
             onClick={() => setAddingLocation(true)}
           >
-            Add client location
+            {translate("Add client location")}
           </Button>
           <AddClientLocationDialog
             open={addingLocation}
@@ -197,21 +207,25 @@ export function ClientsView({
       )}
       {sessionError && (
         <p role="status" className="text-xs text-muted-foreground">
-          Client session history could not be read.
+          {translate("Client session history could not be read.")}
         </p>
       )}
       {present.length === 0 && (
         <EmptyState
           icon={<MonitorCog />}
-          title="No supported clients installed"
-          description="Install Claude Desktop, Cursor, VS Code, or another supported client, then refresh."
+          title={t("No supported clients installed")}
+          description={t(
+            "Install Claude Desktop, Cursor, VS Code, or another supported client, then refresh.",
+          )}
           className="py-12"
         />
       )}
 
       {connected.length > 0 && (
         <section>
-          <SectionHeader count={connected.length}>Connected to Toolport</SectionHeader>
+          <SectionHeader count={connected.length}>
+            {translate("Connected to Toolport")}
+          </SectionHeader>
           <div className="toolport-list">
             {connected.map((client) => (
               <ClientRow
@@ -227,9 +241,11 @@ export function ClientsView({
 
       {available.length > 0 && (
         <section>
-          <SectionHeader count={available.length}>Available to connect</SectionHeader>
+          <SectionHeader count={available.length}>
+            {t("Available to connect")}
+          </SectionHeader>
           <p className="mb-2 text-xs text-muted-foreground">
-            Select an installed client to connect it or review its configuration.
+            {t("Select an installed client to connect it or review its configuration.")}
           </p>
           <div className="toolport-list">
             {available.map((client) => (
@@ -256,7 +272,7 @@ export function ClientsView({
               className={`size-3.5 transition-transform ${showMissing ? "rotate-90" : ""}`}
               aria-hidden="true"
             />
-            <span className="font-medium">Not installed</span>
+            <span className="font-medium">{t("Not installed")}</span>
             <span>{missing.length}</span>
           </button>
           {showMissing && (
@@ -274,7 +290,7 @@ export function ClientsView({
         </section>
       )}
       {sessions.length > 0 && (
-        <section aria-label="Recent client activity">
+        <section aria-label={translate("Recent client activity")}>
           <button
             type="button"
             onClick={() => setShowRecent((value) => !value)}
@@ -285,7 +301,8 @@ export function ClientsView({
               className={`size-3.5 ${showRecent ? "rotate-90" : ""}`}
               aria-hidden="true"
             />
-            Recent client activity <span>{sessions.length}</span>
+            {translate("Recent client activity")}
+            <span>{sessions.length}</span>
           </button>
           {showRecent && (
             <div className="mt-2 toolport-list">
@@ -299,8 +316,13 @@ export function ClientsView({
                     title={
                       clientIdentityTooltip(client) ??
                       [
-                        client.clientLabel && `Reports itself as: ${client.clientLabel}`,
-                        `${client.sessionCount ?? 1} recorded sessions`,
+                        client.clientLabel &&
+                          translate("Reports itself as: {value0}", {
+                            value0: client.clientLabel,
+                          }),
+                        translate("{value0} recorded sessions", {
+                          value0: client.sessionCount ?? 1,
+                        }),
                       ]
                         .filter(Boolean)
                         .join(" · ")
@@ -310,15 +332,26 @@ export function ClientsView({
                   </p>
                   <p
                     className="text-xs text-muted-foreground"
-                    title="Calls today counts retained tool calls since local midnight. Older calls may no longer be retained."
+                    title={translate(
+                      "Calls today counts retained tool calls since local midnight. Older calls may no longer be retained.",
+                    )}
                   >
                     {client.lastActiveMs
-                      ? `Last active ${fmtAgo(client.lastActiveMs)}`
-                      : "Last active time unavailable"}
+                      ? translate("Last active {value0}", {
+                          value0: fmtAgo(client.lastActiveMs),
+                        })
+                      : translate("Last active time unavailable")}
                     {client.callsToday != null &&
-                      ` · ${client.callsToday.toLocaleString()} ${client.callsToday === 1 ? "call" : "calls"} today`}
+                      translate(
+                        client.callsToday === 1
+                          ? msg(" · {count} call today")
+                          : msg(" · {count} calls today"),
+                        { count: client.callsToday.toLocaleString(locale) },
+                      )}
                     {client.firstCatalogSize != null &&
-                      ` · Last saw ${client.firstCatalogSize.toLocaleString()} tools`}
+                      translate(" · Last saw {value0} tools", {
+                        value0: client.firstCatalogSize.toLocaleString(locale),
+                      })}
                   </p>
                 </div>
               ))}

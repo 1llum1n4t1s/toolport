@@ -1,3 +1,4 @@
+import { msg, translate, type SourceMessage } from "./i18n";
 import type { View } from "./types";
 
 /** Views in the order their number key selects them (SBS-143). The four 2.0
@@ -96,12 +97,13 @@ export interface ShortcutHelpRow {
 /** The cheat sheet, built for the platform so a Mac user is not told to press Ctrl. */
 export function shortcutHelp(isMac: boolean): ShortcutHelpRow[] {
   const mod = isMac ? "⌘" : "Ctrl";
-  return [
-    { keys: `${mod}1 – ${mod}4`, what: "Switch view" },
-    { keys: `/ or ${mod}F`, what: "Focus the server search" },
-    { keys: `${mod}N`, what: "Add a server" },
-    { keys: `${mod}R`, what: "Refresh servers and clients" },
-    { keys: "?", what: "Show this list" },
-    { keys: "Esc", what: "Close this list" },
+  const rows: { keys: string; what: SourceMessage }[] = [
+    { keys: `${mod}1 – ${mod}4`, what: msg("Switch view") },
+    { keys: `/ or ${mod}F`, what: msg("Focus the server search") },
+    { keys: `${mod}N`, what: msg("Add a server") },
+    { keys: `${mod}R`, what: msg("Refresh servers and clients") },
+    { keys: "?", what: msg("Show this list") },
+    { keys: "Esc", what: msg("Close this list") },
   ];
+  return rows.map((row) => ({ ...row, what: translate(row.what) }));
 }

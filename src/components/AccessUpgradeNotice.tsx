@@ -1,3 +1,4 @@
+import { translate, useI18n } from "@/lib/i18n";
 import { useState } from "react";
 import { dismissAccessUpgradeNotice, stopStaleGateways } from "@/lib/api";
 import type { Registry } from "@/lib/types";
@@ -10,6 +11,7 @@ export function AccessUpgradeNotice({
   registry: Registry | null;
   onRegistryChange: (registry: Registry) => void;
 }) {
+  const { t } = useI18n();
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState("");
   if (
@@ -27,13 +29,13 @@ export function AccessUpgradeNotice({
       {/* eslint-disable jsx-a11y/no-noninteractive-tabindex -- The labelled scroll region needs keyboard focus. */}
       <p
         role="region"
-        aria-label="Upgrade details"
+        aria-label={t("Upgrade details")}
         tabIndex={0}
         className="min-w-0 flex-1"
       >
-        Old Toolport gateways may still be running from before the upgrade. Stop old
-        gateways, then restart any apps still using them so they use the new client access
-        controls.
+        {t(
+          "Old Toolport gateways may still be running from before the upgrade. Stop old gateways, then restart any apps still using them so they use the new client access controls.",
+        )}
         {result && <span className="block">{result}</span>}
       </p>
       {/* eslint-enable jsx-a11y/no-noninteractive-tabindex */}
@@ -45,35 +47,25 @@ export function AccessUpgradeNotice({
             const outcome = await stopStaleGateways();
             setResult(
               [
-                `Stopped ${outcome.killed.length} old gateways.`,
+                translate("Stopped {value0} old gateways.", {
+                  value0: outcome.killed.length,
+                }),
                 outcome.failed.length
-                  ? `Could not stop: ${outcome.failed.join("; ")}.`
+                  ? translate("Could not stop: {value0}.", {
+                      value0: outcome.failed.join("; "),
+                    })
                   : "",
                 outcome.needsRestart.length
-                  ? `Restart: ${outcome.needsRestart.map((app) => app.client).join(", ")}.`
+                  ? translate("Restart: {value0}.", {
+                      value0: outcome.needsRestart.map((app) => app.client).join(", "),
+                    })
                   : "",
               ]
                 .filter(Boolean)
                 .join(" "),
             );
           } catch (error) {
-            toastError("Could not stop old gateways", { description: String(error) });
-          } finally {
-            setBusy(false);
-          }
-        }}
-        className="rounded-[8px] border px-2.5 py-1 text-[13px] font-semibold"
-      >
-        Stop old gateways
-      </button>
-      <button
-        disabled={busy}
-        onClick={async () => {
-          setBusy(true);
-          try {
-            onRegistryChange(await dismissAccessUpgradeNotice());
-          } catch (error) {
-            toastError("Could not dismiss upgrade notice", {
+            toastError(translate("Could not stop old gateways"), {
               description: String(error),
             });
           } finally {
@@ -82,7 +74,25 @@ export function AccessUpgradeNotice({
         }}
         className="rounded-[8px] border px-2.5 py-1 text-[13px] font-semibold"
       >
-        Dismiss
+        {t("Stop old gateways")}
+      </button>
+      <button
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            onRegistryChange(await dismissAccessUpgradeNotice());
+          } catch (error) {
+            toastError(translate("Could not dismiss upgrade notice"), {
+              description: String(error),
+            });
+          } finally {
+            setBusy(false);
+          }
+        }}
+        className="rounded-[8px] border px-2.5 py-1 text-[13px] font-semibold"
+      >
+        {t("Dismiss")}
       </button>
     </div>
   );

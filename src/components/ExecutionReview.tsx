@@ -1,3 +1,4 @@
+import { useI18n } from "@/lib/i18n";
 import { useEffect } from "react";
 import type { ServerEntry } from "@/lib/types";
 import {
@@ -14,10 +15,11 @@ export default function ExecutionReview({
   server: ServerEntry;
   onReady: (server: ServerEntry) => void;
 }) {
+  const { t } = useI18n();
   useEffect(() => onReady(server), [server, onReady]);
   return (
     <div className="max-h-[60vh] space-y-2 overflow-auto break-all font-mono text-xs">
-      <p>Review the highlighted changes. Enable only a setup you trust.</p>
+      <p>{t("Review the highlighted changes. Enable only a setup you trust.")}</p>
       {executionReviewLines(server).map((line, i) => (
         <p
           key={i}
@@ -27,12 +29,12 @@ export default function ExecutionReview({
               : "whitespace-pre-wrap"
           }
         >
-          {line}
+          {line === "New server" ? t("New server") : line}
         </p>
       ))}
       {server.syncExecutionReview && (
         <details>
-          <summary>Show full definition</summary>
+          <summary>{t("Show full definition")}</summary>
           {Object.entries(executionReviewFields(server)).map(([key, value]) => (
             <p key={key} className="whitespace-pre-wrap">
               {reviewDisplay(server, executionReviewFieldLine(key, value))}

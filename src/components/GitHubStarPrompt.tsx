@@ -1,3 +1,4 @@
+import { useI18n } from "@/lib/i18n";
 import { useEffect, useState, type ReactNode } from "react";
 import { Star, X } from "lucide-react";
 import { getAuditLog } from "@/lib/api";
@@ -48,6 +49,7 @@ export function GitHubStarPrompt({
   refreshKey = 0,
   onVisibleChange,
 }: Props) {
+  const { t } = useI18n();
   // Freeze the audience for this launch; onboarding books a future chip.
   const [stage] = useState<StarStage>(readStarStage);
   const [dismissed, setDismissed] = useState(false);
@@ -146,8 +148,7 @@ export function GitHubStarPrompt({
             onClick={star}
             className={`inline-flex items-center gap-1.5 rounded-full text-xs font-medium transition hover:text-primary ${FOCUS_RING}`}
           >
-            <Star className="size-3.5" />
-            Star Toolport on GitHub
+            <Star className="size-3.5" /> {t("Star Toolport on GitHub")}{" "}
           </button>
           <CloseButton onClick={() => setDismissed(true)} className="rounded-full p-1" />
         </div>
@@ -159,27 +160,26 @@ export function GitHubStarPrompt({
     <Corner>
       <div
         role="status"
-        aria-label="Star Toolport on GitHub"
+        aria-label={t("Star Toolport on GitHub")}
         className={`${SHELL} w-[min(20rem,calc(100vw-2rem))] rounded-xl p-4`}
       >
         <div className="flex items-start gap-2">
           <Star className="mt-0.5 size-4 shrink-0 text-warning" />
-          <p className="flex-1 text-sm font-medium">Enjoying Toolport?</p>
+          <p className="flex-1 text-sm font-medium">{t("Enjoying Toolport?")}</p>
           <CloseButton
             onClick={() => setDismissed(true)}
             className="-mt-0.5 -mr-0.5 rounded p-0.5"
           />
         </div>
         <p className="mt-1.5 text-sm text-muted-foreground">
-          A GitHub star helps other developers find it.
+          {t("A GitHub star helps other developers find it.")}
         </p>
         <div className="mt-3 flex items-center gap-2">
           <Button size="sm" onClick={star}>
-            <Star className="size-3.5" />
-            Star on GitHub
+            <Star className="size-3.5" /> {t("Star on GitHub")}{" "}
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setDismissed(true)}>
-            No thanks
+            {t("No thanks")}
           </Button>
         </div>
       </div>
@@ -198,11 +198,12 @@ function Corner({ children }: { children: ReactNode }) {
 /** Closing is always a "not now", never a separate refusal: the stage was
  *  already spent when the surface appeared, so this only hides it. */
 function CloseButton({ onClick, className }: { onClick: () => void; className: string }) {
+  const { t } = useI18n();
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label="Dismiss"
+      aria-label={t("Dismiss")}
       className={`text-muted-foreground transition hover:text-foreground ${FOCUS_RING} ${className}`}
     >
       <X className="size-3.5" />

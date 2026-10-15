@@ -1,3 +1,4 @@
+import { useI18n, Trans } from "@/lib/i18n";
 import { useState, type ReactNode } from "react";
 import { Check, Loader2, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -36,7 +37,7 @@ export function ImportReviewDialog({
   open,
   items,
   busy = false,
-  title = "Review servers to import",
+  title,
   description,
   confirmLabel,
   allowEmpty = false,
@@ -46,6 +47,7 @@ export function ImportReviewDialog({
   onOpenChange,
   onConfirm,
 }: Props) {
+  const { t } = useI18n();
   if (!open) return null;
 
   return (
@@ -53,7 +55,7 @@ export function ImportReviewDialog({
       <ImportReviewContent
         items={items}
         busy={busy}
-        title={title}
+        title={title ?? t("Review servers to import")}
         description={description}
         confirmLabel={confirmLabel}
         allowEmpty={allowEmpty}
@@ -70,7 +72,7 @@ export function ImportReviewDialog({
 function ImportReviewContent({
   items,
   busy = false,
-  title = "Review servers to import",
+  title,
   description,
   confirmLabel,
   allowEmpty = false,
@@ -80,6 +82,7 @@ function ImportReviewContent({
   onOpenChange,
   onConfirm,
 }: Omit<Props, "open">) {
+  const { t } = useI18n();
   const keyedItems = items.map((item, index) => ({
     item,
     key: item.key ?? `${item.name}-${index}`,
@@ -123,16 +126,18 @@ function ImportReviewContent({
   return (
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
-        <DialogTitle>{title}</DialogTitle>
+        <DialogTitle>{title ?? t("Review servers to import")}</DialogTitle>
       </DialogHeader>
       <div className="flex flex-col gap-4 py-1">
         <p className="text-xs text-muted-foreground">
           {description ??
-            "Review the commands and URLs before adding them. Leave any server unchecked to keep it as it is."}
+            t(
+              "Review the commands and URLs before adding them. Leave any server unchecked to keep it as it is.",
+            )}
         </p>
         {details && (
           <details>
-            <summary className="text-xs">Details</summary>
+            <summary className="text-xs">{t("Details")}</summary>
             <p className="mt-2 whitespace-pre-wrap break-all text-xs text-muted-foreground">
               {details}
             </p>
@@ -182,25 +187,25 @@ function ImportReviewContent({
                                 !env.present &&
                                 !credentialInputs[item.name]?.[env.key],
                             )
-                              ? "Needs input"
+                              ? t("Needs input")
                               : item.credentials.some(
                                     (env) =>
                                       !env.present &&
                                       !credentialInputs[item.name]?.[env.key],
                                   )
-                                ? "Optional"
+                                ? t("Optional")
                                 : item.credentials.some(
                                       (env) =>
                                         secretChoices[item.name]?.[env.key] ?? env.secret,
                                     )
-                                  ? "Found, goes to keychain"
-                                  : "Found"}
+                                  ? t("Found, goes to keychain")
+                                  : t("Found")}
                           </p>
                         )}
                         {busy && isSelected && (
                           <p role="status" className="mt-1 flex gap-2 text-xs">
                             <Loader2 className="size-3 animate-spin" />
-                            Checking {item.name}...
+                            {t("Checking {name}...", { name: item.name })}
                           </p>
                         )}
                       </>
@@ -210,7 +215,7 @@ function ImportReviewContent({
                 {!!item.credentials?.length && (
                   <details className="px-3 pb-3 text-xs">
                     <summary className="cursor-pointer">
-                      {item.name} credentials and settings
+                      {item.name} {t("credentials and settings")}
                     </summary>
                     <div className="flex flex-col gap-2 pt-2">
                       {item.credentials.map((env) => (
@@ -232,17 +237,19 @@ function ImportReviewContent({
                                 }))
                               }
                             />
-                            Keep {env.key} in keychain{" "}
+                            {t("Keep {key} in keychain", { key: env.key })}{" "}
                             {!env.required && (
-                              <span className="text-muted-foreground">Optional</span>
+                              <span className="text-muted-foreground">
+                                {t("Optional")}
+                              </span>
                             )}
                             <span className="ml-auto text-muted-foreground">
                               {env.present
-                                ? "Found"
+                                ? t("Found")
                                 : credentialInputs[item.name]?.[env.key]
-                                  ? "Ready for connection"
+                                  ? t("Ready for connection")
                                   : env.required
-                                    ? "Missing"
+                                    ? t("Missing")
                                     : ""}
                             </span>
                           </label>
@@ -256,7 +263,7 @@ function ImportReviewContent({
                                 setEditing({ name: item.name, key: env.key });
                               }}
                             >
-                              Enter value
+                              {t("Enter value")}
                             </Button>
                           )}
                         </div>
@@ -266,7 +273,8 @@ function ImportReviewContent({
                 )}
                 {item.unsupported && (
                   <p className="px-3 pb-2 text-xs text-warning">
-                    Unsupported: {item.unsupported}
+                    {t("Unsupported:")}
+                    {item.unsupported}
                   </p>
                 )}
               </div>
@@ -283,11 +291,14 @@ function ImportReviewContent({
         >
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>{editing.name} credentials</DialogTitle>
+              <DialogTitle>
+                {editing.name} {t("credentials")}
+              </DialogTitle>
             </DialogHeader>
             <p className="text-sm text-muted-foreground">
-              This value is used only for the selected server. It is saved only if
-              connection succeeds.
+              {t(
+                "This value is used only for the selected server. It is saved only if connection succeeds.",
+              )}
             </p>
             <label className="flex flex-col gap-2 text-sm">
               {editing.key}
@@ -301,7 +312,7 @@ function ImportReviewContent({
             </label>
             <DialogFooter>
               <Button variant="ghost" onClick={() => setEditing(null)}>
-                Cancel
+                {t("Cancel")}
               </Button>
               <Button
                 disabled={!value.trim()}
@@ -314,7 +325,7 @@ function ImportReviewContent({
                   setEditing(null);
                 }}
               >
-                Use for connection
+                {t("Use for connection")}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -327,7 +338,7 @@ function ImportReviewContent({
       ))}
       <DialogFooter className="justify-between">
         <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
-          Cancel
+          {t("Cancel")}
         </Button>
         <Button
           onClick={() => {
@@ -348,8 +359,13 @@ function ImportReviewContent({
           <Check className="size-4" />
           {confirmLabel ??
             (selectedCount === 0
-              ? "Select a server"
-              : `Import ${selectedCount} server${selectedCount === 1 ? "" : "s"}`)}
+              ? t("Select a server")
+              : t(
+                  selectedCount === 1
+                    ? "Import {count} server"
+                    : "Import {count} servers",
+                  { count: selectedCount },
+                ))}
         </Button>
       </DialogFooter>
     </DialogContent>
@@ -366,6 +382,7 @@ export function ImportRow({
   selected?: boolean;
   status?: ReactNode;
 }) {
+  const { t } = useI18n();
   const runs =
     item.command != null ? [item.command, ...item.args].join(" ") : (item.url ?? "");
   const shell = runsShell(item.command, item.args);
@@ -385,10 +402,10 @@ export function ImportRow({
         {
           <span className="ml-auto shrink-0 text-xs text-muted-foreground">
             {item.updates?.length
-              ? "Updates existing server"
+              ? t("Updates existing server")
               : item.isNew
-                ? "New"
-                : "In Toolport"}
+                ? t("New")
+                : t("In Toolport")}
           </span>
         }
       </div>
@@ -399,7 +416,7 @@ export function ImportRow({
       ))}
       {!!item.updates?.length && (
         <p className="mt-1 text-xs text-muted-foreground">
-          Changes: {item.updates.join(", ")}
+          {t("Changes: {changes}", { changes: item.updates.join(", ") })}
         </p>
       )}
       {runs && (
@@ -420,19 +437,27 @@ export function ImportRow({
       )}
       {!!item.envKeys?.length && !item.credentials?.length && (
         <p className="mt-1 text-xs text-warning">
-          Credentials: {item.envKeys.join(", ")}. Review their status before connecting.
+          {t("Credentials: {keys}. Review their status before connecting.", {
+            keys: item.envKeys.join(", "),
+          })}
         </p>
       )}
       {shell && (
         <p className="mt-1.5 flex items-center gap-1.5 text-xs text-warning">
-          <ShieldAlert className="size-3.5 shrink-0" />
-          Runs a shell command. Only import setups you trust.
+          <Trans
+            message={"{value1}Runs a shell command. Only import setups you trust."}
+            values={{ value1: <ShieldAlert className="size-3.5 shrink-0" /> }}
+          />
         </p>
       )}
       {privateHost && (
         <p className="mt-1.5 flex items-center gap-1.5 text-xs text-warning">
-          <ShieldAlert className="size-3.5 shrink-0" />
-          Connects to a private or internal address. Only import setups you trust.
+          <Trans
+            message={
+              "{value1}Connects to a private or internal address. Only import setups you trust."
+            }
+            values={{ value1: <ShieldAlert className="size-3.5 shrink-0" /> }}
+          />
         </p>
       )}
       {status}

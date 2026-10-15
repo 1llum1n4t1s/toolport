@@ -1,3 +1,4 @@
+import { getLocale, translate } from "./i18n";
 import type { Registry } from "./types";
 export interface AccountStatus {
   personalSync?: boolean;
@@ -29,31 +30,41 @@ export function isPersonalSync(registry: Registry | null | undefined): boolean {
 export function accountStatusText(status: AccountStatus, now = Date.now()): string[] {
   const lines = [
     status.plan === "pro"
-      ? "Pro · unlimited devices"
+      ? translate("Pro · unlimited devices")
       : status.plan === "free"
-        ? "Free · 1 person, 1 device"
+        ? translate("Free · 1 person, 1 device")
         : status.plan,
   ];
   if (status.trialActive && status.trialEndsAt != null)
     lines.push(
-      `${Math.max(0, Math.ceil((status.trialEndsAt - now) / 86400000))} trial days left`,
+      translate("{count} trial days left", {
+        count: Math.max(0, Math.ceil((status.trialEndsAt - now) / 86400000)),
+      }),
     );
   if (status.freeSyncGraceEndsAt != null)
     lines.push(
       status.freeSyncGraceEndsAt > now
-        ? `Every device keeps syncing until ${new Date(status.freeSyncGraceEndsAt).toLocaleString()}`
-        : "Sync grace period ended.",
+        ? translate("Every device keeps syncing until {date}", {
+            date: new Date(status.freeSyncGraceEndsAt).toLocaleString(getLocale()),
+          })
+        : translate("Sync grace period ended."),
     );
   if (!status.canReceiveConfig)
     lines.push(
       status.reason ||
-        "This device cannot receive your setup. Choose your active device in Your account.",
+        translate(
+          "This device cannot receive your setup. Choose your active device in Your account.",
+        ),
     );
   return lines;
 }
 export function planName(plan: string | null | undefined): string {
-  const names: Record<string, string> = { pro: "Pro", team: "Team", free: "Free" };
-  return names[plan?.toLowerCase() ?? ""] ?? (plan || "unknown");
+  const names: Record<string, string> = {
+    pro: translate("Pro"),
+    team: translate("Team"),
+    free: translate("Free"),
+  };
+  return names[plan?.toLowerCase() ?? ""] ?? (plan || translate("unknown"));
 }
 export function syncSignInUrl(origin: string): string {
   const url = new URL(origin.trim());

@@ -1,3 +1,4 @@
+import { msg, translate, useI18n } from "@/lib/i18n";
 import { useMemo, useState } from "react";
 import { ChevronRight, ShieldCheck } from "lucide-react";
 import { releaseQuarantine, type SecurityEvent } from "@/lib/api";
@@ -22,7 +23,7 @@ export function groupToolChanges(events: SecurityEvent[]) {
     tools: SecurityEvent[];
   }[] = [];
   for (const event of [...events].sort((a, b) => b.ts - a.ts)) {
-    const server = event.server || "Unknown server";
+    const server = event.server || "";
     const profile = event.profile || "";
     const group = groups.find(
       (group) =>
@@ -48,26 +49,42 @@ export function groupToolChanges(events: SecurityEvent[]) {
 }
 
 function summary(tools: SecurityEvent[]) {
-  const noun = tools.length === 1 ? "tool" : "tools";
+  const singular = tools.length === 1;
   if (tools.every((tool) => tool.change === "added"))
-    return `${tools.length} new ${noun}`;
+    return translate(singular ? msg("{count} new tool") : msg("{count} new tools"), {
+      count: tools.length,
+    });
   if (tools.every((tool) => tool.changed_fields?.includes("input_schema")))
-    return `${tools.length} ${noun} changed their inputs`;
+    return translate(
+      singular
+        ? msg("{count} tool changed its inputs")
+        : msg("{count} tools changed their inputs"),
+      { count: tools.length },
+    );
   if (tools.every((tool) => tool.changed_fields?.join() === "description"))
-    return `${tools.length} ${noun} changed their descriptions`;
-  return `${tools.length} ${noun} changed`;
+    return translate(
+      singular
+        ? msg("{count} tool changed its description")
+        : msg("{count} tools changed their descriptions"),
+      { count: tools.length },
+    );
+  return translate(
+    singular ? msg("{count} tool changed") : msg("{count} tools changed"),
+    { count: tools.length },
+  );
 }
 
 function ago(ts: number) {
   const minutes = Math.max(0, Math.floor((Date.now() - ts) / 60_000));
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)}h ago`;
-  return `${Math.floor(minutes / 1440)}d ago`;
+  if (minutes < 1) return translate("just now");
+  if (minutes < 60) return translate("{value0}m ago", { value0: minutes });
+  if (minutes < 1440)
+    return translate("{value0}h ago", { value0: Math.floor(minutes / 60) });
+  return translate("{value0}d ago", { value0: Math.floor(minutes / 1440) });
 }
 
 function toolName(event: SecurityEvent) {
-  const name = (event.tool || "Unknown tool")
+  const name = (event.tool || translate("Unknown tool"))
     .replace(`${event.server}__`, "")
     .replace(/_/g, " ");
   return name.charAt(0).toUpperCase() + name.slice(1);
@@ -84,6 +101,7 @@ export function ToolChanges({
   onAccept: (events: SecurityEvent[]) => void;
   onReview?: () => void;
 }) {
+  const { t } = useI18n();
   const groups = useMemo(() => groupToolChanges(events), [events]);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -98,19 +116,21 @@ export function ToolChanges({
       }
       onAccept(events);
     } catch (error) {
-      toastError(`Couldn't accept the changes: ${error}`);
+      toastError(
+        translate("Couldn't accept the changes: {value0}", { value0: String(error) }),
+      );
     } finally {
       setBusy(false);
     }
   }
   return (
     <section
-      aria-label="Tool changes"
+      aria-label={t("Tool changes")}
       className="mb-4 rounded-lg border border-border bg-muted/20 p-4"
     >
       <h3 className="mb-3 flex items-center gap-2 text-sm font-medium">
         <ShieldCheck className="size-4 text-muted-foreground" />
-        Tool changes
+        {t("Tool changes")}
       </h3>
       <div className="space-y-3">
         {groups.map((group) => {
@@ -121,7 +141,9 @@ export function ToolChanges({
             registry?.servers.find(
               (server) =>
                 sanitizeSegment(server.id) === group.server || server.id === group.server,
-            )?.name || group.server;
+            )?.name ||
+            group.server ||
+            translate("Unknown server");
           const canAccept =
             !unknown &&
             !reviewRequired &&
@@ -162,19 +184,32 @@ export function ToolChanges({
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
                 <p className={blocked ? "text-destructive" : "text-muted-foreground"}>
                   {reviewRequired
-                    ? "Review the captured definition in Settings before accepting it."
+                    ? translate(
+                        "Review the captured definition in Settings before accepting it.",
+                      )
                     : blocked
-                      ? `${blocked} ${blocked === 1 ? "tool is" : "tools are"} blocked. Review the changes or accept them.`
+                      ? translate(
+                          blocked === 1
+                            ? msg(
+                                "{count} tool is blocked. Review the changes or accept them.",
+                              )
+                            : msg(
+                                "{count} tools are blocked. Review the changes or accept them.",
+                              ),
+                          { count: blocked },
+                        )
                       : unknown
-                        ? "Blocking status unavailable. Review in Settings > Quarantined tools."
-                        : "Not blocked. Review the changes or accept them."}
+                        ? translate(
+                            "Blocking status unavailable. Review in Settings > Quarantined tools.",
+                          )
+                        : translate("Not blocked. Review the changes or accept them.")}
                 </p>
                 {reviewRequired && (
                   <button
                     onClick={onReview}
                     className="rounded border border-border px-2 py-1 text-foreground"
                   >
-                    Review in Settings
+                    {translate("Review in Settings")}
                   </button>
                 )}
                 <button
@@ -182,12 +217,14 @@ export function ToolChanges({
                   onClick={() => void accept(group.tools)}
                   className="ml-auto rounded border border-border px-2 py-1 text-foreground disabled:opacity-50"
                 >
-                  Accept all for this server
+                  {translate("Accept all for this server")}
                 </button>
               </div>
               {group.tools.some((tool) => tool.signatures !== undefined) && (
                 <p className="mt-2 text-xs text-destructive">
-                  Suspicious content found. Review and accept each tool separately.
+                  {translate(
+                    "Suspicious content found. Review and accept each tool separately.",
+                  )}
                 </p>
               )}
               {open && (
@@ -205,12 +242,12 @@ export function ToolChanges({
                           <p key={field}>
                             {(
                               {
-                                description: "Description changed.",
-                                input_schema: "Inputs changed.",
-                                output_schema: "Output format changed.",
-                                annotations: "Safety hints changed.",
+                                description: translate("Description changed."),
+                                input_schema: translate("Inputs changed."),
+                                output_schema: translate("Output format changed."),
+                                annotations: translate("Safety hints changed."),
                               } as Record<string, string>
-                            )[field] || "Definition changed."}
+                            )[field] || translate("Definition changed.")}
                           </p>
                         ))}
                         {event.parameters
@@ -218,27 +255,43 @@ export function ToolChanges({
                               (kind) =>
                                 event.parameters![kind].length > 0 && (
                                   <p key={kind}>
-                                    {kind.charAt(0).toUpperCase() + kind.slice(1)}{" "}
-                                    parameters: {event.parameters![kind].join(", ")}
+                                    {translate(
+                                      {
+                                        added: msg("Added parameters: {parameters}"),
+                                        removed: msg("Removed parameters: {parameters}"),
+                                        changed: msg("Changed parameters: {parameters}"),
+                                      }[kind],
+                                      { parameters: event.parameters![kind].join(", ") },
+                                    )}
                                   </p>
                                 ),
                             )
                           : event.change === "changed" && (
                               <p>
-                                Parameter details were not saved for this older change.
+                                {translate(
+                                  "Parameter details were not saved for this older change.",
+                                )}
                               </p>
                             )}
                         <p>
                           {event.blocked === true
-                            ? "Blocked until you accept the changes."
+                            ? translate("Blocked until you accept the changes.")
                             : event.blocked === false
-                              ? "Not blocked."
-                              : "Blocking status unavailable. Review in Settings > Quarantined tools."}
+                              ? translate("Not blocked.")
+                              : translate(
+                                  "Blocking status unavailable. Review in Settings > Quarantined tools.",
+                                )}
                         </p>
                         {event.signatures !== undefined && (
                           <p className="text-destructive">
-                            Suspicious content. Matched signals:{" "}
-                            {event.signatures.join(", ") || "details unavailable"}.
+                            {translate(
+                              "Suspicious content. Matched signals: {signals}.",
+                              {
+                                signals:
+                                  event.signatures.join(", ") ||
+                                  translate("details unavailable"),
+                              },
+                            )}
                           </p>
                         )}
                         {event.review_required ? (
@@ -246,7 +299,7 @@ export function ToolChanges({
                             onClick={onReview}
                             className="mt-1 rounded border border-border px-2 py-1 text-foreground"
                           >
-                            Review in Settings
+                            {translate("Review in Settings")}
                           </button>
                         ) : (
                           <button
@@ -259,7 +312,7 @@ export function ToolChanges({
                             onClick={() => void accept([event])}
                             className="mt-1 rounded border border-border px-2 py-1 text-foreground disabled:opacity-50"
                           >
-                            Accept this tool
+                            {translate("Accept this tool")}
                           </button>
                         )}
                       </div>

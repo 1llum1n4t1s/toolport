@@ -1,3 +1,4 @@
+import { translate as tr, Trans, useI18n, msg, type SourceMessage } from "@/lib/i18n";
 import {
   dismissalIndex,
   dismissalKey,
@@ -86,38 +87,38 @@ function eventBadge(e: SecurityEvent): { label: string; cls: string } {
       : "bg-muted text-muted-foreground";
   if (e.type === "sync_change_refused") {
     return {
-      label: "synced change blocked",
+      label: tr("synced change blocked"),
       cls: "bg-destructive/15 text-destructive",
     };
   }
   if (e.type === "result_injection_blocked") {
     return {
-      label: "injection blocked",
+      label: tr("injection blocked"),
       cls,
     };
   }
   if (e.type === "result_injection") {
     return {
-      label: "injected result",
+      label: tr("injected result"),
       cls,
     };
   }
   if (e.type === "tool_poison_flag") {
     return {
-      label: "suspicious content",
+      label: tr("suspicious content"),
       cls,
     };
   }
   if (e.type === "pins_load_failed") {
     return {
-      label: "integrity baseline lost",
+      label: tr("integrity baseline lost"),
       cls,
     };
   }
   if (e.change === "changed") {
-    return { label: "changed", cls: "bg-muted text-muted-foreground" };
+    return { label: tr("changed"), cls: "bg-muted text-muted-foreground" };
   }
-  return { label: "new tool", cls: "bg-owned/15 text-owned" };
+  return { label: tr("new tool"), cls: "bg-owned/15 text-owned" };
 }
 
 const SECURITY_DISMISSED_KEY = "toolport.security.dismissed";
@@ -191,13 +192,17 @@ function addDismissed(prev: Set<string>, keys: string[]): Set<string> {
  * security notices. A protection the user never sees builds no trust, so we make
  * the integrity + content-defense watch visible even when nothing is wrong. */
 function SecurityResting() {
+  const { t: tr } = useI18n();
   return (
     <div className="mb-4 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-4 py-2.5 text-xs text-muted-foreground">
       <ShieldCheck className="size-4 shrink-0 text-owned" />
       <span>
-        <span className="block font-semibold text-foreground">Protection active.</span>{" "}
-        Toolport is watching tool definitions and results. Nothing needs your attention
-        right now.
+        <span className="block font-semibold text-foreground">
+          {tr("Protection active.")}
+        </span>{" "}
+        {tr(
+          "Toolport is watching tool definitions and results. Nothing needs your attention right now.",
+        )}
       </span>
     </div>
   );
@@ -214,6 +219,7 @@ function SecurityLoadNotice({
   status: Exclude<LoadStatus, "ready">;
   onRetry: () => void;
 }) {
+  const { t: tr } = useI18n();
   if (status === "loading") {
     return (
       <div
@@ -221,7 +227,7 @@ function SecurityLoadNotice({
         className="mb-4 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-4 py-2.5 text-xs text-muted-foreground"
       >
         <ShieldCheck className="size-4 shrink-0" />
-        <span>Checking protection status…</span>
+        <span>{tr("Checking protection status…")}</span>
       </div>
     );
   }
@@ -236,26 +242,29 @@ function SecurityLoadNotice({
       <span className="text-muted-foreground">
         <span className="block font-semibold text-foreground">
           {stale
-            ? "Security status may be out of date."
-            : "Couldn't verify protection status."}
+            ? tr("Security status may be out of date.")
+            : tr("Couldn't verify protection status.")}
         </span>{" "}
         {stale
-          ? "Showing the last security events Toolport read successfully; the latest check failed."
-          : "Toolport couldn't read security events, so this is not an all-clear."}
+          ? tr(
+              "Showing the last security events Toolport read successfully; the latest check failed.",
+            )
+          : tr("Toolport couldn't read security events, so this is not an all-clear.")}
       </span>
       <button
         type="button"
         onClick={onRetry}
-        aria-label="Retry protection status"
+        aria-label={tr("Retry protection status")}
         className="ml-auto shrink-0 rounded-md border px-2.5 py-1 font-medium text-foreground transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
       >
-        Retry
+        {tr("Retry")}
       </button>
     </div>
   );
 }
 
 function AuditStaleNotice({ onRetry }: { onRetry: () => void }) {
+  const { t: tr } = useI18n();
   return (
     <div
       role="alert"
@@ -264,17 +273,19 @@ function AuditStaleNotice({ onRetry }: { onRetry: () => void }) {
       <AlertTriangle className="size-4 shrink-0 text-warning" />
       <span className="text-muted-foreground">
         <span className="block font-semibold text-foreground">
-          Activity may be out of date.
+          {tr("Activity may be out of date.")}
         </span>{" "}
-        Showing the last calls Toolport read successfully; the latest refresh failed.
+        {tr(
+          "Showing the last calls Toolport read successfully; the latest refresh failed.",
+        )}
       </span>
       <button
         type="button"
         onClick={onRetry}
-        aria-label="Retry activity log"
+        aria-label={tr("Retry activity log")}
         className="ml-auto shrink-0 rounded-md border px-2.5 py-1 font-medium text-foreground transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
       >
-        Retry
+        {tr("Retry")}
       </button>
     </div>
   );
@@ -292,6 +303,7 @@ function SecurityNotices({
   events: SecurityEvent[];
   onDismiss: (e: SecurityEvent) => void;
 }) {
+  const { t: tr } = useI18n();
   const [open, setOpen] = useState(true);
   // One row per finding, newest first, with a recurrence count. See collapseByIdentity.
   const collapsed = collapseByIdentity(events);
@@ -309,7 +321,7 @@ function SecurityNotices({
       >
         <ShieldAlert className="size-4 shrink-0 text-muted-foreground" />
         <h3 className="text-sm font-medium text-muted-foreground">
-          Tool security notices
+          {tr("Tool security notices")}
         </h3>
         <span className="rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
           {collapsed.length}
@@ -323,11 +335,9 @@ function SecurityNotices({
       {open && (
         <>
           <p className="mt-2 mb-3 max-w-2xl text-xs text-muted-foreground">
-            A tool changed after you approved it, a tool's definition contains
-            instruction-like content, or a tool returned data that looks like injected
-            instructions. Usually benign, but it's how rug pulls, tool poisoning, and
-            agentjacking work, so Toolport flags it (and labels suspicious tool output as
-            data). Dismiss the ones you've reviewed.
+            {tr(
+              "A tool changed after you approved it, a tool's definition contains instruction-like content, or a tool returned data that looks like injected instructions. Usually benign, but it's how rug pulls, tool poisoning, and agentjacking work, so Toolport flags it (and labels suspicious tool output as data). Dismiss the ones you've reviewed.",
+            )}
           </p>
           <ul className="space-y-1.5 text-xs">
             {collapsed.slice(0, 10).map(({ e, count }) => {
@@ -339,7 +349,7 @@ function SecurityNotices({
                       {badge.label}
                     </span>
                     <code className="font-mono text-foreground">
-                      {e.tool || e.server || "integrity baseline"}
+                      {e.tool || e.server || tr("integrity baseline")}
                     </code>
                     {e.signatures && e.signatures.length > 0 && (
                       <span className="text-muted-foreground">
@@ -349,18 +359,18 @@ function SecurityNotices({
                     {count > 1 && (
                       <span
                         className="rounded-full bg-muted px-1.5 py-0.5 font-medium text-muted-foreground"
-                        title={`Recurred in ${count} separate time windows`}
+                        title={tr("Recurred in {count} separate time windows", { count })}
                       >
                         ×{count}
                       </span>
                     )}
                     <span className="ml-auto text-muted-foreground">
-                      {count > 1 ? "last " : ""}
+                      {count > 1 ? tr("last ") : ""}
                       {fmtTs(e.ts)}
                     </span>
                     <button
                       onClick={() => onDismiss(e)}
-                      aria-label="Dismiss this notice"
+                      aria-label={tr("Dismiss this notice")}
                       className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-warning/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-warning"
                     >
                       <X className="size-3.5" />
@@ -374,7 +384,7 @@ function SecurityNotices({
                   {e.evidence && (
                     <p className="ml-1 max-w-2xl border-l-2 border-warning/40 pl-2 font-mono text-[11px] leading-relaxed break-words text-muted-foreground">
                       <span className="mr-1 select-none font-sans text-muted-foreground/70">
-                        matched:
+                        {tr("matched:")}
                       </span>
                       {e.evidence}
                     </p>
@@ -405,6 +415,7 @@ function QuietDriftHistory({
   onDismiss: (e: SecurityEvent) => void;
   onDismissAll: () => void;
 }) {
+  const { t: tr } = useI18n();
   const [open, setOpen] = useState(false);
   return (
     <div className="mb-4 rounded-lg border border-border/60 bg-muted/20 p-3">
@@ -415,7 +426,9 @@ function QuietDriftHistory({
           className="flex flex-1 items-center gap-2 text-left"
         >
           <History className="size-3.5 shrink-0" />
-          <span className="font-medium text-foreground/80">New &amp; changed tools</span>
+          <span className="font-medium text-foreground/80">
+            {tr("New & changed tools")}
+          </span>
           <span className="rounded-full bg-muted px-1.5 py-0.5 font-medium">
             {events.length}
           </span>
@@ -427,28 +440,27 @@ function QuietDriftHistory({
           onClick={onDismissAll}
           className="shrink-0 rounded px-2 py-0.5 font-medium text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border"
         >
-          Dismiss all
+          {tr("Dismiss all")}
         </button>
       </div>
       {open && (
         <>
           <p className="mt-2 mb-2 max-w-2xl text-xs text-muted-foreground">
-            New tools first seen, and benign, non-destructive changes to tools you've
-            already approved (vendors revise beta tools server-side). Kept for the record,
-            not flagged as a risk, the approval and destructive-tool gates still guard
-            every call. Dismiss any you've reviewed.
+            {tr(
+              "New tools first seen, and benign, non-destructive changes to tools you've already approved (vendors revise beta tools server-side). Kept for the record, not flagged as a risk, the approval and destructive-tool gates still guard every call. Dismiss any you've reviewed.",
+            )}
           </p>
           <ul className="space-y-1 text-xs">
             {events.slice(0, 20).map((e) => (
               <li key={renderKey(e)} className="flex items-center gap-2">
                 <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
-                  {e.change === "added" ? "new tool" : "changed"}
+                  {e.change === "added" ? tr("new tool") : tr("changed")}
                 </span>
                 <code className="font-mono text-muted-foreground">{e.tool}</code>
                 <span className="ml-auto text-muted-foreground/70">{fmtTs(e.ts)}</span>
                 <button
                   onClick={() => onDismiss(e)}
-                  aria-label="Dismiss this change"
+                  aria-label={tr("Dismiss this change")}
                   className="rounded p-0.5 text-muted-foreground/50 transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border"
                 >
                   <X className="size-3.5" />
@@ -464,19 +476,27 @@ function QuietDriftHistory({
 
 /** One session baseline minus every catalog response and search response. */
 function SavingsBanner({ savings }: { savings: SavingsSummary }) {
+  const { t: tr, locale } = useI18n();
   const hasCatalog = (savings.tokenizedLoads ?? 0) > 0;
   const discovered = (savings.discoveryCount ?? 0) > 0;
-  const method =
-    "The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. We count compact JSON and search response text with cl100k_base, then subtract every tools/list and search response. Sessionless HTTP, initial catalogs above known client limits, and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.";
-  const exact = (value: number | undefined) => (value ?? 0).toLocaleString();
+  const method = tr(
+    "The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. We count compact JSON and search response text with cl100k_base, then subtract every tools/list and search response. Sessionless HTTP, initial catalogs above known client limits, and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.",
+  );
+  const exact = (value: number | undefined) => (value ?? 0).toLocaleString(locale);
   const share = async () => {
     try {
       await navigator.clipboard.writeText(
-        `Toolport measured ${fmtTokens(savings.tokensSaved)} net tokens saved across ${savings.tokenizedLoads} client sessions. Full catalog baselines minus all catalog and search responses, counted locally with cl100k_base; not a billing figure. toolport.app`,
+        tr(
+          "Toolport measured {tokens} net tokens saved across {sessions} client sessions. Full catalog baselines minus all catalog and search responses, counted locally with cl100k_base; not a billing figure. toolport.app",
+          {
+            tokens: fmtTokens(savings.tokensSaved),
+            sessions: savings.tokenizedLoads ?? 0,
+          },
+        ),
       );
-      toast.success("Savings copied, paste them anywhere");
+      toast.success(tr("Savings copied, paste them anywhere"));
     } catch {
-      toastError("Couldn't copy to clipboard");
+      toastError(tr("Couldn't copy to clipboard"));
     }
   };
   return (
@@ -485,10 +505,10 @@ function SavingsBanner({ savings }: { savings: SavingsSummary }) {
         <Sparkles className="size-4 text-success" />
         <span className="text-sm font-medium text-muted-foreground">
           {hasCatalog
-            ? "Net tool description savings"
+            ? tr("Net tool description savings")
             : discovered
-              ? "Discovery payload returned"
-              : "Savings history"}
+              ? tr("Discovery payload returned")
+              : tr("Savings history")}
         </span>
       </div>
       <div className="mt-2 flex flex-wrap items-end gap-x-6 gap-y-1">
@@ -497,23 +517,31 @@ function SavingsBanner({ savings }: { savings: SavingsSummary }) {
             ? fmtTokens(savings.tokensSaved)
             : discovered
               ? fmtBytes(savings.discoveryResponseBytes ?? 0)
-              : "Not measured yet"}{" "}
+              : tr("Not measured yet")}{" "}
           <span className="text-base font-normal text-muted-foreground">
-            {hasCatalog ? "net tokens saved" : discovered ? "discovery text" : ""}
+            {hasCatalog ? tr("net tokens saved") : discovered ? tr("discovery text") : ""}
           </span>
         </span>
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
         {hasCatalog
-          ? "Full catalog baselines minus all catalog and search responses. Counted locally; not a billing figure."
-          : "Older records remain available below. Comparable session measurements start with this version."}
+          ? tr(
+              "Full catalog baselines minus all catalog and search responses. Counted locally; not a billing figure.",
+            )
+          : tr(
+              "Older records remain available below. Comparable session measurements start with this version.",
+            )}
       </p>
       {(savings.previousReportedTokensSaved ?? 0) !== 0 && (
         <div className="mt-3 border-t border-success/20 pt-3 text-xs text-muted-foreground">
           <p className="font-medium">
-            Old estimate: {exact(savings.previousReportedTokensSaved)} tokens
+            {tr("Old estimate: {tokens} tokens", {
+              tokens: exact(savings.previousReportedTokensSaved),
+            })}
           </p>
-          <p className="mt-1">From previous versions; excluded from new savings.</p>
+          <p className="mt-1">
+            {tr("From previous versions; excluded from new savings.")}
+          </p>
         </div>
       )}
       {hasCatalog && (
@@ -521,47 +549,64 @@ function SavingsBanner({ savings }: { savings: SavingsSummary }) {
           onClick={share}
           className="mt-3 inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition hover:text-foreground"
         >
-          <Share2 className="size-3.5" /> Share
+          <Trans
+            message="{value1} Share"
+            values={{ value1: <Share2 className="size-3.5" /> }}
+          />
         </button>
       )}
       <details className="mt-3 text-xs text-muted-foreground">
-        <summary className="cursor-pointer">How this is measured</summary>
+        <summary className="cursor-pointer">{tr("How this is measured")}</summary>
         <div className="mt-2 space-y-2">
           <p>{method}</p>
           {hasCatalog && (
             <p>
-              {exact(savings.fullTokens)} baseline tokens − {exact(savings.exposedTokens)}{" "}
-              catalog response tokens − {exact(savings.discoveryTokens)} search response
-              tokens = {exact(savings.tokensSaved)} net tokens saved.
+              {tr(
+                "{baseline} baseline tokens − {catalog} catalog response tokens − {search} search response tokens = {net} net tokens saved.",
+                {
+                  baseline: exact(savings.fullTokens),
+                  catalog: exact(savings.exposedTokens),
+                  search: exact(savings.discoveryTokens),
+                  net: exact(savings.tokensSaved),
+                },
+              )}
             </p>
           )}
           {(hasCatalog || discovered) && (
             <>
               <p>
-                {exact(savings.tokenizedLoads)} client sessions;{" "}
-                {exact(savings.listLoads)} catalog responses;{" "}
-                {exact(savings.discoveryCount)} search responses.
+                {exact(savings.tokenizedLoads)} {tr("client sessions;")}{" "}
+                {exact(savings.listLoads)} {tr("catalog responses;")}{" "}
+                {exact(savings.discoveryCount)} {tr("search responses.")}
               </p>
               <p>
-                {fmtBytes(savings.fullSurfaceBytes ?? 0)} baseline catalog text;{" "}
-                {fmtBytes(savings.exposedSurfaceBytes ?? 0)} catalog text sent;{" "}
-                {fmtBytes(savings.discoveryResponseBytes ?? 0)} search text sent.
+                {fmtBytes(savings.fullSurfaceBytes ?? 0)} {tr("baseline catalog text;")}{" "}
+                {fmtBytes(savings.exposedSurfaceBytes ?? 0)} {tr("catalog text sent;")}{" "}
+                {fmtBytes(savings.discoveryResponseBytes ?? 0)} {tr("search text sent.")}
               </p>
             </>
           )}
           {(savings.historicalListLoads ?? 0) > 0 && (
             <p>
-              Excluded history: {exact(savings.historicalListLoads)} catalog records (
-              {exact(savings.historicalMeasuredLoads)} with byte measurements). Session
-              identity and repeat loads cannot be verified.
+              {tr(
+                "Excluded history: {records} catalog records ({measured} with byte measurements). Session identity and repeat loads cannot be verified.",
+                {
+                  records: exact(savings.historicalListLoads),
+                  measured: exact(savings.historicalMeasuredLoads),
+                },
+              )}
             </p>
           )}
           {((savings.legacyEstimatedTokensAvoided ?? 0) > 0 ||
             (savings.estimatedTokensAvoided ?? 0) > 0) && (
             <p>
-              Older estimated records: {exact(savings.legacyEstimatedTokensAvoided)}{" "}
-              legacy tokens and {exact(savings.estimatedTokensAvoided)} size-based tokens,
-              excluded.
+              {tr(
+                "Older estimated records: {legacy} legacy tokens and {estimated} size-based tokens, excluded.",
+                {
+                  legacy: exact(savings.legacyEstimatedTokensAvoided),
+                  estimated: exact(savings.estimatedTokensAvoided),
+                },
+              )}
             </p>
           )}
         </div>
@@ -576,6 +621,7 @@ function errCell(errors: number, errorRate: number) {
 
 /** One server row that expands to reveal its per-tool breakdown. */
 function ServerRow({ s }: { s: ServerStat }) {
+  const { t: tr } = useI18n();
   const [open, setOpen] = useState(false);
   const tools = s.tools ?? [];
   const expandable = tools.length > 0;
@@ -606,7 +652,9 @@ function ServerRow({ s }: { s: ServerStat }) {
               />
               <span className="truncate">{s.server}</span>
               <span className="sr-only">
-                {open ? "Collapse" : "Expand"} per-tool breakdown
+                {tr("{value1} per-tool breakdown", {
+                  value1: open ? tr("Collapse") : tr("Expand"),
+                })}
               </span>
             </button>
           ) : (
@@ -677,6 +725,7 @@ function ServerRow({ s }: { s: ServerStat }) {
  * The count is the whole payload. Pseudonymization exists to keep values away from the
  * model, so surfacing one here to explain the count would defeat it. */
 function PiiBadge({ entry }: { entry: AuditEntry }) {
+  const { t: tr } = useI18n();
   const replaced = entry.piiReplaced;
   if (replaced === undefined) return null;
   // Redaction fails OPEN: a full session map or an over-cap result leaves values in the
@@ -686,10 +735,14 @@ function PiiBadge({ entry }: { entry: AuditEntry }) {
     return (
       <span
         className="flex shrink-0 items-center gap-1 rounded bg-warning/15 px-1.5 py-0.5 text-[10px] text-warning"
-        title={`${replaced} value${replaced === 1 ? "" : "s"} masked, but the pass did not fully apply: some values reached the model in the clear (the session map was full, or the result exceeded the scan cap).`}
+        title={tr(
+          "{count} values masked, but the pass did not fully apply: some values reached the model in the clear (the session map was full, or the result exceeded the scan cap).",
+          { count: replaced },
+        )}
       >
         <ShieldAlert aria-hidden="true" className="size-3" />
-        {replaced} {replaced === 1 ? "value" : "values"} masked, incomplete
+        {replaced} {replaced === 1 ? tr("value") : tr("values")}{" "}
+        {tr("masked, incomplete")}
       </span>
     );
   }
@@ -697,28 +750,31 @@ function PiiBadge({ entry }: { entry: AuditEntry }) {
   return (
     <span
       className="flex shrink-0 items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
-      title="Personal values in this result were replaced before reaching the model. The values themselves are never logged."
+      title={tr(
+        "Personal values in this result were replaced before reaching the model. The values themselves are never logged.",
+      )}
     >
       <ShieldCheck aria-hidden="true" className="size-3" />
-      {replaced} {replaced === 1 ? "value" : "values"} masked
+      {replaced} {replaced === 1 ? tr("value") : tr("values")} {tr("masked")}
     </span>
   );
 }
 
 function internalActivityLabel(tool: string): string {
-  return (
+  return tr(
     (
       {
-        search: "Searched tools",
-        describe: "Looked up a tool",
-        status: "Checked Toolport status",
-        fetch: "Retrieved a tool result",
-      } as Record<string, string>
-    )[tool] ?? "Used Toolport"
+        search: msg("Searched tools"),
+        describe: msg("Looked up a tool"),
+        status: msg("Checked Toolport status"),
+        fetch: msg("Retrieved a tool result"),
+      } as Record<string, SourceMessage>
+    )[tool] ?? msg("Used Toolport"),
   );
 }
 
 function CallRow({ e }: { e: AuditEntry }) {
+  const { t: tr } = useI18n();
   const [open, setOpen] = useState(false);
   const approvalOutcome =
     e.kind === "approval"
@@ -740,7 +796,11 @@ function CallRow({ e }: { e: AuditEntry }) {
     ...(e.failureKind ? [e.failureKind.replace(/_/g, " ")] : []),
     ...(duration == null
       ? []
-      : [approvalOutcome ? `waited ${fmtMs(duration)}` : fmtMs(duration)]),
+      : [
+          approvalOutcome
+            ? tr("waited {duration}", { duration: fmtMs(duration) })
+            : fmtMs(duration),
+        ]),
   ].join(" · ");
   const hasDetail = !approvalOutcome && !e.ok && (!!e.error || !!e.runId);
   return (
@@ -795,12 +855,13 @@ function CallRow({ e }: { e: AuditEntry }) {
             title={[
               meta,
               clientIdentityTooltip(e),
-              e.client && `Client: ${e.client}`,
-              e.sessionId && `Session: ${e.sessionId}`,
-              e.runId && `Run: ${e.runId}`,
-              e.cold != null && (e.cold ? "cold catalog" : "warm catalog"),
-              e.dispatchMs != null && `dispatch ${fmtMs(e.dispatchMs)}`,
-              e.kind === "internal" && `Toolport: ${e.tool}`,
+              e.client && tr("Client: {value}", { value: e.client }),
+              e.sessionId && tr("Session: {value}", { value: e.sessionId }),
+              e.runId && tr("Run: {value}", { value: e.runId }),
+              e.cold != null && (e.cold ? tr("cold catalog") : tr("warm catalog")),
+              e.dispatchMs != null &&
+                tr("dispatch {duration}", { duration: fmtMs(e.dispatchMs) }),
+              e.kind === "internal" && tr("Toolport: {tool}", { tool: e.tool }),
             ]
               .filter(Boolean)
               .join(" · ")}
@@ -813,7 +874,7 @@ function CallRow({ e }: { e: AuditEntry }) {
           <span
             className={`shrink-0 rounded border px-2 py-0.5 text-xs ${approvalOutcome.className}`}
           >
-            {approvalOutcome.label}
+            {tr(approvalOutcome.label)}
           </span>
         )}
         <PiiBadge entry={e} />
@@ -823,7 +884,9 @@ function CallRow({ e }: { e: AuditEntry }) {
           <p className="font-mono text-xs whitespace-pre-wrap break-words text-destructive">
             {e.error ?? e.failureKind?.replace(/_/g, " ")}
           </p>
-          {e.runId && <p className="mt-1 font-mono text-xs">Run: {e.runId}</p>}
+          {e.runId && (
+            <p className="mt-1 font-mono text-xs">{tr("Run: {run}", { run: e.runId })}</p>
+          )}
         </div>
       )}
     </div>
@@ -832,47 +895,47 @@ function CallRow({ e }: { e: AuditEntry }) {
 
 const APPROVAL_OUTCOME: Record<
   string,
-  { label: string; Icon: LucideIcon; iconClass: string; className: string }
+  { label: SourceMessage; Icon: LucideIcon; iconClass: string; className: string }
 > = {
   approved: {
-    label: "Approved",
+    label: msg("Approved"),
     Icon: ShieldCheck,
     iconClass: "text-success",
     className: "border-success/30 bg-success/10 text-success",
   },
   denied: {
-    label: "Denied",
+    label: msg("Denied"),
     Icon: ShieldX,
     iconClass: "text-destructive",
     className: "border-destructive/50 text-destructive",
   },
   no_response: {
-    label: "No answer",
+    label: msg("No answer"),
     Icon: Clock,
     iconClass: "text-warning",
     className: "border-warning/30 bg-warning/10 text-warning",
   },
   withdrawn: {
-    label: "Withdrawn",
+    label: msg("Withdrawn"),
     Icon: Undo2,
     iconClass: "text-muted-foreground",
     className: "border-border text-muted-foreground",
   },
   stale_state: {
-    label: "Changed after approval",
+    label: msg("Changed after approval"),
     Icon: AlertTriangle,
     iconClass: "text-warning",
     className: "border-warning/30 bg-warning/10 text-warning",
   },
   unreachable: {
-    label: "No approver available",
+    label: msg("No approver available"),
     Icon: AlertTriangle,
     iconClass: "text-warning",
     className: "border-warning/30 bg-warning/10 text-warning",
   },
 };
 const UNKNOWN_APPROVAL = {
-  label: "Approval event",
+  label: msg("Approval event"),
   Icon: ShieldAlert,
   iconClass: "text-muted-foreground",
   className: "border-border text-muted-foreground",
@@ -883,6 +946,7 @@ export function TelemetryNotice({
 }: {
   stats: Pick<AuditStats, "telemetry" | "gatewayNotes"> | null;
 }) {
+  const { t: tr } = useI18n();
   const health = stats?.telemetry;
   const messages = [...(stats?.gatewayNotes ?? [])];
   if (
@@ -893,17 +957,30 @@ export function TelemetryNotice({
       health.incompleteFlushes)
   ) {
     messages.push(
-      `Activity, savings, Teams reporting and diagnostics may be incomplete: ${health.queueDropped} records dropped, ${health.writeFailedRecords} records with unconfirmed writes, ${health.writeFailures} write failures, ${health.incompleteFlushes} incomplete flushes since gateway start.`,
+      tr(
+        "Activity, savings, Teams reporting and diagnostics may be incomplete: {dropped} records dropped, {unconfirmed} records with unconfirmed writes, {failures} write failures, {flushes} incomplete flushes since gateway start.",
+        {
+          dropped: health.queueDropped,
+          unconfirmed: health.writeFailedRecords,
+          failures: health.writeFailures,
+          flushes: health.incompleteFlushes,
+        },
+      ),
     );
   }
   if (health?.retainedDropped) {
     messages.push(
-      `${health.retainedDropped} dropped telemetry records are recorded in retained history. Activity and savings may be incomplete.`,
+      tr(
+        "{count} dropped telemetry records are recorded in retained history. Activity and savings may be incomplete.",
+        { count: health.retainedDropped },
+      ),
     );
   }
   if (health?.unavailable) {
     messages.push(
-      "Gateway telemetry health is unavailable. Activity and savings may be incomplete.",
+      tr(
+        "Gateway telemetry health is unavailable. Activity and savings may be incomplete.",
+      ),
     );
   }
   if (messages.length === 0) return null;
@@ -920,6 +997,7 @@ export function TelemetryNotice({
 }
 
 function StatsPanel({ stats }: { stats: AuditStats }) {
+  const { t: tr, locale } = useI18n();
   // The three summary cards are the glanceable health check and stay visible; the full
   // per-server table (can be 20+ rows) collapses by default so it stops being a wall
   // below the security lane. It's one tap when you actually want the breakdown.
@@ -935,9 +1013,9 @@ function StatsPanel({ stats }: { stats: AuditStats }) {
       <div className="grid grid-cols-3 gap-3">
         <div className="rounded-lg border p-3">
           <div className="text-2xl font-semibold tabular-nums">
-            {stats.total.toLocaleString()}
+            {stats.total.toLocaleString(locale)}
           </div>
-          <div className="text-xs text-muted-foreground">calls recorded</div>
+          <div className="text-xs text-muted-foreground">{tr("calls recorded")}</div>
         </div>
         <div
           className={`rounded-lg border p-3 ${stats.errors > 0 ? "border-destructive/40 bg-destructive/[0.04]" : ""}`}
@@ -947,13 +1025,15 @@ function StatsPanel({ stats }: { stats: AuditStats }) {
           >
             {stats.errors}
           </div>
-          <div className="text-xs text-muted-foreground">errors ({errPct})</div>
+          <div className="text-xs text-muted-foreground">
+            {tr("errors ({value1})", { value1: errPct })}
+          </div>
         </div>
         <div className="rounded-lg border p-3">
           <div className="text-2xl font-semibold tabular-nums">
             {stats.servers.length}
           </div>
-          <div className="text-xs text-muted-foreground">servers used</div>
+          <div className="text-xs text-muted-foreground">{tr("servers used")}</div>
         </div>
       </div>
 
@@ -962,18 +1042,28 @@ function StatsPanel({ stats }: { stats: AuditStats }) {
         aria-expanded={tableOpen}
         className="flex w-fit items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
       >
-        <ChevronRight
-          className={`size-4 transition-transform ${tableOpen ? "rotate-90" : ""}`}
+        <Trans
+          message="{value1} Per-server breakdown {value2} {value3}"
+          values={{
+            value1: (
+              <ChevronRight
+                className={`size-4 transition-transform ${tableOpen ? "rotate-90" : ""}`}
+              />
+            ),
+            value2: (
+              <span className="text-xs font-normal text-muted-foreground/70">
+                {stats.servers.length === 1
+                  ? tr("{count} server", { count: stats.servers.length })
+                  : tr("{count} servers", { count: stats.servers.length })}
+              </span>
+            ),
+            value3: serversWithErrors > 0 && (
+              <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 text-xs font-medium text-destructive">
+                {tr("{value1} with errors", { value1: serversWithErrors })}
+              </span>
+            ),
+          }}
         />
-        Per-server breakdown
-        <span className="text-xs font-normal text-muted-foreground/70">
-          {stats.servers.length} {stats.servers.length === 1 ? "server" : "servers"}
-        </span>
-        {serversWithErrors > 0 && (
-          <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 text-xs font-medium text-destructive">
-            {serversWithErrors} with errors
-          </span>
-        )}
       </button>
 
       {tableOpen && (
@@ -982,11 +1072,11 @@ function StatsPanel({ stats }: { stats: AuditStats }) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
-                  <th className="px-3 py-2 font-medium">Server</th>
-                  <th className="px-3 py-2 text-right font-medium">Calls</th>
-                  <th className="px-3 py-2 text-right font-medium">Errors</th>
-                  <th className="px-3 py-2 text-right font-medium">Avg</th>
-                  <th className="px-3 py-2 text-right font-medium">p95</th>
+                  <th className="px-3 py-2 font-medium">{tr("Server")}</th>
+                  <th className="px-3 py-2 text-right font-medium">{tr("Calls")}</th>
+                  <th className="px-3 py-2 text-right font-medium">{tr("Errors")}</th>
+                  <th className="px-3 py-2 text-right font-medium">{tr("Avg")}</th>
+                  <th className="px-3 py-2 text-right font-medium">{tr("p95")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -997,7 +1087,7 @@ function StatsPanel({ stats }: { stats: AuditStats }) {
             </table>
           </div>
           <p className="text-xs text-muted-foreground/70">
-            Click a server to see its per-tool breakdown.
+            {tr("Click a server to see its per-tool breakdown.")}
           </p>
         </>
       )}
@@ -1018,6 +1108,7 @@ function fmtBody(v: unknown): string {
 
 /** One captured call. Expands to show the pretty-printed request + response JSON. */
 function InspectRow({ e }: { e: InspectEntry }) {
+  const { t: tr } = useI18n();
   const [open, setOpen] = useState(false);
   return (
     <div className="border-b border-border text-sm">
@@ -1051,7 +1142,11 @@ function InspectRow({ e }: { e: InspectEntry }) {
         {(e.clientName || e.client) && (
           <span
             className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"
-            title={e.client ? `Client: ${e.client}` : "Client that made this call"}
+            title={
+              e.client
+                ? tr("Client: {value1}", { value1: e.client })
+                : tr("Client that made this call")
+            }
           >
             {e.clientName ?? e.client}
           </span>
@@ -1066,13 +1161,13 @@ function InspectRow({ e }: { e: InspectEntry }) {
       {open && (
         <div className="border-t border-border/50 bg-muted/20 px-3 py-2 pl-9">
           <div className="mb-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-            Request
+            {tr("Request")}
           </div>
           <pre className="mb-3 overflow-x-auto rounded bg-background/60 p-2 font-mono text-xs whitespace-pre-wrap break-words">
             {fmtBody(e.request)}
           </pre>
           <div className="mb-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-            Response
+            {tr("Response")}
           </div>
           <pre className="overflow-x-auto rounded bg-background/60 p-2 font-mono text-xs whitespace-pre-wrap break-words">
             {fmtBody(e.response)}
@@ -1085,14 +1180,18 @@ function InspectRow({ e }: { e: InspectEntry }) {
 
 /** One recorded search and its exact returned text size when available. */
 function DiscoveryRow({ t }: { t: SearchTrace }) {
+  const { t: tr, locale } = useI18n();
   const [open, setOpen] = useState(false);
   const hit = t.returned > 0;
   const fallbackCount = t.fallbacks ?? t.ranking?.filter((r) => r.fallback).length ?? 0;
   const resultSummary = fallbackCount
-    ? `${t.total} direct + ${fallbackCount} fallback`
+    ? tr("{value1} direct + {value2} fallback", {
+        value1: t.total,
+        value2: fallbackCount,
+      })
     : hit
-      ? `${t.returned} of ${t.total}`
-      : "no match";
+      ? tr("{returned} of {total}", { returned: t.returned, total: t.total })
+      : tr("no match");
   return (
     <div className="border-b border-border text-sm">
       <div
@@ -1115,7 +1214,7 @@ function DiscoveryRow({ t }: { t: SearchTrace }) {
         />
         <Search className="size-4 shrink-0 text-owned" />
         <span className="min-w-0 truncate font-mono text-xs">
-          &ldquo;{t.query || "(empty)"}&rdquo;
+          {tr("“{value1}”", { value1: t.query || tr("(empty)") })}
         </span>
         {t.client && (
           <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
@@ -1124,12 +1223,12 @@ function DiscoveryRow({ t }: { t: SearchTrace }) {
         )}
         {t.escalated && (
           <span className="shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-[11px] text-warning">
-            loop-broken
+            {tr("loop-broken")}
           </span>
         )}
         {t.mode === "semantic" && (
           <span className="shrink-0 rounded bg-owned/10 px-1.5 py-0.5 text-[11px] text-owned">
-            semantic
+            {tr("semantic")}
           </span>
         )}
         <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
@@ -1158,13 +1257,13 @@ function DiscoveryRow({ t }: { t: SearchTrace }) {
                     </span>
                     <span className="min-w-0 truncate text-[11px] text-muted-foreground">
                       {r.pinned
-                        ? "pinned prerequisite"
+                        ? tr("pinned prerequisite")
                         : r.fallback
-                          ? "fallback candidate"
+                          ? tr("fallback candidate")
                           : r.matched.length > 0
-                            ? `matched ${r.matched.join(", ")}`
+                            ? tr("matched {value1}", { value1: r.matched.join(", ") })
                             : t.mode === "semantic"
-                              ? "semantic match"
+                              ? tr("semantic match")
                               : "—"}
                     </span>
                   </div>
@@ -1187,23 +1286,53 @@ function DiscoveryRow({ t }: { t: SearchTrace }) {
               </div>
             )
           ) : (
-            <div className="mb-2 text-muted-foreground">No tools matched this query.</div>
+            <div className="mb-2 text-muted-foreground">
+              {tr("No tools matched this query.")}
+            </div>
           )}
           {t.responseContentBytes !== undefined ? (
             <div
               className="text-muted-foreground"
-              title={`${t.responseContentBytes.toLocaleString()} exact UTF-8 text bytes`}
+              title={tr("{value1} exact UTF-8 text bytes", {
+                value1: t.responseContentBytes.toLocaleString(locale),
+              })}
             >
-              Returned {fmtBytes(t.responseContentBytes)} of discovery content containing{" "}
-              {t.returned} matching schema{t.returned === 1 ? "" : "s"}.
-              {t.catalogSchemaBytes !== undefined &&
-                ` Full scoped catalog schemas: ${fmtBytes(t.catalogSchemaBytes)}.`}{" "}
-              ≈{fmtTokens(t.estimatedResponseTokens ?? 0)} tokens (UTF-8 bytes ÷ 4).
+              {t.returned === 1
+                ? tr(
+                    "Returned {value1} of discovery content containing  {value2} matching schema. {value4}  ≈{value5} tokens (UTF-8 bytes ÷ 4).",
+                    {
+                      value1: fmtBytes(t.responseContentBytes),
+                      value2: t.returned,
+                      value4:
+                        t.catalogSchemaBytes !== undefined
+                          ? tr(" Full scoped catalog schemas: {value1}.", {
+                              value1: fmtBytes(t.catalogSchemaBytes),
+                            })
+                          : "",
+                      value5: fmtTokens(t.estimatedResponseTokens ?? 0),
+                    },
+                  )
+                : tr(
+                    "Returned {value1} of discovery content containing  {value2} matching schemas. {value4}  ≈{value5} tokens (UTF-8 bytes ÷ 4).",
+                    {
+                      value1: fmtBytes(t.responseContentBytes),
+                      value2: t.returned,
+                      value4:
+                        t.catalogSchemaBytes !== undefined
+                          ? tr(" Full scoped catalog schemas: {value1}.", {
+                              value1: fmtBytes(t.catalogSchemaBytes),
+                            })
+                          : "",
+                      value5: fmtTokens(t.estimatedResponseTokens ?? 0),
+                    },
+                  )}
             </div>
           ) : (
             <div className="text-muted-foreground">
-              Legacy schema-only estimates: ≈{fmtTokens(t.returnedTokens)} returned vs ≈
-              {fmtTokens(t.flatTokens)} catalog. Search guidance text was not counted.
+              {tr(
+                "Legacy schema-only estimates: ≈{value1} returned vs ≈ {value2} catalog. Search guidance text was not counted.",
+                { value1: fmtTokens(t.returnedTokens), value2: fmtTokens(t.flatTokens) },
+              )}
             </div>
           )}
         </div>
@@ -1217,13 +1346,14 @@ function DiscoveryRow({ t }: { t: SearchTrace }) {
  * first fetch is in flight (never once real rows exist — a live refresh should not
  * flash this over last-known data). */
 function PanelLoadingNotice({ label, icon: Icon }: { label: string; icon: LucideIcon }) {
+  const { t: tr } = useI18n();
   return (
     <div
       role="status"
       className="mb-6 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-4 text-xs text-muted-foreground"
     >
       <Icon className="size-4 shrink-0" />
-      <span>Loading {label.toLowerCase()}…</span>
+      <span>{tr("Loading {value1}…", { value1: label.toLowerCase() })}</span>
     </div>
   );
 }
@@ -1232,6 +1362,7 @@ function PanelLoadingNotice({ label, icon: Icon }: { label: string; icon: Lucide
  * from "nothing to show" with an explicit retry, so a backend failure never collapses
  * into the same wording as a genuinely empty panel (#728). */
 function PanelErrorNotice({ label, onRetry }: { label: string; onRetry: () => void }) {
+  const { t: tr } = useI18n();
   return (
     <div
       role="alert"
@@ -1240,17 +1371,17 @@ function PanelErrorNotice({ label, onRetry }: { label: string; onRetry: () => vo
       <AlertTriangle className="size-4 shrink-0 text-warning" />
       <span className="text-muted-foreground">
         <span className="block font-semibold text-foreground">
-          Couldn't load {label.toLowerCase()}.
+          {tr("Couldn't load {label}.", { label: label.toLocaleLowerCase() })}
         </span>{" "}
-        This isn't necessarily empty — Toolport couldn't check.
+        {tr("This isn't necessarily empty — Toolport couldn't check.")}
       </span>
       <button
         type="button"
         onClick={onRetry}
-        aria-label={`Retry loading ${label.toLowerCase()}`}
+        aria-label={tr("Retry loading {value1}", { value1: label.toLowerCase() })}
         className="ml-auto shrink-0 rounded-md border px-2.5 py-1 font-medium text-foreground transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
       >
-        Retry
+        {tr("Retry")}
       </button>
     </div>
   );
@@ -1263,6 +1394,7 @@ function DiscoveryTraces({
   refreshKey: number;
   searches: number;
 }) {
+  const { t: tr } = useI18n();
   const [entries, setEntries] = useState<SearchTrace[]>([]);
   // Collapsed by default: this is glanceable telemetry, not an alert, and the list can run
   // to 100 rows. Leading with it open was a big part of the Activity tab feeling busy.
@@ -1292,12 +1424,15 @@ function DiscoveryTraces({
   }, [refreshKey, retryTick]);
 
   if (status === "loading" && entries.length === 0) {
-    return <PanelLoadingNotice label="Discovery" icon={Search} />;
+    return <PanelLoadingNotice label={tr("Discovery")} icon={Search} />;
   }
 
   if (status === "error") {
     return (
-      <PanelErrorNotice label="Discovery" onRetry={() => setRetryTick((t) => t + 1)} />
+      <PanelErrorNotice
+        label={tr("Discovery")}
+        onRetry={() => setRetryTick((t) => t + 1)}
+      />
     );
   }
 
@@ -1306,11 +1441,14 @@ function DiscoveryTraces({
       <div className="mb-6 rounded-lg border border-border/60 bg-muted/20 p-4 text-xs text-muted-foreground">
         <div className="mb-1 flex items-center gap-2">
           <Search className="size-4 shrink-0 text-owned" />
-          <span className="font-medium text-foreground/80">Discovery</span>
+          <span className="font-medium text-foreground/80">{tr("Discovery")}</span>
         </div>
         {searches > 0
-          ? `${searches} searches in recent activity; detailed search records are not available.`
-          : "Nothing searched yet."}
+          ? tr(
+              "{count} searches in recent activity; detailed search records are not available.",
+              { count: searches },
+            )
+          : tr("Nothing searched yet.")}
       </div>
     );
 
@@ -1322,7 +1460,7 @@ function DiscoveryTraces({
         className="flex w-full items-center gap-2 text-left"
       >
         <Search className="size-4 shrink-0 text-owned" />
-        <h3 className="text-sm font-medium">Discovery</h3>
+        <h3 className="text-sm font-medium">{tr("Discovery")}</h3>
         <span className="rounded-full bg-owned/15 px-1.5 py-0.5 text-xs font-medium text-owned">
           {entries.length}
         </span>
@@ -1335,10 +1473,9 @@ function DiscoveryTraces({
       {open && (
         <>
           <p className="mt-2 mb-3 max-w-2xl text-xs text-muted-foreground">
-            What the model searched for and what Toolport handed back. Each search returns
-            matching tool schemas. Match counts and returned text bytes are exact at
-            Toolport's MCP boundary; token figures are estimates. Local and bounded: tool
-            names only, never arguments or results.
+            {tr(
+              "What the model searched for and what Toolport handed back. Each search returns matching tool schemas. Match counts and returned text bytes are exact at Toolport's MCP boundary; token figures are estimates. Local and bounded: tool names only, never arguments or results.",
+            )}
           </p>
           <div className="flex flex-col gap-1">
             {stableListKeys(entries, (t) => `${t.ts}-${t.query}`).map((key, i) => (
@@ -1354,6 +1491,7 @@ function DiscoveryTraces({
 /** One tool's identity card: the model-visible alias joined to its source server +
  * profiles, with the pinned definition fingerprint and first-seen / last-changed. */
 function ToolIdentityRow({ t }: { t: ToolIdentity }) {
+  const { t: tr } = useI18n();
   const [open, setOpen] = useState(false);
   const fpShort = t.fingerprint.replace(/^v\d+:/, "").slice(0, 12) || "-";
   const fmtDate = (ms: number) => (ms > 0 ? fmtTs(ms, "date") : "-");
@@ -1379,11 +1517,11 @@ function ToolIdentityRow({ t }: { t: ToolIdentity }) {
         />
         <span className="min-w-0 truncate font-mono text-xs">{t.alias}</span>
         <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-          {t.serverName || t.serverId || "unattributed"}
+          {t.serverName || t.serverId || tr("unattributed")}
         </span>
         {t.quarantined && (
           <span className="shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-[11px] text-warning">
-            quarantined
+            {tr("quarantined")}
           </span>
         )}
         <span
@@ -1396,28 +1534,30 @@ function ToolIdentityRow({ t }: { t: ToolIdentity }) {
       {open && (
         <div className="border-t border-border/50 bg-muted/20 px-3 py-2 pl-9 text-xs">
           <dl className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1">
-            <dt className="text-muted-foreground">Upstream tool</dt>
+            <dt className="text-muted-foreground">{tr("Upstream tool")}</dt>
             <dd className="font-mono break-all">{t.upstream || "-"}</dd>
-            <dt className="text-muted-foreground">Source server</dt>
-            <dd>{t.serverName ? `${t.serverName} (${t.serverId})` : "unattributed"}</dd>
-            <dt className="text-muted-foreground">Profiles</dt>
+            <dt className="text-muted-foreground">{tr("Source server")}</dt>
+            <dd>
+              {t.serverName ? `${t.serverName} (${t.serverId})` : tr("unattributed")}
+            </dd>
+            <dt className="text-muted-foreground">{tr("Profiles")}</dt>
             <dd>{t.profiles.length ? t.profiles.join(", ") : "-"}</dd>
-            <dt className="text-muted-foreground">Fingerprint</dt>
+            <dt className="text-muted-foreground">{tr("Fingerprint")}</dt>
             <dd className="font-mono break-all">{t.fingerprint || "-"}</dd>
             {t.firstSeen > 0 ? (
               <>
-                <dt className="text-muted-foreground">First seen</dt>
+                <dt className="text-muted-foreground">{tr("First seen")}</dt>
                 <dd>{fmtDate(t.firstSeen)}</dd>
-                <dt className="text-muted-foreground">Last changed</dt>
+                <dt className="text-muted-foreground">{tr("Last changed")}</dt>
                 <dd>{fmtDate(t.lastChanged)}</dd>
               </>
             ) : (
               <>
-                <dt className="text-muted-foreground">History</dt>
+                <dt className="text-muted-foreground">{tr("History")}</dt>
                 <dd className="text-muted-foreground/80">
-                  This tool&apos;s baseline predates first-seen tracking, so it has no
-                  dates yet. Toolport fills them in automatically the next time a client
-                  lists tools through the gateway.
+                  {tr(
+                    "This tool's baseline predates first-seen tracking, so it has no dates yet. Toolport fills them in automatically the next time a client lists tools through the gateway.",
+                  )}
                 </dd>
               </>
             )}
@@ -1440,6 +1580,7 @@ function IdentityServerGroup({
   items: ToolIdentity[];
   forceOpen: boolean;
 }) {
+  const { t: tr } = useI18n();
   const [open, setOpen] = useState(false);
   const shown = forceOpen || open;
   const quarantined = items.filter((t) => t.quarantined).length;
@@ -1461,7 +1602,7 @@ function IdentityServerGroup({
         </span>
         {quarantined > 0 && (
           <span className="shrink-0 rounded-full bg-warning/15 px-1.5 py-0.5 text-[11px] font-medium text-warning">
-            {quarantined} quarantined
+            {tr("{value1} quarantined", { value1: quarantined })}
           </span>
         )}
       </button>
@@ -1482,6 +1623,7 @@ function IdentityServerGroup({
  * a dozen-plus servers and a flat list is unusable. Self-hides until the gateway has
  * pinned a baseline. */
 function ToolIdentities({ refreshKey }: { refreshKey: number }) {
+  const { t: tr } = useI18n();
   const [rows, setRows] = useState<ToolIdentity[]>([]);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -1515,13 +1657,13 @@ function ToolIdentities({ refreshKey }: { refreshKey: number }) {
   const groups = useMemo(() => {
     const m = new Map<string, ToolIdentity[]>();
     for (const t of rows) {
-      const label = t.serverName || t.serverId || "unattributed";
+      const label = t.serverName || t.serverId || tr("unattributed");
       const arr = m.get(label);
       if (arr) arr.push(t);
       else m.set(label, [t]);
     }
     return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [rows]);
+  }, [rows, tr]);
 
   // A server-name match shows that server's whole block ("vercel" -> all Vercel tools);
   // otherwise match individual tools by alias or upstream name ("vercel__deploy" -> that
@@ -1543,13 +1685,13 @@ function ToolIdentities({ refreshKey }: { refreshKey: number }) {
   }, [groups, q]);
 
   if (status === "loading" && rows.length === 0) {
-    return <PanelLoadingNotice label="Tool identities" icon={Fingerprint} />;
+    return <PanelLoadingNotice label={tr("Tool identities")} icon={Fingerprint} />;
   }
 
   if (status === "error") {
     return (
       <PanelErrorNotice
-        label="Tool identities"
+        label={tr("Tool identities")}
         onRetry={() => setRetryTick((t) => t + 1)}
       />
     );
@@ -1567,7 +1709,7 @@ function ToolIdentities({ refreshKey }: { refreshKey: number }) {
         className="flex w-full items-center gap-2 text-left"
       >
         <Fingerprint className="size-4 shrink-0 text-muted-foreground" />
-        <h3 className="text-sm font-medium">Tool identities</h3>
+        <h3 className="text-sm font-medium">{tr("Tool identities")}</h3>
         <span className="rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
           {rows.length}
         </span>
@@ -1580,10 +1722,9 @@ function ToolIdentities({ refreshKey }: { refreshKey: number }) {
       {open && (
         <>
           <p className="mt-2 mb-3 max-w-2xl text-xs text-muted-foreground">
-            What each model-visible tool name actually maps to: its source server and
-            profiles, the pinned definition fingerprint drift detection checks against,
-            and when it was first seen or last changed. Prefixing helps the model pick a
-            tool; this helps you verify what crossed the boundary.
+            {tr(
+              "What each model-visible tool name actually maps to: its source server and profiles, the pinned definition fingerprint drift detection checks against, and when it was first seen or last changed. Prefixing helps the model pick a tool; this helps you verify what crossed the boundary.",
+            )}
           </p>
 
           <div className="relative mb-3">
@@ -1591,22 +1732,39 @@ function ToolIdentities({ refreshKey }: { refreshKey: number }) {
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Filter by server or tool name…"
-              aria-label="Filter tool identities"
+              placeholder={tr("Filter by server or tool name…")}
+              aria-label={tr("Filter tool identities")}
               className="h-8 pl-8 text-sm"
             />
           </div>
 
           {filtered.length === 0 ? (
             <p className="py-6 text-center text-xs text-muted-foreground">
-              No server or tool matches "{query}".
+              {tr('No server or tool matches "{value1}".', { value1: query })}
             </p>
           ) : (
             <>
               {q && (
                 <p className="mb-2 text-xs text-muted-foreground/70">
-                  {shownTools} tool{shownTools === 1 ? "" : "s"} in {filtered.length}{" "}
-                  server{filtered.length === 1 ? "" : "s"}
+                  {shownTools === 1
+                    ? filtered.length === 1
+                      ? tr("{value1} tool in {value3}  server", {
+                          value1: shownTools,
+                          value3: filtered.length,
+                        })
+                      : tr("{value1} tool in {value3}  servers", {
+                          value1: shownTools,
+                          value3: filtered.length,
+                        })
+                    : filtered.length === 1
+                      ? tr("{value1} tools in {value3}  server", {
+                          value1: shownTools,
+                          value3: filtered.length,
+                        })
+                      : tr("{value1} tools in {value3}  servers", {
+                          value1: shownTools,
+                          value3: filtered.length,
+                        })}
                 </p>
               )}
               <div className="flex flex-col gap-1">
@@ -1631,6 +1789,7 @@ function ToolIdentities({ refreshKey }: { refreshKey: number }) {
  * live inspection is on. Lists recent captured calls, each expandable to its raw
  * request + response JSON. Ephemeral, local, opt-in. */
 function LiveInspector({ refreshKey }: { refreshKey: number }) {
+  const { t: tr } = useI18n();
   const [entries, setEntries] = useState<InspectEntry[]>([]);
   const [open, setOpen] = useState(true);
   // Distinguishes a load failure from a genuinely empty buffer (#728): both leave
@@ -1665,7 +1824,7 @@ function LiveInspector({ refreshKey }: { refreshKey: number }) {
         className="flex w-full items-center gap-2 text-left"
       >
         <Activity className="size-4 shrink-0 text-info" />
-        <h3 className="text-sm font-medium">Live inspector</h3>
+        <h3 className="text-sm font-medium">{tr("Live inspector")}</h3>
         <span className="rounded-full bg-info/15 px-1.5 py-0.5 text-xs font-medium text-info">
           {entries.length}
         </span>
@@ -1678,23 +1837,24 @@ function LiveInspector({ refreshKey }: { refreshKey: number }) {
       {open && (
         <>
           <p className="mt-2 mb-3 max-w-2xl text-xs text-muted-foreground">
-            Ephemeral, local, opt-in. While live inspection is on, Toolport keeps the last
-            50 tool calls' arguments and results here so you can inspect them. This buffer
-            is separate from the audit log, never leaves your machine, and clears when you
-            turn inspection off or restart the gateway.
+            {tr(
+              "Ephemeral, local, opt-in. While live inspection is on, Toolport keeps the last 50 tool calls' arguments and results here so you can inspect them. This buffer is separate from the audit log, never leaves your machine, and clears when you turn inspection off or restart the gateway.",
+            )}
           </p>
           {status === "loading" && entries.length === 0 ? (
             <p role="status" className="py-6 text-center text-sm text-muted-foreground">
-              Checking for captured calls…
+              {tr("Checking for captured calls…")}
             </p>
           ) : status === "error" ? (
             <PanelErrorNotice
-              label="Live inspector"
+              label={tr("Live inspector")}
               onRetry={() => setRetryTick((t) => t + 1)}
             />
           ) : entries.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">
-              No calls captured yet. Run a tool through Toolport and it'll show here.
+              {tr(
+                "No calls captured yet. Run a tool through Toolport and it'll show here.",
+              )}
             </p>
           ) : (
             <div className="flex flex-col gap-1">
@@ -1720,6 +1880,7 @@ export function ActivityView({
   registry: Registry | null;
   onReviewQuarantine?: () => void;
 }) {
+  const { t: tr, locale } = useI18n();
   const [entries, setEntries] = useState<AuditEntry[] | null>(null);
   const [stats, setStats] = useState<AuditStats | null>(null);
   const [savings, setSavings] = useState<SavingsSummary | null>(null);
@@ -1767,10 +1928,10 @@ export function ActivityView({
       setAuditLoadStatus("ready");
       setSavings(null);
       setSavingsLoadStatus("loading");
-      toast.success("Cleared retained activity");
+      toast.success(tr("Cleared retained activity"));
       setReloadTick((t) => t + 1);
     } catch (e) {
-      toastError(`Couldn't clear activity: ${e}`);
+      toastError(tr("Couldn't clear activity: {value1}", { value1: String(e) }));
     }
   }
 
@@ -1919,7 +2080,7 @@ export function ActivityView({
   async function exportLog() {
     try {
       const path = await save({
-        title: "Export activity log",
+        title: tr("Export activity log"),
         defaultPath: "toolport-activity.csv",
         filters: [
           { name: "CSV", extensions: ["csv"] },
@@ -1929,9 +2090,9 @@ export function ActivityView({
       if (!path) return;
       const format = path.toLowerCase().endsWith(".json") ? "json" : "csv";
       await exportAuditToPath(path, format);
-      toast.success("Exported activity log");
+      toast.success(tr("Exported activity log"));
     } catch (e) {
-      toastError(`Couldn't export the log: ${e}`);
+      toastError(tr("Couldn't export the log: {value1}", { value1: String(e) }));
     }
   }
 
@@ -1982,7 +2143,7 @@ export function ActivityView({
       <TelemetryNotice stats={noticeStats} />
       {revisionUnavailable ? (
         <p role="status" className="mb-4 text-sm text-destructive">
-          Activity change checks are unavailable. Displayed activity may be stale.
+          {tr("Activity change checks are unavailable. Displayed activity may be stale.")}
         </p>
       ) : null}
       {/* Loud lane: the only thing here that may need a decision. */}
@@ -2000,8 +2161,8 @@ export function ActivityView({
       {olderToolChanges.length > 0 ? (
         <details className="mb-4 rounded-lg border border-border p-4">
           <summary className="cursor-pointer text-sm">
-            {olderToolChanges.length} older tool-change records. Open history to review
-            them.
+            {olderToolChanges.length}{" "}
+            {tr("older tool-change records. Open history to review them.")}
           </summary>
           <ToolChanges
             events={olderToolChanges}
@@ -2029,8 +2190,8 @@ export function ActivityView({
       {(savingsLoadStatus === "error" || savingsLoadStatus === "stale") && (
         <p role="alert" className="mb-3 text-sm text-destructive">
           {savingsLoadStatus === "stale"
-            ? "Catalog telemetry unavailable. Showing the last loaded measurements."
-            : "Catalog telemetry unavailable. Retry Activity to load measurements."}
+            ? tr("Catalog telemetry unavailable. Showing the last loaded measurements.")
+            : tr("Catalog telemetry unavailable. Retry Activity to load measurements.")}
         </p>
       )}
       {savings &&
@@ -2068,7 +2229,7 @@ export function ActivityView({
       <div>
         {banner}
         <div className="flex items-center justify-center py-24 text-sm text-muted-foreground">
-          Loading activity…
+          {tr("Loading activity…")}
         </div>
       </div>
     );
@@ -2081,18 +2242,19 @@ export function ActivityView({
         <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
           <AlertTriangle className="size-10 text-destructive/70" />
           <div>
-            <p className="font-medium">Couldn't load activity</p>
+            <p className="font-medium">{tr("Couldn't load activity")}</p>
             <p className="max-w-md text-sm text-muted-foreground">
-              Toolport couldn't reach the gateway or read the audit log. This is not an
-              empty log, if the gateway isn't running, start it and refresh.
+              {tr(
+                "Toolport couldn't reach the gateway or read the audit log. This is not an empty log, if the gateway isn't running, start it and refresh.",
+              )}
             </p>
             <button
               type="button"
               onClick={retryLoads}
-              aria-label="Retry activity log"
+              aria-label={tr("Retry activity log")}
               className="mt-3 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
             >
-              Retry
+              {tr("Retry")}
             </button>
           </div>
         </div>
@@ -2107,7 +2269,7 @@ export function ActivityView({
       <div>
         {banner}
         <div className="flex items-center justify-center py-24 text-sm text-destructive">
-          Activity status is unavailable. Retry the activity log.
+          {tr("Activity status is unavailable. Retry the activity log.")}
         </div>
       </div>
     );
@@ -2121,10 +2283,11 @@ export function ActivityView({
         <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
           <AlertTriangle className="size-10 text-warning/70" />
           <div>
-            <p className="font-medium">No current activity status</p>
+            <p className="font-medium">{tr("No current activity status")}</p>
             <p className="max-w-md text-sm text-muted-foreground">
-              The last successful read found no calls, but the latest refresh failed, so
-              Toolport can't verify that the log is still empty.
+              {tr(
+                "The last successful read found no calls, but the latest refresh failed, so Toolport can't verify that the log is still empty.",
+              )}
             </p>
           </div>
         </div>
@@ -2139,10 +2302,11 @@ export function ActivityView({
         <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
           <ScrollText className="size-10 text-muted-foreground/50" />
           <div>
-            <p className="font-medium">No activity yet</p>
+            <p className="font-medium">{tr("No activity yet")}</p>
             <p className="max-w-md text-sm text-muted-foreground">
-              Calls and approval outcomes appear here. Call totals and error rates count
-              tools that ran.
+              {tr(
+                "Calls and approval outcomes appear here. Call totals and error rates count tools that ran.",
+              )}
             </p>
           </div>
         </div>
@@ -2165,32 +2329,38 @@ export function ActivityView({
           <ChevronRight
             className={`size-4 transition-transform ${logOpen ? "rotate-90" : ""}`}
           />
-          Recent calls and approvals
+          {tr("Recent calls and approvals")}
           <span className="text-xs font-normal text-muted-foreground/70">
-            latest {entries.length}
+            {tr("latest {count}", { count: entries.length })}
           </span>
         </button>
         <button
           onClick={() => void exportLog()}
-          title="Export the full activity log to a file (CSV or JSON)"
+          title={tr("Export the full activity log to a file (CSV or JSON)")}
           className="flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
         >
-          <Download className="size-3.5" aria-hidden="true" />
-          Export
+          <Trans
+            message="{value1} Export"
+            values={{ value1: <Download className="size-3.5" aria-hidden="true" /> }}
+          />
         </button>
         <ConfirmDialog
           trigger={
             <button
-              title="Delete all retained activity kept on this device"
+              title={tr("Delete all retained activity kept on this device")}
               className="flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
             >
-              <Trash2 className="size-3.5" aria-hidden="true" />
-              Clear
+              <Trans
+                message="{value1} Clear"
+                values={{ value1: <Trash2 className="size-3.5" aria-hidden="true" /> }}
+              />
             </button>
           }
-          title="Clear retained activity?"
-          description="Permanently deletes everything Toolport keeps on this device: the audit log, discovery search traces, live-inspection captures, and the savings tally (including its running total). Nothing is sent anywhere; each log starts fresh on the next event. This can't be undone."
-          confirmLabel="Clear activity"
+          title={tr("Clear retained activity?")}
+          description={tr(
+            "Permanently deletes everything Toolport keeps on this device: the audit log, discovery search traces, live-inspection captures, and the savings tally (including its running total). Nothing is sent anywhere; each log starts fresh on the next event. This can't be undone.",
+          )}
+          confirmLabel={tr("Clear activity")}
           destructive
           onConfirm={clearActivity}
         />
@@ -2198,13 +2368,25 @@ export function ActivityView({
 
       <p className="mb-2 text-xs text-muted-foreground">
         {stats
-          ? `${stats.total.toLocaleString()} ${stats.total === 1 ? "call" : "calls"} recorded on this computer. `
+          ? tr(
+              stats.total === 1
+                ? "{count} call recorded on this computer. "
+                : "{count} calls recorded on this computer. ",
+              { count: stats.total.toLocaleString(locale) },
+            )
           : ""}
         {logOpen
           ? visible.length === entries.length
-            ? `Showing the latest ${visible.length.toLocaleString()}.`
-            : `Showing ${visible.length.toLocaleString()} matching rows from the latest ${entries.length.toLocaleString()}.`
-          : `Latest ${entries.length.toLocaleString()} available.`}
+            ? tr("Showing the latest {count}.", {
+                count: visible.length.toLocaleString(locale),
+              })
+            : tr("Showing {matching} matching rows from the latest {total}.", {
+                matching: visible.length.toLocaleString(locale),
+                total: entries.length.toLocaleString(locale),
+              })
+          : tr("Latest {count} available.", {
+              count: entries.length.toLocaleString(locale),
+            })}
       </p>
 
       {logOpen && (
@@ -2218,7 +2400,7 @@ export function ActivityView({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All servers</SelectItem>
+                <SelectItem value="all">{tr("All servers")}</SelectItem>
                 {servers.map((s) => (
                   <SelectItem key={s} value={s}>
                     {s}
@@ -2235,10 +2417,10 @@ export function ActivityView({
                   : "text-muted-foreground hover:bg-accent"
               }`}
             >
-              Errors only
+              {tr("Errors only")}
             </button>
             <span className="ml-auto text-xs text-muted-foreground">
-              {serverFilter || errorsOnly ? "Filtered" : ""}
+              {serverFilter || errorsOnly ? tr("Filtered") : ""}
             </span>
           </div>
 
@@ -2247,8 +2429,10 @@ export function ActivityView({
               <div className="flex flex-col items-center gap-2 py-12 text-center">
                 <p className="text-sm text-muted-foreground">
                   {errorsOnly && !serverFilter
-                    ? `No errors in the last ${entries.length} calls.`
-                    : "No calls match this filter."}
+                    ? tr("No errors in the last {value1} calls.", {
+                        value1: entries.length,
+                      })
+                    : tr("No calls match this filter.")}
                 </p>
                 {(serverFilter || errorsOnly) && (
                   <button
@@ -2258,8 +2442,10 @@ export function ActivityView({
                     }}
                     className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   >
-                    <X className="size-3.5" />
-                    Clear filter
+                    <Trans
+                      message="{value1} Clear filter"
+                      values={{ value1: <X className="size-3.5" /> }}
+                    />
                   </button>
                 )}
               </div>

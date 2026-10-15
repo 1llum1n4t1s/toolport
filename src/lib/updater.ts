@@ -2,6 +2,7 @@ import { BundleType, getBundleType } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { msg, translate } from "./i18n";
 
 /** Outcome of an update check. `error` is distinct from `current` so the UI can
  * tell "you're up to date" apart from "couldn't reach the update server". */
@@ -78,24 +79,37 @@ function recoveryAdvice(
     // Installation already succeeded, so this process and its bundled helper are
     // now the old version. It must not republish/restart that helper; only starting
     // the newly installed Toolport can finish the update safely.
-    advice.push("Quit and restart Toolport to finish applying the installed update.");
+    advice.push(
+      translate("Quit and restart Toolport to finish applying the installed update."),
+    );
   }
   const blocked = unique([...shutdown.failed, ...shutdown.remaining]);
   if (blocked.length > 0) {
     advice.push(
-      `Close the client apps that own these gateway processes, then retry: ${blocked.join("; ")}.`,
+      translate(
+        "Close the client apps that own these gateway processes, then retry: {clients}.",
+        { clients: blocked.join("; ") },
+      ),
     );
   }
   if (shutdown.lifecycleErrors.length > 0) {
     advice.push(
-      `Toolport could not safely prepare its managed HTTP endpoint: ${unique(shutdown.lifecycleErrors).join("; ")}. Resolve that error, then retry.`,
+      translate(
+        "Toolport could not safely prepare its managed HTTP endpoint: {error}. Resolve that error, then retry.",
+        { error: unique(shutdown.lifecycleErrors).join("; ") },
+      ),
     );
   }
 
   const clients = unique(shutdown.restartClients.map((client) => client.client));
   if (clients.length > 0) {
     advice.push(
-      `Restart ${clients.join(", ")} to recreate ${clients.length === 1 ? "its" : "their"} Toolport connection.`,
+      translate(
+        clients.length === 1
+          ? msg("Restart {clients} to recreate its Toolport connection.")
+          : msg("Restart {clients} to recreate their Toolport connection."),
+        { clients: clients.join(", ") },
+      ),
     );
   }
   if (shutdown.unattributedExternalStopped.length > 0) {
@@ -105,29 +119,42 @@ function recoveryAdvice(
     // Toolport-owned helpers.
     advice.push(
       phase === "relaunch"
-        ? "Restart any MCP client that disconnected during the update."
-        : "Restart any MCP client that disconnected during the update, then retry.",
+        ? translate("Restart any MCP client that disconnected during the update.")
+        : translate(
+            "Restart any MCP client that disconnected during the update, then retry.",
+          ),
     );
   }
 
   if (phase !== "relaunch" && shutdown.httpBridgePort != null) {
     if (recovery?.httpBridgeRecovered) {
       advice.push(
-        `Toolport restored its HTTP endpoint on port ${shutdown.httpBridgePort}.`,
+        translate("Toolport restored its HTTP endpoint on port {port}.", {
+          port: shutdown.httpBridgePort,
+        }),
       );
       if (recovery.persistenceWarning) {
         advice.push(
-          `The endpoint is available, but Toolport could not save its persistent state: ${recovery.persistenceWarning}.`,
+          translate(
+            "The endpoint is available, but Toolport could not save its persistent state: {error}.",
+            { error: recovery.persistenceWarning },
+          ),
         );
       }
       if (recovery.cleanupWarning) {
         advice.push(
-          `The endpoint is available, but Toolport could not clear its update recovery marker: ${recovery.cleanupWarning}.`,
+          translate(
+            "The endpoint is available, but Toolport could not clear its update recovery marker: {error}.",
+            { error: recovery.cleanupWarning },
+          ),
         );
       }
     } else if (recoveryError) {
       advice.push(
-        `Toolport could not restore its HTTP endpoint on port ${shutdown.httpBridgePort}: ${recoveryError}. Start it again from Settings.`,
+        translate(
+          "Toolport could not restore its HTTP endpoint on port {port}: {error}. Start it again from Settings.",
+          { port: shutdown.httpBridgePort, error: recoveryError },
+        ),
       );
     }
   }
@@ -170,9 +197,13 @@ async function systemPackage(): Promise<SystemPackage | null> {
 
 /** System packages update through the manager that installed them. */
 export function systemPackageUpdateAdvice(packageType: SystemPackage): string {
-  if (packageType === "pacman") return "Update Toolport with sudo pacman -Syu.";
+  if (packageType === "pacman")
+    return translate("Update Toolport with sudo pacman -Syu.");
   const manager = packageType === "deb" ? "apt" : "dnf";
-  return `Download the new .${packageType} from the release page, then run sudo ${manager} install ./<file>.${packageType}.`;
+  return translate(
+    "Download the new .{packageType} from the release page, then run sudo {manager} install ./<file>.{packageType}.",
+    { packageType, manager },
+  );
 }
 
 /** Release notes for a version, including system-managed installs. */
@@ -223,7 +254,16 @@ export async function installUpdate(
     const recovered = await recoverAfterFailure(shutdown);
     throw new UpdateInstallError(
       "shutdown",
-      `Could not safely prepare gateway shutdown (${blocked.length} ${blocked.length === 1 ? "issue" : "issues"}); installation did not start.`,
+      translate(
+        blocked.length === 1
+          ? msg(
+              "Could not safely prepare gateway shutdown ({count} issue); installation did not start.",
+            )
+          : msg(
+              "Could not safely prepare gateway shutdown ({count} issues); installation did not start.",
+            ),
+        { count: blocked.length },
+      ),
       shutdown,
       recovered.recovery,
       recovered.error,

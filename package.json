@@ -39,7 +39,9 @@
     "dev:fixture": "vite --host 127.0.0.1 --open /fixtures/",
     "bench:bundle": "node benchmark/bundle.mjs",
     "bench:audit": "cargo run --manifest-path src-tauri/Cargo.toml --no-default-features --features test-support --example audit-performance",
-    "bench:tokens": "node benchmark/token-budget.mjs"
+    "bench:tokens": "node benchmark/token-budget.mjs",
+    "check:locales": "node --test scripts/check-locales.test.mjs && node scripts/check-locales.mjs",
+    "smoke:localization": "node scripts/localization-smoke.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",

@@ -151,6 +151,9 @@ jobs:
       - name: Check formatting
         run: npm run format:check
 
+      - name: Check localization catalogs and source coverage
+        run: npm run check:locales
+
       - name: Lint
         run: npm run lint
 
@@ -172,12 +175,17 @@ jobs:
       - name: Offline browser fixture smoke
         run: npm run smoke:browser
 
+      - name: Localization fixture smoke
+        run: npm run smoke:localization
+
       - name: Keep browser failure diagnostics
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: browser-smoke-diagnostics
-          path: .verify/browser-*/
+          path: |
+            .verify/browser-*/
+            .verify/localization-*/
           include-hidden-files: true
           if-no-files-found: ignore
 

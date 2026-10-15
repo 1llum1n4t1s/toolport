@@ -1,3 +1,4 @@
+import { translate, translate as t, useI18n, msg, type SourceMessage } from "@/lib/i18n";
 import { SETTINGS_PAGES, type SettingsSubpage } from "@/lib/settingsPages";
 import { isPersonalSync } from "@/lib/personalSync";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -58,19 +59,21 @@ const HELP_ITEM = `flex w-full items-center gap-2 rounded px-2 py-1.5 text-left 
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 function updateProgressLabel(progress: UpdateProgress | null): string {
-  if (!progress) return "Preparing update…";
-  if (progress.phase === "installing") return "Installing…";
+  if (!progress) return t("Preparing update…");
+  if (progress.phase === "installing") return t("Installing…");
   if (progress.totalBytes && progress.totalBytes > 0) {
     const percent = Math.min(
       100,
       Math.round((progress.downloadedBytes / progress.totalBytes) * 100),
     );
-    return `Downloading ${percent}%`;
+    return t("Downloading {value1}%", { value1: percent });
   }
   const megabytes = progress.downloadedBytes / (1024 * 1024);
   return megabytes > 0
-    ? `Downloading ${megabytes.toFixed(megabytes >= 10 ? 0 : 1)} MB…`
-    : "Downloading…";
+    ? t("Downloading {value1} MB…", {
+        value1: megabytes.toFixed(megabytes >= 10 ? 0 : 1),
+      })
+    : t("Downloading…");
 }
 
 /** Footer showing the running version, and an in-app update button when a newer
@@ -87,6 +90,7 @@ function VersionFooter({
   onReplay: () => void;
   onShortcuts: () => void;
 }) {
+  const { t } = useI18n();
   const [version, setVersion] = useState("");
   const [update, setUpdate] = useState<Update | null>(null);
   const [systemPackage, setSystemPackage] = useState<SystemPackage | null>(null);
@@ -127,7 +131,7 @@ function VersionFooter({
       return;
     }
     if (installingRef.current) {
-      if (announce) toast.info("An update is already in progress");
+      if (announce) toast.info(translate("An update is already in progress"));
       return;
     }
     if (
@@ -164,10 +168,10 @@ function VersionFooter({
         if (shouldAnnounce) setShowNotes(true);
       } else if (result.kind === "current") {
         setUpdate(null);
-        if (shouldAnnounce) toast.success("You're on the latest version");
+        if (shouldAnnounce) toast.success(translate("You're on the latest version"));
       } else if (shouldAnnounce) {
-        toastError("Couldn't check for updates", {
-          description: "You may be offline. Try again in a moment.",
+        toastError(translate("Couldn't check for updates"), {
+          description: translate("You may be offline. Try again in a moment."),
         });
       }
     } finally {
@@ -207,9 +211,10 @@ function VersionFooter({
     installingRef.current = true;
     setInstalling(true);
     setInstallProgress(null);
-    toast.info(`Updating to v${update.version}…`, {
-      description:
+    toast.info(t("Updating to v{value1}…", { value1: update.version }), {
+      description: t(
         "Downloading first; MCP clients stay connected until the installer is ready to replace files.",
+      ),
     });
     try {
       await installUpdate(update, (progress) => {
@@ -227,11 +232,11 @@ function VersionFooter({
         typeof e.recoveryAdvice === "string"
           ? e.recoveryAdvice
           : null;
-      toastError(`Update failed: ${message}`, {
+      toastError(t("Update failed: {value1}", { value1: message }), {
         description:
-          recoveryAdvice || "You can download it manually from the releases page.",
+          recoveryAdvice || t("You can download it manually from the releases page."),
         action: {
-          label: "Open",
+          label: t("Open"),
           onClick: () =>
             openExternal("https://github.com/btsouth/toolport/releases/latest"),
         },
@@ -256,17 +261,19 @@ function VersionFooter({
               <ArrowUpCircle className="size-3.5 shrink-0" />
             )}
             <span className="truncate">
-              {installing ? progressLabel : `Update to v${update.version}`}
+              {installing
+                ? progressLabel
+                : t("Update to v{version}", { version: update.version })}
             </span>
           </button>
         ) : version ? (
           <button
             onClick={manualCheck}
             disabled={checking}
-            title="Check for updates"
+            title={t("Check for updates")}
             className={`rounded text-muted-foreground transition hover:text-foreground disabled:opacity-70 ${FOCUS_RING}`}
           >
-            {checking ? "Checking…" : `Toolport v${version}`}
+            {checking ? t("Checking…") : t("Toolport v{version}", { version })}
           </button>
         ) : null}
       </div>
@@ -282,12 +289,12 @@ function VersionFooter({
       <Popover.Root>
         <Popover.Trigger asChild>
           <button
-            aria-label="Help"
+            aria-label={t("Help")}
             className={`flex items-center gap-1 rounded ${FOCUS_RING}`}
-            title="Help and keyboard shortcuts (?)"
+            title={t("Help and keyboard shortcuts (?)")}
           >
             <CircleHelp className="size-4" />
-            <span className="sidebar-help-label">Help</span>
+            <span className="sidebar-help-label">{t("Help")}</span>
           </button>
         </Popover.Trigger>
         <Popover.Portal>
@@ -298,50 +305,51 @@ function VersionFooter({
           >
             <button className={HELP_ITEM} onClick={onShortcuts}>
               <Keyboard className="size-4" />
-              Keyboard shortcuts <span className="ml-auto">?</span>
+              {t("Keyboard shortcuts")}
+              <span className="ml-auto">?</span>
             </button>
             <ShareDialog
               onImported={onImport}
               trigger={
                 <button className={HELP_ITEM}>
                   <Share2 className="size-4" />
-                  Share or import a setup
+                  {t("Share or import a setup")}
                 </button>
               }
             />
             <button className={HELP_ITEM} onClick={onReplay}>
               <Compass className="size-4" />
-              Run setup again
+              {t("Run setup again")}
             </button>
             <button
               className={HELP_ITEM}
               onClick={() =>
-                openDataDir().catch(() => toastError("Couldn't open data folder"))
+                openDataDir().catch(() => toastError(t("Couldn't open data folder")))
               }
             >
               <FolderOpen className="size-4" />
-              Open data folder
+              {t("Open data folder")}
             </button>
             <button
               className={HELP_ITEM}
               onClick={async () => {
                 try {
                   await navigator.clipboard.writeText(await gatherDiagnostics());
-                  toast.success("Diagnostics copied, paste them into your bug report");
+                  toast.success(t("Diagnostics copied, paste them into your bug report"));
                 } catch {
-                  toastError("Couldn't copy diagnostics");
+                  toastError(t("Couldn't copy diagnostics"));
                 }
               }}
             >
               <ClipboardList className="size-4" />
-              Copy diagnostics
+              {t("Copy diagnostics")}
             </button>
             <button
               className={HELP_ITEM}
-              onClick={() => exit(0).catch(() => toastError("Couldn't quit Toolport"))}
+              onClick={() => exit(0).catch(() => toastError(t("Couldn't quit Toolport")))}
             >
               <LogOut className="size-4" />
-              Quit Toolport
+              {t("Quit Toolport")}
             </button>
           </Popover.Content>
         </Popover.Portal>
@@ -369,12 +377,15 @@ function UpdateNotes({
   progressLabel: string;
   onInstall: () => void;
 }) {
+  const { t } = useI18n();
   if (!update) return null;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Update available: v{update.version}</DialogTitle>
+          <DialogTitle>
+            {t("Update available: v{version}", { version: update.version })}
+          </DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-3">
           {update.body ? (
@@ -383,7 +394,8 @@ function UpdateNotes({
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">
-              A new version is ready to install.
+              {" "}
+              {t("A new version is ready to install.")}{" "}
             </p>
           )}
           {systemPackage && (
@@ -393,13 +405,14 @@ function UpdateNotes({
           )}
           {!systemPackage && (
             <p className="text-sm text-muted-foreground">
-              Toolport connections may restart during installation; restart your MCP
-              client if it disconnects.
+              {t(
+                "Toolport connections may restart during installation; restart your MCP client if it disconnects.",
+              )}
             </p>
           )}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => onOpenChange(false)}>
-              {installing ? "Hide" : "Later"}
+              {installing ? t("Hide") : t("Later")}
             </Button>
             {systemPackage ? (
               <Button
@@ -408,7 +421,7 @@ function UpdateNotes({
                   void openExternal(releasePageUrl(update.version));
                 }}
               >
-                <ExternalLink className="size-4" /> Open release page
+                <ExternalLink className="size-4" /> {t("Open release page")}
               </Button>
             ) : (
               <Button onClick={onInstall} disabled={installing}>
@@ -418,7 +431,7 @@ function UpdateNotes({
                   </>
                 ) : (
                   <>
-                    <ArrowUpCircle className="size-4" /> Install and restart
+                    <ArrowUpCircle className="size-4" /> {t("Install and restart")}{" "}
                   </>
                 )}
               </Button>
@@ -453,6 +466,7 @@ export function AppSidebar({
   onReplayOnboarding,
   onShortcuts,
 }: Props) {
+  const { t } = useI18n();
   const [savings, setSavings] = useState<SavingsSummary | null>(null);
   const [savingsStale, setSavingsStale] = useState(false);
   // `null` means "no confirmed count": the first poll hasn't answered yet. It
@@ -523,7 +537,7 @@ export function AppSidebar({
   // icon (not muted), and aria-current so screen readers announce the selection.
   const navItem = (
     Icon: typeof Layers,
-    label: string,
+    label: SourceMessage,
     active: boolean,
     onClick: () => void,
     badge?: number | null,
@@ -531,22 +545,26 @@ export function AppSidebar({
   ) => (
     <button
       onClick={onClick}
-      aria-label={label}
-      title={`${label}${["Servers", "Clients", "Activity", "Settings"].includes(label) ? ` (${/Mac/.test(navigator.platform) ? "⌘" : "Ctrl"}${["Servers", "Clients", "Activity", "Settings"].indexOf(label) + 1})` : ""}`}
+      aria-label={t(label)}
+      title={`${t(label)}${["Servers", "Clients", "Activity", "Settings"].includes(label) ? ` (${/Mac/.test(navigator.platform) ? "⌘" : "Ctrl"}${["Servers", "Clients", "Activity", "Settings"].indexOf(label) + 1})` : ""}`}
       aria-current={active ? "page" : undefined}
       className={`${NAV_ITEM} ${label === "Settings" ? "font-semibold" : ""} ${active ? "bg-accent font-medium text-foreground" : "text-muted-foreground"}`}
     >
       <Icon
         className={`size-4 shrink-0 ${active ? "text-primary" : "text-muted-foreground"}`}
       />
-      <span className="sidebar-label">{label}</span>
+      <span className="sidebar-label">{t(label)}</span>
       {badge !== undefined && badge !== null && badge > 0 && (
         <span
           className="ml-auto inline-flex shrink-0 items-center rounded-full bg-warning/15 px-1.5 text-[10px] font-medium text-warning"
-          aria-label={`${badge} tool${badge === 1 ? "" : "s"} blocked`}
+          aria-label={
+            badge === 1
+              ? t("{value1} tool blocked", { value1: badge })
+              : t("{value1} tools blocked", { value1: badge })
+          }
           title={
             stale
-              ? "Could not reach the gateway — quarantine count may be stale"
+              ? t("Could not reach the gateway — quarantine count may be stale")
               : undefined
           }
         >
@@ -556,8 +574,8 @@ export function AppSidebar({
       {badge === null && stale && (
         <span
           className="ml-auto inline-flex shrink-0 items-center rounded-full bg-warning/15 px-1.5 text-[10px] font-medium text-warning"
-          aria-label="Quarantine status unknown"
-          title="Could not reach the gateway — quarantine status unknown"
+          aria-label={t("Quarantine status unknown")}
+          title={t("Could not reach the gateway — quarantine status unknown")}
         >
           ?
         </span>
@@ -595,30 +613,32 @@ export function AppSidebar({
           <circle cx="24" cy="24" r="4.88" fill="#F97316" />
         </svg>
         <div className="sidebar-label leading-tight">
-          <div className="font-semibold tracking-tight">Toolport</div>
-          <div className="text-xs text-muted-foreground">MCP control center</div>
+          <div className="font-semibold tracking-tight">{t("Toolport")}</div>
+          <div className="text-xs text-muted-foreground">{t("MCP control center")}</div>
         </div>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-        <nav aria-label="Views" className="flex flex-col gap-0.5 px-3 pt-2">
-          {navItem(Layers, "Servers", view === "servers", () => onSelectView("servers"))}
-          {navItem(MonitorCog, "Clients", view === "clients", () =>
+        <nav aria-label={t("Views")} className="flex flex-col gap-0.5 px-3 pt-2">
+          {navItem(Layers, msg("Servers"), view === "servers", () =>
+            onSelectView("servers"),
+          )}
+          {navItem(MonitorCog, msg("Clients"), view === "clients", () =>
             onSelectView("clients"),
           )}
-          {navItem(ScrollText, "Activity", view === "activity", () =>
+          {navItem(ScrollText, msg("Activity"), view === "activity", () =>
             onSelectView("activity"),
           )}
           {navItem(
             Settings,
-            "Settings",
+            msg("Settings"),
             view === "settings",
             () => onSelectView("settings"),
             quarantinedCount,
             quarantineStale,
           )}
           {view === "settings" && (
-            <div className="ml-5 flex flex-col gap-0.5" aria-label="Settings pages">
+            <div className="ml-5 flex flex-col gap-0.5" aria-label={t("Settings pages")}>
               {SETTINGS_PAGES.map((item, index) => (
                 <div key={item.id} className="relative">
                   {navItem(
@@ -630,7 +650,7 @@ export function AppSidebar({
                   {item.id === "safety" && pendingCount > 0 && (
                     <span
                       className="absolute right-2 top-2 rounded-full bg-warning/15 px-1.5 text-xs text-warning"
-                      aria-label={`${pendingCount} pending approvals`}
+                      aria-label={t("{count} pending approvals", { count: pendingCount })}
                     >
                       {pendingCount}
                     </span>
@@ -641,7 +661,11 @@ export function AppSidebar({
           )}
           {navItem(
             Users,
-            paired ? (isPersonalSync(registry) ? "Sync" : "Team") : "Sign in to sync",
+            paired
+              ? isPersonalSync(registry)
+                ? msg("Sync")
+                : msg("Team")
+              : msg("Sign in to sync"),
             view === "teams",
             () => onSelectView("teams"),
             registry?.servers.filter((s) => s.teamEnableReview === true && !s.enabled)
@@ -653,14 +677,15 @@ export function AppSidebar({
           <button
             onClick={() => onSelectView("activity")}
             className="sidebar-savings mx-3 mt-2 flex items-center gap-2 rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-left text-xs transition-colors hover:bg-success/10"
-            title={`${savingsStale ? "Catalog telemetry unavailable; showing the last loaded measurement. " : ""}cl100k_base tokenizer; one full catalog baseline per client session minus every catalog and search response. Sessionless HTTP and unverifiable history excluded; not model usage or billing. Click for the breakdown.`}
+            title={`${savingsStale ? t("Catalog telemetry unavailable; showing the last loaded measurement. ") : ""}${t("cl100k_base tokenizer; one full catalog baseline per client session minus every catalog and search response. Sessionless HTTP and unverifiable history excluded; not model usage or billing. Click for the breakdown.")}`}
           >
             <Zap className="size-3.5 shrink-0 text-success" />
             <span className="text-muted-foreground">
               <span className="font-semibold text-foreground">
                 {fmtTokens(savings.tokensSaved)}
               </span>{" "}
-              tokens saved{savingsStale ? " (stale)" : ""}
+              {t("tokens saved")}
+              {savingsStale ? t(" (stale)") : ""}
             </span>
           </button>
         )}

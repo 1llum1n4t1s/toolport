@@ -1,3 +1,4 @@
+import { msg, Trans, translate, useI18n } from "@/lib/i18n";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Check,
@@ -73,6 +74,7 @@ function ToolOverrideEditor({
   registry: Registry | null;
   onRegistryChange: (r: Registry) => void;
 }) {
+  const { t } = useI18n();
   const current = registry?.toolOverrides?.[serverId]?.[tool.name];
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -97,7 +99,7 @@ function ToolOverrideEditor({
         await setToolOverride(serverId, tool.name, name || null, description || null),
       );
     } catch (e) {
-      toastError(`Couldn't save override: ${e}`);
+      toastError(translate("Couldn't save override: {value0}", { value0: String(e) }));
     } finally {
       setBusy(false);
     }
@@ -109,7 +111,7 @@ function ToolOverrideEditor({
       setName("");
       setDescription("");
     } catch (e) {
-      toastError(`Couldn't clear override: ${e}`);
+      toastError(translate("Couldn't clear override: {value0}", { value0: String(e) }));
     } finally {
       setBusy(false);
     }
@@ -125,11 +127,11 @@ function ToolOverrideEditor({
       >
         <Pencil className="size-3.5 shrink-0" />
         <span className="font-medium text-foreground/80">
-          Override how clients see this tool
+          {t("Override how clients see this tool")}
         </span>
         {hasOverride && (
           <span className="rounded-full bg-info/15 px-1.5 py-0.5 text-[10px] font-medium text-info">
-            active
+            {t("active")}
           </span>
         )}
         <ChevronRight
@@ -139,15 +141,18 @@ function ToolOverrideEditor({
       {open && (
         <div className="flex flex-col gap-2.5 border-t border-border/60 px-3 py-3">
           <p className="text-xs text-muted-foreground">
-            Rename the tool or replace its description as every client sees it, e.g. to
-            neutralize a misleading or injection-laden description. The call still runs
-            the original server tool.
+            {t(
+              "Rename the tool or replace its description as every client sees it, e.g. to neutralize a misleading or injection-laden description. The call still runs the original server tool.",
+            )}
           </p>
           <label className="flex flex-col gap-1 text-xs">
             <span className="text-muted-foreground">
-              Name{" "}
+              {t("Name")}{" "}
               <span className="text-muted-foreground/60">
-                (blank keeps <span className="font-mono">{tool.name}</span>)
+                <Trans
+                  message="(blank keeps {name})"
+                  values={{ name: <span className="font-mono">{tool.name}</span> }}
+                />
               </span>
             </span>
             <input
@@ -159,19 +164,19 @@ function ToolOverrideEditor({
           </label>
           <label className="flex flex-col gap-1 text-xs">
             <span className="text-muted-foreground">
-              Description (blank keeps the server's)
+              {t("Description (blank keeps the server's)")}
             </span>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
-              placeholder={tool.description ?? "(server's description)"}
+              placeholder={tool.description ?? t("(server's description)")}
               className="rounded-md border border-input bg-transparent px-2.5 py-1.5 text-xs shadow-sm focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
             />
           </label>
           <div className="flex gap-2">
             <Button size="sm" onClick={() => void save()} disabled={busy}>
-              Save override
+              {t("Save override")}
             </Button>
             {hasOverride && (
               <Button
@@ -180,7 +185,7 @@ function ToolOverrideEditor({
                 onClick={() => void reset()}
                 disabled={busy}
               >
-                Reset to original
+                {t("Reset to original")}
               </Button>
             )}
           </div>
@@ -237,7 +242,8 @@ interface FieldProps {
 
 /** One argument input, shaped by the property's JSON-schema type. */
 function ArgField({ name, schema, required, value, onChange }: FieldProps) {
-  const t = primaryType(schema);
+  const { t } = useI18n();
+  const schemaType = primaryType(schema);
   const id = useId();
   const enumVals = schema.enum;
 
@@ -246,7 +252,7 @@ function ArgField({ name, schema, required, value, onChange }: FieldProps) {
     control = (
       <Select value={value === undefined ? "" : String(value)} onValueChange={onChange}>
         <SelectTrigger id={id} className="h-9">
-          <SelectValue placeholder="Select…" />
+          <SelectValue placeholder={t("Select…")} />
         </SelectTrigger>
         <SelectContent>
           {enumVals.map((e) => (
@@ -257,7 +263,7 @@ function ArgField({ name, schema, required, value, onChange }: FieldProps) {
         </SelectContent>
       </Select>
     );
-  } else if (t === "boolean") {
+  } else if (schemaType === "boolean") {
     control = (
       <Switch
         id={id}
@@ -265,13 +271,13 @@ function ArgField({ name, schema, required, value, onChange }: FieldProps) {
         onCheckedChange={(c) => onChange(c)}
       />
     );
-  } else if (t === "object" || t === "array") {
+  } else if (schemaType === "object" || schemaType === "array") {
     control = (
       <Textarea
         id={id}
         value={typeof value === "string" ? value : ""}
         onChange={(e) => onChange(e.target.value)}
-        placeholder={t === "array" ? "[ … ]" : "{ … }"}
+        placeholder={schemaType === "array" ? "[ … ]" : "{ … }"}
         rows={3}
         className="font-mono text-xs"
       />
@@ -280,10 +286,14 @@ function ArgField({ name, schema, required, value, onChange }: FieldProps) {
     control = (
       <Input
         id={id}
-        type={t === "number" || t === "integer" ? "number" : "text"}
+        type={schemaType === "number" || schemaType === "integer" ? "number" : "text"}
         value={value === undefined ? "" : String(value)}
         onChange={(e) => onChange(e.target.value)}
-        placeholder={schema.default != null ? `default: ${String(schema.default)}` : ""}
+        placeholder={
+          schema.default != null
+            ? t("default: {value0}", { value0: String(schema.default) })
+            : ""
+        }
         className="h-9"
       />
     );
@@ -294,7 +304,7 @@ function ArgField({ name, schema, required, value, onChange }: FieldProps) {
       <Label htmlFor={id} className="flex items-center gap-1.5">
         <span className="font-mono text-xs">{name}</span>
         {required && <span className="text-destructive">*</span>}
-        <span className="text-xs font-normal text-muted-foreground">{t}</span>
+        <span className="text-xs font-normal text-muted-foreground">{schemaType}</span>
       </Label>
       {schema.description && (
         <p className="text-xs text-muted-foreground">{schema.description}</p>
@@ -314,21 +324,23 @@ function looksLikeAuthError(message: string): boolean {
 }
 
 /** Inline "connecting…" line shared by the resource/prompt panels. */
-function Connecting({ label = "Connecting to server…" }: { label?: string }) {
+function Connecting({ label }: { label?: string }) {
+  const { t } = useI18n();
   return (
     <div className="flex items-center gap-2 text-sm text-muted-foreground">
-      <Loader2 className="size-4 animate-spin" /> {label}
+      <Loader2 className="size-4 animate-spin" /> {label ?? t("Connecting to server…")}
     </div>
   );
 }
 
 /** Copy-to-clipboard button with a brief confirmation, for raw result / JSON blocks. */
 function CopyButton({ text }: { text: string }) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   return (
     <button
       type="button"
-      aria-label="Copy to clipboard"
+      aria-label={t("Copy to clipboard")}
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(text);
@@ -341,7 +353,7 @@ function CopyButton({ text }: { text: string }) {
       className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
     >
       {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-      {copied ? "Copied" : "Copy"}
+      {copied ? t("Copied") : t("Copy")}
     </button>
   );
 }
@@ -364,6 +376,7 @@ function ResultBlock({ title, value }: { title: string; value: unknown }) {
 
 /** Resources tab: list what the server advertises and read one on click. */
 function ResourcesPanel({ serverId }: { serverId: string }) {
+  const { t } = useI18n();
   const [resources, setResources] = useState<McpResource[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -409,7 +422,7 @@ function ResourcesPanel({ serverId }: { serverId: string }) {
   if (!resources || resources.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        This server advertises no resources.
+        {t("This server advertises no resources.")}
       </p>
     );
   }
@@ -418,7 +431,7 @@ function ResourcesPanel({ serverId }: { serverId: string }) {
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
         <Label className="text-xs text-muted-foreground">
-          Resources ({resources.length})
+          {t("Resources ({count})", { count: resources.length })}
         </Label>
         <div className="flex flex-col divide-y rounded-lg border">
           {resources.map((r) => (
@@ -452,15 +465,16 @@ function ResourcesPanel({ serverId }: { serverId: string }) {
           ))}
         </div>
       </div>
-      {reading && <Connecting label="Reading resource…" />}
+      {reading && <Connecting label={t("Reading resource…")} />}
       {readError && <Callout variant="danger">{readError}</Callout>}
-      {result != null && <ResultBlock title="Resource contents" value={result} />}
+      {result != null && <ResultBlock title={t("Resource contents")} value={result} />}
     </div>
   );
 }
 
 /** Prompts tab: list prompts, fill any arguments, and render one. */
 function PromptsPanel({ serverId }: { serverId: string }) {
+  const { t } = useI18n();
   const [prompts, setPrompts] = useState<McpPrompt[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -504,7 +518,12 @@ function PromptsPanel({ serverId }: { serverId: string }) {
       .map((a) => a.name);
     if (missing.length > 0) {
       setRunError(
-        `Fill in required argument${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`,
+        translate(
+          missing.length === 1
+            ? msg("Fill in required argument: {names}")
+            : msg("Fill in required arguments: {names}"),
+          { names: missing.join(", ") },
+        ),
       );
       return;
     }
@@ -524,7 +543,9 @@ function PromptsPanel({ serverId }: { serverId: string }) {
   if (error) return <Callout variant="danger">{error}</Callout>;
   if (!prompts || prompts.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">This server advertises no prompts.</p>
+      <p className="text-sm text-muted-foreground">
+        {t("This server advertises no prompts.")}
+      </p>
     );
   }
 
@@ -532,7 +553,7 @@ function PromptsPanel({ serverId }: { serverId: string }) {
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
         <Label className="text-xs text-muted-foreground">
-          Prompts ({prompts.length})
+          {t("Prompts ({count})", { count: prompts.length })}
         </Label>
         <div className="flex flex-col divide-y rounded-lg border">
           {prompts.map((p) => (
@@ -562,7 +583,7 @@ function PromptsPanel({ serverId }: { serverId: string }) {
           )}
           {(prompt.arguments ?? []).length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              This prompt takes no arguments.
+              {t("This prompt takes no arguments.")}
             </p>
           ) : (
             <div className="flex flex-col gap-4">
@@ -597,14 +618,14 @@ function PromptsPanel({ serverId }: { serverId: string }) {
               ) : (
                 <Play className="size-4" />
               )}
-              {running ? "Getting…" : "Get prompt"}
+              {running ? t("Getting…") : t("Get prompt")}
             </Button>
           </div>
         </div>
       )}
 
       {runError && <Callout variant="danger">{runError}</Callout>}
-      {result != null && <ResultBlock title="Prompt messages" value={result} />}
+      {result != null && <ResultBlock title={t("Prompt messages")} value={result} />}
     </div>
   );
 }
@@ -620,6 +641,7 @@ export function ServerToolsPanel({
   registry,
   onRegistryChange,
 }: ServerToolsProps) {
+  const { t } = useI18n();
   const servers = useMemo(() => registry?.servers ?? [], [registry?.servers]);
   const denyDestructive = registry?.denyDestructive ?? false;
   const defaultAccessKey = `${registry?.defaultAccessProfileId}:${registry?.defaultAccessContextId}:${registry?.defaultAccessLegacyPolicy}`;
@@ -743,7 +765,7 @@ export function ServerToolsPanel({
     try {
       onRegistryChange(await setToolEnabled(serverId, toolName, enabled));
     } catch (e) {
-      toastError(`Couldn't update the tool: ${e}`);
+      toastError(translate("Couldn't update the tool: {value0}", { value0: String(e) }));
     } finally {
       setPolicyBusy(false);
     }
@@ -755,7 +777,7 @@ export function ServerToolsPanel({
     try {
       onRegistryChange(await setToolPinned(serverId, toolName, pinned));
     } catch (e) {
-      toastError(`Couldn't pin the tool: ${e}`);
+      toastError(translate("Couldn't pin the tool: {value0}", { value0: String(e) }));
     } finally {
       setPolicyBusy(false);
     }
@@ -783,11 +805,11 @@ export function ServerToolsPanel({
       try {
         const parsed = JSON.parse(rawJson || "{}");
         if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-          return { error: "Arguments must be a JSON object." };
+          return { error: translate("Arguments must be a JSON object.") };
         }
         return parsed as Record<string, unknown>;
       } catch (e) {
-        return { error: `Invalid JSON: ${String(e)}` };
+        return { error: translate("Invalid JSON: {value0}", { value0: String(e) }) };
       }
     }
     const out: Record<string, unknown> = {};
@@ -799,7 +821,12 @@ export function ServerToolsPanel({
     const missing = [...required].filter((k) => !(k in out));
     if (missing.length > 0) {
       return {
-        error: `Fill in required field${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`,
+        error: translate(
+          missing.length === 1
+            ? msg("Fill in required field: {names}")
+            : msg("Fill in required fields: {names}"),
+          { names: missing.join(", ") },
+        ),
       };
     }
     return out;
@@ -837,7 +864,10 @@ export function ServerToolsPanel({
       if (callSeq.current !== myId) return;
       setCallError(
         e instanceof Error && e.message === "__timeout__"
-          ? `No response after ${CALL_TIMEOUT_MS / 1000}s. The server may be slow or unreachable; check its status under Servers, then retry.`
+          ? translate(
+              "No response after {value0}s. The server may be slow or unreachable; check its status under Servers, then retry.",
+              { value0: CALL_TIMEOUT_MS / 1000 },
+            )
           : String(e),
       );
     } finally {
@@ -859,7 +889,9 @@ export function ServerToolsPanel({
     callSeq.current++;
     if (tickerRef.current) clearInterval(tickerRef.current);
     setCalling(false);
-    setCallError("Stopped waiting: the call may still be running on the server.");
+    setCallError(
+      translate("Stopped waiting: the call may still be running on the server."),
+    );
   }
 
   if (servers.length === 0) {
@@ -867,10 +899,11 @@ export function ServerToolsPanel({
       <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
         <FlaskConical className="size-10 text-muted-foreground/50" />
         <div>
-          <p className="font-medium">No servers to test</p>
+          <p className="font-medium">{t("No servers to test")}</p>
           <p className="max-w-md text-sm text-muted-foreground">
-            Add a server to Toolport, then come back here to invoke its tools and see the
-            raw results, without wiring up a client first.
+            {t(
+              "Add a server to Toolport, then come back here to invoke its tools and see the raw results, without wiring up a client first.",
+            )}
           </p>
         </div>
       </div>
@@ -880,7 +913,7 @@ export function ServerToolsPanel({
   return (
     <div className="flex w-full min-w-0 flex-col gap-5">
       <p className="text-xs text-muted-foreground">
-        Calls use the default access and gateway policy, including approval gates.
+        {t("Calls use the default access and gateway policy, including approval gates.")}
       </p>
 
       {serverId && (
@@ -898,7 +931,11 @@ export function ServerToolsPanel({
             >
               {t === "resources" && <FileText className="size-3.5" />}
               {t === "prompts" && <MessageSquare className="size-3.5" />}
-              {t}
+              {t === "tools"
+                ? translate("Tools")
+                : t === "resources"
+                  ? translate("Resources")
+                  : translate("Prompts")}
             </button>
           ))}
         </div>
@@ -915,7 +952,7 @@ export function ServerToolsPanel({
         <>
           {loadingTools && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" /> Connecting to server…
+              <Loader2 className="size-4 animate-spin" /> {t("Connecting to server…")}
             </div>
           )}
 
@@ -923,11 +960,19 @@ export function ServerToolsPanel({
             (looksLikeAuthError(toolsError) ? (
               <Callout variant="warning">
                 <span className="font-medium">
-                  Sign in to {serverEntry?.name ?? "this server"} first.
+                  {t("Sign in to {server} first.", {
+                    server: serverEntry?.name ?? t("this server"),
+                  })}
                 </span>{" "}
-                Toolport couldn&apos;t list its tools without credentials. Open{" "}
-                <span className="font-medium">Servers</span>, choose this server, and use{" "}
-                <span className="font-medium">Authenticate</span>.
+                <Trans
+                  message="Toolport couldn't list its tools without credentials. Open {servers}, choose this server, and use {authenticate}."
+                  values={{
+                    servers: <span className="font-medium">{t("Servers")}</span>,
+                    authenticate: (
+                      <span className="font-medium">{t("Authenticate")}</span>
+                    ),
+                  }}
+                />
                 <p className="mt-1.5 font-mono text-xs break-words opacity-70">
                   {toolsError}
                 </p>
@@ -939,7 +984,7 @@ export function ServerToolsPanel({
           {/* Server connected but exposes no tools at all. */}
           {!loadingTools && !toolsError && tools && tools.length === 0 && (
             <p className="text-sm text-muted-foreground">
-              This server advertises no tools.
+              {t("This server advertises no tools.")}
             </p>
           )}
 
@@ -955,7 +1000,9 @@ export function ServerToolsPanel({
               {!isExposed(tool) && (
                 <p className="flex items-center gap-1.5 text-xs text-warning">
                   <ShieldAlert className="size-3.5" />
-                  Hidden from clients by policy. The gateway will refuse blocked calls.
+                  {t(
+                    "Hidden from clients by policy. The gateway will refuse blocked calls.",
+                  )}
                 </p>
               )}
 
@@ -970,10 +1017,10 @@ export function ServerToolsPanel({
 
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                  Arguments
+                  {t("Arguments")}
                 </span>
                 <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                  Raw JSON
+                  {t("Raw JSON")}
                   <Switch checked={rawMode} onCheckedChange={setRawMode} />
                 </label>
               </div>
@@ -981,8 +1028,9 @@ export function ServerToolsPanel({
               {rawMode ? (
                 <div className="flex flex-col gap-1.5">
                   <span className="text-xs text-muted-foreground">
-                    Raw-JSON mode: type the full arguments object yourself. The generated
-                    form is bypassed.
+                    {t(
+                      "Raw-JSON mode: type the full arguments object yourself. The generated form is bypassed.",
+                    )}
                   </span>
                   <textarea
                     value={rawJson}
@@ -994,7 +1042,7 @@ export function ServerToolsPanel({
                 </div>
               ) : Object.keys(props).length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  This tool takes no arguments.
+                  {t("This tool takes no arguments.")}
                 </p>
               ) : (
                 <div className="flex flex-col gap-4">
@@ -1018,12 +1066,14 @@ export function ServerToolsPanel({
                   ) : (
                     <Play className="size-4" />
                   )}
-                  {calling ? `Calling… ${elapsed}s` : "Call tool"}
+                  {calling
+                    ? t("Calling… {value0}s", { value0: elapsed })
+                    : t("Call tool")}
                 </Button>
                 {calling && (
                   <Button onClick={cancelCall} variant="outline" size="sm">
                     <X className="size-4" />
-                    Cancel
+                    {t("Cancel")}
                   </Button>
                 )}
               </div>
@@ -1042,7 +1092,7 @@ export function ServerToolsPanel({
                 ) : (
                   <CheckCircle2 className="size-4 text-success" />
                 )}
-                {result.isError ? "Tool returned an error" : "Result"}
+                {result.isError ? t("Tool returned an error") : t("Result")}
                 <CopyButton text={renderResult(result)} />
               </div>
               <pre
@@ -1060,9 +1110,12 @@ export function ServerToolsPanel({
           {tools && tools.length > 0 && (
             <div className="flex flex-col gap-1.5">
               <Label className="text-xs text-muted-foreground">
-                Tools{" "}
+                {t("Tools")}{" "}
                 {toolFilter.trim()
-                  ? `(${filteredTools.length} of ${tools.length})`
+                  ? t("({value0} of {value1})", {
+                      value0: filteredTools.length,
+                      value1: tools.length,
+                    })
                   : `(${tools.length})`}
               </Label>
               {/* A search box once the list is long enough to be worth scanning. */}
@@ -1072,23 +1125,23 @@ export function ServerToolsPanel({
                   <Input
                     value={toolFilter}
                     onChange={(e) => setToolFilter(e.target.value)}
-                    placeholder="Filter tools by name or description"
+                    placeholder={t("Filter tools by name or description")}
                     className="h-9 pl-8"
-                    aria-label="Filter tools"
+                    aria-label={t("Filter tools")}
                   />
                 </div>
               )}
               {filteredTools.length === 0 ? (
                 <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-3 py-6 text-center">
                   <p className="text-sm text-muted-foreground">
-                    No tools match "{toolFilter.trim()}".
+                    {t('No tools match "{filter}".', { filter: toolFilter.trim() })}
                   </p>
                   <button
                     onClick={() => setToolFilter("")}
                     className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   >
                     <X className="size-3.5" />
-                    Clear filter
+                    {t("Clear filter")}
                   </button>
                 </div>
               ) : (
@@ -1129,23 +1182,25 @@ export function ServerToolsPanel({
                             >
                               {t.name}
                             </span>
-                            {destructive && <Badge variant="warning">destructive</Badge>}
+                            {destructive && (
+                              <Badge variant="warning">{translate("destructive")}</Badge>
+                            )}
                             {t.annotations?.readOnlyHint === true && (
-                              <Badge variant="secondary">read-only</Badge>
+                              <Badge variant="secondary">{translate("read-only")}</Badge>
                             )}
                             <span className="text-xs text-muted-foreground">
-                              {perToolOff ? "Disabled" : "Enabled"}
+                              {perToolOff ? translate("Disabled") : translate("Enabled")}
                             </span>
                             <span className="text-xs text-muted-foreground">
                               {t.toolportQuarantine === "quarantined"
-                                ? "Quarantined"
+                                ? translate("Quarantined")
                                 : t.toolportQuarantine === "clear"
-                                  ? "Not quarantined"
-                                  : "Quarantine unknown"}
+                                  ? translate("Not quarantined")
+                                  : translate("Quarantine unknown")}
                             </span>
                             {!exposed && (
                               <span className="text-xs text-muted-foreground">
-                                hidden
+                                {translate("hidden")}
                               </span>
                             )}
                           </span>
@@ -1160,10 +1215,18 @@ export function ServerToolsPanel({
                           disabled={policyBusy}
                           title={
                             pinned
-                              ? "Pinned: always surfaced in lazy-discovery search"
-                              : "Pin as a prerequisite (always surfaced in search)"
+                              ? translate(
+                                  "Pinned: always surfaced in lazy-discovery search",
+                                )
+                              : translate(
+                                  "Pin as a prerequisite (always surfaced in search)",
+                                )
                           }
-                          aria-label={pinned ? `Unpin ${t.name}` : `Pin ${t.name}`}
+                          aria-label={
+                            pinned
+                              ? translate("Unpin {value0}", { value0: t.name })
+                              : translate("Pin {value0}", { value0: t.name })
+                          }
                           aria-pressed={pinned}
                           className="shrink-0 rounded p-1 hover:bg-muted disabled:opacity-50"
                         >
@@ -1177,7 +1240,7 @@ export function ServerToolsPanel({
                           checked={!perToolOff}
                           onCheckedChange={(on) => toggleTool(t.name, on)}
                           disabled={policyBusy}
-                          aria-label={`Enable ${t.name}`}
+                          aria-label={translate("Enable {value0}", { value0: t.name })}
                         />
                       </div>
                     );
@@ -1186,8 +1249,9 @@ export function ServerToolsPanel({
               )}
               {denyDestructive && (
                 <p className="text-xs text-muted-foreground">
-                  Destructive tools are hidden from clients by the global switch even when
-                  individually enabled.
+                  {t(
+                    "Destructive tools are hidden from clients by the global switch even when individually enabled.",
+                  )}
                 </p>
               )}
             </div>

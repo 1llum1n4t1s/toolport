@@ -1,3 +1,5 @@
+import { getLocale, translate } from "@/lib/i18n";
+import { LANGUAGES, type LanguageChoice, useI18n } from "@/lib/i18n";
 import { type SettingsSubpage, SETTINGS_PAGES } from "@/lib/settingsPages";
 import { toast } from "sonner";
 import { useCallback, useEffect, useMemo, useState, useRef, type ReactNode } from "react";
@@ -76,6 +78,7 @@ import {
   type ClientNeedingRestart,
   type HttpBridgeStatus,
   type QuarantinedTool,
+  type ReapOutcome,
 } from "@/lib/api";
 import type { AllowedTool, FolderProfile, Profile, Registry } from "@/lib/types";
 import { isGatewayServer } from "@/lib/types";
@@ -100,6 +103,7 @@ function PinnedPrerequisites({
   registry: Registry | null;
   onRegistryChange: (registry: Registry) => void;
 }) {
+  const { t } = useI18n();
   const [busy, setBusy] = useState<string | null>(null);
   const nameOf = useMemo(() => {
     const m = new Map<string, string>();
@@ -123,7 +127,7 @@ function PinnedPrerequisites({
     try {
       onRegistryChange(await setToolPinned(serverId, tool, false));
     } catch (e) {
-      toastError(`Couldn't unpin the tool: ${e}`);
+      toastError(translate("Couldn't unpin the tool: {value1}", { value1: String(e) }));
     } finally {
       setBusy(null);
     }
@@ -133,19 +137,19 @@ function PinnedPrerequisites({
     <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
       <div className="flex items-center gap-2 text-xs">
         <Pin className="size-3.5 shrink-0 text-info" />
-        <span className="font-medium">Tools always included</span>
+        <span className="font-medium">{translate("Tools always included")}</span>
         <span className="rounded-full bg-muted px-1.5 py-0.5 text-muted-foreground">
           {pins.length}
         </span>
         <span className="ml-auto text-muted-foreground">
-          included in every tool search
+          {translate("included in every tool search")}
         </span>
       </div>
       {pins.length === 0 ? (
         <p className="mt-2 max-w-2xl text-xs text-muted-foreground">
-          None yet. In Servers, open a server's Tools tab and pin tools your agent needs
-          every time, such as sign-in or a required lookup. They will be included even
-          when they do not match the search.
+          {translate(
+            "None yet. In Servers, open a server's Tools tab and pin tools your agent needs every time, such as sign-in or a required lookup. They will be included even when they do not match the search.",
+          )}
         </p>
       ) : (
         <ul className="mt-2 space-y-1">
@@ -161,7 +165,7 @@ function PinnedPrerequisites({
               <button
                 onClick={() => unpin(p.serverId, p.tool)}
                 disabled={busy === `${p.serverId}:${p.tool}`}
-                aria-label={`Unpin ${p.tool}`}
+                aria-label={t("Unpin {value1}", { value1: p.tool })}
                 className="ml-auto rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border disabled:opacity-50"
               >
                 <X className="size-3.5" />
@@ -184,6 +188,7 @@ function FolderRouting({
   registry: Registry | null;
   onRegistryChange: (registry: Registry) => void;
 }) {
+  const { t } = useI18n();
   const mappings = registry?.folderProfiles ?? [];
   const profiles = registry?.profiles ?? [];
   const [path, setPath] = useState("");
@@ -195,7 +200,9 @@ function FolderRouting({
     try {
       onRegistryChange(await setFolderProfiles(next));
     } catch (e) {
-      toastError(`Couldn't save folder routing: ${e}`);
+      toastError(
+        translate("Couldn't save folder routing: {value1}", { value1: String(e) }),
+      );
     } finally {
       setBusy(false);
     }
@@ -206,11 +213,13 @@ function FolderRouting({
       const picked = await openFolderDialog({
         directory: true,
         multiple: false,
-        title: "Choose a project folder",
+        title: translate("Choose a project folder"),
       });
       if (typeof picked === "string") setPath(picked);
     } catch (e) {
-      toastError(`Couldn't open the folder picker: ${e}`);
+      toastError(
+        translate("Couldn't open the folder picker: {value1}", { value1: String(e) }),
+      );
     }
   }
 
@@ -232,12 +241,13 @@ function FolderRouting({
     <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
       <div className="flex items-center gap-2 text-xs">
         <FolderTree className="size-3.5 shrink-0 text-info" />
-        <span className="font-medium">Project folder routing</span>
+        <span className="font-medium">{t("Project folder routing")}</span>
         <span className="rounded-full bg-muted px-1.5 py-0.5 text-muted-foreground">
           {mappings.length}
         </span>
         <span className="ml-auto text-muted-foreground">
-          auto-scope a client by the folder it opens in
+          {" "}
+          {t("auto-scope a client by the folder it opens in")}{" "}
         </span>
       </div>
       {mappings.length > 0 && (
@@ -247,12 +257,12 @@ function FolderRouting({
               <code className="truncate rounded bg-muted px-1.5 py-0.5 font-mono text-foreground/90">
                 {m.path}
               </code>
-              <span className="shrink-0 text-muted-foreground">&rarr;</span>
+              <span className="shrink-0 text-muted-foreground">{translate("→")}</span>
               <span className="shrink-0 text-foreground/90">{label(m.profile)}</span>
               <button
                 onClick={() => save(mappings.filter((x) => x.path !== m.path))}
                 disabled={busy}
-                aria-label={`Remove routing for ${m.path}`}
+                aria-label={t("Remove routing for {value1}", { value1: m.path })}
                 className="ml-auto rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border disabled:opacity-50"
               >
                 <X className="size-3.5" />
@@ -263,7 +273,7 @@ function FolderRouting({
       )}
       {profiles.length === 0 ? (
         <p className="mt-2 text-xs text-muted-foreground">
-          Create an access set first, then map a folder to it here.
+          {translate("Create an access set first, then map a folder to it here.")}
         </p>
       ) : (
         <div className="mt-2 flex items-center gap-2">
@@ -273,23 +283,22 @@ function FolderRouting({
             onKeyDown={(e) => {
               if (e.key === "Enter") void add();
             }}
-            placeholder="/path/to/project"
+            placeholder={translate("/path/to/project")}
             className="min-w-0 flex-1 rounded border bg-background px-2 py-1 font-mono text-xs focus-visible:ring-1 focus-visible:ring-border focus-visible:outline-none"
           />
           <button
             type="button"
             onClick={() => void browse()}
             disabled={busy}
-            aria-label="Browse for a project folder"
-            title="Browse…"
+            aria-label={t("Browse for a project folder")}
+            title={t("Browse…")}
             className="flex shrink-0 items-center gap-1 rounded border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
           >
-            <FolderOpen className="size-3.5" />
-            Browse
+            <FolderOpen className="size-3.5" /> {t("Browse")}{" "}
           </button>
           <Select value={profile} onValueChange={setProfile}>
             <SelectTrigger className="h-7 w-32 text-xs">
-              <SelectValue placeholder="Access set" />
+              <SelectValue placeholder={translate("Access set")} />
             </SelectTrigger>
             <SelectContent>
               {profiles.map((p) => (
@@ -304,7 +313,8 @@ function FolderRouting({
             disabled={busy || !path.trim() || !profile}
             className="shrink-0 rounded border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
           >
-            Add
+            {" "}
+            {t("Add")}{" "}
           </button>
         </div>
       )}
@@ -336,14 +346,14 @@ function AccessSetCreator({
       }}
     >
       <input
-        aria-label="Access set name"
-        placeholder="Access set name"
+        aria-label={translate("Access set name")}
+        placeholder={translate("Access set name")}
         value={name}
         onChange={(e) => setName(e.target.value)}
         className="rounded border px-2"
       />
       <button disabled={busy || !name.trim()} type="submit">
-        Create access set
+        {translate("Create access set")}
       </button>
     </form>
   );
@@ -381,6 +391,7 @@ function ProfileToolScope({
   registry: Registry;
   onRegistryChange: (r: Registry) => void;
 }) {
+  const { t } = useI18n();
   const serverName = useMemo(() => {
     const m = new Map<string, string>();
     // Toolport's own gateway is infrastructure, not a scopable server, so keep it out.
@@ -418,7 +429,12 @@ function ProfileToolScope({
       if (requestIdByServer.current[serverId] !== requestId) {
         return;
       }
-      toastError(`Couldn't load ${serverName.get(serverId) ?? serverId} tools: ${e}`);
+      toastError(
+        translate("Couldn't load {value1} tools: {value2}", {
+          value1: serverName.get(serverId) ?? serverId,
+          value2: String(e),
+        }),
+      );
       setErrorByServer((m) => ({ ...m, [serverId]: true }));
     } finally {
       if (requestIdByServer.current[serverId] === requestId) {
@@ -456,7 +472,9 @@ function ProfileToolScope({
     try {
       onRegistryChange(await setProfileServerTools(profile.id, serverId, next));
     } catch (e) {
-      toastError(`Couldn't update tool scope: ${e}`);
+      toastError(
+        translate("Couldn't update tool scope: {value1}", { value1: String(e) }),
+      );
     } finally {
       setBusy(false);
     }
@@ -472,9 +490,12 @@ function ProfileToolScope({
         const scoped = scope[serverId];
         const badge = scoped
           ? allTools
-            ? `${scoped.length} of ${allTools.length} tools`
-            : `${scoped.length} tools`
-          : "all tools";
+            ? t("{value1} of {value2} tools", {
+                value1: scoped.length,
+                value2: allTools.length,
+              })
+            : t("{value1} tools", { value1: scoped.length })
+          : t("all tools");
         const open = expanded === serverId;
         return (
           <div key={serverId} className="rounded border border-border/50 bg-muted/10">
@@ -489,14 +510,18 @@ function ProfileToolScope({
                 <button
                   type="button"
                   aria-haspopup="dialog"
-                  aria-label={`Choose tools for ${serverName.get(serverId)}`}
+                  aria-label={translate("Choose tools for {value1}", {
+                    value1: String(serverName.get(serverId)),
+                  })}
                   className="flex w-full items-center gap-2 px-2 py-1.5 text-xs hover:bg-muted/30"
                 >
                   <span className="font-medium">
-                    Choose tools for {serverName.get(serverId)}
+                    {t("Choose tools for {server}", {
+                      server: serverName.get(serverId) ?? serverId,
+                    })}
                   </span>
                   <span
-                    className={`ml-auto ${scoped ? "text-info" : "text-muted-foreground"}`}
+                    className={`ml-auto ${String(scoped ? "text-info" : "text-muted-foreground")}`}
                   >
                     {badge}
                   </span>
@@ -504,28 +529,36 @@ function ProfileToolScope({
               </DialogTrigger>
               <DialogContent>
                 <DialogHeader>
-                  <DialogTitle>Choose tools for {serverName.get(serverId)}</DialogTitle>
+                  <DialogTitle>
+                    {t("Choose tools for {server}", {
+                      server: serverName.get(serverId) ?? serverId,
+                    })}
+                  </DialogTitle>
                   <DialogDescription>
-                    Select which tools this access set exposes.
+                    {translate("Select which tools this access set exposes.")}
                   </DialogDescription>
                 </DialogHeader>
                 <div className="max-h-[60vh] overflow-y-auto">
                   {loadingByServer[serverId] ? (
-                    <p className="text-xs text-muted-foreground">Loading tools…</p>
+                    <p className="text-xs text-muted-foreground">
+                      {translate("Loading tools…")}
+                    </p>
                   ) : errorByServer[serverId] ? (
                     <div
                       role="status"
                       aria-live="polite"
                       className="flex flex-col gap-2 rounded-md border border-border p-3"
                     >
-                      <p className="text-xs text-muted-foreground">Couldn't load tools</p>
+                      <p className="text-xs text-muted-foreground">
+                        {translate("Couldn't load tools")}
+                      </p>
                       <Button
                         variant="outline"
                         size="xs"
                         className="w-fit"
                         onClick={() => loadTools(serverId)}
                       >
-                        Retry
+                        {translate("Retry")}
                       </Button>
                     </div>
                   ) : allTools && allTools.length > 0 ? (
@@ -545,7 +578,7 @@ function ProfileToolScope({
                     </div>
                   ) : (
                     <p className="text-xs text-muted-foreground">
-                      This server exposes no tools.
+                      {translate("This server exposes no tools.")}
                     </p>
                   )}
                 </div>
@@ -566,6 +599,14 @@ export function SettingsView({
   page = "general",
   pendingCount = 0,
 }: Props) {
+  const {
+    t,
+    language,
+    setLanguage,
+    loading: languageLoading,
+    error: languageError,
+    saveError,
+  } = useI18n();
   const [purgePlan, setPurgePlan] = useState<import("@/lib/api").DataRemovalPlan | null>(
     null,
   );
@@ -574,7 +615,9 @@ export function SettingsView({
     try {
       setPurgePlan(await dataRemovalPlan());
     } catch (error) {
-      toastError(`Could not prepare data removal: ${error}`);
+      toastError(
+        translate("Could not prepare data removal: {value1}", { value1: String(error) }),
+      );
     }
   };
   const purge = async () => {
@@ -583,7 +626,9 @@ export function SettingsView({
     try {
       await removeToolportData(purgePlan.reportPath);
     } catch (error) {
-      toastError(`Could not start data removal: ${error}`);
+      toastError(
+        translate("Could not start data removal: {value1}", { value1: String(error) }),
+      );
       setPurgeBusy(false);
     }
   };
@@ -599,10 +644,18 @@ export function SettingsView({
       try {
         onRegistryChange(await getRegistry());
       } catch (error) {
-        toastError(`Client removal finished, but could not refresh settings: ${error}`);
+        toastError(
+          translate("Client removal finished, but could not refresh settings: {value1}", {
+            value1: String(error),
+          }),
+        );
       }
     } catch (error) {
-      toastError(`Could not remove client connections: ${error}`);
+      toastError(
+        translate("Could not remove client connections: {value1}", {
+          value1: String(error),
+        }),
+      );
     } finally {
       setRemoveBusy(false);
     }
@@ -640,7 +693,7 @@ export function SettingsView({
     latestRegistry.current = registry;
   }, [registry]);
   const keptSummary = keptSafetySummary(registry?.keptV1Safety);
-  const levelLabel = { off: "Off", ask: "Ask", strict: "Strict" } as const;
+  const levelLabel = { off: t("Off"), ask: t("Ask"), strict: t("Strict") } as const;
   // Picking a level, even the current one, also drops protections kept from 1.x.
   async function chooseSafety(level: "off" | "ask" | "strict") {
     setSafetyBusy(true);
@@ -656,7 +709,9 @@ export function SettingsView({
       latestRegistry.current = reconciled;
       onRegistryChange(reconciled);
     } catch (error) {
-      toastError(`Couldn't update safety: ${error}`);
+      toastError(
+        translate("Couldn't update safety: {value1}", { value1: String(error) }),
+      );
     } finally {
       setSafetyBusy(false);
     }
@@ -671,7 +726,8 @@ export function SettingsView({
   ]);
   const [baselineNotice, setBaselineNotice] = useState<{
     context: string;
-    text: string;
+    ts: number;
+    detail: string;
   } | null>(null);
   const [allowedTools, setAllowedTools] = useState<AllowedTool[]>([]);
   const [allowedError, setAllowedError] = useState(false);
@@ -687,7 +743,7 @@ export function SettingsView({
   const [newToken, setNewToken] = useState<string | null>(null);
   const [clientBusy, setClientBusy] = useState(false);
   const [reapBusy, setReapBusy] = useState(false);
-  const [reapResult, setReapResult] = useState<string | null>(null);
+  const [reapOutcome, setReapResult] = useState<ReapOutcome | null>(null);
   // Apps still launching an obsolete gateway. Seeded from stored state because the
   // launch reaper already found them before this view existed; refreshed from the
   // button's own outcome, which merges rather than replaces (SOU-435).
@@ -699,7 +755,7 @@ export function SettingsView({
       setRestartCheckFailed(false);
     } catch {
       setRestartCheckFailed(true);
-      toastError("Couldn't check for apps using an old gateway");
+      toastError(translate("Couldn't check for apps using an old gateway"));
     }
   }, [setNeedsRestart, setRestartCheckFailed]);
   useEffect(() => {
@@ -746,7 +802,11 @@ export function SettingsView({
       else await disableAutostart();
       setAutostart({ status: "ready", enabled: on });
     } catch (e) {
-      toastError(`Couldn't ${on ? "enable" : "disable"} launch at login: ${e}`);
+      toastError(
+        on
+          ? t("Couldn't enable launch at login: {value2}", { value2: String(e) })
+          : t("Couldn't disable launch at login: {value2}", { value2: String(e) }),
+      );
     } finally {
       setBusySettings((current) => {
         const next = new Set(current);
@@ -765,7 +825,7 @@ export function SettingsView({
       setNewToken(res.token);
       setNewLabel("");
     } catch (e) {
-      toastError(`Couldn't add client: ${e}`);
+      toastError(translate("Couldn't add client: {value1}", { value1: String(e) }));
     } finally {
       setClientBusy(false);
     }
@@ -775,7 +835,7 @@ export function SettingsView({
     try {
       onRegistryChange(await removeHttpClient(id));
     } catch (e) {
-      toastError(`Couldn't remove client: ${e}`);
+      toastError(translate("Couldn't remove client: {value1}", { value1: String(e) }));
     }
   }
 
@@ -804,7 +864,8 @@ export function SettingsView({
             notice
               ? {
                   context: baselineContext,
-                  text: `${new Date(notice.ts).toLocaleString()}: ${notice.detail}`,
+                  ts: notice.ts,
+                  detail: notice.detail,
                 }
               : null,
           );
@@ -835,7 +896,7 @@ export function SettingsView({
       await releaseQuarantine(q.profile, q.tool, undefined, q.record_id);
       setQuarantined(await listQuarantined());
     } catch (e) {
-      toastError(`Couldn't re-approve: ${e}`);
+      toastError(t("Couldn't re-approve: {value1}", { value1: String(e) }));
     }
   };
 
@@ -859,7 +920,7 @@ export function SettingsView({
       await revokeAllowedTool(key);
       setAllowedTools(await listAllowedTools());
     } catch (e) {
-      toastError(`Couldn't revoke: ${e}`);
+      toastError(t("Couldn't revoke: {value1}", { value1: String(e) }));
     }
   };
 
@@ -869,7 +930,11 @@ export function SettingsView({
       setBridge(on ? await startHttpBridge() : await stopHttpBridge());
       setBridgeError(false);
     } catch (e) {
-      toastError(`Couldn't ${on ? "start" : "stop"} the HTTP endpoint: ${e}`);
+      toastError(
+        on
+          ? t("Couldn't start the HTTP endpoint: {value2}", { value2: String(e) })
+          : t("Couldn't stop the HTTP endpoint: {value2}", { value2: String(e) }),
+      );
     } finally {
       setBridgeBusy(false);
     }
@@ -902,7 +967,7 @@ export function SettingsView({
         // eslint-disable-next-line react-hooks/refs -- This callback reads the latest registry after IPC, not during render.
         publishRegistrySetting(key, await fn(v));
       } catch (e) {
-        toastError(`Couldn't update the setting: ${e}`);
+        toastError(t("Couldn't update the setting: {value1}", { value1: String(e) }));
       } finally {
         setBusySettings((current) => {
           const next = new Set(current);
@@ -921,7 +986,7 @@ export function SettingsView({
       if (!on) await clearInspectLog();
       publishRegistrySetting("live-inspect", reg);
     } catch (e) {
-      toastError(`Couldn't update the setting: ${e}`);
+      toastError(t("Couldn't update the setting: {value1}", { value1: String(e) }));
     } finally {
       setBusySettings((current) => {
         const next = new Set(current);
@@ -951,7 +1016,9 @@ export function SettingsView({
       title={extra?.tooltip}
       className="flex items-center gap-2.5 rounded-md border px-3 py-2.5 text-sm"
     >
-      <Icon className={`size-4 shrink-0 ${on ? accent : "text-muted-foreground"}`} />
+      <Icon
+        className={`size-4 shrink-0 ${String(on ? accent : "text-muted-foreground")}`}
+      />
       <span className="flex min-w-0 flex-1 flex-col leading-tight">
         <span className="font-medium">{title}</span>
         <span className="text-xs text-muted-foreground">{desc}</span>
@@ -974,35 +1041,108 @@ export function SettingsView({
       />
       {extra?.onRetry && (
         <Button size="sm" variant="ghost" className="gap-1.5" onClick={extra.onRetry}>
-          <RefreshCw className="size-3.5" />
-          Retry
+          <RefreshCw className="size-3.5" /> {t("Retry")}{" "}
         </Button>
       )}
     </label>
   );
 
+  // Localization follows the current language.
+  const reapResultParts: string[] = [];
+  if (reapOutcome?.killed.length) {
+    reapResultParts.push(
+      t("Stopped {value1}: {value2}", {
+        value1: reapOutcome.killed.length,
+        value2: reapOutcome.killed.join("; "),
+      }),
+    );
+  }
+  if (reapOutcome?.failed.length) {
+    reapResultParts.push(
+      t("Could not stop {value1}: {value2}", {
+        value1: reapOutcome.failed.length,
+        value2: reapOutcome.failed.join("; "),
+      }),
+    );
+  }
+  const reapResult = !reapOutcome
+    ? null
+    : reapResultParts.length > 0
+      ? reapResultParts.join(". ")
+      : reapOutcome.needsRestart.length > 0
+        ? // Derive localized feedback from the latest result.
+          t(
+            "Nothing to stop: these apps spawn the old gateway on their next tool call, so there is no process running between calls.",
+          )
+        : t("No old gateway processes found.");
+
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-8">
-      <SectionHeading title={SETTINGS_PAGES.find((item) => item.id === page)!.label}>
-        {SETTINGS_PAGES.find((item) => item.id === page)!.description}
+      <SectionHeading title={t(SETTINGS_PAGES.find((item) => item.id === page)!.label)}>
+        {t(SETTINGS_PAGES.find((item) => item.id === page)!.description)}
       </SectionHeading>
       {page === "general" && (
-        <section className="settings-page flex flex-col gap-4" aria-label="general">
+        <section
+          className="settings-page flex flex-col gap-4"
+          aria-label={translate("general")}
+        >
+          <div className="flex items-center gap-2.5 rounded-md border px-3 py-2.5 text-sm">
+            <Monitor className="size-4 shrink-0 text-info" />
+            <label
+              htmlFor="interface-language"
+              className="flex min-w-0 flex-1 flex-col leading-tight"
+            >
+              <span className="font-medium">{t("Language")}</span>
+              <span className="text-xs text-muted-foreground">
+                {t("Choose the language used in Toolport.")}
+              </span>
+            </label>
+            <select
+              id="interface-language"
+              value={language}
+              onChange={(event) => void setLanguage(event.target.value as LanguageChoice)}
+              aria-busy={languageLoading}
+              className="max-w-48 rounded-md border bg-background px-2 py-1.5 text-sm"
+            >
+              <option value="system">{t("System language")}</option>
+              {LANGUAGES.map(({ code, label }) => (
+                <option key={code} value={code}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </div>
+          {languageLoading && (
+            <p role="status" className="text-xs text-muted-foreground">
+              {t("Loading language…")}
+            </p>
+          )}
+          {(languageError || saveError) && (
+            <p role="alert" className="text-xs text-destructive">
+              {saveError
+                ? t("Couldn't save the language setting. Try again.")
+                : t("Couldn't load this language. Reload Toolport to retry.")}
+            </p>
+          )}
           {toggle(
             Power,
             autostart.status === "ready" && autostart.enabled,
             "text-info",
-            "Launch at login",
-            "Start Toolport in the tray when you sign in, so it can hold tool calls for approval even before you open it",
+            translate("Launch at login"),
+            translate(
+              "Start Toolport in the tray when you sign in, so it can hold tool calls for approval even before you open it",
+            ),
             toggleAutostart,
             "autostart",
             {
               switchDisabled: autostart.status !== "ready",
               hint:
                 autostart.status === "loading"
-                  ? "Checking the current OS setting…"
+                  ? translate("Checking the current OS setting…")
                   : autostart.status === "error"
-                    ? "Couldn't read the OS setting — launch-at-login state is unknown."
+                    ? translate(
+                        "Couldn't read the OS setting — launch-at-login state is unknown.",
+                      )
                     : undefined,
               hintTone: autostart.status === "error" ? "destructive" : "muted",
               onRetry:
@@ -1012,17 +1152,17 @@ export function SettingsView({
           <div className="flex items-center gap-2.5 rounded-md border px-3 py-2.5 text-sm">
             <Sun className="size-4 shrink-0 text-info" />
             <span className="flex min-w-0 flex-1 flex-col leading-tight">
-              <span className="font-medium">Appearance</span>
+              <span className="font-medium">{translate("Appearance")}</span>
               <span className="text-xs text-muted-foreground">
-                Light, dark, or follow your system setting.
+                {translate("Light, dark, or follow your system setting.")}
               </span>
             </span>
             <div className="flex shrink-0 gap-0.5 rounded-md border bg-background p-0.5">
               {(
                 [
-                  ["light", Sun, "Light"],
-                  ["system", Monitor, "System"],
-                  ["dark", Moon, "Dark"],
+                  ["light", Sun, t("Light")],
+                  ["system", Monitor, t("System")],
+                  ["dark", Moon, t("Dark")],
                 ] as [Theme, typeof Sun, string][]
               ).map(([value, Icon, label]) => (
                 <button
@@ -1030,11 +1170,11 @@ export function SettingsView({
                   onClick={() => setTheme(value)}
                   aria-pressed={theme === value}
                   title={label}
-                  className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
+                  className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${String(
                     theme === value
                       ? "bg-muted font-medium text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
+                      : "text-muted-foreground hover:text-foreground",
+                  )}`}
                 >
                   <Icon className="size-3.5" />
                   {label}
@@ -1044,29 +1184,34 @@ export function SettingsView({
           </div>
           <div className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm">
             <div>
-              <p className="font-medium">Updates</p>
+              <p className="font-medium">{translate("Updates")}</p>
               <p className="text-xs text-muted-foreground">
-                Check for a newer version of Toolport.
+                {translate("Check for a newer version of Toolport.")}
               </p>
             </div>
             <Button
               variant="outline"
               onClick={() => window.dispatchEvent(new Event("toolport-check-updates"))}
             >
-              Check for updates
+              {translate("Check for updates")}
             </Button>
           </div>
         </section>
       )}
       {page === "tools" && (
-        <section className="settings-page flex flex-col gap-4" aria-label="tools">
+        <section
+          className="settings-page flex flex-col gap-4"
+          aria-label={translate("tools")}
+        >
           <div className="settings-switches">
             {toggle(
               Layers,
               lazyDiscovery,
               "text-info",
-              "Find tools as needed",
-              "Agents search for the tools they need instead of loading the full list. This is the default for connections without saved client settings. Choose a different behavior in Clients.",
+              translate("Find tools as needed"),
+              translate(
+                "Agents search for the tools they need instead of loading the full list. This is the default for connections without saved client settings. Choose a different behavior in Clients.",
+              ),
               // eslint-disable-next-line react-hooks/refs -- Render passes an event callback; its registry ref is read only after IPC.
               apply("lazy-discovery", setLazyDiscovery),
               "lazy-discovery",
@@ -1075,8 +1220,10 @@ export function SettingsView({
               Braces,
               codeMode,
               "text-info",
-              "Code mode",
-              "Let agents combine several tool calls in one script to reduce back-and-forth. Each call follows your access and approval settings. Scripts run in a restricted environment, but this does not replace those settings.",
+              translate("Code mode"),
+              translate(
+                "Let agents combine several tool calls in one script to reduce back-and-forth. Each call follows your access and approval settings. Scripts run in a restricted environment, but this does not replace those settings.",
+              ),
               // eslint-disable-next-line react-hooks/refs -- Render passes an event callback; its registry ref is read only after IPC.
               apply("code-mode", setCodeMode),
               "code-mode",
@@ -1101,15 +1248,21 @@ export function SettingsView({
         </section>
       )}
       {page === "safety" && (
-        <section className="settings-page flex flex-col gap-4" aria-label="safety">
-          <fieldset className="grid grid-cols-1 gap-3 sm:grid-cols-3" aria-label="Safety">
+        <section
+          className="settings-page flex flex-col gap-4"
+          aria-label={translate("safety")}
+        >
+          <fieldset
+            className="grid grid-cols-1 gap-3 sm:grid-cols-3"
+            aria-label={translate("Safety")}
+          >
             <legend className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Safety level
+              {translate("Safety level")}
             </legend>
             {safetyLevels.map((level) => (
               <label
                 key={level}
-                className={`flex cursor-pointer flex-col gap-2 rounded-lg border p-4 ${effectiveLevel === level ? "border-primary bg-primary/5" : "bg-card"}`}
+                className={`flex cursor-pointer flex-col gap-2 rounded-lg border p-4 ${String(effectiveLevel === level ? "border-primary bg-primary/5" : "bg-card")}`}
               >
                 <span className="flex items-center justify-between font-medium">
                   {levelLabel[level]}
@@ -1128,35 +1281,44 @@ export function SettingsView({
                 </span>
                 <span className="text-xs text-muted-foreground">
                   {level === "off"
-                    ? "No extra checks before destructive calls."
+                    ? translate("No extra checks before destructive calls.")
                     : level === "ask"
-                      ? "Pause destructive calls for your approval."
-                      : "Hide destructive tools and ask before untrusted calls."}
+                      ? translate("Pause destructive calls for your approval.")
+                      : translate(
+                          "Hide destructive tools and ask before untrusted calls.",
+                        )}
                 </span>
               </label>
             ))}
           </fieldset>
           <p className="text-xs text-muted-foreground">
-            Ask pauses destructive calls for your approval. Strict also hides destructive
-            tools, pauses risky tool changes, blocks high-confidence injection and asks
-            before untrusted calls. Tool labeling and change history stay on at every
-            level.
+            {translate(
+              "Ask pauses destructive calls for your approval. Strict also hides destructive tools, pauses risky tool changes, blocks high-confidence injection and asks before untrusted calls. Tool labeling and change history stay on at every level.",
+            )}
           </p>
           <p
             role="status"
             className="toolport-alert rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
           >
             {effectiveLevel === "off"
-              ? "Safety is set to Off. Toolport does not ask before destructive calls. Server sign-in and client permissions may still ask for approval."
+              ? translate(
+                  "Safety is set to Off. Toolport does not ask before destructive calls. Server sign-in and client permissions may still ask for approval.",
+                )
               : effectiveLevel === "ask"
-                ? "Safety is set to Ask. Destructive calls need your approval before they run."
-                : "Safety is set to Strict. Destructive tools are hidden and untrusted calls need your approval."}
+                ? translate(
+                    "Safety is set to Ask. Destructive calls need your approval before they run.",
+                  )
+                : translate(
+                    "Safety is set to Strict. Destructive tools are hidden and untrusted calls need your approval.",
+                  )}
           </p>
           {keptSummary && (
             <div className="flex flex-col items-start gap-2 rounded-md border px-3 py-2 text-xs">
               <p>
-                {keptSummary} Choosing a level replaces these with that level's
-                protections.
+                {keptSummary}{" "}
+                {translate(
+                  "Choosing a level replaces these with that level's protections.",
+                )}
               </p>
               <Button
                 size="sm"
@@ -1164,27 +1326,29 @@ export function SettingsView({
                 disabled={safetyBusy}
                 onClick={() => chooseSafety(effectiveLevel)}
               >
-                Use standard {levelLabel[effectiveLevel]}
+                {t("Use standard {level}", { level: levelLabel[effectiveLevel] })}
               </Button>
             </div>
           )}
           {teamFloor !== "off" && (
             <p className="text-xs">
-              Team minimum safety level: {teamFloor === "ask" ? "Ask" : "Strict"}. Choices
-              below this floor are unavailable.
+              {t(
+                "Team minimum safety level: {level}. Choices below this floor are unavailable.",
+                { level: teamFloor === "ask" ? t("Ask") : t("Strict") },
+              )}
             </p>
           )}
           {(registry?.teamForcedQuarantineOnDrift ||
             registry?.teamForcedBlockOnInjection) && (
             <p className="text-xs">
-              Team also enforces:{" "}
+              {translate("Team also enforces:")}{" "}
               {[
                 registry.teamForcedQuarantineOnDrift && "quarantine on drift",
                 registry.teamForcedBlockOnInjection && "block on injection",
               ]
                 .filter(Boolean)
                 .join(", ")}
-              . These protections do not raise your safety level.
+              {translate(". These protections do not raise your safety level.")}
             </p>
           )}
           {baselineNotice && baselineNotice.context === baselineContext && (
@@ -1192,24 +1356,31 @@ export function SettingsView({
               role="status"
               className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
             >
-              Last baseline warning: {baselineNotice.text}
+              {t("Last baseline warning: {time}: {detail}", {
+                time: new Date(baselineNotice.ts).toLocaleString(getLocale()),
+                detail: baselineNotice.detail,
+              })}
             </p>
           )}
           {quarantined.length === 0 && quarantineError && (
             <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-muted-foreground">
               <ShieldX className="size-4 shrink-0 text-destructive" />
-              <span>Couldn&apos;t read quarantine status. Retrying every 15s.</span>
+              <span>
+                {translate("Couldn't read quarantine status. Retrying every 15s.")}
+              </span>
             </div>
           )}
           {quarantined.length > 0 && (
             <div className="toolport-alert flex flex-col gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5">
               <div className="flex items-center gap-2">
                 <ShieldX className="size-4 shrink-0 text-destructive" />
-                <span className="text-sm font-medium">Quarantined tools</span>
+                <span className="text-sm font-medium">
+                  {translate("Quarantined tools")}
+                </span>
                 <span className="text-xs text-muted-foreground">
                   {quarantineError
-                    ? "status may be stale"
-                    : "blocked in Strict until you re-approve"}
+                    ? translate("status may be stale")
+                    : translate("blocked in Strict until you re-approve")}
                 </span>
               </div>
               <ul className="flex flex-col gap-1.5">
@@ -1228,7 +1399,7 @@ export function SettingsView({
                       onClick={() => reapprove(q)}
                       className="ml-auto shrink-0 rounded-md border bg-background px-2 py-0.5 text-[11px] font-medium hover:bg-accent"
                     >
-                      Re-approve
+                      {translate("Re-approve")}
                     </button>
                   </li>
                 ))}
@@ -1238,16 +1409,20 @@ export function SettingsView({
           {allowedTools.length === 0 && allowedError && (
             <div className="flex items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
               <UserCheck className="size-4 shrink-0 text-info" />
-              <span>Couldn&apos;t read the allowed-tools list. Retrying every 10s.</span>
+              <span>
+                {translate("Couldn't read the allowed-tools list. Retrying every 10s.")}
+              </span>
             </div>
           )}
           {allowedTools.length > 0 && (
             <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/20 px-3 py-2.5">
               <div className="flex items-center gap-2">
                 <UserCheck className="size-4 shrink-0 text-info" />
-                <span className="text-sm font-medium">Allowed tools</span>
+                <span className="text-sm font-medium">{translate("Allowed tools")}</span>
                 <span className="text-xs text-muted-foreground">
-                  {allowedError ? "list may be stale" : "skip human approval"}
+                  {allowedError
+                    ? translate("list may be stale")
+                    : translate("skip human approval")}
                 </span>
               </div>
               <ul className="flex flex-col gap-1.5">
@@ -1257,14 +1432,14 @@ export function SettingsView({
                       {t.server}/{t.tool}
                     </span>
                     <span className="shrink-0 text-muted-foreground">
-                      {t.persistent ? "always" : "this session"}
+                      {t.persistent ? translate("always") : translate("this session")}
                     </span>
                     <button
                       type="button"
                       onClick={() => void revokeAllowed(t.key)}
                       className="ml-auto shrink-0 rounded-md border bg-background px-2 py-0.5 text-[11px] font-medium hover:bg-accent"
                     >
-                      Revoke
+                      {translate("Revoke")}
                     </button>
                   </li>
                 ))}
@@ -1276,8 +1451,10 @@ export function SettingsView({
               EyeOff,
               piiRedaction,
               "text-info",
-              "Hide personal data from the model",
-              "Replace emails, phone numbers, card numbers and API keys in tool results with placeholders before the model sees them, then put the real values back when it calls a tool. A value only goes back to the server it came from, so a call that would send one server's data to another is refused. Real data stays on this machine and is forgotten when the conversation ends. Off by default; a value no detector recognises still passes through, so this reduces what reaches the model rather than guaranteeing it",
+              translate("Hide personal data from the model"),
+              translate(
+                "Replace emails, phone numbers, card numbers and API keys in tool results with placeholders before the model sees them, then put the real values back when it calls a tool. A value only goes back to the server it came from, so a call that would send one server's data to another is refused. Real data stays on this machine and is forgotten when the conversation ends. Off by default; a value no detector recognises still passes through, so this reduces what reaches the model rather than guaranteeing it",
+              ),
               // eslint-disable-next-line react-hooks/refs -- Render passes an event callback; its registry ref is read only after IPC.
               apply("pii-redaction", setPiiRedaction),
               "pii-redaction",
@@ -1286,31 +1463,39 @@ export function SettingsView({
               Activity,
               liveInspect,
               "text-info",
-              "Live request/response inspection",
-              "Off by default. While on, Toolport captures each tool call's arguments and results to a small local, ephemeral buffer (the last 50 calls) so you can inspect them in Activity. This is separate from the audit log, never leaves your machine, and is cleared when you turn it off or restart the gateway.",
+              translate("Live request/response inspection"),
+              translate(
+                "Off by default. While on, Toolport captures each tool call's arguments and results to a small local, ephemeral buffer (the last 50 calls) so you can inspect them in Activity. This is separate from the audit log, never leaves your machine, and is cleared when you turn it off or restart the gateway.",
+              ),
               // eslint-disable-next-line react-hooks/refs -- Render passes an event callback; its registry ref is read only after IPC.
               applyLiveInspect,
               "live-inspect",
             )}
           </div>
           <p className="text-sm" aria-live="polite">
-            Pending approvals: {pendingCount}. Waiting calls appear in the approval queue.
+            {translate("Pending approvals:")}
+            {pendingCount}
+            {translate(". Waiting calls appear in the approval queue.")}
           </p>
         </section>
       )}
       {page === "access" && (
-        <section className="settings-page flex flex-col gap-4" aria-label="access">
+        <section
+          className="settings-page flex flex-col gap-4"
+          aria-label={translate("access")}
+        >
           <div className="mt-3 flex flex-col gap-2">
             {profiles.length > 0 && (
               <section className="flex flex-col gap-2">
                 <h2 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                  Access sets
+                  {translate("Access sets")}
                 </h2>
                 <p className="text-xs text-muted-foreground">
-                  Access sets narrow enabled servers and, for stdio clients, tools.
-                  Servers that are off stay hidden from every client.
+                  {translate(
+                    "Access sets narrow enabled servers and, for stdio clients, tools. Servers that are off stay hidden from every client.",
+                  )}
                 </p>
-                <p className="text-sm">Default access</p>
+                <p className="text-sm">{translate("Default access")}</p>
                 <Select
                   value={registry?.defaultAccessProfileId || "@all-enabled"}
                   onValueChange={async (id) => {
@@ -1323,11 +1508,13 @@ export function SettingsView({
                     }
                   }}
                 >
-                  <SelectTrigger aria-label="Default access">
+                  <SelectTrigger aria-label={translate("Default access")}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="@all-enabled">All enabled servers</SelectItem>
+                    <SelectItem value="@all-enabled">
+                      {translate("All enabled servers")}
+                    </SelectItem>
                     {profiles.map((p) => (
                       <SelectItem key={p.id} value={p.id}>
                         {p.name}
@@ -1339,8 +1526,9 @@ export function SettingsView({
                   !registry.defaultAccessProfileId && (
                     <div className="flex flex-col gap-2 text-xs text-muted-foreground">
                       <p>
-                        The upgrade retained the default access set&apos;s tool
-                        restrictions and instructions.
+                        {translate(
+                          "The upgrade retained the default access set's tool restrictions and instructions.",
+                        )}
                       </p>
                       <button
                         className="w-fit rounded border px-2 py-1"
@@ -1352,7 +1540,7 @@ export function SettingsView({
                           }
                         }}
                       >
-                        Use All enabled servers
+                        {translate("Use All enabled servers")}
                       </button>
                     </div>
                   )}
@@ -1370,11 +1558,14 @@ export function SettingsView({
                           <span className="text-sm font-medium">{p.name}</span>
                           {active && (
                             <span className="rounded-full bg-info/15 px-1.5 py-0.5 text-[10px] font-medium text-info">
-                              default
+                              {translate("default")}
                             </span>
                           )}
                           <span className="ml-auto text-xs text-muted-foreground">
-                            {names.length} {names.length === 1 ? "server" : "servers"}
+                            {names.length}{" "}
+                            {names.length === 1
+                              ? translate("server")
+                              : translate("servers")}
                           </span>
                         </div>
                         {registry && (
@@ -1404,7 +1595,7 @@ export function SettingsView({
                                     }}
                                   />
                                   {server.name}
-                                  {!server.enabled && " (off)"}
+                                  {!server.enabled && translate(" (off)")}
                                 </label>
                               ))}
                             <button
@@ -1421,13 +1612,13 @@ export function SettingsView({
                                 }
                               }}
                             >
-                              Delete access set
+                              {translate("Delete access set")}
                             </button>
                           </div>
                         )}
                         {names.length === 0 ? (
                           <p className="pl-5 text-xs text-muted-foreground italic">
-                            No servers in this access set.
+                            {translate("No servers in this access set.")}
                           </p>
                         ) : registry ? (
                           registry && (
@@ -1455,10 +1646,10 @@ export function SettingsView({
             <div className="mt-1 flex flex-col gap-2 rounded border bg-muted/20 p-2.5">
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-[11px] font-medium text-muted-foreground">
-                  Scoped clients
+                  {translate("Scoped clients")}
                 </span>
                 <span className="text-[11px] text-muted-foreground/70">
-                  each gets its own token and server set
+                  {translate("each gets its own token and server set")}
                 </span>
               </div>
 
@@ -1467,21 +1658,23 @@ export function SettingsView({
                   {httpClients.map((c) => (
                     <li key={c.id} className="flex items-center gap-2 text-xs">
                       <span className="truncate font-medium">
-                        {c.label || "(unnamed)"}
+                        {c.label || translate("(unnamed)")}
                       </span>
                       <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
                         {c.profile === "@all-enabled"
-                          ? "All enabled servers"
+                          ? translate("All enabled servers")
                           : profiles.find(
                               (p) => p.id === c.profile || p.name === c.profile,
                             )?.name ||
                             c.profile ||
-                            "Full connected set"}
+                            translate("Full connected set")}
                       </span>
                       <button
                         type="button"
                         onClick={() => removeClient(c.id)}
-                        aria-label={`Revoke ${c.label}`}
+                        aria-label={translate("Revoke {value1}", {
+                          value1: String(c.label),
+                        })}
                         className="ml-auto shrink-0 rounded p-1 text-muted-foreground/60 hover:bg-destructive/10 hover:text-destructive"
                       >
                         <Trash2 className="size-3.5" />
@@ -1495,13 +1688,13 @@ export function SettingsView({
                 <>
                   <div className="flex items-center gap-2 rounded border border-success/30 bg-success/5 px-2 py-1.5">
                     <span className="shrink-0 text-[11px] font-medium text-success">
-                      New token
+                      {translate("New token")}
                     </span>
                     <code className="min-w-0 flex-1 truncate text-xs">{newToken}</code>
                     <button
                       type="button"
                       onClick={() => copy(newToken, "newtoken")}
-                      title="Copy token"
+                      title={translate("Copy token")}
                       className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
                     >
                       {copied === "newtoken" ? (
@@ -1513,14 +1706,14 @@ export function SettingsView({
                     <button
                       type="button"
                       onClick={() => setNewToken(null)}
-                      aria-label="Dismiss"
+                      aria-label={translate("Dismiss")}
                       className="shrink-0 rounded p-1 text-muted-foreground/60 hover:text-foreground"
                     >
                       <X className="size-3.5" />
                     </button>
                   </div>
                   <p className="text-[11px] text-warning">
-                    Copy this token now, it won't be shown again.
+                    {translate("Copy this token now, it won't be shown again.")}
                   </p>
                 </>
               )}
@@ -1529,7 +1722,7 @@ export function SettingsView({
                 <input
                   value={newLabel}
                   onChange={(e) => setNewLabel(e.target.value)}
-                  placeholder="Client name (e.g. Open WebUI)"
+                  placeholder={translate("Client name (e.g. Open WebUI)")}
                   className="h-8 min-w-0 flex-1 rounded-md border border-input bg-transparent px-2 text-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
                 />
                 {profiles.length > 0 && (
@@ -1539,14 +1732,18 @@ export function SettingsView({
                   >
                     <SelectTrigger
                       size="sm"
-                      aria-label="Access"
+                      aria-label={translate("Access")}
                       className="h-8 w-32 shrink-0 text-xs"
                     >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="__default__">Full connected set</SelectItem>
-                      <SelectItem value="@all-enabled">All enabled servers</SelectItem>
+                      <SelectItem value="__default__">
+                        {translate("Full connected set")}
+                      </SelectItem>
+                      <SelectItem value="@all-enabled">
+                        {translate("All enabled servers")}
+                      </SelectItem>
                       {profiles.map((p) => (
                         <SelectItem key={p.id} value={p.id}>
                           {p.name}
@@ -1561,28 +1758,37 @@ export function SettingsView({
                   disabled={clientBusy || !newLabel.trim()}
                   className="h-8 shrink-0 rounded-md border bg-background px-2.5 text-xs font-medium hover:bg-accent disabled:opacity-50"
                 >
-                  Add
+                  {translate("Add")}
                 </button>
               </div>
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">
-              Start the HTTP endpoint in Connections to manage scoped clients.
+              {translate(
+                "Start the HTTP endpoint in Connections to manage scoped clients.",
+              )}
             </p>
           )}
         </section>
       )}
       {page === "connections" && (
-        <section className="settings-page flex flex-col gap-4" aria-label="connections">
+        <section
+          className="settings-page flex flex-col gap-4"
+          aria-label={translate("connections")}
+        >
           <div className="flex flex-col gap-2 rounded-md border px-3 py-2.5">
             <label className="flex items-center gap-2.5 text-sm">
               <Globe
-                className={`size-4 shrink-0 ${bridge?.running ? "text-success" : "text-muted-foreground"}`}
+                className={`size-4 shrink-0 ${String(bridge?.running ? "text-success" : "text-muted-foreground")}`}
               />
               <span className="flex min-w-0 flex-1 flex-col leading-tight">
-                <span className="font-medium">Open WebUI / HTTP endpoint</span>
+                <span className="font-medium">
+                  {translate("Open WebUI / HTTP endpoint")}
+                </span>
                 <span className="text-xs text-muted-foreground">
-                  Serve your tools over HTTP/OpenAPI for Open WebUI and any OpenAPI client
+                  {translate(
+                    "Serve your tools over HTTP/OpenAPI for Open WebUI and any OpenAPI client",
+                  )}
                 </span>
               </span>
               <Switch
@@ -1594,15 +1800,16 @@ export function SettingsView({
             {bridgeError && bridge === null && (
               <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <span>
-                  Couldn&apos;t read the HTTP endpoint status. The gateway may be starting
-                  up.
+                  {translate(
+                    "Couldn't read the HTTP endpoint status. The gateway may be starting up.",
+                  )}
                 </span>
                 <button
                   type="button"
                   onClick={loadBridge}
                   className="shrink-0 font-medium text-foreground underline underline-offset-2 hover:text-primary"
                 >
-                  Retry
+                  {translate("Retry")}
                 </button>
               </p>
             )}
@@ -1610,13 +1817,13 @@ export function SettingsView({
               <>
                 <div className="flex items-center gap-2 rounded border bg-muted/40 px-2 py-1.5">
                   <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
-                    URL
+                    {translate("URL")}
                   </span>
                   <code className="min-w-0 flex-1 truncate text-xs">{bridge.url}</code>
                   <button
                     type="button"
                     onClick={() => copy(bridge.url!, "url")}
-                    title="Copy URL"
+                    title={translate("Copy URL")}
                     className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
                   >
                     {copied === "url" ? (
@@ -1629,7 +1836,7 @@ export function SettingsView({
                 {bridge.token && (
                   <div className="flex items-center gap-2 rounded border bg-muted/40 px-2 py-1.5">
                     <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
-                      Token
+                      {translate("Token")}
                     </span>
                     <code className="min-w-0 flex-1 truncate text-xs">
                       {showToken ? bridge.token : "•".repeat(24)}
@@ -1637,8 +1844,12 @@ export function SettingsView({
                     <button
                       type="button"
                       onClick={() => setShowToken((s) => !s)}
-                      title={showToken ? "Hide token" : "Reveal token"}
-                      aria-label={showToken ? "Hide token" : "Reveal token"}
+                      title={
+                        showToken ? translate("Hide token") : translate("Reveal token")
+                      }
+                      aria-label={
+                        showToken ? translate("Hide token") : translate("Reveal token")
+                      }
                       className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
                     >
                       {showToken ? (
@@ -1650,7 +1861,7 @@ export function SettingsView({
                     <button
                       type="button"
                       onClick={() => copy(bridge.token!, "token")}
-                      title="Copy token"
+                      title={translate("Copy token")}
                       className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
                     >
                       {copied === "token" ? (
@@ -1662,10 +1873,9 @@ export function SettingsView({
                   </div>
                 )}
                 <p className="text-xs text-muted-foreground">
-                  In Open WebUI: Settings &rarr; Tools &rarr; add the URL as an OpenAPI
-                  server and paste the token as its API key (Bearer auth), then set
-                  Function Calling to Native (per chat). The token stops other local apps
-                  from calling your tools.
+                  {translate(
+                    "In Open WebUI: Settings → Tools → add the URL as an OpenAPI server and paste the token as its API key (Bearer auth), then set Function Calling to Native (per chat). The token stops other local apps from calling your tools.",
+                  )}
                 </p>
               </>
             )}
@@ -1673,16 +1883,14 @@ export function SettingsView({
           <div className="flex flex-col gap-2 rounded-md border px-3 py-2.5">
             <div className="flex items-center gap-2.5 text-sm">
               <RefreshCw
-                className={`size-4 shrink-0 text-muted-foreground ${reapBusy ? "animate-spin" : ""}`}
+                className={`size-4 shrink-0 text-muted-foreground ${String(reapBusy ? "animate-spin" : "")}`}
               />
               <span className="flex min-w-0 flex-1 flex-col leading-tight">
-                <span className="font-medium">Stop old gateways</span>
+                <span className="font-medium">{translate("Stop old gateways")}</span>
                 <span className="text-xs text-muted-foreground">
-                  End leftover gateway processes from earlier installs. Where the gateway
-                  path stays the same across upgrades, a host that respawns MCP picks up
-                  the new binary on its own. Where the filename carries its version, or
-                  the old one sits at a path an upgrade never touches, an app that was
-                  already running keeps launching it until you restart that app.
+                  {translate(
+                    "End leftover gateway processes from earlier installs. Where the gateway path stays the same across upgrades, a host that respawns MCP picks up the new binary on its own. Where the filename carries its version, or the old one sits at a path an upgrade never touches, an app that was already running keeps launching it until you restart that app.",
+                  )}
                 </span>
               </span>
               <button
@@ -1703,58 +1911,29 @@ export function SettingsView({
                     // the check's own result, which is the same contradiction the
                     // panel exists to prevent (#730).
                     setRestartCheckFailed(false);
-                    const parts: string[] = [];
-                    if (outcome.killed.length > 0) {
-                      parts.push(
-                        `Stopped ${outcome.killed.length}: ${outcome.killed.join("; ")}`,
-                      );
-                    }
-                    // Reporting "found nothing" while a process is still running would
-                    // be the same lie the panel exists to prevent.
-                    if (outcome.failed.length > 0) {
-                      parts.push(
-                        `Could not stop ${outcome.failed.length}: ${outcome.failed.join("; ")}`,
-                      );
-                    }
-                    setReapResult(
-                      parts.length > 0
-                        ? parts.join(". ")
-                        : outcome.needsRestart.length > 0
-                          ? // Saying "found nothing" while the panel below names an app
-                            // still launching an old gateway would be the same
-                            // self-contradiction this panel exists to prevent. Naming
-                            // only the moment ("none right now") was not enough either:
-                            // read directly above "5 apps are still launching an old
-                            // gateway" it still lands as a contradiction. State the
-                            // reason, because that is what makes both true at once — a
-                            // client spawns the gateway on its next tool call, not
-                            // continuously.
-                            "Nothing to stop: these apps spawn the old gateway on their " +
-                            "next tool call, so there is no process running between calls."
-                          : "No old gateway processes found.",
-                    );
+                    setReapResult(outcome);
                   } catch (e) {
-                    toastError(`Couldn't stop old gateways: ${e}`);
+                    toastError(`Couldn't stop old gateways: ${String(e)}`);
                   } finally {
                     setReapBusy(false);
                   }
                 }}
                 className="h-8 shrink-0 rounded-md border bg-background px-2.5 text-xs font-medium hover:bg-accent disabled:opacity-50"
               >
-                {reapBusy ? "Working…" : "Run"}
+                {reapBusy ? translate("Working…") : translate("Run")}
               </button>
             </div>
             {reapResult && <p className="text-xs text-muted-foreground">{reapResult}</p>}
             {restartCheckFailed && (
               <p className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-muted-foreground">
-                Couldn&apos;t check for apps using an old gateway.
+                {translate("Couldn't check for apps using an old gateway.")}
                 <button
                   type="button"
-                  aria-label="Retry checking for old gateway"
+                  aria-label={translate("Retry checking for old gateway")}
                   onClick={() => void loadNeedsRestart()}
                   className="shrink-0 font-medium text-foreground underline underline-offset-2 hover:text-primary"
                 >
-                  Retry
+                  {translate("Retry")}
                 </button>
               </p>
             )}
@@ -1762,8 +1941,10 @@ export function SettingsView({
               <div className="rounded-md border border-warning/40 bg-warning/5 p-3">
                 <p className="text-xs font-medium text-warning">
                   {needsRestart.length === 1
-                    ? "1 app is still launching an old gateway"
-                    : `${needsRestart.length} apps are still launching an old gateway`}
+                    ? translate("1 app is still launching an old gateway")
+                    : translate("{value1} apps are still launching an old gateway", {
+                        value1: String(needsRestart.length),
+                      })}
                 </p>
                 <ul className="mt-1.5 space-y-1">
                   {needsRestart.map((c) => (
@@ -1774,18 +1955,18 @@ export function SettingsView({
                         lines that read as a duplicate-row bug, and "restart each one"
                         cannot be followed when a dozen are running. */}
                       <span className="ml-1 font-mono text-muted-foreground/70">
-                        (pid {c.clientPid})
+                        {translate("(pid")}
+                        {c.clientPid})
                       </span>{" "}
-                      keeps starting <code className="font-mono">{c.gateway}</code>
+                      {translate("keeps starting")}
+                      <code className="font-mono">{c.gateway}</code>
                     </li>
                   ))}
                 </ul>
                 <p className="mt-2 text-xs text-muted-foreground">
-                  These apps cached the old gateway path when they started, so stopping
-                  the process only makes them launch it again — and they only launch it
-                  when they next use a tool, which is why none may be running this moment.
-                  Restart each one to pick up the current gateway. This list clears itself
-                  as you do.
+                  {translate(
+                    "These apps cached the old gateway path when they started, so stopping the process only makes them launch it again — and they only launch it when they next use a tool, which is why none may be running this moment. Restart each one to pick up the current gateway. This list clears itself as you do.",
+                  )}
                 </p>
               </div>
             )}
@@ -1793,28 +1974,35 @@ export function SettingsView({
         </section>
       )}
       {page === "help" && (
-        <section className="settings-page flex flex-col gap-4" aria-label="help">
+        <section
+          className="settings-page flex flex-col gap-4"
+          aria-label={translate("help")}
+        >
           <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
               onClick={async () => {
                 try {
                   await navigator.clipboard.writeText(await gatherDiagnostics());
-                  toast.success("Diagnostics copied, paste them into your bug report");
+                  toast.success(
+                    translate("Diagnostics copied, paste them into your bug report"),
+                  );
                 } catch {
-                  toastError("Couldn't copy diagnostics");
+                  toastError(translate("Couldn't copy diagnostics"));
                 }
               }}
             >
-              Copy diagnostics
+              {translate("Copy diagnostics")}
             </Button>
             <Button
               variant="outline"
               onClick={() =>
-                openDataDir().catch(() => toastError("Couldn't open data folder"))
+                openDataDir().catch(() =>
+                  toastError(translate("Couldn't open data folder")),
+                )
               }
             >
-              Open data folder
+              {translate("Open data folder")}
             </Button>
           </div>
           <Button
@@ -1823,11 +2011,12 @@ export function SettingsView({
             disabled={removeBusy}
             onClick={() => setRemoveOpen(true)}
           >
-            Remove Toolport from all clients
+            {translate("Remove Toolport from all clients")}
           </Button>
           <p className="text-sm text-muted-foreground">
-            Normal uninstall keeps your data. Remove it only when you no longer need
-            Toolport.
+            {translate(
+              "Normal uninstall keeps your data. Remove it only when you no longer need Toolport.",
+            )}
           </p>
           <Button
             variant="destructive"
@@ -1835,7 +2024,7 @@ export function SettingsView({
             disabled={purgeBusy}
             onClick={() => void preparePurge()}
           >
-            Remove Toolport data
+            {translate("Remove Toolport data")}
           </Button>
           <Dialog
             open={purgePlan !== null}
@@ -1845,12 +2034,11 @@ export function SettingsView({
           >
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Remove Toolport data?</DialogTitle>
+                <DialogTitle>{translate("Remove Toolport data?")}</DialogTitle>
                 <DialogDescription>
-                  Toolport will close, restore and disconnect its clients, then
-                  permanently remove the resources below. Client files and native servers
-                  stay. If restoration fails or sessions remain open, data stays for
-                  recovery.
+                  {translate(
+                    "Toolport will close, restore and disconnect its clients, then permanently remove the resources below. Client files and native servers stay. If restoration fails or sessions remain open, data stays for recovery.",
+                  )}
                 </DialogDescription>
               </DialogHeader>
               <ul className="list-disc space-y-2 pl-5 text-sm break-words">
@@ -1859,8 +2047,9 @@ export function SettingsView({
                 ))}
               </ul>
               <p className="text-sm break-words">
-                Results and exact leftovers will be saved to{" "}
-                <strong>{purgePlan?.reportPath}</strong>. This cannot be undone.
+                {translate("Results and exact leftovers will be saved to")}{" "}
+                <strong>{purgePlan?.reportPath}</strong>
+                {translate(". This cannot be undone.")}
               </p>
               <DialogFooter>
                 <Button
@@ -1868,14 +2057,16 @@ export function SettingsView({
                   disabled={purgeBusy}
                   onClick={() => setPurgePlan(null)}
                 >
-                  Cancel
+                  {translate("Cancel")}
                 </Button>
                 <Button
                   variant="destructive"
                   disabled={purgeBusy}
                   onClick={() => void purge()}
                 >
-                  {purgeBusy ? "Closing Toolport…" : "Close and remove data"}
+                  {purgeBusy
+                    ? translate("Closing Toolport…")
+                    : translate("Close and remove data")}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -1883,7 +2074,7 @@ export function SettingsView({
           {removeResults && (
             <ul className="text-sm" aria-live="polite">
               {removeResults.length === 0 ? (
-                <li>No client connections to remove.</li>
+                <li>{translate("No client connections to remove.")}</li>
               ) : (
                 removeResults.map((result) => (
                   <li
@@ -1892,7 +2083,8 @@ export function SettingsView({
                       result.error ? "text-destructive" : "text-muted-foreground"
                     }
                   >
-                    {result.clientId}: {result.error ?? "Client configuration restored"}
+                    {result.clientId}:{" "}
+                    {result.error ?? translate("Client configuration restored")}
                     {result.warnings?.length ? `; ${result.warnings.join("; ")}` : ""}
                   </li>
                 ))
@@ -1907,11 +2099,13 @@ export function SettingsView({
           >
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Remove Toolport from all clients?</DialogTitle>
+                <DialogTitle>
+                  {translate("Remove Toolport from all clients?")}
+                </DialogTitle>
                 <DialogDescription>
-                  Unchanged configs return to their original bytes. If you edited a
-                  config, Toolport preserves your edits and restores entries it moved.
-                  Each client result is reported here.
+                  {translate(
+                    "Unchanged configs return to their original bytes. If you edited a config, Toolport preserves your edits and restores entries it moved. Each client result is reported here.",
+                  )}
                 </DialogDescription>
               </DialogHeader>
               <DialogFooter>
@@ -1920,14 +2114,16 @@ export function SettingsView({
                   disabled={removeBusy}
                   onClick={() => setRemoveOpen(false)}
                 >
-                  Cancel
+                  {translate("Cancel")}
                 </Button>
                 <Button
                   variant="destructive"
                   disabled={removeBusy}
                   onClick={() => void removeAll()}
                 >
-                  {removeBusy ? "Removing…" : "Remove from all clients"}
+                  {removeBusy
+                    ? translate("Removing…")
+                    : translate("Remove from all clients")}
                 </Button>
               </DialogFooter>
             </DialogContent>

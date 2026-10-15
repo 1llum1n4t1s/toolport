@@ -1,5 +1,7 @@
+import { translate } from "@/lib/i18n";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { getLocale } from "./i18n";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -68,9 +70,15 @@ export function fmtMs(ms: number | null): string {
 
 /** Dollar value of saved input tokens, scaled to the number's size. */
 export function fmtDollars(n: number): string {
-  if (n >= 1000) return `$${Math.round(n).toLocaleString()}`;
-  if (n >= 10) return `$${n.toFixed(0)}`;
-  return `$${n.toFixed(2)}`;
+  const digits = n < 10 ? 2 : 0;
+  const rounded = n >= 1000 ? Math.round(n) : Number(n.toFixed(digits));
+  return new Intl.NumberFormat(getLocale(), {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+    useGrouping: n >= 1000,
+  }).format(rounded);
 }
 
 /**
@@ -96,16 +104,16 @@ export function fmtPercent(
  */
 export function fmtTs(timestamp: number, format?: "time" | "date" | "monthDay"): string {
   if (format === "time") {
-    return new Date(timestamp).toLocaleTimeString();
+    return new Date(timestamp).toLocaleTimeString(getLocale());
   } else if (format === "date") {
-    return new Date(timestamp).toLocaleDateString();
+    return new Date(timestamp).toLocaleDateString(getLocale());
   } else if (format === "monthDay") {
-    return new Date(timestamp).toLocaleDateString(undefined, {
+    return new Date(timestamp).toLocaleDateString(getLocale(), {
       month: "short",
       day: "numeric",
     });
   } else {
-    return new Date(timestamp).toLocaleString(undefined, {
+    return new Date(timestamp).toLocaleString(getLocale(), {
       month: "short",
       day: "numeric",
       hour: "2-digit",
@@ -117,8 +125,10 @@ export function fmtTs(timestamp: number, format?: "time" | "date" | "monthDay"):
 /** Relative time shared by Activity rows. */
 export function fmtAgo(ts: number, now = Date.now()): string {
   const seconds = Math.max(0, Math.floor((now - ts) / 1000));
-  if (seconds < 60) return "just now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
+  if (seconds < 60) return translate("just now");
+  if (seconds < 3600)
+    return translate("{count}m ago", { count: Math.floor(seconds / 60) });
+  if (seconds < 86400)
+    return translate("{count}h ago", { count: Math.floor(seconds / 3600) });
+  return translate("{count}d ago", { count: Math.floor(seconds / 86400) });
 }
