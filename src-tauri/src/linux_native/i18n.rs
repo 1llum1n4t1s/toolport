@@ -445,7 +445,11 @@ pub(super) fn bind_language_choices(widget: &gtk::DropDown) {
             let Some(widget) = weak.upgrade() else {
                 return false;
             };
-            let selected = widget.selected();
+            let choice = crate::i18n::language();
+            let selected = crate::ui_settings::LANGUAGES
+                .iter()
+                .position(|code| *code == choice)
+                .unwrap_or(0) as u32;
             let _updating = DropdownUpdate::new(&widget);
             let notifications = widget.freeze_notify();
             let values: Vec<String> = crate::ui_settings::LANGUAGES
