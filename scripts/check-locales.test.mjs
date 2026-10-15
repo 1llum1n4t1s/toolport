@@ -6,6 +6,7 @@ import {
   checkMessageIntegrity,
   checkRustSource,
   checkSource,
+  isCoverageGap,
   isMarkedType,
   parseCatalog,
 } from "./check-locales.mjs";
@@ -52,7 +53,7 @@ test("catalog parity and interpolation names and occurrence counts are checked",
   };
   const errors = checkCatalogs(catalogs, ["en", "ja"], ["common"]).errors.join("\n");
   assert.match(errors, /invalid placeholders/);
-  assert.match(errors, /missing Ready/);
+  assert.match(errors, /missing translation Ready/);
   assert.match(errors, /unknown key extra/);
   catalogs.common.ja["Welcome {name}"] = "{name} {name}";
   assert.match(
@@ -270,4 +271,47 @@ test("Rust conditional messages validate every result branch", () => {
     ).join("\n"),
     /must be a string literal/,
   );
+});
+
+test("coverage gaps only warn, while broken catalogs and misuse still fail", () => {
+  const catalogs = {
+    common: {
+      en: { "Welcome {name}": "Welcome {name}", Ready: "Ready" },
+      ja: { "Welcome {name}": "ようこそ {other}" },
+    },
+  };
+  const catalogErrors = checkCatalogs(catalogs, ["en", "ja"], ["common"]).errors;
+  const gaps = [
+    ...catalogErrors.filter((error) => /missing translation Ready/.test(error)),
+    ...sourceErrors('t("Not in the catalog yet")'),
+    ...sourceErrors("<p>Plain text</p>"),
+    ...sourceErrors("t(label)"),
+  ];
+  assert.equal(gaps.length, 4);
+  for (const gap of gaps) assert.ok(isCoverageGap(gap), gap);
+  const broken = [
+    ...catalogErrors.filter((error) => /invalid placeholders/.test(error)),
+    ...sourceErrors('<div key={t("Hello")} />'),
+    ...sourceErrors('if (t("Hello") === value) {}'),
+    "common/de: missing catalog",
+  ];
+  assert.equal(broken.length, 4);
+  for (const error of broken) assert.ok(!isCoverageGap(error), error);
+});
+
+test("a message key that looks like a gap cannot downgrade a real error", () => {
+  const catalogs = {
+    common: {
+      en: { "Error: missing {name}": "Error: missing {name}", catalog: "catalog" },
+      ja: { "Error: missing {name}": "エラー: {other} がありません" },
+    },
+  };
+  const errors = checkCatalogs(catalogs, ["en", "ja"], ["common"]).errors;
+  const placeholder = errors.find((error) => /invalid placeholders/.test(error));
+  assert.ok(placeholder);
+  assert.ok(!isCoverageGap(placeholder), placeholder);
+  assert.ok(errors.some((error) => error === "common/ja: missing translation catalog"));
+  assert.ok(isCoverageGap("common/ja: missing translation catalog"));
+  assert.ok(!isCoverageGap("common/ja: missing catalog"));
+  assert.ok(!isCoverageGap("src/a.tsx:3: translate display text, not comparison values"));
 });

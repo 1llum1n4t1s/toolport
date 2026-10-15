@@ -34,8 +34,9 @@ jobs:
   # filename and updater version say vX.Y.Z while the binaries still carry the
   # previous version, producing a false or repeated update.
   version-check:
-    # Backstop only - GitHub defaults to 360 minutes. Reads a handful of files.
-    timeout-minutes: 5
+    # Backstop only - GitHub defaults to 360 minutes. Reads a handful of files
+    # and installs the locale checker's dependencies for stable tags.
+    timeout-minutes: 10
     name: check tag against embedded versions
     runs-on: ubuntu-22.04
     steps:
@@ -45,6 +46,20 @@ jobs:
 
       - name: Check the tag matches every version source
         run: node scripts/check-release-version.mjs "$GITHUB_REF_NAME"
+
+      # Pull requests may leave text untranslated (it falls back to English).
+      # A stable release ships every language complete; previews skip this.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: ${{ !contains(github.ref_name, '-') }}
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install the locale checker's dependencies
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: npm ci --ignore-scripts
+      - name: Require complete translations for a stable release
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: npm run check:locales:complete
 
   linux-packages:
     uses: ./.github/workflows/linux-packages.yml

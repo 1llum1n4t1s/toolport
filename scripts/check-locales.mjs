@@ -165,7 +165,7 @@ export function checkCatalogs(catalogs, localeNames = languages, groupNames = gr
       }
       for (const key of Object.keys(english)) {
         if (!Object.hasOwn(catalog, key))
-          errors.push(`${group}/${language}: missing ${key}`);
+          errors.push(`${group}/${language}: missing translation ${key}`);
       }
     }
   }
@@ -596,14 +596,43 @@ export async function checkLocales(root) {
   return { errors, count: catalogResult.messages.size };
 }
 
+// Coverage gaps fall back to English at runtime, so they never break the app.
+// Pull requests only warn about them; stable releases run with --complete.
+// Anchored to the diagnostic's position so text inside a message key, such as
+// "Error: missing token", can never turn a real error into a warning.
+const coverageGap = [
+  /^[^\s:/]+\/[^\s:/]+: missing translation /,
+  /^[^\s:]+:\d+: missing source message /,
+  /^[^\s:]+:\d+: unlocalized (UI|JSX|interpolated UI) text/,
+  /^[^\s:]+:\d+: dynamic source message must come from msg\(/,
+  /^[^\s:]+:\d+: native source message must be a string literal/,
+];
+
+export function isCoverageGap(message) {
+  return coverageGap.some((pattern) => pattern.test(message));
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const complete = process.argv.includes("--complete");
   const result = await checkLocales(root);
-  if (result.errors.length) {
-    console.error(result.errors.join("\n"));
+  const gaps = complete ? [] : result.errors.filter(isCoverageGap);
+  const errors = complete
+    ? result.errors
+    : result.errors.filter((error) => !isCoverageGap(error));
+  if (gaps.length) {
+    console.warn(gaps.join("\n"));
+    console.warn(
+      `${gaps.length} untranslated or unwrapped messages fall back to English. ` +
+        "Fine for a pull request; they are filled in before a stable release " +
+        "(npm run check:locales:complete).",
+    );
+  }
+  if (errors.length) {
+    console.error(errors.join("\n"));
     process.exitCode = 1;
   } else
     console.log(
-      `Locale check passed: ${languages.length} languages, ${result.count} unique source messages.`,
+      `Locale check passed${complete ? " (complete)" : ""}: ${languages.length} languages, ${result.count} unique source messages.`,
     );
 }

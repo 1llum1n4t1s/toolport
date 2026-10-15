@@ -41,6 +41,7 @@
     "bench:audit": "cargo run --manifest-path src-tauri/Cargo.toml --no-default-features --features test-support --example audit-performance",
     "bench:tokens": "node benchmark/token-budget.mjs",
     "check:locales": "node --test scripts/check-locales.test.mjs && node scripts/check-locales.mjs",
+    "check:locales:complete": "node scripts/check-locales.mjs --complete",
     "smoke:localization": "node scripts/localization-smoke.mjs"
   },
   "dependencies": {
