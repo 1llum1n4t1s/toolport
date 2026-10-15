@@ -58,7 +58,7 @@ impl TeamsPage {
             source_label(
                 msg("Sync"),
                 gtk::Label::builder()
-                    .label(&tr("Sync"))
+                    .label(tr("Sync"))
                     .css_classes(["title"])
                     .build(),
             ),
@@ -81,7 +81,7 @@ impl TeamsPage {
             source_label(
                 msg("Sync"),
                 gtk::Label::builder()
-                    .label(&tr("Sync"))
+                    .label(tr("Sync"))
                     .halign(gtk::Align::Start)
                     .css_classes(["title-2"])
                     .build(),
@@ -93,7 +93,7 @@ impl TeamsPage {
             source_label(
                 msg("Free: 1 person, 1 device"),
                 gtk::Label::builder()
-                    .label(&tr("Free: 1 person, 1 device"))
+                    .label(tr("Free: 1 person, 1 device"))
                     .valign(gtk::Align::Center)
                     .css_classes(["toolport-badge", "success", "caption"])
                     .build(),
@@ -101,7 +101,7 @@ impl TeamsPage {
         );
         title_row.append(&plan_badge);
         page.append(&title_row);
-        let intro = source_label(msg("Set up once. Your servers follow you to every machine. Secret values and approvals stay on this machine."), source_label(msg("Set up once. Your servers follow you to every machine. Secret values and approvals stay on this machine."), gtk::Label::builder().label(&tr("Set up once. Your servers follow you to every machine. Secret values and approvals stay on this machine.")).halign(gtk::Align::Fill).xalign(0.0).wrap(true).css_classes(["toolport-muted"]).build()));
+        let intro = source_label(msg("Set up once. Your servers follow you to every machine. Secret values and approvals stay on this machine."), source_label(msg("Set up once. Your servers follow you to every machine. Secret values and approvals stay on this machine."), gtk::Label::builder().label(tr("Set up once. Your servers follow you to every machine. Secret values and approvals stay on this machine.")).halign(gtk::Align::Fill).xalign(0.0).wrap(true).css_classes(["toolport-muted"]).build()));
         page.append(&intro);
         let feedback = gtk::Label::builder()
             .halign(gtk::Align::Fill)
@@ -389,12 +389,12 @@ impl TeamsPage {
             }
         });
         let code = gtk::PasswordEntry::builder()
-            .placeholder_text(&tr("Manual code"))
+            .placeholder_text(tr("Manual code"))
             .show_peek_icon(true)
             .build();
         l10n::bind_placeholder(&code, msg("Manual code"));
         let name = gtk::Entry::builder()
-            .placeholder_text(&tr("Your name (optional)"))
+            .placeholder_text(tr("Your name (optional)"))
             .build();
         l10n::bind_placeholder(&name, msg("Your name (optional)"));
         group.append(&field(msg("Sync service URL"), &url));
@@ -512,7 +512,7 @@ impl TeamsPage {
         actions.append(&leave);
         summary.append(&actions);
         self.content.append(&summary);
-        self.content.append(&source_label(msg("Open Clients to use your enabled team servers from an AI client. Review any remaining servers below before enabling them. Successful managed calls are reported automatically."), source_label(msg("Open Clients to use your enabled team servers from an AI client. Review any remaining servers below before enabling them. Successful managed calls are reported automatically."), gtk::Label::builder().label(&tr("Open Clients to use your enabled team servers from an AI client. Review any remaining servers below before enabling them. Successful managed calls are reported automatically.")).wrap(true).xalign(0.0).build())));
+        self.content.append(&source_label(msg("Open Clients to use your enabled team servers from an AI client. Review any remaining servers below before enabling them. Successful managed calls are reported automatically."), source_label(msg("Open Clients to use your enabled team servers from an AI client. Review any remaining servers below before enabling them. Successful managed calls are reported automatically."), gtk::Label::builder().label(tr("Open Clients to use your enabled team servers from an AI client. Review any remaining servers below before enabling them. Successful managed calls are reported automatically.")).wrap(true).xalign(0.0).build())));
 
         match crate::teams::member_review(&registry) {
             Ok(review) if !review.pending.is_empty() => {
@@ -529,7 +529,7 @@ impl TeamsPage {
                         dialog.present();
                     }
                 });
-                self.content.append(&source_label(msg("Held servers stay off and instructions stay unchanged. Safety floors can tighten immediately."), source_label(msg("Held servers stay off and instructions stay unchanged. Safety floors can tighten immediately."), gtk::Label::builder().label(&tr("Held servers stay off and instructions stay unchanged. Safety floors can tighten immediately.")).wrap(true).xalign(0.0).build())));
+                self.content.append(&source_label(msg("Held servers stay off and instructions stay unchanged. Safety floors can tighten immediately."), source_label(msg("Held servers stay off and instructions stay unchanged. Safety floors can tighten immediately."), gtk::Label::builder().label(tr("Held servers stay off and instructions stay unchanged. Safety floors can tighten immediately.")).wrap(true).xalign(0.0).build())));
                 self.content.append(&button);
             }
             Err(error) => self.feedback.set_text(&error),
@@ -548,7 +548,7 @@ impl TeamsPage {
                 source_label(
                     msg("Team-managed servers · review and local setup"),
                     gtk::Label::builder()
-                        .label(&tr("Team-managed servers · review and local setup"))
+                        .label(tr("Team-managed servers · review and local setup"))
                         .halign(gtk::Align::Start)
                         .css_classes(["heading"])
                         .build(),
@@ -734,7 +734,7 @@ impl TeamsPage {
             source_label(
                 msg("Sync new servers"),
                 gtk::Label::builder()
-                    .label(&tr("Sync new servers"))
+                    .label(tr("Sync new servers"))
                     .css_classes(["toolport-muted", "caption"])
                     .build(),
             ),
@@ -796,7 +796,7 @@ impl TeamsPage {
             list.append(&source_label(
                 msg("No servers yet. Servers you add here show up on your other machines."),
                 gtk::Label::builder()
-                    .label(&tr(
+                    .label(tr(
                         "No servers yet. Servers you add here show up on your other machines.",
                     ))
                     .wrap(true)
@@ -808,7 +808,7 @@ impl TeamsPage {
         self.content.append(&list);
         self.content.append(
             &source_label(msg("Keys and sign-ins never leave a machine. Switching a server to This machine stops syncing it; other machines keep their copy until you remove it there."), source_label(msg("Keys and sign-ins never leave a machine. Switching a server to This machine stops syncing it; other machines keep their copy until you remove it there."), gtk::Label::builder()
-                .label(&tr("Keys and sign-ins never leave a machine. Switching a server to This machine stops syncing it; other machines keep their copy until you remove it there."))
+                .label(tr("Keys and sign-ins never leave a machine. Switching a server to This machine stops syncing it; other machines keep their copy until you remove it there."))
                 .wrap(true)
                 .xalign(0.0)
                 .css_classes(["toolport-muted", "caption"])
@@ -895,10 +895,7 @@ impl TeamsPage {
         #[allow(deprecated)]
         let dialog = adw::MessageDialog::new(
             Some(&parent),
-            Some(&trf(
-                "{name} changed on two machines",
-                &[("name", &(name).to_string())],
-            )),
+            Some(&trf("{name} changed on two machines", &[("name", (name))])),
             Some(&tr(
                 "Choose which version to keep. This machine's version is saved until you choose.",
             )),
@@ -906,7 +903,7 @@ impl TeamsPage {
         l10n::bind_formatted_dialog_heading(
             &dialog,
             msg("{name} changed on two machines"),
-            &[("name", &(name).to_string())],
+            &[("name", (name))],
         );
         dialog.set_size_request(620, -1);
         dialog.set_extra_child(Some(&conflict_content(local, remote)));
@@ -1350,7 +1347,7 @@ impl TeamsPage {
         l10n::bind_formatted_label(
             &self.feedback,
             msg("Sync error: {error}"),
-            &[("error", &(error).to_string())],
+            &[("error", (error))],
         );
         self.feedback.set_visible(true);
         self.feedback.remove_css_class("success");
@@ -1454,7 +1451,7 @@ fn render_instructions_status(container: &gtk::Box, status: crate::teams::Instru
     heading.append(&source_label(
         msg("Team instructions"),
         gtk::Label::builder()
-            .label(&tr("Team instructions"))
+            .label(tr("Team instructions"))
             .halign(gtk::Align::Start)
             .css_classes(["heading"])
             .build(),
@@ -1474,7 +1471,7 @@ fn render_instructions_status(container: &gtk::Box, status: crate::teams::Instru
     container.append(&heading);
     container.append(
         &gtk::Label::builder()
-            .label(&tr(
+            .label(tr(
                 "Org-managed agent rules, written to your AI clients alongside your own \
                  instructions, never over them. Leaving the team removes them.",
             ))
@@ -1506,7 +1503,7 @@ fn render_instructions_status(container: &gtk::Box, status: crate::teams::Instru
         container.append(&source_label(
             msg("No supported AI clients detected on this machine."),
             gtk::Label::builder()
-                .label(&tr("No supported AI clients detected on this machine."))
+                .label(tr("No supported AI clients detected on this machine."))
                 .halign(gtk::Align::Start)
                 .xalign(0.0)
                 .css_classes(["toolport-muted"])
@@ -1810,7 +1807,7 @@ pub(super) fn execution_review_content(server: &crate::registry::ServerEntry) ->
         }
         content.append(
             &gtk::Expander::builder()
-                .label(&tr("Show full definition"))
+                .label(tr("Show full definition"))
                 .child(&full)
                 .build(),
         );
@@ -2170,14 +2167,14 @@ fn member_label(label: &serde_json::Value) -> String {
     let via = label["via"].as_str().unwrap_or("unknown");
     let approval = label["approvedBy"]["name"]
         .as_str()
-        .map(|name| trf(" · approved by {name}", &[("name", &(name).to_string())]))
+        .map(|name| trf(" · approved by {name}", &[("name", (name))]))
         .unwrap_or_default();
     trf(
         "{author} · {time} · via {via}{approval}",
         &[
             ("author", &(author).to_string()),
             ("time", &(time).to_string()),
-            ("via", &(via).to_string()),
+            ("via", (via)),
             ("approval", &(approval).to_string()),
         ],
     )
@@ -2209,7 +2206,7 @@ fn member_review_content(review: &crate::teams::MemberReview) -> gtk::ScrolledWi
                 .build(),
         );
         if change.labels.is_empty() {
-            section.append(&source_label(msg("Full diff from your accepted configuration. Change history labels unavailable."), gtk::Label::builder().label(&tr("Full diff from your accepted configuration. Change history labels unavailable.")).wrap(true).xalign(0.0).build()));
+            section.append(&source_label(msg("Full diff from your accepted configuration. Change history labels unavailable."), gtk::Label::builder().label(tr("Full diff from your accepted configuration. Change history labels unavailable.")).wrap(true).xalign(0.0).build()));
         } else {
             for label in &change.labels {
                 section.append(

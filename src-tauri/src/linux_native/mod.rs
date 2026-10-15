@@ -116,9 +116,7 @@ pub fn run() {
             app_for_startup.downgrade().into();
         let result = gtk::gio::spawn_blocking(move || load_native_startup(app_for_events))
             .await
-            .unwrap_or_else(|_| {
-                Err(crate::i18n::tr("The startup worker stopped unexpectedly").into())
-            });
+            .unwrap_or_else(|_| Err(crate::i18n::tr("The startup worker stopped unexpectedly")));
         if result.is_ok() {
             *tray_for_startup.borrow_mut() = tray::start(&app_for_startup);
             if launch_hidden && tray_for_startup.borrow().is_none() {
@@ -312,7 +310,7 @@ fn ensure_url_scheme_handlers() {
         if std::fs::create_dir_all(&applications).is_err() {
             return;
         }
-        let desktop_path = applications.join(format!("{}.desktop", format!("{}", APP_ID)));
+        let desktop_path = applications.join(format!("{}.desktop", APP_ID));
         let contents = format!("[Desktop Entry]\nType=Application\nName=Toolport\nExec={} %u\nIcon=toolport\nNoDisplay=true\nMimeType=x-scheme-handler/toolport;x-scheme-handler/conduit;\n", format!("{}", exe.display()));
         if std::fs::write(&desktop_path, contents).is_err() {
             return;
@@ -323,7 +321,7 @@ fn ensure_url_scheme_handlers() {
         for scheme in unhandled {
             let _ = std::process::Command::new("xdg-mime")
                 .arg("default")
-                .arg(format!("{}.desktop", format!("{}", APP_ID)))
+                .arg(format!("{}.desktop", APP_ID))
                 .arg(format!("x-scheme-handler/{scheme}"))
                 .status();
         }
@@ -346,8 +344,7 @@ fn ensure_url_scheme_handlers() {
 fn migrate_preview_identity() {
     let old_autostart = crate::autostart::linux_autostart_file(settings::LEGACY_AUTOSTART_NAME);
     let applications = gtk::glib::user_data_dir().join("applications");
-    let stale_handler =
-        applications.join(format!("{}.desktop", format!("{}", LEGACY_PREVIEW_APP_ID)));
+    let stale_handler = applications.join(format!("{}.desktop", LEGACY_PREVIEW_APP_ID));
     let retired = retire_preview_files(old_autostart.as_deref(), &stale_handler, || {
         let _ = crate::autostart::enable_linux(settings::NATIVE_AUTOSTART_NAME);
     });
@@ -711,7 +708,7 @@ fn build_window(
                 .map(|path| {
                     crate::i18n::trf(
                         " The unreadable copy was preserved at {value0}.",
-                        &[("value0", &format!("{}", path))],
+                        &[("value0", path)],
                     )
                 })
                 .unwrap_or_default();
@@ -719,8 +716,8 @@ fn build_window(
                 &crate::i18n::trf(
                     "Toolport recovered the registry from a backup: {value0}.{value1}",
                     &[
-                        ("value0", &format!("{}", notice.reason)),
-                        ("value1", &format!("{}", detail)),
+                        ("value0", &notice.reason.to_string()),
+                        ("value1", &detail.to_string()),
                     ],
                 ),
                 true,
@@ -848,7 +845,7 @@ fn restart_advice_line(clients: &[crate::gateway_publish::ClientNeedingRestart])
         },
         &[
             ("value0", &format!("{}", names.len())),
-            ("value3", &format!("{}", names.join(", "))),
+            ("value3", &names.join(", ").to_string()),
         ],
     )
 }
@@ -938,10 +935,7 @@ fn show_registry_startup_failure(app: &adw::Application, error: &str) {
         l10n::bind_formatted_label(
             &widget,
             "Registry: {value0}\n\nError: {value1}",
-            &[
-                ("value0", &format!("{}", path)),
-                ("value1", &format!("{}", error)),
-            ],
+            &[("value0", &path.to_string()), ("value1", error)],
         );
         widget
     });
@@ -1270,7 +1264,7 @@ fn build_sidebar(
         app.add_action(&action);
         if let Some(number) = shortcut_number {
             app.set_accels_for_action(
-                &format!("app.{}", format!("{}", action_name)),
+                &format!("app.{}", action_name),
                 &[&format!("<Primary>{number}")],
             );
         }
@@ -1651,15 +1645,12 @@ fn security_alert_copy(events: &[serde_json::Value]) -> (String, String) {
             } else {
                 crate::i18n::msg("{value0}. {value1} more are ready to review.")
             },
-            &[
-                ("value0", &format!("{}", first)),
-                ("value1", &format!("{}", remaining)),
-            ],
+            &[("value0", first), ("value1", &format!("{}", remaining))],
         )
     } else {
         crate::i18n::trf(
             "{value0}. Review the retained details in Activity.",
-            &[("value0", &format!("{}", first))],
+            &[("value0", first)],
         )
     };
     (title, detail)
@@ -2005,7 +1996,7 @@ impl ServerPage {
                     &crate::i18n::tr("Update Toolport"),
                     &crate::i18n::trf(
                         "{value0} Toolport left the registry untouched.",
-                        &[("value0", &format!("{}", message))],
+                        &[("value0", &message.to_string())],
                     ),
                     true,
                 ));
@@ -2226,7 +2217,7 @@ impl ServerPage {
                 l10n::bind_formatted_label(
                     &row.label,
                     "{value0} · Checking…",
-                    &[("value0", &format!("{}", row.transport))],
+                    &[("value0", &row.transport.to_string())],
                 );
                 for class in ["success", "error", "review"] {
                     row.label.remove_css_class(class);
@@ -2597,12 +2588,9 @@ impl ClientPage {
                     })
                     .await;
                     match result {
-                        Ok(Ok(_)) => page.refresh_with_confirmation(
-                            crate::i18n::tr(
-                                "Client location added. Select Connect to configure it.",
-                            )
-                            .into(),
-                        ),
+                        Ok(Ok(_)) => page.refresh_with_confirmation(crate::i18n::tr(
+                            "Client location added. Select Connect to configure it.",
+                        )),
                         Ok(Err(error)) => page.show_error(&error),
                         Err(_) => {
                             page.show_error(&crate::i18n::tr("Could not add client location."))
@@ -2637,7 +2625,7 @@ impl ClientPage {
                 Ok(Ok(candidates)) => page.show_import_review(candidates),
                 Ok(Err(error)) => page.show_error(&crate::i18n::trf(
                     "Could not inspect client configurations: {value0}",
-                    &[("value0", &format!("{}", error))],
+                    &[("value0", &error.to_string())],
                 )),
                 Err(_) => {
                     page.show_error(&crate::i18n::tr("The import scan stopped unexpectedly."))
@@ -2679,7 +2667,7 @@ impl ClientPage {
             &crate::i18n::tr("Import selected servers"), false, move |selected, choices, inputs| {
                 let (registry, added) = crate::registry_controller::import_client_servers_inputs(selected, &choices, &inputs)?;
                 let missing = registry.servers.iter().filter(|server| !server.enabled && server.source.as_deref().is_some_and(|source| source.starts_with("imported:"))).map(|server| server.name.clone()).collect::<Vec<_>>();
-                let message = if missing.is_empty() { crate::i18n::trf("Imported {value0} servers. Check their status under Servers.", &[("value0", &format!("{}", added))]) } else { crate::i18n::trf("Imported {value0} servers. Needs input: {value1}", &[("value0", &format!("{}", added)), ("value1", &format!("{}", missing.join(", ")))]) };
+                let message = if missing.is_empty() { crate::i18n::trf("Imported {value0} servers. Check their status under Servers.", &[("value0", &format!("{}", added))]) } else { crate::i18n::trf("Imported {value0} servers. Needs input: {value1}", &[("value0", &format!("{}", added)), ("value1", &missing.join(", ").to_string())]) };
                 Ok(message.into())
             }, move || page.refresh(), Some(self.credential_page.clone()));
     }
@@ -2701,7 +2689,7 @@ impl ClientPage {
                 Ok(Ok(snapshot)) => page.render(snapshot),
                 Ok(Err(error)) => page.show_error(&crate::i18n::trf(
                     "Could not scan clients: {value0}",
-                    &[("value0", &format!("{}", error))],
+                    &[("value0", &error.to_string())],
                 )),
                 Err(_) => {
                     page.show_error(&crate::i18n::tr("The client scan stopped unexpectedly."))
@@ -2839,10 +2827,7 @@ impl ClientPage {
                             ),
                             (
                                 "value1",
-                                &format!(
-                                    "{}",
-                                    client["clientLabel"].as_str().unwrap_or("not provided")
-                                ),
+                                client["clientLabel"].as_str().unwrap_or("not provided"),
                             ),
                         ],
                     )
@@ -2915,10 +2900,10 @@ fn client_activity_detail(client: &serde_json::Value) -> String {
         .map(|ts| {
             crate::i18n::trf(
                 "Last active {value0}",
-                &[("value0", &format!("{}", relative_activity_time(ts)))],
+                &[("value0", &relative_activity_time(ts).to_string())],
             )
         })
-        .unwrap_or_else(|| crate::i18n::tr("Last active time unavailable").into())];
+        .unwrap_or_else(|| crate::i18n::tr("Last active time unavailable"))];
     if let Some(calls) = client["callsToday"].as_u64() {
         details.push(crate::i18n::trf(
             if calls == 1 {
@@ -2926,13 +2911,13 @@ fn client_activity_detail(client: &serde_json::Value) -> String {
             } else {
                 crate::i18n::msg("{value0} calls today")
             },
-            &[("value0", &format!("{}", grouped_number(calls)))],
+            &[("value0", &grouped_number(calls).to_string())],
         ));
     }
     if let Some(tools) = client["firstCatalogSize"].as_u64() {
         details.push(crate::i18n::trf(
             "Last saw {value0} tools",
-            &[("value0", &format!("{}", grouped_number(tools)))],
+            &[("value0", &grouped_number(tools).to_string())],
         ));
     }
     details.join(" · ")
@@ -3045,8 +3030,8 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
             .tooltip_text(crate::i18n::trf(
                 "{value0}\nClient id: {value1}",
                 &[
-                    ("value0", &format!("{}", client.name)),
-                    ("value1", &format!("{}", client.id)),
+                    ("value0", &client.name.to_string()),
+                    ("value1", &client.id.to_string()),
                 ],
             ))
             .css_classes(["heading"])
@@ -3191,7 +3176,7 @@ l10n::bind_dialog_body(&dialog, "This forgets the added location. Your client co
                 let page = page.clone();
                 gtk::glib::spawn_future_local(async move {
                     match gtk::gio::spawn_blocking(move || crate::clients::remove_client_location(&id)).await {
-                        Ok(Ok(())) => page.refresh_with_confirmation(crate::i18n::tr("Client location removed.").into()),
+                        Ok(Ok(())) => page.refresh_with_confirmation(crate::i18n::tr("Client location removed.")),
                         Ok(Err(error)) => page.show_error(&error),
                         Err(_) => page.show_error(&crate::i18n::tr("Could not remove client location.")),
                     }
@@ -3270,7 +3255,7 @@ fn append_client_discovery_actions(
     let auto_hint = match client.inherited_discovery.as_deref() {
         Some(mode) => crate::i18n::trf(
             "Use your global discovery choice ({value0})",
-            &[("value0", &format!("{}", mode))],
+            &[("value0", mode)],
         ),
         None => {
             crate::i18n::tr("Use this client's measured backend default discovery mode").to_string()
@@ -3326,7 +3311,7 @@ fn append_client_discovery_actions(
                     Ok(Ok(_)) => {
                         page.refresh_with_confirmation(crate::i18n::trf(
                             "Updated discovery for {value0}.",
-                            &[("value0", &format!("{}", client_name))],
+                            &[("value0", &client_name.to_string())],
                         ));
                     }
                     Ok(Err(error)) => page.show_error(&error),
@@ -3345,7 +3330,7 @@ fn connected_client_actions_menu(client: state::ClientView, page: ClientPage) ->
         .icon_name("view-more-symbolic")
         .tooltip_text(crate::i18n::trf(
             "Actions for {value0}",
-            &[("value0", &format!("{}", client.name))],
+            &[("value0", &client.name.to_string())],
         ))
         .css_classes(["flat"])
         .build();
@@ -3403,7 +3388,7 @@ fn client_scope_menu(client: state::ClientView, page: ClientPage) -> gtk::MenuBu
     let label = if label.starts_with("Default access") || label == "All enabled servers" {
         label
     } else {
-        crate::i18n::trf("Access: {value0}", &[("value0", &format!("{}", label))])
+        crate::i18n::trf("Access: {value0}", &[("value0", &label.to_string())])
     };
     let menu = gtk::MenuButton::builder()
         .always_show_arrow(true)
@@ -3416,7 +3401,7 @@ fn client_scope_menu(client: state::ClientView, page: ClientPage) -> gtk::MenuBu
         )
         .tooltip_text(crate::i18n::trf(
             "Choose this client's access to enabled servers: {value0}",
-            &[("value0", &format!("{}", label))],
+            &[("value0", &label.to_string())],
         ))
         .build();
     menu.add_css_class("toolport-secondary-action");
@@ -3471,7 +3456,7 @@ fn confirm_client_reset(client: &state::ClientView, button: gtk::Button, page: C
         return;
     };
     #[allow(deprecated)]
-    let dialog = adw::MessageDialog::new(Some(&parent), Some(&crate::i18n::trf(if client.legacy_bearer_argv { crate::i18n::msg("Migrate {value1}'s Toolport entry?") } else { crate::i18n::msg("Reset {value1}'s Toolport entry?") }, &[("value1", &format!("{}", client.name))])), Some(&crate::i18n::tr("Toolport backs up the config before replacing its gateway entry with the standard stdio command. Customized commands, arguments and headers will be replaced; review those changes before confirming. Other client settings and MCP servers are preserved. Restart the client afterward.")));
+    let dialog = adw::MessageDialog::new(Some(&parent), Some(&crate::i18n::trf(if client.legacy_bearer_argv { crate::i18n::msg("Migrate {value1}'s Toolport entry?") } else { crate::i18n::msg("Reset {value1}'s Toolport entry?") }, &[("value1", &client.name.to_string())])), Some(&crate::i18n::tr("Toolport backs up the config before replacing its gateway entry with the standard stdio command. Customized commands, arguments and headers will be replaced; review those changes before confirming. Other client settings and MCP servers are preserved. Restart the client afterward.")));
     l10n::bind_formatted_dialog_heading(
         &dialog,
         if client.legacy_bearer_argv {
@@ -3479,7 +3464,7 @@ fn confirm_client_reset(client: &state::ClientView, button: gtk::Button, page: C
         } else {
             crate::i18n::msg("Reset {value1}'s Toolport entry?")
         },
-        &[("value1", &format!("{}", client.name))],
+        &[("value1", &client.name.to_string())],
     );
     l10n::bind_dialog_body(&dialog, "Toolport backs up the config before replacing its gateway entry with the standard stdio command. Customized commands, arguments and headers will be replaced; review those changes before confirming. Other client settings and MCP servers are preserved. Restart the client afterward.");
     dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
@@ -3510,11 +3495,11 @@ fn confirm_client_disconnect(client: &state::ClientView, button: gtk::Button, pa
         return;
     };
     #[allow(deprecated)]
-    let dialog = adw::MessageDialog::new(Some(&parent), Some(&crate::i18n::trf("Disconnect {value0}?", &[("value0", &format!("{}", client.name))])), Some(&crate::i18n::tr("Toolport removes only its managed gateway entry. The client's other settings and MCP servers are preserved.")));
+    let dialog = adw::MessageDialog::new(Some(&parent), Some(&crate::i18n::trf("Disconnect {value0}?", &[("value0", &client.name.to_string())])), Some(&crate::i18n::tr("Toolport removes only its managed gateway entry. The client's other settings and MCP servers are preserved.")));
     l10n::bind_formatted_dialog_heading(
         &dialog,
         "Disconnect {value0}?",
-        &[("value0", &format!("{}", client.name))],
+        &[("value0", &client.name.to_string())],
     );
     l10n::bind_dialog_body(&dialog, "Toolport removes only its managed gateway entry. The client's other settings and MCP servers are preserved.");
     dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
@@ -3574,8 +3559,8 @@ fn run_client_mutation(
                     crate::i18n::trf(
                         "Connected {value0} to Toolport. Restart {value1} to apply it.",
                         &[
-                            ("value0", &format!("{}", client_name)),
-                            ("value1", &format!("{}", client_name)),
+                            ("value0", &client_name.to_string()),
+                            ("value1", &client_name.to_string()),
                         ],
                     )
                 } else if restored > 0 {
@@ -3586,17 +3571,17 @@ fn run_client_mutation(
                             crate::i18n::msg("Disconnected {value0} from Toolport and put back {value1} servers it had moved. Restart {value3} to apply it.")
                         },
                         &[
-                            ("value0", &format!("{}", client_name)),
+                            ("value0", &client_name.to_string()),
                             ("value1", &format!("{}", restored)),
-                            ("value3", &format!("{}", client_name)),
+                            ("value3", &client_name.to_string()),
                         ],
                     )
                 } else {
                     crate::i18n::trf(
                         "Disconnected {value0} from Toolport. Restart {value1} to apply it.",
                         &[
-                            ("value0", &format!("{}", client_name)),
-                            ("value1", &format!("{}", client_name)),
+                            ("value0", &client_name.to_string()),
+                            ("value1", &client_name.to_string()),
                         ],
                     )
                 };
@@ -3610,7 +3595,7 @@ fn run_client_mutation(
             Ok(Err(error)) => page.show_error(&format!("{client_name}: {error}")),
             Err(_) => page.show_error(&crate::i18n::trf(
                 "{value0}: the operation stopped",
-                &[("value0", &format!("{}", client_name))],
+                &[("value0", &client_name.to_string())],
             )),
         }
     });
@@ -4282,7 +4267,7 @@ impl ActivityPage {
                         l10n::bind_formatted_label(
                             &page.feedback,
                             "Exported retained activity as {value0}.",
-                            &[("value0", &format!("{}", format.to_uppercase()))],
+                            &[("value0", &format.to_uppercase().to_string())],
                         );
                         page.feedback.remove_css_class("error");
                         page.feedback.add_css_class("success");
@@ -4389,7 +4374,7 @@ impl ActivityPage {
                 return;
             }
             let notices = result.unwrap_or_else(|_| vec![
-                crate::i18n::tr("Gateway telemetry health is unavailable. Activity and savings may be incomplete.").into(),
+                crate::i18n::tr("Gateway telemetry health is unavailable. Activity and savings may be incomplete."),
             ]);
             page.apply_health_notices(notices);
         });
@@ -4427,7 +4412,9 @@ impl ActivityPage {
                 return;
             }
             let revision = result.unwrap_or_else(|_| {
-                Err(crate::i18n::tr("Activity change check stopped unexpectedly").into())
+                Err(crate::i18n::tr(
+                    "Activity change check stopped unexpectedly",
+                ))
             });
             page.set_revision_error(revision.as_ref().err().cloned());
             let revision = revision.ok();
@@ -4453,7 +4440,7 @@ impl ActivityPage {
         if let Some(error) = self.revision_error.borrow().as_ref() {
             notices.push(crate::i18n::trf(
                 "Activity change checks are unavailable. Displayed activity may be stale. {value0}",
-                &[("value0", &format!("{}", error))],
+                &[("value0", &error.to_string())],
             ));
         }
         self.telemetry_feedback.set_label(&notices.join("\n"));
@@ -4833,7 +4820,7 @@ impl ActivityPage {
                 }
                 Ok(Err(error)) => page.show_error(&crate::i18n::trf(
                     "could not accept changes: {value0}",
-                    &[("value0", &format!("{}", error))],
+                    &[("value0", &error.to_string())],
                 )),
                 Err(_) => {
                     page.show_error(&crate::i18n::tr("accepting changes stopped unexpectedly"))
@@ -4984,13 +4971,13 @@ impl ActivityPage {
             .set_label(old.as_deref().unwrap_or(""));
         let mut detail = String::from("The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. Compact JSON and search response text are counted with cl100k_base. Every tools/list and search response is subtracted. Sessionless HTTP, initial catalogs above known client limits, and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.");
         if has_catalog || discovered {
-            detail.push_str(&crate::i18n::trf("\n{value0} baseline tokens − {value1} catalog response tokens − {value2} search response tokens = {value3} net tokens saved.\n{value4} client sessions; {value5} catalog responses; {value6} search responses.\n{value7} baseline catalog text; {value8} catalog text sent; {value9} search text sent.", &[("value0", &format!("{}", grouped_number(snapshot.savings_full_tokens))), ("value1", &format!("{}", grouped_number(snapshot.savings_exposed_tokens))), ("value2", &format!("{}", grouped_number(snapshot.savings_discovery_tokens))), ("value3", &format!("{}", snapshot.tokens_saved)), ("value4", &format!("{}", snapshot.savings_tokenized_loads)), ("value5", &format!("{}", snapshot.savings_list_loads)), ("value6", &format!("{}", snapshot.savings_discovery_count)), ("value7", &format!("{}", format_byte_count(snapshot.savings_full_bytes))), ("value8", &format!("{}", format_byte_count(snapshot.savings_exposed_bytes))), ("value9", &format!("{}", format_byte_count(snapshot.savings_discovery_bytes)))]));
+            detail.push_str(&crate::i18n::trf("\n{value0} baseline tokens − {value1} catalog response tokens − {value2} search response tokens = {value3} net tokens saved.\n{value4} client sessions; {value5} catalog responses; {value6} search responses.\n{value7} baseline catalog text; {value8} catalog text sent; {value9} search text sent.", &[("value0", &grouped_number(snapshot.savings_full_tokens).to_string()), ("value1", &grouped_number(snapshot.savings_exposed_tokens).to_string()), ("value2", &grouped_number(snapshot.savings_discovery_tokens).to_string()), ("value3", &format!("{}", snapshot.tokens_saved)), ("value4", &format!("{}", snapshot.savings_tokenized_loads)), ("value5", &format!("{}", snapshot.savings_list_loads)), ("value6", &format!("{}", snapshot.savings_discovery_count)), ("value7", &format_byte_count(snapshot.savings_full_bytes).to_string()), ("value8", &format_byte_count(snapshot.savings_exposed_bytes).to_string()), ("value9", &format_byte_count(snapshot.savings_discovery_bytes).to_string())]));
         }
         if snapshot.savings_historical_loads > 0 {
-            detail.push_str(&crate::i18n::trf("\nExcluded history: {value0} catalog records ({value1} with byte measurements). Session identity and repeat loads cannot be verified.", &[("value0", &format!("{}", grouped_number(snapshot.savings_historical_loads))), ("value1", &format!("{}", grouped_number(snapshot.savings_historical_measured)))]));
+            detail.push_str(&crate::i18n::trf("\nExcluded history: {value0} catalog records ({value1} with byte measurements). Session identity and repeat loads cannot be verified.", &[("value0", &grouped_number(snapshot.savings_historical_loads).to_string()), ("value1", &grouped_number(snapshot.savings_historical_measured).to_string())]));
         }
         if snapshot.savings_legacy_tokens > 0 || snapshot.savings_old_v2_tokens > 0 {
-            detail.push_str(&crate::i18n::trf("\nOlder estimated records: {value0} legacy tokens and {value1} size-based tokens, excluded.", &[("value0", &format!("{}", grouped_number(snapshot.savings_legacy_tokens))), ("value1", &format!("{}", grouped_number(snapshot.savings_old_v2_tokens)))]));
+            detail.push_str(&crate::i18n::trf("\nOlder estimated records: {value0} legacy tokens and {value1} size-based tokens, excluded.", &[("value0", &grouped_number(snapshot.savings_legacy_tokens).to_string()), ("value1", &grouped_number(snapshot.savings_old_v2_tokens).to_string())]));
         }
         self.savings_detail.set_label(&detail);
     }
@@ -5092,7 +5079,7 @@ impl ActivityPage {
         if let Some(error) = &snapshot.tool_identities_error {
             let message = empty_activity_label(&crate::i18n::trf(
                 "Tool identities are unavailable: {value0}",
-                &[("value0", &format!("{}", error))],
+                &[("value0", &error.to_string())],
             ));
             message.remove_css_class("toolport-muted");
             message.add_css_class("error");
@@ -5150,12 +5137,12 @@ impl ActivityPage {
         // A failed refresh over real rows must never read as "all clear": keep
         // the last loaded data on screen and say it is stale.
         if self.last_snapshot.borrow().is_some() {
-            l10n::bind_formatted_label(&self.feedback, "Could not refresh; showing the last loaded activity. Retry with the refresh button. ({value0})", &[("value0", &format!("{}", error))]);
+            l10n::bind_formatted_label(&self.feedback, "Could not refresh; showing the last loaded activity. Retry with the refresh button. ({value0})", &[("value0", error)]);
         } else {
             l10n::bind_formatted_label(
                 &self.feedback,
                 "Could not load activity: {value0}",
-                &[("value0", &format!("{}", error))],
+                &[("value0", error)],
             );
             self.security_status_title
                 .set_label(&crate::i18n::tr("Protection state unavailable"));
@@ -5205,7 +5192,7 @@ impl ActivityPage {
                 Ok(Ok(())) => page.refresh(),
                 Ok(Err(error)) => page.show_error(&crate::i18n::trf(
                     "could not clear activity: {value0}",
-                    &[("value0", &format!("{}", error))],
+                    &[("value0", &error.to_string())],
                 )),
                 Err(_) => {
                     page.show_error(&crate::i18n::tr("the clear operation stopped unexpectedly"))
@@ -5438,9 +5425,7 @@ fn tool_change_group_card(
     reveal.set_child(Some(&tools));
     let expansion_key = format!(
         "security:server:{}:{}:{}",
-        format!("{}", group.profile),
-        format!("{}", group.server),
-        format!("{}", group.ts)
+        group.profile, group.server, group.ts
     );
     let expanded_rows = page.expanded_activity_rows.clone();
     reveal.set_reveal_child(expanded_rows.borrow().contains(&expansion_key));
@@ -5630,7 +5615,7 @@ fn security_notice_card(
     dismiss.set_sensitive(review_required || !is_change || change_can_be_accepted(event));
     let accepted_event = event.clone();
     let key = security_dismissal_key(event);
-    let expansion_key = format!("security:{}", format!("{}", key));
+    let expansion_key = format!("security:{}", key);
     let page_for_dismiss = page.clone();
     let expansion_key_for_dismiss = expansion_key.clone();
     dismiss.connect_clicked(move |_| {
@@ -5704,7 +5689,7 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
                     "annotations" => crate::i18n::tr("Safety hints"),
                     other => other.to_string(),
                 };
-                lines.push(crate::i18n::trf("Changed field: {value0}", &[("value0", &format!("{}", label))]));
+                lines.push(crate::i18n::trf("Changed field: {value0}", &[("value0", &label.to_string())]));
             }
             let annotation_lines = annotation_review_lines(event);
             if fields.is_empty() && annotation_lines.is_empty() {
@@ -5795,7 +5780,7 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
         if !signatures.is_empty() {
             lines.push(crate::i18n::trf(
                 "Matched signals: {value0}",
-                &[("value0", &format!("{}", signatures.join(", ")))],
+                &[("value0", &signatures.join(", ").to_string())],
             ));
         }
     }
@@ -5812,7 +5797,7 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
     {
         lines.push(crate::i18n::trf(
             "Matched text: {value0}",
-            &[("value0", &format!("{}", evidence))],
+            &[("value0", evidence)],
         ));
     }
     lines
@@ -5831,9 +5816,9 @@ fn annotation_review_lines(event: &serde_json::Value) -> Vec<String> {
             crate::i18n::trf(
                 "{value0}: {value1} to {value2}",
                 &[
-                    ("value0", &format!("{}", label)),
-                    ("value1", &format!("{}", security_hint_value(previous))),
-                    ("value2", &format!("{}", security_hint_value(next))),
+                    ("value0", label),
+                    ("value1", &security_hint_value(previous).to_string()),
+                    ("value2", &security_hint_value(next).to_string()),
                 ],
             )
         })
@@ -5958,7 +5943,7 @@ fn trace_ranking_lines(trace: &serde_json::Value) -> Vec<String> {
                     } else if !matched.is_empty() {
                         crate::i18n::trf(
                             "matched {value0}",
-                            &[("value0", &format!("{}", matched.join(", ")))],
+                            &[("value0", &matched.join(", ").to_string())],
                         )
                     } else if trace.get("mode").and_then(serde_json::Value::as_str)
                         == Some("semantic")
@@ -6006,7 +5991,7 @@ fn trace_token_line(trace: &serde_json::Value) -> String {
             .get("catalogSchemaBytes")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
-        return crate::i18n::trf("Returned {value0} of discovery content containing {value1} matching schemas; full scoped catalog schemas: {value2}. ≈{value3} tokens (UTF-8 bytes ÷ 4).", &[("value0", &format!("{}", format_byte_count(bytes))), ("value1", &format!("{}", schemas)), ("value2", &format!("{}", format_byte_count(catalog))), ("value3", &format!("{}", state::format_token_count(bytes.div_ceil(4))))]);
+        return crate::i18n::trf("Returned {value0} of discovery content containing {value1} matching schemas; full scoped catalog schemas: {value2}. ≈{value3} tokens (UTF-8 bytes ÷ 4).", &[("value0", &format_byte_count(bytes).to_string()), ("value1", &format!("{}", schemas)), ("value2", &format_byte_count(catalog).to_string()), ("value3", &state::format_token_count(bytes.div_ceil(4)).to_string())]);
     }
     let number = |key: &str| {
         trace
@@ -6016,7 +6001,7 @@ fn trace_token_line(trace: &serde_json::Value) -> String {
     };
     let returned = number("returnedTokens");
     let flat = number("flatTokens");
-    crate::i18n::trf("Legacy schema-only estimates: ≈{value0} returned vs ≈{value1} catalog; search guidance text was not counted.", &[("value0", &format!("{}", state::format_token_count(returned))), ("value1", &format!("{}", state::format_token_count(flat)))])
+    crate::i18n::trf("Legacy schema-only estimates: ≈{value0} returned vs ≈{value1} catalog; search guidance text was not counted.", &[("value0", &state::format_token_count(returned).to_string()), ("value1", &state::format_token_count(flat).to_string())])
 }
 
 fn search_trace_card(
@@ -6116,7 +6101,7 @@ fn inspect_card(capture: &serde_json::Value, expanded_rows: ActivityExpansionSta
                     "Failed{value1} · captured locally while live inspection was enabled",
                 )
             },
-            &[("value1", &format!("{}", duration))],
+            &[("value1", &duration.to_string())],
         );
         widget
     });
@@ -6174,7 +6159,7 @@ fn savings_detail_line(list_loads: u64, peak_catalog: u64, since: Option<String>
     if let Some(since) = since {
         parts.push(crate::i18n::trf(
             "since {value0}",
-            &[("value0", &format!("{}", since))],
+            &[("value0", &since.to_string())],
         ));
     }
     parts.join(" · ")
@@ -6224,8 +6209,8 @@ fn activity_count_summary(total: usize, visible: usize, recent: usize, filtered:
             crate::i18n::msg("{value0} calls recorded on this computer. {value2}")
         },
         &[
-            ("value0", &format!("{}", grouped_number(total as u64))),
-            ("value2", &format!("{}", shown)),
+            ("value0", &grouped_number(total as u64).to_string()),
+            ("value2", &shown.to_string()),
         ],
     )
 }
@@ -6241,7 +6226,7 @@ fn format_saved_tokens(tokens_saved: i64) -> String {
 fn savings_old_estimate_display(tokens: i64) -> Option<String> {
     (tokens != 0).then(|| {
         let sign = if tokens < 0 { "-" } else { "" };
-        crate::i18n::trf("Old estimate: {value0}{value1} tokens\nFrom previous versions; excluded from new savings.", &[("value0", &format!("{}", sign)), ("value1", &format!("{}", grouped_number(tokens.unsigned_abs())))])
+        crate::i18n::trf("Old estimate: {value0}{value1} tokens\nFrom previous versions; excluded from new savings.", &[("value0", sign), ("value1", &grouped_number(tokens.unsigned_abs()).to_string())])
     })
 }
 
@@ -6261,7 +6246,7 @@ fn savings_primary_display(
 
 fn savings_share_line(tokens_saved: i64, loads: u64, searches: u64, bytes: u64) -> String {
     if loads == 0 {
-        return crate::i18n::trf("Toolport recorded {value0} discovery searches returning {value1} of text at its MCP boundary. toolport.app", &[("value0", &format!("{}", searches)), ("value1", &format!("{}", format_byte_count(bytes)))]);
+        return crate::i18n::trf("Toolport recorded {value0} discovery searches returning {value1} of text at its MCP boundary. toolport.app", &[("value0", &format!("{}", searches)), ("value1", &format_byte_count(bytes).to_string())]);
     }
     crate::i18n::trf(
         if tokens_saved < 0 {
@@ -6271,7 +6256,7 @@ fn savings_share_line(tokens_saved: i64, loads: u64, searches: u64, bytes: u64) 
         },
         &[(
             "value1",
-            &format!("{}", state::format_token_count(tokens_saved.unsigned_abs())),
+            &state::format_token_count(tokens_saved.unsigned_abs()).to_string(),
         )],
     )
 }
@@ -6404,7 +6389,7 @@ fn activity_card(activity: &state::ActivityView) -> gtk::Box {
         detail.push(if outcome.is_some() {
             crate::i18n::trf(
                 "waited {value0}",
-                &[("value0", &format!("{}", format_duration(duration)))],
+                &[("value0", &format_duration(duration).to_string())],
             )
         } else {
             format_duration(duration)
@@ -6423,10 +6408,7 @@ fn activity_card(activity: &state::ActivityView) -> gtk::Box {
                 activity
                     .run_id
                     .as_ref()
-                    .map(|id| crate::i18n::trf(
-                        "\nRun: {value0}",
-                        &[("value0", &format!("{}", id))]
-                    ))
+                    .map(|id| crate::i18n::trf("\nRun: {value0}", &[("value0", &id.to_string())]))
                     .unwrap_or_default(),
                 activity
                     .cold
@@ -6440,7 +6422,7 @@ fn activity_card(activity: &state::ActivityView) -> gtk::Box {
                     .dispatch_ms
                     .map(|ms| crate::i18n::trf(
                         "\nDispatch: {value0}",
-                        &[("value0", &format!("{}", format_duration(ms)))]
+                        &[("value0", &format_duration(ms).to_string())]
                     ))
                     .unwrap_or_default()
             ))
@@ -6590,10 +6572,7 @@ fn activity_client_name(activity: &state::ActivityView) -> String {
     {
         Some(label) => crate::i18n::trf(
             "{value0} (reports \"{value1}\")",
-            &[
-                ("value0", &format!("{}", name)),
-                ("value1", &format!("{}", label)),
-            ],
+            &[("value0", &name.to_string()), ("value1", label)],
         ),
         None => name.to_string(),
     }
@@ -6626,7 +6605,7 @@ fn stat_metrics_line(stat: &serde_json::Value) -> String {
     if let Some(avg) = number("avgMs") {
         parts.push(crate::i18n::trf(
             "avg {value0}",
-            &[("value0", &format!("{}", format_duration(avg)))],
+            &[("value0", &format_duration(avg).to_string())],
         ));
     }
     if let Some(p95) = number("p95Ms") {
@@ -6843,7 +6822,7 @@ fn tool_identity_group(
     });
     bind_activity_expander(
         &expander,
-        format!("identity:{}", format!("{}", server)),
+        format!("identity:{}", server),
         expanded_rows,
         expanded,
     );
@@ -6877,7 +6856,7 @@ fn tool_identity_row(identity: &crate::integrity::ToolIdentity) -> gtk::Box {
         } else {
             crate::i18n::trf(
                 "upstream {value0}",
-                &[("value0", &format!("{}", identity.upstream))],
+                &[("value0", &identity.upstream.to_string())],
             )
         },
         short_fingerprint(&identity.fingerprint),
@@ -6887,14 +6866,14 @@ fn tool_identity_row(identity: &crate::integrity::ToolIdentity) -> gtk::Box {
             "changed {value0}",
             &[(
                 "value0",
-                &format!("{}", relative_activity_time(identity.last_changed)),
+                &relative_activity_time(identity.last_changed).to_string(),
             )],
         ));
     }
     if !identity.profiles.is_empty() {
         detail.push(crate::i18n::trf(
             "profiles {value0}",
-            &[("value0", &format!("{}", identity.profiles.join(", ")))],
+            &[("value0", &identity.profiles.join(", ").to_string())],
         ));
     }
     row.append(
@@ -7143,8 +7122,8 @@ impl ApprovalPage {
                                 if let Some(parent) = page.root.root().and_downcast::<gtk::Window>()
                                 {
                                     #[allow(deprecated)]
-                                    let dialog = adw::MessageDialog::new(Some(&parent), Some(&crate::i18n::tr("Could not save Always allow")), Some(&crate::i18n::trf("This call was approved for this session. Try Always allow again to keep the rule after restarting. {value0}", &[("value0", &format!("{}", error))])));
-                                    l10n::bind_formatted_dialog_body(&dialog, "This call was approved for this session. Try Always allow again to keep the rule after restarting. {value0}", &[("value0", &format!("{}", error))]);
+                                    let dialog = adw::MessageDialog::new(Some(&parent), Some(&crate::i18n::tr("Could not save Always allow")), Some(&crate::i18n::trf("This call was approved for this session. Try Always allow again to keep the rule after restarting. {value0}", &[("value0", &error.to_string())])));
+                                    l10n::bind_formatted_dialog_body(&dialog, "This call was approved for this session. Try Always allow again to keep the rule after restarting. {value0}", &[("value0", &error.to_string())]);
                                     l10n::bind_dialog_heading(
                                         &dialog,
                                         "Could not save Always allow",
@@ -7306,7 +7285,7 @@ fn approval_card(
             &widget,
             "{value0} wants to run this · {value1}",
             &[
-                ("value0", &format!("{}", requester)),
+                ("value0", &requester.to_string()),
                 ("value1", &crate::i18n::lookup(approval_reason(view.reason))),
             ],
         );
@@ -7332,7 +7311,7 @@ fn approval_card(
                 "Reports itself as: {value0}",
                 &[(
                     "value0",
-                    &format!("{}", crate::approval::shorten_client_label(label, 60)),
+                    &crate::approval::shorten_client_label(label, 60).to_string(),
                 )],
             );
             widget
@@ -7351,8 +7330,8 @@ fn approval_card(
                 &widget,
                 "Browser destination: {value0}\n{value1}",
                 &[
-                    ("value0", &format!("{}", url.origin)),
-                    ("value1", &format!("{}", url.message)),
+                    ("value0", &url.origin.to_string()),
+                    ("value1", &url.message.to_string()),
                 ],
             );
             widget
@@ -7369,7 +7348,7 @@ fn approval_card(
                 } else {
                     crate::i18n::trf(
                         "from {value0}",
-                        &[("value0", &format!("{}", value.origins.join(", ")))],
+                        &[("value0", &value.origins.join(", ").to_string())],
                     )
                 };
                 format!("{} → {} ({origins})", value.token, value.value)
@@ -7389,8 +7368,8 @@ fn approval_card(
                 &widget,
                 "Would send to {value0}:\n{value1}",
                 &[
-                    ("value0", &format!("{}", release.server)),
-                    ("value1", &format!("{}", values)),
+                    ("value0", &release.server.to_string()),
+                    ("value1", &values.to_string()),
                 ],
             );
             widget
@@ -7398,7 +7377,7 @@ fn approval_card(
     }
 
     let arguments = serde_json::to_string_pretty(&view.arguments)
-        .unwrap_or_else(|_| crate::i18n::tr("Arguments could not be displayed").into());
+        .unwrap_or_else(|_| crate::i18n::tr("Arguments could not be displayed"));
     let details = gtk::Expander::builder()
         .label(crate::i18n::tr("Review arguments"))
         .build();
@@ -7441,7 +7420,7 @@ fn approval_card(
                     l10n::bind_formatted_label(
                         &widget,
                         "Browser link refused: {value0}",
-                        &[("value0", &format!("{}", error))],
+                        &[("value0", &error.to_string())],
                     );
                     widget
                 });
@@ -7913,7 +7892,7 @@ fn open_shared_setup(url: &str, page: ServerPage) {
             Ok(Err(error)) => page.show_feedback(
                 &crate::i18n::trf(
                     "Could not open shared setup: {value0}",
-                    &[("value0", &format!("{}", error))],
+                    &[("value0", &error.to_string())],
                 ),
                 true,
             ),
@@ -8185,7 +8164,7 @@ fn share_setup(page: ServerPage) {
                         &feedback,
                         &crate::i18n::trf(
                             "Could not create the share link: {value0}",
-                            &[("value0", &format!("{}", error))],
+                            &[("value0", &error.to_string())],
                         ),
                         true,
                     ),
@@ -8224,10 +8203,7 @@ fn share_setup(page: ServerPage) {
                 }
                 Err(error) => show(
                     &feedback,
-                    &crate::i18n::trf(
-                        "Export failed: {value0}",
-                        &[("value0", &format!("{}", error))],
-                    ),
+                    &crate::i18n::trf("Export failed: {value0}", &[("value0", &error.to_string())]),
                     true,
                 ),
             }
@@ -8283,7 +8259,7 @@ fn share_setup(page: ServerPage) {
                             &feedback,
                             &crate::i18n::trf(
                                 "Export failed: {value0}",
-                                &[("value0", &format!("{}", error))],
+                                &[("value0", &error.to_string())],
                             ),
                             true,
                         ),
@@ -8433,10 +8409,7 @@ fn choose_setup_export(page: ServerPage) {
                     "Exported the setup without keychain values or inline credentials.",
                 )),
                 Ok(Err(error)) => page.show_feedback(
-                    &crate::i18n::trf(
-                        "Export failed: {value0}",
-                        &[("value0", &format!("{}", error))],
-                    ),
+                    &crate::i18n::trf("Export failed: {value0}", &[("value0", &error.to_string())]),
                     true,
                 ),
                 Err(_) => {
@@ -8488,10 +8461,7 @@ fn choose_setup_import(page: ServerPage) {
             match result {
                 Ok(Ok((json, preview))) => show_setup_import_review(json, preview, page),
                 Ok(Err(error)) => page.show_feedback(
-                    &crate::i18n::trf(
-                        "Import failed: {value0}",
-                        &[("value0", &format!("{}", error))],
-                    ),
+                    &crate::i18n::trf("Import failed: {value0}", &[("value0", &error.to_string())]),
                     true,
                 ),
                 Err(_) => page.show_feedback(
@@ -8544,7 +8514,7 @@ fn show_setup_import_review(
                 } else {
                     crate::i18n::trf(
                         "{value0} · already present",
-                        &[("value0", &format!("{}", item.name))],
+                        &[("value0", &item.name.to_string())],
                     )
                 })
                 .halign(gtk::Align::Start)
@@ -8621,7 +8591,7 @@ fn show_setup_import_review(
                 .await;
                 match result {
                     Ok(Ok((_, added))) => page.show_confirmation(&crate::i18n::trf(if added == 1 { crate::i18n::msg("Imported {value0} server. Review credentials before enabling them.") } else { crate::i18n::msg("Imported {value0} servers. Review credentials before enabling them.") }, &[("value0", &format!("{}", added))])),
-                    Ok(Err(error)) => page.show_feedback(&crate::i18n::trf("Import failed: {value0}", &[("value0", &format!("{}", error))]), true),
+                    Ok(Err(error)) => page.show_feedback(&crate::i18n::trf("Import failed: {value0}", &[("value0", &error.to_string())]), true),
                     Err(_) => page.show_feedback(&crate::i18n::tr("The import stopped unexpectedly."), true),
                 }
             });
@@ -8684,7 +8654,7 @@ fn run_profile_mutation(
             }
             Ok(Err(error)) => page.restore_after_error(&crate::i18n::trf(
                 "Server update failed: {value0}",
-                &[("value0", &format!("{}", error))],
+                &[("value0", &error.to_string())],
             )),
             Err(_) => {
                 page.restore_after_error(&crate::i18n::tr("Server update stopped unexpectedly"))
@@ -9076,7 +9046,7 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
         .label(if server.enabled && !server.requires_review {
             crate::i18n::trf(
                 "{value0} · Checking…",
-                &[("value0", &format!("{}", server.transport))],
+                &[("value0", &server.transport.to_string())],
             )
         } else {
             server.transport.clone()
@@ -9122,7 +9092,11 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
                 "Keys from {value0}",
                 &[(
                     "value0",
-                    &format!("{}", providers.into_iter().collect::<Vec<_>>().join(", ")),
+                    &providers
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                        .to_string(),
                 )],
             );
             widget
@@ -9314,7 +9288,7 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
             let dialog = adw::MessageDialog::new(
                 Some(&parent),
                 Some(&if personal {
-                    crate::i18n::trf("Enable {value0}?", &[("value0", &format!("{}", entry.name))])
+                    crate::i18n::trf("Enable {value0}?", &[("value0", &entry.name.to_string())])
                 } else {
                     "Approve references and enable?".into()
                 }),
@@ -9360,7 +9334,7 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
                         Ok(Err(e)) => match missing_value_editor(&e, &view.secret_keys) {
                             Some(editor) => {
                                 page.show_feedback(
-                                    &crate::i18n::trf("Could not turn on {value0}: {value1}", &[("value0", &format!("{}", view.name)), ("value1", &format!("{}", missing_value_hint(&e, &editor)))]),
+                                    &crate::i18n::trf("Could not turn on {value0}: {value1}", &[("value0", &view.name.to_string()), ("value1", &missing_value_hint(&e, &editor).to_string())]),
                                     true,
                                 );
                                 match editor {
@@ -9450,10 +9424,10 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
                                 page.restore_after_error(&crate::i18n::trf(
                                     "Could not turn on {value0}: {value1}",
                                     &[
-                                        ("value0", &format!("{}", server_name)),
+                                        ("value0", &server_name.to_string()),
                                         (
                                             "value1",
-                                            &format!("{}", missing_value_hint(&error, &editor)),
+                                            &missing_value_hint(&error, &editor).to_string(),
                                         ),
                                     ],
                                 ));
@@ -9469,8 +9443,8 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
                             None => page.restore_after_error(&crate::i18n::trf(
                                 "Could not update {value0}: {value1}",
                                 &[
-                                    ("value0", &format!("{}", server_name)),
-                                    ("value1", &format!("{}", error)),
+                                    ("value0", &server_name.to_string()),
+                                    ("value1", &error.to_string()),
                                 ],
                             )),
                         }
@@ -9479,7 +9453,7 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
                         restore_server_switch(&toggle, &status, &restoring, !enabled);
                         page.restore_after_error(&crate::i18n::trf(
                             "Could not update {value0}: the operation stopped",
-                            &[("value0", &format!("{}", server_name))],
+                            &[("value0", &server_name.to_string())],
                         ));
                     }
                 }
@@ -9577,7 +9551,7 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
         .icon_name("view-more-symbolic")
         .tooltip_text(crate::i18n::trf(
             "Actions for {value0}",
-            &[("value0", &format!("{}", server.name))],
+            &[("value0", &server.name.to_string())],
         ))
         .popover(&popover)
         .css_classes(["flat"])
@@ -9598,7 +9572,7 @@ fn auth_probe_summary(info: &crate::vendors::AuthInfo) -> String {
     if let Some(vendor) = info.vendor.as_deref() {
         summary.push_str(&crate::i18n::trf(
             " Detected {value0}.",
-            &[("value0", &format!("{}", vendor))],
+            &[("value0", vendor)],
         ));
     }
     if let Some(instructions) = info.instructions.as_deref() {
@@ -9608,7 +9582,7 @@ fn auth_probe_summary(info: &crate::vendors::AuthInfo) -> String {
     if let Some(token_url) = info.token_url.as_deref() {
         summary.push_str(&crate::i18n::trf(
             " Get a token at {value0}",
-            &[("value0", &format!("{}", token_url))],
+            &[("value0", token_url)],
         ));
     }
     summary
@@ -9624,7 +9598,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
         .modal(true)
         .title(crate::i18n::trf(
             "Authentication for {value0}",
-            &[("value0", &format!("{}", server.name))],
+            &[("value0", &server.name.to_string())],
         ))
         .default_width(560)
         .default_height(440)
@@ -9920,7 +9894,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                 l10n::bind_formatted_label(
                     &feedback_for_status,
                     "Could not read authentication status: {value0}",
-                    &[("value0", &format!("{}", error))],
+                    &[("value0", &error.to_string())],
                 );
                 feedback_for_status.add_css_class("error");
             }
@@ -9973,7 +9947,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                     l10n::bind_formatted_label(
                         &feedback,
                         "Client credentials for {value0} are configured.",
-                        &[("value0", &format!("{}", server_name))],
+                        &[("value0", &server_name.to_string())],
                     );
                     feedback.remove_css_class("error");
                     feedback.add_css_class("success");
@@ -9983,7 +9957,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                     l10n::bind_formatted_label(
                         &feedback,
                         "Could not save client credentials: {value0}",
-                        &[("value0", &format!("{}", error))],
+                        &[("value0", &error.to_string())],
                     );
                     feedback.add_css_class("error");
                 }
@@ -10019,7 +9993,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                     l10n::bind_formatted_label(
                         &feedback,
                         "Removed client credentials for {value0}.",
-                        &[("value0", &format!("{}", server_name))],
+                        &[("value0", &server_name.to_string())],
                     );
                     feedback.remove_css_class("error");
                     feedback.add_css_class("success");
@@ -10030,7 +10004,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                     l10n::bind_formatted_label(
                         &feedback,
                         "Could not remove client credentials: {value0}",
-                        &[("value0", &format!("{}", error))],
+                        &[("value0", &error.to_string())],
                     );
                     feedback.add_css_class("error");
                 }
@@ -10115,7 +10089,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                         feedback.remove_css_class("error");
                         feedback.add_css_class("success");
                         remove.set_sensitive(true);
-                        page.show_confirmation(&crate::i18n::trf("Authenticated {value0}", &[("value0", &format!("{}", server_name))]));
+                        page.show_confirmation(&crate::i18n::trf("Authenticated {value0}", &[("value0", &server_name.to_string())]));
                         page.reprobe_after_auth_change(&reprobe_id);
                     }
                     Ok(Err(error)) => {
@@ -10221,7 +10195,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                     remove.set_sensitive(true);
                     page.show_confirmation(&crate::i18n::trf(
                         "Updated authentication for {value0}",
-                        &[("value0", &format!("{}", server_name))],
+                        &[("value0", &server_name.to_string())],
                     ));
                     page.reprobe_after_auth_change(&reprobe_id);
                 }
@@ -10270,7 +10244,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                     feedback.add_css_class("success");
                     page.show_confirmation(&crate::i18n::trf(
                         "Removed authentication for {value0}",
-                        &[("value0", &format!("{}", server_name))],
+                        &[("value0", &server_name.to_string())],
                     ));
                     page.reprobe_after_auth_change(&reprobe_id);
                 }
@@ -10294,10 +10268,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
 fn test_server_connection(server: &state::ServerView, button: &gtk::Button, page: ServerPage) {
     button.set_sensitive(false);
     page.show_feedback(
-        &crate::i18n::trf(
-            "Testing {value0}…",
-            &[("value0", &format!("{}", server.name))],
-        ),
+        &crate::i18n::trf("Testing {value0}…", &[("value0", &server.name.to_string())]),
         false,
     );
     let server_id = server.id.clone();
@@ -10316,14 +10287,14 @@ fn test_server_connection(server: &state::ServerView, button: &gtk::Button, page
                     crate::i18n::msg("{value0} connected and exposed {value1} tools")
                 },
                 &[
-                    ("value0", &format!("{}", server_name)),
+                    ("value0", &server_name.to_string()),
                     ("value1", &format!("{}", probe.tool_count)),
                 ],
             )),
             Ok(Ok(probe)) if probe.auth_required => page.show_feedback(
                 &crate::i18n::trf(
                     "{value0} needs credentials before it can connect",
-                    &[("value0", &format!("{}", server_name))],
+                    &[("value0", &server_name.to_string())],
                 ),
                 true,
             ),
@@ -10331,13 +10302,10 @@ fn test_server_connection(server: &state::ServerView, button: &gtk::Button, page
                 &crate::i18n::trf(
                     "Could not connect to {value0}: {value1}",
                     &[
-                        ("value0", &format!("{}", server_name)),
+                        ("value0", &server_name.to_string()),
                         (
                             "value1",
-                            &format!(
-                                "{}",
-                                probe.error.as_deref().unwrap_or("unknown connection error")
-                            ),
+                            probe.error.as_deref().unwrap_or("unknown connection error"),
                         ),
                     ],
                 ),
@@ -10347,8 +10315,8 @@ fn test_server_connection(server: &state::ServerView, button: &gtk::Button, page
                 &crate::i18n::trf(
                     "Could not test {value0}: {value1}",
                     &[
-                        ("value0", &format!("{}", server_name)),
-                        ("value1", &format!("{}", error)),
+                        ("value0", &server_name.to_string()),
+                        ("value1", &error.to_string()),
                     ],
                 ),
                 true,
@@ -10356,7 +10324,7 @@ fn test_server_connection(server: &state::ServerView, button: &gtk::Button, page
             Err(_) => page.show_feedback(
                 &crate::i18n::trf(
                     "Could not test {value0}: the operation stopped",
-                    &[("value0", &format!("{}", server_name))],
+                    &[("value0", &server_name.to_string())],
                 ),
                 true,
             ),
@@ -10437,10 +10405,7 @@ fn missing_value_hint(error: &str, editor: &MissingValueEditor) -> String {
     };
     crate::i18n::trf(
         "{value0} Add it in {value1}, then turn the server on.",
-        &[
-            ("value0", &format!("{}", needs)),
-            ("value1", &format!("{}", place)),
-        ],
+        &[("value0", needs), ("value1", place)],
     )
 }
 
@@ -10454,7 +10419,7 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
         .modal(true)
         .title(crate::i18n::trf(
             "Credentials for {value0}",
-            &[("value0", &format!("{}", server.name))],
+            &[("value0", &server.name.to_string())],
         ))
         .default_width(620)
         .default_height(640)
@@ -10544,7 +10509,7 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
             .icon_name("user-trash-symbolic")
             .tooltip_text(crate::i18n::trf(
                 "Remove {value0}",
-                &[("value0", &format!("{}", key))],
+                &[("value0", &key.to_string())],
             ))
             .css_classes(["flat", "toolport-destructive-icon"])
             .build();
@@ -10825,19 +10790,12 @@ fn confirm_remove_credential(
     #[allow(deprecated)]
     let dialog = adw::MessageDialog::new(
         Some(&editor),
-        Some(&crate::i18n::trf(
-            "Remove {value0}?",
-            &[("value0", &format!("{}", key))],
-        )),
+        Some(&crate::i18n::trf("Remove {value0}?", &[("value0", key)])),
         Some(&crate::i18n::tr(
             "The stored value will be removed from the system keychain.",
         )),
     );
-    l10n::bind_formatted_dialog_heading(
-        &dialog,
-        "Remove {value0}?",
-        &[("value0", &format!("{}", key))],
-    );
+    l10n::bind_formatted_dialog_heading(&dialog, "Remove {value0}?", &[("value0", key)]);
     l10n::bind_dialog_body(
         &dialog,
         "The stored value will be removed from the system keychain.",
@@ -10906,15 +10864,15 @@ fn finish_credential_update(
             ));
             page.show_confirmation(&crate::i18n::trf(
                 "{value0} credential",
-                &[("value0", &format!("{}", action))],
+                &[("value0", action)],
             ));
             editor.close();
         }
         Ok(Err(error)) => {
             l10n::bind_formatted_label(
-                &feedback,
+                feedback,
                 "Could not update credential: {value0}",
-                &[("value0", &format!("{}", error))],
+                &[("value0", &error.to_string())],
             );
             feedback.set_visible(true);
             button.set_sensitive(true);
@@ -11111,7 +11069,7 @@ fn open_server_editor_prefilled(
             let typed = name.text().trim().to_lowercase();
             let duplicate = !typed.is_empty() && existing.contains(&typed);
             if duplicate {
-                l10n::bind_formatted_label(&duplicate_warning, "Another server is already named \"{value0}\". That's fine for multiple accounts; it'll be saved as a separate entry.", &[("value0", &format!("{}", name.text().trim()))]);
+                l10n::bind_formatted_label(&duplicate_warning, "Another server is already named \"{value0}\". That's fine for multiple accounts; it'll be saved as a separate entry.", &[("value0", name.text().trim())]);
             }
             duplicate_warning.set_visible(duplicate);
         });
@@ -11440,7 +11398,7 @@ fn open_server_editor_prefilled(
                         let items = servers.iter().enumerate().map(|(i, s)| crate::registry_controller::SetupItem {key:i.to_string(),name:s.name.clone(),transport:s.transport.clone(),command:s.command.clone(),args:s.args.clone(),url:s.url.clone(),env_keys:s.env.iter().map(|e| e.key.clone()).collect(),is_new:true,credentials:s.env.iter().map(|e|crate::registry_controller::CredentialReview{key:e.key.clone(),secret:crate::import_credentials::secret_env(&e.key,e.value.as_deref()),present:e.value.as_deref().is_some_and(crate::import_credentials::provided),required:true}).collect(),updates:Vec::new(),unsupported:None}).collect();
                         setup::review(&parent, &crate::i18n::tr("Review pasted servers"), items, &crate::i18n::tr("Review each command and URL. Credentials go to the keychain. Missing inputs stay off."), &crate::i18n::tr("Add selected servers"), false, move |selected,choices,inputs| {
                             let outcome = crate::registry_controller::add_snippet_servers_inputs(&text, &selected, &choices, &inputs)?;
-                            if !outcome.failed.is_empty() { return Err(crate::i18n::tr("Could not save credentials. Open Credentials and retry.").into()); }
+                            if !outcome.failed.is_empty() { return Err(crate::i18n::tr("Could not save credentials. Open Credentials and retry.")); }
                             Ok(outcome.servers.iter().map(|s|format!("{}: {}",s.name,s.status)).collect::<Vec<_>>().join("\n").into())
                         }, { let page = page_for_fill.clone(); move || run_profile_mutation(page.clone(), crate::i18n::msg("Added selected servers"), crate::registry_controller::registry_for_disconnect) }, None);
                         return;
@@ -11483,7 +11441,7 @@ fn open_server_editor_prefilled(
                     feedback_for_fill.add_css_class("success");
                 }
                 Err(error) => {
-                    l10n::bind_formatted_label(&feedback_for_fill, "Could not parse the snippet: {value0}", &[("value0", &format!("{}", error))]);
+                    l10n::bind_formatted_label(&feedback_for_fill, "Could not parse the snippet: {value0}", &[("value0", &error.to_string())]);
                     feedback_for_fill.remove_css_class("success");
                     feedback_for_fill.add_css_class("error");
                 }
@@ -11633,10 +11591,7 @@ fn open_server_editor_prefilled(
                         "Connection failed: {value0}",
                         &[(
                             "value0",
-                            &format!(
-                                "{}",
-                                probe.error.as_deref().unwrap_or("unknown connection error")
-                            ),
+                            probe.error.as_deref().unwrap_or("unknown connection error"),
                         )],
                     );
                     feedback.remove_css_class("success");
@@ -11646,7 +11601,7 @@ fn open_server_editor_prefilled(
                     l10n::bind_formatted_label(
                         &feedback,
                         "Could not test: {value0}",
-                        &[("value0", &format!("{}", error))],
+                        &[("value0", &error.to_string())],
                     );
                     feedback.remove_css_class("success");
                     feedback.add_css_class("error");
@@ -11704,8 +11659,7 @@ fn open_server_editor_prefilled(
                 {
                     return Err(crate::i18n::tr(
                         "Replace <launch-input> with a literal argument before saving",
-                    )
-                    .into());
+                    ));
                 }
                 match server_id {
                     Some(server_id) => {
@@ -11771,7 +11725,7 @@ fn open_server_editor_prefilled(
                     l10n::bind_formatted_label(
                         &feedback,
                         "Could not save: {value0}",
-                        &[("value0", &format!("{}", error))],
+                        &[("value0", &error.to_string())],
                     );
                     feedback.set_visible(true);
                     save.set_sensitive(true);
@@ -11852,7 +11806,7 @@ fn open_sync_settings(server_id: &str, page: &ServerPage) {
         }
         let check = gtk::CheckButton::with_label(&crate::i18n::trf(
             "{value0}: same on every machine",
-            &[("value0", &format!("{}", label))],
+            &[("value0", &label.to_string())],
         ));
         check.set_active(unknown.get("portable") == Some(&serde_json::json!(true)));
         fields.append(&check);
@@ -11956,16 +11910,10 @@ fn snippet_fill_feedback(name: &str, server_count: usize, env_count: usize) -> S
     let mut message = if server_count > 1 {
         crate::i18n::trf(
             "Found {value0} servers; filled \"{value1}\". Add the rest separately.",
-            &[
-                ("value0", &format!("{}", server_count)),
-                ("value1", &format!("{}", name)),
-            ],
+            &[("value0", &format!("{}", server_count)), ("value1", name)],
         )
     } else {
-        crate::i18n::trf(
-            "Parsed \"{value0}\" from the snippet.",
-            &[("value0", &format!("{}", name))],
-        )
+        crate::i18n::trf("Parsed \"{value0}\" from the snippet.", &[("value0", name)])
     };
     if env_count > 0 {
         message.push_str(&crate::i18n::trf(if env_count == 1 { crate::i18n::msg(" {value0} credential value will be stored in the system keychain when you add the server.") } else { crate::i18n::msg(" {value0} credential values will be stored in the system keychain when you add the server.") }, &[("value0", &format!("{}", env_count))]));
@@ -11989,7 +11937,7 @@ fn server_saved_feedback(
     if !declared_without_value.is_empty() {
         message.push_str(&crate::i18n::trf(
             ". Add a value for {value0} in Credentials",
-            &[("value0", &format!("{}", declared_without_value.join(", ")))],
+            &[("value0", &declared_without_value.join(", ").to_string())],
         ));
     }
     if !failed_env.is_empty() {
@@ -11999,7 +11947,7 @@ fn server_saved_feedback(
             } else {
                 crate::i18n::msg(". Could not store {value0}; use Credentials to add them")
             },
-            &[("value0", &format!("{}", failed_env.join(", ")))],
+            &[("value0", &failed_env.join(", ").to_string())],
         ));
     }
     message
@@ -12289,15 +12237,11 @@ fn confirm_remove_server(server_id: &str, server_name: &str, page: ServerPage) {
         Some(&parent),
         Some(&crate::i18n::trf(
             "Remove {value0}?",
-            &[("value0", &format!("{}", server_name))],
+            &[("value0", server_name)],
         )),
         Some(&crate::i18n::lookup(remove_server_copy(server_id))),
     );
-    l10n::bind_formatted_dialog_heading(
-        &dialog,
-        "Remove {value0}?",
-        &[("value0", &format!("{}", server_name))],
-    );
+    l10n::bind_formatted_dialog_heading(&dialog, "Remove {value0}?", &[("value0", server_name)]);
     l10n::bind_dialog_body(&dialog, remove_server_copy(server_id));
     dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
     l10n::bind_dialog_response(&dialog, "cancel", "Cancel");
@@ -12328,21 +12272,21 @@ fn confirm_remove_server(server_id: &str, server_name: &str, page: ServerPage) {
                     ));
                     page.show_confirmation(&crate::i18n::trf(
                         "Removed {value0}",
-                        &[("value0", &format!("{}", server_name))],
+                        &[("value0", &server_name.to_string())],
                     ));
                 }
                 Ok(Err(error)) => {
                     page.restore_after_error(&crate::i18n::trf(
                         "Could not remove {value0}: {value1}",
                         &[
-                            ("value0", &format!("{}", server_name)),
-                            ("value1", &format!("{}", error)),
+                            ("value0", &server_name.to_string()),
+                            ("value1", &error.to_string()),
                         ],
                     ));
                 }
                 Err(_) => page.restore_after_error(&crate::i18n::trf(
                     "Could not remove {value0}: the operation stopped",
-                    &[("value0", &format!("{}", server_name))],
+                    &[("value0", &server_name.to_string())],
                 )),
             }
         });
@@ -15154,9 +15098,9 @@ fn secret_reference_fields(
             provider_field.set_sensitive(true);
             feedback.set_visible(true);
             feedback.set_label(&match result {
-                Ok(Ok(())) => crate::i18n::tr("Success in the desktop app environment. The MCP client gateway may use different environment variables or PATH.").into(),
+                Ok(Ok(())) => crate::i18n::tr("Success in the desktop app environment. The MCP client gateway may use different environment variables or PATH."),
                 Ok(Err(e)) => e.to_string(),
-                Err(_) => crate::i18n::tr("Reference test stopped").into(),
+                Err(_) => crate::i18n::tr("Reference test stopped"),
             });
         });
     });

@@ -327,7 +327,7 @@ impl ServerToolsPanel {
     fn show_error(&self, error: &str) {
         self.set_status(&crate::i18n::trf(
             "Tools error: {value0}",
-            &[("value0", &format!("{}", error))],
+            &[("value0", error)],
         ));
         self.feedback.add_css_class("error");
     }
@@ -562,7 +562,7 @@ fn tool_row(
         .icon_name("view-more-symbolic")
         .tooltip_text(crate::i18n::trf(
             "More actions for {value0}",
-            &[("value0", &format!("{}", name))],
+            &[("value0", &name.to_string())],
         ))
         .popover(&popover)
         .valign(gtk::Align::Center)
@@ -627,7 +627,7 @@ fn tool_row(
     let name_for_run = name.clone();
     run.connect_clicked(move |_| {
         let name = name_for_run.clone();
-        let title = crate::i18n::trf("Run {value0}", &[("value0", &format!("{}", name))]);
+        let title = crate::i18n::trf("Run {value0}", &[("value0", &name.to_string())]);
         let tool_name = name.clone();
         open_json_action(&page, &title, &schema, move |server_id, arguments| {
             crate::playground::call_tool(&server_id, &tool_name, arguments)
@@ -673,7 +673,7 @@ fn open_exposure_editor(
     let window = adw::Window::builder()
         .title(crate::i18n::trf(
             "Tool exposure: {value0}",
-            &[("value0", &format!("{}", tool))],
+            &[("value0", tool)],
         ))
         .transient_for(&parent)
         .modal(true)
@@ -737,7 +737,7 @@ fn open_exposure_editor(
         l10n::bind_formatted_label(
             &widget,
             "Original description: {value0}",
-            &[("value0", &format!("{}", original_description))],
+            &[("value0", original_description)],
         );
         widget
     });
@@ -874,7 +874,7 @@ fn prompt_row(prompt: serde_json::Value, page: ServerToolsPanel) -> gtk::Box {
     let name_for_get = name.clone();
     action_row(&name, &description, "Get", move || {
         let name = name_for_get.clone();
-        let title = crate::i18n::trf("Get {value0}", &[("value0", &format!("{}", name))]);
+        let title = crate::i18n::trf("Get {value0}", &[("value0", &name.to_string())]);
         let prompt_name = name.clone();
         open_json_action(
             &page,
@@ -1005,7 +1005,7 @@ fn form_field_value(field: &FormField, raw: &str) -> Result<Option<serde_json::V
         return if field.required {
             Err(crate::i18n::trf(
                 "{value0} is required",
-                &[("value0", &format!("{}", field.name))],
+                &[("value0", &field.name.to_string())],
             ))
         } else {
             Ok(None)
@@ -1021,7 +1021,7 @@ fn form_field_value(field: &FormField, raw: &str) -> Result<Option<serde_json::V
             .map_err(|_| {
                 crate::i18n::trf(
                     "{value0} must be a whole number",
-                    &[("value0", &format!("{}", field.name))],
+                    &[("value0", &field.name.to_string())],
                 )
             }),
         FieldKind::Number => raw
@@ -1030,12 +1030,12 @@ fn form_field_value(field: &FormField, raw: &str) -> Result<Option<serde_json::V
             .map_err(|_| {
                 crate::i18n::trf(
                     "{value0} must be a number",
-                    &[("value0", &format!("{}", field.name))],
+                    &[("value0", &field.name.to_string())],
                 )
             }),
         FieldKind::Boolean => Err(crate::i18n::trf(
             "{value0} is a boolean and should not reach text coercion",
-            &[("value0", &format!("{}", field.name))],
+            &[("value0", &field.name.to_string())],
         )),
     }
 }
@@ -1062,7 +1062,7 @@ impl FormWidget {
                     return if field.required {
                         Err(crate::i18n::trf(
                             "{value0} is required",
-                            &[("value0", &format!("{}", field.name))],
+                            &[("value0", &field.name.to_string())],
                         ))
                     } else {
                         Ok(None)

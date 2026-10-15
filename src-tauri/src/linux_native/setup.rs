@@ -154,8 +154,8 @@ pub(super) fn review(
                                 crate::i18n::trf(
                                     "Enter {value0} or deselect {value1}",
                                     &[
-                                        ("value0", &format!("{}", field.key)),
-                                        ("value1", &format!("{}", name)),
+                                        ("value0", &field.key.to_string()),
+                                        ("value1", &name.to_string()),
                                     ],
                                 )
                             })
@@ -180,7 +180,7 @@ pub(super) fn review(
             .as_ref()
             .map(|c| format!("{c} {}", item.args.join(" ")))
             .or(item.url.clone())
-            .unwrap_or_else(|| crate::i18n::tr("Needs an endpoint URL").into());
+            .unwrap_or_else(|| crate::i18n::tr("Needs an endpoint URL"));
         let row = adw::ActionRow::builder()
             .title(&item.name)
             .subtitle(&command)
@@ -203,7 +203,7 @@ pub(super) fn review(
         row.set_activatable_widget(Some(&check));
         let (settings, content) = details_expander(&crate::i18n::trf(
             "{value0} credentials and settings",
-            &[("value0", &format!("{}", item.name))],
+            &[("value0", &item.name.to_string())],
         ));
         let credential_rows = gtk::ListBox::new();
         credential_rows.set_selection_mode(gtk::SelectionMode::None);
@@ -315,14 +315,14 @@ pub(super) fn review(
         if let Some(reason) = &item.unsupported {
             row.set_subtitle(&crate::i18n::trf(
                 "Unsupported: {value0}",
-                &[("value0", &format!("{}", reason))],
+                &[("value0", &reason.to_string())],
             ));
         }
         for env in item.credentials {
             let choice = gtk::CheckButton::builder()
                 .label(crate::i18n::trf(
                     "Keep {value0} in keychain",
-                    &[("value0", &format!("{}", env.key))],
+                    &[("value0", &env.key.to_string())],
                 ))
                 .active(env.secret)
                 .build();
@@ -356,9 +356,9 @@ pub(super) fn review(
                 let refresh_state = refresh_state.clone();
                 let value_row_for_input = value_row.clone();
                 open.connect_clicked(move |_| {
-                    let prompt = adw::MessageDialog::new(Some(&owner), Some(&crate::i18n::trf("{value0} credentials", &[("value0", &format!("{}", name))])), Some(&crate::i18n::trf("Enter {value0}. This value is used only for the selected server. It is saved only if connection succeeds.", &[("value0", &format!("{}", key))])));
-l10n::bind_formatted_dialog_heading(&prompt, "{value0} credentials", &[("value0", &format!("{}", name))]);
-l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used only for the selected server. It is saved only if connection succeeds.", &[("value0", &format!("{}", key))]);
+                    let prompt = adw::MessageDialog::new(Some(&owner), Some(&crate::i18n::trf("{value0} credentials", &[("value0", &name.to_string())])), Some(&crate::i18n::trf("Enter {value0}. This value is used only for the selected server. It is saved only if connection succeeds.", &[("value0", &key.to_string())])));
+l10n::bind_formatted_dialog_heading(&prompt, "{value0} credentials", &[("value0", &name.to_string())]);
+l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used only for the selected server. It is saved only if connection succeeds.", &[("value0", &key.to_string())]);
                     let entry = gtk::PasswordEntry::builder().show_peek_icon(true).build();
                     prompt.set_extra_child(Some(&entry));
                     prompt.add_responses(&[("cancel", "Cancel"), ("save", "Use for connection")]);
@@ -559,7 +559,7 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
                                 "{value0} tools · {value1}",
                                 &[
                                     ("value0", &format!("{}", server.tool_count)),
-                                    ("value1", &format!("{}", credential)),
+                                    ("value1", credential),
                                 ],
                             ))
                             .build();
@@ -599,8 +599,8 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
                                 &widget,
                                 "Backup {value0}\n{value1}",
                                 &[
-                                    ("value0", &format!("{}", date)),
-                                    ("value1", &format!("{}", backup)),
+                                    ("value0", &date.to_string()),
+                                    ("value1", &backup.to_string()),
                                 ],
                             );
                             widget
@@ -613,7 +613,7 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
                 result => {
                     let error = match result {
                         Ok(Err(error)) => error,
-                        _ => crate::i18n::tr("Setup stopped. Retry.").into(),
+                        _ => crate::i18n::tr("Setup stopped. Retry."),
                     };
                     feedback.set_label(&error);
                     feedback.add_css_class("error");
@@ -651,7 +651,7 @@ pub(super) fn connect(
                     .into_iter()
                     .find(|client| client.id == client_id)
                     .map(|client| client.name)
-                    .unwrap_or_else(|| crate::i18n::tr("Client").into());
+                    .unwrap_or_else(|| crate::i18n::tr("Client"));
                 let disclosure = crate::i18n::trf(
                     if force {
                         crate::i18n::msg("Config: {value0}\nBackup directory: {value1}\nSelected entries move after gateway verification. Unchecked entries and plugin servers stay in place. This replaces the customized Toolport entry.")
@@ -659,8 +659,8 @@ pub(super) fn connect(
                         crate::i18n::msg("Config: {value0}\nBackup directory: {value1}\nSelected entries move after gateway verification. Unchecked entries and plugin servers stay in place.")
                     },
                     &[
-                        ("value0", &format!("{}", preview.config_path)),
-                        ("value1", &format!("{}", preview.backup_dir)),
+                        ("value0", &preview.config_path.to_string()),
+                        ("value1", &preview.backup_dir.to_string()),
                     ],
                 );
                 review(
@@ -683,7 +683,7 @@ pub(super) fn connect(
                         Ok(Completion {
                             message: crate::i18n::trf(
                                 "{value0} connected. Restart it to load Toolport.",
-                                &[("value0", &format!("{}", client_name))],
+                                &[("value0", &client_name.to_string())],
                             ),
                             servers: outcome.servers,
                             tools: outcome.tools,
@@ -701,7 +701,7 @@ pub(super) fn connect(
                 &error,
                 &crate::i18n::tr("Close"),
                 false,
-                |_, _, _| Err(crate::i18n::tr("Fix the client config and retry.").into()),
+                |_, _, _| Err(crate::i18n::tr("Fix the client config and retry.")),
                 || {},
                 None,
             ),
@@ -712,7 +712,7 @@ pub(super) fn connect(
                 &crate::i18n::tr("Client review stopped."),
                 &crate::i18n::tr("Close"),
                 false,
-                |_, _, _| Err(crate::i18n::tr("Retry from Clients.").into()),
+                |_, _, _| Err(crate::i18n::tr("Retry from Clients.")),
                 || {},
                 None,
             ),

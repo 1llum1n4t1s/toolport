@@ -95,14 +95,14 @@ impl SettingsPage {
             source_label(
                 msg("Settings"),
                 gtk::Label::builder()
-                    .label(&tr("Settings"))
+                    .label(tr("Settings"))
                     .css_classes(["title"])
                     .build(),
             ),
         )));
         let refresh_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
-            .tooltip_text(&tr("Refresh settings"))
+            .tooltip_text(tr("Refresh settings"))
             .build();
         header.pack_end(&refresh_button);
         root.append(&header);
@@ -197,7 +197,7 @@ impl SettingsPage {
             source_label(
                 msg("Tools always included"),
                 gtk::Label::builder()
-                    .label(&tr("Tools always included"))
+                    .label(tr("Tools always included"))
                     .halign(gtk::Align::Start)
                     .css_classes(["heading"])
                     .build(),
@@ -205,7 +205,7 @@ impl SettingsPage {
         ));
         pinned_section.append(
             &source_label(msg("Tools pinned in Servers > Tools are included in every tool search, even when they do not match the search."), source_label(msg("Tools pinned in Servers > Tools are included in every tool search, even when they do not match the search."), gtk::Label::builder()
-                .label(&tr("Tools pinned in Servers > Tools are included in every tool search, even when they do not match the search."))
+                .label(tr("Tools pinned in Servers > Tools are included in every tool search, even when they do not match the search."))
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
@@ -220,7 +220,7 @@ impl SettingsPage {
             source_label(
                 msg("Checking pinned tools…"),
                 gtk::Label::builder()
-                    .label(&tr("Checking pinned tools…"))
+                    .label(tr("Checking pinned tools…"))
                     .halign(gtk::Align::Start)
                     .css_classes(["toolport-muted"])
                     .build(),
@@ -329,7 +329,7 @@ impl SettingsPage {
             source_label(
                 msg("Checking remembered approvals…"),
                 gtk::Label::builder()
-                    .label(&tr("Checking remembered approvals…"))
+                    .label(tr("Checking remembered approvals…"))
                     .halign(gtk::Align::Start)
                     .css_classes(["toolport-muted"])
                     .build(),
@@ -352,7 +352,7 @@ impl SettingsPage {
             source_label(
                 msg("Checking folder mappings…"),
                 gtk::Label::builder()
-                    .label(&tr("Checking folder mappings…"))
+                    .label(tr("Checking folder mappings…"))
                     .halign(gtk::Align::Start)
                     .css_classes(["toolport-muted"])
                     .build(),
@@ -374,7 +374,7 @@ impl SettingsPage {
             source_label(
                 msg("Old gateway processes"),
                 gtk::Label::builder()
-                    .label(&tr("Old gateway processes"))
+                    .label(tr("Old gateway processes"))
                     .halign(gtk::Align::Start)
                     .css_classes(["heading"])
                     .build(),
@@ -382,7 +382,7 @@ impl SettingsPage {
         ));
         stale_copy.append(
             &source_label(msg("Stop gateways left behind by an upgrade without interrupting the current endpoint."), source_label(msg("Stop gateways left behind by an upgrade without interrupting the current endpoint."), gtk::Label::builder()
-                .label(&tr("Stop gateways left behind by an upgrade without interrupting the current endpoint."))
+                .label(tr("Stop gateways left behind by an upgrade without interrupting the current endpoint."))
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
@@ -410,7 +410,7 @@ impl SettingsPage {
             source_label(
                 msg("Updates"),
                 gtk::Label::builder()
-                    .label(&tr("Updates"))
+                    .label(tr("Updates"))
                     .halign(gtk::Align::Start)
                     .css_classes(["heading"])
                     .build(),
@@ -436,7 +436,7 @@ impl SettingsPage {
         updates_copy.append(&source_button(
             msg("Open release page"),
             gtk::LinkButton::builder()
-                .label(&tr("Open release page"))
+                .label(tr("Open release page"))
                 .uri(super::package_updates::RELEASE_PAGE)
                 .halign(gtk::Align::Start)
                 .build(),
@@ -452,7 +452,7 @@ impl SettingsPage {
             source_label(
                 msg("Support and local data"),
                 gtk::Label::builder()
-                    .label(&tr("Support and local data"))
+                    .label(tr("Support and local data"))
                     .halign(gtk::Align::Start)
                     .css_classes(["heading"])
                     .build(),
@@ -460,7 +460,7 @@ impl SettingsPage {
         ));
         diagnostics_copy.append(
             &source_label(msg("Diagnostics redact secrets. The data folder contains your registry, audit, and gateway logs."), source_label(msg("Diagnostics redact secrets. The data folder contains your registry, audit, and gateway logs."), gtk::Label::builder()
-                .label(&tr("Diagnostics redact secrets. The data folder contains your registry, audit, and gateway logs."))
+                .label(tr("Diagnostics redact secrets. The data folder contains your registry, audit, and gateway logs."))
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
@@ -491,7 +491,7 @@ impl SettingsPage {
             source_label(
                 msg("Local HTTP gateway"),
                 gtk::Label::builder()
-                    .label(&tr("Local HTTP gateway"))
+                    .label(tr("Local HTTP gateway"))
                     .halign(gtk::Align::Start)
                     .css_classes(["heading"])
                     .build(),
@@ -502,7 +502,7 @@ impl SettingsPage {
             source_label(
                 msg("Checking endpoint…"),
                 gtk::Label::builder()
-                    .label(&tr("Checking endpoint…"))
+                    .label(tr("Checking endpoint…"))
                     .halign(gtk::Align::Fill)
                     .xalign(0.0)
                     .wrap(true)
@@ -567,7 +567,7 @@ impl SettingsPage {
             source_label(
                 msg("Start the endpoint to manage scoped clients."),
                 gtk::Label::builder()
-                    .label(&tr("Start the endpoint to manage scoped clients."))
+                    .label(tr("Start the endpoint to manage scoped clients."))
                     .halign(gtk::Align::Fill)
                     .xalign(0.0)
                     .wrap(true)
@@ -588,7 +588,7 @@ impl SettingsPage {
             source_label(
                 msg("Checking retained quarantines…"),
                 gtk::Label::builder()
-                    .label(&tr("Checking retained quarantines…"))
+                    .label(tr("Checking retained quarantines…"))
                     .halign(gtk::Align::Fill)
                     .xalign(0.0)
                     .wrap(true)
@@ -716,7 +716,7 @@ l10n::bind_dialog_heading(&error_dialog, msg("Could not start data removal"));
             source_label(
                 msg("Pending approvals appear in the approval queue."),
                 gtk::Label::builder()
-                    .label(&tr("Pending approvals appear in the approval queue."))
+                    .label(tr("Pending approvals appear in the approval queue."))
                     .xalign(0.0)
                     .wrap(true)
                     .css_classes(["toolport-muted"])
@@ -1070,7 +1070,7 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
             source_label(
                 msg("Default access"),
                 gtk::Label::builder()
-                    .label(&tr("Default access"))
+                    .label(tr("Default access"))
                     .halign(gtk::Align::Start)
                     .css_classes(["heading"])
                     .build(),
@@ -1119,7 +1119,7 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
 
         let creator = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let name = gtk::Entry::builder()
-            .placeholder_text(&tr("Access set name"))
+            .placeholder_text(tr("Access set name"))
             .hexpand(true)
             .build();
         l10n::bind_placeholder(&name, msg("Access set name"));
@@ -1258,11 +1258,11 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
             );
             copy.append(&source_formatted_label(
                 msg("Uses {profile_name}"),
-                &[("profile_name", &(profile_name).to_string())],
+                &[("profile_name", (profile_name))],
                 gtk::Label::builder()
                     .label(trf(
                         "Uses {profile_name}",
-                        &[("profile_name", &(profile_name).to_string())],
+                        &[("profile_name", (profile_name))],
                     ))
                     .halign(gtk::Align::Start)
                     .css_classes(["toolport-muted"])
@@ -1271,7 +1271,7 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
             row.append(&copy);
             let remove = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
-                .tooltip_text(&tr("Remove folder mapping"))
+                .tooltip_text(tr("Remove folder mapping"))
                 .css_classes(["flat"])
                 .build();
             let path = mapping.path;
@@ -1367,7 +1367,7 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
             return;
         };
         let dialog = gtk::FileDialog::builder()
-            .title(&tr("Choose a project folder"))
+            .title(tr("Choose a project folder"))
             .modal(true)
             .accept_label("Choose")
             .build();
@@ -1652,7 +1652,7 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
             dialog.set_response_appearance("add", adw::ResponseAppearance::Suggested);
             let form = gtk::Box::new(gtk::Orientation::Vertical, 8);
             let label = gtk::Entry::builder()
-                .placeholder_text(&tr("Client name, for example Open WebUI"))
+                .placeholder_text(tr("Client name, for example Open WebUI"))
                 .css_classes(["toolport-input"])
                 .build();
             l10n::bind_placeholder(&label, msg("Client name, for example Open WebUI"));
@@ -2183,10 +2183,7 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
     }
 
     fn show_error(&self, error: &str) {
-        self.set_status(&trf(
-            "Settings error: {error}",
-            &[("error", &(error).to_string())],
-        ));
+        self.set_status(&trf("Settings error: {error}", &[("error", (error))]));
         self.feedback.add_css_class("error");
     }
 
@@ -2324,10 +2321,7 @@ fn read_baseline_notice() -> Result<Option<String>, String> {
             "Last baseline warning: {time}: {value1}",
             &[
                 ("time", &(time).to_string()),
-                (
-                    "value1",
-                    &(event["detail"].as_str().unwrap_or_default()).to_string(),
-                ),
+                ("value1", (event["detail"].as_str().unwrap_or_default())),
             ],
         )
     }))
@@ -2438,7 +2432,7 @@ fn open_access_tool_scope(
         source_label(
             msg("Loading server tools…"),
             gtk::Label::builder()
-                .label(&tr("Loading server tools…"))
+                .label(tr("Loading server tools…"))
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
@@ -2763,7 +2757,7 @@ l10n::bind_formatted_dialog_heading(&dialog, msg("Re-approve all {count} blocked
 
 fn quarantine_definition_expander(entry: &QuarantinedTool) -> gtk::Expander {
     let expander = gtk::Expander::builder()
-        .label(&tr("Captured definition"))
+        .label(tr("Captured definition"))
         .build();
     expander.set_child(Some(&l10n::label(msg("Expand to load definition."))));
     let loading = Rc::new(Cell::new(false));
@@ -2854,7 +2848,7 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
     } else {
         copy.append(
             &source_label(msg("No saved definition. Approving captures the current definition for one more review."), gtk::Label::builder()
-                .label(&tr("No saved definition. Approving captures the current definition for one more review."))
+                .label(tr("No saved definition. Approving captures the current definition for one more review."))
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["toolport-muted"])

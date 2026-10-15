@@ -134,13 +134,6 @@ pub(super) fn bind_label_with(widget: &gtk::Label, formatter: impl Fn() -> Strin
     );
 }
 
-/// Snapshot raw parameter data, retaining the explicit source for live refresh.
-pub(super) fn formatted_label(source: &'static str, values: &[(&str, &str)]) -> gtk::Label {
-    let widget = gtk::Label::new(None);
-    bind_formatted_label(&widget, source, values);
-    widget
-}
-
 pub(super) fn bind_formatted_label(
     widget: &gtk::Label,
     source: &'static str,
@@ -151,24 +144,6 @@ pub(super) fn bind_formatted_label(
         .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
         .collect();
     bind_label_with(widget, move || {
-        let refs: Vec<_> = values
-            .iter()
-            .map(|(key, value)| (key.as_str(), value.as_str()))
-            .collect();
-        crate::i18n::format_message(source, &refs)
-    });
-}
-
-pub(super) fn bind_formatted_button(
-    widget: &gtk::Button,
-    source: &'static str,
-    values: &[(&str, &str)],
-) {
-    let values: Vec<(String, String)> = values
-        .iter()
-        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-        .collect();
-    bind_button_with(widget, move || {
         let refs: Vec<_> = values
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str()))
@@ -223,42 +198,6 @@ pub(super) fn bind_text(widget: &impl IsA<gtk::Widget>, source: &'static str) {
         bind_check_button(button, source);
     } else {
         panic!("bind_text requires a Label, Button or CheckButton");
-    }
-}
-
-pub(super) fn bind_formatted_text(
-    widget: &impl IsA<gtk::Widget>,
-    source: &'static str,
-    values: &[(&str, &str)],
-) {
-    let widget = widget.as_ref();
-    if let Some(label) = widget.downcast_ref::<gtk::Label>() {
-        bind_formatted_label(label, source, values);
-    } else if let Some(button) = widget.downcast_ref::<gtk::Button>() {
-        bind_formatted_button(button, source, values);
-    } else if let Some(button) = widget.downcast_ref::<gtk::CheckButton>() {
-        let weak = button.downgrade();
-        let values: Vec<(String, String)> = values
-            .iter()
-            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-            .collect();
-        register(
-            button,
-            "label",
-            Rc::new(move || {
-                let Some(button) = weak.upgrade() else {
-                    return false;
-                };
-                let refs: Vec<_> = values
-                    .iter()
-                    .map(|(key, value)| (key.as_str(), value.as_str()))
-                    .collect();
-                button.set_label(Some(&crate::i18n::format_message(source, &refs)));
-                true
-            }),
-        );
-    } else {
-        panic!("bind_formatted_text requires a Label, Button or CheckButton");
     }
 }
 

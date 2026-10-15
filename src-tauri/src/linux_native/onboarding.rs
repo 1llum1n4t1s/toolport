@@ -88,7 +88,7 @@ pub(super) fn mark_complete() -> Result<(), String> {
     crate::registry::atomic_write(&marker_path()?, "complete\n").map_err(|error| {
         crate::i18n::trf(
             "could not save setup completion: {value0}",
-            &[("value0", &format!("{}", error))],
+            &[("value0", &error.to_string())],
         )
     })
 }
@@ -382,17 +382,19 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
                             ("value0", &format!("{}", names.len())),
                             (
                                 "value1",
-                                &format!(
-                                    "{}",
-                                    names.into_iter().take(4).collect::<Vec<_>>().join(", ")
-                                ),
+                                &names
+                                    .into_iter()
+                                    .take(4)
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                                    .to_string(),
                             ),
                         ],
                     )
                 } else {
                     crate::i18n::trf(
                         "Detected: {value0}",
-                        &[("value0", &format!("{}", names.join(", ")))],
+                        &[("value0", &names.join(", ").to_string())],
                     )
                 };
                 detected_for_load.set_label(&message);
@@ -400,7 +402,7 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
             Ok(Err(error)) => l10n::bind_formatted_label(
                 &detected_for_load,
                 "Client detection is unavailable: {value0}",
-                &[("value0", &format!("{}", error))],
+                &[("value0", &error.to_string())],
             ),
             Err(_) => detected_for_load
                 .set_label(&crate::i18n::tr("Client detection stopped unexpectedly.")),
@@ -704,9 +706,9 @@ impl CallVerifier {
                     l10n::bind_formatted_label(
                         &verifier.title,
                         "Prove it works in {value0}",
-                        &[("value0", &format!("{}", client))],
+                        &[("value0", &client.to_string())],
                     );
-                    l10n::bind_formatted_label(&verifier.status, "Waiting for a new Toolport call. If {value0} was already open, restart it first.", &[("value0", &format!("{}", client))]);
+                    l10n::bind_formatted_label(&verifier.status, "Waiting for a new Toolport call. If {value0} was already open, restart it first.", &[("value0", &client.to_string())]);
                     verifier.poll(since, Instant::now() + Duration::from_secs(75), generation);
                 }
                 Ok(Ok(None)) => verifier.root.set_visible(false),
@@ -760,8 +762,8 @@ impl CallVerifier {
                         &verifier_for_read.status,
                         "It works. A new call reached {value0}: {value1}.",
                         &[
-                            ("value0", &format!("{}", proof.server)),
-                            ("value1", &format!("{}", proof.tool)),
+                            ("value0", &proof.server.to_string()),
+                            ("value1", &proof.tool.to_string()),
                         ],
                     );
                     verifier_for_read.retry.set_visible(false);
@@ -781,7 +783,7 @@ impl CallVerifier {
         l10n::bind_formatted_label(
             &self.status,
             "Verification did not start because {value0}. Older calls will never count as proof.",
-            &[("value0", &format!("{}", error))],
+            &[("value0", error)],
         );
         self.retry.set_visible(true);
     }
@@ -903,7 +905,7 @@ fn run_health_check(button: &gtk::Button, label: &gtk::Label) {
                             },
                             &[
                                 ("value0", &format!("{}", failed)),
-                                ("value2", &format!("{}", details)),
+                                ("value2", &details.to_string()),
                             ],
                         ),
                     );
@@ -1025,11 +1027,7 @@ fn show_success(label: &gtk::Label, text: &str) {
 }
 
 fn show_error(label: &gtk::Label, text: &str) {
-    l10n::bind_formatted_label(
-        &label,
-        "Could not continue: {value0}",
-        &[("value0", &format!("{}", text))],
-    );
+    l10n::bind_formatted_label(label, "Could not continue: {value0}", &[("value0", text)]);
     label.set_visible(true);
     label.remove_css_class("success");
     label.add_css_class("error");

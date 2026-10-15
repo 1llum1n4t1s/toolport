@@ -534,7 +534,7 @@ impl CatalogPage {
         l10n::bind_formatted_label(
             &self.feedback,
             "Could not load the catalog: {value0}",
-            &[("value0", &format!("{}", error))],
+            &[("value0", error)],
         );
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
@@ -583,20 +583,20 @@ fn suggestion_row(
     let detail = if entry.source == "curated" {
         crate::i18n::trf(
             "Toolport verified · {value0}",
-            &[("value0", &format!("{}", entry.description))],
+            &[("value0", &entry.description.to_string())],
         )
     } else if let Some(publisher) = entry.publisher.as_deref() {
         crate::i18n::trf(
             "MCP Registry · {value0} · {value1}",
             &[
-                ("value0", &format!("{}", publisher)),
-                ("value1", &format!("{}", entry.description)),
+                ("value0", publisher),
+                ("value1", &entry.description.to_string()),
             ],
         )
     } else {
         crate::i18n::trf(
             "MCP Registry · {value0}",
-            &[("value0", &format!("{}", entry.description))],
+            &[("value0", &entry.description.to_string())],
         )
     };
     copy.append(
@@ -647,7 +647,7 @@ fn suggestion_row(
                         open_added_setup(&registry, &page);
                         page.pending_notice.replace(Some(crate::i18n::trf(
                             "Added {value0}. Check its status under Servers.",
-                            &[("value0", &format!("{}", name))],
+                            &[("value0", &name.to_string())],
                         )));
                         page.search.set_text("");
                         page.refresh();
@@ -736,10 +736,9 @@ fn catalog_card(
     let provenance = match entry.source.as_str() {
         "curated" => crate::i18n::tr("Toolport verified").to_string(),
         "registry" => match entry.publisher.as_deref() {
-            Some(publisher) => crate::i18n::trf(
-                "MCP Registry · {value0}",
-                &[("value0", &format!("{}", publisher))],
-            ),
+            Some(publisher) => {
+                crate::i18n::trf("MCP Registry · {value0}", &[("value0", publisher)])
+            }
             None => crate::i18n::tr("MCP Registry").to_string(),
         },
         _ => crate::i18n::tr("Your pick").to_string(),
@@ -773,7 +772,7 @@ fn catalog_card(
             .icon_name("help-browser-symbolic")
             .tooltip_text(crate::i18n::trf(
                 "Open docs: {value0}",
-                &[("value0", &format!("{}", homepage))],
+                &[("value0", &homepage.to_string())],
             ))
             .valign(gtk::Align::Center)
             .css_classes(["flat"])
@@ -831,7 +830,7 @@ fn catalog_card(
                         open_added_setup(&registry, &page);
                         page.pending_notice.replace(Some(crate::i18n::trf(
                             "Added {value0}. Check its status under Servers.",
-                            &[("value0", &format!("{}", name))],
+                            &[("value0", &name.to_string())],
                         )));
                         page.refresh();
                     }
