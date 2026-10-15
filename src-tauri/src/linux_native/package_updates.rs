@@ -1,3 +1,4 @@
+use crate::i18n::msg;
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -14,19 +15,19 @@ enum PackageType {
 
 fn advice(package: Option<PackageType>) -> &'static str {
     match package {
-        Some(PackageType::Deb) => {
-            "Download the new .deb from the release page, then run sudo apt install ./<file>.deb."
-        }
-        Some(PackageType::Rpm) => {
-            "Download the new .rpm from the release page, then run sudo dnf install ./<file>.rpm."
-        }
-        Some(PackageType::Pacman) => "Update Toolport with sudo pacman -Syu.",
+        Some(PackageType::Deb) => msg(
+            "Download the new .deb from the release page, then run sudo apt install ./<file>.deb.",
+        ),
+        Some(PackageType::Rpm) => msg(
+            "Download the new .rpm from the release page, then run sudo dnf install ./<file>.rpm.",
+        ),
+        Some(PackageType::Pacman) => msg("Update Toolport with sudo pacman -Syu."),
         Some(PackageType::Aur) => {
-            "Update toolport-bin with your AUR helper, or rebuild it from the AUR."
+            msg("Update toolport-bin with your AUR helper, or rebuild it from the AUR.")
         }
-        None => {
-            "Open the release page for the latest Toolport package and installation instructions."
-        }
+        None => msg(
+            "Open the release page for the latest Toolport package and installation instructions.",
+        ),
     }
 }
 

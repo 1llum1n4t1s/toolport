@@ -7,10 +7,12 @@
 FROM rust:1-slim-bookworm AS build
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        pkg-config libssl-dev \
+        pkg-config libssl-dev libdbus-1-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/build.rs ./src-tauri/
+# Cargo validates declared example targets even for a gateway-only build.
+COPY src-tauri/examples ./src-tauri/examples
 WORKDIR /src/src-tauri
 RUN mkdir -p src/bin src/test_support && \
     printf '%s\n' \

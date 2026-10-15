@@ -1,3 +1,4 @@
+use crate::i18n::{tr, trf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::LazyLock;
@@ -26,8 +27,18 @@ thread_local! {
     static TRAY_COMMANDS: std::cell::RefCell<Option<mpsc::Sender<Command>>> = const { std::cell::RefCell::new(None) };
 }
 
+/// Recompute menu labels on the SNI worker after a saved language change.
+pub(super) fn refresh_language() {
+    TRAY_COMMANDS.with(|commands| {
+        if let Some(commands) = commands.borrow().as_ref() {
+            let _ = commands.send(Command::LanguageChanged);
+        }
+    });
+}
+
 enum Command {
     Pending(usize),
+    LanguageChanged,
     Show,
     ShowApprovals,
     Quit,
@@ -46,8 +57,11 @@ impl ksni::Tray for ToolportTray {
     fn title(&self) -> String {
         match self.pending {
             0 => "Toolport".into(),
-            1 => "Toolport - 1 request awaiting action".into(),
-            n => format!("Toolport - {n} requests awaiting action"),
+            1 => tr("Toolport - 1 request awaiting action"),
+            n => trf(
+                "Toolport - {count} requests awaiting action",
+                &[("count", &n.to_string())],
+            ),
         }
     }
 
@@ -88,7 +102,7 @@ impl ksni::Tray for ToolportTray {
 
         vec![
             StandardItem {
-                label: "Open Toolport".into(),
+                label: tr("Open Toolport"),
                 activate: Box::new(|tray: &mut Self| {
                     let _ = tray.commands.send(Command::Show);
                 }),
@@ -96,7 +110,10 @@ impl ksni::Tray for ToolportTray {
             }
             .into(),
             StandardItem {
-                label: format!("Pending approvals ({})", self.pending),
+                label: trf(
+                    "Pending approvals ({count})",
+                    &[("count", &self.pending.to_string())],
+                ),
                 activate: Box::new(|tray: &mut Self| {
                     let _ = tray.commands.send(Command::ShowApprovals);
                 }),
@@ -105,7 +122,7 @@ impl ksni::Tray for ToolportTray {
             .into(),
             MenuItem::Separator,
             StandardItem {
-                label: "Quit Toolport".into(),
+                label: tr("Quit Toolport"),
                 activate: Box::new(|tray: &mut Self| {
                     let _ = tray.commands.send(Command::Quit);
                 }),
@@ -166,6 +183,10 @@ pub(super) fn start(app: &adw::Application) -> Option<ksni::blocking::Handle<Too
                 let _ = handle_for_updates.update(move |tray| tray.pending = pending);
                 continue;
             }
+            if matches!(command, Command::LanguageChanged) {
+                let _ = handle_for_updates.update(|_| {});
+                continue;
+            }
             let app = app.clone();
             gtk::glib::idle_add_once(move || {
                 let Some(app) = app.upgrade() else {
@@ -180,7 +201,7 @@ pub(super) fn start(app: &adw::Application) -> Option<ksni::blocking::Handle<Too
                         }
                     }
                     Command::Quit => app.quit(),
-                    Command::Pending(_) => {}
+                    Command::Pending(_) | Command::LanguageChanged => {}
                 }
             });
         }

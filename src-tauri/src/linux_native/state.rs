@@ -1,3 +1,4 @@
+use crate::i18n::{tr, trf};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
@@ -119,8 +120,8 @@ impl ActivitySnapshot {
                     tool: entry
                         .get("tool")
                         .and_then(serde_json::Value::as_str)
-                        .unwrap_or("Unknown tool")
-                        .to_string(),
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| tr("Unknown tool")),
                     client: entry["clientName"].as_str().map(str::to_string),
                     client_id: entry
                         .get("client")
@@ -211,8 +212,8 @@ fn activity_server(entry: &serde_json::Value) -> String {
         .and_then(serde_json::Value::as_str)
         .and_then(|tool| tool.split_once("__").map(|(server, _)| server.trim()))
         .filter(|server| !server.is_empty())
-        .unwrap_or("Unknown server")
-        .to_string()
+        .map(str::to_owned)
+        .unwrap_or_else(|| tr("Unknown server"))
 }
 
 /// Group provenance rows by source server for display, preserving the incoming
@@ -465,17 +466,34 @@ pub(super) struct ClientSnapshot {
     pub(super) sessions_error: bool,
 }
 
+fn default_access_display_label(registry: &Registry) -> String {
+    let name = registry
+        .default_access_profile_id
+        .as_deref()
+        .or_else(|| {
+            registry
+                .default_access_legacy_policy
+                .then_some(registry.default_access_context_id.as_deref())
+                .flatten()
+        })
+        .and_then(|id| registry.profiles.iter().find(|profile| profile.id == id))
+        .map(|profile| profile.name.as_str())
+        .filter(|name| !name.trim().eq_ignore_ascii_case("default"));
+    name.map(|name| trf("Default access ({name})", &[("name", name)]))
+        .unwrap_or_else(|| tr("Default access"))
+}
+
 fn client_access_label(registry: &Registry, scope: Option<&str>) -> String {
     match scope.filter(|scope| !scope.is_empty()) {
-        None => registry.default_access_label(),
-        Some(crate::registry::ALL_ENABLED_ACCESS) => "All enabled servers".into(),
+        None => default_access_display_label(registry),
+        Some(crate::registry::ALL_ENABLED_ACCESS) => tr("All enabled servers"),
         Some(reference) => {
             let name = registry
                 .profiles
                 .iter()
                 .find(|p| p.id == reference || p.name == reference)
                 .map(|p| p.name.clone())
-                .unwrap_or_else(|| format!("{reference} (unavailable)"));
+                .unwrap_or_else(|| trf("{name} (unavailable)", &[("name", reference)]));
             name
         }
     }
@@ -485,11 +503,11 @@ fn client_access_options(registry: &Registry) -> Vec<ProfileView> {
     let mut options = vec![
         ProfileView {
             id: String::new(),
-            name: registry.default_access_label(),
+            name: default_access_display_label(registry),
         },
         ProfileView {
             id: crate::registry::ALL_ENABLED_ACCESS.into(),
-            name: "All enabled servers".into(),
+            name: tr("All enabled servers"),
         },
     ];
     options.extend(registry.profiles.iter().map(|profile| ProfileView {
@@ -658,7 +676,7 @@ impl RegistrySnapshot {
                 ServerView {
                     origin_label: if crate::personal_sync::is_personal(&registry) {
                         if crate::personal_sync::keep_local(server) {
-                            "This machine only".into()
+                            tr("This machine only")
                         } else if sync_state.as_ref().is_some_and(|st| {
                             st.conflicts.contains_key(
                                 server
@@ -668,25 +686,28 @@ impl RegistrySnapshot {
                                     .unwrap_or(&server.id),
                             )
                         }) {
-                            "Sync conflict".into()
+                            tr("Sync conflict")
                         } else if !enabled && server.needs_team_enable_review() {
                             // Approved and on means reviewed, even though the
                             // gate would apply again to turning it back on.
-                            "Needs review".into()
+                            tr("Needs review")
                         } else {
-                            "Synced".into()
+                            tr("Synced")
                         }
                     } else if server.source.as_deref().unwrap_or("").starts_with("team:") {
-                        format!(
-                            "Team · {}",
-                            registry
-                                .team
-                                .as_ref()
-                                .and_then(|t| t.team_name.as_deref())
-                                .unwrap_or("Shared")
+                        trf(
+                            "Team · {name}",
+                            &[(
+                                "name",
+                                &registry
+                                    .team
+                                    .as_ref()
+                                    .and_then(|team| team.team_name.clone())
+                                    .unwrap_or_else(|| tr("Shared")),
+                            )],
                         )
                     } else {
-                        "Personal".into()
+                        tr("Personal")
                     },
                     id: server.id.clone(),
                     name: server.name.clone(),
@@ -810,6 +831,18 @@ pub(super) fn transport_label(transport: &str) -> &'static str {
         "http" => "Remote HTTP",
         "sse" => "Remote SSE",
         _ => "Custom transport",
+    }
+}
+
+/// Translate the presentation separately: canonical transport labels also
+/// select branding fallbacks and must stay stable in ServerView/Catalog views.
+pub(super) fn display_transport(transport: &str) -> String {
+    match transport {
+        "stdio" | "Local stdio" => tr("Local stdio"),
+        "http" | "Remote HTTP" => tr("Remote HTTP"),
+        "sse" | "Remote SSE" => tr("Remote SSE"),
+        "Custom transport" => tr("Custom transport"),
+        _ => transport.to_owned(),
     }
 }
 
@@ -1121,7 +1154,7 @@ mod tests {
             snapshot.servers,
             vec![
                 ServerView {
-                    origin_label: "Personal".into(),
+                    origin_label: tr("Personal"),
                     id: "local".into(),
                     name: "Files".into(),
                     transport: "Local stdio".into(),
@@ -1142,7 +1175,7 @@ mod tests {
                     probe_fingerprint: fingerprints[0],
                 },
                 ServerView {
-                    origin_label: "Personal".into(),
+                    origin_label: tr("Personal"),
                     id: "remote".into(),
                     name: "GitHub".into(),
                     transport: "Remote HTTP".into(),

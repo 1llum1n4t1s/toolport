@@ -7,6 +7,7 @@ mod branding;
 mod catalog;
 mod health;
 mod http_bridge;
+mod i18n;
 mod io;
 mod notify;
 mod onboarding;
@@ -21,6 +22,7 @@ mod theme;
 mod tools;
 mod tray;
 
+use self::i18n as l10n;
 use adw::prelude::*;
 use catalog::CatalogPage;
 use gtk::glib::prelude::ToValue;
@@ -37,6 +39,7 @@ const APP_ID: &str = "com.tsout.Toolport";
 const LEGACY_PREVIEW_APP_ID: &str = "com.tsout.Toolport.NativePreview";
 
 pub fn run() {
+    let _ = crate::i18n::initialize();
     #[cfg(target_env = "gnu")]
     // SAFETY: this process-wide glibc setting is applied before GTK workers start.
     unsafe {
@@ -65,6 +68,7 @@ pub fn run() {
         return;
     }
     let _hold = app.hold();
+    let _language_monitor = l10n::install_language_watch(tray::refresh_language).ok();
     let quit = gtk::gio::SimpleAction::new("quit", None);
     let app_for_quit = app.clone();
     quit.connect_activate(move |_, _| app_for_quit.quit());
@@ -112,7 +116,7 @@ pub fn run() {
             app_for_startup.downgrade().into();
         let result = gtk::gio::spawn_blocking(move || load_native_startup(app_for_events))
             .await
-            .unwrap_or_else(|_| Err("The startup worker stopped unexpectedly".into()));
+            .unwrap_or_else(|_| Err(crate::i18n::tr("The startup worker stopped unexpectedly")));
         if result.is_ok() {
             *tray_for_startup.borrow_mut() = tray::start(&app_for_startup);
             if launch_hidden && tray_for_startup.borrow().is_none() {
@@ -306,11 +310,8 @@ fn ensure_url_scheme_handlers() {
         if std::fs::create_dir_all(&applications).is_err() {
             return;
         }
-        let desktop_path = applications.join(format!("{APP_ID}.desktop"));
-        let contents = format!(
-            "[Desktop Entry]\nType=Application\nName=Toolport\nExec={} %u\nIcon=toolport\nNoDisplay=true\nMimeType=x-scheme-handler/toolport;x-scheme-handler/conduit;\n",
-            exe.display()
-        );
+        let desktop_path = applications.join(format!("{}.desktop", APP_ID));
+        let contents = format!("[Desktop Entry]\nType=Application\nName=Toolport\nExec={} %u\nIcon=toolport\nNoDisplay=true\nMimeType=x-scheme-handler/toolport;x-scheme-handler/conduit;\n", exe.display());
         if std::fs::write(&desktop_path, contents).is_err() {
             return;
         }
@@ -320,7 +321,7 @@ fn ensure_url_scheme_handlers() {
         for scheme in unhandled {
             let _ = std::process::Command::new("xdg-mime")
                 .arg("default")
-                .arg(format!("{APP_ID}.desktop"))
+                .arg(format!("{}.desktop", APP_ID))
                 .arg(format!("x-scheme-handler/{scheme}"))
                 .status();
         }
@@ -343,7 +344,7 @@ fn ensure_url_scheme_handlers() {
 fn migrate_preview_identity() {
     let old_autostart = crate::autostart::linux_autostart_file(settings::LEGACY_AUTOSTART_NAME);
     let applications = gtk::glib::user_data_dir().join("applications");
-    let stale_handler = applications.join(format!("{LEGACY_PREVIEW_APP_ID}.desktop"));
+    let stale_handler = applications.join(format!("{}.desktop", LEGACY_PREVIEW_APP_ID));
     let retired = retire_preview_files(old_autostart.as_deref(), &stale_handler, || {
         let _ = crate::autostart::enable_linux(settings::NATIVE_AUTOSTART_NAME);
     });
@@ -405,15 +406,19 @@ fn build_window(
     let saved_state = &startup.saved_state;
     let paired = startup.paired;
     let startup_notice = std::rc::Rc::new(std::cell::RefCell::new(startup.recovery.take()));
-    let window = adw::ApplicationWindow::builder()
-        .application(app)
-        .title("Toolport")
-        .icon_name("toolport")
-        .default_width(saved_state.as_ref().map(|s| s.width).unwrap_or(1120))
-        .default_height(saved_state.as_ref().map(|s| s.height).unwrap_or(720))
-        .resizable(true)
-        .hide_on_close(true)
-        .build();
+    let window = {
+        let widget = adw::ApplicationWindow::builder()
+            .application(app)
+            .title(crate::i18n::tr("Toolport"))
+            .icon_name("toolport")
+            .default_width(saved_state.as_ref().map(|s| s.width).unwrap_or(1120))
+            .default_height(saved_state.as_ref().map(|s| s.height).unwrap_or(720))
+            .resizable(true)
+            .hide_on_close(true)
+            .build();
+        l10n::bind_window_title(&widget, "Toolport");
+        widget
+    };
     window.add_css_class("toolport-native");
     // First close-to-tray must not read as a quit: say once, ever, that the app
     // keeps running. The marker is shared with the shipping shell so a user who
@@ -506,25 +511,25 @@ fn build_window(
                 .build(),
         );
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let exports = gtk::Button::with_label("Open exports folder");
+        let exports = l10n::button("Open exports folder");
         exports.connect_clicked(|_| {
             if let Err(error) = crate::diagnostics_controller::open_exports_dir() {
                 eprintln!("toolport: {error}");
             }
         });
         actions.append(&exports);
-        let need = gtk::Button::with_label("I need this");
+        let need = l10n::button("I need this");
         let issue = crate::registry::removed_features_issue_url(removed);
         need.connect_clicked(move |_| {
             let _ = crate::oauth::open_web_url(&issue);
         });
         actions.append(&need);
-        let go_back = gtk::Button::with_label("Go back to 1.24");
+        let go_back = l10n::button("Go back to 1.24");
         go_back.connect_clicked(|_| {
             let _ = crate::oauth::open_web_url(crate::registry::GO_BACK_TO_1X_URL);
         });
         actions.append(&go_back);
-        let dismiss = gtk::Button::with_label("Dismiss");
+        let dismiss = l10n::button("Dismiss");
         let notice_for_dismiss = notice.clone();
         dismiss.connect_clicked(move |button| {
             button.set_sensitive(false);
@@ -554,13 +559,11 @@ fn build_window(
     if startup.access_notice {
         let notice = gtk::Box::new(gtk::Orientation::Vertical, 8);
         notice.add_css_class("toolport-setting-row");
-        notice.append(&gtk::Label::builder().label(
-            "Stop old Toolport gateways, then restart apps to use client access controls."
-        ).tooltip_text(
-            "Old Toolport gateways may still be running from before the upgrade. Stop old gateways, then restart any apps still using them so they use the new client access controls."
-        ).wrap(true).xalign(0.0).build());
+        notice.append(&{ let widget = gtk::Label::builder().label(crate::i18n::tr("Stop old Toolport gateways, then restart apps to use client access controls.")).tooltip_text(
+            crate::i18n::tr("Old Toolport gateways may still be running from before the upgrade. Stop old gateways, then restart any apps still using them so they use the new client access controls.")
+        ).wrap(true).xalign(0.0).build(); l10n::bind_label(&widget, "Stop old Toolport gateways, then restart apps to use client access controls."); widget });
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let stop = gtk::Button::with_label("Stop old gateways");
+        let stop = l10n::button("Stop old gateways");
         let settings = settings_page.clone();
         let stack_for_stop = stack.clone();
         stop.connect_clicked(move |_| {
@@ -569,7 +572,7 @@ fn build_window(
             settings.stop_stale.emit_clicked();
         });
         actions.append(&stop);
-        let dismiss = gtk::Button::with_label("Dismiss");
+        let dismiss = l10n::button("Dismiss");
         let notice_for_dismiss = notice.clone();
         dismiss.connect_clicked(move |button| {
             button.set_sensitive(false);
@@ -681,7 +684,7 @@ fn build_window(
         if let state::RegistryState::Ready(ready) = &snapshot {
             team_button.set_visible(true);
             let label = if !ready.paired {
-                "Sign in to sync"
+                crate::i18n::msg("Sign in to sync")
             } else if ready.personal_sync {
                 "Sync"
             } else {
@@ -691,9 +694,9 @@ fn build_window(
             set_nav_label(
                 &team_button,
                 &if count > 0 {
-                    format!("{label} ({count})")
+                    format!("{} ({count})", crate::i18n::lookup(label))
                 } else {
-                    label.into()
+                    crate::i18n::lookup(label)
                 },
             );
         }
@@ -702,12 +705,20 @@ fn build_window(
             let detail = notice
                 .quarantine_path
                 .as_deref()
-                .map(|path| format!(" The unreadable copy was preserved at {path}."))
+                .map(|path| {
+                    crate::i18n::trf(
+                        " The unreadable copy was preserved at {value0}.",
+                        &[("value0", path)],
+                    )
+                })
                 .unwrap_or_default();
             server_page.show_feedback(
-                &format!(
-                    "Toolport recovered the registry from a backup: {}.{detail}",
-                    notice.reason
+                &crate::i18n::trf(
+                    "Toolport recovered the registry from a backup: {value0}.{value1}",
+                    &[
+                        ("value0", &notice.reason.to_string()),
+                        ("value1", &detail.to_string()),
+                    ],
                 ),
                 true,
             );
@@ -802,7 +813,8 @@ fn start_startup_reap(
             let line = restart_advice_line(&fresh);
             server_page.show_feedback(&line, true);
             // Reaches the user even when the app was launched hidden to the tray.
-            let notification = gtk::gio::Notification::new("Toolport was updated");
+            let notification =
+                gtk::gio::Notification::new(&crate::i18n::tr("Toolport was updated"));
             notification.set_body(Some(&line));
             app.send_notification(Some("toolport-gateway-restart"), &notification);
         }
@@ -817,16 +829,24 @@ fn restart_advice_line(clients: &[crate::gateway_publish::ClientNeedingRestart])
             names.push(client.client.as_str());
         }
     }
-    format!(
-        "{} {} still launching an old Toolport gateway. Restart {} to finish the upgrade: {}.",
-        names.len(),
+    crate::i18n::trf(
         if names.len() == 1 {
-            "app is"
+            if names.len() == 1 {
+                crate::i18n::msg("{value0} app is still launching an old Toolport gateway. Restart it to finish the upgrade: {value3}.")
+            } else {
+                crate::i18n::msg("{value0} app is still launching an old Toolport gateway. Restart them to finish the upgrade: {value3}.")
+            }
         } else {
-            "apps are"
+            if names.len() == 1 {
+                crate::i18n::msg("{value0} apps are still launching an old Toolport gateway. Restart it to finish the upgrade: {value3}.")
+            } else {
+                crate::i18n::msg("{value0} apps are still launching an old Toolport gateway. Restart them to finish the upgrade: {value3}.")
+            }
         },
-        if names.len() == 1 { "it" } else { "them" },
-        names.join(", ")
+        &[
+            ("value0", &format!("{}", names.len())),
+            ("value3", &names.join(", ").to_string()),
+        ],
     )
 }
 
@@ -867,46 +887,58 @@ fn show_registry_startup_failure(app: &adw::Application, error: &str) {
     }
     let path = crate::registry::resolved_path()
         .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "the Toolport data directory".to_string());
-    let window = adw::ApplicationWindow::builder()
-        .application(app)
-        .title("Toolport could not start safely")
-        .default_width(620)
-        .default_height(360)
-        .resizable(true)
-        .build();
+        .unwrap_or_else(|| crate::i18n::tr("the Toolport data directory").to_string());
+    let window = {
+        let widget = adw::ApplicationWindow::builder()
+            .application(app)
+            .title(crate::i18n::tr("Toolport could not start safely"))
+            .default_width(620)
+            .default_height(360)
+            .resizable(true)
+            .build();
+        l10n::bind_window_title(&widget, "Toolport could not start safely");
+        widget
+    };
     let page = gtk::Box::new(gtk::Orientation::Vertical, 16);
     page.set_margin_top(20);
     page.set_margin_bottom(20);
     page.set_margin_start(20);
     page.set_margin_end(20);
-    page.append(
-        &gtk::Label::builder()
-            .label("Toolport could not start safely")
+    page.append(&{
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Toolport could not start safely"))
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["title-1"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, "Toolport could not start safely");
+        widget
+    });
     page.append(
-            &gtk::Label::builder()
-                .label("The registry was not replaced. Close other Toolport processes and try again. If the problem continues, restore a registry backup or move the unreadable registry aside before reopening Toolport.")
+            &{ let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("The registry was not replaced. Close other Toolport processes and try again. If the problem continues, restore a registry backup or move the unreadable registry aside before reopening Toolport."))
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
-                .build(),
+                .build(); l10n::bind_label(&widget, "The registry was not replaced. Close other Toolport processes and try again. If the problem continues, restore a registry backup or move the unreadable registry aside before reopening Toolport."); widget },
         );
-    page.append(
-        &gtk::Label::builder()
-            .label(format!("Registry: {path}\n\nError: {error}"))
+    page.append(&{
+        let widget = gtk::Label::builder()
+            .label("")
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .selectable(true)
             .css_classes(["dim-label"])
-            .build(),
-    );
+            .build();
+        l10n::bind_formatted_label(
+            &widget,
+            "Registry: {value0}\n\nError: {value1}",
+            &[("value0", &path.to_string()), ("value1", error)],
+        );
+        widget
+    });
     let app_for_close = app.clone();
     window.connect_close_request(move |_| {
         app_for_close.quit();
@@ -914,7 +946,7 @@ fn show_registry_startup_failure(app: &adw::Application, error: &str) {
     });
     let app_for_destroy = app.clone();
     window.connect_destroy(move |_| app_for_destroy.quit());
-    let close = gtk::Button::with_label("Close Toolport");
+    let close = l10n::button("Close Toolport");
     close.set_halign(gtk::Align::End);
     close.add_css_class("suggested-action");
     let app = app.clone();
@@ -929,12 +961,32 @@ fn show_registry_startup_failure(app: &adw::Application, error: &str) {
 /// here; their pages and `show-*` actions stay so onboarding, the tray and
 /// pairing can still reach them until a later PR removes or relocates them.
 const NAV_SECTIONS: &[(&str, &str, &str)] = &[
-    ("servers", "Servers", "network-server-symbolic"),
-    ("clients", "Clients", "computer-symbolic"),
-    ("activity", "Activity", "view-list-symbolic"),
-    ("settings", "Settings", "emblem-system-symbolic"),
-    ("teams", "Sign in to sync", "system-users-symbolic"),
-    ("catalog", "Catalog", "system-software-install-symbolic"),
+    (
+        "servers",
+        crate::i18n::msg("Servers"),
+        "network-server-symbolic",
+    ),
+    ("clients", crate::i18n::msg("Clients"), "computer-symbolic"),
+    (
+        "activity",
+        crate::i18n::msg("Activity"),
+        "view-list-symbolic",
+    ),
+    (
+        "settings",
+        crate::i18n::msg("Settings"),
+        "emblem-system-symbolic",
+    ),
+    (
+        "teams",
+        crate::i18n::msg("Sign in to sync"),
+        "system-users-symbolic",
+    ),
+    (
+        "catalog",
+        crate::i18n::msg("Catalog"),
+        "system-software-install-symbolic",
+    ),
 ];
 
 /// Number-key order for the fixed sidebar rows. Team is click-only, matching the
@@ -973,12 +1025,14 @@ fn build_sidebar(
     let brand = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let mark = branding::toolport_mark();
     brand.append(&mark);
-    brand.append(
-        &gtk::Label::builder()
-            .label("Toolport")
+    brand.append(&{
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Toolport"))
             .css_classes(["title"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, "Toolport");
+        widget
+    });
     header.set_title_widget(Some(&brand));
     root.append(&header);
 
@@ -1021,13 +1075,13 @@ fn build_sidebar(
                     if let Some(server) = server {
                         open_server_details(&server, &page, true);
                     } else {
-                        page.show_confirmation("Add a server to try its tools.");
+                        page.show_confirmation(&crate::i18n::tr("Add a server to try its tools."));
                     }
                 }
                 Ok(Err(error)) => page.restore_after_error(&error),
-                Err(_) => {
-                    page.restore_after_error("Could not load server tools: the operation stopped")
-                }
+                Err(_) => page.restore_after_error(&crate::i18n::tr(
+                    "Could not load server tools: the operation stopped",
+                )),
             }
         });
     });
@@ -1039,20 +1093,21 @@ fn build_sidebar(
         button.set_halign(gtk::Align::Fill);
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         row.append(&gtk::Image::from_icon_name(icon));
-        row.append(
-            &gtk::Label::builder()
-                .label(label)
-                .halign(gtk::Align::Start)
-                .hexpand(true)
-                .xalign(0.0)
-                .build(),
-        );
+        row.append(&{
+            let widget = l10n::label(label);
+            widget.set_halign(gtk::Align::Start);
+            widget.set_hexpand(true);
+            widget.set_xalign(0.0);
+            widget
+        });
         if target == "settings" {
             row.append(&quarantine_badge);
             button.add_css_class("toolport-settings-parent");
         }
         if let Some(index) = NAV_SHORTCUTS.iter().position(|name| *name == target) {
-            button.set_tooltip_text(Some(&format!("{label} (Ctrl+{})", index + 1)));
+            l10n::bind_tooltip_with(&button, move || {
+                format!("{} (Ctrl+{})", crate::i18n::lookup(label), index + 1)
+            });
         }
         button.set_child(Some(&row));
         button.add_css_class("flat");
@@ -1083,13 +1138,10 @@ fn build_sidebar(
                 child.add_css_class("toolport-nav-item");
                 let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
                 row.append(&gtk::Image::from_icon_name(icon));
-                row.append(
-                    &gtk::Label::builder()
-                        .label(*label)
-                        .xalign(0.0)
-                        .hexpand(true)
-                        .build(),
-                );
+                let section_label = l10n::label(label);
+                section_label.set_xalign(0.0);
+                section_label.set_hexpand(true);
+                row.append(&section_label);
                 if index == 2 {
                     let badge = gtk::Label::builder()
                         .visible(false)
@@ -1108,7 +1160,10 @@ fn build_sidebar(
                             };
                             let count = broker.list().len();
                             badge.set_label(&count.to_string());
-                            badge.set_tooltip_text(Some(&format!("{count} pending approvals")));
+                            badge.set_tooltip_text(Some(&crate::i18n::trf(
+                                "{value0} pending approvals",
+                                &[("value0", &format!("{}", count))],
+                            )));
                             badge.set_visible(count > 0);
                         });
                     }
@@ -1204,7 +1259,7 @@ fn build_sidebar(
         app.add_action(&action);
         if let Some(number) = shortcut_number {
             app.set_accels_for_action(
-                &format!("app.{action_name}"),
+                &format!("app.{}", action_name),
                 &[&format!("<Primary>{number}")],
             );
         }
@@ -1245,15 +1300,17 @@ fn install_star_prompt(container: &gtk::Box) {
     card.set_margin_end(12);
     card.set_margin_bottom(6);
     card.set_visible(false);
-    card.append(
-        &gtk::Label::builder()
-            .label("Enjoying Toolport?")
+    card.append(&{
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Enjoying Toolport?"))
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["caption", "toolport-muted"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, "Enjoying Toolport?");
+        widget
+    });
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let retire = |card: &gtk::Box| {
         if let Some(marker) = marker() {
@@ -1261,7 +1318,7 @@ fn install_star_prompt(container: &gtk::Box) {
         }
         card.set_visible(false);
     };
-    let star = gtk::Button::with_label("Star on GitHub");
+    let star = l10n::button("Star on GitHub");
     star.add_css_class("toolport-secondary-action");
     star.set_hexpand(true);
     {
@@ -1274,7 +1331,7 @@ fn install_star_prompt(container: &gtk::Box) {
     actions.append(&star);
     let dismiss = gtk::Button::builder()
         .icon_name("window-close-symbolic")
-        .tooltip_text("Dismiss forever")
+        .tooltip_text(crate::i18n::tr("Dismiss forever"))
         .css_classes(["flat"])
         .build();
     {
@@ -1385,13 +1442,13 @@ impl SecurityEventAlert {
         copy.append(&detail);
         root.append(&copy);
 
-        let review = gtk::Button::with_label("Review");
+        let review = l10n::button("Review");
         review.add_css_class("toolport-secondary-action");
         review.set_action_name(Some("app.review-security"));
         root.append(&review);
         let close = gtk::Button::builder()
             .icon_name("window-close-symbolic")
-            .tooltip_text("Dismiss this alert")
+            .tooltip_text(crate::i18n::tr("Dismiss this alert"))
             .css_classes(["flat", "circular"])
             .build();
         root.append(&close);
@@ -1469,13 +1526,13 @@ impl QuarantineAlert {
         copy.append(&detail);
         root.append(&copy);
 
-        let review = gtk::Button::with_label("Review");
+        let review = l10n::button("Review");
         review.add_css_class("suggested-action");
         review.set_action_name(Some("app.review-quarantine"));
         root.append(&review);
         let close = gtk::Button::builder()
             .icon_name("window-close-symbolic")
-            .tooltip_text("Dismiss this alert")
+            .tooltip_text(crate::i18n::tr("Dismiss this alert"))
             .css_classes(["flat", "circular"])
             .build();
         root.append(&close);
@@ -1564,9 +1621,12 @@ fn security_event_covered_by_quarantine(
 fn security_alert_copy(events: &[serde_json::Value]) -> (String, String) {
     let events = security_attention_incidents(events);
     let title = if events.len() == 1 {
-        "Toolport: security finding".to_string()
+        crate::i18n::tr("Toolport: security finding").to_string()
     } else {
-        format!("Toolport: {} security findings", events.len())
+        crate::i18n::trf(
+            "Toolport: {value0} security findings",
+            &[("value0", &format!("{}", events.len()))],
+        )
     };
     let first = events
         .first()
@@ -1574,12 +1634,19 @@ fn security_alert_copy(events: &[serde_json::Value]) -> (String, String) {
         .unwrap_or("A security finding was recorded");
     let detail = if events.len() > 1 {
         let remaining = events.len() - 1;
-        format!(
-            "{first}. {remaining} more {} ready to review.",
-            if remaining == 1 { "is" } else { "are" }
+        crate::i18n::trf(
+            if remaining == 1 {
+                crate::i18n::msg("{value0}. {value1} more is ready to review.")
+            } else {
+                crate::i18n::msg("{value0}. {value1} more are ready to review.")
+            },
+            &[("value0", first), ("value1", &format!("{}", remaining))],
         )
     } else {
-        format!("{first}. Review the retained details in Activity.")
+        crate::i18n::trf(
+            "{value0}. Review the retained details in Activity.",
+            &[("value0", first)],
+        )
     };
     (title, detail)
 }
@@ -1615,8 +1682,12 @@ type SecurityWatchSnapshot = (
 );
 
 fn read_security_watch_snapshot() -> Result<SecurityWatchSnapshot, String> {
-    let events = crate::integrity::read_recent(25)
-        .map_err(|error| format!("could not read security events: {error}"))?;
+    let events = crate::integrity::read_recent(25).map_err(|error| {
+        crate::i18n::trf(
+            "could not read security events: {value0}",
+            &[("value0", &format!("{}", error))],
+        )
+    })?;
     // Keep the error distinct from a known-empty quarantine. The badge displays
     // unknown, while this watcher still announces new security findings.
     let quarantined = crate::integrity::all_quarantined_summaries();
@@ -1722,17 +1793,17 @@ fn start_quarantine_watch(
                 Ok(list) => list,
                 _ => {
                     badge.set_label("?");
-                    badge.set_tooltip_text(Some(
+                    badge.set_tooltip_text(Some(&crate::i18n::tr(
                         "Could not read the quarantine state; unknown is not the same as zero",
-                    ));
+                    )));
                     badge.set_visible(true);
                     return;
                 }
             };
             badge.set_label(&list.len().to_string());
-            badge.set_tooltip_text(Some(
+            badge.set_tooltip_text(Some(&crate::i18n::tr(
                 "Blocked tools awaiting re-approval; review them in Settings",
-            ));
+            )));
             badge.set_visible(!list.is_empty());
             alert.update(&list);
             let keys: std::collections::HashSet<String> = list
@@ -1886,37 +1957,30 @@ impl ServerPage {
                 self.clear_server_list();
                 *self.last_snapshot.borrow_mut() = None;
                 self.reset_summary();
-                self.section_title.set_label("Servers");
-                self.list.append(&state_card(
-                    "network-server-symbolic",
-                    "Toolport is ready for setup",
-                    "Use Add server for a custom endpoint or open Catalog for a curated starting point. Valid servers turn on. Missing setup inputs stay off.",
-                    false,
-                ));
+                l10n::bind_text(&self.section_title, "Servers");
+                self.list.append(&state_card("network-server-symbolic", crate::i18n::msg("Toolport is ready for setup"), crate::i18n::msg("Use Add server for a custom endpoint or open Catalog for a curated starting point. Valid servers turn on. Missing setup inputs stay off."), false));
             }
             state::RegistryState::Unavailable => {
                 self.clear_server_list();
                 *self.last_snapshot.borrow_mut() = None;
                 self.server_count.set_label("–");
                 self.enabled_count.set_label("–");
-                self.section_title.set_label("Servers unavailable");
-                self.list.append(&state_card(
-                    "dialog-warning-symbolic",
-                    "Configuration could not be displayed",
-                    "Toolport left the registry untouched. Open the app again to inspect or recover it.",
-                    true,
-                ));
+                self.section_title
+                    .set_label(&crate::i18n::tr("Servers unavailable"));
+                self.list.append(&state_card("dialog-warning-symbolic", crate::i18n::msg("Configuration could not be displayed"), crate::i18n::msg("Toolport left the registry untouched. Open the app again to inspect or recover it."), true));
             }
             state::RegistryState::NewerVersion(message) => {
                 self.clear_server_list();
                 *self.last_snapshot.borrow_mut() = None;
                 self.server_count.set_label("–");
                 self.enabled_count.set_label("–");
-                self.section_title.set_label("Servers unavailable");
-                self.list.append(&state_card(
+                self.section_title
+                    .set_label(&crate::i18n::tr("Servers unavailable"));
+                self.list.append(&state_card_formatted(
                     "software-update-available-symbolic",
-                    "Update Toolport",
-                    &format!("{message} Toolport left the registry untouched."),
+                    crate::i18n::msg("Update Toolport"),
+                    crate::i18n::msg("{value0} Toolport left the registry untouched."),
+                    &[("value0", &message.to_string())],
                     true,
                 ));
             }
@@ -1971,14 +2035,16 @@ impl ServerPage {
         }
         self.no_matches.borrow_mut().take();
         self.off_heading.borrow_mut().take();
-        self.section_title.set_label("Servers");
+        l10n::bind_text(&self.section_title, "Servers");
         if snapshot.servers.is_empty() {
             self.clear_server_list();
             self.posture.set_visible(false);
             self.list.append(&state_card(
                 "network-server-symbolic",
-                "No servers yet",
-                "Use Add server to connect your first local command or remote endpoint.",
+                crate::i18n::msg("No servers yet"),
+                crate::i18n::msg(
+                    "Use Add server to connect your first local command or remote endpoint.",
+                ),
                 false,
             ));
             return;
@@ -2008,7 +2074,7 @@ impl ServerPage {
             rows.push((server.clone(), card));
         }
         if !off.is_empty() {
-            let heading = client_section_title("Turned off", off.len());
+            let heading = client_section_title(crate::i18n::msg("Turned off"), off.len());
             self.list.append(&heading);
             *self.off_heading.borrow_mut() = Some(heading);
         }
@@ -2053,8 +2119,8 @@ impl ServerPage {
         *self.rows.borrow_mut() = rows;
         let no_matches = state_card(
             "edit-find-symbolic",
-            "No matching servers",
-            "Try a different server name or transport.",
+            crate::i18n::msg("No matching servers"),
+            crate::i18n::msg("Try a different server name or transport."),
             false,
         );
         self.list.append(&no_matches);
@@ -2131,8 +2197,11 @@ impl ServerPage {
                 .into_iter()
                 .flatten()
             {
-                row.label
-                    .set_label(&format!("{} · Checking…", row.transport));
+                l10n::bind_formatted_label(
+                    &row.label,
+                    "{value0} · Checking…",
+                    &[("value0", &row.transport.to_string())],
+                );
                 for class in ["success", "error", "review"] {
                     row.label.remove_css_class(class);
                 }
@@ -2170,7 +2239,7 @@ impl ServerPage {
                     server_id: server_id.clone(),
                     ok: false,
                     tool_count: 0,
-                    error: Some("the probe stopped unexpectedly".to_string()),
+                    error: Some(crate::i18n::tr("the probe stopped unexpectedly").to_string()),
                     auth_required: false,
                     failure: None,
                     auth_target: None,
@@ -2199,15 +2268,18 @@ impl ServerPage {
             .flatten()
         {
             let (status, class) = probe_status_line(probe);
-            row.label
-                .set_label(&format!("{} · {status}", row.transport));
+            row.label.set_label(&format!(
+                "{} · {status}",
+                state::display_transport(&row.transport)
+            ));
             row.label.remove_css_class("success");
             row.label.remove_css_class("error");
             row.label.remove_css_class("review");
             row.label.add_css_class(class);
             row.label
                 .set_tooltip_text(probe.error.as_deref().filter(|error| !error.is_empty()));
-            row.authenticate.set_label(probe_auth_action(probe));
+            row.authenticate
+                .set_label(&crate::i18n::lookup(probe_auth_action(probe)));
             row.authenticate.set_visible(probe.auth_required);
             row.copy_error
                 .set_visible(!probe.ok && probe.error.is_some());
@@ -2300,20 +2372,24 @@ impl ClientPage {
         let header = adw::HeaderBar::new();
         header.add_css_class("toolport-header");
         header.set_show_back_button(true);
-        header.set_title_widget(Some(
-            &gtk::Label::builder()
-                .label("Clients")
+        header.set_title_widget(Some(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Clients"))
                 .css_classes(["title"])
-                .build(),
-        ));
+                .build();
+            l10n::bind_label(&widget, "Clients");
+            widget
+        }));
         let refresh_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
-            .tooltip_text("Scan clients again")
+            .tooltip_text(crate::i18n::tr("Scan clients again"))
             .build();
         header.pack_end(&refresh_button);
-        let add_location = gtk::Button::with_label("Add client location");
-        let import_button = gtk::Button::with_label("Import");
-        import_button.set_tooltip_text(Some("Review servers found in client configurations"));
+        let add_location = l10n::button("Add client location");
+        let import_button = l10n::button("Import");
+        import_button.set_tooltip_text(Some(&crate::i18n::tr(
+            "Review servers found in client configurations",
+        )));
         import_button.add_css_class("toolport-secondary-action");
         root.append(&header);
 
@@ -2331,23 +2407,25 @@ impl ClientPage {
         page_actions.insert(&add_location, -1);
         page_actions.insert(&import_button, -1);
         page.append(&page_actions);
-        page.append(
-            &gtk::Label::builder()
-                .label("Your AI clients, one Toolport gateway")
+        page.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Your AI clients, one Toolport gateway"))
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["title-2"])
-                .build(),
-        );
+                .build();
+            l10n::bind_label(&widget, "Your AI clients, one Toolport gateway");
+            widget
+        });
         page.append(
-            &gtk::Label::builder()
-                .label("Toolport reads each client's local MCP configuration. Existing Toolport entries in extra locations are adopted with a backup.")
+            &{ let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Toolport reads each client's local MCP configuration. Existing Toolport entries in extra locations are adopted with a backup."))
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["toolport-muted"])
-                .build(),
+                .build(); l10n::bind_label(&widget, "Toolport reads each client's local MCP configuration. Existing Toolport entries in extra locations are adopted with a backup."); widget },
         );
         let feedback = gtk::Label::builder()
             .halign(gtk::Align::Fill)
@@ -2355,7 +2433,7 @@ impl ClientPage {
             .wrap(true)
             .css_classes(["toolport-feedback"])
             .build();
-        feedback.set_label("Open Clients to scan this machine.");
+        l10n::bind_text(&feedback, "Open Clients to scan this machine.");
         page.append(&feedback);
 
         let summary = gtk::Grid::new();
@@ -2419,18 +2497,23 @@ impl ClientPage {
             {
                 Ok(types) => types,
                 Err(_) => {
-                    page.show_error("Could not load client types.");
+                    page.show_error(&crate::i18n::tr("Could not load client types."));
                     return;
                 }
             };
             #[allow(deprecated)]
-            let dialog = adw::MessageDialog::new(Some(&parent), Some("Add client location"),
-                Some("Choose this client's config folder. Locations stay on this machine. Connecting is a separate step."));
+            let dialog = adw::MessageDialog::new(Some(&parent), Some(&crate::i18n::tr("Add client location")), Some(&crate::i18n::tr("Choose this client's config folder. Locations stay on this machine. Connecting is a separate step.")));
+            l10n::bind_dialog_heading(&dialog, "Add client location");
+            l10n::bind_dialog_body(&dialog, "Choose this client's config folder. Locations stay on this machine. Connecting is a separate step.");
             let fields = gtk::Box::new(gtk::Orientation::Vertical, 8);
-            let kind_label = gtk::Label::builder()
-                .label("Client type")
-                .xalign(0.0)
-                .build();
+            let kind_label = {
+                let widget = gtk::Label::builder()
+                    .label(crate::i18n::tr("Client type"))
+                    .xalign(0.0)
+                    .build();
+                l10n::bind_label(&widget, "Client type");
+                widget
+            };
             fields.append(&kind_label);
             let names: Vec<&str> = types.iter().map(|kind| kind.name.as_str()).collect();
             let kind = gtk::DropDown::from_strings(&names);
@@ -2441,23 +2524,31 @@ impl ClientPage {
                     .unwrap_or(0) as u32,
             );
             fields.append(&kind);
-            fields.append(
-                &gtk::Label::builder()
-                    .label("Config folder")
+            fields.append(&{
+                let widget = gtk::Label::builder()
+                    .label(crate::i18n::tr("Config folder"))
                     .xalign(0.0)
-                    .build(),
-            );
+                    .build();
+                l10n::bind_label(&widget, "Config folder");
+                widget
+            });
             let folder = gtk::Entry::builder().placeholder_text("~/.claude2").build();
             fields.append(&folder);
-            let hint = gtk::Label::builder()
-                .label("For Codex, choose its CODEX_HOME folder.")
-                .wrap(true)
-                .xalign(0.0)
-                .build();
+            let hint = {
+                let widget = gtk::Label::builder()
+                    .label(crate::i18n::tr("For Codex, choose its CODEX_HOME folder."))
+                    .wrap(true)
+                    .xalign(0.0)
+                    .build();
+                l10n::bind_label(&widget, "For Codex, choose its CODEX_HOME folder.");
+                widget
+            };
             fields.append(&hint);
             dialog.set_extra_child(Some(&fields));
-            dialog.add_response("cancel", "Cancel");
-            dialog.add_response("add", "Add location");
+            dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
+            l10n::bind_dialog_response(&dialog, "cancel", "Cancel");
+            dialog.add_response("add", &crate::i18n::tr("Add location"));
+            l10n::bind_dialog_response(&dialog, "add", "Add location");
             dialog.set_response_enabled("add", false);
             dialog.set_close_response("cancel");
             let dialog_for_input = dialog.clone();
@@ -2480,11 +2571,13 @@ impl ClientPage {
                     })
                     .await;
                     match result {
-                        Ok(Ok(_)) => page.refresh_with_confirmation(
-                            "Client location added. Select Connect to configure it.".into(),
-                        ),
+                        Ok(Ok(_)) => page.refresh_with_confirmation(crate::i18n::tr(
+                            "Client location added. Select Connect to configure it.",
+                        )),
                         Ok(Err(error)) => page.show_error(&error),
-                        Err(_) => page.show_error("Could not add client location."),
+                        Err(_) => {
+                            page.show_error(&crate::i18n::tr("Could not add client location."))
+                        }
                     }
                 });
             });
@@ -2497,7 +2590,9 @@ impl ClientPage {
             return;
         }
         self.import_button.set_sensitive(false);
-        self.show_progress("Looking for servers in client configurations…");
+        self.show_progress(&crate::i18n::tr(
+            "Looking for servers in client configurations…",
+        ));
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
             let result =
@@ -2506,15 +2601,18 @@ impl ClientPage {
             page.import_button.set_sensitive(true);
             match result {
                 Ok(Ok(candidates)) if candidates.is_empty() => {
-                    page.show_confirmation(
+                    page.show_confirmation(&crate::i18n::tr(
                         "No new client-configured servers are available to import.",
-                    );
+                    ));
                 }
                 Ok(Ok(candidates)) => page.show_import_review(candidates),
-                Ok(Err(error)) => {
-                    page.show_error(&format!("Could not inspect client configurations: {error}"))
+                Ok(Err(error)) => page.show_error(&crate::i18n::trf(
+                    "Could not inspect client configurations: {value0}",
+                    &[("value0", &error.to_string())],
+                )),
+                Err(_) => {
+                    page.show_error(&crate::i18n::tr("The import scan stopped unexpectedly."))
                 }
-                Err(_) => page.show_error("The import scan stopped unexpectedly."),
             }
         });
     }
@@ -2547,12 +2645,12 @@ impl ClientPage {
             })
             .collect();
         let page = self.clone();
-        setup::review(&parent, "Review servers to import", items,
-            "Review each command and URL. Values are saved using your keychain choices. Missing inputs stay off.",
-            "Import selected servers", false, move |selected, choices, inputs| {
+        setup::review(&parent, &crate::i18n::tr("Review servers to import"), items,
+            &crate::i18n::tr("Review each command and URL. Values are saved using your keychain choices. Missing inputs stay off."),
+            crate::i18n::msg("Import selected servers"), false, move |selected, choices, inputs| {
                 let (registry, added) = crate::registry_controller::import_client_servers_inputs(selected, &choices, &inputs)?;
                 let missing = registry.servers.iter().filter(|server| !server.enabled && server.source.as_deref().is_some_and(|source| source.starts_with("imported:"))).map(|server| server.name.clone()).collect::<Vec<_>>();
-                let message = if missing.is_empty() { format!("Imported {added} servers. Check their status under Servers.") } else { format!("Imported {added} servers. Needs input: {}", missing.join(", ")) };
+                let message = if missing.is_empty() { crate::i18n::trf("Imported {value0} servers. Check their status under Servers.", &[("value0", &format!("{}", added))]) } else { crate::i18n::trf("Imported {value0} servers. Needs input: {value1}", &[("value0", &format!("{}", added)), ("value1", &missing.join(", ").to_string())]) };
                 Ok(message.into())
             }, move || page.refresh(), Some(self.credential_page.clone()));
     }
@@ -2563,7 +2661,7 @@ impl ClientPage {
         }
         self.refresh_button.set_sensitive(false);
         self.import_button.set_sensitive(false);
-        self.show_progress("Scanning local client configurations…");
+        self.show_progress(&crate::i18n::tr("Scanning local client configurations…"));
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
             let result = gtk::gio::spawn_blocking(state::detect_client_views).await;
@@ -2572,8 +2670,13 @@ impl ClientPage {
             page.import_button.set_sensitive(true);
             match result {
                 Ok(Ok(snapshot)) => page.render(snapshot),
-                Ok(Err(error)) => page.show_error(&format!("Could not scan clients: {error}")),
-                Err(_) => page.show_error("The client scan stopped unexpectedly."),
+                Ok(Err(error)) => page.show_error(&crate::i18n::trf(
+                    "Could not scan clients: {value0}",
+                    &[("value0", &error.to_string())],
+                )),
+                Err(_) => {
+                    page.show_error(&crate::i18n::tr("The client scan stopped unexpectedly."))
+                }
             }
         });
     }
@@ -2618,14 +2721,14 @@ impl ClientPage {
         if installed.is_empty() {
             self.list.append(&state_card(
                 "computer-symbolic",
-                "No supported clients detected",
-                "Install or open a supported AI client, then scan again.",
+                crate::i18n::msg("No supported clients detected"),
+                crate::i18n::msg("Install or open a supported AI client, then scan again."),
                 false,
             ));
         }
         if !connected_clients.is_empty() {
             self.list.append(&client_section_title(
-                "Connected to Toolport",
+                crate::i18n::msg("Connected to Toolport"),
                 connected_clients.len(),
             ));
         }
@@ -2634,7 +2737,7 @@ impl ClientPage {
         }
         if !available_clients.is_empty() {
             self.list.append(&client_section_title(
-                "Available to connect",
+                crate::i18n::msg("Available to connect"),
                 available_clients.len(),
             ));
         }
@@ -2644,15 +2747,18 @@ impl ClientPage {
         // Supported-but-absent clients: collapsed so they don't crowd the real
         // list, but visible so the user knows what Toolport could manage.
         if !absent.is_empty() {
-            let expander = gtk::Expander::new(Some(&format!(
-                "Not installed · {} supported {}",
-                absent.len(),
-                if absent.len() == 1 {
-                    "client"
-                } else {
-                    "clients"
-                }
-            )));
+            let expander = {
+                let widget = gtk::Expander::new(None);
+                widget.set_label_widget(Some(&l10n::formatted_label(
+                    if absent.len() == 1 {
+                        crate::i18n::msg("Not installed · {value0} supported client")
+                    } else {
+                        crate::i18n::msg("Not installed · {value0} supported clients")
+                    },
+                    &[("value0", &format!("{}", absent.len()))],
+                )));
+                widget
+            };
             expander.add_css_class("toolport-card");
             let names = gtk::Label::builder()
                 .label(
@@ -2672,20 +2778,26 @@ impl ClientPage {
             self.list.append(&expander);
         }
         if snapshot.sessions_error {
-            self.list.append(
-                &gtk::Label::builder()
-                    .label("Client activity could not be read.")
+            self.list.append(&{
+                let widget = gtk::Label::builder()
+                    .label(crate::i18n::tr("Client activity could not be read."))
                     .halign(gtk::Align::Start)
                     .wrap(true)
                     .css_classes(["toolport-muted"])
-                    .build(),
-            );
+                    .build();
+                l10n::bind_label(&widget, "Client activity could not be read.");
+                widget
+            });
         }
         if !sessions.is_empty() {
-            let expander = gtk::Expander::new(Some(&format!(
-                "Recent client activity · {}",
-                sessions.len()
-            )));
+            let expander = {
+                let widget = gtk::Expander::new(None);
+                widget.set_label_widget(Some(&l10n::formatted_label(
+                    "Recent client activity · {value0}",
+                    &[("value0", &format!("{}", sessions.len()))],
+                )));
+                widget
+            };
             expander.add_css_class("toolport-card");
             let rows = gtk::Box::new(gtk::Orientation::Vertical, 8);
             for client in sessions {
@@ -2695,23 +2807,38 @@ impl ClientPage {
                     client["clientLabel"].as_str(),
                 );
                 let tooltip = if name == "Unrecorded client" {
-                    crate::clients::UNRECORDED_CLIENT_TOOLTIP.to_string()
+                    unrecorded_client_tooltip()
                 } else {
-                    format!(
-                        "{} recorded sessions. Reports itself as: {}",
-                        client["sessionCount"].as_u64().unwrap_or(1),
-                        client["clientLabel"].as_str().unwrap_or("not provided")
+                    crate::i18n::trf(
+                        "{value0} recorded sessions. Reports itself as: {value1}",
+                        &[
+                            (
+                                "value0",
+                                &format!("{}", client["sessionCount"].as_u64().unwrap_or(1)),
+                            ),
+                            (
+                                "value1",
+                                client["clientLabel"]
+                                    .as_str()
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| crate::i18n::tr("not provided"))
+                                    .as_str(),
+                            ),
+                        ],
                     )
                 };
                 row.append(
                     &gtk::Label::builder()
-                        .label(name)
+                        .label(localized_caller_name(
+                            client["clientName"].as_str(),
+                            client["clientLabel"].as_str(),
+                        ))
                         .tooltip_text(tooltip)
                         .halign(gtk::Align::Start)
                         .css_classes(["heading"])
                         .build(),
                 );
-                row.append(&gtk::Label::builder().label(client_activity_detail(&client)).tooltip_text("Calls today counts retained tool calls since local midnight. Older calls may no longer be retained.").halign(gtk::Align::Start).wrap(true).css_classes(["toolport-muted"]).build());
+                row.append(&gtk::Label::builder().label(client_activity_detail(&client)).tooltip_text(crate::i18n::tr("Calls today counts retained tool calls since local midnight. Older calls may no longer be retained.")).halign(gtk::Align::Start).wrap(true).css_classes(["toolport-muted"]).build());
                 rows.append(&row);
             }
             expander.set_child(Some(&rows));
@@ -2768,17 +2895,28 @@ impl ClientPage {
 fn client_activity_detail(client: &serde_json::Value) -> String {
     let mut details = vec![client["lastActiveMs"]
         .as_u64()
-        .map(|ts| format!("Last active {}", relative_activity_time(ts)))
-        .unwrap_or_else(|| "Last active time unavailable".into())];
+        .map(|ts| {
+            crate::i18n::trf(
+                "Last active {value0}",
+                &[("value0", &relative_activity_time(ts).to_string())],
+            )
+        })
+        .unwrap_or_else(|| crate::i18n::tr("Last active time unavailable"))];
     if let Some(calls) = client["callsToday"].as_u64() {
-        details.push(format!(
-            "{} {} today",
-            grouped_number(calls),
-            if calls == 1 { "call" } else { "calls" }
+        details.push(crate::i18n::trf(
+            if calls == 1 {
+                crate::i18n::msg("{value0} call today")
+            } else {
+                crate::i18n::msg("{value0} calls today")
+            },
+            &[("value0", &grouped_number(calls).to_string())],
         ));
     }
     if let Some(tools) = client["firstCatalogSize"].as_u64() {
-        details.push(format!("Last saw {} tools", grouped_number(tools)));
+        details.push(crate::i18n::trf(
+            "Last saw {value0} tools",
+            &[("value0", &grouped_number(tools).to_string())],
+        ));
     }
     details.join(" · ")
 }
@@ -2797,17 +2935,19 @@ fn grouped_number(n: u64) -> String {
         })
 }
 
-fn client_section_title(title: &str, count: usize) -> gtk::Box {
+fn client_section_title(title: &'static str, count: usize) -> gtk::Box {
     let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     heading.set_margin_top(6);
-    heading.append(
-        &gtk::Label::builder()
+    heading.append(&{
+        let widget = gtk::Label::builder()
             .label(title)
             .halign(gtk::Align::Start)
             .hexpand(true)
             .css_classes(["toolport-section-label"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, title);
+        widget
+    });
     let count = gtk::Label::new(Some(&count.to_string()));
     count.add_css_class("toolport-badge");
     count.set_valign(gtk::Align::Center);
@@ -2834,16 +2974,36 @@ fn toolport_menu_button(label: &str) -> gtk::Button {
         .build()
 }
 
-fn toolport_menu_choice_button(label: &str, selected: bool) -> gtk::Button {
+fn toolport_menu_source_button(source: &'static str) -> gtk::Button {
+    let button = toolport_menu_button(source);
+    let label = button
+        .child()
+        .and_downcast::<gtk::Label>()
+        .expect("menu caption");
+    l10n::bind_label(&label, source);
+    button
+}
+fn toolport_menu_formatted_button(source: &'static str, values: &[(&str, &str)]) -> gtk::Button {
+    let button = toolport_menu_button("");
+    let label = button
+        .child()
+        .and_downcast::<gtk::Label>()
+        .expect("menu caption");
+    l10n::bind_formatted_label(&label, source, values);
+    button
+}
+fn toolport_menu_choice_button(label: &'static str, selected: bool) -> gtk::Button {
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    content.append(
-        &gtk::Label::builder()
+    content.append(&{
+        let widget = gtk::Label::builder()
             .label(label)
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .hexpand(true)
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, label);
+        widget
+    });
     if selected {
         content.append(
             &gtk::Image::builder()
@@ -2885,14 +3045,20 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
             .xalign(0.0)
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
-            .tooltip_text(format!("{}\nClient id: {}", client.name, client.id))
+            .tooltip_text(crate::i18n::trf(
+                "{value0}\nClient id: {value1}",
+                &[
+                    ("value0", &client.name.to_string()),
+                    ("value1", &client.id.to_string()),
+                ],
+            ))
             .css_classes(["heading"])
             .build(),
     );
     let detail = if client.config_error {
-        "Configuration could not be read safely".to_string()
+        crate::i18n::tr("Configuration could not be read safely").to_string()
     } else if client.uses_connectors {
-        let mut detail = "Toolport gateway".to_string();
+        let mut detail = crate::i18n::tr("Toolport gateway").to_string();
         if client.gateway_state == state::ClientGatewayState::Connected {
             detail.push_str(if client.shared_http {
                 " · Shared HTTP"
@@ -2904,20 +3070,22 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
         detail
     } else if client.gateway_state == state::ClientGatewayState::Connected {
         // Toolport's own entry is the gateway, not one of the client's servers.
-        let mut detail = "Toolport gateway".to_string();
+        let mut detail = crate::i18n::tr("Toolport gateway").to_string();
         if client.other_server_count > 0 {
-            detail.push_str(&format!(
-                " · {} other {}",
-                client.other_server_count,
+            detail.push_str(&crate::i18n::trf(
                 if client.other_server_count == 1 {
-                    "server"
+                    crate::i18n::msg(" · {value0} other server")
                 } else {
-                    "servers"
-                }
+                    crate::i18n::msg(" · {value0} other servers")
+                },
+                &[("value0", &format!("{}", client.other_server_count))],
             ));
         }
         if client.movable_server_count > 0 {
-            detail.push_str(&format!(" · {} to import", client.movable_server_count));
+            detail.push_str(&crate::i18n::trf(
+                " · {value0} to import",
+                &[("value0", &format!("{}", client.movable_server_count))],
+            ));
         }
         detail.push_str(if client.shared_http {
             " · Shared HTTP"
@@ -2926,17 +3094,19 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
         });
         detail
     } else {
-        let mut detail = format!(
-            "{} local MCP {}",
-            client.server_count,
+        let mut detail = crate::i18n::trf(
             if client.server_count == 1 {
-                "server"
+                crate::i18n::msg("{value0} local MCP server")
             } else {
-                "servers"
-            }
+                crate::i18n::msg("{value0} local MCP servers")
+            },
+            &[("value0", &format!("{}", client.server_count))],
         );
         if client.movable_server_count > 0 {
-            detail.push_str(&format!(" · {} to import", client.movable_server_count));
+            detail.push_str(&crate::i18n::trf(
+                " · {value0} to import",
+                &[("value0", &format!("{}", client.movable_server_count))],
+            ));
         }
         if client.gateway_state == state::ClientGatewayState::Connected {
             detail.push_str(if client.shared_http {
@@ -2966,11 +3136,11 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
                 .or(client.inherited_discovery.as_deref()),
         );
         let discovery_hint = match mode {
-            "full" => "Full tool list. Client per-tool permission rules need Full mode.",
+            "full" => crate::i18n::msg("Full tool list. Client per-tool permission rules need Full mode."),
             "grouped" => {
-                "Browse a server, then call tools. Client per-tool permission rules need Full mode."
+                crate::i18n::msg("Browse a server, then call tools. Client per-tool permission rules need Full mode.")
             }
-            _ => "Search, then call tools. Client per-tool permission rules need Full mode.",
+            _ => crate::i18n::msg("Search, then call tools. Client per-tool permission rules need Full mode."),
         };
         copy.append(
             &gtk::Label::builder()
@@ -2983,7 +3153,7 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
     }
     heading.append(&copy);
     if client.gateway_state == state::ClientGatewayState::Customized {
-        let badge = gtk::Label::new(Some("Customized"));
+        let badge = l10n::label("Customized");
         badge.add_css_class("toolport-badge");
         badge.set_valign(gtk::Align::Center);
         badge.set_halign(gtk::Align::Start);
@@ -2992,11 +3162,11 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
     }
     let actions = wrapping_actions();
     if client.legacy_bearer_argv {
-        let warning = gtk::Label::new(Some("This older HTTP connection exposes a bearer credential in process arguments. Review migration to stdio; it stays unchanged until you confirm."));
+        let warning = l10n::label("This older HTTP connection exposes a bearer credential in process arguments. Review migration to stdio; it stays unchanged until you confirm.");
         warning.set_wrap(true);
         warning.set_xalign(0.0);
         card.append(&warning);
-        let migrate = gtk::Button::with_label("Review migration to stdio");
+        let migrate = l10n::button("Review migration to stdio");
         let reviewed_client = client.clone();
         let reviewed_page = page.clone();
         migrate.connect_clicked(move |button| {
@@ -3005,7 +3175,7 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
         actions.insert(&migrate, -1);
     }
     if client.location_removable {
-        let remove = gtk::Button::with_label("Remove location");
+        let remove = l10n::button("Remove location");
         remove.set_sensitive(
             !client.config_error && client.gateway_state == state::ClientGatewayState::Disconnected,
         );
@@ -3013,9 +3183,12 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
         let page = page.clone();
         remove.connect_clicked(move |_| {
             let Some(parent) = page.root.root().and_downcast::<gtk::Window>() else { return; };
-            let dialog = adw::MessageDialog::new(Some(&parent), Some("Remove client location?"),
-                Some("This forgets the added location. Your client config and backups are kept. Auto-detected Claude folders still appear in Clients."));
+            let dialog = adw::MessageDialog::new(Some(&parent), Some(&crate::i18n::tr("Remove client location?")), Some(&crate::i18n::tr("This forgets the added location. Your client config and backups are kept. Auto-detected Claude folders still appear in Clients.")));
+l10n::bind_dialog_heading(&dialog, "Remove client location?");
+l10n::bind_dialog_body(&dialog, "This forgets the added location. Your client config and backups are kept. Auto-detected Claude folders still appear in Clients.");
             dialog.add_responses(&[("cancel", "Cancel"), ("remove", "Remove location")]);
+l10n::bind_dialog_response(&dialog,"cancel","Cancel");
+l10n::bind_dialog_response(&dialog,"remove","Remove location");
             let id = id.clone();
             let page = page.clone();
             dialog.connect_response(Some("remove"), move |_, _| {
@@ -3023,9 +3196,9 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
                 let page = page.clone();
                 gtk::glib::spawn_future_local(async move {
                     match gtk::gio::spawn_blocking(move || crate::clients::remove_client_location(&id)).await {
-                        Ok(Ok(())) => page.refresh_with_confirmation("Client location removed.".into()),
+                        Ok(Ok(())) => page.refresh_with_confirmation(crate::i18n::tr("Client location removed.")),
                         Ok(Err(error)) => page.show_error(&error),
-                        Err(_) => page.show_error("Could not remove client location."),
+                        Err(_) => page.show_error(&crate::i18n::tr("Could not remove client location.")),
                     }
                 });
             });
@@ -3035,7 +3208,7 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
     }
     match client.gateway_state {
         state::ClientGatewayState::Disconnected => {
-            let connect = gtk::Button::with_label("Connect");
+            let connect = l10n::button("Connect");
             connect.add_css_class("suggested-action");
             let client_for_connect = client.clone();
             let page_for_connect = page.clone();
@@ -3045,7 +3218,7 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
             actions.insert(&connect, -1);
         }
         state::ClientGatewayState::Customized if client_needs_reset_action(client) => {
-            let reset = gtk::Button::with_label("Reset");
+            let reset = l10n::button("Reset");
             reset.add_css_class("toolport-secondary-action");
             let client_for_reset = client.clone();
             let page_for_reset = page.clone();
@@ -3089,34 +3262,41 @@ fn append_client_discovery_actions(
     page: &ClientPage,
     menu: &gtk::MenuButton,
 ) {
-    content.append(
-        &gtk::Label::builder()
-            .label("Discovery")
+    content.append(&{
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Discovery"))
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .css_classes(["toolport-menu-heading"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, "Discovery");
+        widget
+    });
     let auto_hint = match client.inherited_discovery.as_deref() {
-        Some(mode) => format!("Use your global discovery choice ({mode})"),
-        None => "Use this client's measured backend default discovery mode".to_string(),
+        Some(mode) => crate::i18n::trf(
+            "Use your global discovery choice ({value0})",
+            &[("value0", mode)],
+        ),
+        None => {
+            crate::i18n::tr("Use this client's measured backend default discovery mode").to_string()
+        }
     };
-    for (label, mode, hint) in [
-        ("Auto", None, auto_hint.as_str()),
+    for (label, mode, _hint) in [
+        (crate::i18n::msg("Auto"), None, auto_hint.as_str()),
         (
-            "Full catalog",
+            crate::i18n::msg("Full catalog"),
             Some("full"),
-            "Full tool list. Client per-tool permission rules need Full mode.",
+            crate::i18n::msg("Full tool list. Client per-tool permission rules need Full mode."),
         ),
         (
-            "Lazy search",
+            crate::i18n::msg("Lazy search"),
             Some("lazy"),
-            "Search, then call tools. Client per-tool permission rules need Full mode.",
+            crate::i18n::msg("Search, then call tools. Client per-tool permission rules need Full mode."),
         ),
         (
-            "Grouped search",
+            crate::i18n::msg("Grouped search"),
             Some("grouped"),
-            "Browse a server, then call tools. Client per-tool permission rules need Full mode.",
+            crate::i18n::msg("Browse a server, then call tools. Client per-tool permission rules need Full mode."),
         ),
     ] {
         let selected = match (client.discovery_mode.as_deref(), mode) {
@@ -3125,14 +3305,20 @@ fn append_client_discovery_actions(
             _ => false,
         };
         let button = toolport_menu_choice_button(label, selected);
-        button.set_tooltip_text(Some(hint));
+        let tooltip = match mode {
+            Some("full") => crate::i18n::tr("Full tool list. Client per-tool permission rules need Full mode."),
+            Some("grouped") => crate::i18n::tr("Browse a server, then call tools. Client per-tool permission rules need Full mode."),
+            Some("lazy") => crate::i18n::tr("Search, then call tools. Client per-tool permission rules need Full mode."),
+            _ => auto_hint.clone(),
+        };
+        button.set_tooltip_text(Some(&tooltip));
         let client_id = client.id.clone();
         let client_name = client.name.clone();
         let page = page.clone();
         let menu = menu.clone();
         button.connect_clicked(move |_| {
             menu.popdown();
-            page.show_progress("Updating client discovery…");
+            page.show_progress(&crate::i18n::tr("Updating client discovery…"));
             let client_id = client_id.clone();
             let client_name = client_name.clone();
             let page = page.clone();
@@ -3143,12 +3329,15 @@ fn append_client_discovery_actions(
                 .await;
                 match result {
                     Ok(Ok(_)) => {
-                        page.refresh_with_confirmation(format!(
-                            "Updated discovery for {client_name}."
+                        page.refresh_with_confirmation(crate::i18n::trf(
+                            "Updated discovery for {value0}.",
+                            &[("value0", &client_name.to_string())],
                         ));
                     }
                     Ok(Err(error)) => page.show_error(&error),
-                    Err(_) => page.show_error("the discovery update stopped unexpectedly"),
+                    Err(_) => page.show_error(&crate::i18n::tr(
+                        "the discovery update stopped unexpectedly",
+                    )),
                 }
             });
         });
@@ -3159,7 +3348,10 @@ fn append_client_discovery_actions(
 fn connected_client_actions_menu(client: state::ClientView, page: ClientPage) -> gtk::MenuButton {
     let menu = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
-        .tooltip_text(format!("Actions for {}", client.name))
+        .tooltip_text(crate::i18n::trf(
+            "Actions for {value0}",
+            &[("value0", &client.name.to_string())],
+        ))
         .css_classes(["flat"])
         .build();
     let popover = toolport_menu_popover();
@@ -3171,10 +3363,14 @@ fn connected_client_actions_menu(client: state::ClientView, page: ClientPage) ->
 
     if client.movable_server_count > 0 && !client.config_error {
         let count = client.movable_server_count;
-        let migrate = toolport_menu_button(&format!(
-            "Move {count} {} into Toolport",
-            if count == 1 { "server" } else { "servers" }
-        ));
+        let migrate = toolport_menu_formatted_button(
+            if count == 1 {
+                crate::i18n::msg("Move {count} server into Toolport")
+            } else {
+                crate::i18n::msg("Move {count} servers into Toolport")
+            },
+            &[("count", &count.to_string())],
+        );
         let client_for_migrate = client.clone();
         let page_for_migrate = page.clone();
         let menu_for_migrate = menu.clone();
@@ -3189,7 +3385,7 @@ fn connected_client_actions_menu(client: state::ClientView, page: ClientPage) ->
     append_client_discovery_actions(&content, &client, &page, &menu);
     content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-    let disconnect = toolport_menu_button("Disconnect from Toolport");
+    let disconnect = toolport_menu_source_button(crate::i18n::msg("Disconnect from Toolport"));
     disconnect.add_css_class("destructive-action");
     let menu_for_disconnect = menu.clone();
     disconnect.connect_clicked(move |button| {
@@ -3207,12 +3403,17 @@ fn client_scope_menu(client: state::ClientView, page: ClientPage) -> gtk::MenuBu
         .scope_name
         .as_deref()
         .map(|scope| scope.to_string())
-        .unwrap_or_else(|| "Default access".to_string());
+        .unwrap_or_else(|| crate::i18n::tr("Default access").to_string());
     // "Default access" and "All enabled servers" already say what they are.
-    let label = if label.starts_with("Default access") || label == "All enabled servers" {
+    let label = if client
+        .scope_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .is_none_or(|id| id == crate::registry::ALL_ENABLED_ACCESS)
+    {
         label
     } else {
-        format!("Access: {label}")
+        crate::i18n::trf("Access: {value0}", &[("value0", &label.to_string())])
     };
     let menu = gtk::MenuButton::builder()
         .always_show_arrow(true)
@@ -3223,8 +3424,9 @@ fn client_scope_menu(client: state::ClientView, page: ClientPage) -> gtk::MenuBu
                 .max_width_chars(24)
                 .build(),
         )
-        .tooltip_text(format!(
-            "Choose this client's access to enabled servers: {label}"
+        .tooltip_text(crate::i18n::trf(
+            "Choose this client's access to enabled servers: {value0}",
+            &[("value0", &label.to_string())],
         ))
         .build();
     menu.add_css_class("toolport-secondary-action");
@@ -3268,9 +3470,9 @@ fn client_reset_scope(client: &state::ClientView) -> Option<String> {
 
 fn client_reset_label(client: &state::ClientView) -> &'static str {
     if client.legacy_bearer_argv {
-        "Migrate to stdio"
+        crate::i18n::msg("Migrate to stdio")
     } else {
-        "Reset and connect"
+        crate::i18n::msg("Reset and connect")
     }
 }
 
@@ -3279,13 +3481,20 @@ fn confirm_client_reset(client: &state::ClientView, button: gtk::Button, page: C
         return;
     };
     #[allow(deprecated)]
-    let dialog = adw::MessageDialog::new(
-        Some(&parent),
-        Some(&format!("{} {}'s Toolport entry?", if client.legacy_bearer_argv { "Migrate" } else { "Reset" }, client.name)),
-        Some("Toolport backs up the config before replacing its gateway entry with the standard stdio command. Customized commands, arguments and headers will be replaced; review those changes before confirming. Other client settings and MCP servers are preserved. Restart the client afterward."),
+    let dialog = adw::MessageDialog::new(Some(&parent), Some(&crate::i18n::trf(if client.legacy_bearer_argv { crate::i18n::msg("Migrate {value1}'s Toolport entry?") } else { crate::i18n::msg("Reset {value1}'s Toolport entry?") }, &[("value1", &client.name.to_string())])), Some(&crate::i18n::tr("Toolport backs up the config before replacing its gateway entry with the standard stdio command. Customized commands, arguments and headers will be replaced; review those changes before confirming. Other client settings and MCP servers are preserved. Restart the client afterward.")));
+    l10n::bind_formatted_dialog_heading(
+        &dialog,
+        if client.legacy_bearer_argv {
+            crate::i18n::msg("Migrate {value1}'s Toolport entry?")
+        } else {
+            crate::i18n::msg("Reset {value1}'s Toolport entry?")
+        },
+        &[("value1", &client.name.to_string())],
     );
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("reset", client_reset_label(client));
+    l10n::bind_dialog_body(&dialog, "Toolport backs up the config before replacing its gateway entry with the standard stdio command. Customized commands, arguments and headers will be replaced; review those changes before confirming. Other client settings and MCP servers are preserved. Restart the client afterward.");
+    dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
+    l10n::bind_dialog_response(&dialog, "cancel", "Cancel");
+    dialog.add_response("reset", &crate::i18n::lookup(client_reset_label(client)));
     dialog.set_close_response("cancel");
     dialog.set_default_response(Some("cancel"));
     dialog.set_response_appearance("reset", adw::ResponseAppearance::Suggested);
@@ -3311,13 +3520,17 @@ fn confirm_client_disconnect(client: &state::ClientView, button: gtk::Button, pa
         return;
     };
     #[allow(deprecated)]
-    let dialog = adw::MessageDialog::new(
-        Some(&parent),
-        Some(&format!("Disconnect {}?", client.name)),
-        Some("Toolport removes only its managed gateway entry. The client's other settings and MCP servers are preserved."),
+    let dialog = adw::MessageDialog::new(Some(&parent), Some(&crate::i18n::trf("Disconnect {value0}?", &[("value0", &client.name.to_string())])), Some(&crate::i18n::tr("Toolport removes only its managed gateway entry. The client's other settings and MCP servers are preserved.")));
+    l10n::bind_formatted_dialog_heading(
+        &dialog,
+        "Disconnect {value0}?",
+        &[("value0", &client.name.to_string())],
     );
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("disconnect", "Disconnect");
+    l10n::bind_dialog_body(&dialog, "Toolport removes only its managed gateway entry. The client's other settings and MCP servers are preserved.");
+    dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
+    l10n::bind_dialog_response(&dialog, "cancel", "Cancel");
+    dialog.add_response("disconnect", &crate::i18n::tr("Disconnect"));
+    l10n::bind_dialog_response(&dialog, "disconnect", "Disconnect");
     dialog.set_close_response("cancel");
     dialog.set_default_response(Some("cancel"));
     dialog.set_response_appearance("disconnect", adw::ResponseAppearance::Destructive);
@@ -3340,11 +3553,11 @@ fn run_client_mutation(
     page: ClientPage,
 ) {
     button.set_sensitive(false);
-    page.show_progress(if connect {
-        "Connecting client…"
+    page.show_progress(&crate::i18n::tr(if connect {
+        crate::i18n::msg("Connecting client…")
     } else {
-        "Disconnecting client…"
-    });
+        crate::i18n::msg("Disconnecting client…")
+    }));
     let client_id = client.id.clone();
     let client_name = client.name.clone();
     let button = button.clone();
@@ -3368,17 +3581,33 @@ fn run_client_mutation(
                 // only "Connected" would misstate what the running client does.
                 let restored = result.outcome.restored.len();
                 let message = if connect {
-                    format!(
-                        "Connected {client_name} to Toolport. Restart {client_name} to apply it."
+                    crate::i18n::trf(
+                        "Connected {value0} to Toolport. Restart {value1} to apply it.",
+                        &[
+                            ("value0", &client_name.to_string()),
+                            ("value1", &client_name.to_string()),
+                        ],
                     )
                 } else if restored > 0 {
-                    format!(
-                        "Disconnected {client_name} from Toolport and put back {restored} server{} it had moved. Restart {client_name} to apply it.",
-                        if restored == 1 { "" } else { "s" }
+                    crate::i18n::trf(
+                        if restored == 1 {
+                            crate::i18n::msg("Disconnected {value0} from Toolport and put back {value1} server it had moved. Restart {value3} to apply it.")
+                        } else {
+                            crate::i18n::msg("Disconnected {value0} from Toolport and put back {value1} servers it had moved. Restart {value3} to apply it.")
+                        },
+                        &[
+                            ("value0", &client_name.to_string()),
+                            ("value1", &format!("{}", restored)),
+                            ("value3", &client_name.to_string()),
+                        ],
                     )
                 } else {
-                    format!(
-                        "Disconnected {client_name} from Toolport. Restart {client_name} to apply it."
+                    crate::i18n::trf(
+                        "Disconnected {value0} from Toolport. Restart {value1} to apply it.",
+                        &[
+                            ("value0", &client_name.to_string()),
+                            ("value1", &client_name.to_string()),
+                        ],
                     )
                 };
                 page.refresh_with_confirmation(
@@ -3389,7 +3618,10 @@ fn run_client_mutation(
                 );
             }
             Ok(Err(error)) => page.show_error(&format!("{client_name}: {error}")),
-            Err(_) => page.show_error(&format!("{client_name}: the operation stopped")),
+            Err(_) => page.show_error(&crate::i18n::trf(
+                "{value0}: the operation stopped",
+                &[("value0", &client_name.to_string())],
+            )),
         }
     });
 }
@@ -3504,24 +3736,26 @@ impl ActivityPage {
         let header = adw::HeaderBar::new();
         header.add_css_class("toolport-header");
         header.set_show_back_button(true);
-        header.set_title_widget(Some(
-            &gtk::Label::builder()
-                .label("Activity")
+        header.set_title_widget(Some(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Activity"))
                 .css_classes(["title"])
-                .build(),
-        ));
+                .build();
+            l10n::bind_label(&widget, "Activity");
+            widget
+        }));
         let clear_button = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text("Clear retained activity")
+            .tooltip_text(crate::i18n::tr("Clear retained activity"))
             .build();
         clear_button.add_css_class("flat");
         let refresh_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
-            .tooltip_text("Refresh activity")
+            .tooltip_text(crate::i18n::tr("Refresh activity"))
             .build();
         let export_button = gtk::MenuButton::builder()
             .icon_name("document-save-symbolic")
-            .tooltip_text("Export activity")
+            .tooltip_text(crate::i18n::tr("Export activity"))
             .build();
         let export_menu = toolport_menu_popover();
         let export_actions = gtk::Box::new(gtk::Orientation::Vertical, 4);
@@ -3529,9 +3763,9 @@ impl ActivityPage {
         export_actions.set_margin_bottom(6);
         export_actions.set_margin_start(6);
         export_actions.set_margin_end(6);
-        let export_json = toolport_menu_button("Export JSON");
+        let export_json = toolport_menu_source_button(crate::i18n::msg("Export JSON"));
         export_actions.append(&export_json);
-        let export_csv = toolport_menu_button("Export CSV");
+        let export_csv = toolport_menu_source_button(crate::i18n::msg("Export CSV"));
         export_actions.append(&export_csv);
         export_menu.set_child(Some(&export_actions));
         export_button.set_popover(Some(&export_menu));
@@ -3550,23 +3784,25 @@ impl ActivityPage {
         page.set_margin_bottom(20);
         page.set_margin_start(20);
         page.set_margin_end(20);
-        page.append(
-            &gtk::Label::builder()
-                .label("Calls and approvals, visible locally")
+        page.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Calls and approvals, visible locally"))
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["title-2"])
-                .build(),
-        );
+                .build();
+            l10n::bind_label(&widget, "Calls and approvals, visible locally");
+            widget
+        });
         page.append(
-            &gtk::Label::builder()
-                .label("Toolport records outcomes and timing, never tool arguments or result data. Recent activity is shown below; export includes all saved history.")
+            &{ let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Toolport records outcomes and timing, never tool arguments or result data. Recent activity is shown below; export includes all saved history."))
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["toolport-muted"])
-                .build(),
+                .build(); l10n::bind_label(&widget, "Toolport records outcomes and timing, never tool arguments or result data. Recent activity is shown below; export includes all saved history."); widget },
         );
         let feedback = gtk::Label::builder()
             .halign(gtk::Align::Fill)
@@ -3574,7 +3810,7 @@ impl ActivityPage {
             .wrap(true)
             .css_classes(["toolport-feedback"])
             .build();
-        feedback.set_label("Loading retained activity…");
+        l10n::bind_text(&feedback, "Loading retained activity…");
         page.append(&feedback);
         let telemetry_feedback = gtk::Label::builder()
             .halign(gtk::Align::Start)
@@ -3595,10 +3831,10 @@ impl ActivityPage {
         summary.set_selection_mode(gtk::SelectionMode::None);
         let mut values = Vec::new();
         for (value, label) in [
-            ("…", "Calls recorded"),
-            ("…", "Success rate"),
-            ("…", "Average latency"),
-            ("…", "Tokens saved"),
+            ("…", crate::i18n::msg("Calls recorded")),
+            ("…", crate::i18n::msg("Success rate")),
+            ("…", crate::i18n::msg("Average latency")),
+            ("…", crate::i18n::msg("Tokens saved")),
         ] {
             let (item, value) = summary_item(value, label);
             values.push(value);
@@ -3608,27 +3844,35 @@ impl ActivityPage {
 
         let security_status = gtk::Button::new();
         security_status.add_css_class("toolport-security-status");
-        security_status.set_tooltip_text(Some("Review tool changes"));
+        l10n::bind_tooltip(&security_status, "Review tool changes");
         let security_status_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         let security_status_icon = gtk::Image::from_icon_name("security-high-symbolic");
         security_status_icon.add_css_class("toolport-security-status-icon");
         security_status_row.append(&security_status_icon);
         let security_status_copy = gtk::Box::new(gtk::Orientation::Vertical, 1);
         security_status_copy.set_hexpand(true);
-        let security_status_title = gtk::Label::builder()
-            .label("Checking protection…")
-            .halign(gtk::Align::Start)
-            .xalign(0.0)
-            .css_classes(["heading"])
-            .build();
+        let security_status_title = {
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Checking protection…"))
+                .halign(gtk::Align::Start)
+                .xalign(0.0)
+                .css_classes(["heading"])
+                .build();
+            l10n::bind_label(&widget, "Checking protection…");
+            widget
+        };
         security_status_copy.append(&security_status_title);
-        let security_status_detail = gtk::Label::builder()
-            .label("Loading saved review state.")
-            .halign(gtk::Align::Start)
-            .xalign(0.0)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .css_classes(["toolport-muted", "caption"])
-            .build();
+        let security_status_detail = {
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Loading saved review state."))
+                .halign(gtk::Align::Start)
+                .xalign(0.0)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .css_classes(["toolport-muted", "caption"])
+                .build();
+            l10n::bind_label(&widget, "Loading saved review state.");
+            widget
+        };
         security_status_copy.append(&security_status_detail);
         security_status_row.append(&security_status_copy);
         security_status_row.append(&gtk::Image::from_icon_name("go-next-symbolic"));
@@ -3647,10 +3891,12 @@ impl ActivityPage {
             .css_classes(["heading"])
             .build();
         savings_header.append(&savings_title);
-        let savings_share = gtk::Button::with_label("Share");
+        let savings_share = l10n::button("Share");
         savings_share.add_css_class("toolport-secondary-action");
         savings_share.set_valign(gtk::Align::Center);
-        savings_share.set_tooltip_text(Some("Copy a shareable savings line to the clipboard"));
+        savings_share.set_tooltip_text(Some(&crate::i18n::tr(
+            "Copy a shareable savings line to the clipboard",
+        )));
         savings_header.append(&savings_share);
         savings_banner.append(&savings_header);
         let savings_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -3659,14 +3905,23 @@ impl ActivityPage {
             .css_classes(["title-2"])
             .build();
         savings_row.append(&savings_value);
-        let savings_unit = gtk::Label::builder()
-            .label("tokens of tool definitions kept out of agent context")
-            .halign(gtk::Align::Fill)
-            .xalign(0.0)
-            .valign(gtk::Align::End)
-            .wrap(true)
-            .css_classes(["toolport-muted"])
-            .build();
+        let savings_unit = {
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr(
+                    "tokens of tool definitions kept out of agent context",
+                ))
+                .halign(gtk::Align::Fill)
+                .xalign(0.0)
+                .valign(gtk::Align::End)
+                .wrap(true)
+                .css_classes(["toolport-muted"])
+                .build();
+            l10n::bind_label(
+                &widget,
+                "tokens of tool definitions kept out of agent context",
+            );
+            widget
+        };
         savings_row.append(&savings_unit);
         savings_banner.append(&savings_row);
         let savings_detail = gtk::Label::builder()
@@ -3687,36 +3942,43 @@ impl ActivityPage {
             .css_classes(["toolport-muted", "caption"])
             .build();
         savings_banner.append(&savings_old_estimate);
-        let savings_counting = gtk::Expander::builder()
-            .label("How this is measured")
-            .expanded(false)
-            .child(&savings_detail)
-            .build();
+        let savings_counting = {
+            let widget = gtk::Expander::builder()
+                .expanded(false)
+                .child(&savings_detail)
+                .build();
+            widget.set_label_widget(Some(&l10n::label("How this is measured")));
+            widget
+        };
         savings_banner.append(&savings_counting);
         performance.append(&savings_banner);
 
-        performance.append(
-            &gtk::Label::builder()
-                .label("Per-server performance")
+        performance.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Per-server performance"))
                 .halign(gtk::Align::Start)
                 .css_classes(["heading"])
-                .build(),
-        );
+                .build();
+            l10n::bind_label(&widget, "Per-server performance");
+            widget
+        });
         let stats_list = gtk::Box::new(gtk::Orientation::Vertical, 10);
         performance.append(&stats_list);
-        page.append(
-            &gtk::Label::builder()
-                .label("Recent calls and approvals")
+        page.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Recent calls and approvals"))
                 .halign(gtk::Align::Start)
                 .css_classes(["heading"])
-                .build(),
-        );
+                .build();
+            l10n::bind_label(&widget, "Recent calls and approvals");
+            widget
+        });
         let filter_row = wrapping_actions();
-        let filter_server = gtk::DropDown::from_strings(&["All servers"]);
+        let filter_server = gtk::DropDown::from_strings(&[&crate::i18n::tr("All servers")]);
         filter_server.add_css_class("toolport-input");
         filter_server.add_css_class("toolport-activity-filter");
         filter_server.set_valign(gtk::Align::Center);
-        filter_server.set_tooltip_text(Some("Show events from one server"));
+        l10n::bind_tooltip(&filter_server, "Show events from one server");
         let factory = gtk::SignalListItemFactory::new();
         factory.connect_setup(|_, item| {
             let item = item
@@ -3744,7 +4006,8 @@ impl ActivityPage {
         });
         filter_server.set_factory(Some(&factory));
         filter_row.insert(&filter_server, -1);
-        let errors_only = gtk::ToggleButton::with_label("Errors only");
+        let errors_only = gtk::ToggleButton::new();
+        l10n::bind_button(errors_only.upcast_ref(), "Errors only");
         errors_only.add_css_class("toolport-secondary-action");
         errors_only.add_css_class("toolport-activity-filter");
         errors_only.set_valign(gtk::Align::Center);
@@ -3759,85 +4022,122 @@ impl ActivityPage {
         page.append(&filter_count);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 10);
         page.append(&list);
-        let show_more_calls = gtk::Button::with_label("Show more events");
+        let show_more_calls = l10n::button("Show more events");
         show_more_calls.add_css_class("toolport-secondary-action");
         show_more_calls.set_halign(gtk::Align::Center);
         show_more_calls.set_visible(false);
         page.append(&show_more_calls);
 
-        let performance_expander = gtk::Expander::new(Some("Performance and savings"));
+        let performance_expander = {
+            let widget = gtk::Expander::new(None);
+            widget.set_label_widget(Some(&l10n::label("Performance and savings")));
+            widget
+        };
         performance_expander.add_css_class("toolport-details-expander");
         performance_expander.set_child(Some(&performance));
         page.append(&performance_expander);
 
         let diagnostics = gtk::Box::new(gtk::Orientation::Vertical, 10);
         diagnostics.set_margin_top(10);
-        diagnostics.append(
-            &gtk::Label::builder()
-                .label("Review protection history or inspect the gateway's technical records.")
+        diagnostics.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr(
+                    "Review protection history or inspect the gateway's technical records.",
+                ))
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["toolport-muted"])
-                .build(),
-        );
+                .build();
+            l10n::bind_label(
+                &widget,
+                "Review protection history or inspect the gateway's technical records.",
+            );
+            widget
+        });
         let security = gtk::Box::new(gtk::Orientation::Vertical, 8);
         security.set_margin_top(8);
-        security.append(
-            &gtk::Label::builder()
-                .label("Review changes to your servers and their tools.")
+        security.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr(
+                    "Review changes to your servers and their tools.",
+                ))
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["toolport-muted", "caption"])
-                .build(),
-        );
+                .build();
+            l10n::bind_label(&widget, "Review changes to your servers and their tools.");
+            widget
+        });
         let security_list = gtk::Box::new(gtk::Orientation::Vertical, 10);
         security.append(&security_list);
-        let security_expander = gtk::Expander::new(Some("Protection history"));
+        let security_expander = {
+            let widget = gtk::Expander::new(None);
+            widget.set_label_widget(Some(&l10n::label("Protection history")));
+            widget
+        };
         security_expander.add_css_class("toolport-card");
         security_expander.set_child(Some(&security));
         diagnostics.append(&security_expander);
 
         let technical = gtk::Box::new(gtk::Orientation::Vertical, 12);
         technical.set_margin_top(8);
-        technical.append(
-            &gtk::Label::builder()
-                .label("Tool identities")
+        technical.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Tool identities"))
                 .halign(gtk::Align::Start)
                 .css_classes(["heading"])
-                .build(),
-        );
-        let identity_search = gtk::SearchEntry::builder()
-            .placeholder_text("Filter tools or servers")
-            .css_classes(["toolport-search"])
-            .build();
+                .build();
+            l10n::bind_label(&widget, "Tool identities");
+            widget
+        });
+        let identity_search = {
+            let widget = gtk::SearchEntry::builder()
+                .placeholder_text(crate::i18n::tr("Filter tools or servers"))
+                .css_classes(["toolport-search"])
+                .build();
+            l10n::bind_placeholder(&widget, "Filter tools or servers");
+            widget
+        };
         technical.append(&identity_search);
         let identity_list = gtk::Box::new(gtk::Orientation::Vertical, 10);
         technical.append(&identity_list);
-        technical.append(
-            &gtk::Label::builder()
-                .label("Discovery traces")
+        technical.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Discovery traces"))
                 .halign(gtk::Align::Start)
                 .css_classes(["heading"])
-                .build(),
-        );
+                .build();
+            l10n::bind_label(&widget, "Discovery traces");
+            widget
+        });
         let search_list = gtk::Box::new(gtk::Orientation::Vertical, 10);
         technical.append(&search_list);
-        technical.append(
-            &gtk::Label::builder()
-                .label("Live inspector")
+        technical.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Live inspector"))
                 .halign(gtk::Align::Start)
                 .css_classes(["heading"])
-                .build(),
-        );
+                .build();
+            l10n::bind_label(&widget, "Live inspector");
+            widget
+        });
         let inspect_list = gtk::Box::new(gtk::Orientation::Vertical, 10);
         technical.append(&inspect_list);
-        let technical_expander = gtk::Expander::new(Some("Technical records"));
+        let technical_expander = {
+            let widget = gtk::Expander::new(None);
+            widget.set_label_widget(Some(&l10n::label("Technical records")));
+            widget
+        };
         technical_expander.add_css_class("toolport-card");
         technical_expander.set_child(Some(&technical));
         diagnostics.append(&technical_expander);
-        let diagnostics_expander = gtk::Expander::new(Some("Security and diagnostics"));
+        let diagnostics_expander = {
+            let widget = gtk::Expander::new(None);
+            widget.set_label_widget(Some(&l10n::label("Security and diagnostics")));
+            widget
+        };
         diagnostics_expander.add_css_class("toolport-details-expander");
         diagnostics_expander.set_child(Some(&diagnostics));
         page.append(&diagnostics_expander);
@@ -3880,7 +4180,7 @@ impl ActivityPage {
             last_snapshot: std::rc::Rc::new(std::cell::RefCell::new(None)),
             filter_server,
             filter_server_options: std::rc::Rc::new(std::cell::RefCell::new(vec![
-                "All servers".to_string()
+                crate::i18n::tr("All servers").to_string(),
             ])),
             errors_only,
             filter_count,
@@ -3928,7 +4228,7 @@ impl ActivityPage {
                     .set_text(&savings_share_line(tokens, loads, searches, bytes));
                 page_for_share
                     .feedback
-                    .set_label("Savings copied, paste them anywhere.");
+                    .set_label(&crate::i18n::tr("Savings copied, paste them anywhere."));
                 page_for_share.feedback.remove_css_class("error");
                 page_for_share.feedback.add_css_class("success");
             }
@@ -3982,9 +4282,9 @@ impl ActivityPage {
             return;
         };
         let dialog = gtk::FileDialog::builder()
-            .title("Export activity")
+            .title(crate::i18n::tr("Export activity"))
             .modal(true)
-            .accept_label("Export")
+            .accept_label(crate::i18n::tr("Export"))
             .initial_name(format!("toolport-activity.{format}"))
             .build();
         set_file_dialog_folder(&dialog);
@@ -3994,10 +4294,13 @@ impl ActivityPage {
                 return;
             };
             let Some(path) = file.path() else {
-                page.show_error("the selected destination does not have a local path");
+                page.show_error(&crate::i18n::tr(
+                    "the selected destination does not have a local path",
+                ));
                 return;
             };
-            page.feedback.set_label("Exporting retained activity…");
+            page.feedback
+                .set_label(&crate::i18n::tr("Exporting retained activity…"));
             let page = page.clone();
             gtk::glib::spawn_future_local(async move {
                 let result = gtk::gio::spawn_blocking(move || {
@@ -4006,15 +4309,16 @@ impl ActivityPage {
                 .await;
                 match result {
                     Ok(Ok(())) => {
-                        page.feedback.set_label(&format!(
-                            "Exported retained activity as {}.",
-                            format.to_uppercase()
-                        ));
+                        l10n::bind_formatted_label(
+                            &page.feedback,
+                            "Exported retained activity as {value0}.",
+                            &[("value0", &format.to_uppercase().to_string())],
+                        );
                         page.feedback.remove_css_class("error");
                         page.feedback.add_css_class("success");
                     }
                     Ok(Err(error)) => page.show_error(&error),
-                    Err(_) => page.show_error("the export stopped unexpectedly"),
+                    Err(_) => page.show_error(&crate::i18n::tr("the export stopped unexpectedly")),
                 }
             });
         });
@@ -4074,11 +4378,13 @@ impl ActivityPage {
                 list.remove(&child);
             }
         }
-        self.feedback.set_label("Loading retained activity…");
+        self.feedback
+            .set_label(&crate::i18n::tr("Loading retained activity…"));
         self.feedback.set_visible(true);
-        self.security_status_title.set_label("Checking protection…");
+        self.security_status_title
+            .set_label(&crate::i18n::tr("Checking protection…"));
         self.security_status_detail
-            .set_label("Loading saved review state.");
+            .set_label(&crate::i18n::tr("Loading saved review state."));
         self.security_status.remove_css_class("attention");
         self.security_status.remove_css_class("review");
         for value in [
@@ -4113,7 +4419,7 @@ impl ActivityPage {
                 return;
             }
             let notices = result.unwrap_or_else(|_| vec![
-                "Gateway telemetry health is unavailable. Activity and savings may be incomplete.".into(),
+                crate::i18n::tr("Gateway telemetry health is unavailable. Activity and savings may be incomplete."),
             ]);
             page.apply_health_notices(notices);
         });
@@ -4150,8 +4456,11 @@ impl ActivityPage {
             if generation != page.health_generation.get() {
                 return;
             }
-            let revision =
-                result.unwrap_or_else(|_| Err("Activity change check stopped unexpectedly".into()));
+            let revision = result.unwrap_or_else(|_| {
+                Err(crate::i18n::tr(
+                    "Activity change check stopped unexpectedly",
+                ))
+            });
             page.set_revision_error(revision.as_ref().err().cloned());
             let revision = revision.ok();
             if revision.is_none() || *page.revision.borrow() != revision {
@@ -4174,8 +4483,9 @@ impl ActivityPage {
     fn render_activity_notices(&self, health: &[String]) {
         let mut notices = health.to_vec();
         if let Some(error) = self.revision_error.borrow().as_ref() {
-            notices.push(format!(
-                "Activity change checks are unavailable. Displayed activity may be stale. {error}"
+            notices.push(crate::i18n::trf(
+                "Activity change checks are unavailable. Displayed activity may be stale. {value0}",
+                &[("value0", &error.to_string())],
             ));
         }
         self.telemetry_feedback.set_label(&notices.join("\n"));
@@ -4199,7 +4509,8 @@ impl ActivityPage {
         }
         if announce || self.last_snapshot.borrow().is_none() {
             self.refresh_button.set_sensitive(false);
-            self.feedback.set_label("Loading retained activity…");
+            self.feedback
+                .set_label(&crate::i18n::tr("Loading retained activity…"));
             self.feedback.remove_css_class("error");
             self.feedback.set_visible(true);
         }
@@ -4236,7 +4547,9 @@ impl ActivityPage {
                         }
                     }
                     Ok((_, Err(error))) => page.show_error(&error),
-                    Err(_) => page.show_error("the activity read stopped unexpectedly"),
+                    Err(_) => {
+                        page.show_error(&crate::i18n::tr("the activity read stopped unexpectedly"))
+                    }
                 }
                 break;
             }
@@ -4310,10 +4623,10 @@ impl ActivityPage {
             .set_label(&if snapshot.savings_tokenized_loads > 0 {
                 format_saved_tokens(snapshot.tokens_saved)
             } else {
-                "Not measured".to_string()
+                crate::i18n::tr("Not measured").to_string()
             });
         self.tokens_saved.set_tooltip_text(Some(
-            "One full catalog baseline per session minus all catalog and search responses, counted with cl100k_base. Unverifiable history excluded; not a billing figure.",
+            &crate::i18n::tr("One full catalog baseline per session minus all catalog and search responses, counted with cl100k_base. Unverifiable history excluded; not a billing figure."),
         ));
         self.feedback.set_label("");
         self.feedback.remove_css_class("error");
@@ -4373,9 +4686,10 @@ impl ActivityPage {
             }
             self.expanded_stat_servers.borrow_mut().clear();
             self.server_stat_order.borrow_mut().clear();
-            self.stats_list.append(&empty_activity_label(
-                "Per-server statistics appear once calls are retained.",
-            ));
+            self.stats_list
+                .append(&empty_activity_source_label(crate::i18n::msg(
+                    "Per-server statistics appear once calls are retained.",
+                )));
         } else {
             let mut stats = snapshot.server_stats.clone();
             let current_servers = stats.iter().map(stat_server_name).collect::<Vec<_>>();
@@ -4405,9 +4719,7 @@ impl ActivityPage {
         }
         if traces_changed {
             if snapshot.search_traces.is_empty() {
-                self.search_list.append(&empty_activity_label(
-                    if snapshot.recent.iter().any(|row| row.internal && row.tool == "search") { "Recent activity includes tool searches; detailed search records are not available." } else { "Nothing searched yet." },
-                ));
+                self.search_list.append(&empty_activity_source_label(if snapshot.recent.iter().any(|row| row.internal && row.tool == "search") { crate::i18n::msg("Recent activity includes tool searches; detailed search records are not available.") } else { crate::i18n::msg("Nothing searched yet.") }));
             } else {
                 for trace in &snapshot.search_traces {
                     self.search_list.append(&search_trace_card(
@@ -4419,9 +4731,10 @@ impl ActivityPage {
         }
         if inspect_changed {
             if snapshot.inspect_calls.is_empty() {
-                self.inspect_list.append(&empty_activity_label(
-                    "Live inspection is off or has not captured a call.",
-                ));
+                self.inspect_list
+                    .append(&empty_activity_source_label(crate::i18n::msg(
+                        "Live inspection is off or has not captured a call.",
+                    )));
             } else {
                 for capture in &snapshot.inspect_calls {
                     self.inspect_list
@@ -4442,10 +4755,11 @@ impl ActivityPage {
         if snapshot.security_events.is_empty() {
             self.set_security_status(&[]);
             self.security_expander
-                .set_label(Some("Protection history · Clear"));
-            self.security_list.append(&empty_activity_label(
-                "No tool changes or suspicious content to review.",
-            ));
+                .set_label(Some(&crate::i18n::tr("Protection history · Clear")));
+            self.security_list
+                .append(&empty_activity_source_label(crate::i18n::msg(
+                    "No tool changes or suspicious content to review.",
+                )));
             return;
         }
         let live: Vec<serde_json::Value> = {
@@ -4458,12 +4772,10 @@ impl ActivityPage {
         if live.is_empty() {
             self.set_security_status(&[]);
             self.security_expander
-                .set_label(Some("Protection history · Reviewed"));
+                .set_label(Some(&crate::i18n::tr("Protection history · Reviewed")));
             // The calm "you're protected" state: a protection the user never
             // sees builds no trust.
-            self.security_list.append(&empty_activity_label(
-                "Protection active. Toolport is watching tool definitions and results. Nothing needs your attention right now.",
-            ));
+            self.security_list.append(&empty_activity_source_label(crate::i18n::msg("Protection active. Toolport is watching tool definitions and results. Nothing needs your attention right now.")));
             return;
         }
         let (older, live): (Vec<_>, Vec<_>) = live
@@ -4473,16 +4785,15 @@ impl ActivityPage {
         let groups = crate::integrity::group_tool_changes(&live);
         self.security_expander
             .set_label(Some(&if groups.is_empty() {
-                "Protection history · Security notices".to_string()
+                crate::i18n::tr("Protection history · Security notices").to_string()
             } else {
-                format!(
-                    "Protection history · {} server {}",
-                    groups.len(),
+                crate::i18n::trf(
                     if groups.len() == 1 {
-                        "update"
+                        crate::i18n::msg("Protection history · {value0} server update")
                     } else {
-                        "updates"
-                    }
+                        crate::i18n::msg("Protection history · {value0} server updates")
+                    },
+                    &[("value0", &format!("{}", groups.len()))],
                 )
             }));
         for group in groups {
@@ -4490,12 +4801,14 @@ impl ActivityPage {
                 .append(&tool_change_group_card(&group, self.clone()));
         }
         if !older.is_empty() {
-            let history = gtk::Expander::builder()
-                .label(format!(
-                    "{} older tool-change records. Open history to review them.",
-                    older.len()
-                ))
-                .build();
+            let history = {
+                let widget = gtk::Expander::builder().build();
+                widget.set_label_widget(Some(&l10n::formatted_label(
+                    "{value0} older tool-change records. Open history to review them.",
+                    &[("value0", &format!("{}", older.len()))],
+                )));
+                widget
+            };
             let rows = gtk::Box::new(gtk::Orientation::Vertical, 8);
             let page = self.clone();
             let history_rows = rows.clone();
@@ -4551,8 +4864,13 @@ impl ActivityPage {
                     page.dismiss_security(keys);
                     page.refresh();
                 }
-                Ok(Err(error)) => page.show_error(&format!("could not accept changes: {error}")),
-                Err(_) => page.show_error("accepting changes stopped unexpectedly"),
+                Ok(Err(error)) => page.show_error(&crate::i18n::trf(
+                    "could not accept changes: {value0}",
+                    &[("value0", &error.to_string())],
+                )),
+                Err(_) => {
+                    page.show_error(&crate::i18n::tr("accepting changes stopped unexpectedly"))
+                }
             }
         });
     }
@@ -4563,11 +4881,13 @@ impl ActivityPage {
         self.security_status_icon.remove_css_class("review");
         self.security_status_icon.remove_css_class("attention");
         if important.is_empty() {
-            self.security_status_title.set_label("Protection active");
+            self.security_status_title
+                .set_label(&crate::i18n::tr("Protection active"));
             self.security_status_detail
-                .set_label("No changes need review.");
-            self.security_status
-                .set_tooltip_text(Some("Open security and diagnostic history"));
+                .set_label(&crate::i18n::tr("No changes need review."));
+            self.security_status.set_tooltip_text(Some(&crate::i18n::tr(
+                "Open security and diagnostic history",
+            )));
             return;
         }
         if important
@@ -4588,14 +4908,20 @@ impl ActivityPage {
                 .iter()
                 .filter(|(event, _)| event["type"] != "tool_drift")
                 .count();
-        self.security_status_title.set_label(&format!(
-            "{count} {} to review",
-            if count == 1 { "update" } else { "updates" }
-        ));
+        l10n::bind_formatted_label(
+            &self.security_status_title,
+            if count == 1 {
+                crate::i18n::msg("{value0} update to review")
+            } else {
+                crate::i18n::msg("{value0} updates to review")
+            },
+            &[("value0", &format!("{}", count))],
+        );
         self.security_status_detail
-            .set_label(security_status_detail(important));
-        self.security_status
-            .set_tooltip_text(Some("Review changes in Protection history"));
+            .set_label(&crate::i18n::lookup(security_status_detail(important)));
+        self.security_status.set_tooltip_text(Some(&crate::i18n::tr(
+            "Review changes in Protection history",
+        )));
     }
 
     fn reveal_security(&self) {
@@ -4655,14 +4981,24 @@ impl ActivityPage {
                 || snapshot.savings_historical_loads > 0
                 || snapshot.savings_previous_tokens != 0,
         );
-        self.savings_title.set_label(if has_catalog {
-            "Net tool description savings"
-        } else if discovered {
-            "Discovery payload returned"
-        } else {
-            "Savings history"
-        });
-        self.savings_summary.set_label(if has_catalog { "Full catalog baselines minus all catalog and search responses. Counted locally; not a billing figure." } else { "Older records remain available below. Comparable session measurements start with this version." });
+        l10n::bind_text(
+            &self.savings_title,
+            if has_catalog {
+                crate::i18n::msg("Net tool description savings")
+            } else if discovered {
+                crate::i18n::msg("Discovery payload returned")
+            } else {
+                crate::i18n::msg("Savings history")
+            },
+        );
+        l10n::bind_text(
+            &self.savings_summary,
+            if has_catalog {
+                crate::i18n::msg("Full catalog baselines minus all catalog and search responses. Counted locally; not a billing figure.")
+            } else {
+                crate::i18n::msg("Older records remain available below. Comparable session measurements start with this version.")
+            },
+        );
         let (primary, unit) = if has_catalog || discovered {
             savings_primary_display(
                 snapshot.tokens_saved,
@@ -4670,31 +5006,24 @@ impl ActivityPage {
                 snapshot.savings_discovery_bytes,
             )
         } else {
-            ("Not measured yet".to_string(), "")
+            (crate::i18n::tr("Not measured yet").to_string(), "")
         };
         self.savings_share.set_visible(has_catalog);
         self.savings_value.set_label(&primary);
-        self.savings_unit.set_label(unit);
+        l10n::bind_label(&self.savings_unit, unit);
         let old = savings_old_estimate_display(snapshot.savings_previous_tokens);
         self.savings_old_estimate.set_visible(old.is_some());
         self.savings_old_estimate
             .set_label(old.as_deref().unwrap_or(""));
-        let mut detail = String::from("The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. Compact JSON and search response text are counted with cl100k_base. Every tools/list and search response is subtracted. Sessionless HTTP, initial catalogs above known client limits, and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.");
+        let mut detail = crate::i18n::tr("The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. We count compact JSON and search response text with cl100k_base, then subtract every tools/list and search response. Sessionless HTTP, initial catalogs above known client limits, and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.");
         if has_catalog || discovered {
-            detail.push_str(&format!("\n{} baseline tokens − {} catalog response tokens − {} search response tokens = {} net tokens saved.\n{} client sessions; {} catalog responses; {} search responses.\n{} baseline catalog text; {} catalog text sent; {} search text sent.",
-                grouped_number(snapshot.savings_full_tokens), grouped_number(snapshot.savings_exposed_tokens), grouped_number(snapshot.savings_discovery_tokens), snapshot.tokens_saved,
-                snapshot.savings_tokenized_loads, snapshot.savings_list_loads, snapshot.savings_discovery_count,
-                format_byte_count(snapshot.savings_full_bytes), format_byte_count(snapshot.savings_exposed_bytes), format_byte_count(snapshot.savings_discovery_bytes)));
+            detail.push_str(&crate::i18n::trf("\n{value0} baseline tokens − {value1} catalog response tokens − {value2} search response tokens = {value3} net tokens saved.\n{value4} client sessions; {value5} catalog responses; {value6} search responses.\n{value7} baseline catalog text; {value8} catalog text sent; {value9} search text sent.", &[("value0", &grouped_number(snapshot.savings_full_tokens).to_string()), ("value1", &grouped_number(snapshot.savings_exposed_tokens).to_string()), ("value2", &grouped_number(snapshot.savings_discovery_tokens).to_string()), ("value3", &format!("{}", snapshot.tokens_saved)), ("value4", &format!("{}", snapshot.savings_tokenized_loads)), ("value5", &format!("{}", snapshot.savings_list_loads)), ("value6", &format!("{}", snapshot.savings_discovery_count)), ("value7", &format_byte_count(snapshot.savings_full_bytes).to_string()), ("value8", &format_byte_count(snapshot.savings_exposed_bytes).to_string()), ("value9", &format_byte_count(snapshot.savings_discovery_bytes).to_string())]));
         }
         if snapshot.savings_historical_loads > 0 {
-            detail.push_str(&format!("\nExcluded history: {} catalog records ({} with byte measurements). Session identity and repeat loads cannot be verified.", grouped_number(snapshot.savings_historical_loads), grouped_number(snapshot.savings_historical_measured)));
+            detail.push_str(&crate::i18n::trf("\nExcluded history: {value0} catalog records ({value1} with byte measurements). Session identity and repeat loads cannot be verified.", &[("value0", &grouped_number(snapshot.savings_historical_loads).to_string()), ("value1", &grouped_number(snapshot.savings_historical_measured).to_string())]));
         }
         if snapshot.savings_legacy_tokens > 0 || snapshot.savings_old_v2_tokens > 0 {
-            detail.push_str(&format!(
-                "\nOlder estimated records: {} legacy tokens and {} size-based tokens, excluded.",
-                grouped_number(snapshot.savings_legacy_tokens),
-                grouped_number(snapshot.savings_old_v2_tokens)
-            ));
+            detail.push_str(&crate::i18n::trf("\nOlder estimated records: {value0} legacy tokens and {value1} size-based tokens, excluded.", &[("value0", &grouped_number(snapshot.savings_legacy_tokens).to_string()), ("value1", &grouped_number(snapshot.savings_old_v2_tokens).to_string())]));
         }
         self.savings_detail.set_label(&detail);
     }
@@ -4723,8 +5052,8 @@ impl ActivityPage {
             self.show_more_calls.set_visible(false);
             self.list.append(&state_card(
                 "view-list-symbolic",
-                "No activity yet",
-                "Calls and approval outcomes will appear here with their timing.",
+                crate::i18n::msg("No activity yet"),
+                crate::i18n::msg("Calls and approval outcomes will appear here with their timing."),
                 false,
             ));
             return;
@@ -4734,12 +5063,13 @@ impl ActivityPage {
         let filtered = filter_calls(&snapshot.recent, server.as_deref(), errors_only);
         if filtered.is_empty() {
             self.clear_recent_rows();
-            self.filter_count.set_label("0 matching rows");
+            self.filter_count
+                .set_label(&crate::i18n::tr("0 matching rows"));
             self.show_more_calls.set_visible(false);
             self.list.append(&state_card(
                 "edit-find-symbolic",
-                "No matching activity",
-                "Nothing saved matches the current filter.",
+                crate::i18n::msg("No matching activity"),
+                crate::i18n::msg("Nothing saved matches the current filter."),
                 false,
             ));
             return;
@@ -4759,9 +5089,12 @@ impl ActivityPage {
         self.show_more_calls
             .set_visible(match_count > RECENT_CALL_PREVIEW_LIMIT);
         let show_more_label = if self.show_all_recent.get() {
-            "Show fewer".to_string()
+            crate::i18n::tr("Show fewer").to_string()
         } else {
-            format!("Show all {match_count} rows")
+            crate::i18n::trf(
+                "Show all {value0} rows",
+                &[("value0", &format!("{}", match_count))],
+            )
         };
         self.show_more_calls.set_label(&show_more_label);
         let visible = filtered
@@ -4790,39 +5123,50 @@ impl ActivityPage {
             self.identity_list.remove(&child);
         }
         if let Some(error) = &snapshot.tool_identities_error {
-            let message =
-                empty_activity_label(&format!("Tool identities are unavailable: {error}"));
+            let message = empty_activity_label(&crate::i18n::trf(
+                "Tool identities are unavailable: {value0}",
+                &[("value0", &error.to_string())],
+            ));
             message.remove_css_class("toolport-muted");
             message.add_css_class("error");
             self.identity_list.append(&message);
             return;
         }
         if snapshot.tool_identities.is_empty() {
-            self.identity_list.append(&empty_activity_label(
-                "No tool baselines pinned yet. Identities appear after a client lists tools through the gateway.",
-            ));
+            self.identity_list.append(&empty_activity_source_label(crate::i18n::msg("No tool baselines pinned yet. Identities appear after a client lists tools through the gateway.")));
             return;
         }
         let query = self.identity_search.text().to_lowercase();
         let filtered = filter_tool_identities(&snapshot.tool_identities, &query);
         if filtered.is_empty() {
             self.identity_list
-                .append(&empty_activity_label("No pinned tool matches the filter."));
+                .append(&empty_activity_source_label(crate::i18n::msg(
+                    "No pinned tool matches the filter.",
+                )));
             return;
         }
         let groups = state::group_tool_identities(&filtered);
         if !query.is_empty() {
-            self.identity_list.append(&empty_activity_label(&format!(
-                "{} {} in {} {}",
-                filtered.len(),
-                if filtered.len() == 1 { "tool" } else { "tools" },
-                groups.len(),
-                if groups.len() == 1 {
-                    "server"
-                } else {
-                    "servers"
-                },
-            )));
+            self.identity_list
+                .append(&empty_activity_label(&crate::i18n::trf(
+                    if filtered.len() == 1 {
+                        if groups.len() == 1 {
+                            crate::i18n::msg("{value0} tool in {value2} server")
+                        } else {
+                            crate::i18n::msg("{value0} tool in {value2} servers")
+                        }
+                    } else {
+                        if groups.len() == 1 {
+                            crate::i18n::msg("{value0} tools in {value2} server")
+                        } else {
+                            crate::i18n::msg("{value0} tools in {value2} servers")
+                        }
+                    },
+                    &[
+                        ("value0", &format!("{}", filtered.len())),
+                        ("value2", &format!("{}", groups.len())),
+                    ],
+                )));
         }
         for (server, identities) in groups {
             // A search forces matches open so they are visible without a click.
@@ -4839,16 +5183,17 @@ impl ActivityPage {
         // A failed refresh over real rows must never read as "all clear": keep
         // the last loaded data on screen and say it is stale.
         if self.last_snapshot.borrow().is_some() {
-            self.feedback.set_label(&format!(
-                "Could not refresh; showing the last loaded activity. Retry with the refresh button. ({error})"
-            ));
+            l10n::bind_formatted_label(&self.feedback, "Could not refresh; showing the last loaded activity. Retry with the refresh button. ({value0})", &[("value0", error)]);
         } else {
-            self.feedback
-                .set_label(&format!("Could not load activity: {error}"));
+            l10n::bind_formatted_label(
+                &self.feedback,
+                "Could not load activity: {value0}",
+                &[("value0", error)],
+            );
             self.security_status_title
-                .set_label("Protection state unavailable");
+                .set_label(&crate::i18n::tr("Protection state unavailable"));
             self.security_status_detail
-                .set_label("Retry Activity to check saved reviews.");
+                .set_label(&crate::i18n::tr("Retry Activity to check saved reviews."));
         }
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
@@ -4860,13 +5205,13 @@ impl ActivityPage {
             return;
         };
         #[allow(deprecated)]
-        let dialog = adw::MessageDialog::new(
-            Some(&parent),
-            Some("Clear retained activity?"),
-            Some("This permanently removes the local call audit, discovery traces, live inspector captures, and savings tally. Security drift history remains available for review."),
-        );
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("clear", "Clear activity");
+        let dialog = adw::MessageDialog::new(Some(&parent), Some(&crate::i18n::tr("Clear retained activity?")), Some(&crate::i18n::tr("This permanently removes the local call audit, discovery traces, live inspector captures, and savings tally. Security drift history remains available for review.")));
+        l10n::bind_dialog_heading(&dialog, "Clear retained activity?");
+        l10n::bind_dialog_body(&dialog, "This permanently removes the local call audit, discovery traces, live inspector captures, and savings tally. Security drift history remains available for review.");
+        dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
+        l10n::bind_dialog_response(&dialog, "cancel", "Cancel");
+        dialog.add_response("clear", &crate::i18n::tr("Clear activity"));
+        l10n::bind_dialog_response(&dialog, "clear", "Clear activity");
         dialog.set_close_response("cancel");
         dialog.set_default_response(Some("cancel"));
         dialog.set_response_appearance("clear", adw::ResponseAppearance::Destructive);
@@ -4882,7 +5227,8 @@ impl ActivityPage {
 
     fn clear(&self) {
         self.clear_button.set_sensitive(false);
-        self.feedback.set_label("Clearing retained activity…");
+        self.feedback
+            .set_label(&crate::i18n::tr("Clearing retained activity…"));
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
             let result =
@@ -4890,11 +5236,22 @@ impl ActivityPage {
                     .await;
             match result {
                 Ok(Ok(())) => page.refresh(),
-                Ok(Err(error)) => page.show_error(&format!("could not clear activity: {error}")),
-                Err(_) => page.show_error("the clear operation stopped unexpectedly"),
+                Ok(Err(error)) => page.show_error(&crate::i18n::trf(
+                    "could not clear activity: {value0}",
+                    &[("value0", &error.to_string())],
+                )),
+                Err(_) => {
+                    page.show_error(&crate::i18n::tr("the clear operation stopped unexpectedly"))
+                }
             }
         });
     }
+}
+
+fn empty_activity_source_label(source: &'static str) -> gtk::Label {
+    let label = empty_activity_label(source);
+    l10n::bind_label(&label, source);
+    label
 }
 
 fn empty_activity_label(message: &str) -> gtk::Label {
@@ -4935,13 +5292,21 @@ fn aligned_scroll_value(current: f64, target_y: f64, lower: f64, upper: f64, pag
 
 fn security_event_kind(event: &serde_json::Value) -> &'static str {
     match event.get("type").and_then(serde_json::Value::as_str) {
-        Some("result_injection_blocked") => "Toolport blocked an injected tool result",
-        Some("result_injection") => "Toolport detected instructions inside a tool result",
-        Some("tool_poison_flag") => "Toolport found suspicious content in a tool definition",
-        Some("pins_load_failed") => "The tool integrity baseline could not be verified",
-        Some("tool_drift") => "A previously known tool definition changed",
-        Some("sync_change_refused") => "Toolport blocked a synced change",
-        _ => "A security finding was recorded",
+        Some("result_injection_blocked") => {
+            crate::i18n::msg("Toolport blocked an injected tool result")
+        }
+        Some("result_injection") => {
+            crate::i18n::msg("Toolport detected instructions inside a tool result")
+        }
+        Some("tool_poison_flag") => {
+            crate::i18n::msg("Toolport found suspicious content in a tool definition")
+        }
+        Some("pins_load_failed") => {
+            crate::i18n::msg("The tool integrity baseline could not be verified")
+        }
+        Some("tool_drift") => crate::i18n::msg("A previously known tool definition changed"),
+        Some("sync_change_refused") => crate::i18n::msg("Toolport blocked a synced change"),
+        _ => crate::i18n::msg("A security finding was recorded"),
     }
 }
 
@@ -5046,13 +5411,13 @@ fn security_status_detail(events: &[serde_json::Value]) -> &'static str {
         .filter(|event| event["type"] == "tool_drift")
         .collect();
     if changes.is_empty() {
-        "Security findings need review. Open Protection history for details."
+        crate::i18n::msg("Security findings need review. Open Protection history for details.")
     } else if changes.iter().any(|event| event["blocked"] == true) {
-        "Some tools are blocked. Review the changes or accept them."
+        crate::i18n::msg("Some tools are blocked. Review the changes or accept them.")
     } else if changes.iter().any(|event| event["blocked"].is_null()) {
-        "Blocking status unavailable. Review in Settings > Quarantined tools."
+        crate::i18n::msg("Blocking status unavailable. Review in Settings > Quarantined tools.")
     } else {
-        "Not blocked. Review the changes or accept them."
+        crate::i18n::msg("Not blocked. Review the changes or accept them.")
     }
 }
 
@@ -5105,7 +5470,7 @@ fn tool_change_group_card(
     heading.set_child(Some(&heading_row));
     heading.add_css_class("flat");
     heading.set_halign(gtk::Align::Fill);
-    heading.set_tooltip_text(Some("Expand to review the changed tools"));
+    l10n::bind_tooltip(&heading, "Expand to review the changed tools");
     let tools = gtk::Box::new(gtk::Orientation::Vertical, 8);
     tools.set_margin_top(8);
     let reveal = gtk::Revealer::new();
@@ -5156,23 +5521,29 @@ fn tool_change_group_card(
         .iter()
         .any(|event| event["review_required"] == true);
     let status = if review_required {
-        "Review the captured definition in Settings before accepting it.".to_string()
+        crate::i18n::tr("Review the captured definition in Settings before accepting it.")
+            .to_string()
     } else if blocked > 0 {
-        format!(
-            "{blocked} {} blocked. Review the changes or accept them.",
-            if blocked == 1 { "tool is" } else { "tools are" }
+        crate::i18n::trf(
+            if blocked == 1 {
+                crate::i18n::msg("{value0} tool is blocked. Review the changes or accept them.")
+            } else {
+                crate::i18n::msg("{value0} tools are blocked. Review the changes or accept them.")
+            },
+            &[("value0", &format!("{}", blocked))],
         )
     } else if unknown {
-        "Blocking status unavailable. Review in Settings > Quarantined tools.".to_string()
+        crate::i18n::tr("Blocking status unavailable. Review in Settings > Quarantined tools.")
+            .to_string()
     } else {
-        "Not blocked. Review the changes or accept them.".to_string()
+        crate::i18n::tr("Not blocked. Review the changes or accept them.").to_string()
     };
     let label = empty_activity_label(&status);
     if blocked > 0 {
         label.add_css_class("error");
     }
     card.append(&label);
-    let accept = gtk::Button::with_label("Accept all for this server");
+    let accept = l10n::button("Accept all for this server");
     accept.set_halign(gtk::Align::Start);
     accept.set_sensitive(group_can_be_accepted(group));
     if group
@@ -5180,9 +5551,9 @@ fn tool_change_group_card(
         .iter()
         .any(|event| event.get("signatures").is_some())
     {
-        card.append(&empty_activity_label(
+        card.append(&empty_activity_source_label(crate::i18n::msg(
             "Suspicious content found. Review and accept each tool separately.",
-        ));
+        )));
     }
     let events = group.tools.clone();
     accept.connect_clicked(move |button| {
@@ -5191,7 +5562,7 @@ fn tool_change_group_card(
     });
     card.append(&accept);
     if review_required {
-        let review = gtk::Button::with_label("Review in Settings");
+        let review = l10n::button("Review in Settings");
         review.set_halign(gtk::Align::Start);
         review.set_action_name(Some("app.review-quarantine"));
         card.append(&review);
@@ -5209,11 +5580,11 @@ fn security_notice_card(
 ) -> gtk::Expander {
     let card = gtk::Expander::new(None);
     card.add_css_class("toolport-card");
-    card.set_tooltip_text(Some("Click to review what changed"));
+    l10n::bind_tooltip(&card, "Click to review what changed");
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let kind = match event.get("type").and_then(serde_json::Value::as_str) {
-        Some("sync_change_refused") => "synced change blocked".to_string(),
-        Some("tool_drift") => "Tool changed".to_string(),
+        Some("sync_change_refused") => crate::i18n::tr("synced change blocked").to_string(),
+        Some("tool_drift") => crate::i18n::tr("Tool changed").to_string(),
         other => other.unwrap_or("security_event").replace('_', " "),
     };
     let badge = gtk::Label::new(Some(&kind));
@@ -5258,7 +5629,10 @@ fn security_notice_card(
         recurrence.set_valign(gtk::Align::Center);
         recurrence.set_halign(gtk::Align::Start);
         recurrence.add_css_class("review");
-        recurrence.set_tooltip_text(Some(&format!("Recurred in {count} separate time windows")));
+        recurrence.set_tooltip_text(Some(&crate::i18n::trf(
+            "Recurred in {value0} separate time windows",
+            &[("value0", &format!("{}", count))],
+        )));
         row.append(&recurrence);
     }
     let timestamp = event
@@ -5285,13 +5659,15 @@ fn security_notice_card(
         } else {
             "Reviewed"
         })
-        .tooltip_text("Accept this occurrence; a later change will reappear")
+        .tooltip_text(crate::i18n::tr(
+            "Accept this occurrence; a later change will reappear",
+        ))
         .css_classes(["flat"])
         .build();
     dismiss.set_sensitive(review_required || !is_change || change_can_be_accepted(event));
     let accepted_event = event.clone();
     let key = security_dismissal_key(event);
-    let expansion_key = format!("security:{key}");
+    let expansion_key = format!("security:{}", key);
     let page_for_dismiss = page.clone();
     let expansion_key_for_dismiss = expansion_key.clone();
     dismiss.connect_clicked(move |_| {
@@ -5349,7 +5725,7 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
 
     match (event_type, change) {
         ("tool_drift", "changed") => {
-            lines.push("This tool changed since it was last accepted.".to_string());
+            lines.push(crate::i18n::tr("This tool changed since it was last accepted.").to_string());
             let fields: Vec<&str> = event
                 .get("changed_fields")
                 .and_then(serde_json::Value::as_array)
@@ -5359,64 +5735,65 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
                 .collect();
             for field in &fields {
                 let label = match *field {
-                    "description" => "Description",
-                    "input_schema" => "Inputs",
-                    "output_schema" => "Output format",
-                    "annotations" => "Safety hints",
-                    other => other,
+                    "description" => crate::i18n::tr("Description"),
+                    "input_schema" => crate::i18n::tr("Inputs"),
+                    "output_schema" => crate::i18n::tr("Output format"),
+                    "annotations" => crate::i18n::tr("Safety hints"),
+                    other => other.to_string(),
                 };
-                lines.push(format!("Changed field: {label}"));
+                lines.push(crate::i18n::trf("Changed field: {value0}", &[("value0", &label.to_string())]));
             }
             let annotation_lines = annotation_review_lines(event);
             if fields.is_empty() && annotation_lines.is_empty() {
                 lines.push(
-                    "This older event does not contain field-level change details.".to_string(),
+                    crate::i18n::tr("This older event does not contain field-level change details.").to_string(),
                 );
             }
             lines.extend(annotation_lines);
         }
         ("tool_drift", "added") => {
-            lines.push("Tool was added to an established server definition.".to_string());
+            lines.push(crate::i18n::tr("Tool was added to an established server definition.").to_string());
         }
         ("tool_drift", "removed") => {
-            lines.push("Tool was removed from an established server definition.".to_string());
+            lines.push(crate::i18n::tr("Tool was removed from an established server definition.").to_string());
         }
         ("result_injection_blocked", _) => lines.push(
-            "Toolport blocked this result before it reached the requesting agent.".to_string(),
+            crate::i18n::tr("Toolport blocked this result before it reached the requesting agent.").to_string(),
         ),
         ("result_injection", _) => {
-            lines.push("A tool result matched prompt-injection patterns.".to_string())
+            lines.push(crate::i18n::tr("A tool result matched prompt-injection patterns.").to_string())
         }
         ("tool_poison_flag", _) => {
-            lines.push("The tool definition matched suspicious instruction patterns.".to_string())
+            lines.push(crate::i18n::tr("The tool definition matched suspicious instruction patterns.").to_string())
         }
         ("pins_load_failed", _) => lines.push(
             event["detail"]
                 .as_str()
-                .unwrap_or("Toolport could not read the integrity baseline because it was unreadable or corrupt. See Settings for the current safety policy.")
-                .to_string(),
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::i18n::tr("Toolport could not read the integrity baseline because it was unreadable or corrupt. See Settings for the current safety policy.")),
         ),
         ("sync_change_refused", _) => lines.push(
             event
                 .get("detail")
                 .and_then(serde_json::Value::as_str)
-                .unwrap_or("A synced change was blocked.")
-                .to_string(),
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::i18n::tr("A synced change was blocked.")),
         ),
-        _ => lines.push("Toolport retained this security event for review.".to_string()),
+        _ => lines.push(crate::i18n::tr("Toolport retained this security event for review.").to_string()),
     }
 
     if event_type == "tool_drift" {
         if event["review_required"] == true {
             lines.push(
-                "Review the captured definition in Settings before accepting it.".to_string(),
+                crate::i18n::tr("Review the captured definition in Settings before accepting it.")
+                    .to_string(),
             );
         }
         if let Some(parameters) = event.get("parameters") {
             for (key, label) in [
-                ("added", "Added"),
-                ("removed", "Removed"),
-                ("changed", "Changed"),
+                ("added", crate::i18n::msg("Added parameters: {names}")),
+                ("removed", crate::i18n::msg("Removed parameters: {names}")),
+                ("changed", crate::i18n::msg("Changed parameters: {names}")),
             ] {
                 let names: Vec<_> = parameters[key]
                     .as_array()
@@ -5425,20 +5802,22 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
                     .filter_map(serde_json::Value::as_str)
                     .collect();
                 if !names.is_empty() {
-                    lines.push(format!("{label} parameters: {}", names.join(", ")));
+                    lines.push(crate::i18n::lookup(label).replace("{names}", &names.join(", ")));
                 }
             }
         } else if change == "changed" {
-            lines.push("Parameter details were not saved for this older change.".to_string());
+            lines.push(
+                crate::i18n::tr("Parameter details were not saved for this older change.")
+                    .to_string(),
+            );
         }
-        lines.push(
-            match event["blocked"].as_bool() {
-                Some(true) => "Blocked until you accept the changes.",
-                Some(false) => "Not blocked.",
-                None => "Blocking status unavailable. Review in Settings > Quarantined tools.",
-            }
-            .to_string(),
-        );
+        lines.push(match event["blocked"].as_bool() {
+            Some(true) => crate::i18n::tr("Blocked until you accept the changes."),
+            Some(false) => crate::i18n::tr("Not blocked."),
+            None => crate::i18n::tr(
+                "Blocking status unavailable. Review in Settings > Quarantined tools.",
+            ),
+        });
     }
 
     if let Some(signatures) = event
@@ -5451,18 +5830,27 @@ fn security_review_lines(event: &serde_json::Value) -> Vec<String> {
             .map(|signature| signature.replace('_', " "))
             .collect();
         if !signatures.is_empty() {
-            lines.push(format!("Matched signals: {}", signatures.join(", ")));
+            lines.push(crate::i18n::trf(
+                "Matched signals: {value0}",
+                &[("value0", &signatures.join(", ").to_string())],
+            ));
         }
     }
     if let Some(score) = event.get("score").and_then(serde_json::Value::as_f64) {
-        lines.push(format!("Detection score: {score:.2}"));
+        lines.push(crate::i18n::trf(
+            "Detection score: {value0}",
+            &[("value0", &format!("{:.2}", score))],
+        ));
     }
     if let Some(evidence) = event
         .get("evidence")
         .and_then(serde_json::Value::as_str)
         .filter(|evidence| !evidence.is_empty())
     {
-        lines.push(format!("Matched text: {evidence}"));
+        lines.push(crate::i18n::trf(
+            "Matched text: {value0}",
+            &[("value0", evidence)],
+        ));
     }
     lines
 }
@@ -5477,10 +5865,13 @@ fn annotation_review_lines(event: &serde_json::Value) -> Vec<String> {
         let previous = event.get(previous);
         let next = event.get(next);
         (previous != next).then(|| {
-            format!(
-                "{label}: {} to {}",
-                security_hint_value(previous),
-                security_hint_value(next)
+            crate::i18n::trf(
+                "{value0}: {value1} to {value2}",
+                &[
+                    ("value0", label),
+                    ("value1", &security_hint_value(previous).to_string()),
+                    ("value2", &security_hint_value(next).to_string()),
+                ],
             )
         })
     })
@@ -5490,7 +5881,7 @@ fn annotation_review_lines(event: &serde_json::Value) -> Vec<String> {
 fn security_hint_value(value: Option<&serde_json::Value>) -> String {
     match value {
         Some(serde_json::Value::Bool(value)) => value.to_string(),
-        Some(serde_json::Value::Null) | None => "not set".to_string(),
+        Some(serde_json::Value::Null) | None => crate::i18n::tr("not set").to_string(),
         Some(value) => value.to_string(),
     }
 }
@@ -5527,11 +5918,23 @@ fn trace_summary_line(trace: &serde_json::Value) -> String {
         })
         .unwrap_or(0);
     let result = if fallbacks > 0 {
-        format!("{total} direct + {fallbacks} fallback")
+        crate::i18n::trf(
+            "{value0} direct + {value1} fallback",
+            &[
+                ("value0", &format!("{}", total)),
+                ("value1", &format!("{}", fallbacks)),
+            ],
+        )
     } else if returned > 0 {
-        format!("{returned} of {total}")
+        crate::i18n::trf(
+            "{value0} of {value1}",
+            &[
+                ("value0", &format!("{}", returned)),
+                ("value1", &format!("{}", total)),
+            ],
+        )
     } else {
-        "no match".to_string()
+        crate::i18n::tr("no match").to_string()
     };
     let mut parts = vec![format!("\u{201c}{query}\u{201d}"), result];
     if let Some(client) = string("client").filter(|client| !client.is_empty()) {
@@ -5582,19 +5985,22 @@ fn trace_ranking_lines(trace: &serde_json::Value) -> Vec<String> {
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false)
                     {
-                        "pinned prerequisite".to_string()
+                        crate::i18n::tr("pinned prerequisite").to_string()
                     } else if row
                         .get("fallback")
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false)
                     {
-                        "fallback candidate".to_string()
+                        crate::i18n::tr("fallback candidate").to_string()
                     } else if !matched.is_empty() {
-                        format!("matched {}", matched.join(", "))
+                        crate::i18n::trf(
+                            "matched {value0}",
+                            &[("value0", &matched.join(", ").to_string())],
+                        )
                     } else if trace.get("mode").and_then(serde_json::Value::as_str)
                         == Some("semantic")
                     {
-                        "semantic match".to_string()
+                        crate::i18n::tr("semantic match").to_string()
                     } else {
                         "-".to_string()
                     };
@@ -5613,7 +6019,7 @@ fn trace_ranking_lines(trace: &serde_json::Value) -> Vec<String> {
                 .filter_map(serde_json::Value::as_str)
                 .map(|name| {
                     if Some(name) == top {
-                        format!("{name} (top)")
+                        crate::i18n::trf("{name} (top)", &[("name", name)])
                     } else {
                         name.to_string()
                     }
@@ -5637,9 +6043,7 @@ fn trace_token_line(trace: &serde_json::Value) -> String {
             .get("catalogSchemaBytes")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
-        return format!("Returned {} of discovery content containing {schemas} matching schemas; full scoped catalog schemas: {}. ≈{} tokens (UTF-8 bytes ÷ 4).",
-            format_byte_count(bytes), format_byte_count(catalog),
-            state::format_token_count(bytes.div_ceil(4)));
+        return crate::i18n::trf("Returned {value0} of discovery content containing {value1} matching schemas; full scoped catalog schemas: {value2}. ≈{value3} tokens (UTF-8 bytes ÷ 4).", &[("value0", &format_byte_count(bytes).to_string()), ("value1", &format!("{}", schemas)), ("value2", &format_byte_count(catalog).to_string()), ("value3", &state::format_token_count(bytes.div_ceil(4)).to_string())]);
     }
     let number = |key: &str| {
         trace
@@ -5649,11 +6053,7 @@ fn trace_token_line(trace: &serde_json::Value) -> String {
     };
     let returned = number("returnedTokens");
     let flat = number("flatTokens");
-    format!(
-        "Legacy schema-only estimates: ≈{} returned vs ≈{} catalog; search guidance text was not counted.",
-        state::format_token_count(returned),
-        state::format_token_count(flat)
-    )
+    crate::i18n::trf("Legacy schema-only estimates: ≈{value0} returned vs ≈{value1} catalog; search guidance text was not counted.", &[("value0", &state::format_token_count(returned).to_string()), ("value1", &state::format_token_count(flat).to_string())])
 }
 
 fn search_trace_card(
@@ -5672,7 +6072,9 @@ fn search_trace_card(
         list.set_margin_top(8);
         let lines = trace_ranking_lines(&trace_for_expand);
         if lines.is_empty() {
-            list.append(&empty_activity_label("No tools matched this query."));
+            list.append(&empty_activity_source_label(crate::i18n::msg(
+                "No tools matched this query.",
+            )));
         }
         for line in lines {
             list.append(
@@ -5734,24 +6136,34 @@ fn inspect_card(capture: &serde_json::Value, expanded_rows: ActivityExpansionSta
             .css_classes(["heading"])
             .build(),
     );
-    card.append(
-        &gtk::Label::builder()
-            .label(format!(
-                "{}{} · captured locally while live inspection was enabled",
-                if ok { "Succeeded" } else { "Failed" },
-                duration
-            ))
+    card.append(&{
+        let widget = gtk::Label::builder()
+            .label("")
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["toolport-muted"])
-            .build(),
-    );
+            .build();
+        l10n::bind_formatted_label(
+            &widget,
+            if ok {
+                crate::i18n::msg(
+                    "Succeeded{value1} · captured locally while live inspection was enabled",
+                )
+            } else {
+                crate::i18n::msg(
+                    "Failed{value1} · captured locally while live inspection was enabled",
+                )
+            },
+            &[("value1", &duration.to_string())],
+        );
+        widget
+    });
     let body = serde_json::to_string_pretty(&serde_json::json!({
         "request": capture.get("request").cloned().unwrap_or(serde_json::Value::Null),
         "response": capture.get("response").cloned().unwrap_or(serde_json::Value::Null),
     }))
-    .unwrap_or_else(|_| "Could not format capture".to_string());
+    .unwrap_or_else(|_| crate::i18n::tr("Could not format capture").to_string());
     let view = gtk::TextView::builder()
         .editable(false)
         .cursor_visible(false)
@@ -5768,10 +6180,11 @@ fn inspect_card(capture: &serde_json::Value, expanded_rows: ActivityExpansionSta
         .min_content_height(120)
         .max_content_height(280)
         .build();
-    let details = gtk::Expander::builder()
-        .label("Inspect request and response")
-        .child(&scroll)
-        .build();
+    let details = {
+        let widget = gtk::Expander::builder().child(&scroll).build();
+        widget.set_label_widget(Some(&l10n::label("Inspect request and response")));
+        widget
+    };
     bind_activity_expander(
         &details,
         activity_row_key("inspect", capture),
@@ -5784,15 +6197,25 @@ fn inspect_card(capture: &serde_json::Value, expanded_rows: ActivityExpansionSta
 
 #[cfg(test)]
 fn savings_detail_line(list_loads: u64, peak_catalog: u64, since: Option<String>) -> String {
-    let mut parts = vec![format!(
-        "{list_loads} catalog {}",
-        if list_loads == 1 { "load" } else { "loads" }
+    let mut parts = vec![crate::i18n::trf(
+        if list_loads == 1 {
+            crate::i18n::msg("{value0} catalog load")
+        } else {
+            crate::i18n::msg("{value0} catalog loads")
+        },
+        &[("value0", &format!("{}", list_loads))],
     )];
     if peak_catalog > 4 {
-        parts.push(format!("peak {peak_catalog} tools"));
+        parts.push(crate::i18n::trf(
+            "peak {value0} tools",
+            &[("value0", &format!("{}", peak_catalog))],
+        ));
     }
     if let Some(since) = since {
-        parts.push(format!("since {since}"));
+        parts.push(crate::i18n::trf(
+            "since {value0}",
+            &[("value0", &since.to_string())],
+        ));
     }
     parts.join(" · ")
 }
@@ -5805,24 +6228,45 @@ fn savings_banner_visible(loads: u64, searches: u64) -> bool {
 #[cfg(test)]
 fn savings_title(loads: u64) -> &'static str {
     if loads == 0 {
-        "Discovery payload returned"
+        crate::i18n::msg("Discovery payload returned")
     } else {
-        "Net tool description savings"
+        crate::i18n::msg("Net tool description savings")
     }
 }
 
 fn activity_count_summary(total: usize, visible: usize, recent: usize, filtered: bool) -> String {
     let shown = if filtered {
-        format!("Showing {visible} matching rows from the latest {recent}.")
+        crate::i18n::trf(
+            "Showing {value0} matching rows from the latest {value1}.",
+            &[
+                ("value0", &format!("{}", visible)),
+                ("value1", &format!("{}", recent)),
+            ],
+        )
     } else if visible == recent {
-        format!("Showing the latest {visible}.")
+        crate::i18n::trf(
+            "Showing the latest {value0}.",
+            &[("value0", &format!("{}", visible))],
+        )
     } else {
-        format!("Showing {visible} of the latest {recent}.")
+        crate::i18n::trf(
+            "Showing {value0} of the latest {value1}.",
+            &[
+                ("value0", &format!("{}", visible)),
+                ("value1", &format!("{}", recent)),
+            ],
+        )
     };
-    format!(
-        "{} {} recorded on this computer. {shown}",
-        grouped_number(total as u64),
-        if total == 1 { "call" } else { "calls" }
+    crate::i18n::trf(
+        if total == 1 {
+            crate::i18n::msg("{value0} call recorded on this computer. {value2}")
+        } else {
+            crate::i18n::msg("{value0} calls recorded on this computer. {value2}")
+        },
+        &[
+            ("value0", &grouped_number(total as u64).to_string()),
+            ("value2", &shown.to_string()),
+        ],
     )
 }
 
@@ -5837,10 +6281,7 @@ fn format_saved_tokens(tokens_saved: i64) -> String {
 fn savings_old_estimate_display(tokens: i64) -> Option<String> {
     (tokens != 0).then(|| {
         let sign = if tokens < 0 { "-" } else { "" };
-        format!(
-            "Old estimate: {sign}{} tokens\nFrom previous versions; excluded from new savings.",
-            grouped_number(tokens.unsigned_abs())
-        )
+        crate::i18n::trf("Old estimate: {value0}{value1} tokens\nFrom previous versions; excluded from new savings.", &[("value0", sign), ("value1", &grouped_number(tokens.unsigned_abs()).to_string())])
     })
 }
 
@@ -5852,28 +6293,56 @@ fn savings_primary_display(
     if loads == 0 {
         return (
             format_byte_count(discovery_bytes),
-            "discovery text returned",
+            crate::i18n::msg("discovery text returned"),
         );
     }
-    (format_saved_tokens(tokens_saved), "net tokens saved")
+    (
+        format_saved_tokens(tokens_saved),
+        crate::i18n::msg("net tokens saved"),
+    )
 }
 
 fn savings_share_line(tokens_saved: i64, loads: u64, searches: u64, bytes: u64) -> String {
     if loads == 0 {
-        return format!("Toolport recorded {searches} discovery searches returning {} of text at its MCP boundary. toolport.app", format_byte_count(bytes));
+        return crate::i18n::trf("Toolport recorded {value0} discovery searches returning {value1} of text at its MCP boundary. toolport.app", &[("value0", &format!("{}", searches)), ("value1", &format_byte_count(bytes).to_string())]);
     }
-    format!("Toolport recorded {}{} net tokens saved. Full catalog baselines minus all catalog and search responses; counted locally with cl100k_base, not a billing figure. toolport.app", if tokens_saved < 0 { "-" } else { "" }, state::format_token_count(tokens_saved.unsigned_abs()))
+    crate::i18n::trf(
+        if tokens_saved < 0 {
+            crate::i18n::msg("Toolport recorded -{value1} net tokens saved. Full catalog baselines minus all catalog and search responses; counted locally with cl100k_base, not a billing figure. toolport.app")
+        } else {
+            crate::i18n::msg("Toolport recorded {value1} net tokens saved. Full catalog baselines minus all catalog and search responses; counted locally with cl100k_base, not a billing figure. toolport.app")
+        },
+        &[(
+            "value1",
+            &state::format_token_count(tokens_saved.unsigned_abs()).to_string(),
+        )],
+    )
 }
 
 fn format_byte_count(bytes: u64) -> String {
     if bytes >= 999_950_000_000 {
-        format!("{:.1} TB", bytes as f64 / 1_000_000_000_000.0)
+        crate::i18n::trf(
+            "{value0} TB",
+            &[(
+                "value0",
+                &format!("{:.1}", bytes as f64 / 1_000_000_000_000.0),
+            )],
+        )
     } else if bytes >= 999_950_000 {
-        format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
+        crate::i18n::trf(
+            "{value0} GB",
+            &[("value0", &format!("{:.1}", bytes as f64 / 1_000_000_000.0))],
+        )
     } else if bytes >= 999_950 {
-        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+        crate::i18n::trf(
+            "{value0} MB",
+            &[("value0", &format!("{:.1}", bytes as f64 / 1_000_000.0))],
+        )
     } else if bytes >= 1_000 {
-        format!("{:.1} KB", bytes as f64 / 1_000.0)
+        crate::i18n::trf(
+            "{value0} KB",
+            &[("value0", &format!("{:.1}", bytes as f64 / 1_000.0))],
+        )
     } else {
         format!("{bytes} B")
     }
@@ -5890,34 +6359,135 @@ fn pii_badge(
     let replaced = replaced?;
     if incomplete {
         return Some((
-            format!("{replaced} values masked, incomplete"),
+            crate::i18n::trf("{value0} values masked, incomplete", &[("value0", &format!("{}", replaced))]),
             "review",
-            "The pseudonymization pass did not fully apply - some values reached the model in the clear (the session map was full, or the result exceeded the scan cap).",
+            crate::i18n::msg("The pseudonymization pass did not fully apply - some values reached the model in the clear (the session map was full, or the result exceeded the scan cap)."),
         ));
     }
     if replaced == 0 {
         return None;
     }
     Some((
-        format!("{replaced} {} masked", if replaced == 1 { "value" } else { "values" }),
+        crate::i18n::trf(if replaced == 1 { crate::i18n::msg("{value0} value masked") } else { crate::i18n::msg("{value0} values masked") }, &[("value0", &format!("{}", replaced))]),
         "success",
-        "Personal values in this result were replaced before reaching the model. The values themselves are never logged.",
+        crate::i18n::msg("Personal values in this result were replaced before reaching the model. The values themselves are never logged."),
     ))
 }
 
 fn activity_title(activity: &state::ActivityView) -> String {
     if activity.internal {
         match activity.tool.as_str() {
-            "search" => "Searched tools",
-            "describe" => "Looked up a tool",
-            "status" => "Checked Toolport status",
-            "fetch" => "Retrieved a tool result",
-            _ => "Used Toolport",
+            "search" => crate::i18n::msg("Searched tools"),
+            "describe" => crate::i18n::msg("Looked up a tool"),
+            "status" => crate::i18n::msg("Checked Toolport status"),
+            "fetch" => crate::i18n::msg("Retrieved a tool result"),
+            _ => crate::i18n::msg("Used Toolport"),
         }
         .into()
     } else {
         format!("{} / {}", activity.server, activity.tool)
     }
+}
+
+// Canonical caller strings are identity/control data. Only these known fallback
+// cases are presentation sources; user-reported names are inserted verbatim.
+fn localized_caller_name(name: Option<&str>, label: Option<&str>) -> String {
+    let canonical = crate::clients::display_caller_name(name, label);
+    if name.is_some_and(|name| {
+        !name.is_empty()
+            && !matches!(
+                name,
+                "An AI client" | "Unknown client" | "Unrecorded client"
+            )
+    }) {
+        return canonical;
+    }
+    if let Some(name) = label.filter(|label| !label.is_empty()) {
+        return crate::i18n::trf("{name} (reported)", &[("name", name)]);
+    }
+    match canonical.as_str() {
+        "Unknown client" => crate::i18n::tr("Unknown client"),
+        "Unrecorded client" => crate::i18n::tr("Unrecorded client"),
+        _ => canonical,
+    }
+}
+fn unrecorded_client_tooltip() -> String {
+    crate::i18n::tr("Older Toolport versions did not record callers for these rows.")
+}
+fn activity_client_display(activity: &state::ActivityView) -> String {
+    let canonical = crate::clients::display_caller_name(
+        activity.client.as_deref(),
+        activity.client_label.as_deref(),
+    );
+    let display =
+        localized_caller_name(activity.client.as_deref(), activity.client_label.as_deref());
+    if canonical.ends_with(" (reported)") {
+        return display;
+    }
+    match activity
+        .client_label
+        .as_deref()
+        .filter(|label| !crate::clients::label_only_adds_version(&canonical, label))
+    {
+        Some(label) => crate::i18n::trf(
+            "{value0} (reports \"{value1}\")",
+            &[("value0", &display), ("value1", label)],
+        ),
+        None => display,
+    }
+}
+fn activity_detail(activity: &state::ActivityView) -> String {
+    let outcome = activity.approval_decision.as_deref().map(approval_outcome);
+    let mut detail = vec![
+        activity_client_display(activity),
+        relative_activity_time(activity.timestamp_ms),
+    ];
+
+    if let Some(kind) = &activity.failure_kind {
+        detail.push(kind.replace('_', " "));
+    }
+
+    if let Some(duration) = activity.duration_ms {
+        detail.push(if outcome.is_some() {
+            crate::i18n::trf(
+                "waited {value0}",
+                &[("value0", &format_duration(duration).to_string())],
+            )
+        } else {
+            format_duration(duration)
+        });
+    }
+    detail.join(" · ")
+}
+fn activity_detail_tooltip(activity: &state::ActivityView) -> String {
+    format!(
+        "{}{}{}{}",
+        if activity_client_name(activity) == "Unrecorded client" {
+            unrecorded_client_tooltip()
+        } else {
+            activity.client_id.as_deref().unwrap_or_default().to_owned()
+        },
+        activity
+            .run_id
+            .as_ref()
+            .map(|id| crate::i18n::trf("\nRun: {value0}", &[("value0", &id.to_string())]))
+            .unwrap_or_default(),
+        activity
+            .cold
+            .map(|cold| if cold {
+                crate::i18n::tr("\nCold catalog")
+            } else {
+                crate::i18n::tr("\nWarm catalog")
+            })
+            .unwrap_or_default(),
+        activity
+            .dispatch_ms
+            .map(|ms| crate::i18n::trf(
+                "\nDispatch: {value0}",
+                &[("value0", &format_duration(ms).to_string())]
+            ))
+            .unwrap_or_default()
+    )
 }
 
 fn activity_card(activity: &state::ActivityView) -> gtk::Box {
@@ -5955,67 +6525,37 @@ fn activity_card(activity: &state::ActivityView) -> gtk::Box {
 
     let copy = gtk::Box::new(gtk::Orientation::Vertical, 3);
     copy.set_hexpand(true);
-    copy.append(
-        &gtk::Label::builder()
-            .label(activity_title(activity))
-            .tooltip_text(format!("{} / {}", activity.server, activity.tool))
-            .halign(gtk::Align::Fill)
-            .xalign(0.0)
-            .wrap(true)
-            .css_classes(["heading"])
-            .build(),
-    );
-    let mut detail = vec![
-        activity_client_name(activity),
-        relative_activity_time(activity.timestamp_ms),
-    ];
-
-    if let Some(kind) = &activity.failure_kind {
-        detail.push(kind.replace('_', " "));
-    }
-
-    if let Some(duration) = activity.duration_ms {
-        detail.push(if outcome.is_some() {
-            format!("waited {}", format_duration(duration))
-        } else {
-            format_duration(duration)
+    let heading = gtk::Label::builder()
+        .label(activity_title(activity))
+        .tooltip_text(format!("{} / {}", activity.server, activity.tool))
+        .halign(gtk::Align::Fill)
+        .xalign(0.0)
+        .wrap(true)
+        .css_classes(["heading"])
+        .build();
+    if activity.internal {
+        let activity = activity.clone();
+        l10n::bind_label_with(&heading, move || {
+            crate::i18n::lookup(&activity_title(&activity))
         });
     }
-    copy.append(
-        &gtk::Label::builder()
-            .label(detail.join(" · "))
-            .tooltip_text(format!(
-                "{}{}{}{}",
-                if activity_client_name(activity) == "Unrecorded client" {
-                    crate::clients::UNRECORDED_CLIENT_TOOLTIP
-                } else {
-                    activity.client_id.as_deref().unwrap_or("")
-                },
-                activity
-                    .run_id
-                    .as_ref()
-                    .map(|id| format!("\nRun: {id}"))
-                    .unwrap_or_default(),
-                activity
-                    .cold
-                    .map(|cold| if cold {
-                        "\nCold catalog"
-                    } else {
-                        "\nWarm catalog"
-                    })
-                    .unwrap_or(""),
-                activity
-                    .dispatch_ms
-                    .map(|ms| format!("\nDispatch: {}", format_duration(ms)))
-                    .unwrap_or_default()
-            ))
-            .halign(gtk::Align::Fill)
-            .xalign(0.0)
-            .single_line_mode(true)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .css_classes(["toolport-muted"])
-            .build(),
-    );
+    copy.append(&heading);
+    let detail_label = gtk::Label::builder()
+        .label(activity_detail(activity))
+        .tooltip_text(activity_detail_tooltip(activity))
+        .halign(gtk::Align::Fill)
+        .xalign(0.0)
+        .single_line_mode(true)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .css_classes(["toolport-muted"])
+        .build();
+    let activity_for_detail = activity.clone();
+    l10n::bind_label_with(&detail_label, move || activity_detail(&activity_for_detail));
+    let activity_for_tooltip = activity.clone();
+    l10n::bind_tooltip_with(&detail_label, move || {
+        activity_detail_tooltip(&activity_for_tooltip)
+    });
+    copy.append(&detail_label);
     if let Some(error) = activity.error.as_deref() {
         copy.append(
             &gtk::Label::builder()
@@ -6032,23 +6572,37 @@ fn activity_card(activity: &state::ActivityView) -> gtk::Box {
     if let Some((label, class, tooltip)) = pii_badge(activity.pii_replaced, activity.pii_incomplete)
     {
         let badge = gtk::Label::new(Some(&label));
+        l10n::bind_formatted_label(
+            &badge,
+            if activity.pii_incomplete {
+                crate::i18n::msg("{value0} values masked, incomplete")
+            } else if activity.pii_replaced == Some(1) {
+                crate::i18n::msg("{value0} value masked")
+            } else {
+                crate::i18n::msg("{value0} values masked")
+            },
+            &[(
+                "value0",
+                &activity.pii_replaced.unwrap_or_default().to_string(),
+            )],
+        );
         badge.add_css_class("toolport-badge");
         badge.set_valign(gtk::Align::Center);
         badge.set_halign(gtk::Align::Start);
         badge.add_css_class(class);
-        badge.set_tooltip_text(Some(tooltip));
+        l10n::bind_tooltip(&badge, tooltip);
         card.append(&badge);
     }
     let (status, class) = if let Some((label, _, tone, _)) = outcome {
         (label, tone)
     } else if activity.held {
-        ("Held", "review")
+        (crate::i18n::msg("Held"), "review")
     } else if activity.ok {
-        ("Succeeded", "success")
+        (crate::i18n::msg("Succeeded"), "success")
     } else {
-        ("Failed", "disabled")
+        (crate::i18n::msg("Failed"), "disabled")
     };
-    let badge = gtk::Label::new(Some(status));
+    let badge = l10n::label(status);
     badge.add_css_class("toolport-badge");
     badge.set_valign(gtk::Align::Center);
     badge.set_halign(gtk::Align::Start);
@@ -6068,38 +6622,43 @@ fn approval_outcome(
     // Adwaita symbolic icons, also available in Omarchy's inherited icon theme.
     match decision {
         "approved" => (
-            "Approved",
+            crate::i18n::msg("Approved"),
             "security-medium-symbolic",
             "success",
             Some("object-select-symbolic"),
         ),
         "denied" => (
-            "Denied",
+            crate::i18n::msg("Denied"),
             "security-medium-symbolic",
             "approval-denied",
             Some("window-close-symbolic"),
         ),
         "no_response" => (
-            "No answer",
+            crate::i18n::msg("No answer"),
             "preferences-system-time-symbolic",
             "approval-warning",
             None,
         ),
-        "withdrawn" => ("Withdrawn", "edit-undo-symbolic", "disabled", None),
+        "withdrawn" => (
+            crate::i18n::msg("Withdrawn"),
+            "edit-undo-symbolic",
+            "disabled",
+            None,
+        ),
         "stale_state" => (
-            "Changed after approval",
+            crate::i18n::msg("Changed after approval"),
             "dialog-warning-symbolic",
             "approval-warning",
             None,
         ),
         "unreachable" => (
-            "No approver available",
+            crate::i18n::msg("No approver available"),
             "dialog-warning-symbolic",
             "approval-warning",
             None,
         ),
         _ => (
-            "Approval event",
+            crate::i18n::msg("Approval event"),
             "dialog-information-symbolic",
             "disabled",
             None,
@@ -6109,7 +6668,7 @@ fn approval_outcome(
 
 fn format_duration(ms: u64) -> String {
     if ms < 1000 {
-        format!("{ms} ms")
+        crate::i18n::trf("{value0} ms", &[("value0", &format!("{}", ms))])
     } else if ms < 60000 {
         let tenths = (ms + 50) / 100;
         format!("{}.{} s", tenths / 10, tenths % 10)
@@ -6153,7 +6712,10 @@ fn activity_client_name(activity: &state::ActivityView) -> String {
         .as_deref()
         .filter(|label| !crate::clients::label_only_adds_version(&name, label))
     {
-        Some(label) => format!("{name} (reports \"{label}\")"),
+        Some(label) => crate::i18n::trf(
+            "{value0} (reports \"{value1}\")",
+            &[("value0", &name.to_string()), ("value1", label)],
+        ),
         None => name.to_string(),
     }
 }
@@ -6165,11 +6727,28 @@ fn stat_metrics_line(stat: &serde_json::Value) -> String {
     let calls = number("calls").unwrap_or(0);
     let errors = number("errors").unwrap_or(0);
     let mut parts = vec![
-        format!("{calls} {}", if calls == 1 { "call" } else { "calls" }),
-        format!("{errors} {}", if errors == 1 { "error" } else { "errors" }),
+        crate::i18n::trf(
+            if calls == 1 {
+                crate::i18n::msg("{count} call")
+            } else {
+                crate::i18n::msg("{count} calls")
+            },
+            &[("count", &calls.to_string())],
+        ),
+        crate::i18n::trf(
+            if errors == 1 {
+                crate::i18n::msg("{count} error")
+            } else {
+                crate::i18n::msg("{count} errors")
+            },
+            &[("count", &errors.to_string())],
+        ),
     ];
     if let Some(avg) = number("avgMs") {
-        parts.push(format!("avg {}", format_duration(avg)));
+        parts.push(crate::i18n::trf(
+            "avg {value0}",
+            &[("value0", &format_duration(avg).to_string())],
+        ));
     }
     if let Some(p95) = number("p95Ms") {
         parts.push(format!("p95 {}", format_duration(p95)));
@@ -6198,7 +6777,17 @@ fn server_stat_row(
     let title = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     title.append(
         &gtk::Label::builder()
-            .label(&server)
+            .label(
+                if stat
+                    .get("server")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|name| !name.trim().is_empty())
+                {
+                    server.clone()
+                } else {
+                    crate::i18n::tr("Unknown server")
+                },
+            )
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .hexpand(true)
@@ -6239,13 +6828,16 @@ fn server_stat_row(
         let list = gtk::Box::new(gtk::Orientation::Vertical, 4);
         list.set_margin_top(8);
         if tools.is_empty() {
-            list.append(&empty_activity_label("No per-tool rows retained."));
+            list.append(&empty_activity_source_label(crate::i18n::msg(
+                "No per-tool rows retained.",
+            )));
         }
         for tool in tools {
             let name = tool
                 .get("tool")
                 .and_then(serde_json::Value::as_str)
-                .unwrap_or("Unknown tool");
+                .map(str::to_owned)
+                .unwrap_or_else(|| crate::i18n::tr("Unknown tool"));
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
             row.add_css_class("toolport-stat-row");
             row.append(
@@ -6303,7 +6895,7 @@ fn short_fingerprint(fingerprint: &str) -> String {
 /// Stable filter choices. Keeping this model unchanged prevents an open dropdown
 /// from being dismissed by an unrelated live-metrics refresh.
 fn activity_server_filter_options(calls: &[state::ActivityView]) -> Vec<String> {
-    let mut options = vec!["All servers".to_string()];
+    let mut options = vec![crate::i18n::tr("All servers").to_string()];
     for call in calls {
         if !options.iter().any(|server| server == &call.server) {
             options.push(call.server.clone());
@@ -6361,7 +6953,10 @@ fn tool_identity_group(
         if count == 1 { "tool" } else { "tools" }
     );
     if quarantined > 0 {
-        label.push_str(&format!(" · {quarantined} quarantined"));
+        label.push_str(&crate::i18n::trf(
+            " · {value0} quarantined",
+            &[("value0", &format!("{}", quarantined))],
+        ));
     }
     let expander = gtk::Expander::new(Some(&label));
     expander.add_css_class("toolport-card");
@@ -6382,7 +6977,7 @@ fn tool_identity_group(
     });
     bind_activity_expander(
         &expander,
-        format!("identity:{server}"),
+        format!("identity:{}", server),
         expanded_rows,
         expanded,
     );
@@ -6402,7 +6997,7 @@ fn tool_identity_row(identity: &crate::integrity::ToolIdentity) -> gtk::Box {
         .build();
     title.append(&alias);
     if identity.quarantined {
-        let badge = gtk::Label::new(Some("Quarantined"));
+        let badge = l10n::label("Quarantined");
         badge.add_css_class("toolport-badge");
         badge.set_valign(gtk::Align::Center);
         badge.set_halign(gtk::Align::Start);
@@ -6412,20 +7007,29 @@ fn tool_identity_row(identity: &crate::integrity::ToolIdentity) -> gtk::Box {
     row.append(&title);
     let mut detail = vec![
         if identity.upstream.is_empty() {
-            "unattributed alias".to_string()
+            crate::i18n::tr("unattributed alias").to_string()
         } else {
-            format!("upstream {}", identity.upstream)
+            crate::i18n::trf(
+                "upstream {value0}",
+                &[("value0", &identity.upstream.to_string())],
+            )
         },
         short_fingerprint(&identity.fingerprint),
     ];
     if identity.last_changed > 0 {
-        detail.push(format!(
-            "changed {}",
-            relative_activity_time(identity.last_changed)
+        detail.push(crate::i18n::trf(
+            "changed {value0}",
+            &[(
+                "value0",
+                &relative_activity_time(identity.last_changed).to_string(),
+            )],
         ));
     }
     if !identity.profiles.is_empty() {
-        detail.push(format!("profiles {}", identity.profiles.join(", ")));
+        detail.push(crate::i18n::trf(
+            "profiles {value0}",
+            &[("value0", &identity.profiles.join(", ").to_string())],
+        ));
     }
     row.append(
         &gtk::Label::builder()
@@ -6441,30 +7045,40 @@ fn tool_identity_row(identity: &crate::integrity::ToolIdentity) -> gtk::Box {
 
 fn relative_activity_time(timestamp_ms: u64) -> String {
     if timestamp_ms == 0 {
-        return "Unknown time".to_string();
+        return crate::i18n::tr("Unknown time").to_string();
     }
     let age_ms = epoch_ms().saturating_sub(timestamp_ms);
     let seconds = age_ms / 1000;
     if seconds < 60 {
-        "Just now".to_string()
+        crate::i18n::tr("Just now").to_string()
     } else if seconds < 3_600 {
-        format!("{}m ago", seconds / 60)
+        crate::i18n::trf("{value0}m ago", &[("value0", &format!("{}", seconds / 60))])
     } else if seconds < 86_400 {
-        format!("{}h ago", seconds / 3_600)
+        crate::i18n::trf(
+            "{value0}h ago",
+            &[("value0", &format!("{}", seconds / 3_600))],
+        )
     } else {
-        format!("{}d ago", seconds / 86_400)
+        crate::i18n::trf(
+            "{value0}d ago",
+            &[("value0", &format!("{}", seconds / 86_400))],
+        )
     }
 }
 
 /// The badge label and CSS class for one client's instructions state (shared with the Teams page).
 fn rule_apply_state(state: crate::instructions::ApplyState) -> (&'static str, &'static str) {
     match state {
-        crate::instructions::ApplyState::Applied => ("Applied", "success"),
-        crate::instructions::ApplyState::Stale => ("Needs update", "review"),
-        crate::instructions::ApplyState::Unsupported => ("Unsupported", "disabled"),
-        crate::instructions::ApplyState::BlockedOverride => ("Blocked by override", "review"),
-        crate::instructions::ApplyState::TooLong => ("Too long", "review"),
-        crate::instructions::ApplyState::Error => ("Could not apply", "disabled"),
+        crate::instructions::ApplyState::Applied => (crate::i18n::msg("Applied"), "success"),
+        crate::instructions::ApplyState::Stale => (crate::i18n::msg("Needs update"), "review"),
+        crate::instructions::ApplyState::Unsupported => {
+            (crate::i18n::msg("Unsupported"), "disabled")
+        }
+        crate::instructions::ApplyState::BlockedOverride => {
+            (crate::i18n::msg("Blocked by override"), "review")
+        }
+        crate::instructions::ApplyState::TooLong => (crate::i18n::msg("Too long"), "review"),
+        crate::instructions::ApplyState::Error => (crate::i18n::msg("Could not apply"), "disabled"),
     }
 }
 
@@ -6492,14 +7106,16 @@ impl ApprovalPage {
         root.set_visible(false);
 
         let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        heading.append(
-            &gtk::Label::builder()
-                .label("Approval required")
+        heading.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Approval required"))
                 .halign(gtk::Align::Start)
                 .hexpand(true)
                 .css_classes(["heading"])
-                .build(),
-        );
+                .build();
+            l10n::bind_label(&widget, "Approval required");
+            widget
+        });
         let count = gtk::Label::new(None);
         count.add_css_class("toolport-badge");
         count.set_valign(gtk::Align::Center);
@@ -6578,7 +7194,11 @@ impl ApprovalPage {
         }
         self.root.set_visible(!pending.is_empty());
         self.count.set_visible(pending.len() > 1);
-        self.count.set_label(&format!("{} pending", pending.len()));
+        l10n::bind_formatted_label(
+            &self.count,
+            "{value0} pending",
+            &[("value0", &format!("{}", pending.len()))],
+        );
         if *self.rendered.borrow() == signature {
             self.update_deadlines();
             return;
@@ -6657,12 +7277,14 @@ impl ApprovalPage {
                                 if let Some(parent) = page.root.root().and_downcast::<gtk::Window>()
                                 {
                                     #[allow(deprecated)]
-                                    let dialog = adw::MessageDialog::new(
-                                        Some(&parent),
-                                        Some("Could not save Always allow"),
-                                        Some(&format!("This call was approved for this session. Try Always allow again to keep the rule after restarting. {error}")),
+                                    let dialog = adw::MessageDialog::new(Some(&parent), Some(&crate::i18n::tr("Could not save Always allow")), Some(&crate::i18n::trf("This call was approved for this session. Try Always allow again to keep the rule after restarting. {value0}", &[("value0", &error.to_string())])));
+                                    l10n::bind_formatted_dialog_body(&dialog, "This call was approved for this session. Try Always allow again to keep the rule after restarting. {value0}", &[("value0", &error.to_string())]);
+                                    l10n::bind_dialog_heading(
+                                        &dialog,
+                                        "Could not save Always allow",
                                     );
-                                    dialog.add_response("close", "Close");
+                                    dialog.add_response("close", &crate::i18n::tr("Close"));
+                                    l10n::bind_dialog_response(&dialog, "close", "Close");
                                     dialog.set_close_response("close");
                                     dialog.connect_response(None, |dialog, _| dialog.close());
                                     dialog.present();
@@ -6700,9 +7322,9 @@ fn persist_always_allow(key: String) -> impl std::future::Future<Output = Result
         let _ = done.send(());
     });
     async move {
-        result
-            .await
-            .map_err(|_| "The allow-rule worker stopped unexpectedly".to_string())?
+        result.await.map_err(|_| {
+            crate::i18n::tr("The allow-rule worker stopped unexpectedly").to_string()
+        })?
     }
 }
 
@@ -6726,7 +7348,7 @@ fn finish_allow_saves() {
 async fn read_pair_target(origin: String, team: String) -> Result<bool, String> {
     gtk::gio::spawn_blocking(move || pair_target_is_signed_in(&origin, &team))
         .await
-        .map_err(|_| "The pairing worker stopped unexpectedly".to_string())
+        .map_err(|_| crate::i18n::tr("The pairing worker stopped unexpectedly").to_string())
 }
 
 fn save_always_allow(key: String) -> Result<(), String> {
@@ -6750,25 +7372,27 @@ fn pair_target_is_signed_in(origin: &str, team: &str) -> bool {
 fn inert_broker_card() -> gtk::Box {
     let card = gtk::Box::new(gtk::Orientation::Vertical, 4);
     card.add_css_class("toolport-card");
-    card.append(
-        &gtk::Label::builder()
-            .label("Another Toolport is handling approvals")
+    card.append(&{
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Another Toolport is handling approvals"))
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .hexpand(true)
             .css_classes(["heading"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, "Another Toolport is handling approvals");
+        widget
+    });
     card.append(
-        &gtk::Label::builder()
-            .label("Prompts go to whichever Toolport started first, so they will not appear here. Quit the other one and reopen this window to take over.")
+        &{ let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Prompts go to whichever Toolport started first, so they will not appear here. Quit the other one and reopen this window to take over."))
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .hexpand(true)
             .css_classes(["toolport-muted"])
-            .build(),
+            .build(); l10n::bind_label(&widget, "Prompts go to whichever Toolport started first, so they will not appear here. Quit the other one and reopen this window to take over."); widget },
     );
     card
 }
@@ -6799,56 +7423,91 @@ fn approval_card(
 
     let requester =
         crate::clients::display_caller_name(Some(&view.client_name), view.client_label.as_deref());
-    card.append(
-        &gtk::Label::builder()
+    card.append(&{
+        let widget = gtk::Label::builder()
             .tooltip_text(if requester == "Unrecorded client" {
-                crate::clients::UNRECORDED_CLIENT_TOOLTIP
+                unrecorded_client_tooltip()
             } else {
-                view.client.as_deref().unwrap_or("")
+                view.client.as_deref().unwrap_or("").to_owned()
             })
-            .label(format!(
-                "{requester} wants to run this · {}",
-                approval_reason(view.reason)
-            ))
+            .label("")
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["toolport-muted"])
-            .build(),
-    );
+            .build();
+        let view_for_requester = view.clone();
+        l10n::bind_label_with(&widget, move || {
+            crate::i18n::trf(
+                "{value0} wants to run this · {value1}",
+                &[
+                    (
+                        "value0",
+                        &localized_caller_name(
+                            Some(&view_for_requester.client_name),
+                            view_for_requester.client_label.as_deref(),
+                        ),
+                    ),
+                    (
+                        "value1",
+                        &crate::i18n::lookup(approval_reason(view_for_requester.reason)),
+                    ),
+                ],
+            )
+        });
+        if requester == "Unrecorded client" {
+            l10n::bind_tooltip(
+                &widget,
+                "Older Toolport versions did not record callers for these rows.",
+            );
+        }
+        widget
+    });
 
     if let Some(label) = view
         .client_label
         .as_deref()
         .filter(|label| *label != requester && !requester.ends_with(" (reported)"))
     {
-        card.append(
-            &gtk::Label::builder()
-                .label(format!(
-                    "Reports itself as: {}",
-                    crate::approval::shorten_client_label(label, 60)
-                ))
+        card.append(&{
+            let widget = gtk::Label::builder()
+                .label("")
                 .tooltip_text(label)
                 .xalign(0.0)
                 .wrap(true)
                 .wrap_mode(gtk::pango::WrapMode::WordChar)
                 .css_classes(["toolport-muted"])
-                .build(),
-        );
+                .build();
+            l10n::bind_formatted_label(
+                &widget,
+                "Reports itself as: {value0}",
+                &[(
+                    "value0",
+                    &crate::approval::shorten_client_label(label, 60).to_string(),
+                )],
+            );
+            widget
+        });
     }
     if let Some(url) = &view.url_elicitation {
-        card.append(
-            &gtk::Label::builder()
-                .label(format!(
-                    "Browser destination: {}\n{}",
-                    url.origin, url.message
-                ))
+        card.append(&{
+            let widget = gtk::Label::builder()
+                .label("")
                 .halign(gtk::Align::Start)
                 .xalign(0.0)
                 .wrap(true)
                 .selectable(true)
-                .build(),
-        );
+                .build();
+            l10n::bind_formatted_label(
+                &widget,
+                "Browser destination: {value0}\n{value1}",
+                &[
+                    ("value0", &url.origin.to_string()),
+                    ("value1", &url.message.to_string()),
+                ],
+            );
+            widget
+        });
     }
 
     if let Some(release) = &view.pii_release {
@@ -6857,29 +7516,45 @@ fn approval_card(
             .iter()
             .map(|value| {
                 let origins = if value.origins.is_empty() {
-                    "no recorded source".to_string()
+                    crate::i18n::tr("no recorded source").to_string()
                 } else {
-                    format!("from {}", value.origins.join(", "))
+                    crate::i18n::trf(
+                        "from {value0}",
+                        &[("value0", &value.origins.join(", ").to_string())],
+                    )
                 };
                 format!("{} → {} ({origins})", value.token, value.value)
             })
             .collect::<Vec<_>>()
             .join("\n");
-        card.append(
-            &gtk::Label::builder()
-                .label(format!("Would send to {}:\n{values}", release.server))
+        card.append(&{
+            let widget = gtk::Label::builder()
+                .label("")
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
                 .selectable(true)
                 .css_classes(["toolport-sensitive-review"])
-                .build(),
-        );
+                .build();
+            l10n::bind_formatted_label(
+                &widget,
+                "Would send to {value0}:\n{value1}",
+                &[
+                    ("value0", &release.server.to_string()),
+                    ("value1", &values.to_string()),
+                ],
+            );
+            widget
+        });
     }
 
     let arguments = serde_json::to_string_pretty(&view.arguments)
-        .unwrap_or_else(|_| "Arguments could not be displayed".into());
-    let details = gtk::Expander::builder().label("Review arguments").build();
+        .unwrap_or_else(|_| crate::i18n::tr("Arguments could not be displayed"));
+    let details = {
+        let widget = gtk::Expander::builder().build();
+        widget.set_label_widget(Some(&l10n::label("Review arguments")));
+        widget
+    };
     details.set_child(Some(
         &gtk::Label::builder()
             .label(arguments)
@@ -6900,7 +7575,7 @@ fn approval_card(
         // knows the server asked for something Toolport will not launch.
         match crate::oauth::validate_web_url(&url.url) {
             Ok(_) => {
-                let open = gtk::Button::with_label("Open browser");
+                let open = l10n::button("Open browser");
                 let target = url.url.clone();
                 open.connect_clicked(move |_| {
                     let _ = crate::oauth::open_web_url(&target);
@@ -6908,22 +7583,28 @@ fn approval_card(
                 actions.append(&open);
             }
             Err(error) => {
-                actions.append(
-                    &gtk::Label::builder()
-                        .label(format!("Browser link refused: {error}"))
+                actions.append(&{
+                    let widget = gtk::Label::builder()
+                        .label("")
                         .halign(gtk::Align::Fill)
                         .xalign(0.0)
                         .wrap(true)
                         .css_classes(["toolport-feedback", "error"])
-                        .build(),
-                );
+                        .build();
+                    l10n::bind_formatted_label(
+                        &widget,
+                        "Browser link refused: {value0}",
+                        &[("value0", &error.to_string())],
+                    );
+                    widget
+                });
             }
         }
     }
-    let deny = gtk::Button::with_label(if view.url_elicitation.is_some() {
-        "Cancel"
+    let deny = l10n::button(if view.url_elicitation.is_some() {
+        crate::i18n::msg("Cancel")
     } else {
-        "Deny"
+        crate::i18n::msg("Deny")
     });
     deny.add_css_class("destructive-action");
     let deny_id = view.id.clone();
@@ -6936,8 +7617,10 @@ fn approval_card(
         && view.pii_release.is_none()
     {
         let remember = gtk::MenuButton::builder()
-            .label("Remember approval")
-            .tooltip_text("Approve this definition without asking again")
+            .label(crate::i18n::tr("Remember approval"))
+            .tooltip_text(crate::i18n::tr(
+                "Approve this definition without asking again",
+            ))
             .build();
         remember.add_css_class("toolport-secondary-action");
         let popover = toolport_menu_popover();
@@ -6947,10 +7630,10 @@ fn approval_card(
         choices.set_margin_start(6);
         choices.set_margin_end(6);
         for (label, scope) in [
-            ("For this session", "session"),
-            ("Always for this definition", "always"),
+            (crate::i18n::msg("For this session"), "session"),
+            (crate::i18n::msg("Always for this definition"), "always"),
         ] {
-            let choice = toolport_menu_button(label);
+            let choice = toolport_menu_source_button(label);
             let id = view.id.clone();
             let page = page.clone();
             let remember = remember.clone();
@@ -6965,10 +7648,10 @@ fn approval_card(
         actions.append(&remember);
     }
 
-    let approve = gtk::Button::with_label(if view.url_elicitation.is_some() {
-        "Continue"
+    let approve = l10n::button(if view.url_elicitation.is_some() {
+        crate::i18n::msg("Continue")
     } else {
-        "Approve once"
+        crate::i18n::msg("Approve once")
     });
     approve.add_css_class("suggested-action");
     let approve_id = view.id;
@@ -6987,12 +7670,14 @@ fn epoch_ms() -> u64 {
 
 fn approval_reason(reason: crate::approval::ApprovalReason) -> &'static str {
     match reason {
-        crate::approval::ApprovalReason::Destructive => "destructive tool",
-        crate::approval::ApprovalReason::UntrustedSource => "untrusted source",
+        crate::approval::ApprovalReason::Destructive => crate::i18n::msg("destructive tool"),
+        crate::approval::ApprovalReason::UntrustedSource => crate::i18n::msg("untrusted source"),
         crate::approval::ApprovalReason::DestructiveAndUntrusted => {
-            "destructive tool from an untrusted source"
+            crate::i18n::msg("destructive tool from an untrusted source")
         }
-        crate::approval::ApprovalReason::PiiCrossServer => "cross-server data release",
+        crate::approval::ApprovalReason::PiiCrossServer => {
+            crate::i18n::msg("cross-server data release")
+        }
     }
 }
 
@@ -7006,23 +7691,27 @@ fn build_content(
     let header = adw::HeaderBar::new();
     header.add_css_class("toolport-header");
     header.set_show_back_button(true);
-    header.set_title_widget(Some(
-        &gtk::Label::builder()
-            .label("Servers")
+    header.set_title_widget(Some(&{
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Servers"))
             .css_classes(["title"])
-            .build(),
-    ));
+            .build();
+        l10n::bind_label(&widget, "Servers");
+        widget
+    }));
     let add_server = gtk::Button::builder()
         .icon_name("list-add-symbolic")
-        .tooltip_text("Add server")
+        .tooltip_text(crate::i18n::tr("Add server"))
         .css_classes(["flat", "toolport-header-add"])
         .build();
     header.pack_end(&add_server);
     // Catalog left the sidebar in 2.0, so an install that already has servers
     // never sees the onboarding catalog link. Keep it reachable from the Servers
     // header for both fresh and existing setups.
-    let browse_catalog = gtk::Button::with_label("Browse catalog");
-    browse_catalog.set_tooltip_text(Some("Browse Toolport's curated server catalog"));
+    let browse_catalog = l10n::button("Browse catalog");
+    browse_catalog.set_tooltip_text(Some(&crate::i18n::tr(
+        "Browse Toolport's curated server catalog",
+    )));
     browse_catalog.add_css_class("toolport-secondary-action");
     {
         let app = app.clone();
@@ -7037,15 +7726,17 @@ fn build_content(
     menu_popover.add_css_class("toolport-main-menu");
     menu_popover.set_has_arrow(false);
     let menu_content = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    let menu_action = |label: &str, action: &str, shortcut: Option<&str>| {
+    let menu_action = |label: &'static str, action: &str, shortcut: Option<&str>| {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 18);
-        content.append(
-            &gtk::Label::builder()
+        content.append(&{
+            let widget = gtk::Label::builder()
                 .label(label)
                 .halign(gtk::Align::Start)
                 .hexpand(true)
-                .build(),
-        );
+                .build();
+            l10n::bind_label(&widget, label);
+            widget
+        });
         if let Some(shortcut) = shortcut {
             content.append(
                 &gtk::Label::builder()
@@ -7062,33 +7753,37 @@ fn build_content(
         button
     };
     for (label, action) in [
-        ("Import setup…", "app.import-setup"),
-        ("Import pasted setup…", "app.paste-setup"),
-        ("Export setup…", "app.export-setup"),
-        ("Share setup…", "app.share-setup"),
+        (crate::i18n::msg("Import setup…"), "app.import-setup"),
+        (crate::i18n::msg("Import pasted setup…"), "app.paste-setup"),
+        (crate::i18n::msg("Export setup…"), "app.export-setup"),
+        (crate::i18n::msg("Share setup…"), "app.share-setup"),
     ] {
         menu_content.append(&menu_action(label, action, None));
     }
     menu_content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     menu_content.append(&menu_action(
-        "Run setup assistant…",
+        crate::i18n::msg("Run setup assistant…"),
         "app.show-onboarding",
         None,
     ));
     menu_content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    let quit = menu_action("Quit Toolport", "app.quit", Some("Ctrl+Q"));
+    let quit = menu_action(
+        crate::i18n::msg("Quit Toolport"),
+        "app.quit",
+        Some("Ctrl+Q"),
+    );
     quit.add_css_class("toolport-main-menu-quit");
     menu_content.append(&quit);
     menu_popover.set_child(Some(&menu_content));
     let menu_button = gtk::MenuButton::builder()
         .icon_name("open-menu-symbolic")
-        .tooltip_text("Import, export and setup")
+        .tooltip_text(crate::i18n::tr("Import, export and setup"))
         .build();
     menu_button.set_popover(Some(&menu_popover));
     header.pack_end(&menu_button);
     let check_servers = gtk::Button::builder()
         .icon_name("view-refresh-symbolic")
-        .tooltip_text("Check servers again (Ctrl+R)")
+        .tooltip_text(crate::i18n::tr("Check servers again (Ctrl+R)"))
         .build();
     header.pack_end(&check_servers);
     root.append(&header);
@@ -7104,22 +7799,30 @@ fn build_content(
     page.set_margin_start(20);
     page.set_margin_end(20);
 
-    let intro = gtk::Label::builder()
-        .label("One local gateway for every AI client")
-        .halign(gtk::Align::Fill)
-        .xalign(0.0)
-        .wrap(true)
-        .css_classes(["title-2"])
-        .build();
+    let intro = {
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("One local gateway for every AI client"))
+            .halign(gtk::Align::Fill)
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["title-2"])
+            .build();
+        l10n::bind_label(&widget, "One local gateway for every AI client");
+        widget
+    };
     page.append(&intro);
 
-    let description = gtk::Label::builder()
-        .label("Your MCP servers, available everywhere.")
-        .halign(gtk::Align::Fill)
-        .wrap(true)
-        .xalign(0.0)
-        .css_classes(["toolport-muted"])
-        .build();
+    let description = {
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Your MCP servers, available everywhere."))
+            .halign(gtk::Align::Fill)
+            .wrap(true)
+            .xalign(0.0)
+            .css_classes(["toolport-muted"])
+            .build();
+        l10n::bind_label(&widget, "Your MCP servers, available everywhere.");
+        widget
+    };
     page.append(&description);
 
     let feedback = gtk::Label::builder()
@@ -7138,7 +7841,10 @@ fn build_content(
     summary.set_column_spacing(10);
     summary.set_column_homogeneous(true);
     let mut values = Vec::new();
-    for (column, (value, label)) in [("0", "Servers"), ("0", "Enabled")].into_iter().enumerate() {
+    for (column, (value, label)) in [("0", crate::i18n::msg("Servers")), ("0", "Enabled")]
+        .into_iter()
+        .enumerate()
+    {
         let (item, value) = summary_item(value, label);
         item.set_size_request(0, -1);
         item.set_hexpand(true);
@@ -7155,7 +7861,7 @@ fn build_content(
     short.add_setter(&summary, "visible", Some(&false.to_value()));
     let profile_actions = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
-        .tooltip_text("Enable or disable all servers")
+        .tooltip_text(crate::i18n::tr("Enable or disable all servers"))
         .build();
     profile_actions.add_css_class("flat");
     let profile_popover = toolport_menu_popover();
@@ -7164,19 +7870,23 @@ fn build_content(
     profile_action_list.set_margin_bottom(6);
     profile_action_list.set_margin_start(6);
     profile_action_list.set_margin_end(6);
-    let enable_all = toolport_menu_button("Enable all reviewed servers");
+    let enable_all = toolport_menu_source_button(crate::i18n::msg("Enable all reviewed servers"));
     profile_action_list.append(&enable_all);
-    let disable_all = toolport_menu_button("Disable all servers");
+    let disable_all = toolport_menu_source_button(crate::i18n::msg("Disable all servers"));
     profile_action_list.append(&disable_all);
     profile_popover.set_child(Some(&profile_action_list));
     profile_actions.set_popover(Some(&profile_popover));
     header.pack_end(&profile_actions);
 
-    let section_title = gtk::Label::builder()
-        .label("Servers")
-        .halign(gtk::Align::Start)
-        .css_classes(["heading"])
-        .build();
+    let section_title = {
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Servers"))
+            .halign(gtk::Align::Start)
+            .css_classes(["heading"])
+            .build();
+        l10n::bind_label(&widget, "Servers");
+        widget
+    };
     page.append(&section_title);
 
     let posture = gtk::Label::builder()
@@ -7188,11 +7898,15 @@ fn build_content(
         .build();
     page.append(&posture);
 
-    let search = gtk::SearchEntry::builder()
-        .placeholder_text("Search servers")
-        .hexpand(true)
-        .css_classes(["toolport-search"])
-        .build();
+    let search = {
+        let widget = gtk::SearchEntry::builder()
+            .placeholder_text(crate::i18n::tr("Search servers"))
+            .hexpand(true)
+            .css_classes(["toolport-search"])
+            .build();
+        l10n::bind_placeholder(&widget, "Search servers");
+        widget
+    };
     page.append(&search);
 
     let list = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -7270,7 +7984,8 @@ fn build_content(
     let page_for_share = server_page.1.clone();
     open_share_action.connect_activate(move |_, parameter| {
         let Some(url) = parameter.and_then(|value| value.str()) else {
-            page_for_share.show_feedback("The shared setup link was invalid.", true);
+            page_for_share
+                .show_feedback(&crate::i18n::tr("The shared setup link was invalid."), true);
             return;
         };
         open_shared_setup(url, page_for_share.clone());
@@ -7284,7 +7999,7 @@ fn build_content(
         let profile_id = snapshot.active_profile_id;
         run_profile_mutation(
             page_for_enable_all.clone(),
-            "Enabled reviewed servers",
+            crate::i18n::msg("Enabled reviewed servers"),
             move || crate::registry_controller::set_all_enabled(&profile_id, true),
         );
     });
@@ -7296,7 +8011,7 @@ fn build_content(
         let profile_id = snapshot.active_profile_id;
         run_profile_mutation(
             page_for_disable_all.clone(),
-            "Disabled all servers",
+            crate::i18n::msg("Disabled all servers"),
             move || crate::registry_controller::set_all_enabled(&profile_id, false),
         );
     });
@@ -7332,10 +8047,10 @@ fn open_shared_setup(url: &str, page: ServerPage) {
         return;
     }
     let Some(id) = crate::sharing_controller::parse_share_url(url) else {
-        page.show_feedback("The shared setup link was invalid.", true);
+        page.show_feedback(&crate::i18n::tr("The shared setup link was invalid."), true);
         return;
     };
-    page.show_feedback("Fetching shared setup for review…", false);
+    page.show_feedback(&crate::i18n::tr("Fetching shared setup for review…"), false);
     gtk::glib::spawn_future_local(async move {
         let result = gtk::gio::spawn_blocking(move || {
             let json = crate::sharing_controller::fetch_shared_setup(&id)?;
@@ -7348,17 +8063,24 @@ fn open_shared_setup(url: &str, page: ServerPage) {
         }
         match result {
             Ok(Ok((json, preview))) => show_setup_import_review(json, preview, page),
-            Ok(Err(error)) => {
-                page.show_feedback(&format!("Could not open shared setup: {error}"), true)
-            }
-            Err(_) => page.show_feedback("The shared setup fetch stopped unexpectedly.", true),
+            Ok(Err(error)) => page.show_feedback(
+                &crate::i18n::trf(
+                    "Could not open shared setup: {value0}",
+                    &[("value0", &error.to_string())],
+                ),
+                true,
+            ),
+            Err(_) => page.show_feedback(
+                &crate::i18n::tr("The shared setup fetch stopped unexpectedly."),
+                true,
+            ),
         }
     });
 }
 
 fn request_pairing(origin: String, team: String, page: ServerPage) {
     for window in page.app.windows() {
-        if window.title().as_deref() == Some("Toolport setup") {
+        if window.widget_name() == "toolport-onboarding" {
             window.close();
         }
     }
@@ -7407,28 +8129,28 @@ fn share_setup(page: ServerPage) {
                 .collect()
         })
         .unwrap_or_default();
-    let window = adw::Window::builder()
-        .application(&page.app)
-        .transient_for(&parent)
-        .modal(true)
-        .title("Share this setup")
-        .default_width(640)
-        .default_height(640)
-        .build();
+    let window = {
+        let widget = adw::Window::builder()
+            .application(&page.app)
+            .transient_for(&parent)
+            .modal(true)
+            .title(crate::i18n::tr("Share this setup"))
+            .default_width(640)
+            .default_height(640)
+            .build();
+        l10n::bind_window_title(&widget, "Share this setup");
+        widget
+    };
     window.add_css_class("toolport-editor");
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
-    let done = gtk::Button::with_label("Done");
+    let done = l10n::button("Done");
     done.add_css_class("toolport-secondary-action");
     header.pack_end(&done);
     root.append(&header);
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
     body.add_css_class("toolport-editor-body");
-    body.append(&editor_intro(
-        "send-to-symbolic",
-        "Share a secret-free setup",
-        "Keychain values, inline credentials, and the local gateway are always excluded. Share links expire after 90 days.",
-    ));
+    body.append(&editor_intro("send-to-symbolic", crate::i18n::msg("Share a secret-free setup"), crate::i18n::msg("Keychain values, inline credentials, and the local gateway are always excluded. Share links expire after 90 days.")));
     let feedback = gtk::Label::builder()
         .halign(gtk::Align::Fill)
         .xalign(0.0)
@@ -7437,24 +8159,32 @@ fn share_setup(page: ServerPage) {
         .css_classes(["toolport-feedback"])
         .build();
     body.append(&feedback);
-    let name = gtk::Entry::builder()
-        .placeholder_text("Setup name (optional)")
-        .css_classes(["toolport-input"])
-        .build();
-    body.append(&editor_field("Name", &name));
-    let description = gtk::Entry::builder()
-        .placeholder_text("What this setup is for (optional)")
-        .css_classes(["toolport-input"])
-        .build();
-    body.append(&editor_field("Description", &description));
+    let name = {
+        let widget = gtk::Entry::builder()
+            .placeholder_text(crate::i18n::tr("Setup name (optional)"))
+            .css_classes(["toolport-input"])
+            .build();
+        l10n::bind_placeholder(&widget, "Setup name (optional)");
+        widget
+    };
+    body.append(&editor_field(crate::i18n::msg("Name"), &name));
+    let description = {
+        let widget = gtk::Entry::builder()
+            .placeholder_text(crate::i18n::tr("What this setup is for (optional)"))
+            .css_classes(["toolport-input"])
+            .build();
+        l10n::bind_placeholder(&widget, "What this setup is for (optional)");
+        widget
+    };
+    body.append(&editor_field(crate::i18n::msg("Description"), &description));
     body.append(&section_heading(
-        "Servers to include",
-        "Everything is included unless you uncheck it.",
+        crate::i18n::msg("Servers to include"),
+        crate::i18n::msg("Everything is included unless you uncheck it."),
     ));
     let select_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let select_all = gtk::Button::with_label("All");
+    let select_all = l10n::button("All");
     select_all.add_css_class("flat");
-    let select_none = gtk::Button::with_label("None");
+    let select_none = l10n::button("None");
     select_none.add_css_class("flat");
     select_row.append(&select_all);
     select_row.append(&select_none);
@@ -7494,11 +8224,11 @@ fn share_setup(page: ServerPage) {
     body.append(&list_scroller);
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     actions.set_halign(gtk::Align::End);
-    let copy_json = gtk::Button::with_label("Copy JSON");
+    let copy_json = l10n::button("Copy JSON");
     copy_json.add_css_class("toolport-secondary-action");
-    let save_file = gtk::Button::with_label("Save to file…");
+    let save_file = l10n::button("Save to file…");
     save_file.add_css_class("toolport-secondary-action");
-    let copy_link = gtk::Button::with_label("Copy share link");
+    let copy_link = l10n::button("Copy share link");
     copy_link.add_css_class("suggested-action");
     actions.append(&copy_json);
     actions.append(&save_file);
@@ -7561,11 +8291,19 @@ fn share_setup(page: ServerPage) {
         copy_link.connect_clicked(move |button| {
             let (name, description, selected) = collect();
             if selected.is_empty() {
-                show(&feedback, "Select at least one server to share.", true);
+                show(
+                    &feedback,
+                    &crate::i18n::tr("Select at least one server to share."),
+                    true,
+                );
                 return;
             }
             button.set_sensitive(false);
-            show(&feedback, "Creating a secret-free share link…", false);
+            show(
+                &feedback,
+                &crate::i18n::tr("Creating a secret-free share link…"),
+                false,
+            );
             let feedback = feedback.clone();
             let button = button.clone();
             gtk::glib::spawn_future_local(async move {
@@ -7579,17 +8317,32 @@ fn share_setup(page: ServerPage) {
                     Ok(Ok(link)) => {
                         if let Some(display) = gtk::gdk::Display::default() {
                             display.clipboard().set_text(&link);
-                            show(&feedback, "Copied the secret-free share link.", false);
+                            show(
+                                &feedback,
+                                &crate::i18n::tr("Copied the secret-free share link."),
+                                false,
+                            );
                         } else {
-                            show(&feedback, "Could not access the desktop clipboard.", true);
+                            show(
+                                &feedback,
+                                &crate::i18n::tr("Could not access the desktop clipboard."),
+                                true,
+                            );
                         }
                     }
                     Ok(Err(error)) => show(
                         &feedback,
-                        &format!("Could not create the share link: {error}"),
+                        &crate::i18n::trf(
+                            "Could not create the share link: {value0}",
+                            &[("value0", &error.to_string())],
+                        ),
                         true,
                     ),
-                    Err(_) => show(&feedback, "The sharing task stopped unexpectedly.", true),
+                    Err(_) => show(
+                        &feedback,
+                        &crate::i18n::tr("The sharing task stopped unexpectedly."),
+                        true,
+                    ),
                 }
             });
         });
@@ -7600,17 +8353,29 @@ fn share_setup(page: ServerPage) {
         copy_json.connect_clicked(move |_| {
             let (name, description, selected) = collect();
             if selected.is_empty() {
-                show(&feedback, "Select at least one server to export.", true);
+                show(
+                    &feedback,
+                    &crate::i18n::tr("Select at least one server to export."),
+                    true,
+                );
                 return;
             }
             match export(name, description, selected) {
                 Ok(json) => {
                     if let Some(display) = gtk::gdk::Display::default() {
                         display.clipboard().set_text(&json);
-                        show(&feedback, "Copied the setup JSON to the clipboard.", false);
+                        show(
+                            &feedback,
+                            &crate::i18n::tr("Copied the setup JSON to the clipboard."),
+                            false,
+                        );
                     }
                 }
-                Err(error) => show(&feedback, &format!("Export failed: {error}"), true),
+                Err(error) => show(
+                    &feedback,
+                    &crate::i18n::trf("Export failed: {value0}", &[("value0", &error.to_string())]),
+                    true,
+                ),
             }
         });
     }
@@ -7620,13 +8385,17 @@ fn share_setup(page: ServerPage) {
         save_file.connect_clicked(move |_| {
             let (name, description, selected) = collect();
             if selected.is_empty() {
-                show(&feedback, "Select at least one server to export.", true);
+                show(
+                    &feedback,
+                    &crate::i18n::tr("Select at least one server to export."),
+                    true,
+                );
                 return;
             }
             let dialog = gtk::FileDialog::builder()
-                .title("Export Toolport setup")
+                .title(crate::i18n::tr("Export Toolport setup"))
                 .initial_name("toolport-setup.json")
-                .accept_label("Export")
+                .accept_label(crate::i18n::tr("Export"))
                 .modal(true)
                 .build();
             set_file_dialog_folder(&dialog);
@@ -7641,7 +8410,7 @@ fn share_setup(page: ServerPage) {
                     let Some(path) = file.path() else {
                         show(
                             &feedback,
-                            "The selected destination is not a local file.",
+                            &crate::i18n::tr("The selected destination is not a local file."),
                             true,
                         );
                         return;
@@ -7651,10 +8420,19 @@ fn share_setup(page: ServerPage) {
                     match outcome {
                         Ok(()) => show(
                             &feedback,
-                            "Exported the setup without keychain values or inline credentials.",
+                            &crate::i18n::tr(
+                                "Exported the setup without keychain values or inline credentials.",
+                            ),
                             false,
                         ),
-                        Err(error) => show(&feedback, &format!("Export failed: {error}"), true),
+                        Err(error) => show(
+                            &feedback,
+                            &crate::i18n::trf(
+                                "Export failed: {value0}",
+                                &[("value0", &error.to_string())],
+                            ),
+                            true,
+                        ),
                     }
                 },
             );
@@ -7671,20 +8449,24 @@ fn open_paste_import(page: ServerPage) {
     let Some(parent) = page.app.active_window() else {
         return;
     };
-    let window = adw::Window::builder()
-        .application(&page.app)
-        .transient_for(&parent)
-        .modal(true)
-        .title("Import pasted setup")
-        .default_width(640)
-        .default_height(480)
-        .build();
+    let window = {
+        let widget = adw::Window::builder()
+            .application(&page.app)
+            .transient_for(&parent)
+            .modal(true)
+            .title(crate::i18n::tr("Import pasted setup"))
+            .default_width(640)
+            .default_height(480)
+            .build();
+        l10n::bind_window_title(&widget, "Import pasted setup");
+        widget
+    };
     window.add_css_class("toolport-editor");
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
-    let cancel = gtk::Button::with_label("Cancel");
+    let cancel = l10n::button("Cancel");
     cancel.add_css_class("toolport-secondary-action");
-    let review = gtk::Button::with_label("Review and import");
+    let review = l10n::button("Review and import");
     review.add_css_class("suggested-action");
     header.pack_start(&cancel);
     header.pack_end(&review);
@@ -7693,8 +8475,10 @@ fn open_paste_import(page: ServerPage) {
     body.add_css_class("toolport-editor-body");
     body.append(&editor_intro(
         "edit-paste-symbolic",
-        "Paste a Toolport setup",
-        "Paste the JSON someone exported. Nothing is imported until you review it.",
+        crate::i18n::msg("Paste a Toolport setup"),
+        crate::i18n::msg(
+            "Paste the JSON someone exported. Nothing is imported until you review it.",
+        ),
     ));
     let feedback = gtk::Label::builder()
         .halign(gtk::Align::Fill)
@@ -7727,7 +8511,7 @@ fn open_paste_import(page: ServerPage) {
         const MAX_SETUP_BYTES: usize = 4 * 1024 * 1024;
         if json.len() > MAX_SETUP_BYTES {
             feedback.set_visible(true);
-            feedback.set_label("That is too large to be a Toolport setup.");
+            l10n::bind_text(&feedback, "That is too large to be a Toolport setup.");
             return;
         }
         button.set_sensitive(false);
@@ -7753,7 +8537,7 @@ fn open_paste_import(page: ServerPage) {
                 }
                 Err(_) => {
                     feedback.set_visible(true);
-                    feedback.set_label("The import review stopped unexpectedly.");
+                    l10n::bind_text(&feedback, "The import review stopped unexpectedly.");
                 }
             }
         });
@@ -7766,9 +8550,9 @@ fn choose_setup_export(page: ServerPage) {
         return;
     };
     let dialog = gtk::FileDialog::builder()
-        .title("Export Toolport setup")
+        .title(crate::i18n::tr("Export Toolport setup"))
         .initial_name("toolport-setup.json")
-        .accept_label("Export")
+        .accept_label(crate::i18n::tr("Export"))
         .modal(true)
         .build();
     dialog.save(Some(&parent), gtk::gio::Cancellable::NONE, move |result| {
@@ -7776,10 +8560,13 @@ fn choose_setup_export(page: ServerPage) {
             return;
         };
         let Some(path) = file.path() else {
-            page.show_feedback("The selected destination is not a local file.", true);
+            page.show_feedback(
+                &crate::i18n::tr("The selected destination is not a local file."),
+                true,
+            );
             return;
         };
-        page.show_feedback("Exporting a secret-free setup…", false);
+        page.show_feedback(&crate::i18n::tr("Exporting a secret-free setup…"), false);
         let page = page.clone();
         gtk::glib::spawn_future_local(async move {
             let result = gtk::gio::spawn_blocking(move || {
@@ -7788,11 +8575,16 @@ fn choose_setup_export(page: ServerPage) {
             })
             .await;
             match result {
-                Ok(Ok(())) => page.show_confirmation(
+                Ok(Ok(())) => page.show_confirmation(&crate::i18n::tr(
                     "Exported the setup without keychain values or inline credentials.",
+                )),
+                Ok(Err(error)) => page.show_feedback(
+                    &crate::i18n::trf("Export failed: {value0}", &[("value0", &error.to_string())]),
+                    true,
                 ),
-                Ok(Err(error)) => page.show_feedback(&format!("Export failed: {error}"), true),
-                Err(_) => page.show_feedback("The export stopped unexpectedly.", true),
+                Err(_) => {
+                    page.show_feedback(&crate::i18n::tr("The export stopped unexpectedly."), true)
+                }
             }
         });
     });
@@ -7812,8 +8604,8 @@ fn choose_setup_import(page: ServerPage) {
         return;
     };
     let dialog = gtk::FileDialog::builder()
-        .title("Import Toolport setup")
-        .accept_label("Review")
+        .title(crate::i18n::tr("Import Toolport setup"))
+        .accept_label(crate::i18n::tr("Review"))
         .modal(true)
         .build();
     dialog.open(Some(&parent), gtk::gio::Cancellable::NONE, move |result| {
@@ -7821,10 +8613,13 @@ fn choose_setup_import(page: ServerPage) {
             return;
         };
         let Some(path) = file.path() else {
-            page.show_feedback("The selected setup is not a local file.", true);
+            page.show_feedback(
+                &crate::i18n::tr("The selected setup is not a local file."),
+                true,
+            );
             return;
         };
-        page.show_feedback("Reading setup for review…", false);
+        page.show_feedback(&crate::i18n::tr("Reading setup for review…"), false);
         let page = page.clone();
         gtk::glib::spawn_future_local(async move {
             let result = gtk::gio::spawn_blocking(move || {
@@ -7835,8 +8630,14 @@ fn choose_setup_import(page: ServerPage) {
             .await;
             match result {
                 Ok(Ok((json, preview))) => show_setup_import_review(json, preview, page),
-                Ok(Err(error)) => page.show_feedback(&format!("Import failed: {error}"), true),
-                Err(_) => page.show_feedback("The import review stopped unexpectedly.", true),
+                Ok(Err(error)) => page.show_feedback(
+                    &crate::i18n::trf("Import failed: {value0}", &[("value0", &error.to_string())]),
+                    true,
+                ),
+                Err(_) => page.show_feedback(
+                    &crate::i18n::tr("The import review stopped unexpectedly."),
+                    true,
+                ),
             }
         });
     });
@@ -7852,13 +8653,15 @@ fn show_setup_import_review(
     };
     let new_count = preview.iter().filter(|item| item.is_new).count();
     #[allow(deprecated)]
-    let dialog = adw::MessageDialog::new(
-        Some(&parent),
-        Some("Import this Toolport setup?"),
-        Some("Review every launch target below. Existing server names are skipped, and imported servers remain disabled until you enable them."),
+    let dialog = adw::MessageDialog::new(Some(&parent), Some(&crate::i18n::tr("Import this Toolport setup?")), Some(&crate::i18n::tr("Review every launch target below. Existing server names are skipped, and imported servers remain disabled until you enable them.")));
+    l10n::bind_dialog_heading(&dialog, "Import this Toolport setup?");
+    l10n::bind_dialog_body(&dialog, "Review every launch target below. Existing server names are skipped, and imported servers remain disabled until you enable them.");
+    dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
+    l10n::bind_dialog_response(&dialog, "cancel", "Cancel");
+    dialog.add_response(
+        "import",
+        &crate::i18n::trf("Import {value0}", &[("value0", &format!("{}", new_count))]),
     );
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("import", &format!("Import {new_count}"));
     dialog.set_response_enabled("import", new_count > 0);
     dialog.set_close_response("cancel");
     dialog.set_default_response(Some("cancel"));
@@ -7879,7 +8682,10 @@ fn show_setup_import_review(
                 .label(if item.is_new {
                     item.name.clone()
                 } else {
-                    format!("{} · already present", item.name)
+                    crate::i18n::trf(
+                        "{value0} · already present",
+                        &[("value0", &item.name.to_string())],
+                    )
                 })
                 .halign(gtk::Align::Start)
                 .hexpand(true)
@@ -7941,11 +8747,11 @@ fn show_setup_import_review(
                 .map(|(name, _)| name.clone())
                 .collect();
             if selected.is_empty() {
-                page.show_feedback("Nothing selected; nothing was imported.", true);
+                page.show_feedback(&crate::i18n::tr("Nothing selected; nothing was imported."), true);
                 dialog.close();
                 return;
             }
-            page.show_feedback("Importing reviewed servers…", false);
+            page.show_feedback(&crate::i18n::tr("Importing reviewed servers…"), false);
             let json = json.clone();
             let page = page.clone();
             gtk::glib::spawn_future_local(async move {
@@ -7954,12 +8760,9 @@ fn show_setup_import_review(
                 })
                 .await;
                 match result {
-                    Ok(Ok((_, added))) => page.show_confirmation(&format!(
-                        "Imported {added} server{}. Review credentials before enabling them.",
-                        if added == 1 { "" } else { "s" }
-                    )),
-                    Ok(Err(error)) => page.show_feedback(&format!("Import failed: {error}"), true),
-                    Err(_) => page.show_feedback("The import stopped unexpectedly.", true),
+                    Ok(Ok((_, added))) => page.show_confirmation(&crate::i18n::trf(if added == 1 { crate::i18n::msg("Imported {value0} server. Review credentials before enabling them.") } else { crate::i18n::msg("Imported {value0} servers. Review credentials before enabling them.") }, &[("value0", &format!("{}", added))])),
+                    Ok(Err(error)) => page.show_feedback(&crate::i18n::trf("Import failed: {value0}", &[("value0", &error.to_string())]), true),
+                    Err(_) => page.show_feedback(&crate::i18n::tr("The import stopped unexpectedly."), true),
                 }
             });
         }
@@ -8001,7 +8804,7 @@ fn setup_import_target(item: &crate::sharing_controller::SetupImportItem) -> Str
         item.url
             .as_deref()
             .map(crate::registry::redact_url_userinfo)
-            .unwrap_or_else(|| "No launch target".to_string())
+            .unwrap_or_else(|| crate::i18n::tr("No launch target").to_string())
     )
 }
 
@@ -8017,10 +8820,15 @@ fn run_profile_mutation(
                 page.render(state::RegistryState::Ready(
                     state::RegistrySnapshot::from_registry(registry),
                 ));
-                page.show_confirmation(success);
+                page.show_confirmation(&crate::i18n::lookup(success));
             }
-            Ok(Err(error)) => page.restore_after_error(&format!("Server update failed: {error}")),
-            Err(_) => page.restore_after_error("Server update stopped unexpectedly"),
+            Ok(Err(error)) => page.restore_after_error(&crate::i18n::trf(
+                "Server update failed: {value0}",
+                &[("value0", &error.to_string())],
+            )),
+            Err(_) => {
+                page.restore_after_error(&crate::i18n::tr("Server update stopped unexpectedly"))
+            }
         }
     });
 }
@@ -8090,7 +8898,7 @@ fn server_matches_query(server: &state::ServerView, query: &str) -> bool {
         || server.transport.to_lowercase().contains(&query)
 }
 
-fn summary_item(value: &str, label: &str) -> (gtk::Box, gtk::Label) {
+fn summary_item(value: &str, label: &'static str) -> (gtk::Box, gtk::Label) {
     let item = gtk::Box::new(gtk::Orientation::Vertical, 2);
     item.set_size_request(150, -1);
     item.add_css_class("toolport-summary-item");
@@ -8100,13 +8908,15 @@ fn summary_item(value: &str, label: &str) -> (gtk::Box, gtk::Label) {
         .css_classes(["title-3"])
         .build();
     item.append(&value);
-    item.append(
-        &gtk::Label::builder()
+    item.append(&{
+        let widget = gtk::Label::builder()
             .label(label)
             .halign(gtk::Align::Start)
             .css_classes(["caption", "toolport-muted"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, label);
+        widget
+    });
     (item, value)
 }
 
@@ -8173,7 +8983,7 @@ fn show_tray_hint(app: &adw::Application) {
 /// wording: a URL-elicitation request must say a browser interaction was asked
 /// for, not disguise itself as an ordinary tool call.
 fn approval_notification(view: &crate::approval_broker::PendingView) -> (String, String) {
-    let (title, body) = crate::approval_broker::approval_notification(view);
+    let (title, body) = crate::approval_broker::localized_approval_notification(view);
     (title.to_string(), body)
 }
 
@@ -8186,21 +8996,28 @@ fn approval_queue_notification(
         return Some((title, body));
     }
     let remaining = pending.len() - 1;
-    body.push_str(&format!(
-        " {remaining} more {} waiting.",
-        if remaining == 1 { "is" } else { "are" }
+    body.push_str(&crate::i18n::trf(
+        if remaining == 1 {
+            crate::i18n::msg(" {value0} more is waiting.")
+        } else {
+            crate::i18n::msg(" {value0} more are waiting.")
+        },
+        &[("value0", &format!("{}", remaining))],
     ));
     Some((
-        format!("Toolport: {} approvals required", pending.len()),
+        crate::i18n::trf(
+            "Toolport: {value0} approvals required",
+            &[("value0", &format!("{}", pending.len()))],
+        ),
         body,
     ))
 }
 
 fn probe_auth_action(probe: &crate::server_runtime::ProbeResult) -> &'static str {
     if probe.auth_target == Some(crate::call_failure::AuthTarget::ServiceCredential) {
-        "Edit service key"
+        crate::i18n::msg("Edit service key")
     } else {
-        "Sign in"
+        crate::i18n::msg("Sign in")
     }
 }
 
@@ -8208,14 +9025,13 @@ fn probe_auth_action(probe: &crate::server_runtime::ProbeResult) -> &'static str
 fn probe_status_line(probe: &crate::server_runtime::ProbeResult) -> (String, &'static str) {
     if probe.ok {
         (
-            format!(
-                "Ready · {} {}",
-                probe.tool_count,
+            crate::i18n::trf(
                 if probe.tool_count == 1 {
-                    "tool"
+                    crate::i18n::msg("Ready · {value0} tool")
                 } else {
-                    "tools"
-                }
+                    crate::i18n::msg("Ready · {value0} tools")
+                },
+                &[("value0", &format!("{}", probe.tool_count))],
             ),
             "success",
         )
@@ -8234,30 +9050,47 @@ fn probe_status_line(probe: &crate::server_runtime::ProbeResult) -> (String, &'s
 /// The one-line posture summary above the server list.
 fn posture_line(ready: usize, auth: usize, errors: usize, pending: usize, total: usize) -> String {
     if pending > 0 {
-        return format!(
-            "Checking {pending} of {total} enabled {}…",
-            if total == 1 { "server" } else { "servers" }
+        return crate::i18n::trf(
+            if total == 1 {
+                crate::i18n::msg("Checking {value0} of {value1} enabled server…")
+            } else {
+                crate::i18n::msg("Checking {value0} of {value1} enabled servers…")
+            },
+            &[
+                ("value0", &format!("{}", pending)),
+                ("value1", &format!("{}", total)),
+            ],
         );
     }
     if auth == 0 && errors == 0 {
-        return format!(
-            "All {total} enabled {} ready.",
+        return crate::i18n::trf(
             if total == 1 {
-                "server is"
+                crate::i18n::msg("All {value0} enabled server is ready.")
             } else {
-                "servers are"
-            }
+                crate::i18n::msg("All {value0} enabled servers are ready.")
+            },
+            &[("value0", &format!("{}", total))],
         );
     }
-    let mut parts = vec![format!("{ready} ready")];
+    let mut parts = vec![crate::i18n::trf(
+        "{value0} ready",
+        &[("value0", &format!("{}", ready))],
+    )];
     if auth > 0 {
-        parts.push(format!(
-            "{auth} {} sign-in",
-            if auth == 1 { "needs" } else { "need" }
+        parts.push(crate::i18n::trf(
+            if auth == 1 {
+                crate::i18n::msg("{value0} needs sign-in")
+            } else {
+                crate::i18n::msg("{value0} need sign-in")
+            },
+            &[("value0", &format!("{}", auth))],
         ));
     }
     if errors > 0 {
-        parts.push(format!("{errors} failing"));
+        parts.push(crate::i18n::trf(
+            "{value0} failing",
+            &[("value0", &format!("{}", errors))],
+        ));
     }
     parts.join(" · ")
 }
@@ -8318,8 +9151,14 @@ fn open_server_details(server: &state::ServerView, page: &ServerPage, show_tools
         );
     }
     let tools = ServerToolsPanel::new(&page.app, &server.id);
-    stack.add_titled(&overview, Some("overview"), "Overview");
-    stack.add_titled(&tools.root, Some("tools"), "Tools");
+    l10n::bind_stack_page_title(
+        &stack.add_titled(&overview, Some("overview"), &crate::i18n::tr("Overview")),
+        "Overview",
+    );
+    l10n::bind_stack_page_title(
+        &stack.add_titled(&tools.root, Some("tools"), &crate::i18n::tr("Tools")),
+        "Tools",
+    );
     let switcher = gtk::StackSwitcher::new();
     switcher.set_stack(Some(&stack));
     switcher.set_halign(gtk::Align::Center);
@@ -8375,7 +9214,10 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
     // a paragraph.
     let health = gtk::Label::builder()
         .label(if server.enabled && !server.requires_review {
-            format!("{} · Checking…", server.transport)
+            crate::i18n::trf(
+                "{value0} · Checking…",
+                &[("value0", &server.transport.to_string())],
+            )
         } else {
             server.transport.clone()
         })
@@ -8386,15 +9228,22 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
         .build();
     text.append(&health);
     if server.team_route_removed {
-        text.append(
-            &gtk::Label::builder()
-                .label("Removed or disabled by the team. Your personal server stays off.")
+        text.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr(
+                    "Removed or disabled by the team. Your personal server stays off.",
+                ))
                 .halign(gtk::Align::Start)
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["toolport-muted"])
-                .build(),
-        );
+                .build();
+            l10n::bind_label(
+                &widget,
+                "Removed or disabled by the team. Your personal server stays off.",
+            );
+            widget
+        });
     }
     if !server.secret_references.is_empty() {
         let providers: std::collections::BTreeSet<_> = server
@@ -8402,20 +9251,30 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
             .values()
             .filter_map(|r| crate::secret_refs::parse(r).ok().map(|p| p.name))
             .collect();
-        text.append(
-            &gtk::Label::builder()
-                .label(format!(
-                    "Keys from {}",
-                    providers.into_iter().collect::<Vec<_>>().join(", ")
-                ))
+        text.append(&{
+            let widget = gtk::Label::builder()
+                .label("")
                 .halign(gtk::Align::Start)
                 .css_classes(["toolport-muted"])
-                .build(),
-        );
+                .build();
+            l10n::bind_formatted_label(
+                &widget,
+                "Keys from {value0}",
+                &[(
+                    "value0",
+                    &providers
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                        .to_string(),
+                )],
+            );
+            widget
+        });
     }
     card.append(&text);
 
-    let authenticate = gtk::Button::with_label("Sign in");
+    let authenticate = l10n::button("Sign in");
     authenticate.add_css_class("suggested-action");
     authenticate.set_valign(gtk::Align::Center);
     authenticate.set_visible(false);
@@ -8433,13 +9292,18 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
             }
         });
     }
-    let copy_error = gtk::Button::builder()
-        .label("View log")
-        .tooltip_text("View the connection error and server output")
-        .valign(gtk::Align::Center)
-        .visible(false)
-        .css_classes(["flat"])
-        .build();
+    let copy_error = {
+        let widget = gtk::Button::builder()
+            .label(crate::i18n::tr("View log"))
+            .tooltip_text("View the connection error and server output")
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .css_classes(["flat"])
+            .build();
+        l10n::bind_button(&widget, "View log");
+        l10n::bind_tooltip(&widget, "View the connection error and server output");
+        widget
+    };
     {
         let health_for_log = health.clone();
         let app = page.app.clone();
@@ -8447,13 +9311,17 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
             let Some(error) = health_for_log.tooltip_text() else {
                 return;
             };
-            let window = adw::Window::builder()
-                .application(&app)
-                .title("Connection log")
-                .default_width(640)
-                .default_height(360)
-                .modal(true)
-                .build();
+            let window = {
+                let widget = adw::Window::builder()
+                    .application(&app)
+                    .title(crate::i18n::tr("Connection log"))
+                    .default_width(640)
+                    .default_height(360)
+                    .modal(true)
+                    .build();
+                l10n::bind_window_title(&widget, "Connection log");
+                widget
+            };
             window.set_transient_for(app.active_window().as_ref());
             let view = gtk::TextView::builder()
                 .editable(false)
@@ -8477,12 +9345,17 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
             window.present();
         });
     }
-    let retry = gtk::Button::builder()
-        .label("Retry")
-        .tooltip_text("Check this server again")
-        .visible(false)
-        .css_classes(["flat"])
-        .build();
+    let retry = {
+        let widget = gtk::Button::builder()
+            .label(crate::i18n::tr("Retry"))
+            .tooltip_text(crate::i18n::tr("Retry"))
+            .visible(false)
+            .css_classes(["flat"])
+            .build();
+        l10n::bind_button(&widget, "Retry");
+        l10n::bind_tooltip(&widget, "Retry");
+        widget
+    };
     let page_for_retry = page.clone();
     let retry_id = server.id.clone();
     retry.connect_clicked(move |_| page_for_retry.reprobe_after_auth_change(&retry_id));
@@ -8513,9 +9386,12 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
             .filter(|_| !cache.is_checking(&server.id))
         {
             let (status, class) = probe_status_line(previous);
-            health.set_label(&format!("{} · {status}", server.transport));
+            health.set_label(&format!(
+                "{} · {status}",
+                state::display_transport(&server.transport)
+            ));
             health.add_css_class(class);
-            authenticate.set_label(probe_auth_action(previous));
+            authenticate.set_label(&crate::i18n::lookup(probe_auth_action(previous)));
             authenticate.set_visible(previous.auth_required);
             copy_error.set_visible(!previous.ok && previous.error.is_some());
             health.set_tooltip_text(previous.error.as_deref());
@@ -8524,16 +9400,17 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
     }
 
     if server.requires_review {
-        let personal = matches!(
-            server.origin_label.as_str(),
-            "Synced" | "This machine only" | "Sync conflict" | "Needs review"
-        );
+        let personal = page
+            .last_snapshot
+            .borrow()
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.personal_sync);
         // It looks like a link, so it acts like one: open the page where the
         // review happens.
-        let badge = gtk::Button::with_label(if personal {
-            "Review in Sync"
+        let badge = l10n::button(if personal {
+            crate::i18n::msg("Review in Sync")
         } else {
-            "Review in Teams"
+            crate::i18n::msg("Review in Teams")
         });
         badge.add_css_class("toolport-badge");
         badge.add_css_class("flat");
@@ -8553,10 +9430,10 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
         // team servers still go to the Teams page.
         badge.set_visible(!personal);
         card.append(&badge);
-        let review = gtk::Button::with_label(if personal {
-            "Review and enable"
+        let review = l10n::button(if personal {
+            crate::i18n::msg("Review and enable")
         } else {
-            "Review references"
+            crate::i18n::msg("Review references")
         });
         review.set_visible(personal || !server.secret_references.is_empty());
         if personal {
@@ -8583,7 +9460,7 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
             let dialog = adw::MessageDialog::new(
                 Some(&parent),
                 Some(&if personal {
-                    format!("Enable {}?", entry.name)
+                    crate::i18n::trf("Enable {value0}?", &[("value0", &entry.name.to_string())])
                 } else {
                     "Approve references and enable?".into()
                 }),
@@ -8593,10 +9470,22 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
                     "Review the definition and saved authentication. Enable only a setup you trust."
                 }),
             );
+            if personal {
+                l10n::bind_formatted_dialog_heading(&dialog, "Enable {value0}?", &[("value0", &entry.name)]);
+            } else {
+                l10n::bind_dialog_heading(&dialog, "Approve references and enable?");
+            }
+            l10n::bind_dialog_body(&dialog, if personal {
+                crate::i18n::msg("This server arrived from another machine. Check what it runs before turning it on here. Keys stay on each machine.")
+            } else {
+                crate::i18n::msg("Review the definition and saved authentication. Enable only a setup you trust.")
+            });
             dialog.set_size_request(620, -1);
             dialog.set_extra_child(Some(&teams::execution_review_scroll(&entry)));
-            dialog.add_response("cancel", "Cancel");
-            dialog.add_response("enable", "Enable");
+            dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
+l10n::bind_dialog_response(&dialog, "cancel", "Cancel");
+            dialog.add_response("enable", &crate::i18n::tr("Enable"));
+l10n::bind_dialog_response(&dialog, "enable", "Enable");
             dialog.set_default_response(Some("cancel"));
             let profile = profile.clone();
             let page = page.clone();
@@ -8617,7 +9506,7 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
                         Ok(Err(e)) => match missing_value_editor(&e, &view.secret_keys) {
                             Some(editor) => {
                                 page.show_feedback(
-                                    &format!("Could not turn on {}: {}", view.name, missing_value_hint(&e, &editor)),
+                                    &crate::i18n::trf("Could not turn on {value0}: {value1}", &[("value0", &view.name.to_string()), ("value1", &missing_value_hint(&e, &editor).to_string())]),
                                     true,
                                 );
                                 match editor {
@@ -8627,7 +9516,7 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
                             }
                             None => page.show_feedback(&e, true),
                         },
-                        Err(_) => page.show_feedback("The reference review stopped. Retry enabling the server.", true),
+                        Err(_) => page.show_feedback(&crate::i18n::tr("The reference review stopped. Retry enabling the server."), true),
                     }
                 });
             });
@@ -8635,19 +9524,22 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
         });
         card.append(&review);
     } else {
-        let status = gtk::Label::new(Some(if server.enabled {
-            "Enabled"
+        let status = l10n::label(if server.enabled {
+            crate::i18n::msg("Enabled")
         } else {
-            "Disabled"
-        }));
+            crate::i18n::msg("Disabled")
+        });
         status.add_css_class("toolport-server-state");
         let toggle = gtk::Switch::builder()
             .active(server.enabled)
             .valign(gtk::Align::Center)
-            .tooltip_text(format!(
-                "{} {}",
-                if server.enabled { "Disable" } else { "Enable" },
-                server.name
+            .tooltip_text(crate::i18n::trf(
+                if server.enabled {
+                    crate::i18n::msg("Disable {server}")
+                } else {
+                    crate::i18n::msg("Enable {server}")
+                },
+                &[("server", &server.name)],
             ))
             .build();
         let server_id = server.id.clone();
@@ -8662,7 +9554,7 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
                 return gtk::glib::Propagation::Proceed;
             }
             toggle.set_sensitive(false);
-            status_for_toggle.set_label("Updating");
+            l10n::bind_text(&status_for_toggle, "Updating");
 
             let server_id = server_id.clone();
             let server_name = server_name.clone();
@@ -8701,9 +9593,15 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
                             .flatten();
                         match editor {
                             Some(editor) => {
-                                page.restore_after_error(&format!(
-                                    "Could not turn on {server_name}: {}",
-                                    missing_value_hint(&error, &editor)
+                                page.restore_after_error(&crate::i18n::trf(
+                                    "Could not turn on {value0}: {value1}",
+                                    &[
+                                        ("value0", &server_name.to_string()),
+                                        (
+                                            "value1",
+                                            &missing_value_hint(&error, &editor).to_string(),
+                                        ),
+                                    ],
                                 ));
                                 match editor {
                                     MissingValueEditor::Credentials => {
@@ -8714,15 +9612,20 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
                                     }
                                 }
                             }
-                            None => page.restore_after_error(&format!(
-                                "Could not update {server_name}: {error}"
+                            None => page.restore_after_error(&crate::i18n::trf(
+                                "Could not update {value0}: {value1}",
+                                &[
+                                    ("value0", &server_name.to_string()),
+                                    ("value1", &error.to_string()),
+                                ],
                             )),
                         }
                     }
                     Err(_) => {
                         restore_server_switch(&toggle, &status, &restoring, !enabled);
-                        page.restore_after_error(&format!(
-                            "Could not update {server_name}: the operation stopped"
+                        page.restore_after_error(&crate::i18n::trf(
+                            "Could not update {value0}: the operation stopped",
+                            &[("value0", &server_name.to_string())],
                         ));
                     }
                 }
@@ -8737,7 +9640,10 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
     actions.set_margin_bottom(6);
     actions.set_margin_start(6);
     actions.set_margin_end(6);
-    let test = action_menu_button("Test connection", "network-transmit-receive-symbolic");
+    let test = action_menu_button(
+        crate::i18n::msg("Test connection"),
+        "network-transmit-receive-symbolic",
+    );
     let server_for_test = server.clone();
     let page_for_test = page.clone();
     test.connect_clicked(move |button| {
@@ -8745,13 +9651,16 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
     });
     actions.append(&test);
 
-    let tools = action_menu_button("Server details and tools", "applications-science-symbolic");
+    let tools = action_menu_button(
+        crate::i18n::msg("Server details and tools"),
+        "applications-science-symbolic",
+    );
     let server_for_tools = server.clone();
     let page_for_tools = page.clone();
     tools.connect_clicked(move |_| open_server_details(&server_for_tools, &page_for_tools, true));
     actions.append(&tools);
 
-    let edit = action_menu_button("Edit", "document-edit-symbolic");
+    let edit = action_menu_button(crate::i18n::msg("Edit"), "document-edit-symbolic");
     edit.set_sensitive(matches!(
         server.transport_id.as_str(),
         "stdio" | "http" | "sse"
@@ -8762,13 +9671,16 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
         open_server_editor(Some(server_for_edit.clone()), page_for_edit.clone())
     });
     actions.append(&edit);
-    let settings = action_menu_button("Sync settings", "emblem-synchronizing-symbolic");
+    let settings = action_menu_button(
+        crate::i18n::msg("Sync settings"),
+        "emblem-synchronizing-symbolic",
+    );
     let sync_id = server.id.clone();
     let sync_page = page.clone();
     settings.connect_clicked(move |_| open_sync_settings(&sync_id, &sync_page));
     actions.append(&settings);
 
-    let duplicate = action_menu_button("Duplicate", "edit-copy-symbolic");
+    let duplicate = action_menu_button(crate::i18n::msg("Duplicate"), "edit-copy-symbolic");
     duplicate.set_tooltip_text(Some(
         "Add another account: a new entry with the same connection, named separately",
     ));
@@ -8784,7 +9696,10 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
     actions.append(&duplicate);
 
     if matches!(server.transport_id.as_str(), "http" | "sse") {
-        let authentication = action_menu_button("Authentication", "system-lock-screen-symbolic");
+        let authentication = action_menu_button(
+            crate::i18n::msg("Authentication"),
+            "system-lock-screen-symbolic",
+        );
         let server_for_authentication = server.clone();
         let page_for_authentication = page.clone();
         authentication.connect_clicked(move |_| {
@@ -8796,7 +9711,8 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
         actions.append(&authentication);
     }
 
-    let credentials = action_menu_button("Credentials", "dialog-password-symbolic");
+    let credentials =
+        action_menu_button(crate::i18n::msg("Credentials"), "dialog-password-symbolic");
     let server_for_credentials = server.clone();
     let page_for_credentials = page.clone();
     credentials.connect_clicked(move |_| {
@@ -8804,7 +9720,7 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
     });
     actions.append(&credentials);
 
-    let remove = action_menu_button("Remove", "user-trash-symbolic");
+    let remove = action_menu_button(crate::i18n::msg("Remove"), "user-trash-symbolic");
     remove.add_css_class("destructive-action");
     let server_id = server.id.clone();
     let server_name = server.name.clone();
@@ -8818,7 +9734,10 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
     popover.set_child(Some(&actions));
     let menu = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
-        .tooltip_text(format!("Actions for {}", server.name))
+        .tooltip_text(crate::i18n::trf(
+            "Actions for {value0}",
+            &[("value0", &server.name.to_string())],
+        ))
         .popover(&popover)
         .css_classes(["flat"])
         .build();
@@ -8836,14 +9755,20 @@ fn auth_probe_summary(info: &crate::vendors::AuthInfo) -> String {
         _ => "Toolport could not determine what authentication this server wants.".to_string(),
     };
     if let Some(vendor) = info.vendor.as_deref() {
-        summary.push_str(&format!(" Detected {vendor}."));
+        summary.push_str(&crate::i18n::trf(
+            " Detected {value0}.",
+            &[("value0", vendor)],
+        ));
     }
     if let Some(instructions) = info.instructions.as_deref() {
         summary.push(' ');
         summary.push_str(instructions);
     }
     if let Some(token_url) = info.token_url.as_deref() {
-        summary.push_str(&format!(" Get a token at {token_url}"));
+        summary.push_str(&crate::i18n::trf(
+            " Get a token at {value0}",
+            &[("value0", token_url)],
+        ));
     }
     summary
 }
@@ -8856,7 +9781,10 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
         .application(&page.app)
         .transient_for(&parent)
         .modal(true)
-        .title(format!("Authentication for {}", server.name))
+        .title(crate::i18n::trf(
+            "Authentication for {value0}",
+            &[("value0", &server.name.to_string())],
+        ))
         .default_width(560)
         .default_height(440)
         .build();
@@ -8864,25 +9792,21 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
-    let done = gtk::Button::with_label("Done");
+    let done = l10n::button("Done");
     done.add_css_class("toolport-secondary-action");
     header.pack_end(&done);
     root.append(&header);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
     content.add_css_class("toolport-editor-body");
-    content.append(&editor_intro(
-        "system-lock-screen-symbolic",
-        "Remote authentication",
-        "Use browser sign-in when supported, or paste a token supplied by your provider. Toolport stores credentials in the system keychain.",
-    ));
+    content.append(&editor_intro("system-lock-screen-symbolic", crate::i18n::msg("Remote authentication"), crate::i18n::msg("Use browser sign-in when supported, or paste a token supplied by your provider. Toolport stores credentials in the system keychain.")));
     let feedback = gtk::Label::builder()
         .halign(gtk::Align::Fill)
         .xalign(0.0)
         .wrap(true)
         .css_classes(["toolport-feedback"])
         .build();
-    feedback.set_label("Checking the system keychain…");
+    l10n::bind_text(&feedback, "Checking the system keychain…");
     content.append(&feedback);
 
     // What the server actually wants, probed live so the user does not have to
@@ -8909,26 +9833,32 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
     let token_section = gtk::Box::new(gtk::Orientation::Vertical, 10);
     token_section.add_css_class("toolport-form-section");
     token_section.append(&section_heading(
-        "Bearer token",
-        "Saving a manual token replaces any previous browser sign-in for this server.",
+        crate::i18n::msg("Bearer token"),
+        crate::i18n::msg(
+            "Saving a manual token replaces any previous browser sign-in for this server.",
+        ),
     ));
-    let token = gtk::PasswordEntry::builder()
-        .placeholder_text("Paste a new token")
-        .show_peek_icon(true)
-        .hexpand(true)
-        .css_classes(["toolport-input"])
-        .build();
+    let token = {
+        let widget = gtk::PasswordEntry::builder()
+            .placeholder_text("Paste a new token")
+            .show_peek_icon(true)
+            .hexpand(true)
+            .css_classes(["toolport-input"])
+            .build();
+        l10n::bind_placeholder(&widget, "Paste a new token");
+        widget
+    };
     token_section.append(&token);
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     actions.set_halign(gtk::Align::End);
-    let sign_in = gtk::Button::with_label("Sign in with browser");
+    let sign_in = l10n::button("Sign in with browser");
     sign_in.add_css_class("toolport-secondary-action");
-    let cancel_sign_in = gtk::Button::with_label("Cancel sign-in");
+    let cancel_sign_in = l10n::button("Cancel sign-in");
     cancel_sign_in.set_visible(false);
-    let remove = gtk::Button::with_label("Remove token");
+    let remove = l10n::button("Remove token");
     remove.add_css_class("destructive-action");
     remove.set_sensitive(false);
-    let save = gtk::Button::with_label("Store token");
+    let save = l10n::button("Store token");
     save.add_css_class("suggested-action");
     let browser_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     browser_actions.set_halign(gtk::Align::Start);
@@ -8942,30 +9872,42 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
 
     let client_section = gtk::Box::new(gtk::Orientation::Vertical, 10);
     client_section.add_css_class("toolport-form-section");
-    client_section.append(&section_heading(
-        "Client credentials",
-        "For unattended OAuth servers. The client secret is stored only in the system keychain.",
-    ));
-    let client_id = gtk::Entry::builder()
-        .placeholder_text("OAuth client id")
-        .text(
-            server
-                .client_credentials
-                .as_ref()
-                .map(|credentials| credentials.client_id.as_str())
-                .unwrap_or_default(),
-        )
-        .css_classes(["toolport-input"])
-        .build();
-    let client_secret = gtk::PasswordEntry::builder()
-        .placeholder_text(if server.client_credentials.is_some() {
-            "Leave blank to keep the stored secret"
-        } else {
-            "OAuth client secret"
-        })
-        .show_peek_icon(true)
-        .css_classes(["toolport-input"])
-        .build();
+    client_section.append(&section_heading(crate::i18n::msg("Client credentials"), crate::i18n::msg("For unattended OAuth servers. The client secret is stored only in the system keychain.")));
+    let client_id = {
+        let widget = gtk::Entry::builder()
+            .placeholder_text("OAuth client id")
+            .text(
+                server
+                    .client_credentials
+                    .as_ref()
+                    .map(|credentials| credentials.client_id.as_str())
+                    .unwrap_or_default(),
+            )
+            .css_classes(["toolport-input"])
+            .build();
+        l10n::bind_placeholder(&widget, "OAuth client id");
+        widget
+    };
+    let client_secret = {
+        let widget = gtk::PasswordEntry::builder()
+            .placeholder_text(if server.client_credentials.is_some() {
+                "Leave blank to keep the stored secret"
+            } else {
+                "OAuth client secret"
+            })
+            .show_peek_icon(true)
+            .css_classes(["toolport-input"])
+            .build();
+        l10n::bind_placeholder(
+            &widget,
+            if server.client_credentials.is_some() {
+                crate::i18n::msg("Leave blank to keep the stored secret")
+            } else {
+                crate::i18n::msg("OAuth client secret")
+            },
+        );
+        widget
+    };
     let methods = gtk::StringList::new(&["client_secret_basic", "client_secret_post"]);
     let method = gtk::DropDown::new(Some(methods), None::<gtk::Expression>);
     method.set_selected(
@@ -8975,19 +9917,26 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
             .and_then(|credentials| credentials.token_endpoint_auth_method.as_deref())
             == Some("client_secret_post")) as u32,
     );
-    let scope = gtk::Entry::builder()
-        .placeholder_text("Scopes (optional)")
-        .text(
-            server
-                .client_credentials
-                .as_ref()
-                .and_then(|credentials| credentials.scope.as_deref())
-                .unwrap_or_default(),
-        )
-        .css_classes(["toolport-input"])
-        .build();
-    client_section.append(&editor_field("Client id", &client_id));
-    client_section.append(&editor_field("Client secret", &client_secret));
+    let scope = {
+        let widget = gtk::Entry::builder()
+            .placeholder_text("Scopes (optional)")
+            .text(
+                server
+                    .client_credentials
+                    .as_ref()
+                    .and_then(|credentials| credentials.scope.as_deref())
+                    .unwrap_or_default(),
+            )
+            .css_classes(["toolport-input"])
+            .build();
+        l10n::bind_placeholder(&widget, "Scopes (optional)");
+        widget
+    };
+    client_section.append(&editor_field(crate::i18n::msg("Client id"), &client_id));
+    client_section.append(&editor_field(
+        crate::i18n::msg("Client secret"),
+        &client_secret,
+    ));
     // Whether a secret is actually vaulted is a keychain question, not a
     // registry one: a lost/locked keychain must not read as "stored", and
     // unknown must not read as absent (SBS-722).
@@ -8999,7 +9948,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
         .css_classes(["toolport-muted", "caption"])
         .build();
     client_section.append(&secret_status);
-    let secret_retry = gtk::Button::with_label("Retry the secret check");
+    let secret_retry = l10n::button("Retry the secret check");
     secret_retry.add_css_class("flat");
     secret_retry.set_halign(gtk::Align::Start);
     secret_retry.set_visible(false);
@@ -9027,14 +9976,18 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                                 "A client secret is stored in the keychain. It cannot be shown again; leave the field blank to keep it.",
                             );
                             secret_retry.set_visible(false);
-                            client_secret.set_placeholder_text(Some(
+                            l10n::bind_placeholder(
+                                client_secret.upcast_ref::<gtk::Widget>(),
                                 "Leave blank to keep the stored secret",
-                            ));
+                            );
                         }
                         Ok(Ok(false)) => {
-                            secret_status.set_label("No client secret is stored yet.");
+                            l10n::bind_text(&secret_status, "No client secret is stored yet.");
                             secret_retry.set_visible(false);
-                            client_secret.set_placeholder_text(Some("OAuth client secret"));
+                            l10n::bind_placeholder(
+                                client_secret.upcast_ref::<gtk::Widget>(),
+                                "OAuth client secret",
+                            );
                         }
                         _ => {
                             secret_status.set_label(
@@ -9050,14 +10003,17 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
         let check_for_retry = check.clone();
         secret_retry.connect_clicked(move |_| check_for_retry());
     }
-    client_section.append(&editor_field("Token endpoint auth method", &method));
-    client_section.append(&editor_field("Scope", &scope));
+    client_section.append(&editor_field(
+        crate::i18n::msg("Token endpoint auth method"),
+        &method,
+    ));
+    client_section.append(&editor_field(crate::i18n::msg("Scope"), &scope));
     let client_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     client_actions.set_halign(gtk::Align::End);
-    let remove_client = gtk::Button::with_label("Remove client credentials");
+    let remove_client = l10n::button("Remove client credentials");
     remove_client.add_css_class("destructive-action");
     remove_client.set_sensitive(server.client_credentials.is_some());
-    let save_client = gtk::Button::with_label("Save client credentials");
+    let save_client = l10n::button("Save client credentials");
     save_client.add_css_class("suggested-action");
     client_actions.append(&remove_client);
     client_actions.append(&save_client);
@@ -9108,22 +10064,31 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
         }
         match result {
             Ok(Ok(has_token)) => {
-                feedback_for_status.set_label(if has_token {
-                    "A bearer token is stored in the system keychain."
-                } else {
-                    "No bearer token is stored for this server."
-                });
+                l10n::bind_text(
+                    &feedback_for_status,
+                    if has_token {
+                        crate::i18n::msg("A bearer token is stored in the system keychain.")
+                    } else {
+                        crate::i18n::msg("No bearer token is stored for this server.")
+                    },
+                );
                 feedback_for_status.remove_css_class("error");
                 feedback_for_status.add_css_class("success");
                 remove_for_status.set_sensitive(has_token);
             }
             Ok(Err(error)) => {
-                feedback_for_status
-                    .set_label(&format!("Could not read authentication status: {error}"));
+                l10n::bind_formatted_label(
+                    &feedback_for_status,
+                    "Could not read authentication status: {value0}",
+                    &[("value0", &error.to_string())],
+                );
                 feedback_for_status.add_css_class("error");
             }
             Err(_) => {
-                feedback_for_status.set_label("The keychain status check stopped unexpectedly.");
+                l10n::bind_text(
+                    &feedback_for_status,
+                    "The keychain status check stopped unexpectedly.",
+                );
                 feedback_for_status.add_css_class("error");
             }
         }
@@ -9168,19 +10133,28 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                     page.render(state::RegistryState::Ready(
                         state::RegistrySnapshot::from_registry(registry),
                     ));
-                    feedback.set_label(&format!(
-                        "Client credentials for {server_name} are configured."
-                    ));
+                    l10n::bind_formatted_label(
+                        &feedback,
+                        "Client credentials for {value0} are configured.",
+                        &[("value0", &server_name.to_string())],
+                    );
                     feedback.remove_css_class("error");
                     feedback.add_css_class("success");
                     remove.set_sensitive(true);
                 }
                 Ok(Err(error)) => {
-                    feedback.set_label(&format!("Could not save client credentials: {error}"));
+                    l10n::bind_formatted_label(
+                        &feedback,
+                        "Could not save client credentials: {value0}",
+                        &[("value0", &error.to_string())],
+                    );
                     feedback.add_css_class("error");
                 }
                 Err(_) => {
-                    feedback.set_label("The client-credentials update stopped unexpectedly.");
+                    l10n::bind_text(
+                        &feedback,
+                        "The client-credentials update stopped unexpectedly.",
+                    );
                     feedback.add_css_class("error");
                 }
             }
@@ -9208,19 +10182,30 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                     page.render(state::RegistryState::Ready(
                         state::RegistrySnapshot::from_registry(registry),
                     ));
-                    feedback.set_label(&format!("Removed client credentials for {server_name}."));
+                    l10n::bind_formatted_label(
+                        &feedback,
+                        "Removed client credentials for {value0}.",
+                        &[("value0", &server_name.to_string())],
+                    );
                     feedback.remove_css_class("error");
                     feedback.add_css_class("success");
                     button.set_sensitive(false);
                 }
                 Ok(Err(error)) => {
                     button.set_sensitive(true);
-                    feedback.set_label(&format!("Could not remove client credentials: {error}"));
+                    l10n::bind_formatted_label(
+                        &feedback,
+                        "Could not remove client credentials: {value0}",
+                        &[("value0", &error.to_string())],
+                    );
                     feedback.add_css_class("error");
                 }
                 Err(_) => {
                     button.set_sensitive(true);
-                    feedback.set_label("The client-credentials removal stopped unexpectedly.");
+                    l10n::bind_text(
+                        &feedback,
+                        "The client-credentials removal stopped unexpectedly.",
+                    );
                     feedback.add_css_class("error");
                 }
             }
@@ -9247,7 +10232,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
         let remove_before = remove_before_oauth.clone();
         sign_in.connect_clicked(move |button| {
             if server_url.is_empty() {
-                feedback.set_label("This server does not have a remote URL to sign in to.");
+                l10n::bind_text(&feedback, "This server does not have a remote URL to sign in to.");
                 feedback.add_css_class("error");
                 return;
             }
@@ -9262,7 +10247,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
             remove_before.set(remove.is_sensitive());
             remove.set_sensitive(false);
             cancel.set_visible(true);
-            feedback.set_label("Opening your browser. Approve access there. Waiting up to 3 minutes for the callback. Closed the browser? Cancel sign-in, then sign in again to reopen it. Closing this panel cancels sign-in. The main window closes to tray; Quit Toolport exits.");
+            l10n::bind_text(&feedback, "Opening your browser. Approve access there. Waiting up to 3 minutes for the callback. Closed the browser? Cancel sign-in, then sign in again to reopen it. Closing this panel cancels sign-in. The main window closes to tray; Quit Toolport exits.");
             feedback.remove_css_class("error");
             feedback.remove_css_class("success");
             let server_id = server_id.clone();
@@ -9295,11 +10280,11 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                 cancel.set_visible(false);
                 match result {
                     Ok(Ok(())) => {
-                        feedback.set_label("Browser sign-in completed and the token is stored in the system keychain.");
+                        l10n::bind_text(&feedback, "Browser sign-in completed and the token is stored in the system keychain.");
                         feedback.remove_css_class("error");
                         feedback.add_css_class("success");
                         remove.set_sensitive(true);
-                        page.show_confirmation(&format!("Authenticated {server_name}"));
+                        page.show_confirmation(&crate::i18n::trf("Authenticated {value0}", &[("value0", &server_name.to_string())]));
                         page.reprobe_after_auth_change(&reprobe_id);
                     }
                     Ok(Err(error)) => {
@@ -9308,7 +10293,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                         feedback.add_css_class("error");
                     }
                     Err(_) => {
-                        feedback.set_label("Browser sign-in stopped unexpectedly. Sign in with browser to try again.");
+                        l10n::bind_text(&feedback, "Browser sign-in stopped unexpectedly. Sign in with browser to try again.");
                         feedback.add_css_class("error");
                     }
                 }
@@ -9334,7 +10319,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
             epoch.set(epoch.get().wrapping_add(1));
             let generation = epoch.get();
             button.set_sensitive(false);
-            feedback.set_label("Cancelling browser sign-in…");
+            l10n::bind_text(&feedback, "Cancelling browser sign-in…");
             let epoch = epoch.clone();
             let feedback = feedback.clone();
             let sign_in = sign_in.clone();
@@ -9358,10 +10343,10 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                 remove.set_sensitive(remove_before.get());
                 button.set_sensitive(true);
                 button.set_visible(false);
-                feedback.set_label(match result {
-                    Ok(true) => "Browser sign-in cancelled. Sign in with browser to try again.",
-                    Ok(false) => "Browser sign-in already finished. Close and reopen this panel to check token status.",
-                    Err(_) => "Cancellation stopped unexpectedly. Close this panel and try again.",
+                feedback.set_label(&match result {
+                    Ok(true) => crate::i18n::tr("Browser sign-in cancelled. Sign in with browser to try again."),
+                    Ok(false) => crate::i18n::tr("Browser sign-in already finished. Close and reopen this panel to check token status."),
+                    Err(_) => crate::i18n::tr("Cancellation stopped unexpectedly. Close this panel and try again."),
                 });
             });
         });
@@ -9375,14 +10360,14 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
     save.connect_clicked(move |button| {
         let value = token.text().to_string();
         if value.is_empty() {
-            feedback_for_save.set_label("Paste a token before storing it.");
+            l10n::bind_text(&feedback_for_save, "Paste a token before storing it.");
             feedback_for_save.add_css_class("error");
             return;
         }
         let remove_was_sensitive = remove_for_save.is_sensitive();
         button.set_sensitive(false);
         remove_for_save.set_sensitive(false);
-        feedback_for_save.set_label("Storing token in the system keychain…");
+        l10n::bind_text(&feedback_for_save, "Storing token in the system keychain…");
         feedback_for_save.remove_css_class("error");
         let server_id = server_id.clone();
         let reprobe_id = server_id.clone();
@@ -9399,11 +10384,14 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
             button.set_sensitive(true);
             match result {
                 Ok(Ok(())) => {
-                    feedback.set_label("Bearer token stored in the system keychain.");
+                    l10n::bind_text(&feedback, "Bearer token stored in the system keychain.");
                     feedback.remove_css_class("error");
                     feedback.add_css_class("success");
                     remove.set_sensitive(true);
-                    page.show_confirmation(&format!("Updated authentication for {server_name}"));
+                    page.show_confirmation(&crate::i18n::trf(
+                        "Updated authentication for {value0}",
+                        &[("value0", &server_name.to_string())],
+                    ));
                     page.reprobe_after_auth_change(&reprobe_id);
                 }
                 Ok(Err(error)) => {
@@ -9413,7 +10401,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                     remove.set_sensitive(remove_was_sensitive);
                 }
                 Err(_) => {
-                    feedback.set_label("The token update stopped unexpectedly.");
+                    l10n::bind_text(&feedback, "The token update stopped unexpectedly.");
                     feedback.add_css_class("error");
                     remove.set_sensitive(remove_was_sensitive);
                 }
@@ -9431,7 +10419,10 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
             return;
         }
         button.set_sensitive(false);
-        feedback_for_remove.set_label("Removing token from the system keychain…");
+        l10n::bind_text(
+            &feedback_for_remove,
+            "Removing token from the system keychain…",
+        );
         feedback_for_remove.remove_css_class("error");
         let server_id = server_id.clone();
         let reprobe_id = server_id.clone();
@@ -9446,10 +10437,13 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
             .await;
             match result {
                 Ok(Ok(())) => {
-                    feedback.set_label("No bearer token is stored for this server.");
+                    l10n::bind_text(&feedback, "No bearer token is stored for this server.");
                     feedback.remove_css_class("error");
                     feedback.add_css_class("success");
-                    page.show_confirmation(&format!("Removed authentication for {server_name}"));
+                    page.show_confirmation(&crate::i18n::trf(
+                        "Removed authentication for {value0}",
+                        &[("value0", &server_name.to_string())],
+                    ));
                     page.reprobe_after_auth_change(&reprobe_id);
                 }
                 Ok(Err(error)) => {
@@ -9460,7 +10454,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                 }
                 Err(_) => {
                     button.set_sensitive(true);
-                    feedback.set_label("The token removal stopped unexpectedly.");
+                    l10n::bind_text(&feedback, "The token removal stopped unexpectedly.");
                     feedback.add_css_class("error");
                 }
             }
@@ -9471,7 +10465,10 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
 
 fn test_server_connection(server: &state::ServerView, button: &gtk::Button, page: ServerPage) {
     button.set_sensitive(false);
-    page.show_feedback(&format!("Testing {}…", server.name), false);
+    page.show_feedback(
+        &crate::i18n::trf("Testing {value0}…", &[("value0", &server.name.to_string())]),
+        false,
+    );
     let server_id = server.id.clone();
     let server_name = server.name.clone();
     let button = button.clone();
@@ -9481,50 +10478,73 @@ fn test_server_connection(server: &state::ServerView, button: &gtk::Button, page
                 .await;
         button.set_sensitive(true);
         match result {
-            Ok(Ok(probe)) if probe.ok => page.show_confirmation(&format!(
-                "{server_name} connected and exposed {} {}",
-                probe.tool_count,
+            Ok(Ok(probe)) if probe.ok => page.show_confirmation(&crate::i18n::trf(
                 if probe.tool_count == 1 {
-                    "tool"
+                    crate::i18n::msg("{value0} connected and exposed {value1} tool")
                 } else {
-                    "tools"
-                }
+                    crate::i18n::msg("{value0} connected and exposed {value1} tools")
+                },
+                &[
+                    ("value0", &server_name.to_string()),
+                    ("value1", &format!("{}", probe.tool_count)),
+                ],
             )),
             Ok(Ok(probe)) if probe.auth_required => page.show_feedback(
-                &format!("{server_name} needs credentials before it can connect"),
-                true,
-            ),
-            Ok(Ok(probe)) => page.show_feedback(
-                &format!(
-                    "Could not connect to {server_name}: {}",
-                    probe.error.as_deref().unwrap_or("unknown connection error")
+                &crate::i18n::trf(
+                    "{value0} needs credentials before it can connect",
+                    &[("value0", &server_name.to_string())],
                 ),
                 true,
             ),
-            Ok(Err(error)) => {
-                page.show_feedback(&format!("Could not test {server_name}: {error}"), true)
-            }
+            Ok(Ok(probe)) => page.show_feedback(
+                &crate::i18n::trf(
+                    "Could not connect to {value0}: {value1}",
+                    &[
+                        ("value0", &server_name.to_string()),
+                        (
+                            "value1",
+                            probe.error.as_deref().unwrap_or("unknown connection error"),
+                        ),
+                    ],
+                ),
+                true,
+            ),
+            Ok(Err(error)) => page.show_feedback(
+                &crate::i18n::trf(
+                    "Could not test {value0}: {value1}",
+                    &[
+                        ("value0", &server_name.to_string()),
+                        ("value1", &error.to_string()),
+                    ],
+                ),
+                true,
+            ),
             Err(_) => page.show_feedback(
-                &format!("Could not test {server_name}: the operation stopped"),
+                &crate::i18n::trf(
+                    "Could not test {value0}: the operation stopped",
+                    &[("value0", &server_name.to_string())],
+                ),
                 true,
             ),
         }
     });
 }
 
-fn action_menu_button(label: &str, icon: &str) -> gtk::Button {
+fn action_menu_button(label: &'static str, icon: &str) -> gtk::Button {
     let button = gtk::Button::new();
     button.set_halign(gtk::Align::Fill);
     button.add_css_class("toolport-action-item");
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 9);
     row.append(&gtk::Image::from_icon_name(icon));
-    row.append(
-        &gtk::Label::builder()
+    row.append(&{
+        let widget = gtk::Label::builder()
             .label(label)
             .halign(gtk::Align::Start)
             .hexpand(true)
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, label);
+        widget
+    });
     button.set_child(Some(&row));
     button
 }
@@ -9540,7 +10560,14 @@ fn restore_server_switch(
     toggle.set_state(enabled);
     restoring.set(false);
     toggle.set_sensitive(true);
-    status.set_label(if enabled { "Enabled" } else { "Disabled" });
+    l10n::bind_text(
+        status,
+        if enabled {
+            crate::i18n::msg("Enabled")
+        } else {
+            crate::i18n::msg("Disabled")
+        },
+    );
 }
 
 const SERVER_SETUP_SUFFIX: &str = " Open server setup to add it.";
@@ -9576,7 +10603,10 @@ fn missing_value_hint(error: &str, editor: &MissingValueEditor) -> String {
         MissingValueEditor::Credentials => "Credentials",
         MissingValueEditor::EditServer => "Edit server",
     };
-    format!("{needs} Add it in {place}, then turn the server on.")
+    crate::i18n::trf(
+        "{value0} Add it in {value1}, then turn the server on.",
+        &[("value0", needs), ("value1", place)],
+    )
 }
 
 fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
@@ -9587,7 +10617,10 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
         .application(&page.app)
         .transient_for(&parent)
         .modal(true)
-        .title(format!("Credentials for {}", server.name))
+        .title(crate::i18n::trf(
+            "Credentials for {value0}",
+            &[("value0", &server.name.to_string())],
+        ))
         .default_width(620)
         .default_height(640)
         .build();
@@ -9595,7 +10628,7 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
-    let done = gtk::Button::with_label("Done");
+    let done = l10n::button("Done");
     done.add_css_class("suggested-action");
     header.pack_end(&done);
     root.append(&header);
@@ -9606,11 +10639,7 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
         .build();
     let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
     content.add_css_class("toolport-editor-body");
-    let intro = editor_intro(
-        "dialog-password-symbolic",
-        "Server credentials",
-        "Paste a key into the system keychain or save a password manager reference. Only references sync.",
-    );
+    let intro = editor_intro("dialog-password-symbolic", crate::i18n::msg("Server credentials"), crate::i18n::msg("Paste a key into the system keychain or save a password manager reference. Only references sync."));
     content.append(&intro);
     let feedback = gtk::Label::builder()
         .halign(gtk::Align::Fill)
@@ -9624,8 +10653,8 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
     let stored = gtk::Box::new(gtk::Orientation::Vertical, 10);
     stored.add_css_class("toolport-form-section");
     stored.append(&section_heading(
-        "Stored credentials",
-        "Enter a new value only when you want to replace one.",
+        crate::i18n::msg("Stored credentials"),
+        crate::i18n::msg("Enter a new value only when you want to replace one."),
     ));
     // Secret command arguments are vaulted like keys but are not environment
     // variables, so they save through the launch-input path.
@@ -9646,15 +10675,19 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
         })
         .collect();
     if server.secret_keys.is_empty() && launch_secrets.is_empty() {
-        stored.append(
-            &gtk::Label::builder()
-                .label("No credential keys are declared for this server.")
+        stored.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr(
+                    "No credential keys are declared for this server.",
+                ))
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["toolport-muted"])
-                .build(),
-        );
+                .build();
+            l10n::bind_label(&widget, "No credential keys are declared for this server.");
+            widget
+        });
     }
     for key in &server.secret_keys {
         let row = gtk::Box::new(gtk::Orientation::Vertical, 10);
@@ -9670,20 +10703,27 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
         );
         let remove = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .tooltip_text(format!("Remove {key}"))
+            .tooltip_text(crate::i18n::trf(
+                "Remove {value0}",
+                &[("value0", &key.to_string())],
+            ))
             .css_classes(["flat", "toolport-destructive-icon"])
             .build();
         key_row.append(&remove);
         row.append(&key_row);
         let replace_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let value = gtk::PasswordEntry::builder()
-            .placeholder_text("Enter a replacement value")
-            .show_peek_icon(true)
-            .hexpand(true)
-            .css_classes(["toolport-input"])
-            .build();
+        let value = {
+            let widget = gtk::PasswordEntry::builder()
+                .placeholder_text("Enter a replacement value")
+                .show_peek_icon(true)
+                .hexpand(true)
+                .css_classes(["toolport-input"])
+                .build();
+            l10n::bind_placeholder(&widget, "Enter a replacement value");
+            widget
+        };
         replace_row.append(&value);
-        let replace = gtk::Button::with_label("Replace");
+        let replace = l10n::button("Replace");
         replace.add_css_class("toolport-secondary-action");
         replace_row.append(&replace);
         let (source_choice, reference_box) = secret_reference_controls(
@@ -9711,7 +10751,7 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
         replace.connect_clicked(move |button| {
             let secret = value.text().to_string();
             if secret.is_empty() {
-                feedback_for_replace.set_label("Enter a replacement value first.");
+                l10n::bind_text(&feedback_for_replace, "Enter a replacement value first.");
                 feedback_for_replace.set_visible(true);
                 return;
             }
@@ -9768,14 +10808,18 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
                 .build(),
         );
         let save_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let value = gtk::PasswordEntry::builder()
-            .placeholder_text("Enter the value for this machine")
-            .show_peek_icon(true)
-            .hexpand(true)
-            .css_classes(["toolport-input"])
-            .build();
+        let value = {
+            let widget = gtk::PasswordEntry::builder()
+                .placeholder_text("Enter the value for this machine")
+                .show_peek_icon(true)
+                .hexpand(true)
+                .css_classes(["toolport-input"])
+                .build();
+            l10n::bind_placeholder(&widget, "Enter the value for this machine");
+            widget
+        };
         save_row.append(&value);
-        let save = gtk::Button::with_label("Save");
+        let save = l10n::button("Save");
         save.add_css_class("toolport-secondary-action");
         save_row.append(&save);
         let (source_choice, reference_box) = secret_reference_controls(
@@ -9803,7 +10847,7 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
         save.connect_clicked(move |button| {
             let secret = value.text().to_string();
             if secret.is_empty() {
-                feedback.set_label("Enter a value first.");
+                l10n::bind_text(&feedback, "Enter a value first.");
                 feedback.set_visible(true);
                 return;
             }
@@ -9837,21 +10881,25 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
     let add_section = gtk::Box::new(gtk::Orientation::Vertical, 10);
     add_section.add_css_class("toolport-form-section");
     add_section.append(&section_heading(
-        "Add credential",
-        "Use the environment variable name expected by this server.",
+        crate::i18n::msg("Add credential"),
+        crate::i18n::msg("Use the environment variable name expected by this server."),
     ));
     let add_row = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let new_key = gtk::Entry::builder()
         .placeholder_text("VARIABLE_NAME")
         .css_classes(["toolport-input"])
         .build();
-    let new_value = gtk::PasswordEntry::builder()
-        .placeholder_text("Secret value")
-        .show_peek_icon(true)
-        .hexpand(true)
-        .css_classes(["toolport-input"])
-        .build();
-    let add = gtk::Button::with_label("Store");
+    let new_value = {
+        let widget = gtk::PasswordEntry::builder()
+            .placeholder_text("Secret value")
+            .show_peek_icon(true)
+            .hexpand(true)
+            .css_classes(["toolport-input"])
+            .build();
+        l10n::bind_placeholder(&widget, "Secret value");
+        widget
+    };
+    let add = l10n::button("Store");
     add.add_css_class("suggested-action");
     add_row.append(&new_key);
     let (source_choice, reference_box) = secret_reference_controls_dynamic(
@@ -9886,7 +10934,10 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
         let key = new_key.text().to_string();
         let secret = new_value.text().to_string();
         if key.trim().is_empty() || secret.is_empty() {
-            feedback_for_add.set_label("Enter both a variable name and a secret value.");
+            l10n::bind_text(
+                &feedback_for_add,
+                "Enter both a variable name and a secret value.",
+            );
             feedback_for_add.set_visible(true);
             return;
         }
@@ -9938,11 +10989,20 @@ fn confirm_remove_credential(
     #[allow(deprecated)]
     let dialog = adw::MessageDialog::new(
         Some(&editor),
-        Some(&format!("Remove {key}?")),
-        Some("The stored value will be removed from the system keychain."),
+        Some(&crate::i18n::trf("Remove {value0}?", &[("value0", key)])),
+        Some(&crate::i18n::tr(
+            "The stored value will be removed from the system keychain.",
+        )),
     );
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("remove", "Remove");
+    l10n::bind_formatted_dialog_heading(&dialog, "Remove {value0}?", &[("value0", key)]);
+    l10n::bind_dialog_body(
+        &dialog,
+        "The stored value will be removed from the system keychain.",
+    );
+    dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
+    l10n::bind_dialog_response(&dialog, "cancel", "Cancel");
+    dialog.add_response("remove", &crate::i18n::tr("Remove"));
+    l10n::bind_dialog_response(&dialog, "remove", "Remove");
     dialog.set_close_response("cancel");
     dialog.set_default_response(Some("cancel"));
     dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
@@ -10001,16 +11061,26 @@ fn finish_credential_update(
             page.render(state::RegistryState::Ready(
                 state::RegistrySnapshot::from_registry(registry),
             ));
-            page.show_confirmation(&format!("{action} credential"));
+            page.show_confirmation(&crate::i18n::trf(
+                "{value0} credential",
+                &[("value0", action)],
+            ));
             editor.close();
         }
         Ok(Err(error)) => {
-            feedback.set_label(&format!("Could not update credential: {error}"));
+            l10n::bind_formatted_label(
+                feedback,
+                "Could not update credential: {value0}",
+                &[("value0", &error.to_string())],
+            );
             feedback.set_visible(true);
             button.set_sensitive(true);
         }
         Err(_) => {
-            feedback.set_label("Could not update credential: the operation stopped");
+            l10n::bind_text(
+                feedback,
+                "Could not update credential: the operation stopped",
+            );
             feedback.set_visible(true);
             button.set_sensitive(true);
         }
@@ -10084,17 +11154,26 @@ fn open_server_editor_prefilled(
         .application(&page.app)
         .transient_for(&parent)
         .modal(true)
-        .title(if editing { "Edit server" } else { "Add server" })
+        .title(crate::i18n::tr(if editing {
+            crate::i18n::msg("Edit server")
+        } else {
+            crate::i18n::msg("Add server")
+        }))
         .default_width(620)
         .default_height(660)
         .build();
     editor.add_css_class("toolport-editor");
+    l10n::bind_window_title(&editor, if editing { "Edit server" } else { "Add server" });
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
-    let test = gtk::Button::with_label("Test connection");
+    let test = l10n::button("Test connection");
     test.add_css_class("toolport-secondary-action");
-    let save = gtk::Button::with_label(if editing { "Save" } else { "Add" });
+    let save = l10n::button(if editing {
+        crate::i18n::msg("Save")
+    } else {
+        crate::i18n::msg("Add")
+    });
     save.add_css_class("suggested-action");
     header.pack_end(&save);
     root.append(&header);
@@ -10105,15 +11184,22 @@ fn open_server_editor_prefilled(
         .build();
     let form = gtk::Box::new(gtk::Orientation::Vertical, 12);
     form.add_css_class("toolport-editor-body");
-    form.append(
-        &gtk::Label::builder()
-            .label("Connect a local command or remote MCP endpoint to every Toolport client.")
+    form.append(&{
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr(
+                "Connect a local command or remote MCP endpoint to every Toolport client.",
+            ))
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["toolport-editor-lede"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(
+            &widget,
+            "Connect a local command or remote MCP endpoint to every Toolport client.",
+        );
+        widget
+    });
 
     let feedback = gtk::Label::builder()
         .halign(gtk::Align::Fill)
@@ -10124,11 +11210,14 @@ fn open_server_editor_prefilled(
         .build();
     form.append(&feedback);
 
-    let local_only = gtk::CheckButton::with_label("This machine only");
+    let local_only = l10n::check_button("This machine only");
     local_only.set_visible(
         !editing && crate::registry::load().is_ok_and(|r| crate::personal_sync::is_personal(&r)),
     );
-    local_only.set_tooltip_text(Some("Keep this new server on this machine from the start."));
+    l10n::bind_tooltip(
+        &local_only,
+        "Keep this new server on this machine from the start.",
+    );
     form.append(&local_only);
 
     // Pasted env values wait here until the add commits; the entry itself never
@@ -10137,24 +11226,28 @@ fn open_server_editor_prefilled(
     let snippet_env: std::rc::Rc<std::cell::RefCell<SnippetEnv>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
 
-    let name = gtk::Entry::builder()
-        .text(
-            server
-                .as_ref()
-                .map(|server| server.name.as_str())
-                .unwrap_or(""),
-        )
-        .hexpand(true)
-        .placeholder_text("My MCP server")
-        .css_classes(["toolport-input"])
-        .build();
+    let name = {
+        let widget = gtk::Entry::builder()
+            .text(
+                server
+                    .as_ref()
+                    .map(|server| server.name.as_str())
+                    .unwrap_or(""),
+            )
+            .hexpand(true)
+            .placeholder_text("My MCP server")
+            .css_classes(["toolport-input"])
+            .build();
+        l10n::bind_placeholder(&widget, "My MCP server");
+        widget
+    };
     let identity = gtk::Box::new(gtk::Orientation::Vertical, 8);
     identity.add_css_class("toolport-form-section");
     identity.append(&section_heading(
-        "Identity",
-        "Choose a clear name that will make sense in every AI client.",
+        crate::i18n::msg("Identity"),
+        crate::i18n::msg("Choose a clear name that will make sense in every AI client."),
     ));
-    identity.append(&editor_field("Server name", &name));
+    identity.append(&editor_field(crate::i18n::msg("Server name"), &name));
     if !editing {
         // Soft warning only: multiple accounts under one name are legitimate,
         // the user just needs to know a second entry is what they will get.
@@ -10182,17 +11275,19 @@ fn open_server_editor_prefilled(
             let typed = name.text().trim().to_lowercase();
             let duplicate = !typed.is_empty() && existing.contains(&typed);
             if duplicate {
-                duplicate_warning.set_label(&format!(
-                    "Another server is already named \"{}\". That's fine for multiple accounts; it'll be saved as a separate entry.",
-                    name.text().trim()
-                ));
+                l10n::bind_formatted_label(&duplicate_warning, "Another server is already named \"{value0}\". That's fine for multiple accounts; it'll be saved as a separate entry.", &[("value0", name.text().trim())]);
             }
             duplicate_warning.set_visible(duplicate);
         });
     }
     form.append(&identity);
 
-    let transport = gtk::DropDown::from_strings(&["Local stdio", "Remote HTTP", "Remote SSE"]);
+    let transport = gtk::DropDown::from_strings(&[
+        &crate::i18n::tr("Local stdio"),
+        &crate::i18n::tr("Remote HTTP"),
+        &crate::i18n::tr("Remote SSE"),
+    ]);
+    l10n::bind_dropdown_choices(&transport, &["Local stdio", "Remote HTTP", "Remote SSE"]);
     transport.add_css_class("toolport-input");
     transport.set_selected(
         match server.as_ref().map(|server| server.transport_id.as_str()) {
@@ -10204,10 +11299,10 @@ fn open_server_editor_prefilled(
     let connection = gtk::Box::new(gtk::Orientation::Vertical, 10);
     connection.add_css_class("toolport-form-section");
     connection.append(&section_heading(
-        "Connection",
-        "Toolport will validate these fields before saving.",
+        crate::i18n::msg("Connection"),
+        crate::i18n::msg("Toolport will validate these fields before saving."),
     ));
-    connection.append(&editor_field("Transport", &transport));
+    connection.append(&editor_field(crate::i18n::msg("Transport"), &transport));
 
     let command = gtk::Entry::builder()
         .text(
@@ -10220,7 +11315,7 @@ fn open_server_editor_prefilled(
         .hexpand(true)
         .css_classes(["toolport-input"])
         .build();
-    let command_row = editor_field("Command", &command);
+    let command_row = editor_field(crate::i18n::msg("Command"), &command);
     connection.append(&command_row);
 
     let args = gtk::TextView::new();
@@ -10241,7 +11336,7 @@ fn open_server_editor_prefilled(
         .min_content_height(96)
         .build();
     args_scroller.add_css_class("toolport-text-area");
-    let args_row = editor_field("Arguments, one per line", &args_scroller);
+    let args_row = editor_field(crate::i18n::msg("Arguments, one per line"), &args_scroller);
     connection.append(&args_row);
 
     let original_launch = server.as_ref().and_then(|server| server.launch.clone());
@@ -10260,27 +11355,35 @@ fn open_server_editor_prefilled(
         if !launch.inputs.is_empty() {
             let section = gtk::Box::new(gtk::Orientation::Vertical, 8);
             section.add_css_class("toolport-form-section");
-            section.append(&section_heading(
-                "Launch setup",
-                "Paste a key or use a password manager reference. Leave a saved key blank to keep it.",
-            ));
+            section.append(&section_heading(crate::i18n::msg("Launch setup"), crate::i18n::msg("Paste a key or use a password manager reference. Leave a saved key blank to keep it.")));
             for input in &launch.inputs {
-                let field = gtk::Entry::builder()
-                    .text(if input.secret {
-                        ""
-                    } else {
-                        input.value.as_deref().unwrap_or("")
-                    })
-                    .placeholder_text(if input.secret {
-                        "Saved value stays in vault"
-                    } else {
-                        "Required before enabling"
-                    })
-                    .visibility(!input.secret)
-                    .hexpand(true)
-                    .css_classes(["toolport-input"])
-                    .build();
-                let row = editor_field(&input.label, &field);
+                let field = {
+                    let widget = gtk::Entry::builder()
+                        .text(if input.secret {
+                            ""
+                        } else {
+                            input.value.as_deref().unwrap_or("")
+                        })
+                        .placeholder_text(if input.secret {
+                            "Saved value stays in vault"
+                        } else {
+                            "Required before enabling"
+                        })
+                        .visibility(!input.secret)
+                        .hexpand(true)
+                        .css_classes(["toolport-input"])
+                        .build();
+                    l10n::bind_placeholder(
+                        &widget,
+                        if input.secret {
+                            crate::i18n::msg("Saved value stays in vault")
+                        } else {
+                            crate::i18n::msg("Required before enabling")
+                        },
+                    );
+                    widget
+                };
+                let row = editor_field_data(&input.label, &field);
                 let source = if input.secret {
                     let existing = crate::secret_refs::source(&input.unknown_fields)
                         .ok()
@@ -10304,10 +11407,14 @@ fn open_server_editor_prefilled(
             }
             connection.append(&section);
         }
-        let binding_warning = gtk::Label::builder()
-            .label("Editing the command or arguments removes catalog launch setup. Replace <launch-input> before saving, or restore the catalog preset.")
+        let binding_warning = {
+            let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Editing the command or arguments removes catalog launch setup. Replace <launch-input> before saving, or restore the catalog preset."))
             .halign(gtk::Align::Fill).xalign(0.0).wrap(true).visible(false)
             .css_classes(["toolport-feedback", "error"]).build();
+            l10n::bind_label(&widget, "Editing the command or arguments removes catalog launch setup. Replace <launch-input> before saving, or restore the catalog preset.");
+            widget
+        };
         connection.append(&binding_warning);
         let args_for_warning = args.clone();
         let command_for_warning = command.clone();
@@ -10329,18 +11436,22 @@ fn open_server_editor_prefilled(
         command.connect_changed(move |_| update_warning());
     }
 
-    let cwd = gtk::Entry::builder()
-        .text(
-            server
-                .as_ref()
-                .and_then(|server| server.cwd.as_deref())
-                .unwrap_or(""),
-        )
-        .placeholder_text("Optional working directory")
-        .hexpand(true)
-        .css_classes(["toolport-input"])
-        .build();
-    let cwd_row = editor_field("Working directory", &cwd);
+    let cwd = {
+        let widget = gtk::Entry::builder()
+            .text(
+                server
+                    .as_ref()
+                    .and_then(|server| server.cwd.as_deref())
+                    .unwrap_or(""),
+            )
+            .placeholder_text(crate::i18n::tr("Optional working directory"))
+            .hexpand(true)
+            .css_classes(["toolport-input"])
+            .build();
+        l10n::bind_placeholder(&widget, "Optional working directory");
+        widget
+    };
+    let cwd_row = editor_field(crate::i18n::msg("Working directory"), &cwd);
     let inherit_env = gtk::Switch::builder()
         .active(server.as_ref().is_some_and(|server| server.inherit_env))
         .valign(gtk::Align::Center)
@@ -10349,20 +11460,24 @@ fn open_server_editor_prefilled(
     inherit_row.set_margin_top(6);
     let inherit_copy = gtk::Box::new(gtk::Orientation::Vertical, 3);
     inherit_copy.set_hexpand(true);
-    let inherit_label = gtk::Label::builder()
-        .label("Use my shell environment")
-        .halign(gtk::Align::Start)
-        .css_classes(["toolport-field-label"])
-        .build();
+    let inherit_label = {
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Use my shell environment"))
+            .halign(gtk::Align::Start)
+            .css_classes(["toolport-field-label"])
+            .build();
+        l10n::bind_label(&widget, "Use my shell environment");
+        widget
+    };
     inherit_copy.append(&inherit_label);
     inherit_copy.append(
-        &gtk::Label::builder()
-            .label("Gives this server every variable from your shell, such as AWS, GitHub or kube settings. When off it gets only PATH, HOME and other basics, plus the variables you set.")
+        &{ let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Gives this server every variable from your shell, such as AWS, GitHub or kube settings. When off it gets only PATH, HOME and other basics, plus the variables you set."))
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["toolport-muted", "caption"])
-            .build(),
+            .build(); l10n::bind_label(&widget, "Gives this server every variable from your shell, such as AWS, GitHub or kube settings. When off it gets only PATH, HOME and other basics, plus the variables you set."); widget },
     );
     inherit_env.update_relation(&[gtk::accessible::Relation::LabelledBy(&[
         inherit_label.upcast_ref()
@@ -10383,7 +11498,7 @@ fn open_server_editor_prefilled(
         .hexpand(true)
         .css_classes(["toolport-input"])
         .build();
-    let url_row = editor_field("Server URL", &url);
+    let url_row = editor_field(crate::i18n::msg("Server URL"), &url);
     connection.append(&url_row);
     test.set_halign(gtk::Align::End);
     connection.append(&test);
@@ -10422,20 +11537,24 @@ fn open_server_editor_prefilled(
     form.append(&credentials);
 
     if !editing {
-        let paste = gtk::Expander::new(Some("Start from a pasted config"));
+        let paste = {
+            let widget = gtk::Expander::new(None);
+            widget.set_label_widget(Some(&l10n::label("Start from a pasted config")));
+            widget
+        };
         paste.add_css_class("toolport-paste-expander");
         let paste_content = gtk::Box::new(gtk::Orientation::Vertical, 8);
         paste_content.set_margin_top(6);
         paste_content.set_margin_bottom(12);
         paste_content.append(
-            &gtk::Label::builder()
-                .label("Paste JSON, TOML, YAML, or a claude mcp add command and Toolport will fill the form.")
+            &{ let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Paste JSON, TOML, YAML, or a claude mcp add command and Toolport will fill the form."))
                 .halign(gtk::Align::Fill)
                 .hexpand(true)
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["toolport-muted"])
-                .build(),
+                .build(); l10n::bind_label(&widget, "Paste JSON, TOML, YAML, or a claude mcp add command and Toolport will fill the form."); widget },
         );
         let snippet = gtk::TextView::new();
         snippet.set_monospace(true);
@@ -10450,7 +11569,7 @@ fn open_server_editor_prefilled(
             .build();
         snippet_scroller.add_css_class("toolport-text-area");
         paste_content.append(&snippet_scroller);
-        let fill = gtk::Button::with_label("Fill from snippet");
+        let fill = l10n::button("Fill from snippet");
         fill.add_css_class("toolport-secondary-action");
         fill.set_halign(gtk::Align::Start);
         paste_content.append(&fill);
@@ -10473,13 +11592,9 @@ fn open_server_editor_prefilled(
                 .to_string();
             const MAX_SNIPPET_BYTES: usize = 256 * 1024;
             let parsed = if text.len() > MAX_SNIPPET_BYTES {
-                Err(format!(
-                    "Snippet is {} KB; limit is {} KB. Paste a single server config, not an entire file.",
-                    text.len() / 1024,
-                    MAX_SNIPPET_BYTES / 1024,
-                ))
+                Err(crate::i18n::trf("Snippet is {value0} KB; limit is {value1} KB. Paste a single server config, not an entire file.", &[("value0", &format!("{}", text.len() / 1024)), ("value1", &format!("{}", MAX_SNIPPET_BYTES / 1024))]))
             } else {
-                crate::clients::parse_snippet(&text).map_err(|_| "Could not read the pasted config. Check its syntax and retry.".to_string())
+                crate::clients::parse_snippet(&text).map_err(|_| crate::i18n::tr("Could not read the pasted config. Check its syntax and retry.").to_string())
             };
             feedback_for_fill.set_visible(true);
             match parsed {
@@ -10488,15 +11603,15 @@ fn open_server_editor_prefilled(
                         let Some(parent) = fill.root().and_downcast::<gtk::Window>() else { return; };
                         // Snippets have no launch metadata; Import::prepare requires every env key.
                         let items = servers.iter().enumerate().map(|(i, s)| crate::registry_controller::SetupItem {key:i.to_string(),name:s.name.clone(),transport:s.transport.clone(),command:s.command.clone(),args:s.args.clone(),url:s.url.clone(),env_keys:s.env.iter().map(|e| e.key.clone()).collect(),is_new:true,credentials:s.env.iter().map(|e|crate::registry_controller::CredentialReview{key:e.key.clone(),secret:crate::import_credentials::secret_env(&e.key,e.value.as_deref()),present:e.value.as_deref().is_some_and(crate::import_credentials::provided),required:true}).collect(),updates:Vec::new(),unsupported:None}).collect();
-                        setup::review(&parent, "Review pasted servers", items, "Review each command and URL. Credentials go to the keychain. Missing inputs stay off.", "Add selected servers", false, move |selected,choices,inputs| {
+                        setup::review(&parent, &crate::i18n::tr("Review pasted servers"), items, &crate::i18n::tr("Review each command and URL. Credentials go to the keychain. Missing inputs stay off."), crate::i18n::msg("Add selected servers"), false, move |selected,choices,inputs| {
                             let outcome = crate::registry_controller::add_snippet_servers_inputs(&text, &selected, &choices, &inputs)?;
-                            if !outcome.failed.is_empty() { return Err("Could not save credentials. Open Credentials and retry.".into()); }
+                            if !outcome.failed.is_empty() { return Err(crate::i18n::tr("Could not save credentials. Open Credentials and retry.")); }
                             Ok(outcome.servers.iter().map(|s|format!("{}: {}",s.name,s.status)).collect::<Vec<_>>().join("\n").into())
-                        }, { let page = page_for_fill.clone(); move || run_profile_mutation(page.clone(), "Added selected servers", crate::registry_controller::registry_for_disconnect) }, None);
+                        }, { let page = page_for_fill.clone(); move || run_profile_mutation(page.clone(), crate::i18n::msg("Added selected servers"), crate::registry_controller::registry_for_disconnect) }, None);
                         return;
                     }
                     let Some(first) = servers.first() else {
-                        feedback_for_fill.set_label("No servers found in the pasted config.");
+                        l10n::bind_text(&feedback_for_fill, "No servers found in the pasted config.");
                         feedback_for_fill.remove_css_class("success");
                         feedback_for_fill.add_css_class("error");
                         return;
@@ -10533,7 +11648,7 @@ fn open_server_editor_prefilled(
                     feedback_for_fill.add_css_class("success");
                 }
                 Err(error) => {
-                    feedback_for_fill.set_label(&format!("Could not parse the snippet: {error}"));
+                    l10n::bind_formatted_label(&feedback_for_fill, "Could not parse the snippet: {value0}", &[("value0", &error.to_string())]);
                     feedback_for_fill.remove_css_class("success");
                     feedback_for_fill.add_css_class("error");
                 }
@@ -10595,7 +11710,7 @@ fn open_server_editor_prefilled(
     let plain_env_for_test = plain_env.clone();
     test.connect_clicked(move |button| {
         button.set_sensitive(false);
-        feedback_for_test.set_label("Testing connection…");
+        l10n::bind_text(&feedback_for_test, "Testing connection…");
         feedback_for_test.remove_css_class("error");
         feedback_for_test.add_css_class("success");
         feedback_for_test.set_visible(true);
@@ -10660,38 +11775,46 @@ fn open_server_editor_prefilled(
             button.set_sensitive(true);
             match result {
                 Ok(Ok(probe)) if probe.ok => {
-                    feedback.set_label(&format!(
-                        "Connected successfully and found {} {}.",
-                        probe.tool_count,
+                    l10n::bind_formatted_label(
+                        &feedback,
                         if probe.tool_count == 1 {
-                            "tool"
+                            crate::i18n::msg("Connected successfully and found {value0} tool.")
                         } else {
-                            "tools"
-                        }
-                    ));
+                            crate::i18n::msg("Connected successfully and found {value0} tools.")
+                        },
+                        &[("value0", &format!("{}", probe.tool_count))],
+                    );
                     feedback.remove_css_class("error");
                     feedback.add_css_class("success");
                 }
                 Ok(Ok(probe)) if probe.auth_required => {
-                    feedback.set_label("The server responded but needs credentials.");
+                    l10n::bind_text(&feedback, "The server responded but needs credentials.");
                     feedback.remove_css_class("success");
                     feedback.add_css_class("error");
                 }
                 Ok(Ok(probe)) => {
-                    feedback.set_label(&format!(
-                        "Connection failed: {}",
-                        probe.error.as_deref().unwrap_or("unknown connection error")
-                    ));
+                    l10n::bind_formatted_label(
+                        &feedback,
+                        "Connection failed: {value0}",
+                        &[(
+                            "value0",
+                            probe.error.as_deref().unwrap_or("unknown connection error"),
+                        )],
+                    );
                     feedback.remove_css_class("success");
                     feedback.add_css_class("error");
                 }
                 Ok(Err(error)) => {
-                    feedback.set_label(&format!("Could not test: {error}"));
+                    l10n::bind_formatted_label(
+                        &feedback,
+                        "Could not test: {value0}",
+                        &[("value0", &error.to_string())],
+                    );
                     feedback.remove_css_class("success");
                     feedback.add_css_class("error");
                 }
                 Err(_) => {
-                    feedback.set_label("Could not test: the operation stopped");
+                    l10n::bind_text(&feedback, "Could not test: the operation stopped");
                     feedback.remove_css_class("success");
                     feedback.add_css_class("error");
                 }
@@ -10741,9 +11864,9 @@ fn open_server_editor_prefilled(
                     && launch_definition.is_some()
                     && fields.args.iter().any(|arg| arg == "<launch-input>")
                 {
-                    return Err(
-                        "Replace <launch-input> with a literal argument before saving".into(),
-                    );
+                    return Err(crate::i18n::tr(
+                        "Replace <launch-input> with a literal argument before saving",
+                    ));
                 }
                 match server_id {
                     Some(server_id) => {
@@ -10806,12 +11929,16 @@ fn open_server_editor_prefilled(
                     editor.close();
                 }
                 Ok(Err(error)) => {
-                    feedback.set_label(&format!("Could not save: {error}"));
+                    l10n::bind_formatted_label(
+                        &feedback,
+                        "Could not save: {value0}",
+                        &[("value0", &error.to_string())],
+                    );
                     feedback.set_visible(true);
                     save.set_sensitive(true);
                 }
                 Err(_) => {
-                    feedback.set_label("Could not save: the operation stopped");
+                    l10n::bind_text(&feedback, "Could not save: the operation stopped");
                     feedback.set_visible(true);
                     save.set_sensitive(true);
                 }
@@ -10859,13 +11986,15 @@ fn open_sync_settings(server_id: &str, page: &ServerPage) {
         return;
     };
     #[allow(deprecated)]
-    let dialog = adw::MessageDialog::new(Some(&parent), Some("Sync settings"), Some("Only values marked nonsecret can be the same on every machine. Secret values and approvals always stay on this machine."));
+    let dialog = adw::MessageDialog::new(Some(&parent), Some(&crate::i18n::tr("Sync settings")), Some(&crate::i18n::tr("Only values marked nonsecret can be the same on every machine. Secret values and approvals always stay on this machine.")));
+    l10n::bind_dialog_heading(&dialog, "Sync settings");
+    l10n::bind_dialog_body(&dialog, "Only values marked nonsecret can be the same on every machine. Secret values and approvals always stay on this machine.");
     let fields = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    let local = gtk::CheckButton::with_label("Keep on this machine only");
+    let local = l10n::check_button("Keep on this machine only");
     local.set_active(crate::personal_sync::keep_local(server));
     local.set_sensitive(crate::personal_sync::is_personal(&reg));
     fields.append(&local);
-    fields.append(&gtk::Label::builder().label("Stops future sync for this server on this machine. Copies already on your other machines stay there.").wrap(true).xalign(0.0).build());
+    fields.append(&{ let widget = gtk::Label::builder().label(crate::i18n::tr("Stops future sync for this server on this machine. Copies already on your other machines stay there.")).wrap(true).xalign(0.0).build(); l10n::bind_label(&widget, "Stops future sync for this server on this machine. Copies already on your other machines stay there."); widget });
     let mut portable = Vec::new();
     for (kind, key, label, secret, unknown) in server
         .env
@@ -10882,14 +12011,19 @@ fn open_sync_settings(server_id: &str, page: &ServerPage) {
         if secret || unknown.contains_key("source") {
             continue;
         }
-        let check = gtk::CheckButton::with_label(&format!("{label}: same on every machine"));
+        let check = gtk::CheckButton::with_label(&crate::i18n::trf(
+            "{value0}: same on every machine",
+            &[("value0", &label.to_string())],
+        ));
         check.set_active(unknown.get("portable") == Some(&serde_json::json!(true)));
         fields.append(&check);
         portable.push((kind.to_string(), key.clone(), check));
     }
     dialog.set_extra_child(Some(&fields));
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("save", "Save");
+    dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
+    l10n::bind_dialog_response(&dialog, "cancel", "Cancel");
+    dialog.add_response("save", &crate::i18n::tr("Save"));
+    l10n::bind_dialog_response(&dialog, "save", "Save");
     dialog.set_default_response(Some("save"));
     dialog.set_close_response("cancel");
     let id = server_id.to_string();
@@ -10922,7 +12056,9 @@ fn open_sync_settings(server_id: &str, page: &ServerPage) {
                     state::RegistrySnapshot::from_registry(reg),
                 )),
                 Ok(Err(e)) => page.restore_after_error(&e),
-                Err(_) => page.restore_after_error("Could not save sync settings"),
+                Err(_) => {
+                    page.restore_after_error(&crate::i18n::tr("Could not save sync settings"))
+                }
             }
         });
     });
@@ -10963,7 +12099,7 @@ fn save_launch_entries(
     Ok(registry)
 }
 
-fn editor_field(label: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
+fn editor_field_data(label: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Vertical, 6);
     row.append(
         &gtk::Label::builder()
@@ -10976,18 +12112,33 @@ fn editor_field(label: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
     row
 }
 
+fn editor_field(label: &'static str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    row.append(&{
+        let widget = gtk::Label::builder()
+            .label(label)
+            .halign(gtk::Align::Start)
+            .css_classes(["toolport-field-label"])
+            .build();
+        l10n::bind_label(&widget, label);
+        widget
+    });
+    row.append(child);
+    row
+}
+
 /// What the editor reports after filling the form from a pasted snippet.
 fn snippet_fill_feedback(name: &str, server_count: usize, env_count: usize) -> String {
     let mut message = if server_count > 1 {
-        format!("Found {server_count} servers; filled \"{name}\". Add the rest separately.")
+        crate::i18n::trf(
+            "Found {value0} servers; filled \"{value1}\". Add the rest separately.",
+            &[("value0", &format!("{}", server_count)), ("value1", name)],
+        )
     } else {
-        format!("Parsed \"{name}\" from the snippet.")
+        crate::i18n::trf("Parsed \"{value0}\" from the snippet.", &[("value0", name)])
     };
     if env_count > 0 {
-        message.push_str(&format!(
-            " {env_count} credential {} will be stored in the system keychain when you add the server.",
-            if env_count == 1 { "value" } else { "values" }
-        ));
+        message.push_str(&crate::i18n::trf(if env_count == 1 { crate::i18n::msg(" {value0} credential value will be stored in the system keychain when you add the server.") } else { crate::i18n::msg(" {value0} credential values will be stored in the system keychain when you add the server.") }, &[("value0", &format!("{}", env_count))]));
     }
     message
 }
@@ -11006,16 +12157,19 @@ fn server_saved_feedback(
         if editing { "Updated" } else { "Added" }
     );
     if !declared_without_value.is_empty() {
-        message.push_str(&format!(
-            ". Add a value for {} in Credentials",
-            declared_without_value.join(", ")
+        message.push_str(&crate::i18n::trf(
+            ". Add a value for {value0} in Credentials",
+            &[("value0", &declared_without_value.join(", ").to_string())],
         ));
     }
     if !failed_env.is_empty() {
-        message.push_str(&format!(
-            ". Could not store {}; use Credentials to add {}",
-            failed_env.join(", "),
-            if failed_env.len() == 1 { "it" } else { "them" }
+        message.push_str(&crate::i18n::trf(
+            if failed_env.len() == 1 {
+                crate::i18n::msg(". Could not store {value0}; use Credentials to add it")
+            } else {
+                crate::i18n::msg(". Could not store {value0}; use Credentials to add them")
+            },
+            &[("value0", &failed_env.join(", ").to_string())],
         ));
     }
     message
@@ -11058,7 +12212,7 @@ fn collect_server_fields(
     }
 }
 
-fn editor_intro(icon: &str, title: &str, subtitle: &str) -> gtk::Box {
+fn editor_intro(icon: &str, title: &'static str, subtitle: &'static str) -> gtk::Box {
     let intro = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     intro.add_css_class("toolport-editor-intro");
     let icon = gtk::Image::from_icon_name(icon);
@@ -11066,46 +12220,54 @@ fn editor_intro(icon: &str, title: &str, subtitle: &str) -> gtk::Box {
     intro.append(&icon);
     let copy = gtk::Box::new(gtk::Orientation::Vertical, 3);
     copy.set_hexpand(true);
-    copy.append(
-        &gtk::Label::builder()
+    copy.append(&{
+        let widget = gtk::Label::builder()
             .label(title)
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["title-2"])
-            .build(),
-    );
-    copy.append(
-        &gtk::Label::builder()
+            .build();
+        l10n::bind_label(&widget, title);
+        widget
+    });
+    copy.append(&{
+        let widget = gtk::Label::builder()
             .label(subtitle)
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["toolport-muted"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, subtitle);
+        widget
+    });
     intro.append(&copy);
     intro
 }
 
-fn section_heading(title: &str, subtitle: &str) -> gtk::Box {
+fn section_heading(title: &'static str, subtitle: &'static str) -> gtk::Box {
     let heading = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    heading.append(
-        &gtk::Label::builder()
+    heading.append(&{
+        let widget = gtk::Label::builder()
             .label(title)
             .halign(gtk::Align::Start)
             .css_classes(["toolport-section-label"])
-            .build(),
-    );
-    heading.append(
-        &gtk::Label::builder()
+            .build();
+        l10n::bind_label(&widget, title);
+        widget
+    });
+    heading.append(&{
+        let widget = gtk::Label::builder()
             .label(subtitle)
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["toolport-muted", "caption"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, subtitle);
+        widget
+    });
     heading
 }
 
@@ -11126,17 +12288,14 @@ type PlainEnvRows = std::rc::Rc<std::cell::RefCell<Vec<PlainEnvRow>>>;
 fn plain_env_section(values: &[state::PlainEnvView], personal: bool) -> (gtk::Box, PlainEnvRows) {
     let section = gtk::Box::new(gtk::Orientation::Vertical, 8);
     section.add_css_class("toolport-form-section");
-    section.append(&section_heading(
-        "Environment",
-        "Plain settings the command reads, such as a region or a feature flag. Keys and tokens belong in Credentials.",
-    ));
+    section.append(&section_heading(crate::i18n::msg("Environment"), crate::i18n::msg("Plain settings the command reads, such as a region or a feature flag. Keys and tokens belong in Credentials.")));
     let list = gtk::Box::new(gtk::Orientation::Vertical, 8);
     section.append(&list);
     let rows: PlainEnvRows = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     for saved in values {
         add_plain_env_row(&list, &rows, Some(saved.clone()), personal);
     }
-    let add = gtk::Button::with_label("Add value");
+    let add = l10n::button("Add value");
     add.add_css_class("toolport-secondary-action");
     add.set_halign(gtk::Align::Start);
     let list_for_add = list.clone();
@@ -11163,15 +12322,19 @@ fn add_plain_env_row(
         .width_chars(16)
         .css_classes(["toolport-input", "monospace"])
         .build();
-    let value = gtk::Entry::builder()
-        .text(saved.as_ref().map(|s| s.value.as_str()).unwrap_or(""))
-        .placeholder_text("Value")
-        .hexpand(true)
-        .css_classes(["toolport-input"])
-        .build();
+    let value = {
+        let widget = gtk::Entry::builder()
+            .text(saved.as_ref().map(|s| s.value.as_str()).unwrap_or(""))
+            .placeholder_text(crate::i18n::tr("Value"))
+            .hexpand(true)
+            .css_classes(["toolport-input"])
+            .build();
+        l10n::bind_placeholder(&widget, "Value");
+        widget
+    };
     let remove = gtk::Button::builder()
         .icon_name("user-trash-symbolic")
-        .tooltip_text("Remove this value")
+        .tooltip_text(crate::i18n::tr("Remove this value"))
         .valign(gtk::Align::Center)
         .css_classes(["flat", "toolport-destructive-icon"])
         .build();
@@ -11181,7 +12344,7 @@ fn add_plain_env_row(
     row.append(&line);
     let touched = std::rc::Rc::new(std::cell::Cell::new(false));
     let local = personal.then(|| {
-        let check = gtk::CheckButton::with_label("This machine only");
+        let check = l10n::check_button("This machine only");
         row.append(&check);
         let setting = std::rc::Rc::new(std::cell::Cell::new(false));
         let refresh = {
@@ -11210,10 +12373,10 @@ fn add_plain_env_row(
                 check.set_active(active);
                 setting.set(false);
                 check.set_sensitive(!risky);
-                check.set_tooltip_text(Some(if risky {
-                    "This variable changes how programs run, so it always stays on this machine."
+                check.set_tooltip_text(Some(&if risky {
+                    crate::i18n::tr("This variable changes how programs run, so it always stays on this machine.")
                 } else {
-                    "Keep this value off your other machines."
+                    crate::i18n::tr("Keep this value off your other machines.")
                 }));
             }
         };
@@ -11276,7 +12439,7 @@ fn update_editor_transport(
     url.set_visible(!stdio);
 }
 
-fn remove_server_copy(server_id: &str) -> String {
+fn remove_server_copy(server_id: &str) -> &'static str {
     let syncs = crate::registry::load().is_ok_and(|r| {
         crate::personal_sync::is_personal(&r)
             && r.servers
@@ -11285,11 +12448,12 @@ fn remove_server_copy(server_id: &str) -> String {
                 .is_some_and(|s| !crate::personal_sync::keep_local(s))
     });
     if syncs {
-        "This removes the server from every profile and your other machines. This cannot be undone."
+        crate::i18n::msg("This removes the server from every profile and your other machines. This cannot be undone.")
     } else {
-        "This removes the server from every profile on this machine. This cannot be undone."
+        crate::i18n::msg(
+            "This removes the server from every profile on this machine. This cannot be undone.",
+        )
     }
-    .into()
 }
 fn confirm_remove_server(server_id: &str, server_name: &str, page: ServerPage) {
     let Some(parent) = page.app.active_window() else {
@@ -11298,11 +12462,18 @@ fn confirm_remove_server(server_id: &str, server_name: &str, page: ServerPage) {
     #[allow(deprecated)]
     let dialog = adw::MessageDialog::new(
         Some(&parent),
-        Some(&format!("Remove {server_name}?")),
-        Some(&remove_server_copy(server_id)),
+        Some(&crate::i18n::trf(
+            "Remove {value0}?",
+            &[("value0", server_name)],
+        )),
+        Some(&crate::i18n::lookup(remove_server_copy(server_id))),
     );
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("remove", "Remove");
+    l10n::bind_formatted_dialog_heading(&dialog, "Remove {value0}?", &[("value0", server_name)]);
+    l10n::bind_dialog_body(&dialog, remove_server_copy(server_id));
+    dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
+    l10n::bind_dialog_response(&dialog, "cancel", "Cancel");
+    dialog.add_response("remove", &crate::i18n::tr("Remove"));
+    l10n::bind_dialog_response(&dialog, "remove", "Remove");
     dialog.set_close_response("cancel");
     dialog.set_default_response(Some("cancel"));
     dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
@@ -11326,13 +12497,23 @@ fn confirm_remove_server(server_id: &str, server_name: &str, page: ServerPage) {
                     page.render(state::RegistryState::Ready(
                         state::RegistrySnapshot::from_registry(registry),
                     ));
-                    page.show_confirmation(&format!("Removed {server_name}"));
+                    page.show_confirmation(&crate::i18n::trf(
+                        "Removed {value0}",
+                        &[("value0", &server_name.to_string())],
+                    ));
                 }
                 Ok(Err(error)) => {
-                    page.restore_after_error(&format!("Could not remove {server_name}: {error}"));
+                    page.restore_after_error(&crate::i18n::trf(
+                        "Could not remove {value0}: {value1}",
+                        &[
+                            ("value0", &server_name.to_string()),
+                            ("value1", &error.to_string()),
+                        ],
+                    ));
                 }
-                Err(_) => page.restore_after_error(&format!(
-                    "Could not remove {server_name}: the operation stopped"
+                Err(_) => page.restore_after_error(&crate::i18n::trf(
+                    "Could not remove {value0}: the operation stopped",
+                    &[("value0", &server_name.to_string())],
                 )),
             }
         });
@@ -11341,7 +12522,7 @@ fn confirm_remove_server(server_id: &str, server_name: &str, page: ServerPage) {
     dialog.present();
 }
 
-fn state_card(icon_name: &str, title: &str, body: &str, error: bool) -> gtk::Box {
+fn state_card(icon_name: &str, title: &'static str, body: &'static str, error: bool) -> gtk::Box {
     let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
     card.add_css_class("toolport-state-card");
     if error {
@@ -11351,23 +12532,43 @@ fn state_card(icon_name: &str, title: &str, body: &str, error: bool) -> gtk::Box
     icon.set_pixel_size(32);
     icon.add_css_class("toolport-state-icon");
     card.append(&icon);
-    card.append(
-        &gtk::Label::builder()
+    card.append(&{
+        let widget = gtk::Label::builder()
             .label(title)
             .wrap(true)
             .justify(gtk::Justification::Center)
             .css_classes(["heading"])
-            .build(),
-    );
-    card.append(
-        &gtk::Label::builder()
+            .build();
+        l10n::bind_label(&widget, title);
+        widget
+    });
+    card.append(&{
+        let widget = gtk::Label::builder()
             .label(body)
             .wrap(true)
             .justify(gtk::Justification::Center)
             .max_width_chars(52)
             .css_classes(["toolport-muted"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, body);
+        widget
+    });
+    card
+}
+
+fn state_card_formatted(
+    icon: &str,
+    title: &'static str,
+    source: &'static str,
+    values: &[(&str, &str)],
+    error: bool,
+) -> gtk::Box {
+    let card = state_card(icon, title, "", error);
+    let body = card
+        .last_child()
+        .and_downcast::<gtk::Label>()
+        .expect("state card body label");
+    l10n::bind_formatted_label(&body, source, values);
     card
 }
 
@@ -14029,7 +15230,7 @@ fn secret_reference_controls_dynamic(
     feedback: &gtk::Label,
 ) -> (gtk::DropDown, gtk::Box) {
     let (choice, container, reference) = secret_reference_fields(server_id, existing, feedback);
-    let save = gtk::Button::with_label("Save reference");
+    let save = l10n::button("Save reference");
     container.append(&save);
     let id = server_id.to_string();
     let page = page.clone();
@@ -14057,7 +15258,7 @@ fn secret_reference_controls_dynamic(
                 &editor,
                 &feedback,
                 &button,
-                "Reference saved",
+                &crate::i18n::tr("Reference saved"),
             );
         });
     });
@@ -14069,7 +15270,11 @@ fn secret_reference_fields(
     existing: Option<&str>,
     feedback: &gtk::Label,
 ) -> (gtk::DropDown, gtk::Box, gtk::Entry) {
-    let choice = gtk::DropDown::from_strings(&["Paste a key", "From a password manager"]);
+    let choice = gtk::DropDown::from_strings(&[
+        &crate::i18n::tr("Paste a key"),
+        &crate::i18n::tr("From a password manager"),
+    ]);
+    l10n::bind_dropdown_choices(&choice, &["Paste a key", "From a password manager"]);
     choice.set_selected(u32::from(existing.is_some()));
     let container = gtk::Box::new(gtk::Orientation::Vertical, 8);
     container.set_visible(existing.is_some());
@@ -14099,17 +15304,17 @@ fn secret_reference_fields(
     container.append(&provider);
     container.append(&reference);
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let test = gtk::Button::with_label("Test");
+    let test = l10n::button("Test");
     actions.append(&test);
     container.append(&actions);
     // A caption, not a tooltip: tooltips near the dialog edge were cut off.
     container.append(
-        &gtk::Label::builder()
-            .label("Test runs in this app's environment, which can differ from the gateway's. Only the reference syncs, never the key.")
+        &{ let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Test runs in this app's environment, which can differ from the gateway's. Only the reference syncs, never the key."))
             .wrap(true)
             .xalign(0.0)
             .css_classes(["toolport-muted", "caption"])
-            .build(),
+            .build(); l10n::bind_label(&widget, "Test runs in this app's environment, which can differ from the gateway's. Only the reference syncs, never the key."); widget },
     );
     let box_for_choice = container.clone();
     choice
@@ -14140,9 +15345,9 @@ fn secret_reference_fields(
             provider_field.set_sensitive(true);
             feedback.set_visible(true);
             feedback.set_label(&match result {
-                Ok(Ok(())) => "Success in the desktop app environment. The MCP client gateway may use different environment variables or PATH.".into(),
+                Ok(Ok(())) => crate::i18n::tr("Success in the desktop app environment. The MCP client gateway may use different environment variables or PATH."),
                 Ok(Err(e)) => e.to_string(),
-                Err(_) => "Reference test stopped".into(),
+                Err(_) => crate::i18n::tr("Reference test stopped"),
             });
         });
     });

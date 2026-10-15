@@ -2437,20 +2437,24 @@ pub fn quarantine_notification(newcomers: &[&Value]) -> (String, String) {
     let mut newcomers: Vec<&&Value> = newcomers.iter().collect();
     newcomers.sort_by_key(|r| std::cmp::Reverse(r.get("ts").and_then(|v| v.as_u64()).unwrap_or(0)));
     let title = if newcomers.len() == 1 {
-        "Toolport: tool quarantined".to_string()
+        crate::i18n::tr("Toolport: tool quarantined")
     } else {
-        format!("Toolport: {} tools quarantined", newcomers.len())
+        crate::i18n::trf(
+            "Toolport: {count} tools quarantined",
+            &[("count", &newcomers.len().to_string())],
+        )
     };
     let body = newcomers
         .iter()
         .take(3)
         .map(|r| {
             let tool = r.get("tool").and_then(|v| v.as_str()).unwrap_or("?");
+            let fallback = crate::i18n::tr("high-risk change");
             let detail = r
                 .get("detail")
                 .and_then(|v| v.as_str())
                 .or_else(|| r.get("reason").and_then(|v| v.as_str()))
-                .unwrap_or("high-risk change");
+                .unwrap_or(&fallback);
             format!("{tool}: {detail}")
         })
         .collect::<Vec<_>>()

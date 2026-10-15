@@ -25,29 +25,36 @@ or discarding unsaved input. Unsupported system languages fall back to English.
 Use `useI18n().t("English source message", { name })` in components and
 `translate(...)` in helpers. Keep module-level labels in English and translate
 them when rendering. Add messages to every language under `src/locales/` in the
-relevant `common`, `shell`, `connections`, or `workflows` group. English keys and
+relevant `common`, `shell`, `connections`, `workflows`, or `native` group. English keys and
 values must match. Use complete sentences with named `{placeholders}`; do not
 translate identifiers, commands, URLs, or text supplied by users or MCP servers.
 For embedded links or emphasis use `Trans` with React elements as values, never
 HTML strings. Include `t` in memo/callback dependencies that generate UI text.
 
-`npm run check:locales` checks key parity, duplicate keys, placeholders, and
-literal source messages. `npm run smoke:localization` runs the browser fixture
-through every language, persistence, input preservation, OS fallback, storage
-failure, dictionary load recovery, share previews, keyboard credential saving,
-and hidden pairing dialogs. It also checks that language changes do not repeat
-backend reads. Both are included in `verify:frontend`.
+`npm run check:locales` checks key parity, duplicate keys across every group,
+placeholders, literal messages, marked dynamic labels and native calls.
+`npm run smoke:localization` runs the browser fixture through every language,
+persistence, draft preservation, cold first paint, OS fallback, blocked storage,
+dictionary recovery, formatting fallback and failed preference writes. It also
+captures the main, Settings, Activity, review and personal sync screens.
+Both are included in `verify:frontend`.
 Translations ship with the application; the running app never contacts a
 translation service. Language catalogs are loaded on demand with English as
-the fallback if a dictionary cannot be loaded. Native tray menus, the separate
-GTK interface, and raw backend/MCP diagnostics currently retain their original
-wording.
+the fallback if a dictionary cannot be loaded. The GTK interface, tray menus and native notifications use the same embedded
+JSON catalogs and machine-local language setting. Raw backend and MCP diagnostics
+retain their original wording.
 
 Each English message belongs to exactly one group. Never duplicate keys across
 groups. Mark deferred labels with `msg("English source message")`. Translate UI labels at rendering
 time, keeping keyboard keys, comparison values, lookup identifiers, and React
 keys unchanged. Notification-only callbacks should use `translate` so changing
 language does not restart data-loading effects.
+
+Native code uses `crate::i18n::tr("Source")` or `trf("Source {name}", ... )`.
+Mark deferred native source labels with `msg("Source")`. GTK source bindings under
+`linux_native::i18n` retain explicit source keys and owned interpolation values,
+so language changes update text without replacing open forms. Never translate
+commands, identifiers, paths, or other user data as catalog keys.
 
 Set `TOOLPORT_VERIFY_DIR` to store verification logs/screenshots outside the
 checkout, and `TOOLPORT_BUILD_DIR` to use an external frontend build directory

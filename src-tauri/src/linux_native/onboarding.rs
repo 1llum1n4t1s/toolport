@@ -1,3 +1,4 @@
+use super::i18n as l10n;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -62,7 +63,7 @@ fn should_offer(registry: &crate::registry::Registry, clients: &ClientSnapshot) 
 fn marker_path() -> Result<PathBuf, String> {
     crate::registry::conduit_dir()
         .map(|dir| dir.join(MARKER))
-        .ok_or_else(|| "could not resolve the Toolport data directory".to_string())
+        .ok_or_else(|| crate::i18n::tr("could not resolve the Toolport data directory").to_string())
 }
 
 fn onboarding_complete() -> Result<bool, String> {
@@ -73,7 +74,10 @@ fn onboarding_complete_at(path: &Path) -> Result<bool, String> {
     match std::fs::metadata(path) {
         Ok(metadata) => Ok(metadata.is_file()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(format!("could not inspect the setup marker: {error}")),
+        Err(error) => Err(crate::i18n::trf(
+            "could not inspect the setup marker: {value0}",
+            &[("value0", &format!("{}", error))],
+        )),
     }
 }
 
@@ -81,40 +85,51 @@ pub(super) fn mark_complete() -> Result<(), String> {
     if onboarding_complete()? {
         return Ok(());
     }
-    crate::registry::atomic_write(&marker_path()?, "complete\n")
-        .map_err(|error| format!("could not save setup completion: {error}"))
+    crate::registry::atomic_write(&marker_path()?, "complete\n").map_err(|error| {
+        crate::i18n::trf(
+            "could not save setup completion: {value0}",
+            &[("value0", &error.to_string())],
+        )
+    })
 }
 
 fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
     if let Some(window) = app
         .windows()
         .into_iter()
-        .find(|window| window.title().as_deref() == Some("Toolport setup"))
+        .find(|window| window.widget_name() == "toolport-onboarding")
     {
         window.present();
         return;
     }
 
-    let window = adw::ApplicationWindow::builder()
-        .application(app)
-        .title("Toolport setup")
-        .default_width(660)
-        .default_height(600)
-        .modal(true)
-        .transient_for(parent)
-        .resizable(true)
-        .build();
+    let window = {
+        let widget = adw::ApplicationWindow::builder()
+            .application(app)
+            .title(crate::i18n::tr("Toolport setup"))
+            .default_width(660)
+            .default_height(600)
+            .modal(true)
+            .transient_for(parent)
+            .resizable(true)
+            .build();
+        l10n::bind_window_title(&widget, "Toolport setup");
+        widget
+    };
+    window.set_widget_name("toolport-onboarding");
     window.add_css_class("toolport-native");
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
     header.add_css_class("toolport-header");
-    header.set_title_widget(Some(
-        &gtk::Label::builder()
-            .label("Set up Toolport")
+    header.set_title_widget(Some(&{
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Set up Toolport"))
             .css_classes(["title"])
-            .build(),
-    ));
+            .build();
+        l10n::bind_label(&widget, "Set up Toolport");
+        widget
+    }));
     root.append(&header);
 
     let stack = gtk::Stack::builder()
@@ -124,125 +139,137 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
         .build();
 
     let welcome = wizard_page(
-        "Welcome to Toolport",
-        "Set up servers once, then share them with every supported AI client on this machine.",
+        crate::i18n::msg("Welcome to Toolport"),
+        crate::i18n::msg(
+            "Set up servers once, then share them with every supported AI client on this machine.",
+        ),
     );
     let benefits = gtk::Box::new(gtk::Orientation::Vertical, 8);
     benefits.add_css_class("toolport-settings-group");
     for (title, detail, icon) in [
         (
-            "One gateway for every tool",
-            "Each client shares the servers and profiles you manage here.",
+            crate::i18n::msg("One gateway for every tool"),
+            crate::i18n::msg("Each client shares the servers and profiles you manage here."),
             "network-server-symbolic",
         ),
         (
-            "Smaller tool catalogs",
-            "Lazy discovery keeps agents focused without hiding pinned prerequisites.",
+            crate::i18n::msg("Smaller tool catalogs"),
+            crate::i18n::msg(
+                "Lazy discovery keeps agents focused without hiding pinned prerequisites.",
+            ),
             "edit-find-symbolic",
         ),
         (
-            "Local safety controls",
-            "Approvals, integrity checks, and activity stay on this machine.",
+            crate::i18n::msg("Local safety controls"),
+            crate::i18n::msg("Approvals, integrity checks, and activity stay on this machine."),
             "security-high-symbolic",
         ),
     ] {
         benefits.append(&info_row(icon, title, detail));
     }
     welcome.append(&benefits);
-    let detected = gtk::Label::builder()
-        .label("Checking for supported AI clients…")
-        .halign(gtk::Align::Fill)
-        .xalign(0.0)
-        .wrap(true)
-        .css_classes(["toolport-muted"])
-        .build();
+    let detected = {
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Checking for supported AI clients…"))
+            .halign(gtk::Align::Fill)
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["toolport-muted"])
+            .build();
+        l10n::bind_label(&widget, "Checking for supported AI clients…");
+        widget
+    };
     welcome.append(&detected);
     let welcome_feedback = feedback_label("");
     welcome_feedback.set_visible(false);
     welcome.append(&welcome_feedback);
     let welcome_actions = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    let choose_mcp = gtk::Button::with_label("Set up MCP servers");
+    let choose_mcp = l10n::button("Set up MCP servers");
     choose_mcp.add_css_class("suggested-action");
     welcome_actions.append(&choose_mcp);
-    let choose_team = gtk::Button::with_label("Sign in to sync");
+    let choose_team = l10n::button("Sign in to sync");
     choose_team.add_css_class("toolport-secondary-action");
     welcome_actions.append(&choose_team);
     welcome.append(&welcome_actions);
-    let skip = gtk::Button::with_label("Skip setup");
+    let skip = l10n::button("Skip setup");
     skip.add_css_class("flat");
     skip.set_halign(gtk::Align::End);
     welcome.append(&skip);
     stack.add_named(&scroll_page(welcome), Some("welcome"));
 
     let add = wizard_page(
-        "Add your first servers",
-        "Review and connect a client to import your existing servers, or continue to the full catalog.",
+        crate::i18n::msg("Add your first servers"),
+        crate::i18n::msg("Review and connect a client to import your existing servers, or continue to the full catalog."),
     );
-    let add_feedback = feedback_label("Review a client or browse the catalog when you are ready.");
+    let add_feedback = feedback_label(&crate::i18n::tr(
+        "Review a client or browse the catalog when you are ready.",
+    ));
     add.append(&add_feedback);
-    let import = gtk::Button::with_label("Review and connect clients");
+    let import = l10n::button("Review and connect clients");
     import.add_css_class("toolport-secondary-action");
     add.append(&import);
     let add_nav = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let back_add = gtk::Button::with_label("Back");
+    let back_add = l10n::button("Back");
     back_add.add_css_class("flat");
     add_nav.append(&back_add);
-    let catalog = gtk::Button::with_label("Browse full catalog");
+    let catalog = l10n::button("Browse full catalog");
     catalog.add_css_class("toolport-secondary-action");
     catalog.set_hexpand(true);
     catalog.set_halign(gtk::Align::End);
     add_nav.append(&catalog);
-    let continue_add = gtk::Button::with_label("Connect a client");
+    let continue_add = l10n::button("Connect a client");
     continue_add.add_css_class("suggested-action");
     add_nav.append(&continue_add);
     add.append(&add_nav);
     stack.add_named(&scroll_page(add), Some("add"));
 
     let connect = wizard_page(
-        "Connect a client",
-        "Point an installed AI client at Toolport. Existing client settings and unrelated MCP servers are preserved.",
+        crate::i18n::msg("Connect a client"),
+        crate::i18n::msg("Point an installed AI client at Toolport. Existing client settings and unrelated MCP servers are preserved."),
     );
-    let connect_feedback = feedback_label("Scanning supported clients…");
+    let connect_feedback = feedback_label(&crate::i18n::tr("Scanning supported clients…"));
     connect.append(&connect_feedback);
     let connect_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
     connect_list.add_css_class("toolport-settings-group");
     connect.append(&connect_list);
     let connect_nav = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let back_connect = gtk::Button::with_label("Back");
+    let back_connect = l10n::button("Back");
     back_connect.add_css_class("flat");
     connect_nav.append(&back_connect);
-    let rescan = gtk::Button::with_label("Scan again");
+    let rescan = l10n::button("Scan again");
     rescan.add_css_class("toolport-secondary-action");
     rescan.set_hexpand(true);
     rescan.set_halign(gtk::Align::End);
     connect_nav.append(&rescan);
-    let continue_connect = gtk::Button::with_label("Review setup");
+    let continue_connect = l10n::button("Review setup");
     continue_connect.add_css_class("suggested-action");
     connect_nav.append(&continue_connect);
     connect.append(&connect_nav);
     stack.add_named(&scroll_page(connect), Some("connect"));
 
     let done = wizard_page(
-        "Review your setup",
-        "Toolport can verify enabled servers before you start using the connected clients.",
+        crate::i18n::msg("Review your setup"),
+        crate::i18n::msg(
+            "Toolport can verify enabled servers before you start using the connected clients.",
+        ),
     );
-    let summary = feedback_label("Reading the current setup…");
+    let summary = feedback_label(&crate::i18n::tr("Reading the current setup…"));
     done.append(&summary);
-    let health = feedback_label("Health check has not run yet.");
+    let health = feedback_label(&crate::i18n::tr("Health check has not run yet."));
     done.append(&health);
-    let check_health = gtk::Button::with_label("Check enabled servers");
+    let check_health = l10n::button("Check enabled servers");
     check_health.add_css_class("toolport-secondary-action");
     check_health.set_halign(gtk::Align::Start);
     done.append(&check_health);
     let call_verifier = CallVerifier::new();
     done.append(&call_verifier.root);
     let done_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let destination = gtk::Button::with_label("Open server tools");
+    let destination = l10n::button("Open server tools");
     destination.add_css_class("toolport-secondary-action");
     destination.set_hexpand(true);
     destination.set_halign(gtk::Align::End);
     done_actions.append(&destination);
-    let finish = gtk::Button::with_label("Finish setup");
+    let finish = l10n::button("Finish setup");
     finish.add_css_class("suggested-action");
     done_actions.append(&finish);
     done.append(&done_actions);
@@ -305,7 +332,7 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
     let health_for_done = check_health.clone();
     let verifier_for_done = call_verifier.clone();
     continue_connect.connect_clicked(move |_| {
-        destination_for_done.set_label("Open server tools");
+        l10n::bind_text(&destination_for_done, "Open server tools");
         refresh_summary(&summary_for_done);
         stack_for_done.set_visible_child_name("done");
         health_for_done.emit_clicked();
@@ -349,20 +376,36 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
                     "No supported AI clients were detected yet. You can add servers now and connect a client later."
                         .to_string()
                 } else if names.len() > 4 {
-                    format!(
-                        "Detected {} supported clients, including {}.",
-                        names.len(),
-                        names.into_iter().take(4).collect::<Vec<_>>().join(", ")
+                    crate::i18n::trf(
+                        "Detected {value0} supported clients, including {value1}.",
+                        &[
+                            ("value0", &format!("{}", names.len())),
+                            (
+                                "value1",
+                                &names
+                                    .into_iter()
+                                    .take(4)
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                                    .to_string(),
+                            ),
+                        ],
                     )
                 } else {
-                    format!("Detected: {}", names.join(", "))
+                    crate::i18n::trf(
+                        "Detected: {value0}",
+                        &[("value0", &names.join(", ").to_string())],
+                    )
                 };
                 detected_for_load.set_label(&message);
             }
-            Ok(Err(error)) => {
-                detected_for_load.set_label(&format!("Client detection is unavailable: {error}"))
-            }
-            Err(_) => detected_for_load.set_label("Client detection stopped unexpectedly."),
+            Ok(Err(error)) => l10n::bind_formatted_label(
+                &detected_for_load,
+                "Client detection is unavailable: {value0}",
+                &[("value0", &error.to_string())],
+            ),
+            Err(_) => detected_for_load
+                .set_label(&crate::i18n::tr("Client detection stopped unexpectedly.")),
         }
     });
     window.present();
@@ -372,7 +415,7 @@ fn load_clients(list: &gtk::Box, feedback: &gtk::Label) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
-    feedback.set_label("Scanning supported clients…");
+    l10n::bind_text(feedback, "Scanning supported clients…");
     feedback.remove_css_class("error");
     let list = list.clone();
     let feedback = feedback.clone();
@@ -397,16 +440,19 @@ fn render_clients(list: &gtk::Box, feedback: &gtk::Label, snapshot: ClientSnapsh
         .collect::<Vec<_>>();
     if clients.is_empty() {
         feedback.set_label(
-            "No supported clients are installed yet. You can finish setup and connect one later from Clients.",
+            &crate::i18n::tr("No supported clients are installed yet. You can finish setup and connect one later from Clients."),
         );
         return;
     }
     show_success(
         feedback,
-        &format!(
-            "Found {} supported client{}.",
-            clients.len(),
-            if clients.len() == 1 { "" } else { "s" }
+        &crate::i18n::trf(
+            if clients.len() == 1 {
+                crate::i18n::msg("Found {value0} supported client.")
+            } else {
+                crate::i18n::msg("Found {value0} supported clients.")
+            },
+            &[("value0", &format!("{}", clients.len()))],
         ),
     );
     for client in clients {
@@ -437,12 +483,12 @@ fn render_clients(list: &gtk::Box, feedback: &gtk::Label, snapshot: ClientSnapsh
         );
         row.append(&copy);
         if connected {
-            let status = gtk::Label::new(Some("Connected"));
+            let status = l10n::label("Connected");
             status.add_css_class("toolport-badge");
             status.add_css_class("success");
             row.append(&status);
         } else if client.gateway_state != ClientGatewayState::Customized {
-            let connect = gtk::Button::with_label("Connect");
+            let connect = l10n::button("Connect");
             connect.add_css_class("toolport-secondary-action");
             let client_id = client.id;
             let list = list.clone();
@@ -469,7 +515,7 @@ fn render_clients(list: &gtk::Box, feedback: &gtk::Label, snapshot: ClientSnapsh
 }
 
 fn refresh_summary(label: &gtk::Label) {
-    label.set_label("Reading the current setup…");
+    l10n::bind_text(label, "Reading the current setup…");
     let label = label.clone();
     gtk::glib::spawn_future_local(async move {
         let result = gtk::gio::spawn_blocking(|| {
@@ -488,14 +534,30 @@ fn refresh_summary(label: &gtk::Label) {
         })
         .await;
         match result {
-            Ok(Ok((servers, clients))) => show_success(
-                &label,
-                &format!(
-                    "Toolport manages {servers} server{} for {clients} connected client{}.",
-                    if servers == 1 { "" } else { "s" },
-                    if clients == 1 { "" } else { "s" }
-                ),
-            ),
+            Ok(Ok((servers, clients))) => {
+                show_success(
+                    &label,
+                    &crate::i18n::trf(
+                        if servers == 1 {
+                            if clients == 1 {
+                                crate::i18n::msg("Toolport manages {value0} server for {value2} connected client.")
+                            } else {
+                                crate::i18n::msg("Toolport manages {value0} server for {value2} connected clients.")
+                            }
+                        } else {
+                            if clients == 1 {
+                                crate::i18n::msg("Toolport manages {value0} servers for {value2} connected client.")
+                            } else {
+                                crate::i18n::msg("Toolport manages {value0} servers for {value2} connected clients.")
+                            }
+                        },
+                        &[
+                            ("value0", &format!("{}", servers)),
+                            ("value2", &format!("{}", clients)),
+                        ],
+                    ),
+                )
+            }
             Ok(Err(error)) => show_error(&label, &error),
             Err(_) => show_error(&label, "the setup summary task stopped unexpectedly"),
         }
@@ -525,42 +587,57 @@ impl CallVerifier {
             .css_classes(["heading"])
             .build();
         root.append(&title);
-        root.append(
-            &gtk::Label::builder()
-                .label("In that client, ask your agent to run this read-only prompt:")
+        root.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr(
+                    "In that client, ask your agent to run this read-only prompt:",
+                ))
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["toolport-muted"])
-                .build(),
-        );
+                .build();
+            l10n::bind_label(
+                &widget,
+                "In that client, ask your agent to run this read-only prompt:",
+            );
+            widget
+        });
 
         let prompt_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         prompt_row.add_css_class("toolport-setting-row");
-        let prompt = gtk::Label::builder()
-            .label("List the tools you can use through Toolport.")
-            .halign(gtk::Align::Fill)
-            .xalign(0.0)
-            .selectable(true)
-            .wrap(true)
-            .hexpand(true)
-            .css_classes(["monospace"])
-            .build();
+        let prompt = {
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr(
+                    "List the tools you can use through Toolport.",
+                ))
+                .halign(gtk::Align::Fill)
+                .xalign(0.0)
+                .selectable(true)
+                .wrap(true)
+                .hexpand(true)
+                .css_classes(["monospace"])
+                .build();
+            l10n::bind_label(&widget, "List the tools you can use through Toolport.");
+            widget
+        };
         prompt_row.append(&prompt);
-        let copy = gtk::Button::with_label("Copy prompt");
+        let copy = l10n::button("Copy prompt");
         copy.add_css_class("toolport-secondary-action");
         copy.connect_clicked(move |button| {
-            button
-                .clipboard()
-                .set_text("List the tools you can use through Toolport.");
-            button.set_label("Copied");
+            button.clipboard().set_text(&crate::i18n::tr(
+                "List the tools you can use through Toolport.",
+            ));
+            l10n::bind_text(button, "Copied");
         });
         prompt_row.append(&copy);
         root.append(&prompt_row);
 
-        let status = feedback_label("Reading the activity log so older calls cannot count.");
+        let status = feedback_label(&crate::i18n::tr(
+            "Reading the activity log so older calls cannot count.",
+        ));
         root.append(&status);
-        let retry = gtk::Button::with_label("Retry verification");
+        let retry = l10n::button("Retry verification");
         retry.add_css_class("flat");
         retry.set_halign(gtk::Align::Start);
         retry.set_visible(false);
@@ -589,8 +666,10 @@ impl CallVerifier {
         self.retry.set_visible(false);
         self.status.remove_css_class("error");
         self.status.remove_css_class("success");
-        self.status
-            .set_label("Reading the activity log so older calls cannot count.");
+        l10n::bind_text(
+            &self.status,
+            "Reading the activity log so older calls cannot count.",
+        );
 
         let verifier = self.clone();
         gtk::glib::spawn_future_local(async move {
@@ -603,8 +682,12 @@ impl CallVerifier {
                 let Some(client) = connected else {
                     return Ok::<_, String>(None);
                 };
-                let recent = crate::audit::read_activity(1)
-                    .map_err(|error| format!("could not read the activity log: {error}"))?;
+                let recent = crate::audit::read_activity(1).map_err(|error| {
+                    crate::i18n::trf(
+                        "could not read the activity log: {value0}",
+                        &[("value0", &format!("{}", error))],
+                    )
+                })?;
                 let since = recent
                     .first()
                     .and_then(|entry| entry.get("ts"))
@@ -620,12 +703,12 @@ impl CallVerifier {
             match result {
                 Ok(Ok(Some((client, since)))) => {
                     verifier.root.set_visible(true);
-                    verifier
-                        .title
-                        .set_label(&format!("Prove it works in {client}"));
-                    verifier.status.set_label(&format!(
-                        "Waiting for a new Toolport call. If {client} was already open, restart it first."
-                    ));
+                    l10n::bind_formatted_label(
+                        &verifier.title,
+                        "Prove it works in {value0}",
+                        &[("value0", &client.to_string())],
+                    );
+                    l10n::bind_formatted_label(&verifier.status, "Waiting for a new Toolport call. If {value0} was already open, restart it first.", &[("value0", &client.to_string())]);
                     verifier.poll(since, Instant::now() + Duration::from_secs(75), generation);
                 }
                 Ok(Ok(None)) => verifier.root.set_visible(false),
@@ -646,7 +729,7 @@ impl CallVerifier {
             if Instant::now() >= deadline {
                 verifier.status.add_css_class("error");
                 verifier.status.set_label(
-                    "No call arrived yet. Restart the client, confirm it uses a profile with enabled servers, or test a tool in the server’s Tools tab.",
+                    &crate::i18n::tr("No call arrived yet. Restart the client, confirm it uses a profile with enabled servers, or test a tool in the server’s Tools tab."),
                 );
                 verifier.retry.set_visible(true);
                 return gtk::glib::ControlFlow::Break;
@@ -660,7 +743,12 @@ impl CallVerifier {
                 let result = gtk::gio::spawn_blocking(move || {
                     crate::audit::read_activity(25)
                         .map(|entries| audit_proof_after(&entries, since))
-                        .map_err(|error| format!("could not read the activity log: {error}"))
+                        .map_err(|error| {
+                            crate::i18n::trf(
+                                "could not read the activity log: {value0}",
+                                &[("value0", &format!("{}", error))],
+                            )
+                        })
                 })
                 .await;
                 in_flight_for_read.set(false);
@@ -670,10 +758,14 @@ impl CallVerifier {
                 if let Ok(Ok(Some(proof))) = result {
                     verifier_for_read.status.remove_css_class("error");
                     verifier_for_read.status.add_css_class("success");
-                    verifier_for_read.status.set_label(&format!(
-                        "It works. A new call reached {}: {}.",
-                        proof.server, proof.tool
-                    ));
+                    l10n::bind_formatted_label(
+                        &verifier_for_read.status,
+                        "It works. A new call reached {value0}: {value1}.",
+                        &[
+                            ("value0", &proof.server.to_string()),
+                            ("value1", &proof.tool.to_string()),
+                        ],
+                    );
                     verifier_for_read.retry.set_visible(false);
                     verifier_for_read.cancel_timer();
                 }
@@ -685,11 +777,14 @@ impl CallVerifier {
 
     fn show_snapshot_error(&self, error: &str) {
         self.root.set_visible(true);
-        self.title.set_label("Prove Toolport is receiving calls");
+        self.title
+            .set_label(&crate::i18n::tr("Prove Toolport is receiving calls"));
         self.status.add_css_class("error");
-        self.status.set_label(&format!(
-            "Verification did not start because {error}. Older calls will never count as proof."
-        ));
+        l10n::bind_formatted_label(
+            &self.status,
+            "Verification did not start because {value0}. Older calls will never count as proof.",
+            &[("value0", error)],
+        );
         self.retry.set_visible(true);
     }
 
@@ -729,7 +824,7 @@ fn audit_proof_after(entries: &[serde_json::Value], since: u64) -> Option<AuditP
 
 fn run_health_check(button: &gtk::Button, label: &gtk::Label) {
     button.set_sensitive(false);
-    label.set_label("Checking enabled servers…");
+    l10n::bind_text(label, "Checking enabled servers…");
     label.remove_css_class("error");
     let button = button.clone();
     let label = label.clone();
@@ -747,7 +842,7 @@ fn run_health_check(button: &gtk::Button, label: &gtk::Label) {
         button.set_sensitive(true);
         match result {
             Ok(Ok((results, _))) if results.is_empty() => {
-                label.set_label("No enabled servers need checking yet.");
+                l10n::bind_text(&label, "No enabled servers need checking yet.");
             }
             Ok(Ok((results, names))) => {
                 let failed = results
@@ -758,11 +853,24 @@ fn run_health_check(button: &gtk::Button, label: &gtk::Label) {
                 if failed == 0 {
                     show_success(
                         &label,
-                        &format!(
-                            "{} server{} responded. {auth} still need{} authentication.",
-                            results.len() - auth,
-                            if results.len() - auth == 1 { "" } else { "s" },
-                            if auth == 1 { "s" } else { "" }
+                        &crate::i18n::trf(
+                            if results.len() - auth == 1 {
+                                if auth == 1 {
+                                    crate::i18n::msg("{value0} server responded. {value2} still needs authentication.")
+                                } else {
+                                    crate::i18n::msg("{value0} server responded. {value2} still need authentication.")
+                                }
+                            } else {
+                                if auth == 1 {
+                                    crate::i18n::msg("{value0} servers responded. {value2} still needs authentication.")
+                                } else {
+                                    crate::i18n::msg("{value0} servers responded. {value2} still need authentication.")
+                                }
+                            },
+                            &[
+                                ("value0", &format!("{}", results.len() - auth)),
+                                ("value2", &format!("{}", auth)),
+                            ],
                         ),
                     );
                 } else {
@@ -789,9 +897,16 @@ fn run_health_check(button: &gtk::Button, label: &gtk::Label) {
                         .join("  ");
                     show_error(
                         &label,
-                        &format!(
-                            "{failed} server{} could not start. {details}",
-                            if failed == 1 { "" } else { "s" },
+                        &crate::i18n::trf(
+                            if failed == 1 {
+                                crate::i18n::msg("{value0} server could not start. {value2}")
+                            } else {
+                                crate::i18n::msg("{value0} servers could not start. {value2}")
+                            },
+                            &[
+                                ("value0", &format!("{}", failed)),
+                                ("value2", &details.to_string()),
+                            ],
                         ),
                     );
                 }
@@ -825,31 +940,35 @@ fn finish_window(window: &adw::ApplicationWindow, feedback: &gtk::Label) {
     let _ = complete_and_close(window, feedback);
 }
 
-fn wizard_page(title: &str, subtitle: &str) -> gtk::Box {
+fn wizard_page(title: &'static str, subtitle: &'static str) -> gtk::Box {
     let page = gtk::Box::new(gtk::Orientation::Vertical, 14);
     page.add_css_class("toolport-page");
     page.set_margin_top(24);
     page.set_margin_bottom(24);
     page.set_margin_start(24);
     page.set_margin_end(24);
-    page.append(
-        &gtk::Label::builder()
+    page.append(&{
+        let widget = gtk::Label::builder()
             .label(title)
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["title-2"])
-            .build(),
-    );
-    page.append(
-        &gtk::Label::builder()
+            .build();
+        l10n::bind_label(&widget, title);
+        widget
+    });
+    page.append(&{
+        let widget = gtk::Label::builder()
             .label(subtitle)
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["toolport-muted"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, subtitle);
+        widget
+    });
     page
 }
 
@@ -861,27 +980,31 @@ fn scroll_page(page: gtk::Box) -> gtk::ScrolledWindow {
         .build()
 }
 
-fn info_row(icon: &str, title: &str, detail: &str) -> gtk::Box {
+fn info_row(icon: &str, title: &'static str, detail: &'static str) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     row.add_css_class("toolport-setting-row");
     row.append(&gtk::Image::from_icon_name(icon));
     let copy = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    copy.append(
-        &gtk::Label::builder()
+    copy.append(&{
+        let widget = gtk::Label::builder()
             .label(title)
             .halign(gtk::Align::Start)
             .css_classes(["heading"])
-            .build(),
-    );
-    copy.append(
-        &gtk::Label::builder()
+            .build();
+        l10n::bind_label(&widget, title);
+        widget
+    });
+    copy.append(&{
+        let widget = gtk::Label::builder()
             .label(detail)
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["toolport-muted"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, detail);
+        widget
+    });
     row.append(&copy);
     row
 }
@@ -904,7 +1027,7 @@ fn show_success(label: &gtk::Label, text: &str) {
 }
 
 fn show_error(label: &gtk::Label, text: &str) {
-    label.set_label(&format!("Could not continue: {text}"));
+    l10n::bind_formatted_label(label, "Could not continue: {value0}", &[("value0", text)]);
     label.set_visible(true);
     label.remove_css_class("success");
     label.add_css_class("error");
