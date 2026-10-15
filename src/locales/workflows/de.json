@@ -8,7 +8,7 @@
   " Saving… ": " Speichern… ",
   ". Approve only if the browser shows this same check, the intended setup and your account. This request expires in five minutes. You can hide this message; Toolport finishes connecting when you approve.": ". Genehmigen Sie nur, wenn im Browser derselbe Prüfcode, die gewünschte Einrichtung und Ihr Konto angezeigt werden. Diese Anfrage läuft nach fünf Minuten ab. Sie können diese Nachricht ausblenden; Toolport schließt die Verbindungseinrichtung nach Ihrer Genehmigung ab.",
   "· via {source}": "· über {source}",
-  "{count} server is waiting for review on this machine": "Der {count}-Server wartet auf dieser Maschine auf Überprüfung",
+  "{count} server is waiting for review on this machine": "{count} Server wartet auf dieser Maschine auf Überprüfung",
   "{count} servers are waiting for review on this machine": "{count}-Server warten auf dieser Maschine auf Überprüfung",
   "{count} team change is waiting for your review. Held servers stay off and instructions stay unchanged. Safety floors can tighten immediately.": "{count} Teamänderung wartet auf Ihre Prüfung. Zurückgehaltene Server bleiben aus und Anweisungen unverändert. Höhere Mindestsicherheitsstufen können sofort wirksam werden.",
   "{count} team changes are waiting for your review. Held servers stay off and instructions stay unchanged. Safety floors can tighten immediately.": "{count} Teamänderungen warten auf Ihre Prüfung. Zurückgehaltene Server bleiben aus und Anweisungen unverändert. Höhere Mindestsicherheitsstufen können sofort wirksam werden.",

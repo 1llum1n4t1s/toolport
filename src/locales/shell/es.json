@@ -83,7 +83,7 @@
   "Couldn't copy diagnostics": "No se pudo copiar el diagnóstico",
   "Couldn't disable launch at login: {value2}": "No se pudo deshabilitar el inicio al iniciar sesión: {value2}",
   "Couldn't enable launch at login: {value2}": "No se pudo habilitar el inicio al iniciar sesión: {value2}",
-  "Couldn't load {value1} tools: {value2}": "No se pudieron cargar {value1} herramientas: {value2}",
+  "Couldn't load {value1} tools: {value2}": "No se pudieron cargar las herramientas de {value1}: {value2}",
   "Couldn't load this language. Reload Toolport to retry.": "No se pudo cargar este idioma. Recarga Toolport para reintentar.",
   "Couldn't load tools": "No se pudieron cargar las herramientas",
   "Couldn't open data folder": "No se pudo abrir la carpeta de datos",

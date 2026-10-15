@@ -250,7 +250,7 @@
   "The registry file was missing. Restored from backup ({when}).": "登錄檔檔案遺失。從備份還原 ({when})。",
   "The rest of Toolport is still running. Try again, or reload the window if it keeps happening.": "Toolport 的其餘部分仍在執行。再試一次，或者如果這種情況持續發生，請重新載入視窗。",
   "The upgrade retained the default access set's tool restrictions and instructions.": "升級保留了預設存取集的工具限制和指令。",
-  "These apps cached the old gateway path when they started, so stopping the process only makes them launch it again — and they only launch it when they next use a tool, which is why none may be running this moment. Restart each one to pick up the current gateway. This list clears itself as you do.": "這些應用啟動時快取了舊閘道路徑，因此停止程序只會讓它們再次啟動舊閘道。它們通常在下次使用工具時才啟動閘道，所以此刻可能沒有閘道程序執行。請逐一重啟這些應用，改用當前版本的閘道。完成後，對應專案會自動從列表中消失。",
+  "These apps cached the old gateway path when they started, so stopping the process only makes them launch it again — and they only launch it when they next use a tool, which is why none may be running this moment. Restart each one to pick up the current gateway. This list clears itself as you do.": "這些應用啟動時快取了舊閘道路徑，因此停止程序只會讓它們再次啟動舊閘道。它們通常在下次使用工具時才啟動閘道，所以此刻可能沒有閘道程序執行。請逐一重啟這些應用，改用當前版本的閘道。完成後，對應項目會自動從列表中消失。",
   "They cached the old path at startup, so restarting them is the only way to pick up the current gateway. Settings keeps the list.": "這些應用在啟動時快取了舊路徑，因此只有重啟它們才能使用當前閘道。“設定”中保留了此列表。",
   "This server changed while you were reviewing it. Check it again.": "當您檢視該伺服器時，該伺服器已變更。再檢查一下。",
   "This server exposes no tools.": "該伺服器不公開任何工具。",

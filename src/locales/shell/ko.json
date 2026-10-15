@@ -3,7 +3,7 @@
   ", not the browser-only dev server.": "로 실행하고 브라우저 전용 개발 서버는 사용하지 마세요.",
   ". These protections do not raise your safety level.": ". 이러한 보호 기능은 안전 수준을 높이지 않습니다.",
   ". This cannot be undone.": ". 이 작업은 취소할 수 없습니다.",
-  ". Waiting calls appear in the approval queue.": ". 승인 대기열에 대기 중인 호출가 나타납니다.",
+  ". Waiting calls appear in the approval queue.": ". 승인 대기열에 대기 중인 호출이 나타납니다.",
   "(pid": "(pid",
   "(unnamed)": "(이름 없음)",
   "{reason}. Loaded from backup ({when}).": "{reason}. 백업({when})에서 불러왔습니다.",

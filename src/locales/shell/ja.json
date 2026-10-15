@@ -203,7 +203,7 @@
   "Remove Toolport from all clients?": "すべてのクライアントから Toolport を削除しますか?",
   "Removed \"{value1}\"": "「{value1}」を削除しました",
   "Removing…": "削除中…",
-  "Replace emails, phone numbers, card numbers and API keys in tool results with placeholders before the model sees them, then put the real values back when it calls a tool. A value only goes back to the server it came from, so a call that would send one server's data to another is refused. Real data stays on this machine and is forgotten when the conversation ends. Off by default; a value no detector recognises still passes through, so this reduces what reaches the model rather than guaranteeing it": "ツールの結果に含まれるメールアドレス、呼び出し番号、カード番号、APIキーを、モデルへ渡す前に仮名のプレースホルダーへ置き換えます。ツールを呼び出す際に元の値へ戻しますが、値を返せるのは取得元のサーバーだけです。他のサーバーへ送る呼び出しは拒否します。元のデータはこの端末に保持し、会話終了時に破棄します。初期設定はオフです。検出できない値はそのまま通るため、モデルに渡るデータを減らす機能であり、すべての機密情報を防げる保証はありません。",
+  "Replace emails, phone numbers, card numbers and API keys in tool results with placeholders before the model sees them, then put the real values back when it calls a tool. A value only goes back to the server it came from, so a call that would send one server's data to another is refused. Real data stays on this machine and is forgotten when the conversation ends. Off by default; a value no detector recognises still passes through, so this reduces what reaches the model rather than guaranteeing it": "ツールの結果に含まれるメールアドレス、電話番号、カード番号、APIキーを、モデルへ渡す前に仮名のプレースホルダーへ置き換えます。ツールを呼び出す際に元の値へ戻しますが、値を戻す先は取得元のサーバーに限ります。他のサーバーへ送る呼び出しは拒否します。元のデータはこの端末に保持し、会話終了時に破棄します。初期設定はオフです。検出できない値はそのまま通るため、モデルに渡るデータを減らす機能であり、すべての機密情報を防げる保証はありません。",
   "Results and exact leftovers will be saved to": "処理結果と残っている項目の詳細の保存先：",
   "Retry": "再試行",
   "Retry checking for old gateway": "古いゲートウェイのチェックを再試行します",
