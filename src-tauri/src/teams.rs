@@ -1413,8 +1413,13 @@ pub fn sync_sign_in_url(origin: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 pub fn pairing_confirm_copy(origin: &str, connected: bool) -> String {
-    format!("Sync service: {origin}\n\nOnly continue if you trust this address. Your browser will show your account and setup before approval.{}", if connected { " Signing in replaces this machine's current sync connection." } else { "" })
+    if connected {
+        crate::i18n::trf("Sync service: {origin}\n\nOnly continue if you trust this address. Your browser will show your account and setup before approval. Signing in replaces this machine's current sync connection.", &[("origin", origin)])
+    } else {
+        crate::i18n::trf("Sync service: {origin}\n\nOnly continue if you trust this address. Your browser will show your account and setup before approval.", &[("origin", origin)])
+    }
 }
+
 pub fn retry_delay_seconds(failures: u32) -> u64 {
     if failures == 0 {
         3

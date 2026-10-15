@@ -369,7 +369,9 @@ pub fn review_lines(server: &ServerEntry) -> Vec<String> {
         .unwrap_or_default()
         .into_iter()
         .map(|(field, r)| {
-            let provider = parse(&r).map_or("Password manager", |p| p.name);
+            let provider = parse(&r)
+                .map(|provider| provider.name.to_owned())
+                .unwrap_or_else(|_| crate::i18n::tr("Password manager"));
             let destination = if let Some(command) = &server.command {
                 format!("{} {}", command, server.args.join(" "))
                     .trim_end()
@@ -378,9 +380,17 @@ pub fn review_lines(server: &ServerEntry) -> Vec<String> {
                 server
                     .url
                     .clone()
-                    .unwrap_or_else(|| "unknown destination".into())
+                    .unwrap_or_else(|| crate::i18n::tr("unknown destination"))
             };
-            format!("{provider} entry {r:?} will be sent to {destination} ({field})")
+            crate::i18n::trf(
+                "{provider} entry {reference} will be sent to {destination} ({field})",
+                &[
+                    ("provider", &provider),
+                    ("reference", &format!("{r:?}")),
+                    ("destination", &destination),
+                    ("field", &field),
+                ],
+            )
         })
         .collect()
 }
@@ -392,14 +402,27 @@ pub fn destination_lines(server: &ServerEntry) -> Vec<String> {
         .unwrap_or_default()
         .into_iter()
         .map(|(field, r)| {
-            let provider = parse(&r).map_or("Password manager", |p| p.name);
+            let provider = parse(&r)
+                .map(|provider| provider.name.to_owned())
+                .unwrap_or_else(|_| crate::i18n::tr("Password manager"));
             let (first, second) = if field.starts_with("header:") {
                 (server.url.as_deref(), server.command.as_deref())
             } else {
                 (server.command.as_deref(), server.url.as_deref())
             };
-            let destination = first.or(second).unwrap_or("unknown destination");
-            format!("{provider} entry {r:?} will be sent to {destination} ({field})")
+            let destination = first
+                .or(second)
+                .map(str::to_owned)
+                .unwrap_or_else(|| crate::i18n::tr("unknown destination"));
+            crate::i18n::trf(
+                "{provider} entry {reference} will be sent to {destination} ({field})",
+                &[
+                    ("provider", &provider),
+                    ("reference", &format!("{r:?}")),
+                    ("destination", &destination),
+                    ("field", &field),
+                ],
+            )
         })
         .collect()
 }

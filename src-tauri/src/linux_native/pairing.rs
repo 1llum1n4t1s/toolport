@@ -2,6 +2,9 @@
 //! owns its dialogs, so the approval prompt closes as soon as pairing ends and a
 //! repeated link brings the same attempt forward instead of starting another.
 
+use super::i18n as l10n;
+use crate::i18n::{msg, tr, trf};
+
 use adw::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -81,17 +84,24 @@ pub(super) fn request(hooks: PairingHooks, origin: &str, pair: PairFn) {
         pending: RefCell::new(None),
     });
     CURRENT.with(|current| *current.borrow_mut() = Some(Rc::clone(&attempt)));
+    let connected = crate::registry::load().is_ok_and(|registry| registry.team.is_some());
     let dialog = adw::MessageDialog::new(
         Some(&parent),
-        Some("Sign in to sync?"),
-        Some(&crate::teams::pairing_confirm_copy(
-            origin,
-            crate::registry::load().is_ok_and(|r| r.team.is_some()),
-        )),
+        Some(&tr("Sign in to sync?")),
+        Some(&crate::teams::pairing_confirm_copy(origin, connected)),
     );
+    l10n::bind_dialog_heading(&dialog, msg("Sign in to sync?"));
+    if connected {
+        l10n::bind_formatted_dialog_body(&dialog, msg("Sync service: {origin}\n\nOnly continue if you trust this address. Your browser will show your account and setup before approval. Signing in replaces this machine's current sync connection."), &[("origin", origin)]);
+    } else {
+        l10n::bind_formatted_dialog_body(&dialog, msg("Sync service: {origin}\n\nOnly continue if you trust this address. Your browser will show your account and setup before approval."), &[("origin", origin)]);
+    }
+
     dialog.set_size_request(520, -1);
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("connect", "Continue to browser");
+    dialog.add_response("cancel", &tr("Cancel"));
+    l10n::bind_dialog_response(&dialog, "cancel", msg("Cancel"));
+    dialog.add_response("connect", &tr("Continue to browser"));
+    l10n::bind_dialog_response(&dialog, "connect", msg("Continue to browser"));
     dialog.set_close_response("cancel");
     let pair = RefCell::new(Some(pair));
     let owner = Rc::clone(&attempt);
@@ -123,7 +133,7 @@ impl Attempt {
             self.show_pending();
         } else {
             (self.hooks.feedback)(
-                "Sign-in is starting. Wait for the browser approval page.",
+                &tr("Sign-in is starting. Wait for the browser approval page."),
                 false,
             );
         }
@@ -148,7 +158,10 @@ impl Attempt {
                 match event {
                     Event::Challenge { url, check } => {
                         (attempt.hooks.feedback)(
-                            &format!("Browser approval pending. Match device check {check}."),
+                            &trf(
+                                "Browser approval pending. Match device check {check}.",
+                                &[("check", &(check).to_string())],
+                            ),
                             false,
                         );
                         *attempt.check.borrow_mut() = Some(check);
@@ -177,10 +190,14 @@ impl Attempt {
         let Some(parent) = (self.hooks.parent)() else {
             return;
         };
-        let dialog = adw::MessageDialog::new(Some(&parent), Some("Approve this device in your browser"), Some(&format!("Device check: {check}\n\nApprove only if the browser shows this same check, the intended setup and your account. This request expires in five minutes. You can hide this message; Toolport finishes connecting when you approve.")));
+        let dialog = adw::MessageDialog::new(Some(&parent), Some(&tr("Approve this device in your browser")), Some(&trf("Device check: {check}\n\nApprove only if the browser shows this same check, the intended setup and your account. This request expires in five minutes. You can hide this message; Toolport finishes connecting when you approve.", &[("check", &(check).to_string())])));
+        l10n::bind_formatted_dialog_body(&dialog, msg("Device check: {check}\n\nApprove only if the browser shows this same check, the intended setup and your account. This request expires in five minutes. You can hide this message; Toolport finishes connecting when you approve."), &[("check", &(check).to_string())]);
+        l10n::bind_dialog_heading(&dialog, msg("Approve this device in your browser"));
         dialog.set_size_request(460, -1);
-        dialog.add_response("cancel", "Cancel request");
-        dialog.add_response("hide", "Hide");
+        dialog.add_response("cancel", &tr("Cancel request"));
+        l10n::bind_dialog_response(&dialog, "cancel", msg("Cancel request"));
+        dialog.add_response("hide", &tr("Hide"));
+        l10n::bind_dialog_response(&dialog, "hide", msg("Hide"));
         dialog.set_response_appearance("cancel", adw::ResponseAppearance::Destructive);
         dialog.set_close_response("hide");
         dialog.set_default_response(Some("hide"));
@@ -190,7 +207,7 @@ impl Attempt {
                 owner.pending.borrow_mut().take();
                 if response == "cancel" {
                     owner.cancel.store(true, Ordering::SeqCst);
-                    (owner.hooks.feedback)("Cancelling the connection request…", false);
+                    (owner.hooks.feedback)(&tr("Cancelling the connection request…"), false);
                 }
             }
             dialog.close();
@@ -211,13 +228,13 @@ impl Attempt {
         }
         match result {
             Ok(()) => {
-                (self.hooks.feedback)("Toolport is signed in to sync.", false);
+                (self.hooks.feedback)(&tr("Toolport is signed in to sync."), false);
                 (self.hooks.connected)();
             }
             // Only the cancellation itself; a real failure after a late cancel
             // still says what went wrong.
             Err(error) if error == crate::teams::PAIRING_CANCELLED => {
-                (self.hooks.feedback)(crate::teams::PAIRING_CANCELLED, false);
+                (self.hooks.feedback)(&tr("Connection request cancelled."), false);
             }
             Err(error) => {
                 (self.hooks.feedback)(&error, true);
@@ -226,11 +243,14 @@ impl Attempt {
                 };
                 let dialog = adw::MessageDialog::new(
                     Some(&parent),
-                    Some("Connection not completed"),
-                    Some(&format!("{error}\n\nNothing was connected. Start again from the sync website when you are ready.")),
+                    Some(&tr("Connection not completed")),
+                    Some(&trf("{error}\n\nNothing was connected. Start again from the sync website when you are ready.", &[("error", &(error).to_string())])),
                 );
+                l10n::bind_formatted_dialog_body(&dialog, msg("{error}\n\nNothing was connected. Start again from the sync website when you are ready."), &[("error", &(error).to_string())]);
+                l10n::bind_dialog_heading(&dialog, msg("Connection not completed"));
                 dialog.set_size_request(460, -1);
-                dialog.add_response("close", "Close");
+                dialog.add_response("close", &tr("Close"));
+                l10n::bind_dialog_response(&dialog, "close", msg("Close"));
                 dialog.set_close_response("close");
                 dialog.connect_response(None, |dialog, _| dialog.close());
                 dialog.present();

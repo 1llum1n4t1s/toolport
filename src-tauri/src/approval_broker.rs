@@ -910,30 +910,38 @@ pub fn approval_requester(view: &PendingView) -> String {
         .as_deref()
         .filter(|label| *label != client)
     {
-        Some(label) => format!(
-            "{client} (reports: {})",
-            crate::approval::shorten_client_label(label, 40)
+        Some(label) => crate::i18n::trf(
+            "{client} (reports: {label})",
+            &[
+                ("client", &client),
+                ("label", &crate::approval::shorten_client_label(label, 40)),
+            ],
         ),
         None => client,
     }
 }
 
-pub fn approval_notification(view: &PendingView) -> (&'static str, String) {
+/// Localized OS copy. Keep command, tool and reported client values verbatim.
+pub fn localized_approval_notification(view: &PendingView) -> (String, String) {
     let who = approval_requester(view);
     if let Some(elicitation) = &view.url_elicitation {
         (
-            "Toolport: browser action required",
-            format!(
-                "{} needs a browser action. Requested by {who}. Review it in Toolport.",
-                elicitation.origin
+            crate::i18n::tr("Toolport: browser action required"),
+            crate::i18n::trf(
+                "{origin} needs a browser action. Requested by {requester}. Review it in Toolport.",
+                &[("origin", &elicitation.origin), ("requester", &who)],
             ),
         )
     } else {
         (
-            "Toolport: approval required",
-            format!(
-                "{} / {} needs approval. Requested by {who}.",
-                view.server, view.tool
+            crate::i18n::tr("Toolport: approval required"),
+            crate::i18n::trf(
+                "{server} / {tool} needs approval. Requested by {requester}.",
+                &[
+                    ("server", &view.server),
+                    ("tool", &view.tool),
+                    ("requester", &who),
+                ],
             ),
         )
     }
@@ -945,7 +953,7 @@ pub fn approval_notification(view: &PendingView) -> (&'static str, String) {
 /// force-focus so we don't yank the user out of what they're doing.
 #[cfg(feature = "desktop")]
 fn notify_pending(app: &AppHandle, view: &PendingView, resolved: std::sync::mpsc::Receiver<()>) {
-    let (title, body) = approval_notification(view);
+    let (title, body) = localized_approval_notification(view);
     show_pending_os_toast(
         cfg!(target_os = "linux"),
         resolved,
@@ -953,7 +961,7 @@ fn notify_pending(app: &AppHandle, view: &PendingView, resolved: std::sync::mpsc
             #[cfg(target_os = "linux")]
             std::thread::spawn({
                 let body = body.clone();
-                move || notify_until_resolved(title, &body, resolved)
+                move || notify_until_resolved(&title, &body, resolved)
             });
             #[cfg(not(target_os = "linux"))]
             let _ = resolved;
@@ -1067,7 +1075,14 @@ fn notify_until_resolved_at_destination(
         if shown.get() != 0 {
             // Urgent cards can survive CloseNotification. Replace the tracked id
             // with a short, non-actionable expiry before closing, as GTK does.
-            let id = notify(shown.get(), "Approval handled", "", 0, 1000).unwrap_or(shown.get());
+            let id = notify(
+                shown.get(),
+                &crate::i18n::tr("Approval handled"),
+                "",
+                0,
+                1000,
+            )
+            .unwrap_or(shown.get());
             let _ = bus.call_sync(
                 Some(destination),
                 PATH,
@@ -1104,7 +1119,7 @@ mod tests {
             pii_release: None,
             deadline_ms: 0,
         };
-        assert_eq!(approval_notification(&view).1, "github / delete_issue needs approval. Requested by Claude Code (reports: Claude Code 2.1.0).");
+        assert_eq!(localized_approval_notification(&view).1, "github / delete_issue needs approval. Requested by Claude Code (reports: Claude Code 2.1.0).");
         let mut view = view;
         view.client_label = Some("Claude Code".into());
         assert_eq!(approval_requester(&view), "Claude Code");

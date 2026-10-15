@@ -100,7 +100,7 @@ impl ApprovalNotification {
             "toolport",
             title,
             glib::markup_escape_text(body).as_str(),
-            vec!["default".to_string(), "Review".to_string()],
+            vec!["default".to_string(), crate::i18n::tr("Review")],
             hints,
             -1i32,
         )
@@ -164,7 +164,7 @@ fn withdrawal_parameters(id: u32) -> glib::Variant {
         "Toolport",
         id,
         "toolport",
-        "Approval handled",
+        crate::i18n::tr("Approval handled").as_str(),
         "",
         Vec::<String>::new(),
         hints,

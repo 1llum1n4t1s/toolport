@@ -233,3 +233,41 @@ test("LLM token terms cannot become crypto coins or auth tokens", () => {
   assert.deepEqual(checkMessageIntegrity("Saved auth token", "已保存认证令牌"), []);
   assert.deepEqual(checkMessageIntegrity("Tokens saved", "節省的 Token"), []);
 });
+
+test("GTK binding helpers validate their original source keys", () => {
+  for (const source of [
+    'l10n::label("Missing")',
+    'l10n::bind_label(&label, "Missing")',
+    'l10n::bind_dialog_response(&dialog, "ok", "Missing")',
+    'msg("Missing")',
+  ])
+    assert.match(
+      checkRustSource(source, "native.rs", messages).join("\n"),
+      /missing source message/,
+    );
+  const collected = new Set();
+  checkRustSource('l10n::button("Hello")', "native.rs", messages, { collect: collected });
+  assert.deepEqual([...collected], ["Hello"]);
+});
+
+test("Rust conditional messages validate every result branch", () => {
+  const valid =
+    'trf(if count == 1 { msg("Hello") } else { crate::i18n::msg("Hello") }, values)';
+  assert.deepEqual(checkRustSource(valid, "native.rs", messages), []);
+  assert.match(
+    checkRustSource(
+      'trf(if one { msg("Hello") } else { msg("Missing") }, values)',
+      "native.rs",
+      messages,
+    ).join("\n"),
+    /missing source message/,
+  );
+  assert.match(
+    checkRustSource(
+      'tr(if one { msg("Hello") } else { backend_text })',
+      "native.rs",
+      messages,
+    ).join("\n"),
+    /must be a string literal/,
+  );
+});

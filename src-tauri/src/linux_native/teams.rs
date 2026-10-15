@@ -1,7 +1,11 @@
+use super::i18n as l10n;
+use crate::i18n::{lookup, msg, tr, trf};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
+
+const SYNC_DESTINATIONS: &[&str] = &[msg("Every machine"), msg("This machine")];
 
 #[derive(Clone)]
 struct PendingJoin {
@@ -49,10 +53,16 @@ impl TeamsPage {
         let header = adw::HeaderBar::new();
         header.add_css_class("toolport-header");
         header.set_show_back_button(true);
-        let header_title = gtk::Label::builder()
-            .label("Sync")
-            .css_classes(["title"])
-            .build();
+        let header_title = source_label(
+            msg("Sync"),
+            source_label(
+                msg("Sync"),
+                gtk::Label::builder()
+                    .label(&tr("Sync"))
+                    .css_classes(["title"])
+                    .build(),
+            ),
+        );
         header.set_title_widget(Some(&header_title));
         root.append(&header);
         let scroller = gtk::ScrolledWindow::builder()
@@ -66,20 +76,32 @@ impl TeamsPage {
         page.set_margin_start(20);
         page.set_margin_end(20);
         let title_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        let heading = gtk::Label::builder()
-            .label("Sync")
-            .halign(gtk::Align::Start)
-            .css_classes(["title-2"])
-            .build();
+        let heading = source_label(
+            msg("Sync"),
+            source_label(
+                msg("Sync"),
+                gtk::Label::builder()
+                    .label(&tr("Sync"))
+                    .halign(gtk::Align::Start)
+                    .css_classes(["title-2"])
+                    .build(),
+            ),
+        );
         title_row.append(&heading);
-        let plan_badge = gtk::Label::builder()
-            .label("Free: 1 person, 1 device")
-            .valign(gtk::Align::Center)
-            .css_classes(["toolport-badge", "success", "caption"])
-            .build();
+        let plan_badge = source_label(
+            msg("Free: 1 person, 1 device"),
+            source_label(
+                msg("Free: 1 person, 1 device"),
+                gtk::Label::builder()
+                    .label(&tr("Free: 1 person, 1 device"))
+                    .valign(gtk::Align::Center)
+                    .css_classes(["toolport-badge", "success", "caption"])
+                    .build(),
+            ),
+        );
         title_row.append(&plan_badge);
         page.append(&title_row);
-        let intro = gtk::Label::builder().label("Set up once. Your servers follow you to every machine. Secret values and approvals stay on this machine.").halign(gtk::Align::Fill).xalign(0.0).wrap(true).css_classes(["toolport-muted"]).build();
+        let intro = source_label(msg("Set up once. Your servers follow you to every machine. Secret values and approvals stay on this machine."), source_label(msg("Set up once. Your servers follow you to every machine. Secret values and approvals stay on this machine."), gtk::Label::builder().label(&tr("Set up once. Your servers follow you to every machine. Secret values and approvals stay on this machine.")).halign(gtk::Align::Fill).xalign(0.0).wrap(true).css_classes(["toolport-muted"]).build()));
         page.append(&intro);
         let feedback = gtk::Label::builder()
             .halign(gtk::Align::Fill)
@@ -126,7 +148,7 @@ impl TeamsPage {
         if self.refresh_running.replace(true) {
             return;
         }
-        self.feedback.set_label("Loading sync status…");
+        self.feedback.set_label(&tr("Loading sync status…"));
         self.server_page.reprobe_if_stale();
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
@@ -142,7 +164,7 @@ impl TeamsPage {
                 match result {
                     Ok(Ok(snapshot)) => page.render_snapshot(snapshot),
                     Ok(Err(error)) => page.show_error(&error),
-                    Err(_) => page.show_error("the team status read stopped unexpectedly"),
+                    Err(_) => page.show_error(&tr("the team status read stopped unexpectedly")),
                 }
                 break;
             }
@@ -196,11 +218,17 @@ impl TeamsPage {
             .and_then(|ms| gtk::glib::DateTime::from_unix_local(ms as i64 / 1000).ok())
             .and_then(|date| date.format("%b %d, %Y at %H:%M").ok())
             .map(|date| date.to_string())
-            .unwrap_or_else(|| "not recorded yet".into());
+            .unwrap_or_else(|| tr("not recorded yet"));
         self.set_status(
-            &format!(
-                "{}. Last successful sync: {last}.",
-                crate::team_sync_status::summary(&status)
+            &trf(
+                "{value1}. Last successful sync: {last}.",
+                &[
+                    (
+                        "value1",
+                        &(crate::team_sync_status::summary(&status)).to_string(),
+                    ),
+                    ("last", &(last).to_string()),
+                ],
             ),
             matches!(status.state.as_str(), "offline" | "error"),
         );
@@ -219,15 +247,26 @@ impl TeamsPage {
         *self.server_snapshot.borrow_mut() = Some(snapshot.servers);
         let personal = registry.team.is_none() || crate::personal_sync::is_personal(&registry);
         self.personal.set(personal);
-        self.header_title
-            .set_label(if personal { "Sync" } else { "Teams" });
-        self.heading
-            .set_label(if personal { "Sync" } else { "Teams" });
+        l10n::bind_label(
+            &self.header_title,
+            if personal { msg("Sync") } else { msg("Teams") },
+        );
+        l10n::bind_label(
+            &self.heading,
+            if personal { msg("Sync") } else { msg("Teams") },
+        );
         self.plan_badge.set_visible(false);
         // The personal page states its status itself; the intro is for joining and teams.
         self.intro
             .set_visible(!(personal && registry.team.is_some()));
-        self.intro.set_label(if personal { "Set up once. Your servers follow you to every machine. Secret values and approvals stay on this machine." } else { "One shared server set, governed by your team. Credentials stay on each machine." });
+        l10n::bind_label(
+            &self.intro,
+            if personal {
+                msg("Set up once. Your servers follow you to every machine. Secret values and approvals stay on this machine.")
+            } else {
+                msg("One shared server set, governed by your team. Credentials stay on each machine.")
+            },
+        );
         let notice = self.sync_notice.borrow_mut().take();
         let mut display = serde_json::to_value(&registry).unwrap_or_default();
         if let Some(st) = display
@@ -254,7 +293,7 @@ impl TeamsPage {
             if registry.team.is_some() {
                 self.show_sync_status(&registry);
             } else if self.pending.borrow().is_some() {
-                self.set_status("Waiting for invitation approval.", false);
+                self.set_status(&tr("Waiting for invitation approval."), false);
                 self.feedback.remove_css_class("success");
             } else {
                 self.set_status("", false);
@@ -288,7 +327,7 @@ impl TeamsPage {
         } else {
             self.feedback.remove_css_class("success");
             if self.pending.borrow().is_some() {
-                self.set_status("Waiting for invitation approval.", false);
+                self.set_status(&tr("Waiting for invitation approval."), false);
             } else {
                 self.set_status("", false);
             }
@@ -317,7 +356,7 @@ impl TeamsPage {
     }
     fn render_join(&self) {
         if self.pending.borrow().is_some() {
-            let cancel = gtk::Button::with_label("Cancel request");
+            let cancel = l10n::button("Cancel request");
             let page = self.clone();
             cancel.connect_clicked(move |_| {
                 page.cancel_join_poll();
@@ -326,7 +365,7 @@ impl TeamsPage {
             });
             self.content.append(&cancel);
         }
-        let sign_in = gtk::Button::with_label("Sign in to sync");
+        let sign_in = l10n::button("Sign in to sync");
         sign_in.add_css_class("suggested-action");
 
         self.content.append(&sign_in);
@@ -339,7 +378,7 @@ impl TeamsPage {
         );
         let group = gtk::Box::new(gtk::Orientation::Vertical, 10);
         group.add_css_class("toolport-settings-group");
-        group.append(&super::section_heading("Use a manual code", "If your browser cannot open Toolport, copy the manual code shown after approving this device."));
+        group.append(&super::section_heading(&tr("Use a manual code"), &tr("If your browser cannot open Toolport, copy the manual code shown after approving this device.")));
         let url = gtk::Entry::builder()
             .text(crate::teams::HOSTED_TEAMS_URL)
             .build();
@@ -350,16 +389,18 @@ impl TeamsPage {
             }
         });
         let code = gtk::PasswordEntry::builder()
-            .placeholder_text("Manual code")
+            .placeholder_text(&tr("Manual code"))
             .show_peek_icon(true)
             .build();
+        l10n::bind_placeholder(&code, msg("Manual code"));
         let name = gtk::Entry::builder()
-            .placeholder_text("Your name (optional)")
+            .placeholder_text(&tr("Your name (optional)"))
             .build();
-        group.append(&field("Sync service URL", &url));
-        group.append(&field("Manual code", &code));
-        group.append(&field("Your name", &name));
-        let button = gtk::Button::with_label("Sign in with code");
+        l10n::bind_placeholder(&name, msg("Your name (optional)"));
+        group.append(&field(msg("Sync service URL"), &url));
+        group.append(&field(msg("Manual code"), &code));
+        group.append(&field(msg("Your name"), &name));
+        let button = l10n::button("Sign in with code");
         let page = self.clone();
         button.connect_clicked(move |b| {
             page.connect_team(
@@ -399,41 +440,49 @@ impl TeamsPage {
         summary.add_css_class("toolport-card");
         summary.append(
             &gtk::Label::builder()
-                .label(
-                    team.team_name
-                        .clone()
-                        .unwrap_or_else(|| format!("Team {}", team.team_id)),
-                )
+                .label(team.team_name.clone().unwrap_or_else(|| {
+                    trf("Team {value1}", &[("value1", &(team.team_id).to_string())])
+                }))
                 .halign(gtk::Align::Start)
                 .css_classes(["heading"])
                 .build(),
         );
-        summary.append(
-            &gtk::Label::builder()
-                .label(format!(
-                    "{} · {} · config version {}",
-                    team.server_url, team.role, team.last_version
+        summary.append(&source_formatted_label(
+            msg("{value1} · {value2} · config version {value3}"),
+            &[
+                ("value1", &(team.server_url).to_string()),
+                ("value2", &(team.role).to_string()),
+                ("value3", &(team.last_version).to_string()),
+            ],
+            gtk::Label::builder()
+                .label(trf(
+                    "{value1} · {value2} · config version {value3}",
+                    &[
+                        ("value1", &(team.server_url).to_string()),
+                        ("value2", &(team.role).to_string()),
+                        ("value3", &(team.last_version).to_string()),
+                    ],
                 ))
                 .halign(gtk::Align::Start)
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["toolport-muted"])
                 .build(),
-        );
+        ));
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let sync = gtk::Button::with_label("Sync now");
+        let sync = l10n::button("Sync now");
         sync.add_css_class("suggested-action");
         let page_for_sync = self.clone();
         sync.connect_clicked(move |button| page_for_sync.sync(button.clone()));
         actions.append(&sync);
         if team.role == "admin" {
-            let push = gtk::Button::with_label("Share selected servers");
+            let push = l10n::button("Share selected servers");
             push.add_css_class("toolport-secondary-action");
             let page_for_push = self.clone();
             push.connect_clicked(move |button| page_for_push.select_servers(button.clone()));
             actions.append(&push);
         }
-        let account_link = gtk::Button::with_label("Link portal account");
+        let account_link = l10n::button("Link portal account");
         let page_for_link = self.clone();
         account_link.connect_clicked(move |button| {
             let page = page_for_link.clone();
@@ -448,7 +497,7 @@ impl TeamsPage {
                     Ok(Err(error)) => page.feedback.set_text(&error),
                     Err(_) => page
                         .feedback
-                        .set_text("Could not prepare account link. Please try again."),
+                        .set_text(&tr("Could not prepare account link. Please try again.")),
                 }
                 button.set_sensitive(true);
             });
@@ -456,20 +505,20 @@ impl TeamsPage {
         if team.account_linked != Some(true) {
             actions.append(&account_link);
         }
-        let leave = gtk::Button::with_label("Disconnect app");
+        let leave = l10n::button("Disconnect app");
         leave.add_css_class("destructive-action");
         let page_for_leave = self.clone();
         leave.connect_clicked(move |button| page_for_leave.confirm_leave(button.clone()));
         actions.append(&leave);
         summary.append(&actions);
         self.content.append(&summary);
-        self.content.append(&gtk::Label::builder().label("Open Clients to use your enabled team servers from an AI client. Review any remaining servers below before enabling them. Successful managed calls are reported automatically.").wrap(true).xalign(0.0).build());
+        self.content.append(&source_label(msg("Open Clients to use your enabled team servers from an AI client. Review any remaining servers below before enabling them. Successful managed calls are reported automatically."), source_label(msg("Open Clients to use your enabled team servers from an AI client. Review any remaining servers below before enabling them. Successful managed calls are reported automatically."), gtk::Label::builder().label(&tr("Open Clients to use your enabled team servers from an AI client. Review any remaining servers below before enabling them. Successful managed calls are reported automatically.")).wrap(true).xalign(0.0).build())));
 
         match crate::teams::member_review(&registry) {
             Ok(review) if !review.pending.is_empty() => {
-                let button = gtk::Button::with_label(&format!(
-                    "Review {} team changes",
-                    review.pending.len()
+                let button = gtk::Button::with_label(&trf(
+                    "Review {value1} team changes",
+                    &[("value1", &(review.pending.len()).to_string())],
                 ));
                 let page = self.clone();
                 button.connect_clicked(move |_| {
@@ -480,7 +529,7 @@ impl TeamsPage {
                         dialog.present();
                     }
                 });
-                self.content.append(&gtk::Label::builder().label("Held servers stay off and instructions stay unchanged. Safety floors can tighten immediately.").wrap(true).xalign(0.0).build());
+                self.content.append(&source_label(msg("Held servers stay off and instructions stay unchanged. Safety floors can tighten immediately."), source_label(msg("Held servers stay off and instructions stay unchanged. Safety floors can tighten immediately."), gtk::Label::builder().label(&tr("Held servers stay off and instructions stay unchanged. Safety floors can tighten immediately.")).wrap(true).xalign(0.0).build())));
                 self.content.append(&button);
             }
             Err(error) => self.feedback.set_text(&error),
@@ -494,13 +543,17 @@ impl TeamsPage {
             .cloned()
             .collect::<Vec<_>>();
         if !review.is_empty() {
-            self.content.append(
-                &gtk::Label::builder()
-                    .label("Team-managed servers · review and local setup")
-                    .halign(gtk::Align::Start)
-                    .css_classes(["heading"])
-                    .build(),
-            );
+            self.content.append(&source_label(
+                msg("Team-managed servers · review and local setup"),
+                source_label(
+                    msg("Team-managed servers · review and local setup"),
+                    gtk::Label::builder()
+                        .label(&tr("Team-managed servers · review and local setup"))
+                        .halign(gtk::Align::Start)
+                        .css_classes(["heading"])
+                        .build(),
+                ),
+            ));
             let snapshot = self.server_snapshot.borrow();
             let snapshot = snapshot
                 .as_ref()
@@ -549,10 +602,10 @@ impl TeamsPage {
         top.append(&line);
         *self.sync_line.borrow_mut() = Some(line);
         self.update_sync_line(&registry);
-        let primary = gtk::Button::with_label(if sync.sign_in_required {
-            "Sign in"
+        let primary = l10n::button(if sync.sign_in_required {
+            msg("Sign in")
         } else {
-            "Sync now"
+            msg("Sync now")
         });
         primary.add_css_class("suggested-action");
         primary.set_valign(gtk::Align::Center);
@@ -580,7 +633,7 @@ impl TeamsPage {
             attention.append(&attention_item(warning, None, None));
         }
         if sync.choose_local_servers {
-            let done = gtk::Button::with_label("Done");
+            let done = l10n::button("Done");
             let page = self.clone();
             done.connect_clicked(move |_| {
                 let page = page.clone();
@@ -590,13 +643,13 @@ impl TeamsPage {
                     {
                         Ok(Ok(_)) => page.refresh(),
                         Ok(Err(e)) => page.show_error(&e),
-                        Err(_) => page.show_error("Could not finish sync selection"),
+                        Err(_) => page.show_error(&tr("Could not finish sync selection")),
                     }
                 });
             });
             attention.append(&attention_item(
-                "Choose which servers sync",
-                Some("Servers you already had start on This machine. Switch any you want everywhere below."),
+                &tr("Choose which servers sync"),
+                Some(&tr("Servers you already had start on This machine. Switch any you want everywhere below.")),
                 Some(done),
             ));
         }
@@ -605,7 +658,7 @@ impl TeamsPage {
                 && s.needs_team_enable_review()
                 && !crate::personal_sync::keep_local(s)
         }) {
-            let open = gtk::Button::with_label("Open in Servers");
+            let open = l10n::button("Open in Servers");
             let app = self.app.clone();
             open.connect_clicked(move |_| {
                 if let Some(action) = app.lookup_action("show-servers") {
@@ -613,17 +666,20 @@ impl TeamsPage {
                 }
             });
             attention.append(&attention_item(
-                &format!(
-                    "{} arrived from another machine",
-                    crate::personal_sync::visible_text(&server.name)
+                &trf(
+                    "{value1} arrived from another machine",
+                    &[(
+                        "value1",
+                        &(crate::personal_sync::visible_text(&server.name)).to_string(),
+                    )],
                 ),
-                Some("Review it in Servers before it runs here."),
+                Some(&tr("Review it in Servers before it runs here.")),
                 Some(open),
             ));
         }
         for (id, remote) in &sync.conflicts {
             let name = conflict_name(&registry, &sync, id, remote);
-            let compare = gtk::Button::with_label("Compare");
+            let compare = l10n::button("Compare");
             let page = self.clone();
             let id = id.clone();
             let remote = remote.clone();
@@ -633,8 +689,11 @@ impl TeamsPage {
                 page.compare_conflict(&title, &id, local.as_ref(), &remote)
             });
             attention.append(&attention_item(
-                &format!("{name} changed on two machines"),
-                Some("Pick which version to keep."),
+                &trf(
+                    "{name} changed on two machines",
+                    &[("name", &(name).to_string())],
+                ),
+                Some(&tr("Pick which version to keep.")),
                 Some(compare),
             ));
         }
@@ -646,39 +705,53 @@ impl TeamsPage {
                 .map(|s| s.name.as_str())
                 .unwrap_or(id);
             attention.append(&attention_item(
-                &format!(
-                    "{} could not sync",
-                    crate::personal_sync::visible_text(name)
+                &trf(
+                    "{value1} could not sync",
+                    &[(
+                        "value1",
+                        &(crate::personal_sync::visible_text(name)).to_string(),
+                    )],
                 ),
                 Some(error),
                 None,
             ));
         }
         if attention.first_child().is_some() {
-            self.content.append(&section_label("Needs you"));
+            self.content.append(&section_label(msg("Needs you")));
             self.content.append(&attention);
         }
 
         // What syncs. Turning servers on or off belongs to Servers.
         let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let label = section_label("Servers");
+        let label = section_label(msg("Servers"));
         label.set_hexpand(true);
         label.set_margin_top(0);
         label.set_valign(gtk::Align::Center);
         heading.set_margin_top(14);
         heading.append(&label);
-        heading.append(
-            &gtk::Label::builder()
-                .label("Sync new servers")
-                .css_classes(["toolport-muted", "caption"])
-                .build(),
-        );
-        let new_servers = gtk::DropDown::from_strings(&["Every machine", "This machine"]);
+        heading.append(&source_label(
+            msg("Sync new servers"),
+            source_label(
+                msg("Sync new servers"),
+                gtk::Label::builder()
+                    .label(&tr("Sync new servers"))
+                    .css_classes(["toolport-muted", "caption"])
+                    .build(),
+            ),
+        ));
+        let new_servers = gtk::DropDown::new(None::<gtk::StringList>, gtk::Expression::NONE);
+        l10n::bind_dropdown_choices(&new_servers, SYNC_DESTINATIONS);
         new_servers.add_css_class("toolport-compact-select");
         new_servers.set_selected(u32::from(sync.new_servers_local_only));
-        new_servers.set_tooltip_text(Some("Where servers you add on this machine go"));
+        l10n::bind_tooltip(
+            &new_servers,
+            msg("Where servers you add on this machine go"),
+        );
         let page = self.clone();
         new_servers.connect_selected_notify(move |dropdown| {
+            if l10n::dropdown_rebinding(dropdown) {
+                return;
+            }
             let local = dropdown.selected() == 1;
             let page = page.clone();
             gtk::glib::spawn_future_local(async move {
@@ -689,7 +762,7 @@ impl TeamsPage {
                 {
                     Ok(Ok(_)) => page.refresh(),
                     Ok(Err(e)) => page.show_error(&e),
-                    Err(_) => page.show_error("Could not save the new server choice"),
+                    Err(_) => page.show_error(&tr("Could not save the new server choice")),
                 }
             });
         });
@@ -708,57 +781,64 @@ impl TeamsPage {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&server.id);
             let tag = if sync.conflicts.contains_key(original) {
-                Some("changed on two machines")
+                Some(msg("changed on two machines"))
             } else if !registry.server_enabled(&server.id)
                 && server.needs_team_enable_review()
                 && !crate::personal_sync::keep_local(server)
             {
-                Some("needs review")
+                Some(msg("needs review"))
             } else {
                 None
             };
             list.append(&sync_server_row(server, tag, self.clone()));
         }
         if list.first_child().is_none() {
-            list.append(
-                &gtk::Label::builder()
-                    .label("No servers yet. Servers you add here show up on your other machines.")
+            list.append(&source_label(
+                msg("No servers yet. Servers you add here show up on your other machines."),
+                gtk::Label::builder()
+                    .label(&tr(
+                        "No servers yet. Servers you add here show up on your other machines.",
+                    ))
                     .wrap(true)
                     .xalign(0.0)
                     .css_classes(["toolport-muted"])
                     .build(),
-            );
+            ));
         }
         self.content.append(&list);
         self.content.append(
-            &gtk::Label::builder()
-                .label("Keys and sign-ins never leave a machine. Switching a server to This machine stops syncing it; other machines keep their copy until you remove it there.")
+            &source_label(msg("Keys and sign-ins never leave a machine. Switching a server to This machine stops syncing it; other machines keep their copy until you remove it there."), source_label(msg("Keys and sign-ins never leave a machine. Switching a server to This machine stops syncing it; other machines keep their copy until you remove it there."), gtk::Label::builder()
+                .label(&tr("Keys and sign-ins never leave a machine. Switching a server to This machine stops syncing it; other machines keep their copy until you remove it there."))
                 .wrap(true)
                 .xalign(0.0)
                 .css_classes(["toolport-muted", "caption"])
-                .build(),
+                .build())),
         );
 
-        self.content.append(&section_label("Account"));
+        self.content.append(&section_label(msg("Account")));
         let account = gtk::Box::new(gtk::Orientation::Vertical, 0);
         account.add_css_class("toolport-sync-list");
-        let plan = crate::personal_sync::account_display_lines(&registry)
-            .into_iter()
-            .filter(|line| {
-                !line.starts_with("Last synced") && !line.starts_with("Waiting for first sync")
-            })
-            .collect::<Vec<_>>()
-            .join(" · ");
-        let manage = gtk::Button::with_label("Manage plan");
+        let mut account_lines = crate::personal_sync::account_display_lines(&registry);
+        // The shared account presenter appends a timing row only when signed in.
+        // The status row above owns that information, independently of its language.
+        if !sync.sign_in_required {
+            account_lines.pop();
+        }
+        let plan = account_lines.join(" · ");
+        let manage = l10n::button("Manage plan");
         let origin = team.server_url.clone();
         manage.connect_clicked(move |_| {
             let _ = crate::oauth::open_web_url(&origin);
         });
-        let sign_out = gtk::Button::with_label("Sign out");
+        let sign_out = l10n::button("Sign out");
         let page = self.clone();
         sign_out.connect_clicked(move |b| page.confirm_leave(b.clone()));
-        account.append(&list_row("Your account", Some(&plan), &[manage, sign_out]));
-        let create = gtk::Button::with_label("Create a team");
+        account.append(&list_row(
+            &tr("Your account"),
+            Some(&plan),
+            &[manage, sign_out],
+        ));
+        let create = l10n::button("Create a team");
         create.connect_clicked(|_| {
             let _ = crate::oauth::open_web_url(&format!(
                 "{}/?intent=create-team&from=app-sync",
@@ -766,8 +846,10 @@ impl TeamsPage {
             ));
         });
         account.append(&list_row(
-            "Teams",
-            Some("Share servers with other people. Your own servers stay yours."),
+            &tr("Teams"),
+            Some(&tr(
+                "Share servers with other people. Your own servers stay yours.",
+            )),
             &[create],
         ));
         self.content.append(&account);
@@ -787,7 +869,7 @@ impl TeamsPage {
         .unwrap_or_default();
         let message = message.trim_end_matches('.');
         line.set_label(
-            &if last.is_empty() || message.starts_with("Waiting for first sync") {
+            &if last.is_empty() || message.starts_with(&tr("Waiting for first sync")) {
                 message.to_string()
             } else {
                 format!("{message} · {last}")
@@ -813,14 +895,27 @@ impl TeamsPage {
         #[allow(deprecated)]
         let dialog = adw::MessageDialog::new(
             Some(&parent),
-            Some(&format!("{name} changed on two machines")),
-            Some("Choose which version to keep. This machine's version is saved until you choose."),
+            Some(&trf(
+                "{name} changed on two machines",
+                &[("name", &(name).to_string())],
+            )),
+            Some(&tr(
+                "Choose which version to keep. This machine's version is saved until you choose.",
+            )),
+        );
+        l10n::bind_formatted_dialog_heading(
+            &dialog,
+            msg("{name} changed on two machines"),
+            &[("name", &(name).to_string())],
         );
         dialog.set_size_request(620, -1);
         dialog.set_extra_child(Some(&conflict_content(local, remote)));
-        dialog.add_response("cancel", "Not now");
-        dialog.add_response("remote", "Use synced version");
-        dialog.add_response("mine", "Keep this machine's version");
+        dialog.add_response("cancel", &tr("Not now"));
+        l10n::bind_dialog_response(&dialog, "cancel", msg("Not now"));
+        dialog.add_response("remote", &tr("Use synced version"));
+        l10n::bind_dialog_response(&dialog, "remote", msg("Use synced version"));
+        dialog.add_response("mine", &tr("Keep this machine's version"));
+        l10n::bind_dialog_response(&dialog, "mine", msg("Keep this machine's version"));
         dialog.set_close_response("cancel");
         dialog.set_default_response(Some("cancel"));
         let page = self.clone();
@@ -841,7 +936,7 @@ impl TeamsPage {
                     match result {
                         Ok(Ok(r)) => page.absorb_sync_result(r),
                         Ok(Err(e)) => page.show_error(&e),
-                        Err(_) => page.show_error("Could not resolve sync conflict"),
+                        Err(_) => page.show_error(&tr("Could not resolve sync conflict")),
                     }
                 });
             }
@@ -851,11 +946,11 @@ impl TeamsPage {
     }
     fn connect_team(&self, url: String, code: String, name: String, button: gtk::Button) {
         if url.trim().is_empty() || code.trim().is_empty() {
-            self.show_error("Enter the sync service URL and manual code");
+            self.show_error(&tr("Enter the sync service URL and manual code"));
             return;
         }
         button.set_sensitive(false);
-        self.feedback.set_label("Signing in to sync…");
+        self.feedback.set_label(&tr("Signing in to sync…"));
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
             let url_for_join = url.clone();
@@ -882,7 +977,7 @@ impl TeamsPage {
                     page.schedule_join_poll();
                 }
                 Ok(Err(error)) => page.show_error(&error),
-                Err(_) => page.show_error("the team connection stopped unexpectedly"),
+                Err(_) => page.show_error(&tr("the team connection stopped unexpectedly")),
             }
         });
     }
@@ -917,7 +1012,7 @@ impl TeamsPage {
         if let Some(button) = &button {
             button.set_sensitive(false);
         }
-        self.feedback.set_label("Checking join approval…");
+        self.feedback.set_label(&tr("Checking join approval…"));
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
             let result = gtk::gio::spawn_blocking(move || {
@@ -939,29 +1034,32 @@ impl TeamsPage {
                     page.refresh();
                 }
                 Ok(Ok(crate::teams::JoinPoll::Pending)) => {
-                    page.feedback.set_label(
+                    page.feedback.set_label(&tr(
                         "Still waiting for invitation approval. Checking again automatically…",
-                    );
+                    ));
                     page.schedule_join_poll();
                 }
                 Ok(Ok(crate::teams::JoinPoll::Denied)) => {
                     page.cancel_join_poll();
                     *page.pending.borrow_mut() = None;
-                    page.show_error("the team administrator denied this join request");
+                    page.show_error(&tr("the team administrator denied this join request"));
                 }
                 Ok(Ok(crate::teams::JoinPoll::Unknown)) => {
                     page.cancel_join_poll();
                     *page.pending.borrow_mut() = None;
-                    page.show_error("the join request expired or is no longer available");
+                    page.show_error(&tr("the join request expired or is no longer available"));
                 }
                 Ok(Err(error)) => {
-                    page.show_error(&format!("{error}. Retrying the join request automatically"));
+                    page.show_error(&trf(
+                        "{error}. Retrying the join request automatically",
+                        &[("error", &(error).to_string())],
+                    ));
                     page.schedule_join_poll();
                 }
                 Err(_) => {
-                    page.show_error(
+                    page.show_error(&tr(
                         "the approval check stopped unexpectedly; retrying automatically",
-                    );
+                    ));
                     page.schedule_join_poll();
                 }
             }
@@ -970,7 +1068,7 @@ impl TeamsPage {
 
     fn sync(&self, button: gtk::Button) {
         button.set_sensitive(false);
-        self.feedback.set_label("Syncing configuration…");
+        self.feedback.set_label(&tr("Syncing configuration…"));
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
             let result = gtk::gio::spawn_blocking(crate::teams::sync_now).await;
@@ -978,7 +1076,7 @@ impl TeamsPage {
             match result {
                 Ok(Ok(outcome)) => page.absorb_sync_result(outcome),
                 Ok(Err(error)) => page.show_error(&error),
-                Err(_) => page.show_error("the team sync stopped unexpectedly"),
+                Err(_) => page.show_error(&tr("the team sync stopped unexpectedly")),
             }
         });
     }
@@ -991,11 +1089,10 @@ impl TeamsPage {
     fn absorb_sync_result(&self, result: crate::teams::SyncResult) {
         match result {
             crate::teams::SyncResult::Removed => {
-                let message = "You were removed from the team. Its shared servers \
-                               and this machine's team token have been cleared.";
+                let message = tr("You were removed from the team. Its shared servers and this machine's team token have been cleared.");
                 *self.sync_notice.borrow_mut() = Some((message.to_string(), true));
-                let notification = gtk::gio::Notification::new("Removed from team");
-                notification.set_body(Some(message));
+                let notification = gtk::gio::Notification::new(&tr("Removed from team"));
+                notification.set_body(Some(&message));
                 self.app
                     .send_notification(Some("toolport-team-removed"), &notification);
             }
@@ -1014,7 +1111,7 @@ impl TeamsPage {
             match gtk::gio::spawn_blocking(crate::registry::load).await {
                 Ok(Ok(registry)) => page.show_server_selection(button, registry),
                 Ok(Err(error)) => page.show_error(&error),
-                Err(_) => page.show_error("The server read stopped unexpectedly"),
+                Err(_) => page.show_error(&tr("The server read stopped unexpectedly")),
             }
         });
     }
@@ -1024,10 +1121,14 @@ impl TeamsPage {
             return;
         };
         #[allow(deprecated)]
-        let dialog = adw::MessageDialog::new(Some(&parent), Some("Share with your team"), Some("Choose one working server to begin. Other team servers and your personal originals stay in place. Each member supplies credentials locally. The preview shows how each choice relates to the team before anything is uploaded."));
+        let dialog = adw::MessageDialog::new(Some(&parent), Some(&tr("Share with your team")), Some(&tr("Choose one working server to begin. Other team servers and your personal originals stay in place. Each member supplies credentials locally. The preview shows how each choice relates to the team before anything is uploaded.")));
+        l10n::bind_dialog_heading(&dialog, msg("Share with your team"));
+        l10n::bind_dialog_body(&dialog, msg("Choose one working server to begin. Other team servers and your personal originals stay in place. Each member supplies credentials locally. The preview shows how each choice relates to the team before anything is uploaded."));
         dialog.set_size_request(480, -1);
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("select", "Preview selected");
+        dialog.add_response("cancel", &tr("Cancel"));
+        l10n::bind_dialog_response(&dialog, "cancel", msg("Cancel"));
+        dialog.add_response("select", &tr("Preview selected"));
+        l10n::bind_dialog_response(&dialog, "select", msg("Preview selected"));
         dialog.set_response_enabled("select", false);
         dialog.set_close_response("cancel");
         let list = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -1045,7 +1146,12 @@ impl TeamsPage {
             let check = gtk::CheckButton::new();
             check.set_child(Some(&share_choice_label(
                 &server.name,
-                (!keys.is_empty()).then(|| format!("Local credentials: {keys}")),
+                (!keys.is_empty()).then(|| {
+                    trf(
+                        "Local credentials: {keys}",
+                        &[("keys", &(keys).to_string())],
+                    )
+                }),
                 crate::teams::personal_share_hint(&reg, server),
             )));
             let ids = choices.clone();
@@ -1062,9 +1168,9 @@ impl TeamsPage {
             list.append(&check);
         }
         if list.first_child().is_none() {
-            list.append(&gtk::Label::new(Some(
+            list.append(&l10n::label(
                 "Add a working personal server in Servers first.",
-            )));
+            ));
         }
         dialog.set_extra_child(Some(&list));
         let page = self.clone();
@@ -1080,7 +1186,7 @@ impl TeamsPage {
     fn preview_push(&self, button: gtk::Button, selected: Vec<String>) {
         button.set_sensitive(false);
         self.feedback
-            .set_label("Comparing local and shared team servers…");
+            .set_label(&tr("Comparing local and shared team servers…"));
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
             let ids = selected.clone();
@@ -1090,7 +1196,7 @@ impl TeamsPage {
             match result {
                 Ok(Ok(preview)) => page.show_push_review(preview, selected),
                 Ok(Err(error)) => page.show_error(&error),
-                Err(_) => page.show_error("the team comparison stopped unexpectedly"),
+                Err(_) => page.show_error(&tr("the team comparison stopped unexpectedly")),
             }
         });
     }
@@ -1106,7 +1212,8 @@ impl TeamsPage {
                 let base_version = preview.base_version;
                 let fingerprint = preview.local_fingerprint.clone();
                 let selected = selected.clone();
-                page.feedback.set_label("Updating shared team servers…");
+                page.feedback
+                    .set_label(&tr("Updating shared team servers…"));
                 let page = page.clone();
                 gtk::glib::spawn_future_local(async move {
                     let result = gtk::gio::spawn_blocking(move || {
@@ -1119,13 +1226,27 @@ impl TeamsPage {
                                 if let Some(parent) = page.app.active_window() {
                                     let confirmation = adw::MessageDialog::new(
                                         Some(&parent),
-                                        Some("Sent for confirmation"),
-                                        Some(
+                                        Some(&tr("Sent for confirmation")),
+                                        Some(&tr(
                                             "Finish publishing this update in the Teams dashboard.",
-                                        ),
+                                        )),
                                     );
-                                    confirmation.add_response("close", "Close");
-                                    confirmation.add_response("open", "Open");
+                                    l10n::bind_dialog_heading(
+                                        &confirmation,
+                                        msg("Sent for confirmation"),
+                                    );
+                                    l10n::bind_dialog_heading(
+                                        &confirmation,
+                                        msg("Sent for confirmation"),
+                                    );
+                                    confirmation.add_response("close", &tr("Close"));
+                                    l10n::bind_dialog_response(
+                                        &confirmation,
+                                        "close",
+                                        msg("Close"),
+                                    );
+                                    confirmation.add_response("open", &tr("Open"));
+                                    l10n::bind_dialog_response(&confirmation, "open", msg("Open"));
                                     let url = proposal.confirm_url.clone();
                                     let page = page.clone();
                                     confirmation.connect_response(None, move |dialog, response| {
@@ -1146,7 +1267,7 @@ impl TeamsPage {
                             page.refresh();
                         }
                         Ok(Err(error)) => page.show_error(&error),
-                        Err(_) => page.show_error("the team update stopped unexpectedly"),
+                        Err(_) => page.show_error(&tr("the team update stopped unexpectedly")),
                     }
                 });
             }
@@ -1161,21 +1282,27 @@ impl TeamsPage {
         };
         let personal = self.personal.get();
         #[allow(deprecated)]
-        let dialog = adw::MessageDialog::new(
-            Some(&parent),
-            Some(if personal {
-                "Sign out of sync?"
+        let dialog = adw::MessageDialog::new(Some(&parent), None, None);
+        l10n::bind_dialog_heading(
+            &dialog,
+            if personal {
+                msg("Sign out of sync?")
             } else {
-                "Disconnect this app from the team?"
-            }),
-            Some(if personal {
-                "Synced servers are removed from this app. Your setup stays in Your account. Sign in again to restore it."
-            } else {
-                "Team servers, instructions and policy are removed from this app. Your personal servers stay saved. Your Team membership and shared setup remain. Reconnect from the Teams website."
-            }),
+                msg("Disconnect this app from the team?")
+            },
         );
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("leave", "Disconnect app");
+        l10n::bind_dialog_body(
+            &dialog,
+            if personal {
+                msg("Synced servers are removed from this app. Your setup stays in Your account. Sign in again to restore it.")
+            } else {
+                msg("Team servers, instructions and policy are removed from this app. Your personal servers stay saved. Your Team membership and shared setup remain. Reconnect from the Teams website.")
+            },
+        );
+        dialog.add_response("cancel", &tr("Cancel"));
+        l10n::bind_dialog_response(&dialog, "cancel", msg("Cancel"));
+        dialog.add_response("leave", &tr("Disconnect app"));
+        l10n::bind_dialog_response(&dialog, "leave", msg("Disconnect app"));
         dialog.set_close_response("cancel");
         dialog.set_default_response(Some("cancel"));
         dialog.set_response_appearance("leave", adw::ResponseAppearance::Destructive);
@@ -1188,7 +1315,7 @@ impl TeamsPage {
                     match gtk::gio::spawn_blocking(crate::teams::disconnect).await {
                         Ok(Ok(())) => page.refresh(),
                         Ok(Err(error)) => page.show_error(&error),
-                        Err(_) => page.show_error("the team disconnect stopped unexpectedly"),
+                        Err(_) => page.show_error(&tr("the team disconnect stopped unexpectedly")),
                     }
                 });
             }
@@ -1220,7 +1347,11 @@ impl TeamsPage {
             *last = Some((error.to_string(), now));
         }
         drop(last);
-        self.feedback.set_label(&format!("Sync error: {error}"));
+        l10n::bind_formatted_label(
+            &self.feedback,
+            msg("Sync error: {error}"),
+            &[("error", &(error).to_string())],
+        );
         self.feedback.set_visible(true);
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
@@ -1320,27 +1451,33 @@ fn sync_background_step(page: TeamsPage, runtime: Rc<SyncLoop>) {
 
 fn render_instructions_status(container: &gtk::Box, status: crate::teams::InstructionsStatusView) {
     let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    heading.append(
-        &gtk::Label::builder()
-            .label("Team instructions")
+    heading.append(&source_label(
+        msg("Team instructions"),
+        gtk::Label::builder()
+            .label(&tr("Team instructions"))
             .halign(gtk::Align::Start)
             .css_classes(["heading"])
             .build(),
-    );
-    heading.append(
-        &gtk::Label::builder()
-            .label(format!("v{}", status.version))
+    ));
+    heading.append(&source_formatted_label(
+        msg("v{value1}"),
+        &[("value1", &(status.version).to_string())],
+        gtk::Label::builder()
+            .label(trf(
+                "v{value1}",
+                &[("value1", &(status.version).to_string())],
+            ))
             .halign(gtk::Align::Start)
             .css_classes(["toolport-muted"])
             .build(),
-    );
+    ));
     container.append(&heading);
     container.append(
         &gtk::Label::builder()
-            .label(
+            .label(&tr(
                 "Org-managed agent rules, written to your AI clients alongside your own \
                  instructions, never over them. Leaving the team removes them.",
-            )
+            ))
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .wrap(true)
@@ -1366,14 +1503,15 @@ fn render_instructions_status(container: &gtk::Box, status: crate::teams::Instru
     scroller.add_css_class("toolport-text-area");
     container.append(&scroller);
     if status.clients.is_empty() {
-        container.append(
-            &gtk::Label::builder()
-                .label("No supported AI clients detected on this machine.")
+        container.append(&source_label(
+            msg("No supported AI clients detected on this machine."),
+            gtk::Label::builder()
+                .label(&tr("No supported AI clients detected on this machine."))
                 .halign(gtk::Align::Start)
                 .xalign(0.0)
                 .css_classes(["toolport-muted"])
                 .build(),
-        );
+        ));
         return;
     }
     for client in status.clients {
@@ -1387,7 +1525,7 @@ fn render_instructions_status(container: &gtk::Box, status: crate::teams::Instru
                 .build(),
         );
         let (state_label, badge_class) = super::rule_apply_state(client.state);
-        let badge = gtk::Label::new(Some(state_label));
+        let badge = l10n::label(state_label);
         badge.add_css_class("toolport-badge");
         badge.add_css_class(badge_class);
         row.append(&badge);
@@ -1399,32 +1537,34 @@ fn render_instructions_status(container: &gtk::Box, status: crate::teams::Instru
 /// arrived switched off pending member review, `blocked` were refused outright
 /// (link-local or cloud-metadata URLs). `None` when there is nothing to say.
 fn team_review_line(review: usize, blocked: usize) -> Option<String> {
-    if review == 0 && blocked == 0 {
-        return None;
-    }
     let mut parts = Vec::new();
     if review > 0 {
-        parts.push(format!(
-            "{review} team {} waiting for your review. Held servers stay off; review queued changes above.",
-            if review == 1 { "change is" } else { "changes are" },
-        ));
+        parts.push(if review == 1 {
+            trf("{review} team change is waiting for your review. Held servers stay off; review queued changes above.", &[("review", &review.to_string())])
+        } else {
+            trf("{review} team changes are waiting for your review. Held servers stay off; review queued changes above.", &[("review", &review.to_string())])
+        });
     }
     if blocked > 0 {
-        parts.push(format!(
-            "{blocked} {} Blocked because of unsafe definitions or references. env: references are local only, including personal Pro sync. Use a password manager reference instead.",
-            if blocked == 1 { "was" } else { "were" }
-        ));
+        parts.push(if blocked == 1 {
+            trf("{blocked} was Blocked because of unsafe definitions or references. env: references are local only, including personal Pro sync. Use a password manager reference instead.", &[("blocked", &blocked.to_string())])
+        } else {
+            trf("{blocked} were Blocked because of unsafe definitions or references. env: references are local only, including personal Pro sync. Use a password manager reference instead.", &[("blocked", &blocked.to_string())])
+        });
     }
-    Some(parts.join(" "))
+    (!parts.is_empty()).then(|| parts.join(" "))
 }
 
-fn section_label(text: &str) -> gtk::Label {
-    gtk::Label::builder()
-        .label(text)
-        .halign(gtk::Align::Start)
-        .margin_top(14)
-        .css_classes(["toolport-section-label"])
-        .build()
+fn section_label(text: &'static str) -> gtk::Label {
+    source_label(
+        text,
+        gtk::Label::builder()
+            .label(text)
+            .halign(gtk::Align::Start)
+            .margin_top(14)
+            .css_classes(["toolport-section-label"])
+            .build(),
+    )
 }
 
 /// One line in the Needs you block: a bold title, a muted detail and at most
@@ -1510,7 +1650,7 @@ fn conflict_name(
 /// A server and where it lives: on every machine, or only this one.
 fn sync_server_row(
     server: &crate::registry::ServerEntry,
-    tag: Option<&str>,
+    tag: Option<&'static str>,
     page: TeamsPage,
 ) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
@@ -1533,7 +1673,7 @@ fn sync_server_row(
     if let Some(tag) = tag {
         name.append(
             &gtk::Label::builder()
-                .label(tag)
+                .label(lookup(tag))
                 .css_classes(["toolport-sync-tag", "caption"])
                 .build(),
         );
@@ -1543,14 +1683,20 @@ fn sync_server_row(
     choice.add_css_class("linked");
     choice.add_css_class("toolport-sync-choice");
     choice.set_valign(gtk::Align::Center);
-    let every = gtk::ToggleButton::with_label("Every machine");
-    let here = gtk::ToggleButton::with_label("This machine");
+    let every = source_button(
+        msg("Every machine"),
+        gtk::ToggleButton::with_label("Every machine"),
+    );
+    let here = source_button(
+        msg("This machine"),
+        gtk::ToggleButton::with_label("This machine"),
+    );
     here.set_group(Some(&every));
     let local = crate::personal_sync::keep_local(server);
     here.set_active(local);
     every.set_active(!local);
-    every.set_tooltip_text(Some("Sync this server to your other machines"));
-    here.set_tooltip_text(Some("Stop syncing. Other machines keep their copy."));
+    l10n::bind_tooltip(&every, msg("Sync this server to your other machines"));
+    l10n::bind_tooltip(&here, msg("Stop syncing. Other machines keep their copy."));
     let id = server.id.clone();
     here.connect_toggled(move |button| {
         let local = button.is_active();
@@ -1562,7 +1708,7 @@ fn sync_server_row(
             {
                 Ok(Ok(_)) => page.refresh(),
                 Ok(Err(e)) => page.show_error(&e),
-                Err(_) => page.show_error("Could not save sync choice"),
+                Err(_) => page.show_error(&tr("Could not save sync choice")),
             }
         });
     });
@@ -1572,15 +1718,16 @@ fn sync_server_row(
     row
 }
 
-fn field(label: &str, input: &impl IsA<gtk::Widget>) -> gtk::Box {
+fn field(label: &'static str, input: &impl IsA<gtk::Widget>) -> gtk::Box {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    root.append(
-        &gtk::Label::builder()
+    root.append(&source_label(
+        label,
+        gtk::Label::builder()
             .label(label)
             .halign(gtk::Align::Start)
             .css_classes(["heading"])
             .build(),
-    );
+    ));
     root.append(input);
     root
 }
@@ -1590,12 +1737,12 @@ fn conflict_content(local: Option<&serde_json::Value>, remote: &serde_json::Valu
     let left = crate::personal_sync::conflict_fields(local);
     let right = crate::personal_sync::conflict_fields(Some(remote));
     let keys: std::collections::BTreeSet<_> = left.keys().chain(right.keys()).collect();
-    for (title, fields) in [("This machine", &left), ("Other machine", &right)] {
+    for (title, fields) in [(msg("This machine"), &left), (msg("Other machine"), &right)] {
         let column = gtk::Box::new(gtk::Orientation::Vertical, 8);
         column.set_hexpand(true);
         column.append(
             &gtk::Label::builder()
-                .label(title)
+                .label(lookup(title))
                 .xalign(0.0)
                 .css_classes(["heading"])
                 .build(),
@@ -1604,8 +1751,12 @@ fn conflict_content(local: Option<&serde_json::Value>, remote: &serde_json::Valu
             let changed = left.get(*key) != right.get(*key);
             let label = gtk::Label::builder()
                 .label(format!(
-                    "{key}: {}",
-                    fields.get(*key).map(String::as_str).unwrap_or("Not set")
+                    "{}: {}",
+                    crate::personal_sync::review_field_label(key),
+                    fields
+                        .get(*key)
+                        .map(String::as_str)
+                        .unwrap_or(&tr("Not set"))
                 ))
                 .wrap(true)
                 .wrap_mode(gtk::pango::WrapMode::Word)
@@ -1637,6 +1788,7 @@ pub(super) fn execution_review_content(server: &crate::registry::ServerEntry) ->
         }
         if text == "New server" {
             label.add_css_class("heading");
+            l10n::bind_label(&label, msg("New server"));
         }
         content.append(&label);
     }
@@ -1658,7 +1810,7 @@ pub(super) fn execution_review_content(server: &crate::registry::ServerEntry) ->
         }
         content.append(
             &gtk::Expander::builder()
-                .label("Show full definition")
+                .label(&tr("Show full definition"))
                 .child(&full)
                 .build(),
         );
@@ -1720,7 +1872,7 @@ fn review_server_row(
             .map(|s| s.name.clone())
     });
     if let Some(original) = original {
-        let use_managed = gtk::Button::with_label("Use in this profile");
+        let use_managed = l10n::button("Use in this profile");
         use_managed.set_valign(gtk::Align::Center);
         let page = page.clone();
         let id = server.id.clone();
@@ -1728,14 +1880,18 @@ fn review_server_row(
         use_managed.connect_clicked(move |_| {
             let Some(parent) = page.app.active_window() else { return; };
             #[allow(deprecated)]
-            let d = adw::MessageDialog::new(Some(&parent), Some("Use team-managed version?"), Some(&format!("{detail}\n\nEnable this managed copy and disable Personal {original} in this profile. The original stays saved. Existing local credentials and sign-in are reused only when the definitions match exactly. Nothing is uploaded. Signing out affects both copies.")));
+            let d = adw::MessageDialog::new(Some(&parent), Some(&tr("Use team-managed version?")), Some(&trf("{detail}\n\nEnable this managed copy and disable Personal {original} in this profile. The original stays saved. Existing local credentials and sign-in are reused only when the definitions match exactly. Nothing is uploaded. Signing out affects both copies.", &[("detail", &(detail).to_string()), ("original", &(original).to_string())])));
+l10n::bind_formatted_dialog_body(&d, msg("{detail}\n\nEnable this managed copy and disable Personal {original} in this profile. The original stays saved. Existing local credentials and sign-in are reused only when the definitions match exactly. Nothing is uploaded. Signing out affects both copies."), &[("detail", &(detail).to_string()), ("original", &(original).to_string())]);
+l10n::bind_dialog_heading(&d, msg("Use team-managed version?"));
             d.set_size_request(520, -1);
-            d.add_response("cancel", "Cancel"); d.add_response("use", "Use managed version"); d.set_close_response("cancel");
+            d.add_response("cancel", &tr("Cancel"));
+ l10n::bind_dialog_response(&d, "cancel", msg("Cancel")); d.add_response("use", &tr("Use managed version"));
+ l10n::bind_dialog_response(&d, "use", msg("Use managed version")); d.set_close_response("cancel");
             let page = page.clone(); let id = id.clone();
             d.connect_response(None, move |d, response| {
                 if response == "use" { let page = page.clone(); let id = id.clone(); gtk::glib::spawn_future_local(async move {
                     match gtk::gio::spawn_blocking(move || crate::teams::use_managed_server(&id)).await {
-                        Ok(Ok(_)) => page.refresh(), Ok(Err(e)) => page.show_error(&e), Err(_) => page.show_error("Could not switch to managed server"),
+                        Ok(Ok(_)) => page.refresh(), Ok(Err(e)) => page.show_error(&e), Err(_) => page.show_error(&tr("Could not switch to managed server")),
                     }
                 }); }
                 d.close();
@@ -1747,21 +1903,21 @@ fn review_server_row(
     if already_enabled || !server.needs_team_enable_review() {
         row.append(
             &gtk::Label::builder()
-                .label(if already_enabled {
-                    "Enabled in this profile"
+                .label(lookup(if already_enabled {
+                    msg("Enabled in this profile")
                 } else {
-                    "Turned off"
-                })
+                    msg("Turned off")
+                }))
                 .css_classes(["toolport-muted"])
                 .build(),
         );
         return row;
     }
-    let enable = gtk::Button::with_label("Review and enable");
+    let enable = l10n::button("Review and enable");
     enable.set_valign(gtk::Align::Center);
     let held = server.unknown_fields.get("teamHeldChange") == Some(&serde_json::json!(true));
     if held {
-        enable.set_label("Held for team change review");
+        l10n::bind_button(&enable, msg("Held for team change review"));
     }
     enable.set_sensitive(!already_enabled && !held);
     enable.add_css_class("toolport-secondary-action");
@@ -1774,14 +1930,18 @@ fn review_server_row(
         #[allow(deprecated)]
         let dialog = adw::MessageDialog::new(
             Some(&parent),
-            Some(&format!("Enable {server_name}?")),
-            Some("Enable only after verifying this definition and saved authentication. Credentials remain local."),
+            Some(&trf("Enable {server_name}?", &[("server_name", &(server_name).to_string())])),
+            Some(&tr("Enable only after verifying this definition and saved authentication. Credentials remain local.")),
         );
+l10n::bind_formatted_dialog_heading(&dialog, msg("Enable {server_name}?"), &[("server_name", &(server_name).to_string())]);
+l10n::bind_dialog_body(&dialog, msg("Enable only after verifying this definition and saved authentication. Credentials remain local."));
         dialog.set_size_request(620, -1);
         let scroll = execution_review_scroll(&reviewed_entry);
         dialog.set_extra_child(Some(&scroll));
-        dialog.add_response("cancel", "Keep disabled");
-        dialog.add_response("enable", "Enable");
+        dialog.add_response("cancel", &tr("Keep disabled"));
+ l10n::bind_dialog_response(&dialog, "cancel", msg("Keep disabled"));
+        dialog.add_response("enable", &tr("Enable"));
+ l10n::bind_dialog_response(&dialog, "enable", msg("Enable"));
         dialog.set_close_response("cancel");
         dialog.set_default_response(Some("cancel"));
         dialog.set_response_appearance("enable", adw::ResponseAppearance::Suggested);
@@ -1813,7 +1973,7 @@ fn review_server_row(
                         }
                         Err(_) => {
                             button.set_sensitive(true);
-                            page.show_error("the review update stopped unexpectedly");
+                            page.show_error(&tr("the review update stopped unexpectedly"));
                         }
                     }
                 });
@@ -1853,13 +2013,13 @@ fn share_choice_label(name: &str, keys: Option<String>, hint: Option<&str>) -> g
 /// nothing to upload or switch. The React preview applies the same rule.
 fn share_action(preview: &crate::teams::PushPreview) -> Option<&'static str> {
     if share_uploads(preview) {
-        Some("Share selected")
+        Some(msg("Share selected"))
     } else if preview
         .selections
         .iter()
         .any(|selection| selection.local.outcome == crate::teams::HandoffOutcome::Switched)
     {
-        Some("Use Team copies")
+        Some(msg("Use Team copies"))
     } else {
         None
     }
@@ -1875,13 +2035,16 @@ fn share_preview_dialog(
     preview: &crate::teams::PushPreview,
 ) -> adw::MessageDialog {
     let dialog = adw::MessageDialog::new(
-        Some(parent), Some("Share selected servers?"),
-        Some("Other team servers, instructions and policies stay unchanged. Your personal servers remain saved, and other profiles stay unchanged. Credential values are never uploaded. Each member uses their own credentials locally."),
+        Some(parent), Some(&tr("Share selected servers?")),
+        Some(&tr("Other team servers, instructions and policies stay unchanged. Your personal servers remain saved, and other profiles stay unchanged. Credential values are never uploaded. Each member uses their own credentials locally.")),
     );
+    l10n::bind_dialog_heading(&dialog, msg("Share selected servers?"));
+    l10n::bind_dialog_body(&dialog, msg("Other team servers, instructions and policies stay unchanged. Your personal servers remain saved, and other profiles stay unchanged. Credential values are never uploaded. Each member uses their own credentials locally."));
     dialog.set_size_request(520, -1);
-    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("cancel", &tr("Cancel"));
+    l10n::bind_dialog_response(&dialog, "cancel", msg("Cancel"));
     let action = share_action(preview);
-    dialog.add_response("push", action.unwrap_or("Share selected"));
+    dialog.add_response("push", &lookup(action.unwrap_or(msg("Share selected"))));
     dialog.set_response_enabled("push", action.is_some());
     dialog.set_close_response("cancel");
     dialog.set_default_response(Some("cancel"));
@@ -1922,25 +2085,31 @@ fn share_preview_content(preview: &crate::teams::PushPreview) -> gtk::ScrolledWi
     }
     let uploads = share_uploads(preview);
     if !preview.selections.is_empty() && !uploads {
-        changes.append(&label(if share_action(preview).is_some() {
-            "Nothing new is uploaded to the team. Only this profile changes."
+        let source = if share_action(preview).is_some() {
+            msg("Nothing new is uploaded to the team. Only this profile changes.")
         } else {
-            "Nothing to upload or switch for this selection."
-        }));
+            msg("Nothing to upload or switch for this selection.")
+        };
+        let outcome = label(&lookup(source));
+        l10n::bind_label(&outcome, source);
+        changes.append(&outcome);
     }
     for (kind, names) in [
-        ("Added", &preview.added),
-        ("Changed", &preview.changed),
-        ("Removed", &preview.removed),
+        (msg("Added"), &preview.added),
+        (msg("Changed"), &preview.changed),
+        (msg("Removed"), &preview.removed),
     ]
     .into_iter()
     .filter(|_| uploads || preview.selections.is_empty())
     {
-        let heading = label(&format!("{kind} ({})", names.len()));
+        let heading = label(&trf(
+            "{kind} ({count})",
+            &[("kind", &lookup(kind)), ("count", &names.len().to_string())],
+        ));
         heading.add_css_class("heading");
         changes.append(&heading);
         if names.is_empty() {
-            changes.append(&label("None"));
+            changes.append(&label(&tr("None")));
         }
         if kind == "Removed" {
             for name in names {
@@ -1952,13 +2121,21 @@ fn share_preview_content(preview: &crate::teams::PushPreview) -> gtk::ScrolledWi
             let expander = gtk::Expander::builder()
                 .expanded(preview.definitions.len() == 1)
                 .build();
-            let summary = label(&format!("{} · {}", definition.name, definition.transport));
+            let summary = label(&format!(
+                "{} · {}",
+                definition.name,
+                super::state::display_transport(&definition.transport)
+            ));
             summary.set_selectable(false);
             expander.set_label_widget(Some(&summary));
             let fields = gtk::Box::new(gtk::Orientation::Vertical, 6);
             fields.set_margin_start(16);
             for field in &definition.fields {
-                let title = label(&field.label);
+                let title = label("");
+                let field_key = field.label.clone();
+                l10n::bind_label_with(&title, move || {
+                    crate::personal_sync::review_field_label(&field_key)
+                });
                 title.add_css_class("toolport-muted");
                 fields.append(&title);
                 let value = label(&field.value);
@@ -1969,7 +2146,7 @@ fn share_preview_content(preview: &crate::teams::PushPreview) -> gtk::ScrolledWi
             changes.append(&expander);
         }
     }
-    changes.append(&label("If the team or your local servers change before saving, Toolport stops and asks you to review again."));
+    changes.append(&label(&tr("If the team or your local servers change before saving, Toolport stops and asks you to review again.")));
     gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .min_content_width(440)
@@ -1980,27 +2157,41 @@ fn share_preview_content(preview: &crate::teams::PushPreview) -> gtk::ScrolledWi
 }
 
 fn member_label(label: &serde_json::Value) -> String {
-    let author = label["author"]["name"].as_str().unwrap_or("Unknown author");
+    let author = label["author"]["name"]
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| tr("Unknown author"));
     let time = label["at"]
         .as_i64()
         .and_then(|ms| gtk::glib::DateTime::from_unix_utc(ms / 1000).ok())
         .and_then(|date| date.format("%Y-%m-%d %H:%M UTC").ok())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| "Unknown time".into());
+        .unwrap_or_else(|| tr("Unknown time"));
     let via = label["via"].as_str().unwrap_or("unknown");
     let approval = label["approvedBy"]["name"]
         .as_str()
-        .map(|name| format!(" · approved by {name}"))
+        .map(|name| trf(" · approved by {name}", &[("name", &(name).to_string())]))
         .unwrap_or_default();
-    format!("{author} · {time} · via {via}{approval}")
+    trf(
+        "{author} · {time} · via {via}{approval}",
+        &[
+            ("author", &(author).to_string()),
+            ("time", &(time).to_string()),
+            ("via", &(via).to_string()),
+            ("approval", &(approval).to_string()),
+        ],
+    )
 }
 
 fn member_review_dialog(
     parent: &impl IsA<gtk::Window>,
     review: &crate::teams::MemberReview,
 ) -> adw::MessageDialog {
-    let dialog = adw::MessageDialog::new(Some(parent), Some("Review team changes"), Some("Each decision applies to this member and the exact content shown. Held servers stay off. Safety floors can tighten immediately."));
-    dialog.add_response("close", "Close");
+    let dialog = adw::MessageDialog::new(Some(parent), Some(&tr("Review team changes")), Some(&tr("Each decision applies to this member and the exact content shown. Held servers stay off. Safety floors can tighten immediately.")));
+    l10n::bind_dialog_heading(&dialog, msg("Review team changes"));
+    l10n::bind_dialog_body(&dialog, msg("Each decision applies to this member and the exact content shown. Held servers stay off. Safety floors can tighten immediately."));
+    dialog.add_response("close", &tr("Close"));
+    l10n::bind_dialog_response(&dialog, "close", msg("Close"));
     dialog.set_extra_child(Some(&member_review_content(review)));
     dialog
 }
@@ -2018,7 +2209,7 @@ fn member_review_content(review: &crate::teams::MemberReview) -> gtk::ScrolledWi
                 .build(),
         );
         if change.labels.is_empty() {
-            section.append(&gtk::Label::builder().label("Full diff from your accepted configuration. Change history labels unavailable.").wrap(true).xalign(0.0).build());
+            section.append(&source_label(msg("Full diff from your accepted configuration. Change history labels unavailable."), gtk::Label::builder().label(&tr("Full diff from your accepted configuration. Change history labels unavailable.")).wrap(true).xalign(0.0).build()));
         } else {
             for label in &change.labels {
                 section.append(
@@ -2031,17 +2222,27 @@ fn member_review_content(review: &crate::teams::MemberReview) -> gtk::ScrolledWi
             }
         }
         for field in &change.fields {
-            section.append(
-                &gtk::Label::builder()
-                    .label(format!(
-                        "{}\nBefore: {}\nAfter: {}",
-                        field.field, field.before, field.after
+            section.append(&source_formatted_label(
+                msg("{value1}\nBefore: {value2}\nAfter: {value3}"),
+                &[
+                    ("value1", &(field.field).to_string()),
+                    ("value2", &(field.before).to_string()),
+                    ("value3", &(field.after).to_string()),
+                ],
+                gtk::Label::builder()
+                    .label(trf(
+                        "{value1}\nBefore: {value2}\nAfter: {value3}",
+                        &[
+                            ("value1", &(field.field).to_string()),
+                            ("value2", &(field.before).to_string()),
+                            ("value3", &(field.after).to_string()),
+                        ],
                     ))
                     .wrap(true)
                     .selectable(true)
                     .xalign(0.0)
                     .build(),
-            );
+            ));
         }
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         for (name, accept) in [("Accept", true), ("Reject", false)] {
@@ -2132,9 +2333,9 @@ fn connect_member_decisions(
                             }
                             Err(_) => {
                                 dialog.close();
-                                page.show_error(
+                                page.show_error(&tr(
                                     "Team review stopped unexpectedly. Review the current queue.",
-                                );
+                                ));
                             }
                         }
                     });
@@ -2149,6 +2350,24 @@ fn connect_member_decisions(
     }
 }
 
+fn source_label(source: &'static str, label: gtk::Label) -> gtk::Label {
+    l10n::bind_label(&label, source);
+    label
+}
+
+fn source_button<B: IsA<gtk::Button>>(source: &'static str, button: B) -> B {
+    l10n::bind_button(button.upcast_ref::<gtk::Button>(), source);
+    button
+}
+
+fn source_formatted_label(
+    source: &'static str,
+    values: &[(&str, &str)],
+    label: gtk::Label,
+) -> gtk::Label {
+    l10n::bind_formatted_label(&label, source, values);
+    label
+}
 #[cfg(test)]
 mod tests {
     #[test]

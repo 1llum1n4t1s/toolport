@@ -1,5 +1,6 @@
 //! Tauri desktop shell: tray, webview IPC commands, approval broker, HTTP bridge.
 
+use crate::i18n::{tr, trf};
 use std::io::ErrorKind;
 use std::sync::Mutex;
 #[cfg(test)]
@@ -45,16 +46,21 @@ async fn get_ui_language() -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn set_ui_language(language: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || crate::ui_settings::set_language(&language))
+async fn set_ui_language(app: AppHandle, language: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::i18n::set_language(&language))
         .await
-        .map_err(|error| format!("language settings worker failed: {error}"))?
+        .map_err(|error| format!("language settings worker failed: {error}"))??;
+    update_tray_tooltip(&app);
+    Ok(())
 }
 
 type RegistryState = Mutex<Registry>;
 
 struct TrayMenuState {
     pending_approvals: MenuItem<tauri::Wry>,
+    open: MenuItem<tauri::Wry>,
+    check_updates: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
 }
 
 static HTTP_BRIDGE_LIFECYCLE: Mutex<()> = Mutex::new(());
@@ -3843,7 +3849,7 @@ fn deliver_team_pair(app: &AppHandle, origin: String, team: String) {
             &origin,
             crate::registry::load().is_ok_and(|r| r.team.is_some()),
         ))
-        .title("Sign in to sync?")
+        .title(tr("Sign in to sync?"))
         .buttons(MessageDialogButtons::OkCancel)
         .show(move |approved| {
             if !approved {
@@ -3994,16 +4000,24 @@ fn update_tray_tooltip(app: &AppHandle) {
         .map(|b| b.list().len())
         .unwrap_or(0);
     if let Some(menu) = app.try_state::<TrayMenuState>() {
-        let _ = menu
-            .pending_approvals
-            .set_text(format!("Pending approvals ({pending})"));
+        let _ = menu.pending_approvals.set_text(trf(
+            "Pending approvals ({count})",
+            &[("count", &pending.to_string())],
+        ));
+        let _ = menu.open.set_text(tr("Open Toolport"));
+        let _ = menu.check_updates.set_text(tr("Check for updates"));
+        let _ = menu.quit.set_text(tr("Quit Toolport"));
     }
     if let Some(tray) = app.tray_by_id("main") {
         let tip = if pending > 0 {
-            format!(
-                "Toolport - {pending} request{} awaiting action",
-                if pending == 1 { "" } else { "s" }
-            )
+            if pending == 1 {
+                tr("Toolport - 1 request awaiting action")
+            } else {
+                trf(
+                    "Toolport - {count} requests awaiting action",
+                    &[("count", &pending.to_string())],
+                )
+            }
         } else {
             "Toolport".to_string()
         };
@@ -4026,10 +4040,9 @@ fn maybe_show_tray_hint(app: &AppHandle) {
     let _ = app
         .notification()
         .builder()
-        .title("Toolport is still running")
+        .title(tr("Toolport is still running"))
         .body(
-            "It stays in your tray so it can hold tool calls for your approval. \
-             Quit it any time from the tray icon.",
+            tr("It stays in your tray so it can hold tool calls for your approval. Quit it any time from the tray icon."),
         )
         .show();
 }
@@ -4040,26 +4053,29 @@ fn maybe_show_tray_hint(app: &AppHandle) {
 /// down the HTTP bridge); closing the window only hides it (see the window-event
 /// handler), so the gateway/broker keep running and HITL stays live.
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "tray_open", "Open Toolport", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "tray_open", tr("Open Toolport"), true, None::<&str>)?;
     let approvals = MenuItem::with_id(
         app,
         "tray_approvals",
-        "Pending approvals (0)",
+        trf("Pending approvals ({count})", &[("count", "0")]),
         true,
         None::<&str>,
     )?;
     let check_updates = MenuItem::with_id(
         app,
         "tray_check_updates",
-        "Check for updates",
+        tr("Check for updates"),
         true,
         None::<&str>,
     )?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "tray_quit", "Quit Toolport", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "tray_quit", tr("Quit Toolport"), true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &approvals, &check_updates, &sep, &quit])?;
     app.manage(TrayMenuState {
         pending_approvals: approvals,
+        open,
+        check_updates,
+        quit,
     });
 
     let mut builder = TrayIconBuilder::with_id("main")
@@ -4178,6 +4194,7 @@ fn open_external(url: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _ = crate::i18n::initialize();
     // `generate_context!()` must expand exactly once in this crate: on macOS dev
     // builds each expansion embeds a `_EMBED_INFO_PLIST` byte section, and two
     // collide at codegen ("symbol is already defined"). Both startup paths share
@@ -4512,8 +4529,8 @@ pub fn run() {
                     Err(error) => {
                         crate::daemon::add_status_note("Gateway publication incomplete. Retry after fixing data directory access.");
                         eprintln!("toolport: gateway publication incomplete: {error}");
-                        let _ = migrate_handle.notification().builder().title("Gateway publication incomplete")
-                            .body("The gateway manifest could not be saved. Fix data directory access and reopen Toolport.").show();
+                        let _ = migrate_handle.notification().builder().title(tr("Gateway publication incomplete"))
+                            .body(tr("The gateway manifest could not be saved. Fix data directory access and reopen Toolport.")).show();
                     }
                 }
                 // An in-app update deliberately stops the supervised HTTP child
@@ -4562,8 +4579,8 @@ pub fn run() {
                         if let Err(error) = crate::gateway_publish::persist_repointed_ownership(&repoint.repointed) {
                             crate::daemon::add_status_note("Client configs updated, but ownership state was not saved. Retry after fixing registry access.");
                             eprintln!("toolport: client configs updated, but ownership state was not saved: {error}");
-                            let _ = migrate_handle.notification().builder().title("Client update incomplete")
-                                .body("Client configs changed, but their ownership state could not be saved. Fix registry access and reopen Toolport.").show();
+                            let _ = migrate_handle.notification().builder().title(tr("Client update incomplete"))
+                                .body(tr("Client configs changed, but their ownership state could not be saved. Fix registry access and reopen Toolport.")).show();
                         }
                     }
                     if !repoint.customized.is_empty() {
@@ -4760,6 +4777,7 @@ pub fn run() {
 /// empty registry. Closing the dialog exits; the user can then resolve a stuck lock or restore
 /// one of the preserved backup/unreadable files before relaunching (SOU-331).
 fn run_registry_startup_failure(error: String, context: tauri::Context) {
+    let _ = crate::i18n::initialize();
     let message = registry_startup_failure_message(registry::resolved_path().as_deref(), &error);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -4767,9 +4785,9 @@ fn run_registry_startup_failure(error: String, context: tauri::Context) {
             let handle = app.handle().clone();
             app.dialog()
                 .message(message)
-                .title("Toolport could not start safely")
+                .title(tr("Toolport could not start safely"))
                 .kind(MessageDialogKind::Error)
-                .buttons(MessageDialogButtons::OkCustom("Close Toolport".to_string()))
+                .buttons(MessageDialogButtons::OkCustom(tr("Close Toolport")))
                 .show(move |_| handle.exit(1));
             Ok(())
         })
@@ -4780,17 +4798,13 @@ fn run_registry_startup_failure(error: String, context: tauri::Context) {
 fn registry_startup_failure_message(path: Option<&std::path::Path>, error: &str) -> String {
     let path = path
         .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "the Toolport data directory".to_string());
+        .unwrap_or_else(|| tr("the Toolport data directory"));
     // Version skew has a different fix from corruption: restoring a backup or
     // moving the file aside is the wrong advice when the file is simply newer.
     if registry::is_newer_version_error(error) {
-        return format!(
-            "Toolport stopped before touching your registry because it was written by a newer version.\n\n{error}\n\nRegistry: {path}"
-        );
+        return trf("Toolport stopped before touching your registry because it was written by a newer version.\n\n{error}\n\nRegistry: {path}", &[("error", error), ("path", &path)]);
     }
-    format!(
-        "Toolport could not safely load its registry, so it stopped before showing or saving an empty configuration. Your registry was not replaced.\n\nClose any other Toolport processes and try again. If the problem continues, restore a registry backup or move the unreadable registry aside, then reopen Toolport.\n\nRegistry: {path}\n\nError: {error}"
-    )
+    trf("Toolport could not safely load its registry, so it stopped before showing or saving an empty configuration. Your registry was not replaced.\n\nClose any other Toolport processes and try again. If the problem continues, restore a registry backup or move the unreadable registry aside, then reopen Toolport.\n\nRegistry: {path}\n\nError: {error}", &[("path", &path), ("error", error)])
 }
 
 #[cfg(test)]

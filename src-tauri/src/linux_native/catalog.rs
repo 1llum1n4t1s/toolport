@@ -1,3 +1,4 @@
+use super::i18n as l10n;
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -59,12 +60,14 @@ impl CatalogPage {
         let header = adw::HeaderBar::new();
         header.add_css_class("toolport-header");
         header.set_show_back_button(true);
-        header.set_title_widget(Some(
-            &gtk::Label::builder()
-                .label("Catalog")
+        header.set_title_widget(Some(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Catalog"))
                 .css_classes(["title"])
-                .build(),
-        ));
+                .build();
+            l10n::bind_label(&widget, "Catalog");
+            widget
+        }));
         root.append(&header);
 
         let scroller = gtk::ScrolledWindow::builder()
@@ -77,27 +80,35 @@ impl CatalogPage {
         page.set_margin_bottom(20);
         page.set_margin_start(20);
         page.set_margin_end(20);
-        page.append(
-            &gtk::Label::builder()
-                .label("Add trusted MCP servers")
+        page.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Add trusted MCP servers"))
                 .halign(gtk::Align::Start)
                 .css_classes(["title-2"])
-                .build(),
-        );
+                .build();
+            l10n::bind_label(&widget, "Add trusted MCP servers");
+            widget
+        });
         page.append(
-            &gtk::Label::builder()
-                .label("Browse Toolport's curated picks or search the official MCP Registry. Valid servers turn on. Missing credentials and setup inputs stay off.")
+            &{ let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Browse Toolport's curated picks or search the official MCP Registry. Valid servers turn on. Missing credentials and setup inputs stay off."))
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["toolport-muted"])
-                .build(),
+                .build(); l10n::bind_label(&widget, "Browse Toolport's curated picks or search the official MCP Registry. Valid servers turn on. Missing credentials and setup inputs stay off."); widget },
         );
-        let search = gtk::SearchEntry::builder()
-            .placeholder_text("Search servers, categories, or capabilities")
-            .hexpand(true)
-            .css_classes(["toolport-search"])
-            .build();
+        let search = {
+            let widget = gtk::SearchEntry::builder()
+                .placeholder_text(crate::i18n::tr(
+                    "Search servers, categories, or capabilities",
+                ))
+                .hexpand(true)
+                .css_classes(["toolport-search"])
+                .build();
+            l10n::bind_placeholder(&widget, "Search servers, categories, or capabilities");
+            widget
+        };
         // A layout-managed parent allocates the popover's native surface.
         // SearchEntry allocates only its own text and icons.
         let search_row = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -124,14 +135,16 @@ impl CatalogPage {
         feedback.set_visible(false);
         page.append(&feedback);
         let server_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        server_header.append(
-            &gtk::Label::builder()
-                .label("Servers")
+        server_header.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Servers"))
                 .halign(gtk::Align::Start)
                 .hexpand(true)
                 .css_classes(["heading"])
-                .build(),
-        );
+                .build();
+            l10n::bind_label(&widget, "Servers");
+            widget
+        });
         let server_count = gtk::Label::builder()
             .halign(gtk::Align::End)
             .css_classes(["caption", "toolport-muted"])
@@ -264,7 +277,7 @@ impl CatalogPage {
         });
         self.suggestion_limit.set(SUGGESTION_BATCH);
         if entries.is_empty() {
-            self.show_suggestion_message("Searching the MCP Registry…", false);
+            self.show_suggestion_message(&crate::i18n::tr("Searching the MCP Registry…"), false);
         } else {
             self.render_suggestions();
         }
@@ -314,9 +327,11 @@ impl CatalogPage {
                 Ok(Err(error)) if page.suggestion_state.borrow().entries.is_empty() => {
                     page.show_suggestion_message(&error, true)
                 }
-                Err(_) if page.suggestion_state.borrow().entries.is_empty() => {
-                    page.show_suggestion_message("The catalog search stopped unexpectedly.", true)
-                }
+                Err(_) if page.suggestion_state.borrow().entries.is_empty() => page
+                    .show_suggestion_message(
+                        &crate::i18n::tr("The catalog search stopped unexpectedly."),
+                        true,
+                    ),
                 Ok(Err(_)) | Err(_) => {}
             }
         });
@@ -365,7 +380,7 @@ impl CatalogPage {
                     .css_classes(["toolport-suggestion-message", "error"])
                     .build(),
             );
-            let retry = gtk::Button::with_label("Try again");
+            let retry = l10n::button("Try again");
             retry.add_css_class("flat");
             retry.set_halign(gtk::Align::Start);
             let page = self.clone();
@@ -385,27 +400,38 @@ impl CatalogPage {
                 return;
             }
             self.show_suggestion_message(
-                "No trusted matches. Try a vendor, capability, or category.",
+                &crate::i18n::tr("No trusted matches. Try a vendor, capability, or category."),
                 false,
             );
             return;
         }
         let limit = self.suggestion_limit.get().min(state.entries.len());
         let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        heading.append(
-            &gtk::Label::builder()
-                .label("Best matches")
+        heading.append(&{
+            let widget = gtk::Label::builder()
+                .label(crate::i18n::tr("Best matches"))
                 .halign(gtk::Align::Start)
                 .hexpand(true)
                 .css_classes(["heading"])
-                .build(),
-        );
-        heading.append(
-            &gtk::Label::builder()
-                .label(format!("Showing {limit} of {}", state.entries.len()))
+                .build();
+            l10n::bind_label(&widget, "Best matches");
+            widget
+        });
+        heading.append(&{
+            let widget = gtk::Label::builder()
+                .label("")
                 .css_classes(["caption", "toolport-muted"])
-                .build(),
-        );
+                .build();
+            l10n::bind_formatted_label(
+                &widget,
+                "Showing {value0} of {value1}",
+                &[
+                    ("value0", &format!("{}", limit)),
+                    ("value1", &format!("{}", state.entries.len())),
+                ],
+            );
+            widget
+        });
         heading.add_css_class("toolport-suggestion-heading");
         self.suggestion_list.append(&heading);
         for entry in state.entries.into_iter().take(limit) {
@@ -413,7 +439,7 @@ impl CatalogPage {
                 .append(&suggestion_row(entry, &state.existing, self.clone()));
         }
         if limit < self.suggestion_state.borrow().entries.len() {
-            let more = gtk::Button::with_label("Show 4 more");
+            let more = l10n::button("Show 4 more");
             more.add_css_class("toolport-suggestion-more");
             let page = self.clone();
             more.connect_clicked(move |_| {
@@ -429,7 +455,8 @@ impl CatalogPage {
     fn load_popular(&self) {
         let generation = self.request_generation.get().wrapping_add(1);
         self.request_generation.set(generation);
-        self.feedback.set_label("Loading curated servers…");
+        self.feedback
+            .set_label(&crate::i18n::tr("Loading curated servers…"));
         self.feedback.remove_css_class("error");
         self.feedback.remove_css_class("success");
         self.feedback.set_visible(true);
@@ -452,7 +479,9 @@ impl CatalogPage {
             match result {
                 Ok(Ok((entries, existing))) => page.render(entries, existing),
                 Ok(Err(error)) => page.show_error(&error),
-                Err(_) => page.show_error("the catalog search stopped unexpectedly"),
+                Err(_) => {
+                    page.show_error(&crate::i18n::tr("the catalog search stopped unexpectedly"))
+                }
             }
         });
     }
@@ -469,8 +498,11 @@ impl CatalogPage {
         } else {
             self.feedback.set_visible(false);
         }
-        self.server_count
-            .set_label(&format!("{} available", entries.len()));
+        l10n::bind_formatted_label(
+            &self.server_count,
+            "{value0} available",
+            &[("value0", &format!("{}", entries.len()))],
+        );
         if unchanged {
             return;
         }
@@ -480,8 +512,8 @@ impl CatalogPage {
         if entries.is_empty() {
             self.list.append(&super::state_card(
                 "edit-find-symbolic",
-                "No matching servers",
-                "Try a broader name or capability.",
+                &crate::i18n::tr("No matching servers"),
+                &crate::i18n::tr("Try a broader name or capability."),
                 false,
             ));
             return;
@@ -499,8 +531,11 @@ impl CatalogPage {
         if let Some(timer) = self.feedback_timer.borrow_mut().take() {
             timer.remove();
         }
-        self.feedback
-            .set_label(&format!("Could not load the catalog: {error}"));
+        l10n::bind_formatted_label(
+            &self.feedback,
+            "Could not load the catalog: {value0}",
+            &[("value0", &format!("{}", error))],
+        );
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
         self.feedback.set_visible(true);
@@ -546,11 +581,23 @@ fn suggestion_row(
             .build(),
     );
     let detail = if entry.source == "curated" {
-        format!("Toolport verified · {}", entry.description)
+        crate::i18n::trf(
+            "Toolport verified · {value0}",
+            &[("value0", &format!("{}", entry.description))],
+        )
     } else if let Some(publisher) = entry.publisher.as_deref() {
-        format!("MCP Registry · {publisher} · {}", entry.description)
+        crate::i18n::trf(
+            "MCP Registry · {value0} · {value1}",
+            &[
+                ("value0", &format!("{}", publisher)),
+                ("value1", &format!("{}", entry.description)),
+            ],
+        )
     } else {
-        format!("MCP Registry · {}", entry.description)
+        crate::i18n::trf(
+            "MCP Registry · {value0}",
+            &[("value0", &format!("{}", entry.description))],
+        )
     };
     copy.append(
         &gtk::Label::builder()
@@ -568,14 +615,14 @@ fn suggestion_row(
     if crate::catalog::installed_entry_identity(&entry)
         .is_some_and(|identity| existing.contains(&identity))
     {
-        let added = gtk::Label::new(Some("Added"));
+        let added = l10n::label("Added");
         added.set_size_request(72, -1);
         added.set_valign(gtk::Align::Center);
         added.set_xalign(0.5);
         added.add_css_class("toolport-catalog-added");
         row.append(&added);
     } else {
-        let add = gtk::Button::with_label("Add");
+        let add = l10n::button("Add");
         add.set_size_request(72, -1);
         add.set_valign(gtk::Align::Center);
         add.add_css_class("suggested-action");
@@ -598,15 +645,18 @@ fn suggestion_row(
                 match result {
                     Ok(Ok(registry)) => {
                         open_added_setup(&registry, &page);
-                        page.pending_notice.replace(Some(format!(
-                            "Added {name}. Check its status under Servers."
+                        page.pending_notice.replace(Some(crate::i18n::trf(
+                            "Added {value0}. Check its status under Servers.",
+                            &[("value0", &format!("{}", name))],
                         )));
                         page.search.set_text("");
                         page.refresh();
                     }
                     Ok(Err(error)) => page.show_suggestion_message(&error, true),
-                    Err(_) => page
-                        .show_suggestion_message("The add operation stopped unexpectedly.", true),
+                    Err(_) => page.show_suggestion_message(
+                        &crate::i18n::tr("The add operation stopped unexpectedly."),
+                        true,
+                    ),
                 }
             });
         });
@@ -684,12 +734,15 @@ fn catalog_card(
     );
     // Provenance tier, like the shipping catalog: who stands behind the entry.
     let provenance = match entry.source.as_str() {
-        "curated" => "Toolport verified".to_string(),
+        "curated" => crate::i18n::tr("Toolport verified").to_string(),
         "registry" => match entry.publisher.as_deref() {
-            Some(publisher) => format!("MCP Registry · {publisher}"),
-            None => "MCP Registry".to_string(),
+            Some(publisher) => crate::i18n::trf(
+                "MCP Registry · {value0}",
+                &[("value0", &format!("{}", publisher))],
+            ),
+            None => crate::i18n::tr("MCP Registry").to_string(),
         },
-        _ => "Your pick".to_string(),
+        _ => crate::i18n::tr("Your pick").to_string(),
     };
     let metadata = [
         Some(provenance.as_str()),
@@ -718,7 +771,10 @@ fn catalog_card(
     if let Some(homepage) = entry.homepage.clone() {
         let docs = gtk::Button::builder()
             .icon_name("help-browser-symbolic")
-            .tooltip_text(format!("Open docs: {homepage}"))
+            .tooltip_text(crate::i18n::trf(
+                "Open docs: {value0}",
+                &[("value0", &format!("{}", homepage))],
+            ))
             .valign(gtk::Align::Center)
             .css_classes(["flat"])
             .build();
@@ -739,14 +795,14 @@ fn catalog_card(
     if crate::catalog::installed_entry_identity(&entry)
         .is_some_and(|identity| existing.contains(&identity))
     {
-        let added = gtk::Label::new(Some("Added"));
+        let added = l10n::label("Added");
         added.set_valign(gtk::Align::Center);
         added.set_size_request(72, -1);
         added.set_xalign(0.5);
         added.add_css_class("toolport-catalog-added");
         action_slot.append(&added);
     } else {
-        let add = gtk::Button::with_label("Add");
+        let add = l10n::button("Add");
         add.add_css_class("suggested-action");
         add.add_css_class("toolport-catalog-action");
         add.set_valign(gtk::Align::Center);
@@ -773,13 +829,16 @@ fn catalog_card(
                 match result {
                     Ok(Ok(registry)) => {
                         open_added_setup(&registry, &page);
-                        page.pending_notice.replace(Some(format!(
-                            "Added {name}. Check its status under Servers."
+                        page.pending_notice.replace(Some(crate::i18n::trf(
+                            "Added {value0}. Check its status under Servers.",
+                            &[("value0", &format!("{}", name))],
                         )));
                         page.refresh();
                     }
                     Ok(Err(error)) => page.show_error(&error),
-                    Err(_) => page.show_error("the add operation stopped unexpectedly"),
+                    Err(_) => {
+                        page.show_error(&crate::i18n::tr("the add operation stopped unexpectedly"))
+                    }
                 }
             });
         });

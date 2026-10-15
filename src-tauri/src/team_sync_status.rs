@@ -127,13 +127,12 @@ pub fn record(conn: &TeamConnection, result: Result<(), &str>) -> Result<(), Str
 }
 
 pub fn summary(status: &SyncStatus) -> String {
-    let state = match status.state.as_str() {
-        "synced" => "Last sync succeeded",
-        "offline" => "Offline: cannot reach the team server",
-        "error" => "Team sync failed. Try Sync now",
-        _ => "Team connection has not been checked recently",
-    };
-    state.to_string()
+    match status.state.as_str() {
+        "synced" => crate::i18n::tr("Last sync succeeded"),
+        "offline" => crate::i18n::tr("Offline: cannot reach the team server"),
+        "error" => crate::i18n::tr("Team sync failed. Try Sync now"),
+        _ => crate::i18n::tr("Team connection has not been checked recently"),
+    }
 }
 
 #[cfg(test)]

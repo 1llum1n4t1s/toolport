@@ -29,6 +29,7 @@ pub mod hooks;
 pub mod hostenv;
 pub mod http_bridge;
 pub mod http_client;
+pub mod i18n;
 mod import_credentials;
 pub mod inspect;
 pub mod instructions;

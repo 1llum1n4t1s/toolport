@@ -1,3 +1,4 @@
+use super::i18n as l10n;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -44,9 +45,9 @@ impl ServerToolsPanel {
         let controls = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         page.append(
             &gtk::Label::builder()
-                .label(
+                .label(crate::i18n::tr(
                     "Calls follow the active profile and gateway policy, including approval gates.",
-                )
+                ))
                 .wrap(true)
                 .xalign(0.0)
                 .css_classes(["toolport-muted"])
@@ -58,13 +59,17 @@ impl ServerToolsPanel {
             .wrap(true)
             .css_classes(["toolport-feedback"])
             .build();
-        feedback.set_label("Choose a server to load its capabilities.");
+        l10n::bind_text(&feedback, "Choose a server to load its capabilities.");
 
-        let tool_filter = gtk::SearchEntry::builder()
-            .placeholder_text("Filter tools")
-            .css_classes(["toolport-search"])
-            .hexpand(true)
-            .build();
+        let tool_filter = {
+            let widget = gtk::SearchEntry::builder()
+                .placeholder_text(crate::i18n::tr("Filter tools"))
+                .css_classes(["toolport-search"])
+                .hexpand(true)
+                .build();
+            l10n::bind_placeholder(&widget, "Filter tools");
+            widget
+        };
         controls.append(&tool_filter);
         page.append(&controls);
         let view_stack = gtk::Stack::builder()
@@ -74,9 +79,18 @@ impl ServerToolsPanel {
         let tools = capability_list();
         let resources = capability_list();
         let prompts = capability_list();
-        view_stack.add_titled(&tools, Some("tools"), "Tools");
-        view_stack.add_titled(&resources, Some("resources"), "Resources");
-        view_stack.add_titled(&prompts, Some("prompts"), "Prompts");
+        l10n::bind_stack_page_title(
+            &view_stack.add_titled(&tools, Some("tools"), &crate::i18n::tr("Tools")),
+            "Tools",
+        );
+        l10n::bind_stack_page_title(
+            &view_stack.add_titled(&resources, Some("resources"), &crate::i18n::tr("Resources")),
+            "Resources",
+        );
+        l10n::bind_stack_page_title(
+            &view_stack.add_titled(&prompts, Some("prompts"), &crate::i18n::tr("Prompts")),
+            "Prompts",
+        );
         let switcher = gtk::StackSwitcher::new();
         switcher.set_stack(Some(&view_stack));
         switcher.set_halign(gtk::Align::Start);
@@ -121,7 +135,7 @@ impl ServerToolsPanel {
             return;
         }
         let server_id = self.server_id.clone();
-        self.set_status("Connecting to server…");
+        self.set_status(&crate::i18n::tr("Connecting to server…"));
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
             let result = gtk::gio::spawn_blocking(move || {
@@ -157,7 +171,9 @@ impl ServerToolsPanel {
             match result {
                 Ok(Ok((capabilities, policy))) => page.render(capabilities, policy),
                 Ok(Err(error)) => page.show_error(&error),
-                Err(_) => page.show_error("the server connection stopped unexpectedly"),
+                Err(_) => page.show_error(&crate::i18n::tr(
+                    "the server connection stopped unexpectedly",
+                )),
             }
         });
     }
@@ -174,12 +190,13 @@ impl ServerToolsPanel {
             self.prompts.append(&prompt_row(prompt, self.clone()));
         }
         if resource_count == 0 {
-            self.resources
-                .append(&empty_capability("No resources advertised"));
+            self.resources.append(&empty_capability(&crate::i18n::tr(
+                "No resources advertised",
+            )));
         }
         if prompt_count == 0 {
             self.prompts
-                .append(&empty_capability("No prompts advertised"));
+                .append(&empty_capability(&crate::i18n::tr("No prompts advertised")));
         }
         *self.last_load.borrow_mut() = Some((capabilities, policy));
         self.render_tools();
@@ -194,11 +211,18 @@ impl ServerToolsPanel {
     fn set_capability_counts(&self, counts: Option<(usize, usize, usize)>) {
         let labels = match counts {
             Some((tools, resources, prompts)) => [
-                format!("Tools ({tools})"),
-                format!("Resources ({resources})"),
-                format!("Prompts ({prompts})"),
+                crate::i18n::trf("Tools ({value0})", &[("value0", &format!("{}", tools))]),
+                crate::i18n::trf(
+                    "Resources ({value0})",
+                    &[("value0", &format!("{}", resources))],
+                ),
+                crate::i18n::trf("Prompts ({value0})", &[("value0", &format!("{}", prompts))]),
             ],
-            None => ["Tools".into(), "Resources".into(), "Prompts".into()],
+            None => [
+                crate::i18n::tr("Tools"),
+                crate::i18n::tr("Resources"),
+                crate::i18n::tr("Prompts"),
+            ],
         };
         for (child, label) in [&self.tools, &self.resources, &self.prompts]
             .into_iter()
@@ -225,7 +249,8 @@ impl ServerToolsPanel {
             self.tools.remove(&child);
         }
         if capabilities.tools.is_empty() {
-            self.tools.append(&empty_capability("No tools advertised"));
+            self.tools
+                .append(&empty_capability(&crate::i18n::tr("No tools advertised")));
             return;
         }
         let query = self.tool_filter.text().to_lowercase();
@@ -257,8 +282,9 @@ impl ServerToolsPanel {
             ));
         }
         if shown == 0 {
-            self.tools
-                .append(&empty_capability("No tool matches the filter"));
+            self.tools.append(&empty_capability(&crate::i18n::tr(
+                "No tool matches the filter",
+            )));
         }
     }
 
@@ -299,7 +325,10 @@ impl ServerToolsPanel {
     }
 
     fn show_error(&self, error: &str) {
-        self.set_status(&format!("Tools error: {error}"));
+        self.set_status(&crate::i18n::trf(
+            "Tools error: {value0}",
+            &[("value0", &format!("{}", error))],
+        ));
         self.feedback.add_css_class("error");
     }
 }
@@ -435,7 +464,7 @@ fn tool_row(
 
     // Built before the visibility toggle, which desensitizes it in place rather
     // than rebuilding the row.
-    let run = gtk::Button::with_label("Run");
+    let run = l10n::button("Run");
     run.add_css_class("toolport-secondary-action");
     run.set_valign(gtk::Align::Center);
     run.set_sensitive(enabled);
@@ -493,7 +522,14 @@ fn tool_row(
                     page.remember_tool_enabled(&name, enabled);
                     set_visibility_look(&button, enabled);
                     run.set_sensitive(enabled);
-                    badge.set_label(if enabled { "Enabled" } else { "Disabled" });
+                    l10n::bind_text(
+                        &badge,
+                        if enabled {
+                            crate::i18n::msg("Enabled")
+                        } else {
+                            crate::i18n::msg("Disabled")
+                        },
+                    );
                 }
                 Ok(Err(error)) => {
                     // The registry rejected the change, so the control must not
@@ -507,14 +543,16 @@ fn tool_row(
                     reverting.set(true);
                     button.set_active(enabled);
                     reverting.set(false);
-                    page.show_error("the tool visibility update stopped unexpectedly");
+                    page.show_error(&crate::i18n::tr(
+                        "the tool visibility update stopped unexpectedly",
+                    ));
                 }
             }
         });
     });
 
     let actions = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let pin_item = super::toolport_menu_button(pin_label(pinned));
+    let pin_item = super::toolport_menu_button(&crate::i18n::lookup(pin_label(pinned)));
     let rename_item = super::toolport_menu_button("Rename for clients\u{2026}");
     actions.append(&pin_item);
     actions.append(&rename_item);
@@ -522,7 +560,10 @@ fn tool_row(
     popover.set_child(Some(&actions));
     let menu = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
-        .tooltip_text(format!("More actions for {name}"))
+        .tooltip_text(crate::i18n::trf(
+            "More actions for {value0}",
+            &[("value0", &format!("{}", name))],
+        ))
         .popover(&popover)
         .valign(gtk::Align::Center)
         .css_classes(["flat"])
@@ -560,11 +601,11 @@ fn tool_row(
                     is_pinned.set(pinned);
                     badge.set_visible(pinned);
                     if let Some(label) = item.child().and_downcast::<gtk::Label>() {
-                        label.set_label(pin_label(pinned));
+                        label.set_label(&crate::i18n::lookup(pin_label(pinned)));
                     }
                 }
                 Ok(Err(error)) => page.show_error(&error),
-                Err(_) => page.show_error("the pin update stopped unexpectedly"),
+                Err(_) => page.show_error(&crate::i18n::tr("the pin update stopped unexpectedly")),
             }
         });
     });
@@ -586,7 +627,7 @@ fn tool_row(
     let name_for_run = name.clone();
     run.connect_clicked(move |_| {
         let name = name_for_run.clone();
-        let title = format!("Run {name}");
+        let title = crate::i18n::trf("Run {value0}", &[("value0", &format!("{}", name))]);
         let tool_name = name.clone();
         open_json_action(&page, &title, &schema, move |server_id, arguments| {
             crate::playground::call_tool(&server_id, &tool_name, arguments)
@@ -601,9 +642,9 @@ fn tool_row(
 
 fn pin_label(pinned: bool) -> &'static str {
     if pinned {
-        "Unpin from discovery"
+        crate::i18n::msg("Unpin from discovery")
     } else {
-        "Pin for discovery"
+        crate::i18n::msg("Pin for discovery")
     }
 }
 
@@ -613,10 +654,10 @@ fn set_visibility_look(button: &gtk::ToggleButton, enabled: bool) {
     } else {
         "view-conceal-symbolic"
     });
-    button.set_tooltip_text(Some(if enabled {
-        "Exposed to clients. Hide it."
+    button.set_tooltip_text(Some(&if enabled {
+        crate::i18n::tr("Exposed to clients. Hide it.")
     } else {
-        "Hidden from clients. Expose it."
+        crate::i18n::tr("Hidden from clients. Expose it.")
     }));
 }
 
@@ -630,7 +671,10 @@ fn open_exposure_editor(
         return;
     };
     let window = adw::Window::builder()
-        .title(format!("Tool exposure: {tool}"))
+        .title(crate::i18n::trf(
+            "Tool exposure: {value0}",
+            &[("value0", &format!("{}", tool))],
+        ))
         .transient_for(&parent)
         .modal(true)
         .default_width(560)
@@ -643,9 +687,9 @@ fn open_exposure_editor(
     root.set_margin_end(18);
     root.append(
         &gtk::Label::builder()
-            .label(
+            .label(crate::i18n::tr(
                 "Change only what AI clients see. Calls still route to the server's original tool.",
-            )
+            ))
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .wrap(true)
@@ -661,7 +705,10 @@ fn open_exposure_editor(
                 .unwrap_or_default(),
         )
         .build();
-    root.append(&super::editor_field("Exposed name", &name));
+    root.append(&super::editor_field(
+        &crate::i18n::tr("Exposed name"),
+        &name,
+    ));
     let description = gtk::TextView::new();
     description.set_wrap_mode(gtk::WrapMode::WordChar);
     description.buffer().set_text(
@@ -676,18 +723,24 @@ fn open_exposure_editor(
         .child(&description)
         .build();
     root.append(&super::editor_field(
-        "Replacement description",
+        &crate::i18n::tr("Replacement description"),
         &description_scroll,
     ));
-    root.append(
-        &gtk::Label::builder()
-            .label(format!("Original description: {original_description}"))
+    root.append(&{
+        let widget = gtk::Label::builder()
+            .label("")
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["caption", "toolport-muted"])
-            .build(),
-    );
+            .build();
+        l10n::bind_formatted_label(
+            &widget,
+            "Original description: {value0}",
+            &[("value0", &format!("{}", original_description))],
+        );
+        widget
+    });
     let feedback = gtk::Label::builder()
         .halign(gtk::Align::Fill)
         .xalign(0.0)
@@ -697,14 +750,14 @@ fn open_exposure_editor(
     root.append(&feedback);
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     actions.set_halign(gtk::Align::End);
-    let cancel = gtk::Button::with_label("Cancel");
-    let reset = gtk::Button::with_label("Reset to original");
+    let cancel = l10n::button("Cancel");
+    let reset = l10n::button("Reset to original");
     reset.add_css_class("destructive-action");
     reset.set_sensitive(current.is_some());
-    reset.set_tooltip_text(Some(
+    reset.set_tooltip_text(Some(&crate::i18n::tr(
         "Remove the override so clients see the server's original name and description",
-    ));
-    let save = gtk::Button::with_label("Save exposure");
+    )));
+    let save = l10n::button("Save exposure");
     save.add_css_class("suggested-action");
     actions.append(&cancel);
     actions.append(&reset);
@@ -739,7 +792,9 @@ fn open_exposure_editor(
                         page.load_selected();
                     }
                     Ok(Err(error)) => page.show_error(&error),
-                    Err(_) => page.show_error("the override reset stopped unexpectedly"),
+                    Err(_) => {
+                        page.show_error(&crate::i18n::tr("the override reset stopped unexpectedly"))
+                    }
                 }
             });
         });
@@ -773,7 +828,9 @@ fn open_exposure_editor(
                     page.load_selected();
                 }
                 Ok(Err(error)) => page.show_error(&error),
-                Err(_) => page.show_error("the exposure update stopped unexpectedly"),
+                Err(_) => {
+                    page.show_error(&crate::i18n::tr("the exposure update stopped unexpectedly"))
+                }
             }
         });
     });
@@ -817,7 +874,7 @@ fn prompt_row(prompt: serde_json::Value, page: ServerToolsPanel) -> gtk::Box {
     let name_for_get = name.clone();
     action_row(&name, &description, "Get", move || {
         let name = name_for_get.clone();
-        let title = format!("Get {name}");
+        let title = crate::i18n::trf("Get {value0}", &[("value0", &format!("{}", name))]);
         let prompt_name = name.clone();
         open_json_action(
             &page,
@@ -946,7 +1003,10 @@ fn form_field_value(field: &FormField, raw: &str) -> Result<Option<serde_json::V
     let raw = raw.trim();
     if raw.is_empty() {
         return if field.required {
-            Err(format!("{} is required", field.name))
+            Err(crate::i18n::trf(
+                "{value0} is required",
+                &[("value0", &format!("{}", field.name))],
+            ))
         } else {
             Ok(None)
         };
@@ -958,14 +1018,24 @@ fn form_field_value(field: &FormField, raw: &str) -> Result<Option<serde_json::V
         FieldKind::Integer => raw
             .parse::<i64>()
             .map(|value| Some(serde_json::Value::from(value)))
-            .map_err(|_| format!("{} must be a whole number", field.name)),
+            .map_err(|_| {
+                crate::i18n::trf(
+                    "{value0} must be a whole number",
+                    &[("value0", &format!("{}", field.name))],
+                )
+            }),
         FieldKind::Number => raw
             .parse::<f64>()
             .map(|value| Some(serde_json::json!(value)))
-            .map_err(|_| format!("{} must be a number", field.name)),
-        FieldKind::Boolean => Err(format!(
-            "{} is a boolean and should not reach text coercion",
-            field.name
+            .map_err(|_| {
+                crate::i18n::trf(
+                    "{value0} must be a number",
+                    &[("value0", &format!("{}", field.name))],
+                )
+            }),
+        FieldKind::Boolean => Err(crate::i18n::trf(
+            "{value0} is a boolean and should not reach text coercion",
+            &[("value0", &format!("{}", field.name))],
         )),
     }
 }
@@ -990,7 +1060,10 @@ impl FormWidget {
                 let selected = dropdown.selected() as usize;
                 if selected == 0 {
                     return if field.required {
-                        Err(format!("{} is required", field.name))
+                        Err(crate::i18n::trf(
+                            "{value0} is required",
+                            &[("value0", &format!("{}", field.name))],
+                        ))
                     } else {
                         Ok(None)
                     };
@@ -1010,7 +1083,7 @@ fn build_form_row(field: &FormField) -> (gtk::Box, FormWidget) {
     let row = gtk::Box::new(gtk::Orientation::Vertical, 4);
     let label = gtk::Label::builder()
         .label(if field.required {
-            format!("{} (required)", field.name)
+            crate::i18n::trf("{field} (required)", &[("field", field.name.as_str())])
         } else {
             field.name.clone()
         })
@@ -1124,13 +1197,15 @@ fn open_json_action(
     root.set_margin_bottom(18);
     root.set_margin_start(18);
     root.set_margin_end(18);
-    root.append(
-        &gtk::Label::builder()
-            .label("Arguments")
+    root.append(&{
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr("Arguments"))
             .halign(gtk::Align::Start)
             .css_classes(["toolport-muted", "caption"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, "Arguments");
+        widget
+    });
 
     // Typed form when the schema is all primitives; raw JSON otherwise, and as
     // an explicit opt-out either way.
@@ -1217,7 +1292,7 @@ fn open_json_action(
         )
         .build();
     let schema_expander = gtk::Expander::builder()
-        .label("Input schema")
+        .label(crate::i18n::tr("Input schema"))
         .child(&schema_view)
         .css_classes(["toolport-details-expander"])
         .build();
@@ -1232,8 +1307,8 @@ fn open_json_action(
     root.append(&feedback);
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     actions.set_halign(gtk::Align::End);
-    let cancel = gtk::Button::with_label("Cancel");
-    let run = gtk::Button::with_label("Run");
+    let cancel = l10n::button("Cancel");
+    let run = l10n::button("Run");
     run.add_css_class("suggested-action");
     actions.append(&cancel);
     actions.append(&run);
@@ -1263,11 +1338,22 @@ fn open_json_action(
             match serde_json::from_str::<serde_json::Value>(&text) {
                 Ok(serde_json::Value::Object(object)) => serde_json::Value::Object(object),
                 Ok(_) => {
-                    set_dialog_status(&feedback, "Arguments must be a JSON object.", true);
+                    set_dialog_status(
+                        &feedback,
+                        &crate::i18n::tr("Arguments must be a JSON object."),
+                        true,
+                    );
                     return;
                 }
                 Err(error) => {
-                    set_dialog_status(&feedback, &format!("Invalid JSON: {error}"), true);
+                    set_dialog_status(
+                        &feedback,
+                        &crate::i18n::trf(
+                            "Invalid JSON: {value0}",
+                            &[("value0", &format!("{}", error))],
+                        ),
+                        true,
+                    );
                     return;
                 }
             }
@@ -1291,7 +1377,7 @@ fn open_json_action(
             return;
         };
         button.set_sensitive(false);
-        set_dialog_status(&feedback, "Calling… 0s", false);
+        set_dialog_status(&feedback, &crate::i18n::tr("Calling… 0s"), false);
         let started = std::time::Instant::now();
         let done = Rc::new(Cell::new(false));
         {
@@ -1303,7 +1389,10 @@ fn open_json_action(
                 }
                 set_dialog_status(
                     &feedback,
-                    &format!("Calling… {}s", started.elapsed().as_secs()),
+                    &crate::i18n::trf(
+                        "Calling… {seconds}s",
+                        &[("seconds", &started.elapsed().as_secs().to_string())],
+                    ),
                     false,
                 );
                 gtk::glib::ControlFlow::Continue
@@ -1323,7 +1412,7 @@ fn open_json_action(
             match result {
                 Ok(Ok(value)) => show_output(&page, "Tools result", value),
                 Ok(Err(error)) => page.show_error(&error),
-                Err(_) => page.show_error("the tool call stopped unexpectedly"),
+                Err(_) => page.show_error(&crate::i18n::tr("the tool call stopped unexpectedly")),
             }
         });
     });
@@ -1341,7 +1430,7 @@ fn run_output(
         match gtk::gio::spawn_blocking(operation).await {
             Ok(Ok(value)) => show_output(&page, &title, value),
             Ok(Err(error)) => page.show_error(&error),
-            Err(_) => page.show_error("the tool operation stopped unexpectedly"),
+            Err(_) => page.show_error(&crate::i18n::tr("the tool operation stopped unexpectedly")),
         }
     });
 }
@@ -1360,16 +1449,18 @@ fn show_output(page: &ServerToolsPanel, title: &str, value: serde_json::Value) {
     let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
-    let copy = gtk::Button::with_label("Copy");
+    let copy = l10n::button("Copy");
     copy.add_css_class("toolport-secondary-action");
-    copy.set_tooltip_text(Some("Copy the full result to the clipboard"));
+    copy.set_tooltip_text(Some(&crate::i18n::tr(
+        "Copy the full result to the clipboard",
+    )));
     {
         let text = text.clone();
         let copy_button = copy.clone();
         copy.connect_clicked(move |_| {
             if let Some(display) = gtk::gdk::Display::default() {
                 display.clipboard().set_text(&text);
-                copy_button.set_label("Copied");
+                l10n::bind_text(&copy_button, "Copied");
             }
         });
     }

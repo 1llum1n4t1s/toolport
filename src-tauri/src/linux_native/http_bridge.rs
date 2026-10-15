@@ -42,7 +42,10 @@ impl BridgeController {
             if !was_running {
                 let _ = crate::http_bridge::stop(&self.state);
             }
-            return Err(format!("Could not save the HTTP endpoint token: {error}"));
+            return Err(crate::i18n::trf(
+                "Could not save the HTTP endpoint token: {value0}",
+                &[("value0", &format!("{}", error))],
+            ));
         }
         if let Err(error) = crate::registry::update(|registry| {
             registry.http_bridge_enabled = true;
@@ -52,7 +55,10 @@ impl BridgeController {
             if !was_running {
                 let _ = crate::http_bridge::stop(&self.state);
             }
-            return Err(format!("Could not save the HTTP endpoint setting: {error}"));
+            return Err(crate::i18n::trf(
+                "Could not save the HTTP endpoint setting: {value0}",
+                &[("value0", &format!("{}", error))],
+            ));
         }
         Ok(status)
     }
@@ -107,8 +113,9 @@ impl BridgeController {
             if let Err(error) =
                 crate::http_bridge::start_with_token_at(&self.state, before.port, before.token)
             {
-                failed.push(format!(
-                    "Could not restart the Shared HTTP endpoint: {error}"
+                failed.push(crate::i18n::trf(
+                    "Could not restart the Shared HTTP endpoint: {value0}",
+                    &[("value0", &format!("{}", error))],
                 ));
             }
         }

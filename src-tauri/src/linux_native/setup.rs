@@ -1,4 +1,5 @@
 //! Shared review window for client cutover and multi-server paste.
+use super::i18n as l10n;
 use crate::registry_controller::SetupItem;
 use adw::prelude::*;
 
@@ -78,7 +79,7 @@ pub(super) fn review(
     let header = adw::HeaderBar::new();
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
-    let cancel = gtk::Button::with_label("Cancel");
+    let cancel = l10n::button("Cancel");
     let confirm = gtk::Button::with_label(confirm_label);
     confirm.add_css_class("suggested-action");
     header.pack_start(&cancel);
@@ -89,11 +90,17 @@ pub(super) fn review(
     body.set_margin_bottom(24);
     body.set_margin_start(24);
     body.set_margin_end(24);
-    let lede = gtk::Label::builder()
-        .label("Review the selected servers before continuing.")
-        .xalign(0.0)
-        .wrap(true)
-        .build();
+    let lede = {
+        let widget = gtk::Label::builder()
+            .label(crate::i18n::tr(
+                "Review the selected servers before continuing.",
+            ))
+            .xalign(0.0)
+            .wrap(true)
+            .build();
+        l10n::bind_label(&widget, "Review the selected servers before continuing.");
+        widget
+    };
     body.append(&lede);
     let rows = gtk::ListBox::new();
     rows.set_selection_mode(gtk::SelectionMode::None);
@@ -143,7 +150,15 @@ pub(super) fn review(
                                         .and_then(|values| values.get(&field.key))
                                         .is_some_and(|v| !v.trim().is_empty())
                             })
-                            .map(|field| format!("Enter {} or deselect {name}", field.key))
+                            .map(|field| {
+                                crate::i18n::trf(
+                                    "Enter {value0} or deselect {value1}",
+                                    &[
+                                        ("value0", &format!("{}", field.key)),
+                                        ("value1", &format!("{}", name)),
+                                    ],
+                                )
+                            })
                             .collect::<Vec<_>>()
                     })
                     .collect::<Vec<_>>()
@@ -165,7 +180,7 @@ pub(super) fn review(
             .as_ref()
             .map(|c| format!("{c} {}", item.args.join(" ")))
             .or(item.url.clone())
-            .unwrap_or_else(|| "Needs an endpoint URL".into());
+            .unwrap_or_else(|| crate::i18n::tr("Needs an endpoint URL").into());
         let row = adw::ActionRow::builder()
             .title(&item.name)
             .subtitle(&command)
@@ -186,21 +201,23 @@ pub(super) fn review(
         row.add_prefix(&check);
         check.set_sensitive(item.unsupported.is_none());
         row.set_activatable_widget(Some(&check));
-        let (settings, content) =
-            details_expander(&format!("{} credentials and settings", item.name));
+        let (settings, content) = details_expander(&crate::i18n::trf(
+            "{value0} credentials and settings",
+            &[("value0", &format!("{}", item.name))],
+        ));
         let credential_rows = gtk::ListBox::new();
         credential_rows.set_selection_mode(gtk::SelectionMode::None);
         content.append(&credential_rows);
-        let tag = gtk::Label::new(Some(if !item.updates.is_empty() {
-            "Updates existing server"
+        let tag = l10n::label(if !item.updates.is_empty() {
+            crate::i18n::msg("Updates existing server")
         } else if item.is_new {
-            "New"
+            crate::i18n::msg("New")
         } else {
-            "In Toolport"
-        }));
+            crate::i18n::msg("In Toolport")
+        });
         if !item.updates.is_empty() {
             let changes = adw::ActionRow::builder()
-                .title("Changes")
+                .title(crate::i18n::tr("Changes"))
                 .subtitle(item.updates.join(", "))
                 .build();
             credential_rows.append(&changes);
@@ -217,15 +234,15 @@ pub(super) fn review(
                 .iter()
                 .all(|env| !env.required || env.present);
             let secret = item.credentials.iter().any(|env| env.secret);
-            let state = gtk::Label::new(Some(if !found && required_found {
-                "Optional"
+            let state = l10n::label(if !found && required_found {
+                crate::i18n::msg("Optional")
             } else if !found {
-                "Missing"
+                crate::i18n::msg("Missing")
             } else if secret {
-                "Found, goes to keychain"
+                crate::i18n::msg("Found, goes to keychain")
             } else {
-                "Found"
-            }));
+                crate::i18n::msg("Found")
+            });
             state.add_css_class(if required_found {
                 "dim-label"
             } else {
@@ -267,20 +284,23 @@ pub(super) fn review(
                                 .and_then(|values| values.get(&env.key))
                                 .is_some_and(|value| !value.is_empty())
                     });
-                    state.set_label(if !found && required_found {
-                        "Optional"
-                    } else if !found {
-                        "Missing"
-                    } else if choices
-                        .borrow()
-                        .iter()
-                        .filter_map(|choice| choice.upgrade())
-                        .any(|choice| choice.is_active())
-                    {
-                        "Found, goes to keychain"
-                    } else {
-                        "Found"
-                    });
+                    l10n::bind_text(
+                        state,
+                        if !found && required_found {
+                            crate::i18n::msg("Optional")
+                        } else if !found {
+                            crate::i18n::msg("Missing")
+                        } else if choices
+                            .borrow()
+                            .iter()
+                            .filter_map(|choice| choice.upgrade())
+                            .any(|choice| choice.is_active())
+                        {
+                            crate::i18n::msg("Found, goes to keychain")
+                        } else {
+                            crate::i18n::msg("Found")
+                        },
+                    );
                     state.remove_css_class("warning");
                     state.remove_css_class("dim-label");
                     state.add_css_class(if required_found {
@@ -293,11 +313,17 @@ pub(super) fn review(
             }
         });
         if let Some(reason) = &item.unsupported {
-            row.set_subtitle(&format!("Unsupported: {reason}"));
+            row.set_subtitle(&crate::i18n::trf(
+                "Unsupported: {value0}",
+                &[("value0", &format!("{}", reason))],
+            ));
         }
         for env in item.credentials {
             let choice = gtk::CheckButton::builder()
-                .label(format!("Keep {} in keychain", env.key))
+                .label(crate::i18n::trf(
+                    "Keep {value0} in keychain",
+                    &[("value0", &format!("{}", env.key))],
+                ))
                 .active(env.secret)
                 .build();
             row_choices.borrow_mut().push(choice.downgrade());
@@ -322,7 +348,7 @@ pub(super) fn review(
             value_row.set_activatable_widget(Some(&choice));
             credential_rows.append(&value_row);
             if !env.present {
-                let open = gtk::Button::with_label("Enter value");
+                let open = l10n::button("Enter value");
                 let owner = dialog.clone();
                 let inputs = credential_inputs.clone();
                 let name = item.name.clone();
@@ -330,7 +356,9 @@ pub(super) fn review(
                 let refresh_state = refresh_state.clone();
                 let value_row_for_input = value_row.clone();
                 open.connect_clicked(move |_| {
-                    let prompt = adw::MessageDialog::new(Some(&owner), Some(&format!("{name} credentials")), Some(&format!("Enter {key}. This value is used only for the selected server. It is saved only if connection succeeds.")));
+                    let prompt = adw::MessageDialog::new(Some(&owner), Some(&crate::i18n::trf("{value0} credentials", &[("value0", &format!("{}", name))])), Some(&crate::i18n::trf("Enter {value0}. This value is used only for the selected server. It is saved only if connection succeeds.", &[("value0", &format!("{}", key))])));
+l10n::bind_formatted_dialog_heading(&prompt, "{value0} credentials", &[("value0", &format!("{}", name))]);
+l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used only for the selected server. It is saved only if connection succeeds.", &[("value0", &format!("{}", key))]);
                     let entry = gtk::PasswordEntry::builder().show_peek_icon(true).build();
                     prompt.set_extra_child(Some(&entry));
                     prompt.add_responses(&[("cancel", "Cancel"), ("save", "Use for connection")]);
@@ -360,7 +388,7 @@ pub(super) fn review(
     body.append(&rows);
     body.append(&missing_reason);
     refresh_confirm();
-    let (details, content) = details_expander("Details");
+    let (details, content) = details_expander(&crate::i18n::tr("Details"));
     let path = gtk::Label::builder()
         .label(disclosure)
         .wrap(true)
@@ -447,7 +475,7 @@ pub(super) fn review(
             spinner.set_visible(check.is_active());
             spinner.set_spinning(check.is_active());
         }
-        feedback.set_label("Checking selected servers...");
+        l10n::bind_text(&feedback, "Checking selected servers...");
         feedback.set_visible(true);
         let (action, finished, selected, busy, completed) = (
             action.clone(),
@@ -495,7 +523,7 @@ pub(super) fn review(
                 Ok(Ok(outcome)) => {
                     completed.set(true);
                     cancel.set_visible(false);
-                    button.set_label("Done");
+                    l10n::bind_text(&button, "Done");
                     rows.set_visible(false);
                     details.set_visible(false);
                     lede.set_visible(false);
@@ -527,13 +555,20 @@ pub(super) fn review(
                         };
                         let row = adw::ActionRow::builder()
                             .title(&server.name)
-                            .subtitle(format!("{} tools · {}", server.tool_count, credential))
+                            .subtitle(crate::i18n::trf(
+                                "{value0} tools · {value1}",
+                                &[
+                                    ("value0", &format!("{}", server.tool_count)),
+                                    ("value1", &format!("{}", credential)),
+                                ],
+                            ))
                             .build();
                         results.append(&row);
                     }
                     body.append(&results);
                     if !outcome.tools.is_empty() {
-                        let (agent, content) = details_expander("What your agent sees");
+                        let (agent, content) =
+                            details_expander(&crate::i18n::tr("What your agent sees"));
                         for tool in outcome.tools {
                             let row = adw::ActionRow::builder()
                                 .title(tool["name"].as_str().unwrap_or("Tool"))
@@ -543,7 +578,7 @@ pub(super) fn review(
                         body.append(&agent);
                     }
                     if let Some(backup) = outcome.backup {
-                        let (detail, content) = details_expander("Details");
+                        let (detail, content) = details_expander(&crate::i18n::tr("Details"));
                         let date = std::fs::metadata(&backup)
                             .ok()
                             .and_then(|m| m.modified().ok())
@@ -554,11 +589,22 @@ pub(super) fn review(
                             .and_then(|t| t.format("%e %B %Y, %H:%M").ok())
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| "saved".into());
-                        let label = gtk::Label::builder()
-                            .label(format!("Backup {date}\n{backup}"))
-                            .wrap(true)
-                            .selectable(true)
-                            .build();
+                        let label = {
+                            let widget = gtk::Label::builder()
+                                .label("")
+                                .wrap(true)
+                                .selectable(true)
+                                .build();
+                            l10n::bind_formatted_label(
+                                &widget,
+                                "Backup {value0}\n{value1}",
+                                &[
+                                    ("value0", &format!("{}", date)),
+                                    ("value1", &format!("{}", backup)),
+                                ],
+                            );
+                            widget
+                        };
                         content.append(&label);
                         body.append(&detail);
                     }
@@ -567,11 +613,11 @@ pub(super) fn review(
                 result => {
                     let error = match result {
                         Ok(Err(error)) => error,
-                        _ => "Setup stopped. Retry.".into(),
+                        _ => crate::i18n::tr("Setup stopped. Retry.").into(),
                     };
                     feedback.set_label(&error);
                     feedback.add_css_class("error");
-                    button.set_label("Retry");
+                    l10n::bind_text(&button, "Retry");
                     refresh_confirm();
                     for (_, row, _, _, name) in selected.iter() {
                         if error.contains(name) {
@@ -605,14 +651,24 @@ pub(super) fn connect(
                     .into_iter()
                     .find(|client| client.id == client_id)
                     .map(|client| client.name)
-                    .unwrap_or_else(|| "Client".into());
-                let disclosure = format!("Config: {}\nBackup directory: {}\nSelected entries move after gateway verification. Unchecked entries and plugin servers stay in place.{}", preview.config_path, preview.backup_dir, if force { " This replaces the customized Toolport entry." } else { "" });
+                    .unwrap_or_else(|| crate::i18n::tr("Client").into());
+                let disclosure = crate::i18n::trf(
+                    if force {
+                        crate::i18n::msg("Config: {value0}\nBackup directory: {value1}\nSelected entries move after gateway verification. Unchecked entries and plugin servers stay in place. This replaces the customized Toolport entry.")
+                    } else {
+                        crate::i18n::msg("Config: {value0}\nBackup directory: {value1}\nSelected entries move after gateway verification. Unchecked entries and plugin servers stay in place.")
+                    },
+                    &[
+                        ("value0", &format!("{}", preview.config_path)),
+                        ("value1", &format!("{}", preview.backup_dir)),
+                    ],
+                );
                 review(
                     &parent,
-                    "Review and connect",
+                    &crate::i18n::tr("Review and connect"),
                     preview.items,
                     &disclosure,
-                    "Connect to Toolport",
+                    &crate::i18n::tr("Connect to Toolport"),
                     true,
                     move |selected, choices, inputs| {
                         let outcome = crate::registry_controller::migrate_client_reviewed_inputs(
@@ -625,8 +681,9 @@ pub(super) fn connect(
                             &inputs,
                         )?;
                         Ok(Completion {
-                            message: format!(
-                                "{client_name} connected. Restart it to load Toolport."
+                            message: crate::i18n::trf(
+                                "{value0} connected. Restart it to load Toolport.",
+                                &[("value0", &format!("{}", client_name))],
                             ),
                             servers: outcome.servers,
                             tools: outcome.tools,
@@ -639,23 +696,23 @@ pub(super) fn connect(
             }
             Ok(Err(error)) => review(
                 &parent,
-                "Could not review setup",
+                &crate::i18n::tr("Could not review setup"),
                 Vec::new(),
                 &error,
-                "Close",
+                &crate::i18n::tr("Close"),
                 false,
-                |_, _, _| Err("Fix the client config and retry.".into()),
+                |_, _, _| Err(crate::i18n::tr("Fix the client config and retry.").into()),
                 || {},
                 None,
             ),
             Err(_) => review(
                 &parent,
-                "Could not review setup",
+                &crate::i18n::tr("Could not review setup"),
                 Vec::new(),
-                "Client review stopped.",
-                "Close",
+                &crate::i18n::tr("Client review stopped."),
+                &crate::i18n::tr("Close"),
                 false,
-                |_, _, _| Err("Retry from Clients.".into()),
+                |_, _, _| Err(crate::i18n::tr("Retry from Clients.").into()),
                 || {},
                 None,
             ),

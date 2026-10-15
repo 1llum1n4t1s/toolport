@@ -1,6 +1,7 @@
 //! Owner-only configuration sync. Values and approvals remain machine-local unless
 //! a nonsecret value is explicitly marked portable. Network work never holds the
 //! registry lock; acknowledgements compare the exact queued mutation again.
+use crate::i18n::{tr, trf};
 use crate::registry::{Registry, ServerEntry};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -498,27 +499,272 @@ pub fn review_field_line(key: &str, value: &str) -> String {
 /// Display only: consent compares `execution_review_fields`, so naming secret
 /// arguments after their flag here never changes what was approved.
 pub fn review_display(server: &ServerEntry, line: &str) -> String {
-    let mut out = line.replace("<launch-input>", "<secret>");
-    let Some(launch) = &server.launch else {
-        return out;
-    };
-    // Only generated names are renamed; a label someone chose is already readable.
-    for input in launch
-        .inputs
-        .iter()
-        .filter(|input| input.secret && input.label.starts_with("Imported argument"))
-    {
-        let key = visible_text(&input.key);
-        let name = crate::launch_inputs::input_display_name(&server.args, launch, &input.key);
-        out = out
-            .replace(
-                &format!("Input: {key} = <masked secret>"),
-                &format!("{name} = secret, entered on each machine"),
-            )
-            .replace(&format!("Input: {key} ="), &format!("{name} ="))
-            .replace(&format!("{{{key}}}"), &format!("<{name}>"));
+    let fields = execution_review_fields(server);
+    if let Some(launch) = &server.launch {
+        for input in launch
+            .inputs
+            .iter()
+            .filter(|input| input.secret && input.label.starts_with("Imported argument"))
+        {
+            let key = format!("Input: {}", visible_text(&input.key));
+            if let Some(value) = fields.get(&key) {
+                if line == review_field_line(&key, value) {
+                    let name = display_input_name(server, launch, &input.key);
+                    return if value == "<masked secret>" {
+                        trf(
+                            "{name} = secret, entered on each machine",
+                            &[("name", &name)],
+                        )
+                    } else {
+                        format!(
+                            "{name} = {}",
+                            display_review_value(server, &key, value, &tr)
+                        )
+                    };
+                }
+            }
+        }
+    }
+    let mut out = localize_review_line(server, line);
+    // Secret placeholder presentation applies only to argument fields. Commands,
+    // paths and ordinary environment values remain exact, even if token-like.
+    if line.starts_with("Arguments: ") || line.starts_with("Argument values: ") {
+        out = out.replace("<launch-input>", "<secret>");
+        if let Some(launch) = &server.launch {
+            for input in launch
+                .inputs
+                .iter()
+                .filter(|input| input.secret && input.label.starts_with("Imported argument"))
+            {
+                let name = display_input_name(server, launch, &input.key);
+                out = out.replace(
+                    &format!("{{{}}}", visible_text(&input.key)),
+                    &format!("<{name}>"),
+                );
+            }
+        }
     }
     out
+}
+
+fn display_input_name(
+    server: &ServerEntry,
+    launch: &crate::registry::LaunchConfig,
+    key: &str,
+) -> String {
+    let label = launch
+        .inputs
+        .iter()
+        .find(|input| input.key == key)
+        .map_or(key, |input| input.label.as_str());
+    if !label.starts_with("Imported argument") {
+        return label.to_owned();
+    }
+    let index = launch.bindings.iter().find_map(|binding| {
+        matches!(binding.parts.as_slice(), [crate::registry::ArgPart::Input { key: input, .. }] if input == key).then_some(binding.index)
+    });
+    match index {
+        Some(position)
+            if position > 0
+                && server
+                    .args
+                    .get(position - 1)
+                    .is_some_and(|flag| flag.starts_with('-')) =>
+        {
+            trf(
+                "Value for {flag} (argument {position})",
+                &[
+                    ("flag", &server.args[position - 1]),
+                    ("position", &(position + 1).to_string()),
+                ],
+            )
+        }
+        Some(position) => trf(
+            "Secret argument {position}",
+            &[("position", &(position + 1).to_string())],
+        ),
+        None => label.to_owned(),
+    }
+}
+
+/// Translate known canonical field labels only; arbitrary user keys stay raw.
+pub fn review_field_label(key: &str) -> String {
+    match key {
+        "Name" => tr("Name"),
+        "Transport" => tr("Transport"),
+        "Working directory" => tr("Working directory"),
+        "Disabled" => tr("Disabled"),
+        "Request timeout" => tr("Request timeout"),
+        "Startup timeout" => tr("Startup timeout"),
+        "Disabled tools" => tr("Disabled tools"),
+        "Server" => tr("Server"),
+        "Environment" => tr("Environment"),
+        "Input" => tr("Input"),
+        "Header" => tr("Header"),
+        "Endpoint" => tr("Endpoint"),
+        "Environment / credential keys" => tr("Environment / credential keys"),
+        "Local setup inputs" => tr("Local setup inputs"),
+        "Authentication" => tr("Authentication"),
+        "Command" => tr("Command"),
+        "Arguments" => tr("Arguments"),
+        "Working folder" => tr("Working folder"),
+        "Uses this machine's environment" => tr("Uses this machine's environment"),
+        "Argument values" => tr("Argument values"),
+        "URL" => tr("URL"),
+        _ => {
+            for (prefix, label) in [
+                ("Environment: ", tr("Environment")),
+                ("Input: ", tr("Input")),
+                ("Header: ", tr("Header")),
+            ] {
+                if let Some(name) = key.strip_prefix(prefix) {
+                    return format!("{label}: {name}");
+                }
+            }
+            if let Some(position) = key.strip_prefix("Argument ").filter(|position| {
+                !position.is_empty() && position.bytes().all(|byte| byte.is_ascii_digit())
+            }) {
+                return trf("Argument {position}", &[("position", position)]);
+            }
+            key.to_owned()
+        }
+    }
+}
+
+fn display_argument_values(value: &str) -> String {
+    value
+        .split('\n')
+        .map(|line| {
+            let Some((position, value)) = line
+                .strip_prefix("Argument ")
+                .and_then(|line| line.split_once(" = "))
+            else {
+                return line.to_owned();
+            };
+            if !position.bytes().all(|byte| byte.is_ascii_digit()) {
+                return line.to_owned();
+            }
+            trf(
+                "Argument {position} = {value}",
+                &[("position", position), ("value", value)],
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn display_review_value(
+    server: &ServerEntry,
+    key: &str,
+    value: &str,
+    lookup: &dyn Fn(&str) -> String,
+) -> String {
+    // Arbitrary execution values must never be translated because they happen
+    // to equal a source key. Establish semantic sentinels from the typed row.
+    for (prefix, path) in [
+        ("Environment: ", "/env"),
+        ("Input: ", "/launch/inputs"),
+        ("Header: ", "/headerKeys"),
+    ] {
+        if let Some(name) = key.strip_prefix(prefix) {
+            let definition = json!(server);
+            let row = definition
+                .pointer(path)
+                .and_then(Value::as_array)
+                .and_then(|rows| {
+                    rows.iter().find(|row| {
+                        row["key"]
+                            .as_str()
+                            .is_some_and(|key| visible_text(key) == name)
+                    })
+                });
+            let Some(row) = row else {
+                return if value == "Removed" {
+                    lookup("Removed")
+                } else {
+                    value.to_owned()
+                };
+            };
+            if prefix == "Header: " {
+                if let Some(name) = row["env"].as_str() {
+                    if value == format!("Uses environment: {}", visible_text(name)) {
+                        return trf("Uses environment: {name}", &[("name", &visible_text(name))]);
+                    }
+                }
+            }
+            if let Some(reference) = row["source"]["ref"].as_str() {
+                if value == format!("Password manager: {}", visible_text(reference)) {
+                    return trf(
+                        "Password manager: {reference}",
+                        &[("reference", &visible_text(reference))],
+                    );
+                }
+            }
+            if row["secret"] == true && value == "<masked secret>" {
+                return lookup("<masked secret>");
+            }
+            if row.get("value").is_none_or(Value::is_null) && value == "Set on this machine" {
+                return lookup("Set on this machine");
+            }
+            return value.to_owned();
+        }
+    }
+    if key == "Uses this machine's environment" && matches!(value, "yes" | "no") {
+        return lookup(value);
+    }
+    if key == "Argument values" {
+        return display_argument_values(value);
+    }
+    if !execution_review_fields(server).contains_key(key) && value == "Removed" {
+        return lookup("Removed");
+    }
+    value.to_owned()
+}
+
+fn localize_review_line(server: &ServerEntry, line: &str) -> String {
+    // Native callers use this raw marker for heading/highlight styling.
+    if line == "New server" {
+        return line.to_owned();
+    }
+    for (key, value) in execution_review_fields(server) {
+        let canonical = review_field_line(&key, &value);
+        if line == canonical {
+            let value = display_review_value(server, &key, &value, &tr);
+            let label = review_field_label(&key);
+            return if key.starts_with("Environment:")
+                || key.starts_with("Input:")
+                || key.starts_with("Header:")
+            {
+                format!("{label} = {value}")
+            } else {
+                format!("{label}: {value}")
+            };
+        }
+    }
+    // Removed fields have no current row; only translate a known prior key.
+    if let Some(previous) = server
+        .unknown_fields
+        .get("syncExecutionReview")
+        .and_then(Value::as_object)
+        .map(review_baseline)
+    {
+        for key in previous
+            .keys()
+            .filter(|key| !execution_review_fields(server).contains_key(*key))
+        {
+            if line == review_field_line(key, "Removed") {
+                return if key.starts_with("Environment:")
+                    || key.starts_with("Input:")
+                    || key.starts_with("Header:")
+                {
+                    format!("{} = {}", review_field_label(key), tr("Removed"))
+                } else {
+                    format!("{}: {}", review_field_label(key), tr("Removed"))
+                };
+            }
+        }
+    }
+    line.to_owned()
 }
 pub fn execution_review_lines(server: &ServerEntry) -> Vec<String> {
     execution_review_raw_lines(server)
@@ -535,12 +781,34 @@ fn changed_arguments(old: &str, new: &str) -> String {
             .collect()
     };
     let (old, new) = (items(old), items(new));
-    let mut out = String::from("Arguments changed:");
+    let mut out = tr("Arguments changed:");
     for i in 0..old.len().max(new.len()) {
         match (old.get(i), new.get(i)) {
-            (Some(a), Some(b)) if a != b => out.push_str(&format!("\n  {}. {b} (was {a})", i + 1)),
-            (None, Some(b)) => out.push_str(&format!("\n  {}. {b} (added)", i + 1)),
-            (Some(a), None) => out.push_str(&format!("\n  {}. removed (was {a})", i + 1)),
+            (Some(a), Some(b)) if a != b => out.push_str(&format!(
+                "\n  {}",
+                trf(
+                    "{position}. {value} (was {previous})",
+                    &[
+                        ("position", &(i + 1).to_string()),
+                        ("value", b),
+                        ("previous", a)
+                    ]
+                )
+            )),
+            (None, Some(b)) => out.push_str(&format!(
+                "\n  {}",
+                trf(
+                    "{position}. {value} (added)",
+                    &[("position", &(i + 1).to_string()), ("value", b)]
+                )
+            )),
+            (Some(a), None) => out.push_str(&format!(
+                "\n  {}",
+                trf(
+                    "{position}. removed (was {previous})",
+                    &[("position", &(i + 1).to_string()), ("previous", a)]
+                )
+            )),
             _ => {}
         }
     }
@@ -571,10 +839,10 @@ fn execution_review_raw_lines(server: &ServerEntry) -> Vec<String> {
         }
     }
     if server.unknown_fields.get("personalSyncArgsReview") == Some(&json!(true)) {
-        lines.push(ARGS_REVIEW_LINE.into());
+        lines.push(crate::i18n::lookup(ARGS_REVIEW_LINE));
     }
     for n in missing_secret_args(server) {
-        lines.push(format!("Argument {n} is a secret that does not sync. Edit this server and enter it on this machine before enabling."));
+        lines.push(trf("Argument {position} is a secret that does not sync. Edit this server and enter it on this machine before enabling.", &[("position", &n.to_string())]));
     }
     // Consent is to a reference reaching a destination, so this stays visible
     // even when neither the reference nor the destination changed.
@@ -583,19 +851,16 @@ fn execution_review_raw_lines(server: &ServerEntry) -> Vec<String> {
         .map(|line| visible_text(line))
         .collect();
     if previous.is_some() && lines.is_empty() {
-        lines.push(
-            if references.is_empty() {
-                "Nothing in this definition changed. Confirm it to run it on this machine."
-            } else {
-                "Approve these password manager entries for this machine."
-            }
-            .into(),
-        );
+        lines.push(if references.is_empty() {
+            tr("Nothing in this definition changed. Confirm it to run it on this machine.")
+        } else {
+            tr("Approve these password manager entries for this machine.")
+        });
     }
     lines.extend(references);
     lines
 }
-pub const ARGS_REVIEW_LINE: &str = "Arguments changed on another machine and could not be matched to the secret values saved here. Toolport kept this machine's arguments. Check them before enabling.";
+pub const ARGS_REVIEW_LINE: &str = crate::i18n::msg("Arguments changed on another machine and could not be matched to the secret values saved here. Toolport kept this machine's arguments. Check them before enabling.");
 /// One-based argument positions whose secret value never synced to this machine.
 pub fn missing_secret_args(server: &ServerEntry) -> Vec<usize> {
     if server.unknown_fields.get("personalSyncEntry") != Some(&json!(true)) {
@@ -2341,11 +2606,11 @@ pub fn conflict_fields(value: Option<&Value>) -> BTreeMap<String, String> {
 }
 fn plan_name(plan: Option<&str>) -> String {
     match plan.map(str::to_ascii_lowercase).as_deref() {
-        Some("pro") => "Pro".into(),
-        Some("team") => "Team".into(),
-        Some("free") => "Free".into(),
+        Some("pro") => tr("Pro"),
+        Some("team") => tr("Team"),
+        Some("free") => tr("Free"),
         Some(other) if !other.is_empty() => visible_text(plan.unwrap_or_default()),
-        _ => "unknown".into(),
+        _ => tr("unknown"),
     }
 }
 pub fn account_display_lines(reg: &Registry) -> Vec<String> {
@@ -2357,9 +2622,9 @@ pub fn account_display_lines(reg: &Registry) -> Vec<String> {
         .cloned()
         .unwrap_or(Value::Null);
     if st.sign_in_required {
-        return vec![format!(
-            "Saved account plan: {}. Sign in to confirm your account and resume sync.",
-            plan_name(status["plan"].as_str())
+        return vec![trf(
+            "Saved account plan: {plan}. Sign in to confirm your account and resume sync.",
+            &[("plan", &plan_name(status["plan"].as_str()))],
         )];
     }
     status_lines(&status, st.last_synced_at)
@@ -2382,37 +2647,51 @@ pub fn status_lines(status: &Value, last_synced: Option<i64>) -> Vec<String> {
     status_lines_at(status, last_synced, now())
 }
 fn status_lines_at(status: &Value, last_synced: Option<i64>, now: i64) -> Vec<String> {
-    let mut lines = vec![match status["plan"].as_str().unwrap_or("Unknown plan") {
-        "free" => "Free · 1 person, 1 device".into(),
-        "pro" => "Pro · unlimited devices".into(),
+    let mut lines = vec![match status["plan"].as_str().unwrap_or("") {
+        "free" => tr("Free · 1 person, 1 device"),
+        "pro" => tr("Pro · unlimited devices"),
+        "" => tr("Unknown plan"),
         plan => plan.to_string(),
     }];
     let days = |end: i64| ((end - now).max(0) as u64).div_ceil(86_400_000);
     if status["trialActive"] == true {
         if let Some(end) = status["trialEndsAt"].as_i64() {
-            lines.push(format!("{} trial days left", days(end)));
+            lines.push(trf(
+                "{count} trial days left",
+                &[("count", &days(end).to_string())],
+            ));
         }
     }
     if let Some(end) = status["freeSyncGraceEndsAt"].as_i64() {
         lines.push(if end > now {
-            format!("Every device keeps syncing for {} more days", days(end))
+            trf(
+                "Every device keeps syncing for {count} more days",
+                &[("count", &days(end).to_string())],
+            )
         } else {
-            "Sync grace period ended.".into()
+            tr("Sync grace period ended.")
         });
     }
     if status["canReceiveConfig"] == false {
-        lines.push(status["reason"].as_str().unwrap_or("This device cannot receive your setup. Choose your active device in Your account.").into());
+        lines.push(status["reason"].as_str().map(str::to_owned).unwrap_or_else(|| tr("This device cannot receive your setup. Choose your active device in Your account.")));
     }
     lines.push(match last_synced {
-        Some(t) if now - t < 60_000 => "Last synced just now".into(),
+        Some(t) if now - t < 60_000 => tr("Last synced just now"),
         Some(t) => {
             let minutes = (now - t).max(0) / 60_000;
-            format!(
-                "Last synced {minutes} {} ago",
-                if minutes == 1 { "minute" } else { "minutes" }
-            )
+            if minutes == 1 {
+                trf(
+                    "Last synced {count} minute ago",
+                    &[("count", &minutes.to_string())],
+                )
+            } else {
+                trf(
+                    "Last synced {count} minutes ago",
+                    &[("count", &minutes.to_string())],
+                )
+            }
         }
-        None => "Waiting for first sync".into(),
+        None => tr("Waiting for first sync"),
     });
     lines
 }
@@ -2434,6 +2713,55 @@ pub fn record_error(error: Option<&str>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn localized_review_values_preserve_commands_paths_and_plain_fields() {
+        let translated = |source: &str| format!("übersetzt:{source}");
+        for raw in [
+            "yes",
+            "no",
+            "Removed",
+            "Set on this machine",
+            "<masked secret>",
+            "Uses environment: PATH",
+            "Password manager: op://v/i/key",
+            "Argument 1 = no",
+            "Input: token = <masked secret>",
+            "<launch-input>",
+        ] {
+            let server: ServerEntry = serde_json::from_value(json!({
+                "id":"localized-review", "name":"Review", "transport":"stdio", "command":raw,
+                "args":[], "cwd":raw, "inheritEnv":true,
+                "env":[{"key":"STATUS", "secret":false, "value":raw}],
+                "launch":{"inputs":[{"key":"token", "label":"Imported argument 1", "secret":true, "required":false, "value":null}], "bindings":[]}
+            })).unwrap();
+            let fields = execution_review_fields(&server);
+            for key in ["Command", "Working folder", "Environment: STATUS"] {
+                assert_eq!(
+                    display_review_value(&server, key, &fields[key], &translated),
+                    raw
+                );
+                assert_eq!(
+                    review_display(&server, &review_field_line(key, &fields[key])),
+                    review_field_line(key, raw)
+                );
+                assert_eq!(execution_review_fields(&server)[key], raw);
+            }
+            assert_eq!(
+                display_review_value(
+                    &server,
+                    "Uses this machine's environment",
+                    "yes",
+                    &translated
+                ),
+                "übersetzt:yes"
+            );
+            assert_eq!(
+                display_review_value(&server, "Environment: Missing", "Removed", &translated),
+                "übersetzt:Removed"
+            );
+        }
+    }
+
     #[test]
     fn conflict_version_preserves_legacy_canonical_hash() {
         let original = serde_json::json!({"z":1,"a":{"y":2,"b":3}});

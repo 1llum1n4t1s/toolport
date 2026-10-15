@@ -3,4 +3,6 @@ import shell from "./shell/zh-CN.json";
 import connections from "./connections/zh-CN.json";
 import workflows from "./workflows/zh-CN.json";
 
-export default { ...shell, ...connections, ...workflows, ...common };
+import native from "./native/zh-CN.json";
+
+export default { ...shell, ...connections, ...workflows, ...common, ...native };

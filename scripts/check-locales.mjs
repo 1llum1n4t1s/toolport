@@ -307,7 +307,7 @@ export function checkSource(source, file, messages, checker) {
 
 // A small Rust lexer keeps comments and raw strings from producing false calls.
 // Native translation calls use tr("source") or trf("source", parameters).
-export function checkRustSource(source, file, messages) {
+export function checkRustSource(source, file, messages, options = {}) {
   const tokens = [];
   const errors = [];
   let offset = 0;
@@ -398,24 +398,119 @@ export function checkRustSource(source, file, messages) {
     tokens.push({ text, offset });
     offset += text.length;
   }
+  const helperArguments = {
+    label: 0,
+    button: 0,
+    check_button: 0,
+    formatted_label: 0,
+    bind_label: 1,
+    bind_text: 1,
+    bind_formatted_text: 1,
+    bind_formatted_label: 1,
+    bind_formatted_button: 1,
+    bind_button: 1,
+    bind_check_button: 1,
+    bind_tooltip: 1,
+    bind_placeholder: 1,
+    bind_formatted_dialog_heading: 1,
+    bind_formatted_dialog_body: 1,
+    bind_stack_page_title: 1,
+    bind_window_title: 1,
+    bind_dialog_heading: 1,
+    bind_dialog_body: 1,
+    bind_dialog_response: 2,
+  };
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index];
+    const direct = ["tr", "trf", "msg"].includes(token.text);
+    const qualifiedHelper =
+      Object.hasOwn(helperArguments, token.text) &&
+      tokens[index - 1]?.text === ":" &&
+      tokens[index - 2]?.text === ":" &&
+      ["l10n", "i18n"].includes(tokens[index - 3]?.text);
     if (
       token.string ||
-      !["tr", "trf"].includes(token.text) ||
+      (!direct && !qualifiedHelper) ||
       tokens[index + 1]?.text !== "(" ||
       tokens[index - 1]?.text === "fn"
     )
       continue;
-    const argument = tokens[index + 2];
+    let position = index + 2;
+    for (
+      let argument = 0;
+      argument < (qualifiedHelper ? helperArguments[token.text] : 0);
+      argument++
+    ) {
+      let depth = 0;
+      while (position < tokens.length) {
+        const value = tokens[position++];
+        if (!value.string && ["(", "[", "{"].includes(value.text)) depth++;
+        if (!value.string && [")", "]", "}"].includes(value.text)) depth--;
+        if (!value.string && value.text === "," && depth === 0) break;
+      }
+    }
+    let end = position;
+    let depth = 0;
+    while (end < tokens.length) {
+      const value = tokens[end];
+      if (!value.string && depth === 0 && [",", ")"].includes(value.text)) break;
+      if (!value.string && ["(", "[", "{"].includes(value.text)) depth++;
+      if (!value.string && [")", "]", "}"].includes(value.text)) depth--;
+      end++;
+    }
     const line = source.slice(0, token.offset).split("\n").length;
-    if (!argument?.string || ![",", ")"].includes(tokens[index + 3]?.text))
-      errors.push(`${file}:${line}: native source message must be a string literal`);
-    else if (!messages.has(argument.text))
+    function sourceExpression(parts) {
+      while (parts[0]?.text === "&") parts = parts.slice(1);
+      if (parts.length === 1 && parts[0].string) {
+        const key = parts[0].text;
+        options.collect?.add(key);
+        if (!messages.has(key))
+          errors.push(`${file}:${line}: missing source message ${JSON.stringify(key)}`);
+        return true;
+      }
+      const marker = parts.findIndex((part) => !part.string && part.text === "msg");
+      if (
+        marker >= 0 &&
+        parts[marker + 1]?.text === "(" &&
+        parts.at(-1)?.text === ")" &&
+        parts
+          .slice(0, marker)
+          .every((part) => !part.string && /^([a-zA-Z_][a-zA-Z0-9_]*|:)$/.test(part.text))
+      )
+        return sourceExpression(parts.slice(marker + 2, -1));
+      if (parts[0]?.text !== "if") return false;
+      let nesting = 0;
+      let open = -1;
+      for (let i = 1; i < parts.length; i++) {
+        if (!parts[i].string && parts[i].text === "{" && nesting === 0) {
+          open = i;
+          break;
+        }
+        if (!parts[i].string && ["(", "["].includes(parts[i].text)) nesting++;
+        if (!parts[i].string && [")", "]"].includes(parts[i].text)) nesting--;
+      }
+      if (open < 0) return false;
+      let close = open + 1;
+      nesting = 1;
+      while (close < parts.length && nesting) {
+        if (!parts[close].string && parts[close].text === "{") nesting++;
+        if (!parts[close].string && parts[close].text === "}") nesting--;
+        if (nesting) close++;
+      }
+      if (parts[close + 1]?.text !== "else") return false;
+      let alternate = parts.slice(close + 2);
+      if (alternate[0]?.text === "{" && alternate.at(-1)?.text === "}")
+        alternate = alternate.slice(1, -1);
+      const left = sourceExpression(parts.slice(open + 1, close));
+      const right = sourceExpression(alternate);
+      return left && right;
+    }
+    if (!sourceExpression(tokens.slice(position, end)) && direct)
       errors.push(
-        `${file}:${line}: missing source message ${JSON.stringify(argument.text)}`,
+        `${file}:${line}: native source message must be a string literal or a conditional of marked source literals`,
       );
   }
+
   return errors;
 }
 
