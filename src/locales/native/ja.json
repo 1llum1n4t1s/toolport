@@ -798,7 +798,7 @@
   "Uses {profile_name}": "{profile_name} を使用",
   "Value": "値",
   "Verification did not start because {value0}. Older calls will never count as proof.": "{value0}のため検証が開始されませんでした。それより古い呼び出しは証拠としてカウントされません。",
-  "Waiting for a new Toolport call. If {value0} was already open, restart it first.": "新しいToolportからの呼び出しを待っています。 {value0} がすでに開いている場合は、最初に再起動します。",
+  "Waiting for a new Toolport call. If {value0} was already open, restart it first.": "Toolportへの新しい呼び出しを待っています。{value0} がすでに開いている場合は、最初に再起動してください。",
   "Waiting for invitation approval.": "招待の承認を待っています。",
   "Waiting for the current definition. One more review is needed.": "現在の定義を待っています。もう 1 つ見直しが必要です。",
   "What this setup is for (optional)": "この設定の目的 (オプション)",

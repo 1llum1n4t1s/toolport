@@ -4006,7 +4006,8 @@ impl ActivityPage {
         });
         filter_server.set_factory(Some(&factory));
         filter_row.insert(&filter_server, -1);
-        let errors_only = gtk::ToggleButton::with_label("Errors only");
+        let errors_only = gtk::ToggleButton::new();
+        l10n::bind_button(errors_only.upcast_ref(), "Errors only");
         errors_only.add_css_class("toolport-secondary-action");
         errors_only.add_css_class("toolport-activity-filter");
         errors_only.set_valign(gtk::Align::Center);
@@ -4283,7 +4284,7 @@ impl ActivityPage {
         let dialog = gtk::FileDialog::builder()
             .title(crate::i18n::tr("Export activity"))
             .modal(true)
-            .accept_label("Export")
+            .accept_label(crate::i18n::tr("Export"))
             .initial_name(format!("toolport-activity.{format}"))
             .build();
         set_file_dialog_folder(&dialog);
@@ -8394,7 +8395,7 @@ fn share_setup(page: ServerPage) {
             let dialog = gtk::FileDialog::builder()
                 .title(crate::i18n::tr("Export Toolport setup"))
                 .initial_name("toolport-setup.json")
-                .accept_label("Export")
+                .accept_label(crate::i18n::tr("Export"))
                 .modal(true)
                 .build();
             set_file_dialog_folder(&dialog);
@@ -8551,7 +8552,7 @@ fn choose_setup_export(page: ServerPage) {
     let dialog = gtk::FileDialog::builder()
         .title(crate::i18n::tr("Export Toolport setup"))
         .initial_name("toolport-setup.json")
-        .accept_label("Export")
+        .accept_label(crate::i18n::tr("Export"))
         .modal(true)
         .build();
     dialog.save(Some(&parent), gtk::gio::Cancellable::NONE, move |result| {
@@ -8604,7 +8605,7 @@ fn choose_setup_import(page: ServerPage) {
     };
     let dialog = gtk::FileDialog::builder()
         .title(crate::i18n::tr("Import Toolport setup"))
-        .accept_label("Review")
+        .accept_label(crate::i18n::tr("Review"))
         .modal(true)
         .build();
     dialog.open(Some(&parent), gtk::gio::Cancellable::NONE, move |result| {
@@ -9300,6 +9301,7 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
             .css_classes(["flat"])
             .build();
         l10n::bind_button(&widget, "View log");
+        l10n::bind_tooltip(&widget, "View the connection error and server output");
         widget
     };
     {
@@ -9346,11 +9348,12 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
     let retry = {
         let widget = gtk::Button::builder()
             .label(crate::i18n::tr("Retry"))
-            .tooltip_text("Check this server again")
+            .tooltip_text(crate::i18n::tr("Retry"))
             .visible(false)
             .css_classes(["flat"])
             .build();
         l10n::bind_button(&widget, "Retry");
+        l10n::bind_tooltip(&widget, "Retry");
         widget
     };
     let page_for_retry = page.clone();
