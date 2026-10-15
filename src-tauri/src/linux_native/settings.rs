@@ -679,17 +679,34 @@ l10n::bind_dialog_heading(&error_dialog, msg("Could not start data removal"));
             let Some(choice) = crate::ui_settings::LANGUAGES.get(picker.selected() as usize) else {
                 return;
             };
-            if let Err(error) = crate::i18n::set_language(choice) {
-                l10n::bind_formatted_label(
-                    &feedback_for_language,
-                    msg("Could not save language: {error}"),
-                    &[("error", &error)],
-                );
-                feedback_for_language.add_css_class("error");
-                return;
-            }
-            l10n::refresh_bindings();
-            super::tray::refresh_language();
+            let choice = (*choice).to_owned();
+            picker.set_sensitive(false);
+            let picker = picker.downgrade();
+            let feedback = feedback_for_language.downgrade();
+            gtk::glib::MainContext::default().spawn_local(async move {
+                let saved = gtk::gio::spawn_blocking(move || crate::i18n::set_language(&choice))
+                    .await
+                    .unwrap_or_else(|error| Err(error.to_string()));
+                if let Some(picker) = picker.upgrade() {
+                    picker.set_sensitive(true);
+                }
+                match saved {
+                    Ok(()) => {
+                        l10n::refresh_bindings();
+                        super::tray::refresh_language();
+                    }
+                    Err(error) => {
+                        if let Some(feedback) = feedback.upgrade() {
+                            l10n::bind_formatted_label(
+                                &feedback,
+                                msg("Could not save language: {error}"),
+                                &[("error", &error)],
+                            );
+                            feedback.add_css_class("error");
+                        }
+                    }
+                }
+            });
         });
         language_row.append(&language_picker);
         startup.append(&language_row);
