@@ -139,7 +139,7 @@
   "•••••••• (saved)": "•••••••• (enregistré)",
   "•••••••• (set)": "•••••••• (ensemble)",
   "+{value1} more": "+{value1} plus",
-  "~/projects/my-app": "~/projects/mon-application",
+  "~/projects/my-app": "~/projects/my-app",
   "${VAR}": "${VAR}",
   "A call reached Toolport after this check started: {tool} on {server}. Local stdio calls are not tagged with a client, so this is not proof it came from {client}.": "Un appel est arrivé à Toolport après le début de cette vérification : {tool} le {server}. Les appels locaux stdio ne sont pas associés à un client, ce n'est donc pas une preuve qu'ils proviennent du {client}.",
   "A call reached Toolport after this check started: {tool}. Local stdio calls are not tagged with a client, so this is not proof it came from {client}.": "Un appel est arrivé au Toolport après le début de cette vérification : {tool}. Les appels locaux stdio ne sont pas associés à un client, ce n'est donc pas une preuve qu'ils proviennent de {client}.",

@@ -139,7 +139,7 @@
   "•••••••• (saved)": "••••••••(저장됨)",
   "•••••••• (set)": "••••••••(세트)",
   "+{value1} more": "+{value1} 더보기",
-  "~/projects/my-app": "~/프로젝트/내 앱",
+  "~/projects/my-app": "~/projects/my-app",
   "${VAR}": "${VAR}",
   "A call reached Toolport after this check started: {tool} on {server}. Local stdio calls are not tagged with a client, so this is not proof it came from {client}.": "이 확인이 시작된 후 통화가 Toolport에 도달했습니다: {server}의 {tool}. 로컬 stdio 호출에는 클라이언트 태그가 지정되지 않으므로 이것이 {client}에서 왔다는 증거는 아닙니다.",
   "A call reached Toolport after this check started: {tool}. Local stdio calls are not tagged with a client, so this is not proof it came from {client}.": "이 확인이 시작된 후 전화가 Toolport에 도달했습니다: {tool} . 로컬 stdio 호출에는 클라이언트 태그가 지정되지 않으므로 이것이 {client}에서 왔다는 증거는 아닙니다.",

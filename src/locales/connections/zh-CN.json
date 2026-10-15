@@ -139,7 +139,7 @@
   "•••••••• (saved)": "••••••••（已保存）",
   "•••••••• (set)": "••••••••（套）",
   "+{value1} more": "+{value1} 更多",
-  "~/projects/my-app": "〜/项目/我的应用程序",
+  "~/projects/my-app": "~/projects/my-app",
   "${VAR}": "${VAR}",
   "A call reached Toolport after this check started: {tool} on {server}. Local stdio calls are not tagged with a client, so this is not proof it came from {client}.": "此检查开始后，呼叫到达 Toolport： {tool} on {server} 。本地 stdio 调用未标记有客户端，因此这并不能证明它来自 {client} 。",
   "A call reached Toolport after this check started: {tool}. Local stdio calls are not tagged with a client, so this is not proof it came from {client}.": "此检查开始后，呼叫到达 Toolport： {tool} 。本地 stdio 调用未标记有客户端，因此这并不能证明它来自 {client} 。",

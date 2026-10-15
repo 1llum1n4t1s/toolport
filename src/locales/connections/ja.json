@@ -139,7 +139,7 @@
   "•••••••• (saved)": "••••••••（保存済み）",
   "•••••••• (set)": "••••••••（セット）",
   "+{value1} more": "+{value1} もっと見る",
-  "~/projects/my-app": "~/プロジェクト/マイアプリ",
+  "~/projects/my-app": "~/projects/my-app",
   "${VAR}": "${VAR}",
   "A call reached Toolport after this check started: {tool} on {server}. Local stdio calls are not tagged with a client, so this is not proof it came from {client}.": "このチェックが開始された後、通話が Toolport に到達しました: {server} の {tool}。ローカル stdio 通話にはクライアントのタグが付けられていないため、これは {client} からの通話であることを証明するものではありません。",
   "A call reached Toolport after this check started: {tool}. Local stdio calls are not tagged with a client, so this is not proof it came from {client}.": "このチェックが開始された後、通話が Toolport に到達しました: {tool}。ローカル stdio 通話にはクライアントのタグが付けられていないため、これが {client} から発信されたことを証明するものではありません。",
