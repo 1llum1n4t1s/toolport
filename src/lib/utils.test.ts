@@ -82,10 +82,11 @@ describe("fmtTokens", () => {
       expect(fmtTokens(value)).toBe(expected);
   });
 
-  it("passes 0 and negative inputs through unformatted", () => {
+  it("formats signed net savings using the same compact units", () => {
     expect(fmtTokens(0)).toBe("0");
     expect(fmtTokens(-1)).toBe("-1");
-    expect(fmtTokens(-12345)).toBe("-12345");
+    expect(fmtTokens(-12345)).toBe("-12.3k");
+    expect(fmtTokens(-3_692_944_923)).toBe("-3.7B");
   });
 });
 
@@ -190,4 +191,12 @@ describe("fmtTs", () => {
       }),
     );
   });
+});
+
+it("formats minute durations with the same rollover as GTK", () => {
+  expect(fmtMs(850)).toBe("850 ms");
+  expect(fmtMs(1500)).toBe("1.5 s");
+  expect(fmtMs(60000)).toBe("1m 0s");
+  expect(fmtMs(90000)).toBe("1m 30s");
+  expect(fmtMs(119999)).toBe("2m 0s");
 });

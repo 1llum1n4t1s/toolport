@@ -10,18 +10,18 @@ Releases are built by CI on a version tag (`.github/workflows/release.yml`).
    - `src-tauri/Cargo.lock` (the Cargo package is still named `conduit` for history;
      update that package's `version` entry)
    - `packaging/agent-plugin/toolport/plugin.json` and
-     `packaging/agent-plugin/toolport/.claude-plugin/plugin.json` (`version`) —
+     `packaging/agent-plugin/toolport/.claude-plugin/plugin.json` (`version`);
      a vitest check (`src/test/agent-plugin.test.ts`) fails CI if these drift
      from `package.json`
    - `packaging/homebrew/toolport.rb` (`version`; update both dmg `sha256`s
-     after publishing, in the Homebrew tap step below) — a vitest check
+     after publishing, in the Homebrew tap step below); a vitest check
      (`src/test/homebrew-cask.test.ts`) fails CI if the version drifts from
      `package.json`. This file is a snapshot; `brew install` reads the live
      tap, not this copy (see Homebrew tap below)
    - `packaging/linux/native/PKGBUILD` (`pkgver`; set its source `sha256sums`
      to `SKIP` until the tag archive exists, then pin the real digest before
      dispatching the Arch repository workflow below)
-   - `CHANGELOG.md` — move `[Unreleased]` entries into a dated section
+   - `CHANGELOG.md`; move `[Unreleased]` entries into a dated section
    - `server.json` only when publishing a matching standalone gateway package
    - `scripts/install.ps1` / `scripts/install.sh` only if you changed them, in which
      case also move `INSTALL_SCRIPTS_REF` in the site repo's `worker/index.js`, since
@@ -41,9 +41,35 @@ Releases are built by CI on a version tag (`.github/workflows/release.yml`).
    ```
 
 CI builds installers for **Windows** (NSIS), **macOS** (dmg), and **Linux**
-(deb + AppImage), each with the gateway bundled, plus `toolport-agent-plugin.zip`,
+(GTK deb + rpm, plus the Tauri AppImage), each with the gateway bundled, plus
+`toolport-agent-plugin.zip`,
 and attaches them to a **draft** release titled `Toolport vX.Y.Z` whose body is the
 changelog section. Review the draft, then click **Publish**.
+
+## 2.0 staged rollout
+
+Publish 2.0.0 for manual installation first. Hold the 1.x in-app update offer
+and package-channel promotion for about two weeks while early users upgrade.
+Keep 1.24.x available and provide security fixes for three months after 2.0.0.
+
+This is release policy, not an automatic workflow delay. The Tauri endpoint is
+`releases/latest/download/latest.json`; making 2.0.0 Latest with that asset
+immediately offers it to Windows, macOS and AppImage users. Publishing also
+triggers winget, the Homebrew tap follows Latest, and stable tags can update AUR.
+Keep 2.0 out of Latest and hold those channel jobs during the manual-install
+period; defer the Arch repository's publishing dispatch too. Do not publish a
+normal Latest release and assume these channels will wait.
+
+Write the notes under `## [2.0.0]` in `CHANGELOG.md`, add the release date when
+cutting the tag, and keep the first paragraph to a short update summary. Both
+release-body extraction steps read that exact section. The updater manifest
+currently includes version, date and platform artifacts but **no `notes` field**;
+the app displays `update.body` only when supplied. Before enabling the 1.x offer,
+ensure `latest.json` carries the short summary as `notes` and links to the
+[upgrade guide](migration.md). Writing the changelog alone does not populate
+an in-app prompt. Check the published manifest and prompt before promotion.
+
+## Package channels
 
 The **Arch pacman repository** is a separate manual dispatch. The tag archive's
 checksum cannot be pinned in the commit that creates the tag, because changing
@@ -77,26 +103,25 @@ while the release is still a draft. It no-ops with a warning unless the
 `WINGET_TOKEN` secret (a PAT with `public_repo`) is set, so it can never fail a
 release.
 
-To submit by hand instead, copy `packaging/winget` to a new
-`manifests/t/Toolport/Toolport/<version>/` directory in a fork of
-`microsoft/winget-pkgs` and update it for the release first: `PackageVersion`
-in all three files, plus `InstallerUrl`, `InstallerSha256`, `ReleaseDate` and
-`ReleaseNotesUrl`. The copy in this repo stays pinned to whatever version last
-shipped, so submitting it unchanged re-submits that version's metadata and the new
-release never reaches winget. Check it with `winget validate --manifest <dir>`
-before opening the PR.
+To retry a failed submission, run `winget.yml` manually with the same stable tag.
+It downloads the existing installer, checks its SHA256 against the release asset
+metadata, syncs the token owner's `winget-pkgs` fork from upstream `master`, and
+reuses `toolport-<version>` after checking its saved manifest version, URL and hash. It never builds or
+uploads release assets. An existing open or merged PR is reused; a closed,
+unmerged PR or a retry manifest naming different artifacts fails for operator review. Releases without
+an asset SHA256 digest fail validation rather than inventing a trusted checksum.
+The fork must already exist. Its `master` is reset to upstream; other branches
+are preserved. The checked-in files in `packaging/winget` are templates, with
+version, installer URL/hash and release notes URL filled from the release.
 
-Publishing also triggers the **AUR** (`aur.yml`): it renders
-`PKGBUILD`/`.SRCINFO` from the published `.deb` with `scripts/render-aur.sh`,
-builds the package in an `archlinux:base-devel` container to prove the PKGBUILD
-works, and pushes `toolport-bin`. Same reason as winget for waiting on publish:
-the sha256sums must come from assets that are actually downloadable. It skips
-prereleases (an Arch `pkgver` cannot carry `-rc.1`), and no-ops with a warning
-unless the `AUR_SSH_PRIVATE_KEY` secret is set, so it can never fail a release.
-One-time setup and how to publish by hand are in
-[`packaging/linux/aur/README.md`](../packaging/linux/aur/README.md). `PKGBUILD`
-is deliberately NOT checked in: it pins one release's checksum, so a tracked copy
-would only ever be stale.
+Linux system packages now ship the GTK shell as `.deb` and `.rpm`, built once on
+Ubuntu 24.04 and tested before upload to the draft. The Tauri AppImage remains the
+fallback for Ubuntu 22.04, Debian 12 and older RPM distributions, and keeps its
+in-app updater. GTK debs require Ubuntu 24.04+ or Debian 13+; RPMs require
+GTK 4.14+, libadwaita 1.5+, GLib 2.80+ and glibc 2.39+. Stable releases also
+update AUR `toolport-bin` by repackaging the GTK deb, so existing AUR users can
+upgrade with their helper. The native pacman package remains an alternative. See
+[`docs/linux-packages.md`](linux-packages.md) for build and upgrade checks.
 
 Publishing is also when the **Homebrew tap** is bumped, and that is now
 automatic. `brew install --cask btsouth/toolport/toolport` and
@@ -132,7 +157,7 @@ from `package.json`, so skipping it is loud. Its checksums are cosmetic (nothing
 installs from it), but keep them honest by copying what the tap landed.
 
 The **gateway container image** (`ghcr.io/btsouth/toolport-gateway`) publishes
-separately on every push to `main` via `docker-publish.yml` — no tag required.
+separately on every push to `main` via `docker-publish.yml`; no tag required.
 
 ## After users upgrade
 

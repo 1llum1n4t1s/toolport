@@ -9,9 +9,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// What pairing needs from the window it runs in. Tests supply their own.
+type PairingFeedback = Box<dyn Fn(&str, bool)>;
+
 pub(super) struct PairingHooks {
     pub parent: Box<dyn Fn() -> Option<gtk::Window>>,
-    pub feedback: Box<dyn Fn(&str, bool)>,
+    pub feedback: PairingFeedback,
     /// Show the connected Teams view.
     pub connected: Box<dyn Fn()>,
     pub open_url: Box<dyn Fn(&str)>,
@@ -79,7 +81,14 @@ pub(super) fn request(hooks: PairingHooks, origin: &str, pair: PairFn) {
         pending: RefCell::new(None),
     });
     CURRENT.with(|current| *current.borrow_mut() = Some(Rc::clone(&attempt)));
-    let dialog = adw::MessageDialog::new(Some(&parent), Some("Connect Toolport to Teams?"), Some(&format!("Control plane: {origin}\n\nOnly continue if you trust this origin. Your browser will show the named team and signed-in account before approval. Connecting replaces this installation's current team connection.")));
+    let dialog = adw::MessageDialog::new(
+        Some(&parent),
+        Some("Sign in to sync?"),
+        Some(&crate::teams::pairing_confirm_copy(
+            origin,
+            crate::registry::load().is_ok_and(|r| r.team.is_some()),
+        )),
+    );
     dialog.set_size_request(520, -1);
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("connect", "Continue to browser");
@@ -114,7 +123,7 @@ impl Attempt {
             self.show_pending();
         } else {
             (self.hooks.feedback)(
-                "A team connection is starting. Wait for the browser approval page.",
+                "Sign-in is starting. Wait for the browser approval page.",
                 false,
             );
         }
@@ -168,7 +177,7 @@ impl Attempt {
         let Some(parent) = (self.hooks.parent)() else {
             return;
         };
-        let dialog = adw::MessageDialog::new(Some(&parent), Some("Approve this device in your browser"), Some(&format!("Device check: {check}\n\nApprove only if the browser shows this same check, the intended team and your account. This request expires in five minutes. You can hide this message; Toolport finishes connecting when you approve.")));
+        let dialog = adw::MessageDialog::new(Some(&parent), Some("Approve this device in your browser"), Some(&format!("Device check: {check}\n\nApprove only if the browser shows this same check, the intended setup and your account. This request expires in five minutes. You can hide this message; Toolport finishes connecting when you approve.")));
         dialog.set_size_request(460, -1);
         dialog.add_response("cancel", "Cancel request");
         dialog.add_response("hide", "Hide");
@@ -202,7 +211,7 @@ impl Attempt {
         }
         match result {
             Ok(()) => {
-                (self.hooks.feedback)("Toolport connected to Teams.", false);
+                (self.hooks.feedback)("Toolport is signed in to sync.", false);
                 (self.hooks.connected)();
             }
             // Only the cancellation itself; a real failure after a late cancel
@@ -218,7 +227,7 @@ impl Attempt {
                 let dialog = adw::MessageDialog::new(
                     Some(&parent),
                     Some("Connection not completed"),
-                    Some(&format!("{error}\n\nNothing was connected. Start again from the Teams website when you are ready.")),
+                    Some(&format!("{error}\n\nNothing was connected. Start again from the sync website when you are ready.")),
                 );
                 dialog.set_size_request(460, -1);
                 dialog.add_response("close", "Close");
@@ -304,7 +313,7 @@ mod tests {
         dialog.response(response);
     }
 
-    const CONFIRM: &str = "Connect Toolport to Teams?";
+    const CONFIRM: &str = "Sign in to sync?";
     const APPROVE: &str = "Approve this device in your browser";
     const FAILED: &str = "Connection not completed";
 
@@ -338,6 +347,7 @@ mod tests {
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
     #[allow(deprecated)]
     fn the_approval_prompt_follows_the_pairing_attempt() {
+        let _data = crate::registry::DataDirTestEnv::new("gtk-pairing-prompt");
         adw::init().unwrap();
         let parent = gtk::Window::builder()
             .title("Toolport")
@@ -364,7 +374,7 @@ mod tests {
         assert_eq!(started.load(Ordering::SeqCst), 1);
         assert_eq!(
             seen.feedback.borrow().last().unwrap(),
-            &("Toolport connected to Teams.".to_string(), false)
+            &("Toolport is signed in to sync.".to_string(), false)
         );
 
         // Pairing fails, or the request expires: a terminal result replaces the prompt.

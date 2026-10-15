@@ -236,7 +236,10 @@ DMG_DIR="$REPO_ROOT/src-tauri/target/$TARGET/release/bundle/dmg"
 mkdir -p "$DMG_DIR"
 DMG="$DMG_DIR/Toolport_${TARGET}.dmg"
 rm -f "$DMG"
-hdiutil create -volname "Toolport" -srcfolder "$APP" -ov -format UDZO "$DMG"
+# hdiutil's own size estimate can come up short for the larger 2.0 app
+# ("No space left on device"), so size the image from the app plus headroom.
+DMG_SIZE_MB=$(( $(du -sm "$APP" | cut -f1) * 5 / 4 + 64 ))
+hdiutil create -volname "Toolport" -srcfolder "$APP" -size "${DMG_SIZE_MB}m" -ov -format UDZO "$DMG"
 codesign --force --timestamp -s "$APPLE_SIGNING_IDENTITY" "$DMG"
 notarize "$DMG" "dmg"
 xcrun stapler staple "$DMG"

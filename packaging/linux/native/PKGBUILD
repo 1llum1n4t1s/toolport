@@ -1,8 +1,9 @@
 # Maintainer: Tyler South <tsouth2@gmail.com>
 # The archive is expected to unpack to toolport-$pkgver.
 pkgname=toolport
-pkgver=1.24.1
+pkgver=2.0.0
 pkgrel=1
+install=toolport.install
 pkgdesc='One local MCP gateway for every AI client, with a native GTK shell'
 arch=('x86_64')
 url='https://github.com/btsouth/toolport'
@@ -11,7 +12,7 @@ license=('MIT')
 # to the Secret Service over D-Bus rather than linking libsecret, and namcap
 # confirms neither binary links it. A provider is a runtime choice, and without
 # one Toolport falls back to its own encrypted file backend.
-depends=('gtk4' 'libadwaita' 'glib2' 'dbus' 'hicolor-icon-theme')
+depends=('coreutils' 'util-linux' 'gtk4' 'libadwaita' 'glib2' 'dbus' 'hicolor-icon-theme')
 optdepends=('gnome-keyring: store credentials in the system keyring instead of the encrypted file backend'
             'kwallet: same, on KDE')
 makedepends=('cargo' 'desktop-file-utils' 'appstream' 'zip')
@@ -22,18 +23,22 @@ makedepends=('cargo' 'desktop-file-utils' 'appstream' 'zip')
 conflicts=('toolport-bin' 'toolport-native-preview')
 replaces=('toolport-native-preview')
 options=('!lto')
-source=("toolport-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('48030e3e1746236e5e77d353100dd01712c8ab588c65a09f3c5aa5db4996d9c9')
+source=("toolport-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+        "toolport.install"
+        "disconnect-users.sh")
+sha256sums=('SKIP'
+            '0083ee13186ff966eb3c5379a75e2f1107e4f51fbeb9cd213ffa807acc7b97ab'
+            '21222580a18e27e7a8e9ea614e9b8dd083980d686274ec48944bc83283e29b8b')
 
 build() {
   cd "toolport-$pkgver/src-tauri"
   cargo build --release --locked --no-default-features \
-    --features gtk-desktop --bin toolport-gtk --bin toolport-gateway
+    --features gtk-desktop,search-static --bin toolport-gtk --bin toolport-gateway
 }
 
 check() {
   cd "toolport-$pkgver/src-tauri"
-  cargo test --locked --no-default-features --features gtk-desktop \
+  cargo test --locked --no-default-features --features gtk-desktop,search-static,test-support \
     --lib linux_native::
 }
 
@@ -56,6 +61,10 @@ package() {
   install -d "$pkgdir/usr/share/toolport/agent-plugin"
   (cd packaging/agent-plugin && zip -qr \
     "$pkgdir/usr/share/toolport/agent-plugin/toolport-agent-plugin.zip" toolport)
+  install -Dm755 "$srcdir/disconnect-users.sh" \
+    "$pkgdir/usr/share/toolport/disconnect-users.sh"
+  install -Dm755 scripts/toolport-preview-rollback.sh \
+    "$pkgdir/usr/share/toolport/toolport-preview-rollback.sh"
   install -Dm644 LICENSE \
     "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

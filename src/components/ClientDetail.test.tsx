@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ClientDetail } from "./ClientDetail";
+import { importServers, previewImportServers } from "@/lib/api";
 import type { DetectedClient, Registry } from "@/lib/types";
 
 const installGateway = vi.fn();
 const uninstallGateway = vi.fn();
 const migrateClient = vi.fn();
+const removeClientLocation = vi.fn();
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
 
@@ -14,8 +16,26 @@ vi.mock("@/lib/api", () => ({
   installGateway: (...a: unknown[]) => installGateway(...a),
   uninstallGateway: (...a: unknown[]) => uninstallGateway(...a),
   migrateClient: (...a: unknown[]) => migrateClient(...a),
+  previewClientSetup: vi.fn().mockResolvedValue({
+    configPath: "/fixture/client.json",
+    backupDir: "/fixture/backups",
+    revision: "fixture-revision",
+    items: [
+      {
+        key: "calendar",
+        name: "calendar",
+        transport: "stdio",
+        command: "calendar-mcp",
+        args: [],
+        url: null,
+        isNew: true,
+      },
+    ],
+  }),
   setClientDiscovery: vi.fn(),
-  addServer: vi.fn(),
+  removeClientLocation: (...a: unknown[]) => removeClientLocation(...a),
+  importServers: vi.fn(),
+  previewImportServers: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("sonner", () => ({
@@ -58,11 +78,86 @@ function emptyRegistry(): Registry {
 }
 
 beforeEach(() => {
+  vi.mocked(importServers).mockReset();
+  vi.mocked(previewImportServers).mockReset().mockResolvedValue([]);
   installGateway.mockReset();
   uninstallGateway.mockReset();
   migrateClient.mockReset();
   toastSuccess.mockReset();
   toastError.mockReset();
+});
+
+it("imports the reviewed definition when another client has the same server name", async () => {
+  const server = {
+    name: "calendar",
+    transport: "stdio" as const,
+    command: "calendar-mcp",
+    args: ["--workspace", "reviewed"],
+    envKeys: [],
+    url: null,
+  };
+  vi.mocked(previewImportServers).mockResolvedValue([
+    { ...server, args: ["--workspace", "other"], key: "other-client", isNew: true },
+    { ...server, key: "reviewed-client", isNew: true },
+  ]);
+  vi.mocked(importServers).mockResolvedValue(emptyRegistry());
+  render(
+    <ClientDetail
+      client={client({ servers: [server] })}
+      registry={emptyRegistry()}
+      onChanged={vi.fn()}
+      onRegistryChange={vi.fn()}
+    />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: /^Import$/ }));
+  await userEvent.click(screen.getByRole("button", { name: /^Import 1 server$/ }));
+  await waitFor(() => expect(importServers).toHaveBeenCalledWith(["reviewed-client"]));
+});
+
+it("uses bulk review storage choices and leaves unsupported servers unchecked", async () => {
+  const server = {
+    name: "calendar",
+    transport: "stdio" as const,
+    command: "calendar-mcp",
+    args: [],
+    envKeys: ["PORT"],
+    url: null,
+  };
+  const unsupported = { ...server, name: "unsupported", command: "custom-mcp" };
+  vi.mocked(previewImportServers).mockResolvedValue([
+    {
+      ...server,
+      key: "reviewed-safe",
+      isNew: true,
+      credentials: [{ key: "PORT", secret: false, present: true, required: true }],
+    },
+    {
+      ...unsupported,
+      key: "reviewed-unsupported",
+      isNew: true,
+      unsupported: "Custom HTTP headers",
+    },
+  ]);
+  vi.mocked(importServers).mockResolvedValue(emptyRegistry());
+  render(
+    <ClientDetail
+      client={client({ servers: [server, unsupported] })}
+      registry={emptyRegistry()}
+      onChanged={vi.fn()}
+      onRegistryChange={vi.fn()}
+    />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Import all (2)" }));
+  const choice = await screen.findByRole("checkbox", { name: /Keep PORT in keychain/ });
+  expect(choice).not.toBeChecked();
+  await userEvent.click(choice);
+  await userEvent.click(screen.getByRole("button", { name: "Import 1 server" }));
+  await waitFor(() =>
+    expect(importServers).toHaveBeenCalledWith(["reviewed-safe"], {
+      calendar: { PORT: true },
+      unsupported: {},
+    }),
+  );
 });
 
 describe("ClientDetail detection errors", () => {
@@ -137,18 +232,11 @@ describe("ClientDetail customized entry (SOU-406)", () => {
     await userEvent.click(confirms[confirms.length - 1]!);
 
     await waitFor(() =>
-      expect(installGateway).toHaveBeenCalledWith(
-        "claude-desktop",
-        undefined,
-        true,
-        "stdio",
-      ),
+      expect(installGateway).toHaveBeenCalledWith("claude-desktop", undefined, true),
     );
   });
 
-  it("passes live sharedHttp transport when applying scope (WS3-2)", async () => {
-    // Regression: installGateway defaults missing transport to stdio and would
-    // silently rewrite a Shared HTTP client as a stdio spawn.
+  it("keeps sharedHttp untouched on mount and uses stdio on explicit reconnect", async () => {
     installGateway.mockResolvedValue({ backup: false });
     const reg = emptyRegistry();
     // Profile picker only renders when profiles.length > 1.
@@ -181,23 +269,21 @@ describe("ClientDetail customized entry (SOU-406)", () => {
       />,
     );
 
+    expect(installGateway).not.toHaveBeenCalled();
+    expect(migrateClient).not.toHaveBeenCalled();
+
     // Change scope so Apply scope is enabled (profile !== currentScope).
     // Scope select is the first combobox in the header (w-52); discovery is lower.
     const scopeSelect = screen.getAllByRole("combobox")[0]!;
     await userEvent.click(scopeSelect);
-    const home = await screen.findByRole("option", { name: /Only: Home/i });
+    const home = await screen.findByRole("option", { name: /^Home$/i });
     await userEvent.click(home);
 
-    const apply = await screen.findByRole("button", { name: /apply scope/i });
+    const apply = await screen.findByRole("button", { name: /apply access/i });
     await userEvent.click(apply);
 
     await waitFor(() =>
-      expect(installGateway).toHaveBeenCalledWith(
-        "claude-desktop",
-        "p2",
-        false,
-        "sharedHttp",
-      ),
+      expect(installGateway).toHaveBeenCalledWith("claude-desktop", "p2", false),
     );
   });
 
@@ -221,7 +307,7 @@ describe("ClientDetail customized entry (SOU-406)", () => {
         onRegistryChange={() => {}}
       />,
     );
-    expect(screen.getAllByRole("combobox")[0]).toHaveTextContent("Only: Work");
+    expect(screen.getAllByRole("combobox")[0]).toHaveTextContent("Work");
   });
 
   it("passes a stable profile id from the migrate dialog", async () => {
@@ -230,7 +316,13 @@ describe("ClientDetail customized entry (SOU-406)", () => {
       { id: "p1", name: "Work", enabledServerIds: [] },
       { id: "p2", name: "Home", enabledServerIds: [] },
     ];
-    migrateClient.mockResolvedValue({ registry: reg, moved: ["calendar"] });
+    migrateClient.mockResolvedValue({
+      registry: reg,
+      moved: ["calendar"],
+      tools: [{ name: "calendar__read" }],
+      servers: [{ name: "calendar", toolCount: 2, credentialState: "none" }],
+      outcome: { path: "/fixture/client.json", backup: "/fixture/backups/previous.json" },
+    });
     render(
       <ClientDetail
         client={client({
@@ -251,86 +343,295 @@ describe("ClientDetail customized entry (SOU-406)", () => {
       />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: /move into gateway/i }));
-    const dialog = screen.getByRole("dialog");
-    const scopeSelect = dialog.querySelector('[role="combobox"]');
-    expect(scopeSelect).not.toBeNull();
-    await userEvent.click(scopeSelect!);
-    await userEvent.click(await screen.findByRole("option", { name: /Only: Home/i }));
-    await userEvent.click(screen.getByRole("button", { name: /move 1 into toolport/i }));
+    await userEvent.click(screen.getByRole("combobox", { name: "Access" }));
+    await userEvent.click(await screen.findByRole("option", { name: /^Home$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /connect to toolport/i }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: /connect to toolport/i }),
+    );
 
     await waitFor(() =>
       expect(migrateClient).toHaveBeenCalledWith(
         "claude-desktop",
         "p2",
-        undefined,
-        "stdio",
+        false,
+        ["calendar"],
+        "fixture-revision",
       ),
     );
   });
 });
 
-describe("ClientDetail connect toast (SOU-317)", () => {
-  it("tells the user to restart the client after a successful Connect", async () => {
-    // Without this, the UI says "Connected" while Claude Desktop (and most peers)
-    // still has the old MCP config in memory and Toolport looks broken.
-    installGateway.mockResolvedValue({ backup: false });
+describe("ClientDetail reviewed connection", () => {
+  it("requires review and shows actual tools with restart and backup paths", async () => {
+    migrateClient.mockResolvedValue({
+      registry: emptyRegistry(),
+      imported: 1,
+      moved: ["calendar"],
+      tools: [{ name: "calendar__read" }],
+      servers: [{ name: "calendar", toolCount: 2, credentialState: "none" }],
+      outcome: { path: "/fixture/client.json", backup: "/fixture/backups/previous.json" },
+    });
     render(
       <ClientDetail
         client={client()}
+        registry={emptyRegistry()}
+        onChanged={vi.fn()}
+        onRegistryChange={vi.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /connect to toolport/i }));
+    await userEvent.click(await screen.findByText("Details"));
+    expect(await screen.findByText(/Backups will be saved/)).toHaveTextContent(
+      "/fixture/backups",
+    );
+    expect(migrateClient).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: /connect to toolport/i }));
+    await userEvent.click(await screen.findByText("What your agent sees"));
+    expect(await screen.findByText("calendar__read")).toBeVisible();
+    await userEvent.click(screen.getByText("Details"));
+    expect(screen.getByText("Restart Claude Desktop to load Toolport.")).toBeVisible();
+    expect(screen.getByText("Backup: /fixture/backups/previous.json")).toBeVisible();
+    expect(installGateway).not.toHaveBeenCalled();
+  });
+});
+
+it("shows a migrated default without rewriting the client and explicitly applies All", async () => {
+  const reg = emptyRegistry();
+  reg.version = 3;
+  reg.profiles = [{ id: "default", name: "Default", enabledServerIds: ["on"] }];
+  reg.defaultAccessProfileId = "default";
+  reg.clientScopes = { "claude-desktop": "" };
+  reg.servers = ["on", "off"].map((id) => ({
+    id,
+    name: id,
+    enabled: id === "on",
+    transport: "http",
+    command: null,
+    args: [],
+    env: [],
+    url: null,
+    source: null,
+  }));
+  installGateway.mockResolvedValue({ backup: false });
+  render(
+    <ClientDetail
+      client={client({ gatewayInstalled: true, entryState: "managed" })}
+      registry={reg}
+      onChanged={() => {}}
+      onRegistryChange={() => {}}
+    />,
+  );
+  expect(screen.getByRole("combobox", { name: "Access" })).toHaveTextContent(
+    /^Default access$/,
+  );
+  expect(installGateway).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("combobox", { name: "Access" }));
+  await userEvent.click(
+    await screen.findByRole("option", { name: "All enabled servers" }),
+  );
+  await userEvent.click(screen.getByRole("button", { name: /apply access/i }));
+  await waitFor(() =>
+    expect(installGateway).toHaveBeenCalledWith("claude-desktop", "@all-enabled", false),
+  );
+});
+
+it("restores Default access with an empty scope and retains the default tool limits", async () => {
+  const reg = emptyRegistry();
+  reg.version = 3;
+  reg.defaultAccessContextId = "default";
+  reg.defaultAccessLegacyPolicy = true;
+  reg.profiles = [
+    {
+      id: "default",
+      name: "Kept tools",
+      enabledServerIds: [],
+      toolScope: { s: ["read"] },
+    },
+  ];
+  reg.clientScopes = { "claude-desktop": "@all-enabled" };
+  installGateway.mockResolvedValue({ backup: false });
+  render(
+    <ClientDetail
+      client={client({ gatewayInstalled: true, entryState: "managed" })}
+      registry={reg}
+      onChanged={() => {}}
+      onRegistryChange={() => {}}
+    />,
+  );
+  expect(screen.getByRole("combobox", { name: "Access" })).toHaveTextContent(
+    "All enabled servers",
+  );
+  await userEvent.click(screen.getByRole("combobox", { name: "Access" }));
+  await userEvent.click(
+    await screen.findByRole("option", { name: "Default access (Kept tools)" }),
+  );
+  await userEvent.click(screen.getByRole("button", { name: /apply access/i }));
+  await waitFor(() =>
+    expect(installGateway).toHaveBeenCalledWith("claude-desktop", undefined, false),
+  );
+  expect(reg.profiles[0]?.toolScope).toEqual({ s: ["read"] });
+});
+
+describe("ClientDetail legacy bearer migration", () => {
+  it("preserves the connection through render, review and cancel; migrates only on confirmation", async () => {
+    installGateway.mockResolvedValue({ backup: true });
+    const legacy = client({
+      gatewayInstalled: true,
+      entryState: "customized",
+      servers: [
+        {
+          name: "toolport",
+          transport: "stdio",
+          command: "npx",
+          args: ["mcp-remote", "Authorization: Bearer fixture-canary"],
+          envKeys: [],
+          url: null,
+        },
+      ],
+    });
+    render(
+      <ClientDetail
+        client={legacy}
         registry={emptyRegistry()}
         onChanged={() => {}}
         onRegistryChange={() => {}}
       />,
     );
-
-    await userEvent.click(screen.getByRole("button", { name: /connect to toolport/i }));
-
+    expect(installGateway).not.toHaveBeenCalled();
+    expect(screen.queryByText(/fixture-canary/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Review migration" }));
+    expect(screen.getByText(/backs up the config/)).toBeInTheDocument();
+    expect(installGateway).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(installGateway).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Review migration" }));
+    await userEvent.click(screen.getByRole("button", { name: "Migrate to stdio" }));
     await waitFor(() =>
-      expect(installGateway).toHaveBeenCalledWith(
-        "claude-desktop",
-        undefined,
-        false,
-        "stdio",
-      ),
+      expect(installGateway).toHaveBeenCalledWith("claude-desktop", undefined, true),
     );
-    expect(toastSuccess).toHaveBeenCalledWith(
-      "Connected Toolport to Claude Desktop",
-      expect.objectContaining({
-        description: "Restart Claude Desktop so it loads Toolport.",
-      }),
-    );
+    expect(migrateClient).not.toHaveBeenCalled();
   });
+});
 
-  it("includes scope detail after the restart nudge when connecting with a profile", async () => {
-    installGateway.mockResolvedValue({ backup: false });
-    // Seed clientScopes so the component's profile state initializes to Work.
-    const reg = emptyRegistry();
-    reg.profiles = [{ id: "p1", name: "Work", enabledServerIds: [] }];
-    reg.clientScopes = { "claude-desktop": "Work" };
-
+describe("ClientDetail Auto discovery", () => {
+  it.each([
+    ["claude-code", "lazy"],
+    ["codex", "full"],
+    ["cursor", "full"],
+    ["opencode", "lazy"],
+  ] as const)("shows the backend Auto default before connect (%s=%s)", (id, autoMode) => {
     render(
       <ClientDetail
-        client={client()}
-        registry={reg}
-        onChanged={() => {}}
-        onRegistryChange={() => {}}
+        client={client({
+          id,
+          discovery: {
+            autoMode,
+            nativeToolSearch: true,
+            toolsListChanged: null,
+            evidence: "fixture",
+          },
+        })}
+        registry={emptyRegistry()}
+        onRegistryChange={vi.fn()}
+        onChanged={vi.fn()}
       />,
     );
-
-    // Already connected would show Disconnect; for connect we need uninstalled.
-    // clientScopes still pre-fills the profile picker for a fresh connect.
-    await userEvent.click(screen.getByRole("button", { name: /connect to toolport/i }));
-
-    await waitFor(() =>
-      expect(installGateway).toHaveBeenCalledWith("claude-desktop", "p1", false, "stdio"),
-    );
-    expect(toastSuccess).toHaveBeenCalledWith(
-      "Connected Toolport to Claude Desktop",
-      expect.objectContaining({
-        description:
-          'Restart Claude Desktop so it loads Toolport. Scoped to the "Work" profile.',
-      }),
-    );
+    expect(screen.getByText(`Auto (${autoMode})`)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        autoMode === "full"
+          ? "Full tool list. Client per-tool permission rules need Full mode."
+          : "Search, then call tools. Client per-tool permission rules need Full mode.",
+      ),
+    ).toBeInTheDocument();
   });
+  it("shows the Lazy a 1.x upgrade kept instead of the client default", () => {
+    render(
+      <ClientDetail
+        client={client({
+          id: "codex",
+          discovery: {
+            autoMode: "full",
+            nativeToolSearch: true,
+            toolsListChanged: false,
+            evidence: "fixture",
+          },
+        })}
+        registry={{ ...emptyRegistry(), legacyLazyDiscovery: true }}
+        onRegistryChange={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Auto (lazy)")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Search, then call tools. Client per-tool permission rules need Full mode.",
+      ),
+    ).toBeInTheDocument();
+  });
+  it.each(["grouped", " GROUPED "])(
+    "keeps an explicit override instead of Auto (%s)",
+    (mode) => {
+      render(
+        <ClientDetail
+          client={client({
+            gatewayInstalled: true,
+            entryState: "managed",
+            discovery: {
+              nativeToolSearch: true,
+              toolsListChanged: true,
+              evidence: "fixture",
+            },
+          })}
+          registry={{
+            ...emptyRegistry(),
+            clientDiscovery: { "claude-desktop": mode },
+          }}
+          onRegistryChange={vi.fn()}
+          onChanged={vi.fn()}
+        />,
+      );
+      expect(screen.getByText("Grouped · per-server")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Browse a server, then call tools. Client per-tool permission rules need Full mode.",
+        ),
+      ).toBeInTheDocument();
+    },
+  );
+});
+
+it("removes a disconnected manual location through the confirmation flow", async () => {
+  const user = userEvent.setup();
+  const onChanged = vi.fn();
+  removeClientLocation.mockResolvedValue(undefined);
+  render(
+    <ClientDetail
+      client={client({ id: "codex@fixture", locationRemovable: true })}
+      registry={emptyRegistry()}
+      onChanged={onChanged}
+      onRegistryChange={vi.fn()}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: "Remove location" }));
+  await user.click(screen.getByRole("button", { name: "Remove location" }));
+  expect(removeClientLocation).toHaveBeenCalledWith("codex@fixture");
+  await waitFor(() => expect(onChanged).toHaveBeenCalled());
+});
+
+it("requires disconnect before forgetting a connected location", () => {
+  render(
+    <ClientDetail
+      client={client({
+        locationRemovable: true,
+        gatewayInstalled: true,
+        entryState: "managed",
+      })}
+      registry={emptyRegistry()}
+      onChanged={vi.fn()}
+      onRegistryChange={vi.fn()}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Remove location" })).toBeDisabled();
 });

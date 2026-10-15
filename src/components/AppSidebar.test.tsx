@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import type { Registry } from "@/lib/types";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppSidebar } from "./AppSidebar";
+import { getVersion } from "@tauri-apps/api/app";
 
 const getSavingsSummary = vi.fn();
 const listQuarantined = vi.fn();
@@ -14,6 +16,7 @@ const toastInfo = vi.fn();
 const toastError = vi.fn();
 const openDataDir = vi.fn();
 const openExternal = vi.fn();
+const exitApp = vi.fn().mockResolvedValue(undefined);
 const eventListeners = new Map<string, (event: { payload: unknown }) => void>();
 
 vi.mock("sonner", () => ({
@@ -42,6 +45,10 @@ vi.mock("@tauri-apps/api/app", () => ({
   getVersion: vi.fn().mockResolvedValue("1.0.0"),
 }));
 
+vi.mock("@tauri-apps/plugin-process", () => ({
+  exit: (...args: unknown[]) => exitApp(...args),
+}));
+
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn((event: string, handler: (event: { payload: unknown }) => void) => {
     eventListeners.set(event, handler);
@@ -49,7 +56,8 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }));
 
-vi.mock("@/lib/updater", () => ({
+vi.mock("@/lib/updater", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/updater")>()),
   checkForUpdate: (...args: unknown[]) => checkForUpdate(...args),
   installUpdate: (...args: unknown[]) => installUpdate(...args),
   releasePageUrl: (version: string) =>
@@ -62,6 +70,18 @@ vi.mock("@/components/ShareDialog", () => ({
 
 function fakeUpdate(version = "1.1.0") {
   return { version, body: "Release notes", close: vi.fn().mockResolvedValue(undefined) };
+}
+
+/** The minimum registry a paired install hands the sidebar: one profile so the
+ * ProfileBar renders, and a team connection so Team is a top-level row. */
+function pairedRegistry(): Registry {
+  return {
+    version: 3,
+    servers: [],
+    profiles: [{ id: "default", name: "Default" }],
+    activeProfileId: "default",
+    team: { teamId: "team-1" },
+  } as unknown as Registry;
 }
 
 beforeEach(() => {
@@ -97,6 +117,7 @@ describe("AppSidebar accessibility", () => {
           onRegistryChange={vi.fn()}
           view="clients"
           onSelectView={vi.fn()}
+          onShortcuts={vi.fn()}
           onReplayOnboarding={vi.fn()}
         />
       </TooltipProvider>,
@@ -110,7 +131,7 @@ describe("AppSidebar accessibility", () => {
     );
   });
 
-  it("routes to the agent-rules view and marks it current", async () => {
+  it("shows sign in before pairing and team navigation after pairing", async () => {
     const onSelectView = vi.fn();
     const { rerender } = render(
       <TooltipProvider>
@@ -119,29 +140,44 @@ describe("AppSidebar accessibility", () => {
           onRegistryChange={vi.fn()}
           view="servers"
           onSelectView={onSelectView}
+          onShortcuts={vi.fn()}
           onReplayOnboarding={vi.fn()}
         />
       </TooltipProvider>,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Agent rules" }));
-    expect(onSelectView).toHaveBeenCalledWith("rules");
+    const nav = screen.getByRole("navigation", { name: "Views" });
+    expect(
+      within(nav)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Servers", "Clients", "Activity", "Settings", "Sign in to sync"]);
+    // Catalog, Playground, Agent rules, Agent activity and Team are not top-level.
+    for (const name of [
+      "Browse catalog",
+      "Playground",
+      "Agent rules",
+      "Agent activity",
+      "Team",
+    ]) {
+      expect(within(nav).queryByRole("button", { name })).not.toBeInTheDocument();
+    }
 
     rerender(
       <TooltipProvider>
         <AppSidebar
-          registry={null}
+          registry={pairedRegistry()}
           onRegistryChange={vi.fn()}
-          view="rules"
+          view="servers"
           onSelectView={onSelectView}
+          onShortcuts={vi.fn()}
           onReplayOnboarding={vi.fn()}
         />
       </TooltipProvider>,
     );
-    expect(screen.getByRole("button", { name: "Agent rules" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Team" }));
+    expect(onSelectView).toHaveBeenCalledWith("teams");
   });
 
   it("rechecks updates when a stale tray-hidden window is shown", async () => {
@@ -155,6 +191,7 @@ describe("AppSidebar accessibility", () => {
           onRegistryChange={vi.fn()}
           view="servers"
           onSelectView={vi.fn()}
+          onShortcuts={vi.fn()}
           onReplayOnboarding={vi.fn()}
         />
       </TooltipProvider>,
@@ -180,6 +217,7 @@ describe("AppSidebar accessibility", () => {
           onRegistryChange={vi.fn()}
           view="servers"
           onSelectView={vi.fn()}
+          onShortcuts={vi.fn()}
           onReplayOnboarding={vi.fn()}
         />
       </TooltipProvider>,
@@ -213,6 +251,7 @@ describe("AppSidebar accessibility", () => {
           onRegistryChange={vi.fn()}
           view="servers"
           onSelectView={vi.fn()}
+          onShortcuts={vi.fn()}
           onReplayOnboarding={vi.fn()}
         />
       </TooltipProvider>,
@@ -225,9 +264,13 @@ describe("AppSidebar accessibility", () => {
     expect((await screen.findAllByText("Downloading 50%")).length).toBeGreaterThan(0);
   });
 
-  it("sends a .deb install to the release page instead of installing", async () => {
+  it.each([
+    ["deb", "sudo apt install ./<file>.deb"],
+    ["rpm", "sudo dnf install ./<file>.rpm"],
+    ["pacman", "sudo pacman -Syu"],
+  ])("directs a .%s install to its package manager", async (systemPackage, command) => {
     const update = fakeUpdate();
-    checkForUpdate.mockResolvedValue({ kind: "update", update, systemPackage: "deb" });
+    checkForUpdate.mockResolvedValue({ kind: "update", update, systemPackage });
 
     render(
       <TooltipProvider>
@@ -236,6 +279,7 @@ describe("AppSidebar accessibility", () => {
           onRegistryChange={vi.fn()}
           view="servers"
           onSelectView={vi.fn()}
+          onShortcuts={vi.fn()}
           onReplayOnboarding={vi.fn()}
         />
       </TooltipProvider>,
@@ -244,12 +288,15 @@ describe("AppSidebar accessibility", () => {
     await userEvent.click(
       await screen.findByRole("button", { name: /update to v1.1.0/i }),
     );
-    expect(screen.getByText(/installed from a \.deb package/i)).toBeInTheDocument();
+    expect(screen.getByText((text) => text.includes(command))).toBeInTheDocument();
+    if (systemPackage !== "pacman") {
+      expect(screen.getByText(/download the new/i)).toBeInTheDocument();
+    }
     expect(
       screen.queryByRole("button", { name: /install and restart/i }),
     ).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: /open download page/i }));
+    await userEvent.click(screen.getByRole("button", { name: /open release page/i }));
 
     expect(openExternal).toHaveBeenCalledWith(
       "https://github.com/btsouth/toolport/releases/tag/v1.1.0",
@@ -271,6 +318,7 @@ describe("AppSidebar accessibility", () => {
           onRegistryChange={vi.fn()}
           view="servers"
           onSelectView={vi.fn()}
+          onShortcuts={vi.fn()}
           onReplayOnboarding={vi.fn()}
         />
       </TooltipProvider>,
@@ -306,6 +354,7 @@ describe("AppSidebar accessibility", () => {
           onRegistryChange={vi.fn()}
           view="servers"
           onSelectView={vi.fn()}
+          onShortcuts={vi.fn()}
           onReplayOnboarding={vi.fn()}
         />
       </TooltipProvider>,
@@ -344,6 +393,7 @@ describe("AppSidebar accessibility", () => {
           onRegistryChange={vi.fn()}
           view="servers"
           onSelectView={vi.fn()}
+          onShortcuts={vi.fn()}
           onReplayOnboarding={vi.fn()}
         />
       </TooltipProvider>,
@@ -375,6 +425,7 @@ describe("AppSidebar accessibility", () => {
           onRegistryChange={vi.fn()}
           view="servers"
           onSelectView={vi.fn()}
+          onShortcuts={vi.fn()}
           onReplayOnboarding={vi.fn()}
         />
       </TooltipProvider>,
@@ -402,6 +453,7 @@ describe("AppSidebar quarantine badge", () => {
           onRegistryChange={vi.fn()}
           view="servers"
           onSelectView={vi.fn()}
+          onShortcuts={vi.fn()}
           onReplayOnboarding={vi.fn()}
         />
       </TooltipProvider>,
@@ -410,6 +462,7 @@ describe("AppSidebar quarantine badge", () => {
 
   function quarantinedTool(over: Partial<import("@/lib/api").QuarantinedTool> = {}) {
     return {
+      record_id: "displayed-record",
       server: "linear",
       tool: "linear__save_issue",
       reason: "a destructive tool's definition changed",
@@ -536,6 +589,26 @@ describe("AppSidebar quarantine badge", () => {
 });
 
 describe("AppSidebar open data folder", () => {
+  it("keeps Help and Quit reachable when the version lookup fails", async () => {
+    vi.mocked(getVersion).mockRejectedValueOnce(new Error("unavailable"));
+    const user = userEvent.setup();
+    render(
+      <TooltipProvider>
+        <AppSidebar
+          registry={null}
+          onRegistryChange={vi.fn()}
+          view="servers"
+          onSelectView={vi.fn()}
+          onShortcuts={vi.fn()}
+          onReplayOnboarding={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: "Help" }));
+    await user.click(screen.getByRole("button", { name: "Quit Toolport" }));
+    expect(exitApp).toHaveBeenCalledWith(0);
+  });
+
   it("shows an error toast when opening the data folder fails", async () => {
     openDataDir.mockRejectedValue(new Error("no such directory"));
     const user = userEvent.setup();
@@ -547,15 +620,79 @@ describe("AppSidebar open data folder", () => {
           onRegistryChange={vi.fn()}
           view="servers"
           onSelectView={vi.fn()}
+          onShortcuts={vi.fn()}
           onReplayOnboarding={vi.fn()}
         />
       </TooltipProvider>,
     );
 
-    await user.click(await screen.findByLabelText("Open data folder"));
+    await user.click(await screen.findByRole("button", { name: /Help/ }));
+    await user.click(await screen.findByRole("button", { name: "Open data folder" }));
 
     await waitFor(() => {
       expect(toastError).toHaveBeenCalledWith("Couldn't open data folder");
     });
   });
+});
+
+it("shows negative net savings with the tokenizer method and excludes legacy estimates", async () => {
+  getSavingsSummary.mockResolvedValue({
+    tokensSaved: -12_340,
+    tokenizedLoads: 1,
+    listLoads: 99,
+    peakCatalog: 80,
+    sinceTs: 0,
+    legacyEstimatedTokensAvoided: 1_000_000,
+  });
+  render(
+    <TooltipProvider>
+      <AppSidebar
+        registry={null}
+        onRegistryChange={vi.fn()}
+        view="servers"
+        onSelectView={vi.fn()}
+        onShortcuts={vi.fn()}
+        onReplayOnboarding={vi.fn()}
+      />
+    </TooltipProvider>,
+  );
+  const badge = await screen.findByRole("button", {
+    name: "-12.3k tokens saved",
+  });
+  expect(badge).toHaveAttribute("title", expect.stringContaining("cl100k_base"));
+  expect(badge).toHaveAttribute(
+    "title",
+    expect.stringContaining("minus every catalog and search response"),
+  );
+  expect(badge).toHaveAttribute(
+    "title",
+    expect.stringContaining("one full catalog baseline per client session"),
+  );
+  expect(badge).not.toHaveTextContent("1.0M");
+});
+
+it("shows indented settings pages with an active row and pending count", async () => {
+  const selectPage = vi.fn();
+  render(
+    <TooltipProvider>
+      <AppSidebar
+        registry={null}
+        onRegistryChange={vi.fn()}
+        view="settings"
+        onSelectView={vi.fn()}
+        onReplayOnboarding={vi.fn()}
+        onShortcuts={vi.fn()}
+        settingsPage="tools"
+        onSettingsPageChange={selectPage}
+        pendingCount={3}
+      />
+    </TooltipProvider>,
+  );
+  expect(screen.getByRole("button", { name: "Tools" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  expect(screen.getByLabelText("3 pending approvals")).toHaveTextContent("3");
+  await userEvent.click(screen.getByRole("button", { name: "Safety" }));
+  expect(selectPage).toHaveBeenCalledWith("safety");
 });

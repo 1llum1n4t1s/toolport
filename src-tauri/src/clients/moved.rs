@@ -82,10 +82,25 @@ fn container(format: Format) -> Container {
     }
 }
 
+pub(super) fn server_container(format: Format, root: &serde_json::Value) -> serde_json::Value {
+    match container(format) {
+        Container::Json { key, nested } => {
+            let value = &root[key];
+            nested.map_or_else(|| value.clone(), |key| value[key].clone())
+        }
+        Container::Toml => root["mcp_servers"].clone(),
+        Container::YamlMap(key) | Container::YamlList(key) => root[key].clone(),
+    }
+}
+
 fn record_path(client_id: &str) -> Result<PathBuf, String> {
     Ok(backup_dir(client_id)
         .ok_or("Could not resolve backup dir")?
         .join(RECORD_FILE))
+}
+
+pub(super) fn has_record(client_id: &str) -> bool {
+    record_path(client_id).is_ok_and(|path| path.exists())
 }
 
 fn load(client_id: &str) -> Result<Option<Record>, String> {
@@ -99,45 +114,98 @@ fn load(client_id: &str) -> Result<Option<Record>, String> {
     }
 }
 
-/// The record file's bytes before [`record`] changed it, so a failed migration
-/// can put it back.
-pub(super) struct Previous {
-    client_id: String,
-    bytes: Option<String>,
+pub(super) fn matches_path(client_id: &str, path: &Path) -> Result<bool, String> {
+    Ok(load(client_id)?.is_some_and(|record| record.config_path == path.to_string_lossy()))
 }
 
-impl Previous {
-    pub(super) fn revert(self) {
-        let Ok(path) = record_path(&self.client_id) else {
-            return;
-        };
-        let _ = match self.bytes {
-            Some(bytes) => crate::registry::atomic_write(&path, &bytes),
-            None => std::fs::remove_file(&path).map_err(|e| e.to_string()),
-        };
+pub(super) fn recorded_paths() -> Vec<(String, PathBuf, Result<Format, String>)> {
+    let mut paths = Vec::new();
+    for def in machine_defs(false) {
+        if !has_record(def.client_id()) {
+            continue;
+        }
+        match load(def.client_id()) {
+            Ok(Some(record)) => {
+                let path = PathBuf::from(record.config_path);
+                if path.is_absolute() {
+                    paths.push((def.client_id().into(), path, Ok(def.format)));
+                } else {
+                    paths.push((
+                        def.client_id().into(),
+                        record_path(def.client_id()).unwrap_or_default(),
+                        Err("Legacy move record has no absolute config path".into()),
+                    ));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => paths.push((
+                def.client_id().into(),
+                record_path(def.client_id()).unwrap_or_default(),
+                Err(error),
+            )),
+        }
     }
+    paths
+}
+
+/// Raw values stay inside the backend and the owner-only config transaction.
+pub(super) fn definition(
+    format: Format,
+    path: &Path,
+    name: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    let entries = extract(container(format), &read_config_file(path)?)?;
+    let Some(entry) = entries.into_iter().find(|entry| entry.name == name) else {
+        return Ok(None);
+    };
+    let value = match entry.raw {
+        Raw::Json { value } => value,
+        Raw::Toml { text } => {
+            let doc: toml::Value =
+                toml::from_str(&text).map_err(|_| "Could not read imported settings")?;
+            serde_json::to_value(&doc["mcp_servers"][name])
+                .map_err(|_| "Could not read imported settings")?
+        }
+        Raw::Yaml { text } => {
+            let doc: serde_yaml::Value =
+                serde_yaml::from_str(&text).map_err(|_| "Could not read imported settings")?;
+            serde_json::to_value(doc).map_err(|_| "Could not read imported settings")?
+        }
+    };
+    Ok(Some(value))
 }
 
 /// Copy every non-gateway entry in `path` into the client's move record before
 /// migration strips them. Entries already recorded by an earlier move are kept;
 /// a name moved again takes its newest definition.
-pub(super) fn record(client_id: &str, format: Format, path: &Path) -> Result<Previous, String> {
+#[cfg(test)]
+pub(super) fn record(client_id: &str, format: Format, path: &Path) -> Result<(), String> {
+    let names = extract(container(format), &read_config_file(path)?)?
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
+    record_selected(client_id, format, path, &names)
+}
+
+pub(super) fn record_selected(
+    client_id: &str,
+    format: Format,
+    path: &Path,
+    names: &[String],
+) -> Result<(), String> {
     let record_file = record_path(client_id)?;
-    let previous = Previous {
-        client_id: client_id.to_string(),
-        bytes: match std::fs::read_to_string(&record_file) {
-            Ok(bytes) => Some(bytes),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(format!("could not read {}: {e}", record_file.display())),
-        },
+    let previous = match std::fs::read_to_string(&record_file) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("could not read {}: {e}", record_file.display())),
     };
-    let entries = if path.exists() {
+    let entries = if mutation::exists(path) {
         extract(container(format), &read_config_file(path)?)?
     } else {
         Vec::new()
     };
     let config_path = path.display().to_string();
-    let mut record = match previous.bytes.as_deref() {
+    let mut record = match previous.as_deref() {
         Some(text) => serde_json::from_str::<Record>(text)
             .map_err(|e| format!("could not read {}: {e}", record_file.display()))?,
         None => Record::default(),
@@ -149,17 +217,228 @@ pub(super) fn record(client_id: &str, format: Format, path: &Path) -> Result<Pre
         };
     }
     if entries.is_empty() && record.entries.is_empty() {
-        return Ok(previous);
+        return Ok(());
     }
-    for entry in entries {
+    for entry in entries
+        .into_iter()
+        .filter(|entry| names.contains(&entry.name))
+    {
         record
             .entries
             .retain(|kept| !kept.name.eq_ignore_ascii_case(&entry.name));
         record.entries.push(entry);
     }
     let text = serde_json::to_string_pretty(&record).map_err(|e| e.to_string())?;
-    crate::registry::atomic_write(&record_file, &text)?;
-    Ok(previous)
+    atomic_write(&record_file, &text)?;
+    Ok(())
+}
+
+/// Remove only the definitions reviewed for this transaction. Other entries,
+/// including unknown adapter fields and inline credentials, stay in their format.
+pub(super) fn remove_selected(format: Format, path: &Path, names: &[String]) -> Result<(), String> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    match container(format) {
+        Container::Json { key, nested } => {
+            let original = read_config_file(path)?;
+            let mut root = read_existing_json(&original, true)?;
+            let mut servers = root.get_mut(key);
+            if let Some(nested) = nested {
+                servers = servers.and_then(|v| v.get_mut(nested));
+            }
+            let servers = servers
+                .and_then(|v| v.as_object_mut())
+                .ok_or("Could not read the reviewed server list")?;
+            for name in names {
+                servers.remove(name);
+            }
+            atomic_write_json_config(path, Some(&original), &root, key)
+        }
+        Container::Toml => {
+            let mut doc = load_toml_document(path)?;
+            for name in names {
+                toml_mcp_servers_mut(&mut doc).remove(name);
+            }
+            atomic_write(path, &doc.to_string())
+        }
+        Container::YamlMap(key) | Container::YamlList(key) => {
+            let list = matches!(container(format), Container::YamlList(_));
+            let (original, mut root) = read_existing_yaml_with_source(path)?;
+            let servers = root
+                .get_mut(key)
+                .ok_or("Could not read the reviewed server list")?;
+            if list {
+                servers
+                    .as_sequence_mut()
+                    .ok_or("Expected a server list")?
+                    .retain(|v| {
+                        !v.get("name")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|n| names.iter().any(|name| name == n))
+                    });
+            } else {
+                let servers = servers.as_mapping_mut().ok_or("Expected a server map")?;
+                for name in names {
+                    servers.remove(serde_yaml::Value::String(name.clone()));
+                }
+            }
+            atomic_write_yaml_config(path, original.as_deref(), &root, key)
+        }
+    }
+}
+
+/// Add only an identity env key to an existing owned entry. Preserve raw fields.
+pub(super) fn backfill_identity(
+    format: Format,
+    path: &Path,
+    name: &str,
+    id: &str,
+) -> Result<(), String> {
+    let reclaim_main = main_location_identity_changed(
+        id,
+        location_launch_id(format, name, &read_config_file(path)?)?.as_deref(),
+    );
+    let keys = if id.contains('@') || reclaim_main {
+        vec![crate::brand::ATTRIBUTION_ID, crate::brand::CLIENT_ID]
+    } else {
+        vec![crate::brand::ATTRIBUTION_ID]
+    };
+    match container(format) {
+        Container::Json {
+            key: container_key,
+            nested,
+        } => {
+            let original = read_config_file(path)?;
+            let mut root = read_existing_json(&original, true)?;
+            let mut servers = root
+                .get_mut(container_key)
+                .ok_or("Missing server container")?;
+            if let Some(nested) = nested {
+                servers = servers.get_mut(nested).ok_or("Missing server container")?;
+            }
+            let entry = servers.get_mut(name).ok_or("Missing owned gateway")?;
+            let env_key = if matches!(format, Format::JsonOpenCodeMcp) {
+                "environment"
+            } else {
+                "env"
+            };
+            if entry.get(env_key).is_none() {
+                entry[env_key] = serde_json::json!({});
+            }
+            for key in &keys {
+                entry
+                    .get_mut(env_key)
+                    .and_then(serde_json::Value::as_object_mut)
+                    .ok_or("Invalid gateway environment")?
+                    .insert((*key).into(), serde_json::json!(id));
+            }
+            atomic_write_json_config(path, Some(&original), &root, container_key)
+        }
+        Container::Toml => {
+            let mut doc = load_toml_document(path)?;
+            let entry = &mut toml_mcp_servers_mut(&mut doc)[name];
+            if entry.get("env").is_none() {
+                entry["env"] = toml_edit::Item::Table(toml_edit::Table::new());
+            }
+            for key in &keys {
+                entry["env"]
+                    .as_table_like_mut()
+                    .ok_or("Invalid gateway environment")?
+                    .insert(key, toml_edit::value(id));
+            }
+            atomic_write(path, &doc.to_string())
+        }
+        Container::YamlMap(container_key) | Container::YamlList(container_key) => {
+            let (original, mut root) = read_existing_yaml_with_source(path)?;
+            let servers = root
+                .get_mut(container_key)
+                .ok_or("Missing server container")?;
+            let entry = if matches!(container(format), Container::YamlList(_)) {
+                servers
+                    .as_sequence_mut()
+                    .ok_or("Invalid server list")?
+                    .iter_mut()
+                    .find(|s| s["name"].as_str() == Some(name))
+                    .ok_or("Missing owned gateway")?
+            } else {
+                servers.get_mut(name).ok_or("Missing owned gateway")?
+            };
+            let env_key = if matches!(format, Format::YamlExtensions) {
+                "envs"
+            } else {
+                "env"
+            };
+            if entry.get(env_key).is_none() {
+                entry[env_key] = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+            }
+            for key in &keys {
+                entry
+                    .get_mut(env_key)
+                    .and_then(serde_yaml::Value::as_mapping_mut)
+                    .ok_or("Invalid gateway environment")?
+                    .insert(
+                        serde_yaml::Value::String((*key).into()),
+                        serde_yaml::Value::String(id.into()),
+                    );
+            }
+            atomic_write_yaml_config(path, original.as_deref(), &root, container_key)
+        }
+    }
+}
+
+pub(super) fn toml_entry(
+    client_id: &str,
+    path: &Path,
+    name: &str,
+) -> Result<Option<toml_edit::Item>, String> {
+    let Some(record) = load(client_id)? else {
+        return Ok(None);
+    };
+    if record.config_path != path.to_string_lossy() {
+        return Ok(None);
+    }
+    let Some(entry) = record.entries.iter().find(|entry| entry.name == name) else {
+        return Ok(None);
+    };
+    let Raw::Toml { text } = &entry.raw else {
+        return Ok(None);
+    };
+    let doc = text
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| e.to_string())?;
+    Ok(doc
+        .get("mcp_servers")
+        .and_then(|table| table.get(name))
+        .cloned())
+}
+
+pub(super) fn missing_names(
+    client_id: &str,
+    format: Format,
+    path: &Path,
+) -> Result<Vec<String>, String> {
+    let Some(record) = load(client_id)? else {
+        return Ok(Vec::new());
+    };
+    if record.config_path != path.to_string_lossy() {
+        return Ok(Vec::new());
+    }
+    let existing = if mutation::exists(path) {
+        extract(container(format), &read_config_file(path)?)?
+    } else {
+        Vec::new()
+    };
+    Ok(record
+        .entries
+        .into_iter()
+        .filter(|entry| {
+            !existing
+                .iter()
+                .any(|current| current.name.eq_ignore_ascii_case(&entry.name))
+        })
+        .map(|entry| entry.name)
+        .collect())
 }
 
 /// What [`restore`] put back.
@@ -188,9 +467,12 @@ pub(super) fn restore(
 }
 
 /// Drop the client's record once Disconnect has finished with it.
-pub(super) fn forget(client_id: &str) {
-    if let Ok(path) = record_path(client_id) {
-        let _ = std::fs::remove_file(path);
+pub(super) fn forget(client_id: &str) -> Result<(), String> {
+    let path = record_path(client_id)?;
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("Could not remove client move record: {e}")),
     }
 }
 
@@ -321,7 +603,7 @@ fn insert_missing(
     let mut names = Vec::new();
     match container {
         Container::Json { key, nested } => {
-            let original = if path.exists() {
+            let original = if mutation::exists(path) {
                 Some(read_config_file(path)?)
             } else {
                 None

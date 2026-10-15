@@ -13,6 +13,7 @@ import {
   existsSync,
   writeFileSync,
   chmodSync,
+  readFileSync,
   rmSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -37,20 +38,39 @@ function gatewayPathFor(triple) {
   return join("src-tauri", "target", sub, `toolport-gateway${ext}`);
 }
 
+// Windows machines without the Visual C++ runtime cannot start a gateway that
+// links VCRUNTIME140.dll, and the installer preflight runs it. Tauri links the
+// app statically; do the same for the sidecar.
+const windowsMsvc = (triple) => /windows-msvc$/.test(triple);
+
 function buildGateway(triple) {
   const targetArg = triple ? `--target ${triple} ` : "";
+  const staticCrt = windowsMsvc(triple || hostTriple());
+  const env = staticCrt
+    ? {
+        ...process.env,
+        RUSTFLAGS: [process.env.RUSTFLAGS, "-C target-feature=+crt-static"]
+          .filter(Boolean)
+          .join(" "),
+      }
+    : process.env;
   console.log(
     `[sidecar] building toolport-gateway (${profile}) ${triple ? "for " + triple : "(host)"}`,
   );
   execSync(
-    `cargo build ${debug ? "" : "--release "}${targetArg}--bin toolport-gateway --no-default-features`,
+    `cargo build ${debug ? "" : "--release "}${targetArg}--bin toolport-gateway --no-default-features --features search-static`,
     {
       cwd: "src-tauri",
       stdio: "inherit",
+      env,
     },
   );
   const src = gatewayPathFor(triple);
   if (!existsSync(src)) throw new Error(`built gateway not found at ${src}`);
+  if (staticCrt && readFileSync(src).includes("VCRUNTIME140.dll", 0, "latin1"))
+    throw new Error(
+      `${src} still imports VCRUNTIME140.dll; it would not start without the VC++ runtime`,
+    );
   return src;
 }
 

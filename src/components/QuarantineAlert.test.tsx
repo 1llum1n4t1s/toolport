@@ -31,6 +31,7 @@ async function confirmReapproveAll() {
 
 function tool(over: Partial<QuarantinedTool> = {}): QuarantinedTool {
   return {
+    record_id: "displayed-record",
     server: "linear",
     tool: "linear__save_issue",
     reason: "a destructive tool's definition changed",
@@ -75,10 +76,15 @@ describe("QuarantineAlert bulk re-approval", () => {
 
     // One call for the one profile, not one per tool.
     await waitFor(() => expect(releaseAllQuarantine).toHaveBeenCalledTimes(1));
-    expect(releaseAllQuarantine).toHaveBeenCalledWith("default");
+    expect(releaseAllQuarantine).toHaveBeenCalledWith(
+      "default",
+      Object.fromEntries(catalog(40).map((q) => [q.tool, q.record_id])),
+    );
     expect(releaseQuarantine).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole("region")).not.toBeInTheDocument());
-    expect(toastSuccess).toHaveBeenCalledWith("Re-approved 40 tools");
+    expect(toastSuccess).toHaveBeenCalledWith(
+      "Saved 40 approvals. Current definitions need one more review and stay blocked until then.",
+    );
   });
 
   it("clears every profile the card covers", async () => {
@@ -96,8 +102,14 @@ describe("QuarantineAlert bulk re-approval", () => {
     await confirmReapproveAll();
 
     await waitFor(() => expect(releaseAllQuarantine).toHaveBeenCalledTimes(2));
-    expect(releaseAllQuarantine).toHaveBeenCalledWith("default");
-    expect(releaseAllQuarantine).toHaveBeenCalledWith("work");
+    expect(releaseAllQuarantine).toHaveBeenCalledWith(
+      "default",
+      Object.fromEntries(catalog(2).map((q) => [q.tool, q.record_id])),
+    );
+    expect(releaseAllQuarantine).toHaveBeenCalledWith(
+      "work",
+      Object.fromEntries(catalog(2, "work").map((q) => [q.tool, q.record_id])),
+    );
   });
 
   it("does not release anything until the confirm is accepted", async () => {
@@ -129,11 +141,81 @@ describe("QuarantineAlert bulk re-approval", () => {
 
     await waitFor(() => expect(toastError).toHaveBeenCalled());
     expect(toastError.mock.calls[0][0]).toMatch(
-      /Re-approved 1\. 2 could not be repaired/,
+      /Saved 1 approval\. 2 could not be repaired/,
     );
     expect(toastSuccess).not.toHaveBeenCalled();
     // Still blocked, so the card must stay up.
     expect(screen.getByRole("region")).toBeInTheDocument();
+  });
+
+  it("keeps confirmation bound to its displayed list while polling finds another block", async () => {
+    const displayed = catalog(2);
+    listQuarantined.mockResolvedValueOnce(displayed);
+    listQuarantined.mockResolvedValue([
+      ...displayed,
+      tool({ tool: "unseen", record_id: "new-record" }),
+    ]);
+    releaseAllQuarantine.mockResolvedValue({
+      released: 2,
+      skipped: [],
+      changed: ["unseen"],
+    });
+    render(<QuarantineAlert />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: /re-approve all \(2\)/i }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => expect(listQuarantined.mock.calls.length).toBeGreaterThan(1), {
+      timeout: 4000,
+    });
+    expect(dialog).toHaveAccessibleName("Re-approve 2 blocked tools?");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: /^re-approve all$/i }),
+    );
+    await waitFor(() =>
+      expect(releaseAllQuarantine).toHaveBeenCalledWith(
+        "default",
+        Object.fromEntries(displayed.map((q) => [q.tool, q.record_id])),
+      ),
+    );
+  });
+
+  it("reports findings that appeared or changed after review as still blocked", async () => {
+    listQuarantined.mockResolvedValue(catalog(3));
+    releaseAllQuarantine.mockResolvedValue({
+      released: 1,
+      skipped: [],
+      changed: ["clerk__call_api_key_1", "new_tool"],
+    });
+    render(<QuarantineAlert />);
+    await screen.findByRole("region");
+    await confirmReapproveAll();
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        "Saved 1 approval. 2 new or changed findings remain blocked. Refresh and review them.",
+      ),
+    );
+    expect(toastSuccess).not.toHaveBeenCalled();
+    expect(screen.getByRole("region")).toBeInTheDocument();
+  });
+
+  it("reports a new profile's block without releasing an unseen scope", async () => {
+    const displayed = catalog(2);
+    listQuarantined.mockResolvedValueOnce(displayed);
+    listQuarantined.mockResolvedValue([
+      tool({ profile: "new-profile", record_id: "unseen-record" }),
+    ]);
+    releaseAllQuarantine.mockResolvedValue({ released: 2, skipped: [], changed: [] });
+    render(<QuarantineAlert />);
+    await screen.findByRole("region");
+    await confirmReapproveAll();
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        "Saved 2 approvals. 1 new or changed findings remain blocked. Refresh and review them.",
+      ),
+    );
+    expect(releaseAllQuarantine).toHaveBeenCalledTimes(1);
+    expect(toastSuccess).not.toHaveBeenCalled();
   });
 
   it("keeps the card up and reports a failed bulk re-approval", async () => {
@@ -169,7 +251,7 @@ describe("QuarantineAlert bulk re-approval", () => {
 
     await waitFor(() => expect(toastError).toHaveBeenCalled());
     // The successful profile is reported, not silently dropped.
-    expect(toastError.mock.calls[0][0]).toMatch(/Re-approved 2\./);
+    expect(toastError.mock.calls[0][0]).toMatch(/Saved 2 approvals\./);
     expect(toastError.mock.calls[0][0]).toMatch(/1 profile could not be re-approved/);
     expect(toastSuccess).not.toHaveBeenCalled();
     // The refresh still ran, so the card drops the tools that did come free.
@@ -214,6 +296,41 @@ describe("QuarantineAlert", () => {
     ).toBeInTheDocument();
   });
 
+  it("explains that missing definitions always need a captured review", async () => {
+    listQuarantined.mockResolvedValue([tool()]);
+    render(<QuarantineAlert />);
+    expect(
+      await screen.findByText(
+        "No saved definition. Approving captures the current definition for one more review. The tool stays blocked until then.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the captured definition and explains the extra legacy review", async () => {
+    listQuarantined.mockResolvedValue([
+      tool({
+        reason:
+          "This older block had no saved definition. Review the captured current definition before approving.",
+        definition: {
+          name: "linear__save_issue",
+          description: "Update the selected issue",
+          inputSchema: { type: "object", properties: { title: { type: "string" } } },
+          outputSchema: { type: "object" },
+          annotations: { readOnlyHint: false },
+        },
+      }),
+    ]);
+    render(<QuarantineAlert />);
+    expect(
+      await screen.findByText(/This older block had no saved definition/),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Captured definition"));
+    const definition = screen.getByText(/Update the selected issue/);
+    for (const field of ["inputSchema", "outputSchema", "readOnlyHint", "title"]) {
+      expect(definition).toHaveTextContent(field);
+    }
+  });
+
   it("re-approves through the profile-scoped API and re-reads the list", async () => {
     // Empty profile is the no-profile store; the backend maps it to None. Passing the
     // wrong profile would silently release nothing.
@@ -225,7 +342,12 @@ describe("QuarantineAlert", () => {
     // Exact match: the footer also offers a bulk "Re-approve all" button.
     await userEvent.click(await screen.findByRole("button", { name: /^re-approve$/i }));
 
-    expect(releaseQuarantine).toHaveBeenCalledWith("work", "linear__save_issue");
+    expect(releaseQuarantine).toHaveBeenCalledWith(
+      "work",
+      "linear__save_issue",
+      undefined,
+      "displayed-record",
+    );
     await waitFor(() => expect(screen.queryByRole("region")).not.toBeInTheDocument());
   });
 

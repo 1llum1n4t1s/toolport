@@ -23,7 +23,100 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 pub(crate) static REGISTRY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-const REGISTRY_VERSION: u32 = 1;
+pub(crate) mod client_file;
+mod v2_migration;
+mod v3_migration;
+
+/// The newest registry schema version this build knows how to load and write.
+const REGISTRY_VERSION: u32 = 3;
+
+/// Explicit per-client access to all globally enabled servers.
+pub const ALL_ENABLED_ACCESS: &str = "@all-enabled";
+
+/// One ordered schema migration: it rewrites a registry document at version N
+/// into version N+1. The loader stamps the `version` field after each step, so
+/// a step only transforms data, plus any export it must write before data is
+/// dropped. Index `i` migrates v(i+1) -> v(i+2).
+pub type Migration = fn(&mut serde_json::Value, &MigrationContext) -> Result<(), String>;
+
+/// What a migration step may need beyond the document: where to put exports of
+/// user data a schema change drops. Steps run after the pre-migration backup
+/// and before the migrated registry is written.
+pub struct MigrationContext {
+    /// The directory holding the registry being migrated.
+    pub data_dir: PathBuf,
+    /// Today's UTC date as `YYYY-MM-DD`, used in export file names.
+    pub date: String,
+}
+
+impl MigrationContext {
+    fn for_registry(path: &Path) -> Self {
+        let data_dir = path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let days = (now_ms() / 86_400_000) as i64;
+        let (year, month, day) = crate::usage_report::civil_from_days(days);
+        MigrationContext {
+            data_dir,
+            date: format!("{year:04}-{month:02}-{day:02}"),
+        }
+    }
+}
+
+/// The shipped `vN -> vN+1` pipeline, in order. Its length must stay
+/// `REGISTRY_VERSION - 1` (asserted by a test), so a step can neither be
+/// silently skipped nor applied twice.
+const MIGRATIONS: &[Migration] = &[
+    v2_migration::migrate_v1_to_v2,
+    v3_migration::migrate_v2_to_v3,
+];
+
+/// A registry that could not be loaded or safely written because of its schema
+/// version. Kept distinct from the generic corruption error so version skew (an
+/// older binary pointed at a newer file) is surfaced with its own message
+/// instead of being mistaken for a corrupt file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryError {
+    /// The file was written by a newer Toolport. `found` is the on-disk schema
+    /// version, `supported` the newest this build knows.
+    NewerVersion { found: u32, supported: u32 },
+}
+
+/// Shared prefix so [`is_newer_version_error`] and the `Display` text can never
+/// drift apart.
+const NEWER_VERSION_PREFIX: &str = "This registry was written by a newer Toolport";
+
+impl std::fmt::Display for RegistryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RegistryError::NewerVersion { found, supported } => write!(
+                f,
+                "{NEWER_VERSION_PREFIX} (schema v{found}); this build supports up to v{supported}. \
+                 Update Toolport or restore a backup."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RegistryError {}
+
+impl From<RegistryError> for String {
+    fn from(error: RegistryError) -> Self {
+        error.to_string()
+    }
+}
+
+/// True when `error` is the refusal [`RegistryError::NewerVersion`] produces, so
+/// the app and gateway can show version-skew guidance rather than the generic
+/// corrupt-registry recovery steps.
+pub fn is_newer_version_error(error: &str) -> bool {
+    error.starts_with(NEWER_VERSION_PREFIX)
+}
+
+fn newer_version_error(found: u32, supported: u32) -> String {
+    RegistryError::NewerVersion { found, supported }.into()
+}
 
 /// Per-process counter for unique atomic-write temp names.
 static ATOMIC_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -91,19 +184,10 @@ pub(crate) fn trimmed_tail(content: &str, keep: usize) -> String {
 /// Append one already-serialized JSONL `line` to `path` under the cross-process
 /// lock for that path, then trim to `keep_lines` once the file passes `max_bytes`.
 ///
-/// Shared by the tool-call audit log ([`crate::audit`]) and the agent-hook sensor
-/// log ([`crate::hooks`]). Both are appended to by several independent processes at
-/// once - every client's gateway, and one short-lived process per hook event - so an
-/// in-process mutex is not enough. Atomic replacement protects readers from partial
-/// files, but only this shared critical section prevents a stale rotation snapshot
-/// from replacing an append that completed in another process (#708).
-///
-/// `after_snapshot` is a test seam: it runs between reading the file for rotation and
-/// writing the trimmed result, so a test can prove an append landing in that window
-/// is not lost.
-///
-/// Returns `Err` only when the line could not be recorded. Trimming is best-effort:
-/// a failure there never fails the append it follows.
+/// Thin wrapper over [`append_lines_locked`] for the callers whose writes stay on
+/// the calling thread, such as the integrity pin store. The
+/// audit, savings and search-trace logs go through [`append_lines_locked`] on the
+/// background writer instead (see [`crate::telemetry`]).
 pub(crate) fn append_line_locked(
     path: &Path,
     line: &str,
@@ -111,6 +195,55 @@ pub(crate) fn append_line_locked(
     keep_lines: usize,
     after_snapshot: Option<&mut dyn FnMut()>,
 ) -> Result<(), String> {
+    let line = line.to_string();
+    append_lines_locked(
+        path,
+        std::slice::from_ref(&line),
+        max_bytes,
+        keep_lines,
+        after_snapshot,
+    )
+}
+
+/// Append a batch of already-serialized JSONL `lines` to `path` under ONE
+/// acquisition of the path's cross-process lock, then trim to `keep_lines` once
+/// the file passes `max_bytes`.
+///
+/// Shared by the tool-call audit log ([`crate::audit`]) and the search-trace log
+/// ([`crate::searchtrace`]). They are appended to by several independent processes
+/// at once - every client's gateway and the app - so an in-process mutex is not
+/// enough. Atomic replacement protects readers from partial files, but only
+/// this shared critical section prevents a stale rotation snapshot from replacing
+/// an append that completed in another process (#708).
+///
+/// Batching several lines under one lock is what keeps the lock, the write and any
+/// rotation off the request thread: the caller queues a formatted line and this
+/// runs on the writer thread.
+///
+/// `after_snapshot` is a test seam: it runs between reading the file for rotation and
+/// writing the trimmed result, so a test can prove an append landing in that window
+/// is not lost.
+///
+/// Reports append and rotation failures. The telemetry outcome preserves whether
+/// the lines already landed before rotation failed.
+pub(crate) fn append_lines_locked(
+    path: &Path,
+    lines: &[String],
+    max_bytes: u64,
+    keep_lines: usize,
+    after_snapshot: Option<&mut dyn FnMut()>,
+) -> Result<(), String> {
+    append_lines_with_outcome(path, lines, max_bytes, keep_lines, after_snapshot)
+        .map_err(|error| error.message)
+}
+
+pub(crate) fn append_lines_with_outcome(
+    path: &Path,
+    lines: &[String],
+    max_bytes: u64,
+    keep_lines: usize,
+    after_snapshot: Option<&mut dyn FnMut()>,
+) -> Result<(), crate::telemetry::AppendError> {
     use std::io::Write as _;
 
     let _lock = lock_at(path)?;
@@ -127,11 +260,14 @@ pub(crate) fn append_line_locked(
             }
             open().map_err(|e| e.to_string())?
         }
-        Err(error) => return Err(error.to_string()),
+        Err(error) => return Err(error.to_string().into()),
     };
-    let mut bytes = line.to_string();
-    if !bytes.ends_with('\n') {
-        bytes.push('\n');
+    let mut bytes = String::new();
+    for line in lines {
+        bytes.push_str(line);
+        if !line.ends_with('\n') {
+            bytes.push('\n');
+        }
     }
     file.write_all(bytes.as_bytes())
         .map_err(|e| e.to_string())?;
@@ -151,18 +287,21 @@ pub(crate) fn append_line_locked(
         // as replacement characters, which readers already skip (they `filter_map` the
         // JSON parse), and it ages out of the keep window like any other line.
         //
-        // The `atomic_write` result stays ignored on purpose, and is a different case: a
-        // failed rotation leaves the file oversized, so the NEXT append past the cap tries
-        // again. That self-heals; an unreadable file never would.
-        if let Ok(bytes) = std::fs::read(path) {
-            if let Some(hook) = after_snapshot {
-                hook();
-            }
-            let content = String::from_utf8_lossy(&bytes);
-            // Atomic + unique temp: several processes share this file, so a bespoke
-            // fixed temp name could let two rotations collide.
-            let _ = atomic_write(path, &trimmed_tail(&content, keep_lines));
+        let bytes = std::fs::read(path)
+            .map_err(|error| crate::telemetry::AppendError::after_append(error.to_string()))?;
+        if let Some(hook) = after_snapshot {
+            hook();
         }
+        let content = String::from_utf8_lossy(&bytes);
+        let tail = trimmed_tail(&content, keep_lines);
+        // Large lines can cross the byte threshold before the line window fills.
+        // Rewriting that unchanged tail adds two fsyncs to every later batch.
+        if tail.as_bytes() == bytes {
+            return Ok(());
+        }
+        // A failed rotation keeps the appended history intact, but must be
+        // reported so telemetry health does not claim complete persistence.
+        atomic_write(path, &tail).map_err(crate::telemetry::AppendError::after_append)?;
     }
     Ok(())
 }
@@ -199,10 +338,10 @@ const RENAME_BACKOFF_CAP: std::time::Duration = std::time::Duration::from_millis
 /// open, and something usually does: Defender, the search indexer, a backup agent. The handle is
 /// released within milliseconds, so the operation was never impossible - only early.
 ///
-/// This is not hypothetical. `hooks::tests::preview_text_is_the_bytes_install_actually_writes`
-/// failed one Windows CI run with `install_at` returning `Err`, while the identical test passed
-/// on every other host and on every other run. Users hit the same edge writing `settings.json`
-/// on a machine with antivirus running; CI just reports it more visibly.
+/// This is not hypothetical. A client-config write failed one Windows CI run with a rename
+/// returning `Err`, while the identical test passed on every other host and on every other run.
+/// Users hit the same edge writing `settings.json` on a machine with antivirus running; CI just
+/// reports it more visibly.
 ///
 /// Unix needs none of this: `rename(2)` is atomic against open handles, so a failure there is a
 /// real permission or layout problem and retrying only delays the report.
@@ -224,15 +363,21 @@ fn transient_rename_error(_error: &std::io::Error) -> bool {
 /// Bounded on both axes - at most [`RENAME_ATTEMPTS`] tries and a capped backoff - so a
 /// destination that is genuinely locked forever still reports its error instead of hanging.
 /// A non-retryable error returns on the first attempt, unchanged and undelayed.
-fn rename_with_retry(ops: &impl AtomicWriteOps, from: &Path, to: &Path) -> std::io::Result<()> {
+fn rename_with_retry(
+    ops: &impl AtomicWriteOps,
+    from: &Path,
+    to: &Path,
+    check: impl Fn() -> Result<(), String>,
+) -> Result<(), String> {
     let mut delay = RENAME_BACKOFF_START;
     let mut attempt = 1;
     loop {
+        check()?;
         match ops.rename(from, to) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 if attempt >= RENAME_ATTEMPTS || !ops.rename_is_retryable(&error) {
-                    return Err(error);
+                    return Err(error.to_string());
                 }
                 std::thread::sleep(delay);
                 delay = (delay * 2).min(RENAME_BACKOFF_CAP);
@@ -375,6 +520,10 @@ fn resolve_atomic_write_dest(path: &Path) -> Result<PathBuf, String> {
 /// If `path` is a symlink, the temp and rename target the resolved file so the
 /// link inode is left in place (SBS-886).
 pub fn atomic_write(path: &Path, contents: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(result) = tests::injected_atomic_write(path, contents) {
+        return result;
+    }
     atomic_write_with_ops(path, contents, &FsAtomicWriteOps)
 }
 
@@ -382,6 +531,15 @@ fn atomic_write_with_ops(
     path: &Path,
     contents: &str,
     ops: &impl AtomicWriteOps,
+) -> Result<(), String> {
+    atomic_write_checked_with_ops(path, contents, ops, || Ok(()))
+}
+
+fn atomic_write_checked_with_ops(
+    path: &Path,
+    contents: &str,
+    ops: &impl AtomicWriteOps,
+    check: impl Fn() -> Result<(), String>,
 ) -> Result<(), String> {
     // SBS-886: rename(2) replaces a destination symlink. Resolve first so the
     // temp file and rename land next to the real target.
@@ -413,7 +571,7 @@ fn atomic_write_with_ops(
     // leave a truncated registry.json. `fs::write` + `rename` alone did not.
     ops.sync_all(&f).map_err(|e| e.to_string())?;
     drop(f);
-    rename_with_retry(ops, &tmp, &dest).map_err(|e| e.to_string())?;
+    rename_with_retry(ops, &tmp, &dest, check)?;
     cleanup.disarm();
     // Best-effort: fsync the containing directory so the rename entry itself is durable
     // (Unix). Opening a directory as a File fails on Windows, where NTFS journals the
@@ -439,6 +597,9 @@ pub struct EnvVar {
     pub value: Option<String>,
     #[serde(default)]
     pub secret: bool,
+    /// Fields from newer builds, preserved on every registry save.
+    #[serde(flatten)]
+    pub unknown_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A named launch input. Only nonsecret values may be serialized here. Secret
@@ -453,13 +614,24 @@ pub struct LaunchInput {
     pub required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// Fields from newer builds, preserved on every registry save.
+    #[serde(flatten)]
+    pub unknown_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ArgPart {
-    Literal { value: String },
-    Input { key: String },
+    Literal {
+        value: String,
+        #[serde(flatten)]
+        unknown_fields: serde_json::Map<String, serde_json::Value>,
+    },
+    Input {
+        key: String,
+        #[serde(flatten)]
+        unknown_fields: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 /// Replaces exactly one argument at `index`. Parts are concatenated without a
@@ -469,6 +641,9 @@ pub enum ArgPart {
 pub struct ArgBinding {
     pub index: usize,
     pub parts: Vec<ArgPart>,
+    /// Fields from newer builds, preserved on every registry save.
+    #[serde(flatten)]
+    pub unknown_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -486,6 +661,9 @@ pub struct LaunchConfig {
     pub template: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<u32>,
+    /// Fields from newer builds, preserved on every registry save.
+    #[serde(flatten)]
+    pub unknown_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 impl LaunchConfig {
@@ -533,14 +711,14 @@ impl LaunchConfig {
                 return Err("launch argument binding has an invalid or duplicate index".into());
             }
             for part in &binding.parts {
-                if let ArgPart::Literal { value } = part {
+                if let ArgPart::Literal { value, .. } = part {
                     if value.len() > 32
                         || value.chars().any(|c| c.is_alphanumeric() || c.is_control())
                     {
                         return Err("launch argument literals may contain punctuation only".into());
                     }
                 }
-                if let ArgPart::Input { key } = part {
+                if let ArgPart::Input { key, .. } = part {
                     if !keys.contains(key.as_str()) {
                         return Err(format!("launch argument refers to missing input '{key}'"));
                     }
@@ -604,6 +782,8 @@ pub(crate) fn validate_initialize_timeout_ms(milliseconds: u64) -> Result<u64, S
 #[serde(rename_all = "camelCase")]
 pub struct ServerEntry {
     #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
     pub id: String,
     pub name: String,
     /// "stdio" | "http" | "sse"
@@ -628,6 +808,15 @@ pub struct ServerEntry {
     /// Only applies to stdio servers. See issue #239.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Opt a stdio server back in to inheriting the gateway process's whole
+    /// environment (minus the `TOOLPORT_*`/`CONDUIT_*` control variables).
+    /// Unset, the child gets only the non-secret system and toolchain locator
+    /// allowlist (SEC-04), so ambient credentials like `AWS_*`, `GITHUB_TOKEN`
+    /// or `OPENAI_API_KEY` never reach a third-party server. Set only for a
+    /// server that genuinely needs an ambient variable; everything else in the
+    /// gateway's environment is readable by the child.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inherit_env: bool,
     /// Where this entry came from, e.g. "imported:cursor" or "manual".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -678,6 +867,13 @@ impl ServerEntry {
     /// Team-synced local commands, LAN URLs and changed remote definitions need
     /// individual consent. Enable-all and the playground must not skip that gate.
     pub fn needs_team_enable_review(&self) -> bool {
+        if crate::secret_refs::is_shared(self) && crate::secret_refs::has_references(self) {
+            return true;
+        }
+        if self.unknown_fields.get("personalSyncEntry") == Some(&serde_json::Value::Bool(true)) {
+            return self.unknown_fields.get("teamEnableReview")
+                == Some(&serde_json::Value::Bool(true));
+        }
         let Some(src) = self.source.as_deref() else {
             return false;
         };
@@ -781,98 +977,9 @@ pub struct Profile {
     /// server's instructions into context don't repeat the same block once per profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
-}
-
-/// One named set of the user's own agent rules (CLAUDE.md / AGENTS.md / GEMINI.md content),
-/// applied to every opted-in AI client by [`crate::rules`]. Several sets can exist so a user can
-/// switch between, say, "Work" and "Personal"; exactly one is active at a time.
-///
-/// `(id, revision)` is what the personal sentinel marker carries, standing in for the team
-/// scope's `(team_id, version)` — see [`crate::instructions::Scope`]. `revision` therefore only
-/// moves when `content` actually changes, so a rename is not a rewrite of every client's file.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct RuleSet {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub content: String,
-    #[serde(default)]
-    pub revision: i64,
-}
-
-/// What Claude Code should do with a native tool call that matches a rule (SBS-1058). The
-/// names are Claude Code's own `permissions` list names, so a rule maps to one list.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum PermissionAction {
-    Allow,
-    Ask,
-    Deny,
-}
-
-impl PermissionAction {
-    /// The key under `permissions` this action writes to.
-    pub fn list_key(self) -> &'static str {
-        match self {
-            PermissionAction::Allow => "allow",
-            PermissionAction::Ask => "ask",
-            PermissionAction::Deny => "deny",
-        }
-    }
-}
-
-/// How a guard hook acts on the permission rules (SBS-1059).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum GuardMode {
-    /// Hook not installed.
-    #[default]
-    Off,
-    /// Hook installed; every call is evaluated and the decision recorded, but the answer is
-    /// always "allow". For seeing what a policy WOULD do before letting it act.
-    Observe,
-    /// Hook installed; deny and ask rules take effect.
-    Enforce,
-}
-
-impl GuardMode {
-    pub fn is_off(&self) -> bool {
-        *self == GuardMode::Off
-    }
-}
-
-/// One native permission rule: a pattern in Claude Code's rule syntax (`Bash(rm -rf *)`,
-/// `Read(./.env)`, `WebFetch(domain:example.com)`, `mcp__server__tool`) and what to do.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "camelCase")]
-pub struct PermissionRule {
-    pub pattern: String,
-    pub action: PermissionAction,
-}
-
-/// One registered project folder for project-level agent rules (SBS-1037). The consent unit
-/// inside it is a FILE, not a client: at project level nearly every client reads the root
-/// `AGENTS.md`, Gemini reads `GEMINI.md`, Claude Code and VS Code read `.claude/rules/`, so
-/// `files` maps each of those (by `rules::PROJECT_FILES` key) to whether the user switched it
-/// on. Off means never written.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct RulesProject {
-    pub id: String,
-    /// Absolute path of the folder, as the user picked it.
-    pub path: String,
-    /// Display name; defaults to the folder name.
-    pub name: String,
-    /// The rule set applied to this project, if any. Independent of the global active set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub set_id: Option<String>,
-    /// Per-file opt-in, keyed by `rules::PROJECT_FILES` key. Absent means off.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub files: HashMap<String, bool>,
-    /// Absolute paths this project's applies have written, so removal touches exactly those.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub targets: Vec<String>,
+    /// Fields from newer builds, preserved on every registry save.
+    #[serde(flatten)]
+    pub unknown_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Maps a project folder to a profile, so the gateway can auto-scope a client to the right
@@ -885,6 +992,9 @@ pub struct RulesProject {
 pub struct FolderProfile {
     pub path: String,
     pub profile: String,
+    /// Fields from newer builds, preserved on every registry save.
+    #[serde(flatten)]
+    pub unknown_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A consumer registered to reach the gateway over the HTTP/OpenAPI bridge with
@@ -902,6 +1012,9 @@ pub struct HttpClient {
     /// (no extra filtering), so it behaves like the legacy single-token bridge.
     #[serde(default)]
     pub profile: String,
+    /// Fields from newer builds, preserved on every registry save.
+    #[serde(flatten)]
+    pub unknown_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 /// SHA-256 (hex) of a string. Used to hash bearer tokens so plaintext never hits
@@ -973,51 +1086,178 @@ pub struct ToolOverride {
     /// A replacement description shown to the client instead of the server's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Fields from newer builds, preserved on every registry save.
+    #[serde(flatten)]
+    pub unknown_fields: serde_json::Map<String, serde_json::Value>,
 }
 
-/// Startup topology for client-spawned stdio gateways. An absent registry value
-/// follows the release default; an explicit value survives future default flips.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GatewayTopology {
-    Legacy,
-    Daemon,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(Default)]
+pub enum SafetyLevel {
+    Off,
+    #[default]
+    Ask,
+    Strict,
 }
 
-pub const DEFAULT_GATEWAY_TOPOLOGY: GatewayTopology = GatewayTopology::Daemon;
+fn team_safety_floor_default() -> SafetyLevel {
+    SafetyLevel::Off
+}
+
+/// 1.x protections an upgrader had on that their 2.0 level does not include.
+/// Set only by the v1 migration and cleared when the user picks a level, so an
+/// upgrade never quietly loosens or tightens what they chose.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeptV1Safety {
+    /// 1.x approval also held calls from shared or registry servers.
+    #[serde(default)]
+    pub hold_untrusted: bool,
+    #[serde(default)]
+    pub deny_destructive: bool,
+    #[serde(default)]
+    pub quarantine_on_drift: bool,
+    #[serde(default)]
+    pub block_on_injection: bool,
+}
+
+/// The name a user knew a removed 1.x feature by. The React shell keeps the
+/// same names in `src/lib/removedFeatures.ts`.
+pub fn removed_feature_label(id: &str) -> &str {
+    match id {
+        "agentRules" => "Agent rules",
+        "agentPermissions" => "Agent permissions",
+        "activityHooks" => "Agent activity hooks",
+        "routines" => "Routines",
+        "agentControl" => "Agent control",
+        other => other,
+    }
+}
+
+/// Where upgraders read how to go back to 1.24.
+pub const GO_BACK_TO_1X_URL: &str =
+    "https://github.com/btsouth/toolport/blob/main/docs/upgrading-to-2.md#go-back-to-124";
+
+/// The upgrade notice for removed features this install used. The React shell
+/// keeps the same wording in `src/lib/removedFeatures.ts`.
+pub fn removed_features_message(features: &[String]) -> String {
+    let names: Vec<&str> = features
+        .iter()
+        .map(|id| removed_feature_label(id))
+        .collect();
+    let list = match names.as_slice() {
+        [one] => (*one).to_string(),
+        [first, second] => format!("{first} and {second}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+        [] => String::new(),
+    };
+    format!(
+        "Toolport 2.0 no longer includes {list}, which you used in 1.x. Your settings for them are saved in the exports folder, and files Toolport wrote for them were left as they were. Tell us if you need one back, or go back to 1.24."
+    )
+}
+
+/// A new GitHub issue with only the feature names filled in.
+pub fn removed_features_issue_url(features: &[String]) -> String {
+    let names: Vec<&str> = features
+        .iter()
+        .map(|id| removed_feature_label(id))
+        .collect();
+    let title = format!("I need {} in Toolport 2.0", names.join(", "));
+    let body = format!(
+        "Toolport 2.0 removed: {}.\n\nWhat I used it for:\n\n",
+        names.join(", ")
+    );
+    format!(
+        "https://github.com/btsouth/toolport/issues/new?title={}&body={}",
+        url_component(&title),
+        url_component(&body)
+    )
+}
+
+fn url_component(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
+impl KeptV1Safety {
+    pub fn any(self) -> bool {
+        self.hold_untrusted
+            || self.deny_destructive
+            || self.quarantine_on_drift
+            || self.block_on_injection
+    }
+
+    /// What each kept protection does, for Settings. The React shell keeps the
+    /// same wording in `src/lib/keptSafety.ts`.
+    pub fn summary(self) -> Option<String> {
+        let parts: Vec<&str> = [
+            (
+                self.hold_untrusted,
+                "asks before calls from shared or registry servers",
+            ),
+            (self.deny_destructive, "hides destructive tools"),
+            (
+                self.quarantine_on_drift,
+                "pauses tools whose definitions change",
+            ),
+            (
+                self.block_on_injection,
+                "blocks results that look like prompt injection",
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(on, text)| on.then_some(text))
+        .collect();
+        let list = match parts.as_slice() {
+            [] => return None,
+            [one] => (*one).to_string(),
+            [first, second] => format!("{first} and {second}"),
+            [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+        };
+        Some(format!("Kept from 1.x: Toolport also {list}."))
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Registry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety_level: Option<SafetyLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_v1_safety: Option<KeptV1Safety>,
+    /// Schema version. Historically optional; a document with no `version` is a
+    /// v1 file, which is what [`legacy_registry_version`] supplies.
+    #[serde(default = "legacy_registry_version")]
     pub version: u32,
     pub servers: Vec<ServerEntry>,
     pub profiles: Vec<Profile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_profile_id: Option<String>,
-    /// An absent value selects the release default (`daemon`). `legacy` keeps
-    /// an explicit rollback choice for client-spawned stdio gateways.
+    /// Pinned legacy default when its server set was narrower than the union.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gateway_topology: Option<GatewayTopology>,
-    /// Global safety switch: when true, the gateway hides and blocks any tool a
-    /// server annotates with `destructiveHint: true` (deletes, drops, writes).
-    /// One toggle to keep agents read-only across every connected server.
+    pub default_access_profile_id: Option<String>,
+    /// Stable legacy policy and integrity context for unscoped clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_access_context_id: Option<String>,
+    /// Retain the legacy default tool policy until the user explicitly chooses All.
+    #[serde(default)]
+    pub default_access_legacy_policy: bool,
+    /// The 1.x safety toggles (`denyDestructive`, `confirmDestructive`, `humanApproval`,
+    /// `quarantineOnDrift`, `blockOnInjection`). In a v1 registry they select the safety
+    /// level (see [`Registry::safety_level_selected`]). From v2 on they are a write-only
+    /// mirror of `safety_level`, kept in sync on every save so a 1.x process still running
+    /// across the upgrade enforces the equivalent policy; 2.0 never reads them there.
     #[serde(default)]
     pub deny_destructive: bool,
-    /// Per-call confirmation for destructive tools: when true, the gateway
-    /// intercepts each call to a destructive-hinted tool, returns a preview
-    /// with a confirmation token, and requires `conduit_confirm { token }` to
-    /// proceed. The original arguments are replayed exactly — the agent cannot
-    /// change them. Unlike `deny_destructive` (which hides tools entirely),
-    /// this lets agents use destructive tools — but forces a conscious review
-    /// of every call first.
     #[serde(default)]
     pub confirm_destructive: bool,
-    /// Human-in-the-loop approval: when true, a *gated* tool call (destructive-hinted, or
-    /// from an untrusted-provenance server) is held and surfaced to the Toolport app for a
-    /// person to approve or deny before it runs. Unlike `confirm_destructive` (which the
-    /// AGENT re-confirms with a token), this puts a HUMAN in the loop: the call blocks until
-    /// a decision or a fail-closed timeout. Off by default. Takes precedence over
-    /// `confirm_destructive` for the tools it gates (a human decision supersedes the agent's).
     #[serde(default)]
     pub human_approval: bool,
     /// Tools the user chose to "always allow" past human approval, so the HITL gate skips
@@ -1034,11 +1274,13 @@ pub struct Registry {
     /// The gate holds a call when either is true (see [`Registry::human_approval_effective`]).
     #[serde(default)]
     pub team_forced_human_approval: bool,
-    /// The same releasable org-lock treatment as [`team_forced_human_approval`] for the other
-    /// tighten-only screening flags (`denyDestructive`, `forceContentDefense`,
-    /// `forceQuarantineOnDrift`, `forceBlockOnInjection`). Set from the active team's policy,
-    /// recomputed each sync and cleared on leave, so an org lock never permanently overwrites
-    /// the member's own setting. Enforcement reads `*_effective()` (member's own OR team-forced).
+    /// Releasable team floor, kept separate from the member's own safety choice.
+    #[serde(default = "team_safety_floor_default")]
+    pub team_min_safety_level: SafetyLevel,
+    /// Retained legacy flags are recomputed each sync and cleared on leave.
+    /// Legacy team deny supplies a Strict floor when the payload has no valid floor.
+    /// Content labeling is always on in 2.0.
+    /// Quarantine and injection blocking remain independent tighten-only protections.
     #[serde(default)]
     pub team_forced_deny_destructive: bool,
     #[serde(default)]
@@ -1088,41 +1330,21 @@ pub struct Registry {
     /// browse per-server instead of searching - instead of setting a per-client env var.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery_mode: Option<String>,
+    /// Set by the 1.x upgrade when the user was still on 1.x's Lazy default. 1.x ran
+    /// every client in Lazy; without this, 2.0 would read that default as Auto and move
+    /// some clients to Full. New installs never set it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub legacy_lazy_discovery: bool,
     /// Server-side "code mode": advertise the `toolport_run_script` meta-tool so an
     /// agent can orchestrate many downstream tool calls in one sandboxed JS script (a single
-    /// round-trip). **On by default** (SOU-397): each in-script call still hits the same
+    /// round-trip). Off by default: each in-script call still hits the same
     /// scope / approval gates as `toolport_call_tool`, and Settings is the kill switch.
     /// Code mode is not a security boundary (agent-supplied JS). Shared/HTTP multi-tenant
     /// operators who do not want the surface can turn it off in Settings or set
     /// `"codeMode": false` in the registry. `TOOLPORT_CODE_MODE=1` (legacy
     /// `CONDUIT_CODE_MODE`) still force-enables regardless of the toggle.
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub code_mode: bool,
-    /// Opt-in permission for agents to request persistence of Code Mode routines. Off by
-    /// default. This only exposes the save surface; each save still requires a separate,
-    /// content-bound human approval. Existing routines may still be listed and run while
-    /// writes are disabled.
-    #[serde(default)]
-    pub allow_routine_writes: bool,
-    /// Opt-in agent control: when true, an agent may turn servers on or off via
-    /// the gateway's `conduit_enable_server` / `conduit_disable_server` tools.
-    /// Off by default. The `deny_destructive` safety switch is never agent-
-    /// writable regardless, so granting this cannot let an agent escalate past
-    /// the user's governance, only flip which servers are connected.
-    #[serde(default)]
-    pub allow_agent_control: bool,
-    /// Tool-definition integrity: fingerprint each connected tool and flag when a
-    /// previously-approved tool's definition changes (a rug-pull signal) or a known
-    /// server quietly adds a tool. Detection only, it records a security event and
-    /// never blocks. On by default.
-    #[serde(default = "default_true")]
-    pub integrity_check: bool,
-    /// Content defense (anti-agentjacking): scan untrusted tool RESULTS for injection
-    /// and label flagged content as data, not instructions, before the agent sees it.
-    /// Detection + labeling. On by default. Pair with [`block_on_injection`] to fail closed
-    /// on high-confidence hits (SOU-345).
-    #[serde(default = "default_true")]
-    pub content_defense: bool,
     /// Replace PII in tool results with stable pseudonyms before they reach the model,
     /// re-hydrating them on the way back out (SBS-346). OFF by default: it rewrites tool
     /// output, and unlike content defense a missed value fails OPEN, so it is a reduction
@@ -1180,7 +1402,7 @@ pub struct Registry {
     pub folder_profiles: Vec<FolderProfile>,
     /// Per-client discovery-mode override, keyed by stable client id (e.g. "cursor" ->
     /// "grouped"). Value is `"full" | "lazy" | "grouped"`; an absent entry means the client
-    /// inherits the global mode (`discovery_mode`, else `lazy_discovery`). The gateway
+    /// uses Auto from the client capability table. The gateway
     /// resolves it live via `CONDUIT_CLIENT_ID`, so changing it re-applies without
     /// reinstalling the client (same mechanism as `client_scopes`).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -1207,68 +1429,6 @@ pub struct Registry {
     /// the rest of the registry JSON is unchanged.
     #[serde(default)]
     pub secrets_generation: u64,
-    /// The user's own agent rule sets. Several can exist; `active_rule_set_id` picks the one
-    /// written to clients. See [`crate::rules`].
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rule_sets: Vec<RuleSet>,
-    /// Which of `rule_sets` is currently applied. `None` = none; every file we wrote is removed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_rule_set_id: Option<String>,
-    /// Per-client opt-in for personal rules, keyed by client id. ABSENT MEANS OFF: writing into
-    /// someone's `~/.claude/rules` or `AGENTS.md` is not something to do unasked, so a client
-    /// only receives rules once the user turns it on.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub rules_clients: HashMap<String, bool>,
-    /// Absolute paths of the personal-rules files we have written, so cleanup after a set
-    /// switch / client opt-out / uninstall touches exactly what we created and nothing else.
-    /// Same role as `TeamConnection::team_instructions_targets`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rules_targets: Vec<String>,
-    /// Project folders the user registered for project-level agent rules (SBS-1037). Nothing
-    /// is ever discovered: a folder is here because the user added it, and its files are
-    /// written only by an explicit Apply for that project, never at startup.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rules_projects: Vec<RulesProject>,
-    /// Cursor guard hook (SBS-1059): how the `--toolport-guard cursor` hook Toolport installs
-    /// into `~/.cursor/hooks.json` treats the same permission rules. `Off` = not installed.
-    #[serde(default, skip_serializing_if = "GuardMode::is_off")]
-    pub guard_cursor_mode: GuardMode,
-    /// Cursor guard, when enforcing: route an "ask first" rule through Toolport's approval
-    /// window instead of Cursor's own prompt (SBS-1059). Off = Cursor prompts.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub guard_cursor_ask_via_toolport: bool,
-    /// Claude Code guard (SBS-1059): the `--toolport-guard claude-code` PreToolUse hook.
-    /// Claude Code enforces deny and allow natively, so this hook's one job is asks:
-    /// `Enforce` moves the ask rules it can judge (shell commands, file reads, MCP tools)
-    /// out of `settings.json` and into Toolport's approval window. `Observe` installs the
-    /// hook and records what it would decide; the native rules stay as they are.
-    #[serde(default, skip_serializing_if = "GuardMode::is_off")]
-    pub guard_claude_mode: GuardMode,
-    /// Absolute paths of the hooks files the guard has been written into, for exact cleanup.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub guard_targets: Vec<String>,
-    /// Native permission policy for Claude Code (SBS-1058): rules in Claude Code's own
-    /// `permissions` syntax that Toolport writes into every profile's `settings.json`. Off
-    /// until the user opts in; nothing is written until then. See [`crate::agent_permissions`].
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub agent_permissions_enabled: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub agent_permission_rules: Vec<PermissionRule>,
-    /// Per settings file, exactly the rule strings Toolport ADDED there (a rule the user
-    /// already had is not added and not recorded, so it is never removed). Removal and
-    /// policy changes strip exactly these. Same role as `hook_targets` / `rules_targets`.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub agent_permission_targets: HashMap<String, Vec<PermissionRule>>,
-    /// Whether the native-agent hook sensor is installed. OFF until the user opts in:
-    /// it writes into a settings file they own and it observes every native tool call
-    /// their agent makes. See [`crate::hooks`].
-    #[serde(default)]
-    pub hooks_enabled: bool,
-    /// Absolute paths of the agent settings files we have written hooks into, so
-    /// removal touches exactly what we created. Same role as `rules_targets`, and the
-    /// reason a profile that disappears between apply and remove is not an error.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub hook_targets: Vec<String>,
     /// Top-level fields THIS build doesn't know, preserved verbatim across
     /// load -> save. The registry is shared by mixed versions of the app and
     /// long-running gateways (a dev build, the installed release, and gateways
@@ -1302,6 +1462,9 @@ pub struct ManagedEntry {
     /// Unix epoch seconds when we last wrote this entry.
     #[serde(default)]
     pub updated_at: u64,
+    /// Fields from newer builds, preserved on every registry save.
+    #[serde(flatten)]
+    pub unknown_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 fn managed_transport_stdio() -> String {
@@ -1346,6 +1509,7 @@ impl ManagedEntry {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
+            unknown_fields: Default::default(),
         }
     }
 }
@@ -1450,6 +1614,9 @@ pub struct TeamConnection {
     /// the team server; empty = no org caps. Enforced cooperatively in the local gateway.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rate_limits: Vec<crate::rate_limits::Cap>,
+    /// Fields from newer builds, preserved on every registry save.
+    #[serde(flatten)]
+    pub unknown_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Settings for embedding-based search re-ranking. The embedding API key, if the
@@ -1467,6 +1634,9 @@ pub struct SemanticSettings {
     /// Weight of semantic vs lexical, 0.0 (pure lexical) .. 1.0 (pure semantic).
     #[serde(default = "default_blend")]
     pub blend: f32,
+    /// Fields from newer builds, preserved on every registry save.
+    #[serde(flatten)]
+    pub unknown_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 fn default_blend() -> f32 {
@@ -1480,12 +1650,21 @@ impl Default for SemanticSettings {
             endpoint: String::new(),
             model: String::new(),
             blend: 0.5,
+            unknown_fields: Default::default(),
         }
     }
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// Serde default for [`Registry::version`]: a document that omits the field is
+/// a v1 file, no matter what the current [`REGISTRY_VERSION`] is. Loading still
+/// checks and migrates the declared version, so this only covers the historical
+/// shape that predates the field.
+fn legacy_registry_version() -> u32 {
+    1
 }
 
 impl Default for Registry {
@@ -1499,14 +1678,20 @@ impl Default for Registry {
                 enabled_server_ids: Vec::new(),
                 tool_scope: HashMap::new(),
                 instructions: None,
+                unknown_fields: Default::default(),
             }],
             active_profile_id: Some(DEFAULT_PROFILE_ID.to_string()),
-            gateway_topology: None,
+            default_access_profile_id: None,
+            default_access_context_id: None,
+            default_access_legacy_policy: false,
+            safety_level: Some(SafetyLevel::Ask),
+            kept_v1_safety: None,
             deny_destructive: false,
             confirm_destructive: false,
             human_approval: false,
             human_approval_allow: Vec::new(),
             team_forced_human_approval: false,
+            team_min_safety_level: SafetyLevel::Off,
             team_forced_deny_destructive: false,
             team_forced_content_defense: false,
             team_forced_quarantine_on_drift: false,
@@ -1517,13 +1702,10 @@ impl Default for Registry {
             pinned_tools: HashMap::new(),
             quarantine_on_drift: false,
             lazy_discovery: true,
+            legacy_lazy_discovery: false,
             gateway_instructions: None,
             discovery_mode: None,
-            code_mode: true,
-            allow_routine_writes: false,
-            allow_agent_control: false,
-            integrity_check: true,
-            content_defense: true,
+            code_mode: false,
             block_on_injection: false,
             injection_block_exempt: HashMap::new(),
             live_inspect: false,
@@ -1538,20 +1720,6 @@ impl Default for Registry {
             http_bridge_enabled: false,
             http_bridge_port: None,
             secrets_generation: 0,
-            rule_sets: Vec::new(),
-            active_rule_set_id: None,
-            rules_clients: HashMap::new(),
-            rules_targets: Vec::new(),
-            rules_projects: Vec::new(),
-            guard_cursor_mode: GuardMode::Off,
-            guard_cursor_ask_via_toolport: false,
-            guard_claude_mode: GuardMode::Off,
-            guard_targets: Vec::new(),
-            agent_permissions_enabled: false,
-            agent_permission_rules: Vec::new(),
-            agent_permission_targets: HashMap::new(),
-            hooks_enabled: false,
-            hook_targets: Vec::new(),
             unknown_fields: serde_json::Map::new(),
         }
     }
@@ -1575,7 +1743,14 @@ pub(crate) fn slugify(s: &str) -> String {
 /// A filesystem-safe, collision-resistant key for a stable profile id.
 /// Every id uses the same SHA-256 domain so no readable/non-readable branch can
 /// collide with another id's literal text (SBS-715).
+pub fn access_integrity_id(id: &str) -> &str {
+    id.strip_prefix("@default-access:")
+        .or_else(|| id.strip_prefix("@all-enabled:"))
+        .unwrap_or(id)
+}
+
 pub fn profile_store_key(profile_id: &str) -> String {
+    let profile_id = access_integrity_id(profile_id);
     sha256_hex(&format!("toolport-profile-id-v1:{profile_id}"))
 }
 
@@ -1583,6 +1758,7 @@ pub fn profile_store_key(profile_id: &str) -> String {
 /// for this profile. Live reads must fail closed rather than treat that as a
 /// first run (SBS-715).
 pub fn unmigrated_legacy_profile_store(profile: &str, pins: bool) -> bool {
+    let profile = access_integrity_id(profile);
     let Some(dir) = conduit_dir() else {
         return false;
     };
@@ -1639,7 +1815,7 @@ pub fn unmigrated_legacy_profile_store(profile: &str, pins: bool) -> bool {
 }
 
 /// The lossy filename mapping used before profile stores were keyed by stable ids.
-fn legacy_profile_store_slug(profile_ref: &str) -> String {
+pub(crate) fn legacy_profile_store_slug(profile_ref: &str) -> String {
     profile_ref
         .chars()
         .map(|c| {
@@ -1887,10 +2063,6 @@ pub(crate) fn unique_id(base: &str, existing: &[String]) -> String {
 }
 
 impl Registry {
-    pub fn gateway_topology_effective(&self) -> GatewayTopology {
-        self.gateway_topology.unwrap_or(DEFAULT_GATEWAY_TOPOLOGY)
-    }
-
     fn profile_id_for_ref(&self, profile_ref: &str) -> Option<String> {
         let profile_ref = profile_ref.trim();
         if profile_ref.is_empty() {
@@ -1915,6 +2087,9 @@ impl Registry {
     /// Resolve a user/API supplied profile reference to a stable id, rejecting
     /// stale and ambiguous names instead of creating another name-keyed binding.
     pub fn canonical_profile_id(&self, profile_ref: &str) -> Result<String, String> {
+        if profile_ref == ALL_ENABLED_ACCESS {
+            return Ok(ALL_ENABLED_ACCESS.to_string());
+        }
         self.profile_id_for_ref(profile_ref)
             .ok_or_else(|| format!("No unique profile matches '{profile_ref}'"))
     }
@@ -1922,12 +2097,15 @@ impl Registry {
     /// Rewrite every persisted profile reference to the stable profile id when
     /// it resolves unambiguously. Unknown or ambiguous legacy references remain
     /// dangling and therefore fail closed.
-    fn normalize_profile_references(&mut self) {
+    pub(crate) fn normalize_profile_references(&mut self) {
         let profiles = self.profiles.clone();
         let resolve = |profile_ref: &str| {
             let profile_ref = profile_ref.trim();
             if profile_ref.is_empty() {
                 return None;
+            }
+            if profile_ref == ALL_ENABLED_ACCESS {
+                return Some(ALL_ENABLED_ACCESS.to_string());
             }
             if let Some(profile) = profiles.iter().find(|p| p.id == profile_ref) {
                 return Some(profile.id.clone());
@@ -1989,7 +2167,9 @@ impl Registry {
             .iter_mut()
             .find(|s| s.id == entry.id)
             .ok_or_else(|| format!("No server with id '{}'", entry.id))?;
+        let enabled = slot.enabled;
         *slot = entry;
+        slot.enabled = enabled;
         Ok(())
     }
 
@@ -2026,7 +2206,188 @@ impl Registry {
             .unwrap_or_else(|| DEFAULT_PROFILE_ID.to_string())
     }
 
+    /// The default server access and its legacy tool/integrity policy are separate.
+    pub fn default_access_id(&self) -> String {
+        if self.version < 3 {
+            return self.active_profile_id();
+        }
+        self.default_access_profile_id.clone().unwrap_or_else(|| {
+            format!(
+                "@default-access:{}",
+                self.default_access_context_id.as_deref().unwrap_or("")
+            )
+        })
+    }
+
+    pub fn access_label(&self, reference: &str) -> String {
+        if reference.trim().is_empty() || reference.starts_with("@default-access:") {
+            return "Default access".into();
+        }
+        if reference == ALL_ENABLED_ACCESS || reference.starts_with("@all-enabled:") {
+            return "All enabled servers".into();
+        }
+        let id = self.resolve_profile_id(reference);
+        self.profiles
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| reference.to_string())
+    }
+
+    pub fn default_access_label(&self) -> String {
+        let name = self
+            .default_access_profile_id
+            .as_deref()
+            .or_else(|| {
+                self.default_access_legacy_policy
+                    .then_some(self.default_access_context_id.as_deref())
+                    .flatten()
+            })
+            .and_then(|id| self.profiles.iter().find(|p| p.id == id))
+            .map(|p| p.name.as_str())
+            // A set that is itself named "Default" would read "Default access (Default)".
+            .filter(|name| !name.trim().eq_ignore_ascii_case("default"));
+        name.map(|name| format!("Default access ({name})"))
+            .unwrap_or_else(|| "Default access".into())
+    }
+
+    pub fn access_upgrade_notice_pending(&self) -> bool {
+        self.version >= 3
+            && self.unknown_fields.get("accessUpgradeNoticePending")
+                == Some(&serde_json::Value::Bool(true))
+            && self.unknown_fields.get("accessUpgradeNoticeDismissed")
+                != Some(&serde_json::Value::Bool(true))
+    }
+
+    pub fn dismiss_access_upgrade_notice(&mut self) {
+        self.unknown_fields.insert(
+            "accessUpgradeNoticeDismissed".into(),
+            serde_json::Value::Bool(true),
+        );
+    }
+
+    /// Removed 1.x features this install used, recorded by the upgrade, until
+    /// the user dismisses the notice.
+    pub fn removed_features_notice(&self) -> Vec<String> {
+        let Some(notice) = self.unknown_fields.get("removedFeaturesNotice") else {
+            return Vec::new();
+        };
+        if notice.get("dismissed").and_then(serde_json::Value::as_bool) == Some(true) {
+            return Vec::new();
+        }
+        notice
+            .get("features")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_string)
+            .collect()
+    }
+
+    pub fn dismiss_removed_features_notice(&mut self) {
+        if let Some(serde_json::Value::Object(notice)) =
+            self.unknown_fields.get_mut("removedFeaturesNotice")
+        {
+            notice.insert("dismissed".into(), serde_json::Value::Bool(true));
+        }
+    }
+
+    pub fn all_access_id(&self) -> String {
+        format!(
+            "@all-enabled:{}",
+            self.default_access_context_id.as_deref().unwrap_or("")
+        )
+    }
+
+    pub fn access_profile(&self, id: &str) -> Option<&Profile> {
+        let id = if id == self.default_access_id()
+            && self.default_access_profile_id.is_none()
+            && self.default_access_legacy_policy
+        {
+            self.default_access_context_id.as_deref().unwrap_or("")
+        } else {
+            id
+        };
+        self.profiles.iter().find(|p| p.id == id)
+    }
+
+    pub fn server_enabled(&self, server_id: &str) -> bool {
+        if self.version < 3 {
+            return self
+                .profiles
+                .iter()
+                .any(|p| p.enabled_server_ids.iter().any(|id| id == server_id));
+        }
+        self.servers.iter().any(|s| s.id == server_id && s.enabled)
+    }
+
+    pub fn set_global_server_enabled(
+        &mut self,
+        server_id: &str,
+        enabled: bool,
+    ) -> Result<(), String> {
+        let server = self
+            .servers
+            .iter_mut()
+            .find(|s| s.id == server_id)
+            .ok_or_else(|| format!("No server with id '{server_id}'"))?;
+        if enabled && server.launch.is_some() {
+            crate::launch_inputs::check_ready_for_enable(server)?;
+        }
+        server.enabled = enabled;
+        Ok(())
+    }
+
+    pub fn set_access_server(
+        &mut self,
+        profile: &str,
+        server: &str,
+        included: bool,
+    ) -> Result<(), String> {
+        let entry = self
+            .servers
+            .iter()
+            .find(|s| s.id == server)
+            .ok_or_else(|| format!("No server with id '{server}'"))?;
+        if included {
+            entry.check_enable_allowed(false)?;
+        }
+        let profile = self
+            .profiles
+            .iter_mut()
+            .find(|p| p.id == profile)
+            .ok_or("Access set not found")?;
+        if included && !profile.enabled_server_ids.iter().any(|id| id == server) {
+            profile.enabled_server_ids.push(server.to_string());
+        }
+        if !included {
+            profile.enabled_server_ids.retain(|id| id != server);
+        }
+        Ok(())
+    }
+
+    pub fn set_default_access(&mut self, profile: Option<&str>) -> Result<(), String> {
+        self.default_access_profile_id = profile
+            .filter(|p| !p.is_empty())
+            .map(|p| self.canonical_profile_id(p))
+            .transpose()?;
+        self.default_access_legacy_policy = false;
+        Ok(())
+    }
+
     pub fn is_enabled(&self, profile_id: &str, server_id: &str) -> bool {
+        if self.version >= 3 {
+            if !self.server_enabled(server_id) {
+                return false;
+            }
+            if profile_id == self.default_access_id() && self.default_access_profile_id.is_none()
+                || profile_id == self.all_access_id()
+                || profile_id == ALL_ENABLED_ACCESS
+            {
+                return true;
+            }
+        }
         self.profiles
             .iter()
             .find(|p| p.id == profile_id)
@@ -2034,20 +2395,34 @@ impl Registry {
             .unwrap_or(false)
     }
 
-    /// Toggle a server's enabled state within a profile.
+    /// The switch the Servers page shows, as React's `isEnabled` reads it. In v3
+    /// it is global and the legacy active profile's list can be stale, so asking
+    /// `is_enabled(active_profile_id())` there is wrong.
+    pub fn enabled_here(&self, server_id: &str) -> bool {
+        if self.version >= 3 {
+            self.server_enabled(server_id)
+        } else {
+            self.is_enabled(&self.active_profile_id(), server_id)
+        }
+    }
+
+    /// Toggle the user's global switch in v3, or legacy profile membership in v1/v2.
     pub fn set_server_enabled(
         &mut self,
         profile_id: &str,
         server_id: &str,
         enabled: bool,
     ) -> Result<(), String> {
+        if self.version >= 3 {
+            return self.set_global_server_enabled(server_id, enabled);
+        }
         let server = self
             .servers
             .iter()
             .find(|s| s.id == server_id)
             .ok_or_else(|| format!("No server with id '{server_id}'"))?;
         if enabled && server.launch.is_some() {
-            crate::launch_inputs::resolve_args(server)?;
+            crate::launch_inputs::check_ready_for_enable(server)?;
         }
         let profile = self
             .profiles
@@ -2063,12 +2438,23 @@ impl Registry {
         Ok(())
     }
 
-    /// Enable or disable every server in a profile at once.
+    /// Enable or disable every server globally at once.
     ///
     /// Enabling skips team-review servers (local command / LAN URL / changed remote). Those stay
     /// as they were so Enable all cannot bypass the Teams confirm, and so a
     /// server the member already consented to is not wiped.
     pub fn set_all_enabled(&mut self, profile_id: &str, enabled: bool) -> Result<(), String> {
+        if !enabled {
+            let held: Vec<_> = self
+                .servers
+                .iter()
+                .filter(|s| crate::teams::server_change_held(self, &s.id))
+                .map(|s| s.id.clone())
+                .collect();
+            for id in held {
+                crate::teams::remember_held_disable(self, profile_id, &id)?;
+            }
+        }
         let ids: Vec<String> = if enabled {
             self.servers
                 .iter()
@@ -2079,19 +2465,27 @@ impl Registry {
         } else {
             Vec::new()
         };
-        let profile = self
-            .profiles
-            .iter_mut()
-            .find(|p| p.id == profile_id)
-            .ok_or_else(|| format!("No profile with id '{profile_id}'"))?;
-        if enabled {
-            for id in ids {
-                if !profile.enabled_server_ids.contains(&id) {
-                    profile.enabled_server_ids.push(id);
+        if self.version >= 3 {
+            for server in &mut self.servers {
+                if !enabled || ids.contains(&server.id) {
+                    server.enabled = enabled;
                 }
             }
         } else {
-            profile.enabled_server_ids = Vec::new();
+            let profile = self
+                .profiles
+                .iter_mut()
+                .find(|p| p.id == profile_id)
+                .ok_or_else(|| format!("No profile with id '{profile_id}'"))?;
+            if enabled {
+                for id in ids {
+                    if !profile.enabled_server_ids.contains(&id) {
+                        profile.enabled_server_ids.push(id);
+                    }
+                }
+            } else {
+                profile.enabled_server_ids.clear();
+            }
         }
         Ok(())
     }
@@ -2135,7 +2529,7 @@ impl Registry {
     /// profile ref imposes no extra tool restriction here (the server scope already blocks it).
     pub fn profile_allows_tool(&self, profile_ref: &str, server_id: &str, tool: &str) -> bool {
         let id = self.resolve_profile_id(profile_ref);
-        match self.profiles.iter().find(|p| p.id == id) {
+        match self.access_profile(&id) {
             Some(p) => match p.tool_scope.get(server_id) {
                 Some(allowed) => allowed.iter().any(|t| t == tool),
                 None => true,
@@ -2195,58 +2589,120 @@ impl Registry {
             .unwrap_or(false)
     }
 
-    /// Set the global destructive-tool deny switch. Mutually exclusive with
-    /// `confirm_destructive`: enabling deny clears confirm.
-    pub fn set_deny_destructive(&mut self, deny: bool) {
-        self.deny_destructive = deny;
-        if deny {
-            self.confirm_destructive = false;
+    /// The member's own level. From v2 on an absent level means the 2.0 default,
+    /// Ask. Only a v1 registry derives it from the 1.x toggles.
+    pub fn safety_level_selected(&self) -> SafetyLevel {
+        if self.version >= 2 {
+            return self.safety_level.unwrap_or_default();
+        }
+        // Approval or confirmation is Ask and nothing is Off. The 1.x blocking
+        // flags apply on their own (see `kept`), as they did in 1.x.
+        self.safety_level.unwrap_or({
+            if self.human_approval || self.confirm_destructive {
+                SafetyLevel::Ask
+            } else {
+                SafetyLevel::Off
+            }
+        })
+    }
+
+    pub fn safety_level_team_floor(&self) -> SafetyLevel {
+        self.team_min_safety_level
+            .max(if self.team_forced_human_approval {
+                SafetyLevel::Ask
+            } else {
+                SafetyLevel::Off
+            })
+    }
+
+    pub fn safety_level_effective(&self) -> SafetyLevel {
+        self.safety_level_selected()
+            .max(self.safety_level_team_floor())
+    }
+
+    pub fn validate_safety_level(&self, level: SafetyLevel) -> Result<(), String> {
+        if level < self.safety_level_team_floor() {
+            return Err("Safety cannot be set below the team's minimum level".into());
+        }
+        Ok(())
+    }
+
+    pub fn set_safety_level(&mut self, level: SafetyLevel) {
+        self.safety_level = Some(level);
+        // Choosing a level replaces any 1.x protections kept by the upgrade.
+        self.kept_v1_safety = None;
+        self.sync_legacy_safety_mirror();
+    }
+
+    /// Rewrite the 1.x toggles from the selected level in a v2+ registry, so a 1.x
+    /// reader enforces the same policy: Strict blocks destructive tools, drift and
+    /// injection and holds calls for approval, Ask holds calls for approval, Off sets
+    /// nothing. Read by 1.x's rules this derives the same level back.
+    pub fn sync_legacy_safety_mirror(&mut self) {
+        if self.version < 2 {
+            return;
+        }
+        let level = self.safety_level_selected();
+        let strict = level == SafetyLevel::Strict;
+        let kept = self.kept();
+        self.deny_destructive = strict || kept.deny_destructive;
+        self.quarantine_on_drift = strict || kept.quarantine_on_drift;
+        self.block_on_injection = strict || kept.block_on_injection;
+        self.human_approval = level >= SafetyLevel::Ask;
+        self.confirm_destructive = false;
+    }
+
+    /// 1.x protections applied on top of the level: saved by the migration, or
+    /// read straight from the toggles of a v1 registry that has not migrated yet.
+    pub fn kept(&self) -> KeptV1Safety {
+        if self.version < 2 && self.safety_level.is_none() {
+            return KeptV1Safety {
+                hold_untrusted: self.human_approval,
+                deny_destructive: self.deny_destructive,
+                quarantine_on_drift: self.quarantine_on_drift,
+                block_on_injection: self.block_on_injection,
+            };
+        }
+        self.kept_v1_safety.unwrap_or_default()
+    }
+
+    pub fn requires_human_approval(&self, destructive: bool, untrusted: bool) -> bool {
+        // 1.x approval, kept by the upgrade or forced by a team, also held
+        // calls from untrusted servers.
+        let hold_untrusted = self.kept().hold_untrusted || self.team_forced_human_approval;
+        match self.safety_level_effective() {
+            SafetyLevel::Off => false,
+            SafetyLevel::Ask => destructive || (untrusted && hold_untrusted),
+            SafetyLevel::Strict => destructive || untrusted,
         }
     }
 
-    /// Set per-call confirmation mode for destructive tools. When enabled,
-    /// `deny_destructive` is forced off (they're mutually exclusive: deny hides
-    /// tools entirely, confirm intercepts them with a preview).
-    pub fn set_confirm_destructive(&mut self, confirm: bool) {
-        self.confirm_destructive = confirm;
-        if confirm {
-            self.deny_destructive = false;
-        }
-    }
-
-    /// Turn human-in-the-loop approval on or off. Independent of deny/confirm: `deny`
-    /// hides tools, `confirm` has the agent re-confirm, `human_approval` holds the call
-    /// for a person. When it gates a tool it takes precedence over `confirm_destructive`.
-    pub fn set_human_approval(&mut self, on: bool) {
-        self.human_approval = on;
-    }
-
-    /// Whether the HITL gate is active: the member's OWN toggle, OR an active team's forced
-    /// policy. The gate reads this instead of `human_approval` directly so an org lock stays
-    /// releasable (it lives in `team_forced_human_approval`, cleared on leave) rather than
-    /// permanently overwriting the member's own choice.
     pub fn human_approval_effective(&self) -> bool {
-        self.human_approval || self.team_forced_human_approval
+        self.safety_level_effective() >= SafetyLevel::Ask
     }
 
     /// Effective (member's own OR team-forced) values for the other tighten-only safety flags,
     /// so an org lock is releasable on leave instead of permanently overwriting the member's own.
     pub fn deny_destructive_effective(&self) -> bool {
-        self.deny_destructive || self.team_forced_deny_destructive
+        self.safety_level_effective() == SafetyLevel::Strict || self.kept().deny_destructive
     }
     pub fn content_defense_effective(&self) -> bool {
-        self.content_defense || self.team_forced_content_defense
+        true
     }
     /// Member's own OR team-forced PII pseudonymization (SBS-346).
     pub fn pii_redaction_effective(&self) -> bool {
         self.pii_redaction || self.team_forced_pii_redaction
     }
     pub fn quarantine_on_drift_effective(&self) -> bool {
-        self.quarantine_on_drift || self.team_forced_quarantine_on_drift
+        self.safety_level_effective() == SafetyLevel::Strict
+            || self.team_forced_quarantine_on_drift
+            || self.kept().quarantine_on_drift
     }
     /// Member's own OR team-forced fail-closed injection block (SOU-345).
     pub fn block_on_injection_effective(&self) -> bool {
-        self.block_on_injection || self.team_forced_block_on_injection
+        self.safety_level_effective() == SafetyLevel::Strict
+            || self.team_forced_block_on_injection
+            || self.kept().block_on_injection
     }
     /// Whether this server should fail closed on a high-confidence injection hit:
     /// block mode effective, and the server is not on the exempt list.
@@ -2344,94 +2800,18 @@ impl Registry {
             enabled_server_ids: Vec::new(),
             tool_scope: HashMap::new(),
             instructions: None,
+            unknown_fields: Default::default(),
         });
         id
     }
 
-    /// The rule set currently applied to clients, if any.
-    pub fn active_rule_set(&self) -> Option<&RuleSet> {
-        let id = self.active_rule_set_id.as_deref()?;
-        self.rule_sets.iter().find(|s| s.id == id)
-    }
-
-    /// Create a set (`id: None`) or update one in place. Returns the set's id.
-    ///
-    /// `revision` moves ONLY when `content` changes: it rides in the on-disk sentinel marker, so
-    /// bumping it on a rename would restale every client's file and force a pointless rewrite.
-    /// A newly created set becomes active when nothing else is, so the first set a user writes
-    /// applies without a second step.
-    ///
-    /// An `id` that names no existing set is an ERROR, not a create. Falling through to create
-    /// would silently duplicate a set whenever a second window (or a stale view) saved against an
-    /// id that had since been deleted, leaving the user with two "Work" sets and an edit that
-    /// went somewhere they did not mean.
-    pub fn upsert_rule_set(
-        &mut self,
-        id: Option<&str>,
-        name: &str,
-        content: &str,
-    ) -> Result<String, String> {
-        let name = if name.trim().is_empty() {
-            "Rules"
-        } else {
-            name.trim()
-        };
-        if let Some(id) = id {
-            let Some(existing) = self.rule_sets.iter_mut().find(|s| s.id == id) else {
-                return Err("That rule set no longer exists.".to_string());
-            };
-            if existing.content != content {
-                existing.content = content.to_string();
-                existing.revision += 1;
-            }
-            existing.name = name.to_string();
-            return Ok(existing.id.clone());
-        }
-        let id = unique_id(&slugify(name), &self.rule_set_ids());
-        self.rule_sets.push(RuleSet {
-            id: id.clone(),
-            name: name.to_string(),
-            content: content.to_string(),
-            revision: 1,
-        });
-        if self.active_rule_set_id.is_none() {
-            self.active_rule_set_id = Some(id.clone());
-        }
-        Ok(id)
-    }
-
-    /// Remove a set. Removing the ACTIVE one clears the selection rather than silently promoting
-    /// another, so the next apply removes our files instead of writing someone else's rules.
-    pub fn remove_rule_set(&mut self, id: &str) {
-        self.rule_sets.retain(|s| s.id != id);
-        if self.active_rule_set_id.as_deref() == Some(id) {
-            self.active_rule_set_id = None;
-        }
-    }
-
-    /// Select the active set. An unknown id clears the selection (same effect as `None`).
-    pub fn set_active_rule_set(&mut self, id: Option<&str>) {
-        self.active_rule_set_id = id
-            .filter(|id| self.rule_sets.iter().any(|s| s.id == *id))
-            .map(str::to_string);
-    }
-
-    /// Opt one client in or out of personal rules. `false` is stored explicitly rather than
-    /// removed so the UI can tell "turned off" from "never seen".
-    pub fn set_rules_client_enabled(&mut self, client_id: &str, enabled: bool) {
-        self.rules_clients.insert(client_id.to_string(), enabled);
-    }
-
-    /// Whether a client receives personal rules. Absent = off (see the field docs).
-    pub fn rules_client_enabled(&self, client_id: &str) -> bool {
-        self.rules_clients.get(client_id).copied().unwrap_or(false)
-    }
-
-    fn rule_set_ids(&self) -> Vec<String> {
-        self.rule_sets.iter().map(|s| s.id.clone()).collect()
-    }
-
     pub fn remove_profile(&mut self, id: &str) -> Result<(), String> {
+        if self.version >= 3
+            && (self.default_access_profile_id.as_deref() == Some(id)
+                || self.default_access_context_id.as_deref() == Some(id))
+        {
+            return Err("Cannot remove the default access set or its policy context".into());
+        }
         if self.profiles.len() <= 1 {
             return Err("Cannot remove the last profile".to_string());
         }
@@ -2446,17 +2826,9 @@ impl Registry {
         Ok(())
     }
 
-    pub fn set_active_profile(&mut self, id: &str) -> Result<(), String> {
-        if !self.profiles.iter().any(|p| p.id == id) {
-            return Err(format!("No profile with id '{id}'"));
-        }
-        self.active_profile_id = Some(id.to_string());
-        Ok(())
-    }
-
-    /// Servers enabled in the active profile - what the gateway should expose.
+    /// Servers visible through Default access for an unscoped client.
     pub fn enabled_servers(&self) -> Vec<&ServerEntry> {
-        let active = self.active_profile_id();
+        let active = self.default_access_id();
         self.servers
             .iter()
             .filter(|s| self.is_enabled(&active, &s.id))
@@ -2474,7 +2846,13 @@ impl Registry {
     /// never on a dangling reference.
     pub fn resolve_profile_id(&self, profile_ref: &str) -> String {
         if profile_ref.trim().is_empty() {
-            return self.active_profile_id();
+            return self.default_access_id();
+        }
+        if profile_ref == ALL_ENABLED_ACCESS {
+            return self.all_access_id();
+        }
+        if profile_ref == self.default_access_id() || profile_ref == self.all_access_id() {
+            return profile_ref.to_string();
         }
         self.profile_id_for_ref(profile_ref)
             .unwrap_or_else(|| profile_ref.to_string())
@@ -2497,9 +2875,7 @@ impl Registry {
     /// built-in text. An empty or whitespace-only result means send no instructions.
     pub fn configured_instructions(&self, profile_ref: Option<&str>) -> Option<&str> {
         let id = self.resolve_profile_id(profile_ref.unwrap_or(""));
-        self.profiles
-            .iter()
-            .find(|profile| profile.id == id)
+        self.access_profile(&id)
             .and_then(|profile| profile.instructions.as_deref())
             .or(self.gateway_instructions.as_deref())
     }
@@ -2550,7 +2926,7 @@ impl Registry {
         use std::collections::HashSet;
         let base_id = match base {
             Some(p) => self.resolve_profile_id(p),
-            None => self.active_profile_id(),
+            None => self.default_access_id(),
         };
         let mut profile_ids: Vec<String> = vec![base_id];
         for c in &self.http_clients {
@@ -2607,6 +2983,16 @@ impl Registry {
                 self.client_discovery.remove(client_id);
             }
         }
+    }
+
+    /// The global discovery mode only when the user picked one. 1.x wrote
+    /// `lazyDiscovery: true` by default, so only `false` there was a choice, except
+    /// that an upgraded 1.x default keeps the Lazy it ran with.
+    pub fn chosen_global_discovery_mode(&self) -> Option<&str> {
+        self.discovery_mode
+            .as_deref()
+            .or((!self.lazy_discovery).then_some("full"))
+            .or(self.legacy_lazy_discovery.then_some("lazy"))
     }
 
     /// This client's discovery-mode override, if any (`None` = inherit the global mode).
@@ -2726,15 +3112,56 @@ static DATA_DIR_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Serialize tests that resolve [`conduit_dir`] with tests that override it.
 ///
-/// The override is process-global, so this lock is required even for tests that only
-/// read the normal data directory; otherwise they can observe another test's scratch
-/// directory while that test holds a [`DataDirOverride`].
+/// Every test that resolves a data-dir-derived path must hold this lock and its
+/// own [`DataDirOverride`]. Acquire this before process environment locks. Prefer
+/// [`DataDirTestEnv`] for scratch directory setup and cleanup.
 #[cfg(any(debug_assertions, test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn data_dir_test_lock() -> std::sync::MutexGuard<'static, ()> {
     DATA_DIR_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Owns a serialized scratch data directory, including telemetry cleanup.
+/// Acquire this before any process environment lock.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub struct DataDirTestEnv {
+    pub dir: PathBuf,
+    data_dir: Option<DataDirOverride>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl DataDirTestEnv {
+    pub fn new(label: &str) -> Self {
+        let lock = data_dir_test_lock();
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "toolport-{label}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("a writable scratch data directory");
+        Self {
+            data_dir: Some(DataDirOverride::set(&dir)),
+            dir,
+            _lock: lock,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for DataDirTestEnv {
+    fn drop(&mut self) {
+        drop(self.data_dir.take());
+        assert!(crate::telemetry::retire_dir_for_test(
+            &self.dir,
+            std::time::Duration::from_secs(5)
+        ));
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 /// Points [`conduit_dir`] at a scratch directory until the guard drops. **Tests only.**
@@ -2752,8 +3179,8 @@ pub fn data_dir_test_lock() -> std::sync::MutexGuard<'static, ()> {
 /// `--features test-support`.
 ///
 /// The override is process-global. Every test in the same test binary that resolves
-/// [`conduit_dir`] directly or indirectly must hold `data_dir_test_lock`, whether
-/// or not that test installs an override itself.
+/// [`conduit_dir`] directly or indirectly must hold `data_dir_test_lock` and install
+/// its own override. Workers must finish before the override is dropped.
 #[cfg(any(debug_assertions, test, feature = "test-support"))]
 #[doc(hidden)]
 #[must_use = "the override is reverted when the guard drops, so it must be bound"]
@@ -2804,6 +3231,13 @@ fn resolve_conduit_dir() -> (Option<PathBuf>, DirResolution) {
             return (Some(p), DirResolution::Direct);
         }
     }
+    // Unit tests must never fall through to the developer's data directory. Binary
+    // fixtures compiled with test-support may supply an explicit directory instead.
+    #[cfg(any(test, feature = "test-support"))]
+    assert!(
+        !cfg!(test) && crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR").is_some(),
+        "data directory resolved without DataDirOverride; hold data_dir_test_lock and install a scratch override"
+    );
     {
         let cached = DATA_DIR_RESOLVED
             .read()
@@ -2834,6 +3268,20 @@ pub fn invalidate_data_dir_cache() {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
+/// Use the same real filesystem view as the selected data directory under MSIX.
+pub(crate) fn devirtualized_dir(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if msix::has_package_identity() {
+        if dirs::home_dir()
+            .and_then(|home| msix::unc_twin(&home))
+            .is_some_and(|home| std::fs::metadata(home).is_ok())
+        {
+            return msix::unc_twin(path).unwrap_or_else(|| path.to_path_buf());
+        }
+    }
+    path.to_path_buf()
+}
+
 fn compute_conduit_dir() -> (Option<PathBuf>, DirResolution) {
     if let Some(dir) = crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR") {
         return (Some(PathBuf::from(dir)), DirResolution::Direct);
@@ -2849,16 +3297,17 @@ fn compute_conduit_dir() -> (Option<PathBuf>, DirResolution) {
         if !msix::has_package_identity() {
             return (Some(under_roaming(&home)), DirResolution::Direct);
         }
-        match msix::unc_twin(&home) {
-            // The profile dir always exists, so a metadata success proves the
-            // UNC view actually works before we commit every file to it.
-            Some(unc_home) if std::fs::metadata(&unc_home).is_ok() => {
-                (Some(under_roaming(&unc_home)), DirResolution::Devirtualized)
-            }
-            _ => (
+        let real_home = devirtualized_dir(&home);
+        if real_home != home {
+            (
+                Some(under_roaming(&real_home)),
+                DirResolution::Devirtualized,
+            )
+        } else {
+            (
                 Some(under_roaming(&home)),
                 DirResolution::VirtualizedFallback,
-            ),
+            )
         }
     }
     #[cfg(not(windows))]
@@ -2942,7 +3391,7 @@ const RECOVERY_NOTICE_FILE: &str = "registry-recovery.json";
 #[serde(rename_all = "camelCase")]
 pub struct RegistryRecoveryNotice {
     pub recovered_at_ms: u128,
-    /// `"missing"` when the primary was absent; `"corrupt"` when it was unreadable.
+    /// Why the primary could not be used, including any preservation failure.
     pub reason: String,
     pub quarantine_path: Option<String>,
 }
@@ -3020,6 +3469,10 @@ const BACKUP_GENERATIONS: usize = 5;
 /// `<registry>.bak` (no trailing timestamp) and the `.unreadable-*` quarantine
 /// files, which use a different prefix.
 fn backup_generations(path: &Path) -> Vec<PathBuf> {
+    backup_candidates(path, true)
+}
+
+fn backup_candidates(path: &Path, regular_only: bool) -> Vec<PathBuf> {
     let (Some(dir), Some(base)) = (path.parent(), path.file_name().and_then(|f| f.to_str())) else {
         return Vec::new();
     };
@@ -3029,15 +3482,26 @@ fn backup_generations(path: &Path) -> Vec<PathBuf> {
     };
     let mut gens: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
+        .filter(|e| !regular_only || e.file_type().is_ok_and(|kind| kind.is_file()))
         .map(|e| e.path())
         .filter(|p| {
             p.file_name()
                 .and_then(|f| f.to_str())
                 .and_then(|f| f.strip_prefix(&prefix))
-                .is_some_and(|suffix| suffix.parse::<u128>().is_ok())
+                .is_some_and(|suffix| {
+                    suffix
+                        .parse::<u128>()
+                        .is_ok_and(|sequence| sequence.to_string() == suffix)
+                })
         })
         .collect();
-    gens.sort();
+    gens.sort_by_key(|p| {
+        p.file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix(&prefix))
+            .and_then(|suffix| suffix.parse::<u128>().ok())
+            .unwrap_or(0)
+    });
     gens
 }
 
@@ -3050,7 +3514,7 @@ fn next_backup_sequence(path: &Path) -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let latest = backup_generations(path)
+    let latest = backup_candidates(path, false)
         .into_iter()
         .filter_map(|generation| {
             generation
@@ -3066,25 +3530,221 @@ fn next_backup_sequence(path: &Path) -> u128 {
     now.max(latest.saturating_add(1))
 }
 
-fn write_backup_generation(path: &Path, content: &str, sequence: u128) {
-    let mut name = path.as_os_str().to_owned();
-    name.push(format!(".bak.{sequence}"));
-    if atomic_write(&PathBuf::from(name), content).is_err() {
+fn write_backup_generation(path: &Path, content: &str, mut sequence: u128) {
+    // Publish a complete snapshot without replacing any occupied name. Unlike
+    // atomic_write, journal publication must never follow a destination symlink.
+    let temp_sequence = ATOMIC_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = PathBuf::from(format!(
+        "{}.{}.{}.conduit-tmp",
+        path.display(),
+        std::process::id(),
+        temp_sequence
+    ));
+    let mut cleanup = TempFileCleanup::new(tmp.clone());
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+    else {
+        return;
+    };
+    cleanup.arm();
+    let ops = FsAtomicWriteOps;
+    if ops.set_owner_only(&file).is_err()
+        || ops.write_all(&mut file, content.as_bytes()).is_err()
+        || ops.sync_all(&file).is_err()
+    {
         return;
     }
-    let mut gens = backup_generations(path);
-    while gens.len() > BACKUP_GENERATIONS {
-        let _ = std::fs::remove_file(gens.remove(0));
+    drop(file);
+    // A concurrent writer may claim the sequence after allocation. Bound retries
+    // and fail closed on inspection or publication errors other than occupancy.
+    for _ in 0..32 {
+        let mut name = path.as_os_str().to_owned();
+        name.push(format!(".bak.{sequence}"));
+        let dest = PathBuf::from(name);
+        match std::fs::symlink_metadata(&dest) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::hard_link(&tmp, &dest) {
+                    Ok(()) => {
+                        if let Some(dir) = path.parent() {
+                            if let Ok(dir) = std::fs::File::open(dir) {
+                                let _ = dir.sync_all();
+                            }
+                        }
+                        let mut gens = backup_generations(path);
+                        while gens.len() > BACKUP_GENERATIONS {
+                            let _ = std::fs::remove_file(gens.remove(0));
+                        }
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(_) => return,
+                }
+            }
+            Err(_) => return,
+        }
+        let Some(next) = sequence.checked_add(1) else {
+            return;
+        };
+        sequence = next;
     }
+}
+
+/// How many pre-migration snapshots to keep beside the registry. The registry
+/// is a few KB, so five generations are negligible and mean a migration that
+/// turns out wrong can be undone without reaching for an external backup.
+const MIGRATION_BACKUPS: usize = 5;
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// The schema version a raw registry document declares. A missing (or zero)
+/// version is read as v1: every registry that predates the enforced version
+/// field is a v1 document, and v1 is the only schema that does.
+fn document_version(value: &serde_json::Value) -> u32 {
+    match value.get("version").and_then(serde_json::Value::as_u64) {
+        Some(version) if version > 0 => version.min(u64::from(u32::MAX)) as u32,
+        _ => 1,
+    }
+}
+
+/// The `<registry>.vN-<unix-ms>.bak` files written before a schema migration,
+/// oldest-first by their embedded timestamp. Distinct from the `.bak` /
+/// `.bak.<sequence>` journal `save_to` keeps, so a migration snapshot is never
+/// pruned by an ordinary save.
+fn migration_backup_files(path: &Path) -> Vec<PathBuf> {
+    let (Some(dir), Some(base)) = (path.parent(), path.file_name().and_then(|f| f.to_str())) else {
+        return Vec::new();
+    };
+    let prefix = format!("{base}.v");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut backups: Vec<(u128, PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter_map(|candidate| {
+            let name = candidate.file_name()?.to_str()?;
+            let rest = name.strip_prefix(&prefix)?.strip_suffix(".bak")?;
+            let (version, timestamp) = rest.split_once('-')?;
+            version.parse::<u32>().ok()?;
+            Some((timestamp.parse::<u128>().ok()?, candidate))
+        })
+        .collect();
+    backups.sort();
+    backups.into_iter().map(|(_, backup)| backup).collect()
+}
+
+fn migration_backup_path(path: &Path, from_version: u32, timestamp_ms: u128) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".v{from_version}-{timestamp_ms}.bak"));
+    PathBuf::from(name)
+}
+
+/// Snapshot the pre-migration registry next to it and prune to the newest
+/// [`MIGRATION_BACKUPS`]. A failure here aborts the migration: there is no
+/// point rewriting a registry we could not first preserve.
+fn write_migration_backup(path: &Path, content: &str, from_version: u32) -> Result<(), String> {
+    write_migration_backup_at(path, content, from_version, now_ms())
+}
+
+fn write_migration_backup_at(
+    path: &Path,
+    content: &str,
+    from_version: u32,
+    timestamp_ms: u128,
+) -> Result<(), String> {
+    // Two writes in the same millisecond must not land on one name, or the
+    // second would silently overwrite the first snapshot.
+    let mut timestamp = timestamp_ms;
+    loop {
+        let dest = migration_backup_path(path, from_version, timestamp);
+        if !dest.exists() {
+            atomic_write(&dest, content)?;
+            break;
+        }
+        timestamp = timestamp.saturating_add(1);
+    }
+    let mut backups = migration_backup_files(path);
+    while backups.len() > MIGRATION_BACKUPS {
+        let _ = std::fs::remove_file(backups.remove(0));
+    }
+    Ok(())
+}
+
+/// Run the ordered `vN -> vN+1` steps needed to reach `target_version`, stamping
+/// the version after each one. Mutates only the in-memory document, so a failed
+/// step leaves the caller free to abandon the write and keep the original file.
+fn run_migration_steps(
+    value: &mut serde_json::Value,
+    migrations: &[Migration],
+    target_version: u32,
+    context: &MigrationContext,
+) -> Result<(), String> {
+    let mut version = document_version(value);
+    while version < target_version {
+        let step = migrations.get((version - 1) as usize).ok_or_else(|| {
+            format!(
+                "No registry migration from schema v{version} to v{} is registered",
+                version + 1
+            )
+        })?;
+        step(value, context).map_err(|error| {
+            format!(
+                "Registry migration from schema v{version} to v{} failed: {error}",
+                version + 1
+            )
+        })?;
+        version += 1;
+        value["version"] = serde_json::json!(version);
+    }
+    Ok(())
+}
+
+/// Back up the pre-migration file, then migrate the in-memory document to
+/// `target_version`. The primary is not touched here; the caller saves the
+/// migrated document only after it deserializes into a [`Registry`].
+fn migrate_document(
+    path: &Path,
+    value: &mut serde_json::Value,
+    original: &str,
+    migrations: &[Migration],
+    target_version: u32,
+) -> Result<(), String> {
+    let from_version = document_version(value);
+    if from_version >= target_version {
+        return Ok(());
+    }
+    write_migration_backup(path, original, from_version)?;
+    run_migration_steps(
+        value,
+        migrations,
+        target_version,
+        &MigrationContext::for_registry(path),
+    )
 }
 
 /// Recover the registry from the backups `save_to` maintains, newest-first by
 /// filesystem modification time across both `.bak` and rolling generations.
-/// Returns the first that parses (and
-/// best-effort rewrites the primary from it so a later read self-heals), or None
-/// when nothing usable remains. Walking the journal means one stale or corrupt
+/// Returns the first that parses, optionally best-effort restoring the primary,
+/// or None when nothing usable remains. Walking the journal means one stale or corrupt
 /// `.bak` no longer strands recovery when fresher snapshots exist.
-fn restore_from_backup(path: &Path) -> Option<Registry> {
+///
+/// A candidate whose schema is newer than `target_version` is skipped, never
+/// recovered: rewriting it in this build's shape would destroy a newer build's
+/// data, the same loss the primary-path version check exists to prevent.
+fn load_from_backup(
+    path: &Path,
+    migrations: &[Migration],
+    target_version: u32,
+    restore_primary: bool,
+) -> Option<Registry> {
     let single_backup = backup_path(path);
     let single_sequence = std::fs::read_to_string(backup_sequence_path(path))
         .ok()
@@ -3127,12 +3787,37 @@ fn restore_from_backup(path: &Path) -> Option<Registry> {
         if content.trim().is_empty() {
             continue;
         }
-        if let Ok(registry) = serde_json::from_str::<Registry>(&content) {
-            // Best-effort: restore the primary so we don't keep reading a backup.
-            // Recovery still succeeds if this write fails.
-            let _ = atomic_write(path, &content);
-            return Some(registry);
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        let from_version = document_version(&value);
+        if from_version > target_version {
+            // A newer build's backup. Leave it for that build rather than
+            // rewriting it in an older shape.
+            continue;
         }
+        if from_version < target_version {
+            // Before restoring, journal this backup before migrating it. When
+            // loading only into memory, its original bytes stay in the backup.
+            if restore_primary && write_migration_backup(path, &content, from_version).is_err() {
+                continue;
+            }
+            let context = MigrationContext::for_registry(path);
+            if run_migration_steps(&mut value, migrations, target_version, &context).is_err() {
+                continue;
+            }
+        }
+        let Ok(registry) = serde_json::from_value::<Registry>(value.clone()) else {
+            continue;
+        };
+        // Never replace primary bytes that could not be read or preserved.
+        // Recovery still succeeds if a permitted restore fails.
+        if restore_primary {
+            if let Ok(restored) = serde_json::to_string_pretty(&value) {
+                let _ = atomic_write(path, &restored);
+            }
+        }
+        return Some(registry);
     }
     None
 }
@@ -3143,9 +3828,8 @@ enum ReadOutcome {
     /// Still missing or empty after retries: genuinely absent, not a race.
     Absent,
     /// The file is there but every read failed with something other than
-    /// not-found (sharing violation, permissions, I/O error). Recovery treats
-    /// this exactly like `Absent`, but a caller reading a security decision out
-    /// of the result has to know the real contents were never seen (SBS-900).
+    /// not-found (sharing violation, permissions, I/O error). A usable backup
+    /// can keep the app running, but must not replace bytes we could not read.
     Unreadable,
 }
 
@@ -3154,19 +3838,26 @@ enum ReadOutcome {
 /// `\\localhost\C$` twin, where rename windows are wider) can expose: a brief
 /// not-found, empty, or sharing-violation moment during the rename. A reader
 /// that mistakes that moment for "the registry is gone" used to fall into
-/// `restore_from_backup`, which REWRITES the primary from a possibly-days-old
+/// backup restoration, which REWRITES the primary from a possibly-days-old
 /// .bak - the exact mechanism that destroyed a real user registry (manual
 /// servers added over three days lost to a self-heal from a stale backup).
-/// Retrying a few times before concluding anything makes that race unloseable.
+/// Retry briefly before falling back, and never substitute defaults for a read error.
 fn read_registry_file(path: &Path) -> ReadOutcome {
+    read_registry_file_with(|| std::fs::read_to_string(path), std::thread::sleep)
+}
+
+fn read_registry_file_with(
+    mut read: impl FnMut() -> std::io::Result<String>,
+    mut backoff: impl FnMut(std::time::Duration),
+) -> ReadOutcome {
     const ATTEMPTS: u32 = 4;
     const BACKOFF_MS: u64 = 75;
     // Why the last attempt failed, so a file we were never allowed to read is not
-    // reported as a file that is not there (SBS-900). Recovery behaves the same
-    // for both; only the reported outcome differs.
+    // reported as a file that is not there (SBS-900). An unreadable primary
+    // must not be overwritten or treated as a first run.
     let mut last_error: Option<std::io::ErrorKind> = None;
     for attempt in 0..ATTEMPTS {
-        match std::fs::read_to_string(path) {
+        match read() {
             Ok(content) if !content.trim().is_empty() => return ReadOutcome::Content(content),
             // An empty read is the rename window itself, not an error.
             Ok(_) => last_error = None,
@@ -3175,7 +3866,7 @@ fn read_registry_file(path: &Path) -> ReadOutcome {
             Err(e) => last_error = Some(e.kind()),
         }
         if attempt + 1 < ATTEMPTS {
-            std::thread::sleep(std::time::Duration::from_millis(BACKOFF_MS));
+            backoff(std::time::Duration::from_millis(BACKOFF_MS));
         }
     }
     match last_error {
@@ -3186,45 +3877,71 @@ fn read_registry_file(path: &Path) -> ReadOutcome {
     }
 }
 
-/// Preserve an unreadable registry file next to the original before anything
-/// overwrites it. "Unreadable" does NOT always mean corrupt: on a machine
-/// running mixed builds it can be a NEWER schema this binary can't parse, and
-/// destroying it silently loses whatever the newer build stored. Best-effort;
-/// keeps the most recent few so a repeating failure can't fill the disk.
-/// Returns the quarantine file path when a copy was written.
-fn quarantine_unreadable(path: &Path, content: &str) -> Option<PathBuf> {
+/// Preserve corrupt bytes before recovery or repair overwrites the primary.
+/// The content hash gives repeated loads the same immutable evidence copy.
+/// Keep three distinct copies, including legacy timestamped copies, without
+/// touching the separate backup and migration journals.
+fn quarantine_unreadable(path: &Path, content: &str) -> Result<PathBuf, String> {
     const KEEP: usize = 3;
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
     let mut name = path.as_os_str().to_owned();
-    name.push(format!(".unreadable-{ts}"));
+    name.push(format!(".unreadable-sha256-{}", sha256_hex(content)));
     let dest = PathBuf::from(name);
-    atomic_write(&dest, content).ok()?;
-    // Prune older quarantine files beyond the newest KEEP.
-    let (Some(dir), Some(base)) = (path.parent(), path.file_name().and_then(|f| f.to_str())) else {
-        return None;
-    };
+    if dest.exists()
+        && (!std::fs::symlink_metadata(&dest).is_ok_and(|metadata| metadata.file_type().is_file())
+            || !std::fs::read_to_string(&dest).is_ok_and(|saved| saved == content))
+    {
+        return Err(format!("Could not preserve corrupt registry at {}: an incompatible copy already exists. Move it aside and try again.", dest.display()));
+    }
+    let dir = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let base = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            "Could not identify registry evidence copies: invalid file name".to_string()
+        })?;
     let prefix = format!("{base}.unreadable-");
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return None;
-    };
-    let mut quarantined: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|f| f.to_str())
-                .is_some_and(|f| f.starts_with(&prefix))
+    let entries = std::fs::read_dir(dir).map_err(|error| {
+        format!("Could not list preserved registry copies in {}: {error}. Check directory permissions, then try again.", dir.display())
+    })?;
+    let mut quarantined: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let candidate = entry.path();
+            let suffix = candidate.file_name()?.to_str()?.strip_prefix(&prefix)?;
+            let recognized = suffix.parse::<u128>().is_ok()
+                || suffix.strip_prefix("sha256-").is_some_and(|hash| {
+                    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                });
+            let metadata = std::fs::symlink_metadata(&candidate).ok()?;
+            if !recognized || !metadata.file_type().is_file() || candidate == dest {
+                return None;
+            }
+            Some((
+                metadata.modified().unwrap_or(std::time::UNIX_EPOCH),
+                candidate,
+            ))
         })
         .collect();
-    // Timestamps are fixed-width for any realistic epoch, so name order = age order.
     quarantined.sort();
-    while quarantined.len() > KEEP {
-        let _ = std::fs::remove_file(quarantined.remove(0));
+    // Always keep the evidence for the primary being recovered, even if it is
+    // an older copy being reused. Reuse does not rewrite its bytes or timestamp.
+    // Make room before creating a new copy. If listing or pruning fails, stop
+    // recovery instead of allowing each distinct corrupt load to grow the set.
+    while quarantined.len() >= KEEP {
+        let oldest = quarantined.remove(0).1;
+        std::fs::remove_file(&oldest).map_err(|error| {
+            format!("Could not prune registry evidence at {}: {error}. Check directory permissions, then try again.", oldest.display())
+        })?;
     }
-    Some(dest)
+    if !dest.exists() {
+        atomic_write(&dest, content).map_err(|error| {
+            format!("Could not preserve corrupt registry at {}: {error}. Check the data directory's permissions and free space, then try again.", dest.display())
+        })?;
+    }
+    Ok(dest)
 }
 
 /// Where a loaded [`Registry`] actually came from.
@@ -3244,21 +3961,17 @@ pub enum LoadSource {
     /// No registry file and no backup worth recovering: a genuine first run.
     /// Empty here is the truth.
     FirstRun,
-    /// The primary was absent, unreadable, or unparseable, and the registry came
+    /// The primary was absent, unreadable or unparseable, and the registry came
     /// from a backup. `save_to` snapshots the PRE-write content, so the newest
     /// backup is state N-1: the save that registered the first HTTP client is
     /// exactly the one whose backup still has none.
     Backup,
-    /// The primary exists but could not be read (locked, permissions, I/O) and
-    /// no backup was usable, so this is a `Registry::default()` standing in for
-    /// contents nobody has seen.
-    Unreadable,
 }
 
 impl LoadSource {
     /// True only when an absent value in the loaded registry means the user never
     /// configured it, rather than "this build could not tell". Everything
-    /// reconstructed or defaulted over unread contents is `false`, so a caller
+    /// reconstructed from a backup is `false`, so a caller
     /// that must fail closed can just ask.
     pub fn is_authoritative(self) -> bool {
         matches!(self, LoadSource::File | LoadSource::FirstRun)
@@ -3266,46 +3979,102 @@ impl LoadSource {
 }
 
 fn load_from_inner(path: &Path) -> Result<(Registry, LoadSource), String> {
-    let (mut registry, source) = match read_registry_file(path) {
+    load_from_inner_with(path, MIGRATIONS, REGISTRY_VERSION)
+}
+
+/// [`load_from_inner`] with an explicit pipeline, so tests can prove the
+/// framework with a migration that has not shipped yet. Production always calls
+/// [`MIGRATIONS`] against [`REGISTRY_VERSION`].
+fn load_from_inner_with(
+    path: &Path,
+    migrations: &[Migration],
+    target_version: u32,
+) -> Result<(Registry, LoadSource), String> {
+    load_from_inner_with_outcome(path, migrations, target_version, read_registry_file(path))
+}
+
+fn load_from_inner_with_outcome(
+    path: &Path,
+    migrations: &[Migration],
+    target_version: u32,
+    outcome: ReadOutcome,
+) -> Result<(Registry, LoadSource), String> {
+    let (mut registry, source) = match outcome {
         // Genuinely missing or empty (not a rename race - read_registry_file
         // already waited that out): recover the last-known-good from the .bak
         // sibling if one survived, else this is a first run.
         ReadOutcome::Absent => {
-            if let Some(reg) = restore_from_backup(path) {
+            if let Some(reg) = load_from_backup(path, migrations, target_version, true) {
                 record_registry_recovery("missing", None);
                 Ok((reg, LoadSource::Backup))
             } else {
                 Ok((Registry::default(), LoadSource::FirstRun))
             }
         }
-        // Same recovery, different truth: the file is there and we never saw it,
-        // so a default here is a placeholder, not a first run (SBS-900).
+        // Keep running from a backup without replacing bytes we never saw.
+        // Its empty fields remain non-authoritative for security decisions.
         ReadOutcome::Unreadable => {
-            if let Some(reg) = restore_from_backup(path) {
-                record_registry_recovery("missing", None);
+            if let Some(reg) = load_from_backup(path, migrations, target_version, false) {
+                record_registry_recovery("unreadable", None);
                 Ok((reg, LoadSource::Backup))
             } else {
-                Ok((Registry::default(), LoadSource::Unreadable))
+                Err(format!(
+                    "Could not read registry at {}. Check file permissions and contents, then try again. The registry and its backups have not been changed.",
+                    path.display()
+                ))
             }
         }
-        ReadOutcome::Content(content) => match serde_json::from_str(&content) {
-            Ok(reg) => Ok((reg, LoadSource::File)),
-            // Present but unparseable by THIS build: corrupt, or a newer schema.
-            // Quarantine the evidence BEFORE restore_from_backup self-heals the
-            // primary from .bak, so nothing is ever silently destroyed.
-            Err(e) => {
-                let quarantine = quarantine_unreadable(path, &content);
-                match restore_from_backup(path) {
-                    Some(reg) => {
-                        record_registry_recovery("corrupt", quarantine);
-                        Ok((reg, LoadSource::Backup))
+        ReadOutcome::Content(content) => {
+            // Parse the envelope first so the version is a fact we can check
+            // BEFORE deserializing the data model. A newer schema that happens to
+            // still deserialize (serde ignores unknown fields) would otherwise be
+            // accepted and then rewritten in this build's shape.
+            match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(mut value) => {
+                    let found = document_version(&value);
+                    if found > target_version {
+                        return Err(newer_version_error(found, target_version));
                     }
-                    None => Err(format!("Corrupt registry: {e}")),
+                    let needs_migration = found < target_version;
+                    if needs_migration {
+                        // Backs up first; mutates only the in-memory document, so
+                        // a failed step leaves the primary untouched.
+                        migrate_document(path, &mut value, &content, migrations, target_version)?;
+                    }
+                    match serde_json::from_value::<Registry>(value.clone()) {
+                        Ok(reg) => {
+                            // Publish the migrated document atomically, only
+                            // after it deserialized into a Registry. The raw
+                            // document is written, not the struct, so nested
+                            // fields this build does not model survive.
+                            if needs_migration {
+                                validate_server_launches(&reg)?;
+                                let json = serde_json::to_string_pretty(&value)
+                                    .map_err(|e| e.to_string())?;
+                                write_registry_document(path, &json, &value)?;
+                            }
+                            Ok((reg, LoadSource::File))
+                        }
+                        Err(e) => corrupt_registry(
+                            path,
+                            &content,
+                            e.to_string(),
+                            migrations,
+                            target_version,
+                        ),
+                    }
+                }
+                // Present but unparseable by THIS build: corrupt, or a newer
+                // schema that is not even JSON. Preserve the evidence before
+                // any restore; otherwise recovery leaves the primary untouched.
+                Err(e) => {
+                    corrupt_registry(path, &content, e.to_string(), migrations, target_version)
                 }
             }
-        },
+        }
     }?;
     registry.normalize_profile_references();
+    registry.sync_legacy_safety_mirror();
     // This path is reached only under the registry file lock. Save an exact
     // legacy-template migration here so a concurrent older writer cannot race
     // between detection and the atomic backup-preserving write.
@@ -3317,6 +4086,36 @@ fn load_from_inner(path: &Path) -> Result<(Registry, LoadSource), String> {
         }
     }
     Ok((registry, source))
+}
+
+/// Handle a primary registry that is not a parseable document at a supported
+/// version: try to quarantine the exact bytes, then load a backup. Only restore
+/// the primary if preservation succeeded. Kept separate so
+/// the newer-version refusal above can never fall into this path (it must not
+/// quarantine or recover anything).
+fn corrupt_registry(
+    path: &Path,
+    content: &str,
+    parse_error: String,
+    migrations: &[Migration],
+    target_version: u32,
+) -> Result<(Registry, LoadSource), String> {
+    let quarantine = quarantine_unreadable(path, content);
+    match load_from_backup(path, migrations, target_version, quarantine.is_ok()) {
+        Some(registry) => {
+            match quarantine {
+                Ok(path) => record_registry_recovery("corrupt", Some(path)),
+                Err(error) => record_registry_recovery(
+                    &format!("corrupt registry could not be preserved: {error}"),
+                    None,
+                ),
+            }
+            Ok((registry, LoadSource::Backup))
+        }
+        None => Err(quarantine
+            .err()
+            .unwrap_or_else(|| format!("Corrupt registry: {parse_error}"))),
+    }
 }
 
 /// Only exact, unedited catalog definitions qualify. Keep ids, profile state,
@@ -3389,6 +4188,7 @@ fn migrate_curated_legacy(registry: &mut Registry) -> bool {
                 key: key.clone(),
                 value: None,
                 secret: true,
+                unknown_fields: Default::default(),
             })
             .collect();
         // Changed requirements must be reviewed and completed before launch.
@@ -3396,6 +4196,7 @@ fn migrate_curated_legacy(registry: &mut Registry) -> bool {
             server.name.as_str(),
             "Twilio" | "PostgreSQL" | "Filesystem" | "Browserbase" | "Qdrant" | "AWS"
         ) {
+            server.enabled = false;
             for profile in &mut registry.profiles {
                 profile.enabled_server_ids.retain(|id| id != &server.id);
             }
@@ -3468,8 +4269,10 @@ mod catalog_launch_migration_tests {
             revision: Some(1),
             ..Default::default()
         });
-        let mut registry = Registry::default();
-        registry.servers = vec![old, edited.clone(), v1_template];
+        let mut registry = Registry {
+            servers: vec![old, edited.clone(), v1_template],
+            ..Default::default()
+        };
         registry.profiles[0].enabled_server_ids = vec![
             "atlassian-work".into(),
             "atlassian-edited".into(),
@@ -3576,7 +4379,7 @@ mod catalog_launch_migration_tests {
         server.launch = template.launch;
         let mut registry = Registry::default();
         registry.servers.push(server);
-        let profile = registry.active_profile_id();
+        let profile = registry.default_access_id();
         let error = registry
             .set_server_enabled(&profile, "files", true)
             .unwrap_err();
@@ -3605,11 +4408,13 @@ mod catalog_launch_migration_tests {
             key: "SLACK_BOT_TOKEN".into(),
             value: None,
             secret: true,
+            unknown_fields: Default::default(),
         }];
         server.env.push(EnvVar {
             key: "SLACK_TEAM_ID".into(),
             value: None,
             secret: true,
+            unknown_fields: Default::default(),
         });
         let mut registry = Registry::default();
         registry.servers.push(server);
@@ -3663,7 +4468,73 @@ pub fn load_from_locked_with_source(
     load_from_inner(path)
 }
 
+/// Parse an already-read registry document, refusing one written by a newer
+/// Toolport.
+///
+/// Read-only callers (server probing, the native shell) that do not run the full
+/// recovery pipeline still must not accept a newer schema and act on a partial
+/// view of it. Full loads go through [`load_from`], which additionally migrates,
+/// recovers from backups, and takes the cross-process lock.
+pub fn parse_registry_contents(contents: &str) -> Result<Registry, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(contents).map_err(|error| format!("Corrupt registry: {error}"))?;
+    let found = document_version(&value);
+    if found > REGISTRY_VERSION {
+        return Err(newer_version_error(found, REGISTRY_VERSION));
+    }
+    let mut registry: Registry =
+        serde_json::from_value(value).map_err(|error| format!("Corrupt registry: {error}"))?;
+    registry.sync_legacy_safety_mirror();
+    Ok(registry)
+}
+
+/// Run [`load_from_inner_with`] holding the registry lock, so a test can prove
+/// the migration pipeline through the same locked path production uses.
+#[cfg(test)]
+fn load_from_with_migrations_for_test(
+    path: &Path,
+    migrations: &[Migration],
+    target_version: u32,
+) -> Result<Registry, String> {
+    let _lock = lock_for(path, registry_lock_timeout())?;
+    load_from_inner_with(path, migrations, target_version).map(|(registry, _)| registry)
+}
+
+pub fn validate_access_set_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("Give the access set a name".into());
+    }
+    if name.trim().starts_with('@') {
+        return Err("Access-set names beginning with @ are reserved".into());
+    }
+    Ok(())
+}
+
 pub fn save_to(path: &Path, registry: &Registry) -> Result<(), String> {
+    if registry.version >= 3 {
+        for profile in &registry.profiles {
+            if profile.name.trim().starts_with('@') {
+                return Err("Access-set names beginning with @ are reserved".into());
+            }
+        }
+    }
+    validate_server_launches(registry)?;
+    let mut registry = registry.clone();
+    registry.sync_legacy_safety_mirror();
+    if let Some(state) = registry
+        .team
+        .as_mut()
+        .and_then(|t| t.unknown_fields.get_mut("personalSyncState"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        state.remove("lastSyncedAt");
+    }
+    let value = serde_json::to_value(&registry).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    write_registry_document(path, &json, &value)
+}
+
+fn validate_server_launches(registry: &Registry) -> Result<(), String> {
     for server in &registry.servers {
         if let Some(launch) = &server.launch {
             launch.validate(&server.args, true)?;
@@ -3673,11 +4544,39 @@ pub fn save_to(path: &Path, registry: &Registry) -> Result<(), String> {
             // Structural validation above is enough for saving.
         }
     }
+    Ok(())
+}
+
+/// Write `json` (the serialized form of `value`) as the primary, with the
+/// newer-version guard, the no-op guard and the backup journal.
+fn write_registry_document(
+    path: &Path,
+    json: &str,
+    value: &serde_json::Value,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let json = serde_json::to_string_pretty(registry).map_err(|e| e.to_string())?;
-    let existing = std::fs::read_to_string(path).ok();
+    let existing = match std::fs::read_to_string(path) {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!(
+            "Could not read existing registry at {}: {error}. Refusing to replace unreadable bytes. Check file permissions and contents, then try again.",
+            path.display()
+        )),
+    };
+    // An older binary must never overwrite a registry a newer build wrote: this
+    // is the write half of the mixed-version guard (the read half is in
+    // `load_from_inner_with`). Check BEFORE the no-op comparison and before any
+    // backup/quarantine work, so the newer file is left byte-for-byte as it was.
+    if let Some(cur) = existing.as_deref() {
+        if let Ok(on_disk) = serde_json::from_str::<serde_json::Value>(cur) {
+            let found = document_version(&on_disk);
+            if found > REGISTRY_VERSION {
+                return Err(newer_version_error(found, REGISTRY_VERSION));
+            }
+        }
+    }
     // No-op guard: if the on-disk registry is already semantically identical to what we
     // would write, skip the whole save so we never bump the file's mtime. This is NOT just
     // an IO optimization. The gateway watches this file's mtime and, on ANY change, does a
@@ -3688,10 +4587,7 @@ pub fn save_to(path: &Path, registry: &Registry) -> Result<(), String> {
     // HashMap key-order jitter across a load->save round-trip can't masquerade as a change.
     if let Some(cur) = existing.as_deref() {
         if let Ok(cur_val) = serde_json::from_str::<serde_json::Value>(cur) {
-            if serde_json::to_value(registry)
-                .map(|v| v == cur_val)
-                .unwrap_or(false)
-            {
+            if *value == cur_val {
                 return Ok(());
             }
         }
@@ -3720,17 +4616,19 @@ pub fn save_to(path: &Path, registry: &Registry) -> Result<(), String> {
                 // whatever the one .bak happens to hold.
                 write_backup_generation(path, &existing, sequence);
             } else {
-                quarantine_unreadable(path, &existing);
+                quarantine_unreadable(path, &existing)?;
             }
         }
     }
     // The registry is the single source of truth for every server, so a crash,
     // power loss, or full disk mid-write must not be able to truncate it.
-    atomic_write(path, &json)
+    atomic_write(path, json)
 }
 
 pub fn load() -> Result<Registry, String> {
-    load_resolved()
+    let mut registry = load_resolved()?;
+    crate::personal_sync::attach_status(&mut registry);
+    Ok(registry)
 }
 
 pub fn save(registry: &Registry) -> Result<(), String> {
@@ -3780,8 +4678,17 @@ const DEFAULT_REGISTRY_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::
 /// An env override rather than `cfg!(test)` because the rate-limit repro spawns real child
 /// processes, which are not test builds and inherit only the environment.
 fn registry_lock_timeout() -> std::time::Duration {
-    crate::brand::env_var("TOOLPORT_LOCK_TIMEOUT_MS", "CONDUIT_LOCK_TIMEOUT_MS")
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
+    parse_lock_timeout(
+        crate::brand::env_var("TOOLPORT_LOCK_TIMEOUT_MS", "CONDUIT_LOCK_TIMEOUT_MS").as_deref(),
+    )
+}
+
+/// Parse a `TOOLPORT_LOCK_TIMEOUT_MS` value. Missing, blank, non-numeric and zero
+/// values fall back to the production deadline rather than expiring instantly.
+/// Pure on purpose: parsing must never mutate the process-global env a live
+/// [`LockTimeoutOverride`] is holding (SBS-895).
+fn parse_lock_timeout(raw: Option<&str>) -> std::time::Duration {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|ms| *ms > 0)
         .map(std::time::Duration::from_millis)
         .unwrap_or(DEFAULT_REGISTRY_LOCK_TIMEOUT)
@@ -3844,14 +4751,18 @@ impl Drop for LockTimeoutOverride {
 }
 
 fn lock_for(path: &Path, timeout: std::time::Duration) -> Result<FileLock, String> {
+    let lock_error = |error| {
+        format!("Could not open the registry lock at {}: {error}. Toolport requires a writable data directory to load safely. Check directory permissions or choose a writable TOOLPORT_DATA_DIR, then try again.", lock_path(path).display())
+    };
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(parent).map_err(lock_error)?;
     }
     let file = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .write(true)
         .open(lock_path(path))
-        .map_err(|e| format!("Could not open the registry lock: {e}"))?;
+        .map_err(lock_error)?;
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match file.try_lock_exclusive() {
@@ -3883,7 +4794,9 @@ pub fn update<T>(
     let path = resolved_path().ok_or("Could not resolve registry path")?;
     let lock = lock_for(&path, registry_lock_timeout())?;
     let mut reg = load_from_locked(&path, &lock)?;
+    let before = reg.clone();
     let out = f(&mut reg)?;
+    crate::personal_sync::record(&before, &mut reg)?;
     // Save to the exact path we locked and loaded. Re-resolving after `f` would let a
     // runtime env override change redirect this write to a different, unlocked registry.
     save_to(&path, &reg)?;
@@ -3891,7 +4804,7 @@ pub fn update<T>(
 }
 
 /// Like [`update`], but refuses to mutate or save when the registry was reconstructed from a
-/// backup or defaulted over unreadable contents. Use this for reconciliations whose filesystem
+/// backup. Use this for reconciliations whose filesystem
 /// side effects depend on absence being authoritative: a placeholder registry must never make
 /// rules cleanup look like an intentional clear.
 pub fn update_authoritative<T>(
@@ -3903,7 +4816,9 @@ pub fn update_authoritative<T>(
     if !source.is_authoritative() {
         return Err("Registry contents are not authoritative; refusing filesystem changes".into());
     }
+    let before = reg.clone();
     let out = f(&mut reg)?;
+    crate::personal_sync::record(&before, &mut reg)?;
     save_to(&path, &reg)?;
     Ok((reg, out))
 }
@@ -3931,7 +4846,9 @@ pub fn update_at<T>(
 ) -> Result<(Registry, T), String> {
     let lock = lock_for(path, registry_lock_timeout())?;
     let mut reg = load_from_locked(path, &lock)?;
+    let before = reg.clone();
     let out = f(&mut reg)?;
+    crate::personal_sync::record(&before, &mut reg)?;
     save_to(path, &reg)?;
     Ok((reg, out))
 }
@@ -3952,9 +4869,8 @@ pub fn load_resolved() -> Result<Registry, String> {
 }
 
 /// [`load_resolved`] plus where the result came from. `Ok` alone does not mean the
-/// registry on disk was read: it also covers a recovery from a backup and a
-/// default standing in for a file that could not be read, both of which are empty
-/// for reasons that are not "the user configured nothing" (SBS-900).
+/// registry on disk was read: a backup can be empty for reasons that are not
+/// "the user configured nothing" (SBS-900). Unreadable primaries never default.
 pub fn load_resolved_with_source() -> Result<(Registry, LoadSource), String> {
     let (registry, source) = match resolved_path() {
         Some(path) => load_from_with_source(&path),
@@ -4357,29 +5273,104 @@ pub(crate) fn redact_url_userinfo(url: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::approval::fingerprint_allow_key;
 
     static REGISTRY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
-    fn gateway_topology_absence_follows_default_and_explicit_choice_round_trips() {
+    fn data_dir_resolution_requires_a_scratch_override() {
+        let _lock = data_dir_test_lock();
+        for resolve in [conduit_dir, resolved_path, gateway_log_path] {
+            let panic = std::panic::catch_unwind(resolve).expect_err("unisolated lookup must fail");
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap();
+            assert!(message.contains("without DataDirOverride"));
+        }
+        let dir = std::env::temp_dir().join(format!("toolport-resolver-{}", std::process::id()));
+        let data = DataDirOverride::set(&dir);
+        assert_eq!(conduit_dir(), Some(dir.clone()));
+        assert_eq!(resolved_path(), Some(dir.join("registry.json")));
+        assert_eq!(gateway_log_path(), Some(dir.join("gateway.log")));
+        drop(data);
+        assert!(std::panic::catch_unwind(conduit_dir).is_err());
+    }
+
+    #[test]
+    fn access_review_global_switch_never_follows_membership() {
         let mut reg = Registry::default();
-        assert_eq!(reg.gateway_topology_effective(), GatewayTopology::Daemon);
-        let absent = serde_json::to_value(&reg).unwrap();
-        assert!(absent.get("gatewayTopology").is_none());
-        reg.gateway_topology = Some(GatewayTopology::Daemon);
-        let opted_in = serde_json::to_value(&reg).unwrap();
-        assert_eq!(opted_in["gatewayTopology"], "daemon");
-        let loaded: Registry = serde_json::from_value(opted_in).unwrap();
-        assert_eq!(loaded.gateway_topology_effective(), GatewayTopology::Daemon);
-        reg.gateway_topology = Some(GatewayTopology::Legacy);
-        assert_eq!(
-            serde_json::to_value(&reg).unwrap()["gatewayTopology"],
-            "legacy",
-            "an explicit rollback must survive a future release default change"
-        );
+        let server: ServerEntry = serde_json::from_value(serde_json::json!({
+            "id":"s", "name":"S", "transport":"http", "url":"https://example.com"
+        }))
+        .unwrap();
+        reg.servers.push(server);
+        let other = reg.add_profile("Other");
+        reg.set_access_server("default", "s", true).unwrap();
+        reg.set_access_server(&other, "s", true).unwrap();
+        reg.set_server_enabled("default", "s", false).unwrap();
+        assert!(!reg.server_enabled("s"));
+        assert!(reg.profiles.iter().all(|p| p.enabled_server_ids == ["s"]));
+        reg.set_server_enabled("default", "s", true).unwrap();
+        assert!(reg.server_enabled("s"));
+        reg.set_server_enabled(&other, "s", false).unwrap();
+        assert!(!reg.server_enabled("s"));
+        assert!(reg.enabled_servers_for(ALL_ENABLED_ACCESS).is_empty());
+    }
+
+    #[test]
+    fn access_review_membership_cannot_bypass_team_review() {
+        for transport in ["stdio", "http"] {
+            let mut reg = Registry::default();
+            let server: ServerEntry = serde_json::from_value(serde_json::json!({
+                "id":"team_s", "name":"S", "transport":transport,
+                "command":if transport == "stdio" { Some("fixture") } else { None },
+                "url":"https://example.com", "source":"team:t", "teamEnableReview":true
+            }))
+            .unwrap();
+            reg.servers.push(server);
+            assert_eq!(
+                reg.set_access_server("default", "team_s", true)
+                    .unwrap_err(),
+                TEAM_REVIEW_REQUIRED
+            );
+            assert!(reg.profiles[0].enabled_server_ids.is_empty());
+            reg.profiles[0].enabled_server_ids.push("team_s".into());
+            reg.set_access_server("default", "team_s", false).unwrap();
+            assert!(reg.profiles[0].enabled_server_ids.is_empty());
+        }
+    }
+
+    #[test]
+    fn access_review_pinned_default_and_context_cannot_be_removed() {
+        let mut reg = Registry::default();
+        let context = reg.add_profile("Context");
+        let spare = reg.add_profile("Spare");
+        reg.default_access_profile_id = Some("default".into());
+        reg.default_access_context_id = Some(context.clone());
+        assert!(reg.remove_profile("default").is_err());
+        assert!(reg.remove_profile(&context).is_err());
+        reg.remove_profile(&spare).unwrap();
+        assert_eq!(reg.profiles.len(), 2);
+    }
+
+    #[test]
+    fn access_review_reserved_name_rename_cannot_be_saved() {
+        let mut reg = Registry::default();
+        reg.profiles[0].name = " @all-enabled".into();
+        let dir = std::env::temp_dir().join(format!(
+            "toolport-access-name-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("registry.json");
+        assert!(save_to(&path, &reg).is_err());
+        assert!(!path.exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// SBS-890: an error body is the downstream server's own words. It has been
@@ -4504,44 +5495,47 @@ mod tests {
     /// they would go on flaking under load with nothing to point at.
     #[test]
     fn lock_timeout_honors_the_env_override_and_ignores_junk() {
-        let _env = REGISTRY_ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let previous = std::env::var_os("TOOLPORT_LOCK_TIMEOUT_MS");
-        std::env::remove_var("TOOLPORT_LOCK_TIMEOUT_MS");
-
-        assert_eq!(registry_lock_timeout(), DEFAULT_REGISTRY_LOCK_TIMEOUT);
-
-        {
-            let _guard = LockTimeoutOverride::generous();
-            assert_eq!(
-                registry_lock_timeout(),
-                std::time::Duration::from_millis(60_000),
-                "the override must actually reach the lock, or the concurrency tests \
-                 silently keep the production budget"
-            );
-        }
-        // Dropping the guard restores, so one test cannot leak a long budget into another.
-        assert_eq!(registry_lock_timeout(), DEFAULT_REGISTRY_LOCK_TIMEOUT);
-
-        // Junk and zero fall back rather than producing a 0ms (instantly-expiring) budget.
+        // Junk and zero fall back rather than producing a 0ms (instantly-expiring)
+        // budget. Parsed through the pure helper, NOT by setting the process-global
+        // `TOOLPORT_LOCK_TIMEOUT_MS`: a concurrent `LockTimeoutOverride` (the rules
+        // concurrency test holds one for seconds) is live on that variable, and a
+        // sibling test poking it stripped the override back to the 5s production
+        // deadline mid-flight, which is what flaked the rules test (SBS-895).
         for bad in ["", "   ", "abc", "0", "-5", "9999999999999999999999"] {
-            std::env::set_var("TOOLPORT_LOCK_TIMEOUT_MS", bad);
             assert_eq!(
-                registry_lock_timeout(),
+                parse_lock_timeout(Some(bad)),
                 DEFAULT_REGISTRY_LOCK_TIMEOUT,
                 "{bad:?} must fall back to the default, not disable locking"
             );
+            assert_eq!(parse_lock_timeout(None), DEFAULT_REGISTRY_LOCK_TIMEOUT);
         }
+        assert_eq!(
+            parse_lock_timeout(Some("250")),
+            std::time::Duration::from_millis(250)
+        );
 
-        match previous {
-            Some(value) => std::env::set_var("TOOLPORT_LOCK_TIMEOUT_MS", value),
-            None => std::env::remove_var("TOOLPORT_LOCK_TIMEOUT_MS"),
+        // The refcounted override must actually reach the lock, or the concurrency
+        // tests silently keep the production budget. Parsing junk above must not
+        // have disturbed this guard.
+        let _guard = LockTimeoutOverride::generous();
+        assert_eq!(
+            registry_lock_timeout(),
+            std::time::Duration::from_millis(60_000)
+        );
+        for bad in ["", "abc", "0", "-5"] {
+            assert_eq!(parse_lock_timeout(Some(bad)), DEFAULT_REGISTRY_LOCK_TIMEOUT);
+            assert_eq!(
+                registry_lock_timeout(),
+                std::time::Duration::from_millis(60_000),
+                "parsing {bad:?} must not disturb a live override"
+            );
         }
     }
 
     fn sample_server(name: &str) -> ServerEntry {
         ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: String::new(),
             name: name.to_string(),
             transport: "stdio".to_string(),
@@ -4579,28 +5573,27 @@ mod tests {
         let path = dir.join("registry.json");
         save_to(&path, &Registry::default()).unwrap();
 
-        // Simulate a concurrent external writer flipping `allow_agent_control` on disk.
+        // Simulate a concurrent external writer flipping `live_inspect` on disk.
         let mut disk = load_from(&path).unwrap();
-        disk.allow_agent_control = true;
+        disk.live_inspect = true;
         save_to(&path, &disk).unwrap();
 
         // Our update touches a different field. Loading fresh must keep the concurrent change.
         let (out, ()) = update_at(&path, |r| {
-            r.deny_destructive = true;
+            r.pii_redaction = true;
             Ok(())
         })
         .unwrap();
-        assert!(out.deny_destructive, "our change applied");
-        assert!(
-            out.allow_agent_control,
-            "the concurrent write was NOT reverted"
-        );
+        assert!(out.pii_redaction, "our change applied");
+        assert!(out.live_inspect, "the concurrent write was NOT reverted");
 
         let reloaded = load_from(&path).unwrap();
-        assert!(reloaded.deny_destructive && reloaded.allow_agent_control);
+        assert!(reloaded.pii_redaction && reloaded.live_inspect);
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    const WRITER_TEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
 
     /// One `secrets_generation` increment, retrying the way a real caller would.
     ///
@@ -4619,7 +5612,7 @@ mod tests {
         // Bound the retries by wall clock, not by a count: each attempt already
         // spins inside `lock_for` for its own deadline, so a fixed attempt count
         // would multiply out to minutes before the test admitted defeat.
-        let give_up_at = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let give_up_at = std::time::Instant::now() + WRITER_TEST_BUDGET;
         loop {
             match update_at(path, |r| {
                 r.secrets_generation += 1;
@@ -4653,16 +5646,39 @@ mod tests {
 
         const THREADS: u64 = 4;
         const PER: u64 = 30;
+        // flock is not fair: a fast winner can reacquire for all 30 fsync-backed
+        // writes while a peer exhausts its contention budget. Contend once per
+        // round so no writer can start another increment before its peers finish.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let mut starts = Vec::new();
         let handles: Vec<_> = (0..THREADS)
             .map(|_| {
                 let p = path.clone();
+                let (start_tx, start_rx) = std::sync::mpsc::channel();
+                starts.push(start_tx);
+                let done_tx = done_tx.clone();
                 std::thread::spawn(move || {
                     for _ in 0..PER {
+                        start_rx
+                            .recv_timeout(WRITER_TEST_BUDGET)
+                            .expect("writer round must start within the contention budget");
                         increment_with_retry(&p);
+                        done_tx.send(()).unwrap();
                     }
                 })
             })
             .collect();
+        for _ in 0..PER {
+            let deadline = std::time::Instant::now() + WRITER_TEST_BUDGET;
+            for start in &starts {
+                start.send(()).unwrap();
+            }
+            for _ in 0..THREADS {
+                done_rx
+                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                    .expect("every writer must finish the round within the contention budget");
+            }
+        }
         for h in handles {
             h.join().unwrap();
         }
@@ -4689,6 +5705,7 @@ mod tests {
     #[test]
     fn remove_server_cleans_up_server_state() {
         let mut r = Registry::default();
+        r.set_safety_level(SafetyLevel::Strict);
         let id = r.add_server(sample_server("Github MCP"));
         // `tool_overrides` / `pinned_tools` are keyed by the RAW registry id, while
         // `injection_block_exempt` / `result_budgets` / the allow-list are keyed by
@@ -4703,6 +5720,7 @@ mod tests {
             ToolOverride {
                 name: Some("repo-search".to_string()),
                 description: None,
+                unknown_fields: Default::default(),
             },
         );
         r.set_tool_pinned(&id, "create_issue", true);
@@ -4715,7 +5733,7 @@ mod tests {
         r.block_on_injection = true;
 
         // Assert setup
-        assert!(r.tool_overrides.get(&id).is_some());
+        assert!(r.tool_overrides.contains_key(&id));
         assert!(r.is_tool_pinned(&id, "create_issue"));
         assert!(r.is_tool_allowed(&key));
         assert!(
@@ -4728,7 +5746,7 @@ mod tests {
         r.remove_server(&id).unwrap();
 
         // Assert cleanup
-        assert!(r.tool_overrides.get(&id).is_none());
+        assert!(!r.tool_overrides.contains_key(&id));
         assert!(!r.is_tool_pinned(&id, "create_issue"));
         assert!(!r.is_tool_allowed(&key));
         // Through the reader the gateway actually calls, not the raw map: a stale
@@ -4752,6 +5770,7 @@ mod tests {
             ToolOverride {
                 name: Some("repo-search".to_string()),
                 description: None,
+                unknown_fields: Default::default(),
             },
         );
         r.set_tool_pinned(&id, "create_issue", true);
@@ -4766,7 +5785,7 @@ mod tests {
         let new_id = r.add_server(sample_server("GitHub MCP"));
         // Assert
         assert_eq!(new_id, id);
-        assert!(r.tool_overrides.get(&new_id).is_none());
+        assert!(!r.tool_overrides.contains_key(&new_id));
         assert!(!r.is_tool_pinned(&new_id, "create_issue"));
         let new_key =
             fingerprint_allow_key(&sanitize_segment(&new_id), "create_issue", "v2:testfp");
@@ -4776,10 +5795,33 @@ mod tests {
     }
 
     #[test]
-    fn toggle_drives_active_profile_membership() {
+    fn enabled_here_follows_the_switch_not_a_stale_legacy_profile() {
         let mut r = Registry::default();
         let id = r.add_server(sample_server("github"));
-        let profile = r.active_profile_id();
+        let legacy = r.active_profile_id();
+        r.set_server_enabled(&legacy, &id, true).unwrap();
+        // v3 enables globally, so the legacy profile list never gains the id.
+        assert!(!r.is_enabled(&legacy, &id));
+        assert!(r.enabled_here(&id));
+        r.set_server_enabled(&legacy, &id, false).unwrap();
+        assert!(!r.enabled_here(&id));
+
+        let mut old = Registry {
+            version: 2,
+            ..Default::default()
+        };
+        let id = old.add_server(sample_server("files"));
+        old.set_server_enabled(&legacy, &id, true).unwrap();
+        assert!(old.enabled_here(&id));
+        old.profiles[0].enabled_server_ids.clear();
+        assert!(!old.enabled_here(&id));
+    }
+
+    #[test]
+    fn toggle_drives_global_server_switch() {
+        let mut r = Registry::default();
+        let id = r.add_server(sample_server("github"));
+        let profile = r.default_access_id();
         assert!(!r.is_enabled(&profile, &id));
         r.set_server_enabled(&profile, &id, true).unwrap();
         assert!(r.is_enabled(&profile, &id));
@@ -4811,24 +5853,24 @@ mod tests {
         let team_public_id = r.add_server(team_public);
 
         r.set_all_enabled("default", true).unwrap();
-        assert!(r.is_enabled("default", &own));
-        assert!(r.is_enabled("default", &team_public_id));
+        assert!(r.server_enabled(&own));
+        assert!(r.server_enabled(&team_public_id));
         assert!(
-            !r.is_enabled("default", &team_cmd_id),
+            !r.server_enabled(&team_cmd_id),
             "team stdio stays off until explicit enable"
         );
         assert!(
-            !r.is_enabled("default", &team_lan_id),
+            !r.server_enabled(&team_lan_id),
             "team LAN URL stays off until explicit enable"
         );
 
         r.set_server_enabled("default", &team_cmd_id, true).unwrap();
         r.set_all_enabled("default", true).unwrap();
         assert!(
-            r.is_enabled("default", &team_cmd_id),
+            r.server_enabled(&team_cmd_id),
             "consented review server stays on"
         );
-        assert!(!r.is_enabled("default", &team_lan_id));
+        assert!(!r.server_enabled(&team_lan_id));
     }
 
     #[test]
@@ -4836,10 +5878,11 @@ mod tests {
         let mut r = Registry::default();
         let id = r.add_server(sample_server("postgres"));
         let work = r.add_profile("Work");
+        r.set_access_server("default", &id, true).unwrap();
         r.set_server_enabled("default", &id, true).unwrap();
         assert!(r.is_enabled("default", &id));
         assert!(!r.is_enabled(&work, &id));
-        r.set_active_profile(&work).unwrap();
+        r.set_default_access(Some(&work)).unwrap();
         assert!(r.enabled_servers().is_empty());
     }
 
@@ -4849,7 +5892,9 @@ mod tests {
         let db = r.add_server(sample_server("postgres"));
         let pay = r.add_server(sample_server("stripe"));
         let billing = r.add_profile("Billing");
-        // default enables only postgres; Billing enables only stripe.
+        r.set_access_server("default", &db, true).unwrap();
+        r.set_access_server(&billing, &pay, true).unwrap();
+        // Both switches are on; each access set includes only its own server.
         r.set_server_enabled("default", &db, true).unwrap();
         r.set_server_enabled(&billing, &pay, true).unwrap();
 
@@ -4907,7 +5952,7 @@ mod tests {
             "a dangling reference gets the registry default"
         );
 
-        r.active_profile_id = Some(postgres.clone());
+        r.set_default_access(Some(&postgres)).unwrap();
         assert_eq!(r.configured_instructions(None), Some(""));
     }
 
@@ -4938,21 +5983,26 @@ mod tests {
 
     #[test]
     fn profile_for_root_longest_prefix_wins_on_a_path_boundary() {
-        let mut r = Registry::default();
-        r.folder_profiles = vec![
-            FolderProfile {
-                path: "/home/me/work".into(),
-                profile: "Work".into(),
-            },
-            FolderProfile {
-                path: "/home/me/work/client-a".into(),
-                profile: "ClientA".into(),
-            },
-            FolderProfile {
-                path: "/home/me/personal".into(),
-                profile: "Personal".into(),
-            },
-        ];
+        let r = Registry {
+            folder_profiles: vec![
+                FolderProfile {
+                    path: "/home/me/work".into(),
+                    profile: "Work".into(),
+                    unknown_fields: Default::default(),
+                },
+                FolderProfile {
+                    path: "/home/me/work/client-a".into(),
+                    profile: "ClientA".into(),
+                    unknown_fields: Default::default(),
+                },
+                FolderProfile {
+                    path: "/home/me/personal".into(),
+                    profile: "Personal".into(),
+                    unknown_fields: Default::default(),
+                },
+            ],
+            ..Default::default()
+        };
         // Exact match, and a descendant picks the parent mapping.
         assert_eq!(r.profile_for_root("/home/me/work"), Some("Work".into()));
         assert_eq!(r.profile_for_root("/home/me/work/src"), Some("Work".into()));
@@ -5049,14 +6099,17 @@ mod tests {
             FolderProfile {
                 path: "/a".into(),
                 profile: "P".into(),
+                unknown_fields: Default::default(),
             },
             FolderProfile {
                 path: "  ".into(),
                 profile: "P".into(),
+                unknown_fields: Default::default(),
             }, // blank path
             FolderProfile {
                 path: "/b".into(),
                 profile: " ".into(),
+                unknown_fields: Default::default(),
             }, // blank profile
         ]);
         assert_eq!(r.folder_profiles.len(), 1);
@@ -5065,11 +6118,14 @@ mod tests {
 
     #[test]
     fn profile_for_root_normalizes_separators_and_trailing_slash() {
-        let mut r = Registry::default();
-        r.folder_profiles = vec![FolderProfile {
-            path: "/home/me/work/".into(),
-            profile: "Work".into(),
-        }];
+        let r = Registry {
+            folder_profiles: vec![FolderProfile {
+                path: "/home/me/work/".into(),
+                profile: "Work".into(),
+                unknown_fields: Default::default(),
+            }],
+            ..Default::default()
+        };
         // A trailing slash on the mapping and backslash separators in the root both normalize.
         assert_eq!(r.profile_for_root("/home/me/work"), Some("Work".into()));
         assert_eq!(
@@ -5099,8 +6155,8 @@ mod tests {
         assert_eq!(r.resolve_profile_id("deleted-profile"), "deleted-profile");
 
         // An empty/whitespace ref is the *unscoped* case and still follows active.
-        assert_eq!(r.resolve_profile_id(""), r.active_profile_id());
-        assert_eq!(r.resolve_profile_id("   "), r.active_profile_id());
+        assert_eq!(r.resolve_profile_id(""), r.default_access_id());
+        assert_eq!(r.resolve_profile_id("   "), r.default_access_id());
         assert_eq!(r.enabled_servers_for("").len(), 1);
     }
 
@@ -5133,6 +6189,7 @@ mod tests {
             transport: "stdio".into(),
             url: None,
             updated_at: 42,
+            unknown_fields: Default::default(),
         };
         r.set_client_managed_entry("claude-desktop", entry.clone());
         assert_eq!(r.client_managed_entry("claude-desktop"), Some(&entry));
@@ -5187,6 +6244,7 @@ mod tests {
             label: "Open WebUI".into(),
             token_sha256: sha256_hex(token),
             profile: "Billing".into(),
+            unknown_fields: Default::default(),
         });
         // The plaintext token resolves to its client; a wrong token doesn't.
         assert_eq!(
@@ -5207,10 +6265,14 @@ mod tests {
         let c = r.add_server(sample_server("charlie"));
         let billing = r.add_profile("Billing");
         let support = r.add_profile("Support");
-        // default (active) enables alpha; Billing -> bravo; Support -> charlie.
+        r.set_access_server("default", &a, true).unwrap();
+        r.set_access_server(&billing, &b, true).unwrap();
+        r.set_access_server(&support, &c, true).unwrap();
+        // Each client includes one globally enabled server.
         r.set_server_enabled("default", &a, true).unwrap();
         r.set_server_enabled(&billing, &b, true).unwrap();
         r.set_server_enabled(&support, &c, true).unwrap();
+        r.set_default_access(Some("default")).unwrap();
         // Base alone (no clients) connects only the active profile's server.
         assert_eq!(
             r.bridge_enabled_servers(None)
@@ -5225,12 +6287,14 @@ mod tests {
             label: "x".into(),
             token_sha256: "h1".into(),
             profile: "Billing".into(),
+            unknown_fields: Default::default(),
         });
         r.http_clients.push(HttpClient {
             id: "2".into(),
             label: "y".into(),
             token_sha256: "h2".into(),
             profile: "Support".into(),
+            unknown_fields: Default::default(),
         });
         let ids: Vec<_> = r
             .bridge_enabled_servers(None)
@@ -5245,6 +6309,7 @@ mod tests {
             label: "z".into(),
             token_sha256: "h3".into(),
             profile: String::new(),
+            unknown_fields: Default::default(),
         });
         assert_eq!(r.bridge_enabled_servers(None).len(), 3);
     }
@@ -5291,15 +6356,15 @@ mod tests {
         r.set_tool_pinned(&id, "create_issue", false);
         r.set_tool_pinned(&id, "list_issues", false);
         assert!(!r.is_tool_pinned(&id, "create_issue"));
-        assert!(r.pinned_tools.get(&id).is_none());
+        assert!(!r.pinned_tools.contains_key(&id));
     }
 
     #[test]
-    fn deny_destructive_round_trips_through_disk() {
+    fn strict_safety_round_trips_through_disk() {
         let mut r = Registry::default();
         let id = r.add_server(sample_server("postgres"));
         r.set_tool_enabled(&id, "drop_table", false).unwrap();
-        r.set_deny_destructive(true);
+        r.set_safety_level(SafetyLevel::Strict);
 
         let mut path = std::env::temp_dir();
         path.push(format!("conduit-policy-test-{}.json", std::process::id()));
@@ -5307,7 +6372,8 @@ mod tests {
         let loaded = load_from(&path).unwrap();
         std::fs::remove_file(&path).ok();
 
-        assert!(loaded.deny_destructive);
+        assert_eq!(loaded.safety_level_selected(), SafetyLevel::Strict);
+        assert!(loaded.deny_destructive, "the 1.x mirror is written");
         assert!(!loaded.is_tool_enabled(&id, "drop_table"));
     }
 
@@ -5437,6 +6503,38 @@ mod tests {
         );
     }
 
+    /// SEC-04: `inheritEnv` is additive. A server entry written before it existed
+    /// has no key and must keep round-tripping byte-identically; when a server
+    /// opts in, the `true` survives.
+    #[test]
+    fn inherit_env_is_additive_and_round_trips() {
+        let server = sample_server("github");
+        assert!(!server.inherit_env);
+
+        // Unset must not add a key, so an older entry round-trips unchanged.
+        let json = serde_json::to_string(&server).unwrap();
+        assert!(
+            !json.contains("inheritEnv"),
+            "unset inheritEnv must not be serialized: {json}"
+        );
+        let loaded: ServerEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded, server);
+        assert_eq!(
+            serde_json::to_string(&loaded).unwrap(),
+            json,
+            "an entry without inheritEnv must round-trip byte-identically"
+        );
+
+        // Opt in, and the true survives a round trip with the key present.
+        let mut on = server;
+        on.inherit_env = true;
+        let json = serde_json::to_string(&on).unwrap();
+        assert!(json.contains("\"inheritEnv\":true"), "{json}");
+        let back: ServerEntry = serde_json::from_str(&json).unwrap();
+        assert!(back.inherit_env);
+        assert_eq!(back, on);
+    }
+
     #[test]
     fn initialize_timeout_rejects_zero_and_values_over_24_hours() {
         assert_eq!(validate_initialize_timeout_ms(1), Ok(1));
@@ -5457,11 +6555,10 @@ mod tests {
 
     #[test]
     fn load_and_save_resolved_honor_registry_override() {
-        let _guard = REGISTRY_ENV_LOCK.lock().unwrap();
-        // Resolves the data dir indirectly through save/load/update, so it owes
-        // the same lock every other resolver takes. Without it this ran beside a
-        // test holding a DataDirOverride and each saw the other's path.
-        let _data_dir = data_dir_test_lock();
+        let _data = DataDirTestEnv::new("registry-override");
+        let _guard = REGISTRY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let mut path = std::env::temp_dir();
         path.push(format!(
@@ -5496,11 +6593,10 @@ mod tests {
 
     #[test]
     fn update_saves_to_the_same_resolved_path_it_locked() {
-        let _guard = REGISTRY_ENV_LOCK.lock().unwrap();
-        // Resolves the data dir indirectly through save/load/update, so it owes
-        // the same lock every other resolver takes. Without it this ran beside a
-        // test holding a DataDirOverride and each saw the other's path.
-        let _data_dir = data_dir_test_lock();
+        let _data_dir = DataDirTestEnv::new("update-path");
+        let _guard = REGISTRY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!("toolport-update-path-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let locked_path = dir.join("locked.json");
@@ -5520,14 +6616,14 @@ mod tests {
         std::env::set_var("TOOLPORT_REGISTRY", &locked_path);
 
         update(|registry| {
-            registry.deny_destructive = true;
+            registry.pii_redaction = true;
             std::env::set_var("TOOLPORT_REGISTRY", &redirected_path);
             Ok(())
         })
         .unwrap();
 
         let persisted = load_from(&locked_path).unwrap();
-        assert!(persisted.deny_destructive);
+        assert!(persisted.pii_redaction);
         assert!(
             !redirected_path.exists(),
             "update wrote to a path whose lock it never held"
@@ -5568,28 +6664,25 @@ mod tests {
         assert!(super::msix::unc_twin(Path::new("C:")).is_none());
     }
 
-    /// `cargo test` never runs with package identity, so resolution must be
-    /// Direct and the dir the natural home-derived path (not a UNC one).
     #[cfg(windows)]
     #[test]
     fn conduit_dir_is_direct_outside_a_container() {
-        let _data_dir = data_dir_test_lock();
-        assert_eq!(conduit_dir_resolution(), DirResolution::Direct);
-        let dir = conduit_dir().expect("home dir resolves");
-        let s = dir.to_string_lossy();
-        // Prefer Toolport; existing installs may still resolve under the legacy leaf
-        // until desktop launch migrates it.
-        assert!(
-            s.ends_with(&format!(
-                "AppData\\Roaming\\{}",
-                crate::brand::data_dir_leaf_name()
-            )) || s.ends_with(&format!(
-                "AppData\\Roaming\\{}",
-                crate::brand::legacy_data_dir_leaf_name()
-            )),
-            "unexpected data dir: {s}"
+        let env = DataDirTestEnv::new("windows-direct");
+        assert!(!msix::has_package_identity());
+        // Exercise the natural Windows anchor under a synthetic home, never the
+        // developer's actual profile or an installed legacy data directory.
+        let natural =
+            crate::brand::resolve_data_dir_under(&crate::brand::windows_roaming_base(&env.dir));
+        assert_eq!(
+            natural,
+            env.dir
+                .join("AppData")
+                .join("Roaming")
+                .join(crate::brand::data_dir_leaf_name())
         );
-        assert!(!s.starts_with(r"\\"));
+        let _data = DataDirOverride::set(&natural);
+        assert_eq!(conduit_dir_resolution(), DirResolution::Direct);
+        assert_eq!(conduit_dir(), Some(natural));
     }
 
     #[test]
@@ -5612,10 +6705,35 @@ mod tests {
     }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
-    enum FailingAtomicWriteStep {
+    pub(crate) enum FailingAtomicWriteStep {
         Permissions,
         Write,
         Sync,
+        Rename,
+    }
+
+    thread_local! {
+        static ATOMIC_FAILURE: std::cell::Cell<Option<FailingAtomicWriteStep>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(crate) fn with_atomic_failure<T>(
+        step: FailingAtomicWriteStep,
+        operation: impl FnOnce() -> T,
+    ) -> T {
+        struct Restore(Option<FailingAtomicWriteStep>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ATOMIC_FAILURE.set(self.0);
+            }
+        }
+        let _restore = Restore(ATOMIC_FAILURE.replace(Some(step)));
+        operation()
+    }
+
+    pub(super) fn injected_atomic_write(path: &Path, contents: &str) -> Option<Result<(), String>> {
+        ATOMIC_FAILURE
+            .get()
+            .map(|step| atomic_write_with_ops(path, contents, &FailingAtomicWriteOps(step)))
     }
 
     /// Fails the publish rename `fail_times` times, then lets it through.
@@ -5737,24 +6855,35 @@ mod tests {
     /// dropped guard revert the variable out from under the others.
     #[test]
     fn overlapping_lock_timeout_overrides_survive_the_first_drop() {
+        let baseline = {
+            let state = LOCK_TIMEOUT_OVERRIDES
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.0 == 0 {
+                std::env::var_os("TOOLPORT_LOCK_TIMEOUT_MS")
+            } else {
+                state.1.clone()
+            }
+        };
         let outer = LockTimeoutOverride::generous();
-        {
-            let _inner = LockTimeoutOverride::generous();
-            assert_eq!(
-                std::env::var("TOOLPORT_LOCK_TIMEOUT_MS").as_deref(),
-                Ok("60000")
-            );
-        }
+        let inner = LockTimeoutOverride::generous();
+        drop(outer);
         assert_eq!(
             std::env::var("TOOLPORT_LOCK_TIMEOUT_MS").as_deref(),
             Ok("60000"),
-            "the inner guard's drop must not revert while the outer one is still held"
+            "the first guard's drop must not revert while the later one is still held"
         );
-        drop(outer);
-        assert!(
-            std::env::var_os("TOOLPORT_LOCK_TIMEOUT_MS").is_none(),
-            "the last guard out restores the baseline"
-        );
+        drop(inner);
+        // A peer test can keep the override alive after both local guards drop.
+        let state = LOCK_TIMEOUT_OVERRIDES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let expected = if state.0 == 0 {
+            baseline
+        } else {
+            Some(std::ffi::OsString::from("60000"))
+        };
+        assert_eq!(std::env::var_os("TOOLPORT_LOCK_TIMEOUT_MS"), expected);
     }
 
     struct FailingAtomicWriteOps(FailingAtomicWriteStep);
@@ -5781,6 +6910,12 @@ mod tests {
                 return Err(std::io::Error::other("injected sync failure"));
             }
             file.sync_all()
+        }
+        fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+            if self.0 == FailingAtomicWriteStep::Rename {
+                return Err(std::io::Error::other("injected rename failure"));
+            }
+            std::fs::rename(from, to)
         }
     }
 
@@ -5815,6 +6950,7 @@ mod tests {
             ("permissions", FailingAtomicWriteStep::Permissions),
             ("write", FailingAtomicWriteStep::Write),
             ("sync", FailingAtomicWriteStep::Sync),
+            ("rename", FailingAtomicWriteStep::Rename),
         ] {
             let path = dir.join(format!("{label}.json"));
             std::fs::write(&path, "original").unwrap();
@@ -5846,6 +6982,7 @@ mod tests {
         // this is what serializes two Toolport processes' read-modify-write (SOU-23 / SOU-165).
         let second = std::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .write(true)
             .open(lock_path(&path))
             .unwrap();
@@ -5865,6 +7002,8 @@ mod tests {
 
     #[test]
     fn recovery_waits_for_the_registry_lock_before_rewriting_primary() {
+        let _data = data_dir_test_lock();
+        let (_notice_dir, _notice_override) = scratch_data_dir("reg-lock-notice");
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -5876,10 +7015,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("registry.json");
 
-        let mut stale = Registry::default();
-        stale.allow_agent_control = false;
-        let mut latest = Registry::default();
-        latest.allow_agent_control = true;
+        let stale = Registry {
+            live_inspect: false,
+            ..Default::default()
+        };
+        let latest = Registry {
+            live_inspect: true,
+            ..Default::default()
+        };
         atomic_write(
             &backup_path(&path),
             &serde_json::to_string_pretty(&stale).unwrap(),
@@ -5908,13 +7051,13 @@ mod tests {
 
         let loaded = reader.join().unwrap().expect("reader loads newest primary");
         assert!(
-            loaded.allow_agent_control,
+            loaded.live_inspect,
             "reader must not return the stale backup"
         );
         let persisted: Registry =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(
-            persisted.allow_agent_control,
+            persisted.live_inspect,
             "recovery must not overwrite the newer primary after the writer releases"
         );
         let _ = std::fs::remove_dir_all(dir);
@@ -6226,6 +7369,8 @@ mod tests {
 
     #[test]
     fn corrupt_primary_is_quarantined_before_selfheal() {
+        let _data = data_dir_test_lock();
+        let (_notice_dir, _notice_override) = scratch_data_dir("reg-quarantine-notice");
         let dir = std::env::temp_dir();
         let path = dir.join(format!("conduit-reg-quar-{}.json", std::process::id()));
         let bak = backup_path(&path);
@@ -6266,6 +7411,7 @@ mod tests {
             label: "Open WebUI".into(),
             token_sha256: sha256_hex("tok"),
             profile: String::new(),
+            unknown_fields: Default::default(),
         }
     }
 
@@ -6279,12 +7425,36 @@ mod tests {
         }
     }
 
+    /// A scratch data directory with the process-global [`DataDirOverride`] installed.
+    ///
+    /// A `load_from` that recovers from a backup writes `registry-recovery.json`
+    /// through [`conduit_dir`], not next to the registry file. A test that triggers
+    /// that recovery must hold [`data_dir_test_lock`] first, or its atomic-write temp
+    /// can land in a concurrent test's override directory and look like a partial
+    /// file left behind. Returns the directory and the override guard; the caller
+    /// must have already taken [`data_dir_test_lock`].
+    fn scratch_data_dir(label: &str) -> (PathBuf, DataDirOverride) {
+        let dir = std::env::temp_dir().join(format!(
+            "toolport-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let guard = DataDirOverride::set(&dir);
+        (dir, guard)
+    }
+
     /// SBS-900: `load_from` answers `Ok` to three different questions, and the
     /// gateway reads a security decision out of an EMPTY field (an empty
     /// `http_clients` is what lets `--insecure-loopback` serve an open listener).
     /// The source has to say which `Ok` this was.
     #[test]
     fn load_source_separates_a_real_read_from_a_recovery() {
+        let _data = data_dir_test_lock();
+        let (_notice_dir, _notice_override) = scratch_data_dir("reg-source-notice");
         let path =
             std::env::temp_dir().join(format!("conduit-reg-source-{}.json", std::process::id()));
         clear_registry_files(&path);
@@ -6330,6 +7500,89 @@ mod tests {
         clear_registry_files(&path);
     }
 
+    #[test]
+    fn transient_unreadable_registry_retries_before_using_backup() {
+        let _data = data_dir_test_lock();
+        let (dir, _override) = scratch_data_dir("reg-read-retry");
+        let path = dir.join("registry.json");
+        let mut current = Registry::default();
+        current.add_server(sample_server("current"));
+        let bytes = serde_json::to_string_pretty(&current).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let backup = serde_json::to_string_pretty(&Registry::default()).unwrap();
+        std::fs::write(backup_path(&path), &backup).unwrap();
+        let mut attempts = 0;
+        let mut delays = Vec::new();
+        let outcome = read_registry_file_with(
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                } else {
+                    std::fs::read_to_string(&path)
+                }
+            },
+            |delay| delays.push(delay),
+        );
+        assert_eq!(attempts, 3);
+        assert_eq!(delays, vec![std::time::Duration::from_millis(75); 2]);
+        let (loaded, source) =
+            load_from_inner_with_outcome(&path, MIGRATIONS, REGISTRY_VERSION, outcome).unwrap();
+        assert_eq!(source, LoadSource::File);
+        assert_eq!(loaded.servers[0].id, "current");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), bytes);
+        assert_eq!(std::fs::read_to_string(backup_path(&path)).unwrap(), backup);
+        assert!(take_recovery_notice().is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_unreadable_registry_loads_backup_without_replacing_primary() {
+        let _data = data_dir_test_lock();
+        let (dir, _override) = scratch_data_dir("reg-read-fallback");
+        let path = dir.join("registry.json");
+        let bytes = [0xff, 0xfe, 0x80];
+        std::fs::write(&path, bytes).unwrap();
+        let mut good = Registry::default();
+        good.add_server(sample_server("last-good"));
+        let backup = serde_json::to_string_pretty(&good).unwrap();
+        std::fs::write(backup_path(&path), &backup).unwrap();
+        let mut attempts = 0;
+        let mut delays = Vec::new();
+        let outcome = read_registry_file_with(
+            || {
+                attempts += 1;
+                std::fs::read_to_string(&path)
+            },
+            |delay| delays.push(delay),
+        );
+        assert_eq!(attempts, 4);
+        assert_eq!(delays, vec![std::time::Duration::from_millis(75); 3]);
+        let (loaded, source) =
+            load_from_inner_with_outcome(&path, MIGRATIONS, REGISTRY_VERSION, outcome).unwrap();
+        assert_eq!(source, LoadSource::Backup);
+        assert!(!source.is_authoritative());
+        assert_eq!(loaded.servers[0].id, "last-good");
+        assert_eq!(take_recovery_notice().unwrap().reason, "unreadable");
+        assert!(save_to(&path, &loaded)
+            .unwrap_err()
+            .contains("Refusing to replace unreadable bytes"));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(std::fs::read_to_string(backup_path(&path)).unwrap(), backup);
+        std::fs::remove_file(backup_path(&path)).unwrap();
+        let error = load_from_inner_with_outcome(
+            &path,
+            MIGRATIONS,
+            REGISTRY_VERSION,
+            ReadOutcome::Unreadable,
+        )
+        .unwrap_err();
+        assert!(error.contains("Could not read registry"), "{error}");
+        assert!(error.contains("Check file permissions"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// SBS-900: `read_registry_file` used to fold every read failure into
     /// "absent", so a registry this process was not allowed to read came back as
     /// a first run. Unix-only: it needs a mode the current user is denied.
@@ -6355,13 +7608,8 @@ mod tests {
             return;
         }
 
-        let (loaded, source) = load_from_with_source(&path).unwrap();
-        assert_eq!(source, LoadSource::Unreadable);
-        assert!(
-            !source.is_authoritative(),
-            "a default standing in for contents nobody read is not a first run"
-        );
-        assert!(loaded.http_clients.is_empty(), "it really is a default");
+        let error = load_from_with_source(&path).unwrap_err();
+        assert!(error.contains("Could not read registry"), "{error}");
 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).ok();
         clear_registry_files(&path);
@@ -6489,6 +7737,8 @@ mod tests {
 
         let mut reg = Registry::default();
         reg.servers.push(ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "s1".into(),
             name: "s1".into(),
             transport: "stdio".into(),
@@ -6524,27 +7774,215 @@ mod tests {
     }
 
     #[test]
-    fn quarantine_prunes_to_the_newest_three() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("conduit-reg-prune-{}.json", std::process::id()));
-        cleanup_quarantine(&path);
-        for i in 0..5 {
-            quarantine_unreadable(&path, &format!("junk-{i}"));
-            // Distinct millisecond timestamps so each call gets its own file.
-            std::thread::sleep(std::time::Duration::from_millis(3));
+    fn repeated_corruption_loads_reuse_evidence_and_keep_last_good() {
+        let _data = data_dir_test_lock();
+        let (dir, _override) = scratch_data_dir("reg-repeated-corruption");
+        let path = dir.join("registry.json");
+        let corrupt = "{ identical corruption";
+        std::fs::write(&path, corrupt).unwrap();
+        for _ in 0..10 {
+            assert!(load_from(&path).unwrap_err().contains("Corrupt registry"));
         }
-        let q = quarantine_files(&path);
-        assert_eq!(q.len(), 3, "quarantine must stay bounded");
-        let newest = std::fs::read_to_string(q.last().unwrap()).unwrap();
+        let copies = quarantine_files(&path);
+        assert_eq!(copies.len(), 1);
+        assert_eq!(std::fs::read_to_string(&copies[0]).unwrap(), corrupt);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt);
+        let copied_at = std::fs::metadata(&copies[0]).unwrap().modified().unwrap();
+
+        let mut good = Registry::default();
+        good.add_server(sample_server("last-good"));
+        let good_bytes = serde_json::to_string_pretty(&good).unwrap();
+        std::fs::write(backup_path(&path), &good_bytes).unwrap();
+        for _ in 0..10 {
+            std::fs::write(&path, corrupt).unwrap();
+            let (loaded, source) = load_from_with_source(&path).unwrap();
+            assert_eq!(source, LoadSource::Backup);
+            assert_eq!(loaded.servers[0].id, "last-good");
+            assert_eq!(
+                std::fs::read_to_string(backup_path(&path)).unwrap(),
+                good_bytes
+            );
+        }
+        assert_eq!(quarantine_files(&path), copies);
         assert_eq!(
-            newest, "junk-4",
-            "pruning removes the oldest, keeps the newest"
+            std::fs::metadata(&copies[0]).unwrap().modified().unwrap(),
+            copied_at
         );
-        cleanup_quarantine(&path);
+
+        std::fs::write(&path, "{ different corruption").unwrap();
+        assert_eq!(load_from(&path).unwrap().servers[0].id, "last-good");
+        assert_eq!(quarantine_files(&path).len(), 2);
+        assert_eq!(
+            std::fs::read_to_string(backup_path(&path)).unwrap(),
+            good_bytes
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_quarantine_keeps_primary_and_last_good_during_load_and_repair() {
+        let _data = data_dir_test_lock();
+        let (dir, _override) = scratch_data_dir("reg-quarantine-failure");
+        let path = dir.join("registry.json");
+        let corrupt = "{ preserve this evidence";
+        std::fs::write(&path, corrupt).unwrap();
+        let good = serde_json::to_string_pretty(&Registry::default()).unwrap();
+        std::fs::write(backup_path(&path), &good).unwrap();
+        // A directory at the hash destination injects an evidence-write failure.
+        let dest = dir.join(format!(
+            "registry.json.unreadable-sha256-{}",
+            sha256_hex(corrupt)
+        ));
+        std::fs::create_dir(&dest).unwrap();
+        let (loaded, source) = load_from_with_source(&path).unwrap();
+        assert_eq!(source, LoadSource::Backup);
+        assert!(!source.is_authoritative());
+        let notice = take_recovery_notice().unwrap();
+        assert!(notice
+            .reason
+            .starts_with("corrupt registry could not be preserved:"));
+        assert!(notice.reason.contains("Could not preserve"));
+        assert!(notice.quarantine_path.is_none());
+        assert!(save_to(&path, &loaded)
+            .unwrap_err()
+            .contains("Could not preserve"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt);
+        assert_eq!(std::fs::read_to_string(backup_path(&path)).unwrap(), good);
+        assert!(atomic_temp_files(&dest).is_empty());
+        std::fs::remove_dir(&dest).unwrap();
+        save_to(&path, &Registry::default()).unwrap();
+        assert!(load_from(&path).is_ok());
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), corrupt);
+        assert_eq!(std::fs::read_to_string(backup_path(&path)).unwrap(), good);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn lock_creation_failure_refuses_load_and_update_without_mutation() {
+        let _data = data_dir_test_lock();
+        let (dir, _override) = scratch_data_dir("reg-lock-failure");
+        let path = dir.join("registry.json");
+        let bytes = serde_json::to_string_pretty(&Registry::default()).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        // Portable injection: opening a directory as the lock file must fail.
+        std::fs::create_dir(lock_path(&path)).unwrap();
+        let error = load_from(&path).unwrap_err();
+        assert!(error.contains("writable TOOLPORT_DATA_DIR"), "{error}");
+        assert!(
+            error.contains(&lock_path(&path).display().to_string()),
+            "{error}"
+        );
+        let mut called = false;
+        assert!(update_at(&path, |_| {
+            called = true;
+            Ok(())
+        })
+        .is_err());
+        assert!(
+            !called,
+            "no client or registry mutation may run without the lock"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), bytes);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quarantine_listing_failure_does_not_create_unbounded_copies() {
+        use std::os::unix::fs::PermissionsExt;
+        let _data = data_dir_test_lock();
+        let (dir, _override) = scratch_data_dir("reg-quarantine-listing");
+        let path = dir.join("registry.json");
+        let corrupt = "{ cannot list copies";
+        std::fs::write(&path, corrupt).unwrap();
+        let good = serde_json::to_string_pretty(&Registry::default()).unwrap();
+        std::fs::write(backup_path(&path), &good).unwrap();
+        // Creation and named-file access work, but enumeration is prohibited.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o300)).unwrap();
+        let result = load_from_with_source(&path);
+        let error = save_to(&path, &Registry::default()).unwrap_err();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(result.unwrap().1, LoadSource::Backup);
+        assert!(
+            error.contains("Could not list preserved registry copies"),
+            "{error}"
+        );
+        assert!(take_recovery_notice()
+            .unwrap()
+            .reason
+            .contains("Could not list preserved registry copies"));
+        assert!(quarantine_files(&path).is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt);
+        assert_eq!(std::fs::read_to_string(backup_path(&path)).unwrap(), good);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn quarantine_prunes_to_the_newest_three() {
+        let _data = data_dir_test_lock();
+        let (dir, _override) = scratch_data_dir("reg-prune");
+        let path = dir.join("registry.json");
+        // Seed the legacy naming format and migration backups. Only recognized
+        // corrupt copies participate in this retention policy.
+        let legacy = dir.join("registry.json.unreadable-1");
+        std::fs::write(&legacy, "legacy corruption").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&legacy)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH)
+            .unwrap();
+        let unrelated = dir.join("registry.json.unreadable-owner-note");
+        std::fs::write(&unrelated, "keep").unwrap();
+        for i in 0..5 {
+            write_migration_backup_at(&path, "migration", 1, i).unwrap();
+        }
+        let migration_backups = migration_backup_files(&path);
+        for i in 0..5 {
+            // Explicit file times make age ordering deterministic without sleeps.
+            let dest = quarantine_unreadable(&path, &format!("junk-{i}")).unwrap();
+            assert!(dest.exists(), "current evidence is always retained");
+            std::fs::File::options()
+                .write(true)
+                .open(&dest)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(i + 1))
+                .unwrap();
+        }
+        assert!(!legacy.exists());
+        assert!(unrelated.exists());
+        assert_eq!(
+            quarantine_files(&path).len(),
+            4,
+            "three copies plus the owner note"
+        );
+        for i in 0..5 {
+            let dest = dir.join(format!(
+                "registry.json.unreadable-sha256-{}",
+                sha256_hex(&format!("junk-{i}"))
+            ));
+            assert_eq!(
+                dest.exists(),
+                i >= 2,
+                "only the newest three copies survive"
+            );
+        }
+        assert_eq!(migration_backup_files(&path), migration_backups);
+        for backup in migration_backups {
+            assert_eq!(std::fs::read_to_string(backup).unwrap(), "migration");
+        }
+        assert!(std::fs::read_dir(&dir).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".conduit-tmp")));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn save_keeps_backup_and_load_recovers_from_it() {
+        let _data = data_dir_test_lock();
+        let (_notice_dir, _notice_override) = scratch_data_dir("reg-bak-notice");
         let dir = std::env::temp_dir();
         let path = dir.join(format!("conduit-reg-bak-{}.json", std::process::id()));
         let bak = backup_path(&path);
@@ -6621,7 +8059,117 @@ mod tests {
     }
 
     #[test]
+    fn journal_retention_preserves_manual_backups_and_symlinks() {
+        let _data = data_dir_test_lock();
+        let (dir, _override) = scratch_data_dir("journal-manual-copies");
+        let path = dir.join("registry.json");
+        for name in [
+            "registry.json.bak.notes",
+            "registry.json.pre-live-owner",
+            "registry.json.v1-123.bak",
+            "registry.json.bak.+1",
+            "registry.json.bak.001",
+        ] {
+            std::fs::write(dir.join(name), "user copy").unwrap();
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            dir.join("registry.json.bak.notes"),
+            dir.join("registry.json.bak.1"),
+        )
+        .unwrap();
+        for sequence in [2, 3, 4, 5, 6, 7, 10] {
+            write_backup_generation(&path, "toolport copy", sequence);
+        }
+        assert_eq!(
+            backup_generations(&path)
+                .iter()
+                .map(|p| p.file_name().unwrap().to_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "registry.json.bak.4",
+                "registry.json.bak.5",
+                "registry.json.bak.6",
+                "registry.json.bak.7",
+                "registry.json.bak.10"
+            ]
+        );
+        for name in [
+            "registry.json.bak.notes",
+            "registry.json.pre-live-owner",
+            "registry.json.v1-123.bak",
+            "registry.json.bak.+1",
+            "registry.json.bak.001",
+        ] {
+            assert_eq!(
+                std::fs::read_to_string(dir.join(name)).unwrap(),
+                "user copy"
+            );
+        }
+        #[cfg(unix)]
+        assert!(dir.join("registry.json.bak.1").is_symlink());
+    }
+
+    #[test]
+    fn journal_allocation_preserves_occupied_names() {
+        let _data = data_dir_test_lock();
+        let (dir, _override) = scratch_data_dir("journal-occupied-names");
+        let path = dir.join("registry.json");
+        let n = now_ms() + 60_000;
+        let generation = |sequence| dir.join(format!("registry.json.bak.{sequence}"));
+        std::fs::write(generation(n), "good registry").unwrap();
+        let target = dir.join("user-named-copy.json");
+        std::fs::write(&target, "user copy").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, generation(n + 1)).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target, generation(n + 1)).unwrap();
+        std::fs::create_dir(generation(n + 2)).unwrap();
+        std::fs::write(generation(n + 3), "foreign file").unwrap();
+        assert_eq!(next_backup_sequence(&path), n + 4);
+        // Also exercise a destination claimed after allocation, including a link.
+        write_backup_generation(&path, "previous registry", n + 1);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "user copy");
+        assert!(generation(n + 1).is_symlink());
+        assert!(generation(n + 2).is_dir());
+        assert_eq!(
+            std::fs::read_to_string(generation(n + 3)).unwrap(),
+            "foreign file"
+        );
+        assert_eq!(
+            std::fs::read_to_string(generation(n + 4)).unwrap(),
+            "previous registry"
+        );
+    }
+
+    #[test]
+    fn journal_concurrent_publication_keeps_both_snapshots() {
+        let _data = data_dir_test_lock();
+        let (dir, _override) = scratch_data_dir("journal-concurrent");
+        let path = dir.join("registry.json");
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            for content in ["first", "second"] {
+                let path = &path;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    write_backup_generation(path, content, 100);
+                });
+            }
+        });
+        let mut contents: Vec<_> = backup_generations(&path)
+            .iter()
+            .map(|path| std::fs::read_to_string(path).unwrap())
+            .collect();
+        contents.sort();
+        assert_eq!(contents, ["first", "second"]);
+    }
+
+    #[test]
     fn recovery_uses_the_journal_when_bak_is_gone() {
+        let _data = data_dir_test_lock();
+        let (_notice_dir, _notice_override) = scratch_data_dir("reg-journal-notice");
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
             "conduit-reg-recover-journal-{}.json",
@@ -6663,6 +8211,8 @@ mod tests {
 
     #[test]
     fn recovery_prefers_a_fresher_journal_over_a_stale_parseable_bak() {
+        let _data = data_dir_test_lock();
+        let (_notice_dir, _notice_override) = scratch_data_dir("reg-fresh-notice");
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
             "conduit-reg-recover-freshest-{}.json",
@@ -6706,6 +8256,8 @@ mod tests {
 
     #[test]
     fn recovery_uses_backup_sequence_when_mtimes_tie() {
+        let _data = data_dir_test_lock();
+        let (_notice_dir, _notice_override) = scratch_data_dir("reg-sequence-notice");
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
             "conduit-reg-recover-sequence-{}.json",
@@ -6815,8 +8367,10 @@ mod tests {
 
     #[test]
     fn normalize_clears_a_stale_active_profile_for_first_profile_fallback() {
-        let mut registry = Registry::default();
-        registry.active_profile_id = Some("deleted-profile".into());
+        let mut registry = Registry {
+            active_profile_id: Some("deleted-profile".into()),
+            ..Default::default()
+        };
         registry.normalize_profile_references();
         assert_eq!(registry.active_profile_id, None);
         assert_eq!(registry.active_profile_id(), DEFAULT_PROFILE_ID);
@@ -7033,6 +8587,33 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn append_line_locked_keeps_the_inode_when_the_tail_is_unchanged() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "toolport-append-noop-{}-{}",
+            std::process::id(),
+            ATOMIC_WRITE_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("log.jsonl");
+        std::fs::write(&path, "one\n").unwrap();
+        let inode = std::fs::metadata(&path).unwrap().ino();
+
+        for line in ["two", "three"] {
+            append_line_locked(&path, line, 1, 4, None).unwrap();
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().ino(),
+                inode,
+                "a no-op trim must not replace and fsync the log"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\nthree\n");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn append_line_locked_trims_once_past_the_cap() {
         let dir = std::env::temp_dir().join(format!(
             "toolport-append-trim-{}-{}",
@@ -7051,5 +8632,652 @@ mod tests {
         assert_eq!(content, "{\"i\":7}\n{\"i\":8}\n{\"i\":9}\n");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Registry schema-version and migration contract (CODE-01). Kept in its own
+/// module so the version pipeline's tests are easy to find as the migration
+/// list grows.
+#[cfg(test)]
+mod registry_version_tests {
+    use super::*;
+
+    /// A migration that only exists for tests, proving the framework runs a
+    /// pipeline independently of the shipped steps.
+    fn test_migration_v1_to_v2(
+        value: &mut serde_json::Value,
+        _context: &MigrationContext,
+    ) -> Result<(), String> {
+        value["testMigrated"] = serde_json::Value::Bool(true);
+        Ok(())
+    }
+
+    fn failing_migration_v1_to_v2(
+        _value: &mut serde_json::Value,
+        _context: &MigrationContext,
+    ) -> Result<(), String> {
+        Err("boom".to_string())
+    }
+
+    fn simple_server(name: &str) -> ServerEntry {
+        ServerEntry {
+            enabled: false,
+            inherit_env: false,
+            id: String::new(),
+            name: name.to_string(),
+            transport: "stdio".to_string(),
+            command: Some("npx".to_string()),
+            args: vec!["-y".to_string(), format!("@scope/{name}")],
+            env: vec![],
+            url: None,
+            source: Some("manual".to_string()),
+            disabled_tools: vec![],
+            cwd: None,
+            client_credentials: None,
+            request_timeout_ms: None,
+            initialize_timeout_ms: None,
+            launch: None,
+            unknown_fields: serde_json::Map::new(),
+        }
+    }
+
+    fn scratch_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "toolport-regver-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A v1 document with no `version` field, exercising the historical shape
+    /// that predates the field.
+    const MISSING_VERSION: &str = r#"{
+        "servers": [],
+        "profiles": [{"id": "default", "name": "Default", "enabledServerIds": []}],
+        "activeProfileId": "default"
+    }"#;
+
+    /// The v1.0.0 shape: minimal `ServerEntry`/`Profile`/`Registry` fields, a
+    /// stdio server, and a secret env declaration.
+    const V1_0_0_SHAPE: &str = r#"{
+        "version": 1,
+        "servers": [
+            {
+                "id": "fs",
+                "name": "Filesystem",
+                "transport": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                "env": [{"key": "FS_TOKEN", "secret": true}],
+                "source": "manual",
+                "disabledTools": ["write_file"]
+            }
+        ],
+        "profiles": [{"id": "default", "name": "Default", "enabledServerIds": ["fs"]}],
+        "activeProfileId": "default",
+        "denyDestructive": true,
+        "confirmDestructive": false,
+        "lazyDiscovery": true
+    }"#;
+
+    /// The v1.6.2 shape: adds human approval, tool overrides and HTTP clients.
+    const V1_6_2_SHAPE: &str = r#"{
+        "version": 1,
+        "servers": [
+            {
+                "id": "remote",
+                "name": "Remote MCP",
+                "transport": "http",
+                "url": "https://mcp.example.com/mcp",
+                "args": [],
+                "env": [],
+                "source": "manual"
+            }
+        ],
+        "profiles": [{"id": "default", "name": "Default", "enabledServerIds": ["remote"]}],
+        "activeProfileId": "default",
+        "humanApproval": true,
+        "humanApprovalAllow": ["remote/read"],
+        "toolOverrides": {"remote": {"list": {"description": "safe"}}},
+        "httpClients": [
+            {"id": "c1", "label": "Open WebUI", "tokenSha256": "deadbeef", "profile": "default"}
+        ],
+        "httpBridgeEnabled": true,
+        "gatewayInstructions": "hello"
+    }"#;
+
+    #[test]
+    fn migration_pipeline_covers_every_version() {
+        // Every version from v1 up to the current one needs exactly one step, so
+        // adding a schema version without its migration fails here instead of
+        // failing at a user's first upgrade.
+        assert_eq!(
+            MIGRATIONS.len() as u32,
+            REGISTRY_VERSION - 1,
+            "REGISTRY_VERSION and MIGRATIONS must stay in step"
+        );
+    }
+
+    #[test]
+    fn missing_version_loads_as_v1() {
+        let _data = data_dir_test_lock();
+        let _env = REGISTRY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_dir("missing-version");
+        let _override = DataDirOverride::set(&dir);
+        let path = resolved_path().unwrap();
+        std::fs::write(&path, MISSING_VERSION).unwrap();
+
+        let value: serde_json::Value = serde_json::from_str(MISSING_VERSION).unwrap();
+        assert_eq!(
+            document_version(&value),
+            1,
+            "a missing version is read as v1"
+        );
+        let registry = load().unwrap();
+        assert_eq!(registry.version, REGISTRY_VERSION, "and migrated from v1");
+        let backups = migration_backup_files(&path);
+        assert_eq!(backups.len(), 1);
+        assert!(backups[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("registry.json.v1-"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn current_version_loads_unchanged() {
+        let _data = data_dir_test_lock();
+        let _env = REGISTRY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_dir("current-version");
+        let _override = DataDirOverride::set(&dir);
+        let path = resolved_path().unwrap();
+
+        let mut registry = Registry::default();
+        registry.servers.push(simple_server("alpha"));
+        save(&registry).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let loaded = load().unwrap();
+        assert_eq!(loaded.version, REGISTRY_VERSION);
+        assert_eq!(loaded.servers.len(), 1);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "loading a current-version registry must not rewrite it"
+        );
+        assert!(migration_backup_files(&path).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn future_version_is_refused_and_the_file_is_untouched() {
+        let _data = data_dir_test_lock();
+        let _env = REGISTRY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_dir("future-version");
+        let _override = DataDirOverride::set(&dir);
+        let path = resolved_path().unwrap();
+
+        let future = r#"{
+            "version": 99,
+            "servers": [],
+            "profiles": [{"id": "default", "name": "Default"}],
+            "someFutureFeature": {"enabled": true}
+        }"#;
+        std::fs::write(&path, future).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let error = load().unwrap_err();
+        assert!(is_newer_version_error(&error), "{error}");
+        assert!(error.contains("schema v99"), "{error}");
+        assert!(
+            error.contains("Update Toolport"),
+            "the message must tell the user how to recover: {error}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "refusing a newer registry must not mutate or back it up"
+        );
+        assert!(migration_backup_files(&path).is_empty());
+        assert!(!backup_path(&path).exists());
+
+        // The read-only parse helper used by probing and the native shell
+        // refuses the same document instead of acting on a partial view.
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(parse_registry_contents(&contents).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn save_over_a_newer_on_disk_version_is_refused() {
+        let _data = data_dir_test_lock();
+        let _env = REGISTRY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_dir("save-over-newer");
+        let _override = DataDirOverride::set(&dir);
+        let path = resolved_path().unwrap();
+
+        std::fs::write(&path, r#"{"version": 7, "servers": [], "profiles": []}"#).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let error = save_to(&path, &Registry::default()).unwrap_err();
+        assert!(is_newer_version_error(&error), "{error}");
+        assert!(error.contains("schema v7"), "{error}");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "an older binary must not overwrite a newer registry"
+        );
+        assert!(!backup_path(&path).exists());
+
+        // The resolved save path is guarded by the same check.
+        assert!(save(&Registry::default()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_only_migration_runs_writes_a_backup_and_saves_the_new_version() {
+        let _data = data_dir_test_lock();
+        let _env = REGISTRY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_dir("test-migration");
+        let _override = DataDirOverride::set(&dir);
+        let path = resolved_path().unwrap();
+        std::fs::write(&path, MISSING_VERSION).unwrap();
+        let original = std::fs::read_to_string(&path).unwrap();
+
+        let registry =
+            load_from_with_migrations_for_test(&path, &[test_migration_v1_to_v2], 2).unwrap();
+
+        assert_eq!(registry.version, 2, "the migrated version is stamped");
+        assert_eq!(
+            registry.unknown_fields.get("testMigrated"),
+            Some(&serde_json::Value::Bool(true)),
+            "the migration's change is present in the loaded registry"
+        );
+
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_disk["version"], 2);
+        assert_eq!(on_disk["testMigrated"], serde_json::Value::Bool(true));
+
+        let backups = migration_backup_files(&path);
+        assert_eq!(backups.len(), 1, "exactly one pre-migration backup");
+        let name = backups[0].file_name().unwrap().to_string_lossy();
+        assert!(
+            name.starts_with("registry.json.v1-") && name.ends_with(".bak"),
+            "unexpected backup name: {name}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&backups[0]).unwrap(),
+            original,
+            "the backup holds the exact pre-migration bytes"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn failing_migration_leaves_the_original_and_no_partial_file() {
+        let _data = data_dir_test_lock();
+        let _env = REGISTRY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_dir("failing-migration");
+        let _override = DataDirOverride::set(&dir);
+        let path = resolved_path().unwrap();
+        std::fs::write(&path, MISSING_VERSION).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let error = load_from_with_migrations_for_test(&path, &[failing_migration_v1_to_v2], 2)
+            .unwrap_err();
+        assert!(error.contains("v1 to v2"), "{error}");
+        assert!(error.contains("boom"), "{error}");
+
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "a failed migration must leave the primary byte-identical"
+        );
+        assert!(
+            !backup_path(&path).exists(),
+            "no last-known-good snapshot is written by a failed migration"
+        );
+        // No half-written temp or partial document survives next to the primary;
+        // only the pre-migration snapshot and the lock file are allowed.
+        let stray: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("tmp") || name.contains(".new"))
+            .collect();
+        assert!(stray.is_empty(), "partial files left behind: {stray:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn migration_backups_are_pruned_to_five() {
+        let dir = scratch_dir("prune-migration-backups");
+        let path = dir.join("registry.json");
+
+        for timestamp in 1..=7u128 {
+            write_migration_backup_at(&path, &format!("snapshot-{timestamp}"), 1, timestamp)
+                .unwrap();
+        }
+
+        let backups = migration_backup_files(&path);
+        assert_eq!(backups.len(), MIGRATION_BACKUPS, "newest five are kept");
+        assert_eq!(
+            std::fs::read_to_string(&backups[0]).unwrap(),
+            "snapshot-3",
+            "the two oldest were pruned"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&backups[4]).unwrap(),
+            "snapshot-7",
+            "the newest is retained"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn historical_registry_shapes_still_load() {
+        let _data = data_dir_test_lock();
+        let _env = REGISTRY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_dir("historical-shapes");
+        let _override = DataDirOverride::set(&dir);
+        let path = resolved_path().unwrap();
+
+        let fixtures: [(&str, &str); 3] = [
+            (
+                "shipped example",
+                include_str!("../../data/registry.json.example"),
+            ),
+            ("v1.0.0", V1_0_0_SHAPE),
+            ("v1.6.2", V1_6_2_SHAPE),
+        ];
+        for (label, document) in fixtures {
+            std::fs::write(&path, document).unwrap();
+            let registry = load().unwrap_or_else(|error| panic!("{label} failed to load: {error}"));
+            assert_eq!(
+                registry.version, REGISTRY_VERSION,
+                "{label} migrates from v1"
+            );
+            assert!(!registry.servers.is_empty(), "{label} has a server");
+            assert!(
+                registry
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.id == "default"),
+                "{label} keeps its default profile"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod safety_level_tests {
+    use super::*;
+
+    #[test]
+    fn levels_and_team_policy_only_tighten() {
+        for level in [SafetyLevel::Off, SafetyLevel::Ask, SafetyLevel::Strict] {
+            let mut registry = Registry::default();
+            registry.set_safety_level(level);
+            assert_eq!(
+                registry.human_approval_effective(),
+                level >= SafetyLevel::Ask
+            );
+            assert_eq!(
+                registry.deny_destructive_effective(),
+                level == SafetyLevel::Strict
+            );
+            assert_eq!(
+                registry.quarantine_on_drift_effective(),
+                level == SafetyLevel::Strict
+            );
+            assert_eq!(
+                registry.block_on_injection_effective(),
+                level == SafetyLevel::Strict
+            );
+            assert!(registry.content_defense_effective());
+            assert!(!registry.requires_human_approval(false, false));
+            assert_eq!(
+                registry.requires_human_approval(true, false),
+                level >= SafetyLevel::Ask
+            );
+            assert_eq!(
+                registry.requires_human_approval(false, true),
+                level == SafetyLevel::Strict
+            );
+            registry.team_forced_human_approval = true;
+            assert_eq!(
+                registry.safety_level_effective(),
+                level.max(SafetyLevel::Ask)
+            );
+            registry.team_forced_block_on_injection = true;
+            assert_eq!(
+                registry.safety_level_effective(),
+                level.max(SafetyLevel::Ask)
+            );
+            registry.team_forced_human_approval = false;
+            registry.team_forced_block_on_injection = false;
+            assert_eq!(registry.safety_level_effective(), level);
+        }
+    }
+
+    #[test]
+    fn team_floors_take_the_maximum_and_release_without_changing_member_choice() {
+        for member in [SafetyLevel::Off, SafetyLevel::Ask, SafetyLevel::Strict] {
+            for floor in [SafetyLevel::Off, SafetyLevel::Ask, SafetyLevel::Strict] {
+                for legacy in [false, true] {
+                    let mut r = Registry::default();
+                    r.set_safety_level(member);
+                    r.team_min_safety_level = floor;
+                    r.team_forced_human_approval = legacy;
+                    let expected = member.max(floor).max(if legacy {
+                        SafetyLevel::Ask
+                    } else {
+                        SafetyLevel::Off
+                    });
+                    assert_eq!(r.safety_level_effective(), expected);
+                    assert_eq!(
+                        r.deny_destructive_effective(),
+                        expected == SafetyLevel::Strict
+                    );
+                    assert_eq!(
+                        r.requires_human_approval(true, false),
+                        expected >= SafetyLevel::Ask
+                    );
+                    // Team-forced approval held untrusted calls in 1.x and still does.
+                    assert_eq!(
+                        r.requires_human_approval(false, true),
+                        expected == SafetyLevel::Strict || legacy
+                    );
+                    assert_eq!(r.safety_level_selected(), member);
+                    for choice in [SafetyLevel::Off, SafetyLevel::Ask, SafetyLevel::Strict] {
+                        assert_eq!(
+                            r.validate_safety_level(choice).is_ok(),
+                            choice >= r.safety_level_team_floor()
+                        );
+                    }
+                    r.team_min_safety_level = SafetyLevel::Off;
+                    r.team_forced_human_approval = false;
+                    assert_eq!(r.safety_level_effective(), member);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn independent_team_protections_never_raise_the_safety_level() {
+        for member in [SafetyLevel::Off, SafetyLevel::Ask, SafetyLevel::Strict] {
+            for quarantine in [false, true] {
+                for block in [false, true] {
+                    let mut r = Registry::default();
+                    r.set_safety_level(member);
+                    r.team_forced_content_defense = true;
+                    r.team_forced_pii_redaction = true;
+                    r.team_forced_quarantine_on_drift = quarantine;
+                    r.team_forced_block_on_injection = block;
+                    assert_eq!(r.safety_level_team_floor(), SafetyLevel::Off);
+                    assert_eq!(r.safety_level_effective(), member);
+                    assert_eq!(
+                        r.deny_destructive_effective(),
+                        member == SafetyLevel::Strict
+                    );
+                    assert_eq!(
+                        r.quarantine_on_drift_effective(),
+                        member == SafetyLevel::Strict || quarantine
+                    );
+                    assert_eq!(
+                        r.block_on_injection_effective(),
+                        member == SafetyLevel::Strict || block
+                    );
+                    assert!(r.content_defense_effective());
+                    assert!(r.pii_redaction_effective());
+                }
+            }
+        }
+        let r: Registry =
+            serde_json::from_value(serde_json::json!({"servers": [], "profiles": []})).unwrap();
+        assert_eq!(
+            r.team_min_safety_level,
+            SafetyLevel::Off,
+            "absent floor has no effect"
+        );
+    }
+
+    #[test]
+    fn the_removed_features_notice_lists_until_dismissed() {
+        let mut registry = Registry::default();
+        assert!(registry.removed_features_notice().is_empty());
+        registry.unknown_fields.insert(
+            "removedFeaturesNotice".into(),
+            serde_json::json!({ "features": ["agentRules", "routines"] }),
+        );
+        assert_eq!(
+            registry.removed_features_notice(),
+            ["agentRules", "routines"]
+        );
+        assert_eq!(
+            removed_features_issue_url(&registry.removed_features_notice()),
+            "https://github.com/btsouth/toolport/issues/new?title=I%20need%20Agent%20rules%2C%20Routines%20in%20Toolport%202.0&body=Toolport%202.0%20removed%3A%20Agent%20rules%2C%20Routines.%0A%0AWhat%20I%20used%20it%20for%3A%0A%0A"
+        );
+        assert_eq!(
+            removed_features_message(&registry.removed_features_notice()),
+            "Toolport 2.0 no longer includes Agent rules and Routines, which you used in 1.x. Your settings for them are saved in the exports folder, and files Toolport wrote for them were left as they were. Tell us if you need one back, or go back to 1.24."
+        );
+        registry.dismiss_removed_features_notice();
+        assert!(registry.removed_features_notice().is_empty());
+    }
+
+    #[test]
+    fn kept_v1_protections_are_summarized_for_settings() {
+        assert_eq!(KeptV1Safety::default().summary(), None);
+        let one = KeptV1Safety {
+            hold_untrusted: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            one.summary().unwrap(),
+            "Kept from 1.x: Toolport also asks before calls from shared or registry servers."
+        );
+        let two = KeptV1Safety {
+            hold_untrusted: true,
+            block_on_injection: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            two.summary().unwrap(),
+            "Kept from 1.x: Toolport also asks before calls from shared or registry servers and blocks results that look like prompt injection."
+        );
+    }
+
+    #[test]
+    fn kept_v1_protections_apply_until_the_user_picks_a_level() {
+        let mut r = Registry {
+            safety_level: Some(SafetyLevel::Off),
+            kept_v1_safety: Some(KeptV1Safety {
+                quarantine_on_drift: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(r.quarantine_on_drift_effective());
+        assert!(!r.deny_destructive_effective());
+        assert!(!r.requires_human_approval(true, true));
+        r.safety_level = Some(SafetyLevel::Ask);
+        r.kept_v1_safety = Some(KeptV1Safety {
+            hold_untrusted: true,
+            ..Default::default()
+        });
+        assert!(r.requires_human_approval(false, true));
+        assert!(r.requires_human_approval(true, false));
+        assert!(!r.requires_human_approval(false, false));
+        r.set_safety_level(SafetyLevel::Ask);
+        assert_eq!(r.kept_v1_safety, None);
+        assert!(!r.requires_human_approval(false, true));
+    }
+
+    #[test]
+    fn legacy_fields_derive_nearest_level_and_new_registry_asks() {
+        assert_eq!(
+            Registry::default().safety_level_effective(),
+            SafetyLevel::Ask
+        );
+        // A v1 registry behaves as 1.x did: each toggle on its own, no Strict.
+        for (field, level) in [
+            ("denyDestructive", SafetyLevel::Off),
+            ("quarantineOnDrift", SafetyLevel::Off),
+            ("blockOnInjection", SafetyLevel::Off),
+            ("humanApproval", SafetyLevel::Ask),
+            ("confirmDestructive", SafetyLevel::Ask),
+        ] {
+            let mut value = serde_json::json!({"servers": [], "profiles": []});
+            value[field] = serde_json::json!(true);
+            let registry: Registry = serde_json::from_value(value).unwrap();
+            assert_eq!(registry.safety_level_effective(), level, "{field}");
+            assert_eq!(
+                registry.deny_destructive_effective(),
+                field == "denyDestructive"
+            );
+            assert_eq!(
+                registry.quarantine_on_drift_effective(),
+                field == "quarantineOnDrift"
+            );
+            assert_eq!(
+                registry.block_on_injection_effective(),
+                field == "blockOnInjection"
+            );
+            assert_eq!(
+                registry.requires_human_approval(false, true),
+                field == "humanApproval"
+            );
+            assert_eq!(
+                registry.requires_human_approval(true, false),
+                level == SafetyLevel::Ask
+            );
+        }
+        let registry: Registry =
+            serde_json::from_value(serde_json::json!({"servers": [], "profiles": []})).unwrap();
+        assert_eq!(registry.safety_level_effective(), SafetyLevel::Off);
     }
 }

@@ -20,6 +20,7 @@
 //! Gaps were tracked here as `#[ignore]`d acceptance criteria while the work was
 //! in flight, which is a good pattern to reuse. Every test in this file runs
 //! today.
+use conduit_lib::http_client::{RequestHeaderExt as _, ResponseResultExt as _};
 
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -120,7 +121,8 @@ fn spawn_http_fixture(revision: &str, strict: bool, transcript: Option<&str>) ->
 /// test can drive the handshake itself and observe era behaviour directly.
 fn raw_transport(env: &[(String, String)]) -> StdioTransport {
     let dirty = Arc::new(AtomicU8::new(0));
-    StdioTransport::spawn_watched(mock_bin(), &[], env, None, dirty, None).expect("spawn fixture")
+    StdioTransport::spawn_watched(mock_bin(), &[], env, None, false, dirty, None)
+        .expect("spawn fixture")
 }
 
 /// JSON-RPC error objects are carried structurally by `TransportError::Rpc`
@@ -347,7 +349,7 @@ fn downstream_transcript_pins_current_wire_format() {
     let env = env_for(None, false, Some(&path.to_string_lossy()));
 
     let dirty = Arc::new(AtomicU8::new(0));
-    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, dirty, None)
+    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, false, dirty, None)
         .expect("spawn fixture");
     let mut server =
         DownstreamServer::connect("mock".to_string(), Box::new(transport)).expect("connect");
@@ -413,7 +415,7 @@ fn downstream_transcript_pins_current_wire_format() {
 /// Ask the fixture to reflect back whatever `_meta` reached it.
 fn relayed_meta(client_meta: &Value) -> Value {
     let dirty = Arc::new(AtomicU8::new(0));
-    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &[], None, dirty, None)
+    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &[], None, false, dirty, None)
         .expect("spawn fixture");
     let mut server =
         DownstreamServer::connect("mock".to_string(), Box::new(transport)).expect("connect");
@@ -503,8 +505,9 @@ fn progress_token_reaches_downstream_server() {
 #[test]
 fn downstream_progress_notification_reaches_the_bound_sink() {
     let dirty = Arc::new(AtomicU8::new(0));
-    let mut transport = StdioTransport::spawn_watched(mock_bin(), &[], &[], None, dirty, None)
-        .expect("spawn fixture");
+    let mut transport =
+        StdioTransport::spawn_watched(mock_bin(), &[], &[], None, false, dirty, None)
+            .expect("spawn fixture");
 
     let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let sink_seen = Arc::clone(&seen);
@@ -554,7 +557,7 @@ fn gateway_connects_to_a_modern_server() {
     let env = env_for(Some(MODERN), true, Some(&path.to_string_lossy()));
 
     let dirty = Arc::new(AtomicU8::new(0));
-    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, dirty, None)
+    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, false, dirty, None)
         .expect("spawn fixture");
     let mut server = DownstreamServer::connect("mock".to_string(), Box::new(transport))
         .expect("a dual-era gateway must connect to a modern server");
@@ -631,7 +634,7 @@ fn legacy_client_is_shimmed_across_a_modern_mrtr_server() {
     let _ = std::fs::remove_file(&path);
     let env = env_for(Some(MODERN), true, Some(&path.to_string_lossy()));
     let dirty = Arc::new(AtomicU8::new(0));
-    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, dirty, None)
+    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, false, dirty, None)
         .expect("spawn fixture");
     let mut server =
         DownstreamServer::connect("mock".to_string(), Box::new(transport)).expect("connect");
@@ -681,7 +684,7 @@ fn modern_client_controls_native_mrtr_retry_fields() {
     let _ = std::fs::remove_file(&path);
     let env = env_for(Some(MODERN), true, Some(&path.to_string_lossy()));
     let dirty = Arc::new(AtomicU8::new(0));
-    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, dirty, None)
+    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, false, dirty, None)
         .expect("spawn fixture");
     let mut server =
         DownstreamServer::connect("mock".to_string(), Box::new(transport)).expect("connect");
@@ -735,7 +738,7 @@ fn modern_client_resumes_legacy_stdio_hitl_without_replaying_the_tool() {
     let _ = std::fs::remove_file(&path);
     let env = env_for(Some("2025-11-25"), true, Some(&path.to_string_lossy()));
     let dirty = Arc::new(AtomicU8::new(0));
-    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, dirty, None)
+    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, false, dirty, None)
         .expect("spawn legacy fixture");
     let mut server =
         DownstreamServer::connect("mock".to_string(), Box::new(transport)).expect("connect");
@@ -810,13 +813,20 @@ fn http_fixture_enforces_header_body_agreement() {
     });
 
     // Header disagrees with the body: the exact shape of the bug that shipped.
-    let mismatched = ureq::post(&fixture.url)
-        .set("MCP-Protocol-Version", "2025-06-18")
-        .set("Mcp-Method", "tools/list")
-        .send_json(body.clone());
+    let mismatched = conduit_lib::http_client::agent()
+        .post(&fixture.url)
+        .set_header("MCP-Protocol-Version", "2025-06-18")
+        .set_header("Mcp-Method", "tools/list")
+        .send_json(body.clone())
+        .retain_status_body();
     match mismatched {
-        Err(ureq::Error::Status(400, resp)) => {
-            let err: Value = resp.into_json().expect("json error body");
+        Err(conduit_lib::http_client::Error::Status(400, resp)) => {
+            let err: Value = resp
+                .into_body()
+                .with_config()
+                .limit(u64::MAX)
+                .read_json()
+                .expect("json error body");
             assert_eq!(
                 err["error"]["code"], -32020,
                 "a header/body mismatch must be HeaderMismatch, got {err}"
@@ -826,31 +836,49 @@ fn http_fixture_enforces_header_body_agreement() {
     }
 
     // Absent header is equally invalid under this revision.
-    let missing = ureq::post(&fixture.url).send_json(body.clone());
+    let missing = conduit_lib::http_client::agent()
+        .post(&fixture.url)
+        .send_json(body.clone())
+        .retain_status_body();
     assert!(
-        matches!(missing, Err(ureq::Error::Status(400, _))),
+        matches!(
+            missing,
+            Err(conduit_lib::http_client::Error::Status(400, _))
+        ),
         "a missing MCP-Protocol-Version must be rejected"
     );
 
     // ...and the matching header is accepted, so the gate is not simply refusing
     // everything.
-    let ok = ureq::post(&fixture.url)
-        .set("MCP-Protocol-Version", MODERN)
-        .set("Mcp-Method", "tools/list")
+    let ok = conduit_lib::http_client::agent()
+        .post(&fixture.url)
+        .set_header("MCP-Protocol-Version", MODERN)
+        .set_header("Mcp-Method", "tools/list")
         .send_json(body)
+        .retain_status_body()
         .expect("agreeing header and body must be accepted");
-    let parsed: Value = ok.into_json().expect("json body");
+    let parsed: Value = ok
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json()
+        .expect("json body");
     assert!(parsed["result"]["tools"].is_array(), "got {parsed}");
 
     let missing_method_header_body = json!({
         "jsonrpc": "2.0", "id": 2, "method": "tools/list",
         "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": MODERN } }
     });
-    let missing_method = ureq::post(&fixture.url)
-        .set("MCP-Protocol-Version", MODERN)
-        .send_json(missing_method_header_body);
+    let missing_method = conduit_lib::http_client::agent()
+        .post(&fixture.url)
+        .set_header("MCP-Protocol-Version", MODERN)
+        .send_json(missing_method_header_body)
+        .retain_status_body();
     assert!(
-        matches!(missing_method, Err(ureq::Error::Status(400, _))),
+        matches!(
+            missing_method,
+            Err(conduit_lib::http_client::Error::Status(400, _))
+        ),
         "a missing Mcp-Method must be rejected"
     );
 
@@ -862,13 +890,18 @@ fn http_fixture_enforces_header_body_agreement() {
             "_meta": { "io.modelcontextprotocol/protocolVersion": MODERN }
         }
     });
-    let wrong_name = ureq::post(&fixture.url)
-        .set("MCP-Protocol-Version", MODERN)
-        .set("Mcp-Method", "tools/call")
-        .set("Mcp-Name", "other")
-        .send_json(wrong_name_body);
+    let wrong_name = conduit_lib::http_client::agent()
+        .post(&fixture.url)
+        .set_header("MCP-Protocol-Version", MODERN)
+        .set_header("Mcp-Method", "tools/call")
+        .set_header("Mcp-Name", "other")
+        .send_json(wrong_name_body)
+        .retain_status_body();
     assert!(
-        matches!(wrong_name, Err(ureq::Error::Status(400, _))),
+        matches!(
+            wrong_name,
+            Err(conduit_lib::http_client::Error::Status(400, _))
+        ),
         "a mismatched Mcp-Name must be rejected"
     );
 
@@ -879,12 +912,17 @@ fn http_fixture_enforces_header_body_agreement() {
             "_meta": { "io.modelcontextprotocol/protocolVersion": MODERN }
         }
     });
-    let missing_name = ureq::post(&fixture.url)
-        .set("MCP-Protocol-Version", MODERN)
-        .set("Mcp-Method", "tools/call")
-        .send_json(missing_name_body);
+    let missing_name = conduit_lib::http_client::agent()
+        .post(&fixture.url)
+        .set_header("MCP-Protocol-Version", MODERN)
+        .set_header("Mcp-Method", "tools/call")
+        .send_json(missing_name_body)
+        .retain_status_body();
     assert!(
-        matches!(missing_name, Err(ureq::Error::Status(400, _))),
+        matches!(
+            missing_name,
+            Err(conduit_lib::http_client::Error::Status(400, _))
+        ),
         "a missing routing name must be rejected"
     );
 }
@@ -953,7 +991,7 @@ fn legacy_server_that_rejects_initialize_still_fails_fast() {
     // Sending a bad `initialize` makes it error, then go silent on the probe.
     let dirty = Arc::new(AtomicU8::new(0));
     let env = env_for(Some("2025-06-18"), true, None);
-    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, dirty, None)
+    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, false, dirty, None)
         .expect("spawn fixture");
 
     let started = std::time::Instant::now();
@@ -990,7 +1028,7 @@ fn legacy_servers_see_no_era_detection_traffic() {
     let env = env_for(Some("2025-06-18"), true, Some(&path.to_string_lossy()));
 
     let dirty = Arc::new(AtomicU8::new(0));
-    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, dirty, None)
+    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, false, dirty, None)
         .expect("spawn fixture");
     let mut server =
         DownstreamServer::connect("mock".to_string(), Box::new(transport)).expect("connect");
@@ -1054,7 +1092,7 @@ fn the_gateway_forwards_icons_through_tool_aggregation() {
 
     let env = env_for(Some("2025-11-25"), false, None);
     let dirty = Arc::new(AtomicU8::new(0));
-    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, dirty, None)
+    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, false, dirty, None)
         .expect("spawn fixture");
     let server =
         DownstreamServer::connect("mock".to_string(), Box::new(transport)).expect("connect");
@@ -1063,6 +1101,7 @@ fn the_gateway_forwards_icons_through_tool_aggregation() {
     // failing means the gateway dropped them rather than the fixture omitting them.
     let raw_has_icons = server
         .tools
+        .materialize_all()
         .iter()
         .any(|t| t["name"] == "echo" && t.get("icons").is_some());
     assert!(
@@ -1103,7 +1142,7 @@ fn a_legacy_server_sees_client_meta_relayed_but_never_protocol_meta() {
     let env = env_for(Some("2025-06-18"), true, Some(&path.to_string_lossy()));
 
     let dirty = Arc::new(AtomicU8::new(0));
-    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, dirty, None)
+    let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, false, dirty, None)
         .expect("spawn fixture");
     let mut server =
         DownstreamServer::connect("mock".to_string(), Box::new(transport)).expect("connect");
@@ -1241,8 +1280,9 @@ fn legacy_era_pins_the_version_the_server_actually_answered() {
         );
         let env = env_for(Some(revision), true, None);
         let dirty = Arc::new(AtomicU8::new(0));
-        let transport = StdioTransport::spawn_watched(mock_bin(), &[], &env, None, dirty, None)
-            .expect("spawn fixture");
+        let transport =
+            StdioTransport::spawn_watched(mock_bin(), &[], &env, None, false, dirty, None)
+                .expect("spawn fixture");
         let server = DownstreamServer::connect("mock".to_string(), Box::new(transport))
             .unwrap_or_else(|e| panic!("connect to a {revision} server: {e}"));
 

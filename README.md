@@ -26,8 +26,6 @@ them across Claude, Cursor, Codex, VS Code, and other clients.
 - **Keys stay local.** Credentials live in your OS keychain, outside client configs.
 - **Control over tool calls.** Disable tools, require approval for destructive
   calls, and review activity in one place.
-- **Shared agent rules.** Write instructions once and apply them to supported
-  clients, with a preview before changes are written.
 
 ## Get started
 
@@ -47,9 +45,9 @@ configuration and policies while each member keeps their own credentials.
 
 ## Documentation
 
+- [Upgrade from 1.24.x to 2.0](docs/migration.md)
 - [Supported clients and setup](docs/clients.md)
 - [Profiles, environment variables, and configuration](docs/configuration.md)
-- [Agent rules](docs/agent-rules.md) and [permissions](docs/agent-permissions.md)
 - [Headless gateway and Docker](docs/headless.md)
 - [Arch and Omarchy install (pacman repository)](docs/arch-pacman-repo.md)
 - [Open WebUI](docs/openwebui.md) and [agent plugin](packaging/agent-plugin/toolport/README.md)

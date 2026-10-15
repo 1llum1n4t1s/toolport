@@ -12,18 +12,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/build.rs ./src-tauri/
 WORKDIR /src/src-tauri
-RUN mkdir -p src/bin && \
+RUN mkdir -p src/bin src/test_support && \
     printf '%s\n' \
       '#[cfg(test)] mod tests {}' \
       'pub fn _docker_dep_stub() {}' > src/lib.rs && \
     printf 'fn main() {}\n' > src/main.rs && \
     printf 'fn main() {}\n' > src/bin/toolport-gateway.rs && \
-    printf 'fn main() {}\n' > src/bin/mock-mcp-server.rs && \
-    cargo build --release --bin toolport-gateway --no-default-features
+    printf 'fn main() {}\n' > src/test_support/mock-mcp-server.rs && \
+    cargo build --release --bin toolport-gateway --no-default-features --features search-static
 
+COPY src-tauri/assets/search ./assets/search
 COPY src-tauri/src ./src
-RUN touch src/lib.rs src/main.rs src/bin/toolport-gateway.rs src/bin/mock-mcp-server.rs && \
-    cargo build --release --bin toolport-gateway --no-default-features
+RUN touch src/lib.rs src/main.rs src/bin/toolport-gateway.rs src/test_support/mock-mcp-server.rs && \
+    cargo build --release --bin toolport-gateway --no-default-features --features search-static
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -31,8 +32,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /data
 COPY --from=build /src/src-tauri/target/release/toolport-gateway /usr/local/bin/toolport-gateway
-RUN useradd --system --uid 10001 --home-dir /data toolport \
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 755 /usr/local/bin/toolport-gateway /usr/local/bin/docker-entrypoint.sh \
+    && useradd --system --uid 10001 --home-dir /data toolport \
     && chown toolport:toolport /data
+
+# The runtime user is fixed at uid 10001; a host-owned bind mount must be owned
+# by that uid (the entrypoint says so) or the registry cannot load. See
+# Dockerfile and docker-compose.example.yml.
+# Only the gateway and entrypoint belong in the application binary directory.
+RUN find /usr/local/bin -mindepth 1 -maxdepth 1 -print | sort > /tmp/toolport-contents \
+    && cat /tmp/toolport-contents \
+    && test "$(cat /tmp/toolport-contents)" = "$(printf '/usr/local/bin/docker-entrypoint.sh\n/usr/local/bin/toolport-gateway')" \
+    && rm /tmp/toolport-contents
 
 USER toolport
 # HTTP mode comes from the `--http` flag on the ENTRYPOINT below, not from the
@@ -44,4 +56,8 @@ ENV CONDUIT_REGISTRY=/data/registry.json
 EXPOSE 8765
 VOLUME ["/data"]
 
-ENTRYPOINT ["toolport-gateway", "--http", "8765"]
+# Readiness, not liveness: 200 only once the registry loaded (INST-02).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -fsS -o /dev/null http://127.0.0.1:8765/healthz || exit 1
+
+ENTRYPOINT ["docker-entrypoint.sh", "toolport-gateway", "--http", "8765"]

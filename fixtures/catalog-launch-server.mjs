@@ -1,25 +1,42 @@
 /* global process */
 // Contract fixture only. It never connects to a provider or proves provider auth.
 import readline from "node:readline";
+import { readFileSync } from "node:fs";
+import { URL } from "node:url";
+import http from "node:http";
+
+const pins = JSON.parse(
+  readFileSync(new URL("../src-tauri/catalog-pins.json", import.meta.url), "utf8"),
+);
+const spec = (runner, name, separator = "@") =>
+  `${name}${separator}${pins[`${runner}:${name}`].version}`;
 
 const args = process.argv.slice(2);
 const contracts = [
-  ["-y", "@twilio-alpha/mcp", "ACreview/SKreview:review secret:$literal & value"],
   [
     "-y",
-    "@modelcontextprotocol/server-postgres",
+    spec("npx", "@twilio-alpha/mcp"),
+    "ACreview/SKreview:review secret:$literal & value",
+  ],
+  [
+    "-y",
+    spec("npx", "@modelcontextprotocol/server-postgres"),
     "postgresql://user:review%40secret@localhost/test",
   ],
-  ["-y", "@modelcontextprotocol/server-filesystem", "/fixture/directory with spaces"],
+  [
+    "-y",
+    spec("npx", "@modelcontextprotocol/server-filesystem"),
+    "/fixture/directory with spaces",
+  ],
   [
     "--from",
-    "redis-mcp-server@latest",
+    spec("uvx", "redis-mcp-server", "=="),
     "redis-mcp-server",
     "--url",
     "redis://user:review%40secret@localhost:6379/0",
   ],
-  ["awslabs.aws-api-mcp-server@latest"],
-  ["mcp-server-qdrant"],
+  [spec("uvx", "awslabs.aws-api-mcp-server")],
+  [spec("uvx", "mcp-server-qdrant")],
 ];
 if (!contracts.some((expected) => JSON.stringify(expected) === JSON.stringify(args))) {
   // Deliberately echo escaped and truncated credentials to exercise redaction.
@@ -27,13 +44,13 @@ if (!contracts.some((expected) => JSON.stringify(expected) === JSON.stringify(ar
   process.exit(1);
 }
 if (
-  args[0] === "awslabs.aws-api-mcp-server@latest" &&
+  args[0] === spec("uvx", "awslabs.aws-api-mcp-server") &&
   (process.env.AWS_ACCESS_KEY_ID || process.env.AWS_SECRET_ACCESS_KEY)
 ) {
   process.exit(2);
 }
 if (
-  args[0] === "mcp-server-qdrant" &&
+  args[0] === spec("uvx", "mcp-server-qdrant") &&
   (process.env.QDRANT_URL !== "http://127.0.0.1:6333" ||
     process.env.QDRANT_API_KEY ||
     process.env.COLLECTION_NAME)
@@ -46,6 +63,18 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   if (!Object.hasOwn(request, "id")) continue;
   let result = {};
   if (request.method === "initialize") {
+    // The gateway fixture can hold one handshake until a partial catalog was
+    // observed. Release comes from the test, not an elapsed-time assumption.
+    if (process.env.TOOLPORT_FIXTURE_CATALOG_GATE) {
+      await new Promise((resolve, reject) => {
+        http
+          .get(process.env.TOOLPORT_FIXTURE_CATALOG_GATE, (response) => {
+            response.resume();
+            response.on("end", resolve);
+          })
+          .on("error", reject);
+      });
+    }
     result = {
       protocolVersion: request.params.protocolVersion,
       capabilities: { tools: {} },

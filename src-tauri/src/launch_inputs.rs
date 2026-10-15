@@ -31,6 +31,34 @@ impl ResolvedArgs {
     }
 }
 
+/// What a person calls a launch input. Inputs created from pasted arguments
+/// carry a generated label, so name them after the flag they follow instead.
+pub fn input_display_name(
+    args: &[String],
+    launch: &crate::registry::LaunchConfig,
+    key: &str,
+) -> String {
+    let label = launch
+        .inputs
+        .iter()
+        .find(|input| input.key == key)
+        .map_or(key, |input| input.label.as_str());
+    if !label.starts_with("Imported argument") {
+        return label.to_string();
+    }
+    let index = launch.bindings.iter().find_map(|binding| {
+        matches!(binding.parts.as_slice(), [ArgPart::Input { key: k, .. }] if k == key)
+            .then_some(binding.index)
+    });
+    match index {
+        Some(i) if i > 0 && args.get(i - 1).is_some_and(|flag| flag.starts_with('-')) => {
+            format!("Value for {} (argument {})", args[i - 1], i + 1)
+        }
+        Some(i) => format!("Secret argument {}", i + 1),
+        None => label.to_string(),
+    }
+}
+
 pub fn resolve_args(server: &ServerEntry) -> Result<ResolvedArgs, String> {
     let args = resolve_args_for_prewarm(server)?;
     if let Some(launch) = &server.launch {
@@ -70,6 +98,21 @@ pub fn resolve_args_for_prewarm(server: &ServerEntry) -> Result<ResolvedArgs, St
     resolve_args_with(server, crate::secrets::get_vault_secret_result)
 }
 
+/// A declared reference is configured before its value exists in this process.
+/// Enable review validates bindings using a transient placeholder; only connect resolves it.
+pub fn check_ready_for_enable(server: &ServerEntry) -> Result<(), String> {
+    let mut staged = server.clone();
+    for input in staged.launch.iter_mut().flat_map(|l| &mut l.inputs) {
+        if crate::secret_refs::source(&input.unknown_fields)
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            input.value = Some("<reference>".into());
+        }
+    }
+    resolve_args(&staged).map(|_| ())
+}
+
 pub fn resolve_args_with(
     server: &ServerEntry,
     mut vault: impl FnMut(&str, &str) -> Result<Option<String>, String>,
@@ -80,7 +123,7 @@ pub fn resolve_args_with(
         return Ok(ResolvedArgs {
             args,
             sensitive,
-            has_binding: false,
+            has_binding: server.env.iter().any(|e| e.secret),
         });
     };
     launch.validate(&args, false)?;
@@ -88,8 +131,8 @@ pub fn resolve_args_with(
         let mut value = String::new();
         for part in &binding.parts {
             match part {
-                ArgPart::Literal { value: literal } => value.push_str(literal),
-                ArgPart::Input { key } => {
+                ArgPart::Literal { value: literal, .. } => value.push_str(literal),
+                ArgPart::Input { key, .. } => {
                     let input = launch
                         .inputs
                         .iter()
@@ -109,6 +152,14 @@ pub fn resolve_args_with(
                     };
                     let resolved = match resolved.filter(|v| !v.trim().is_empty()) {
                         Some(v) => v,
+                        None if input.required && input.secret => {
+                            return Err(format!(
+                                "{} needs {}. Add it in Servers > {} > Credentials.",
+                                server.name,
+                                input_display_name(&server.args, launch, &input.key),
+                                server.name
+                            ))
+                        }
                         None if input.required => {
                             return Err(format!(
                                 "{} needs {}. Open server setup to add it.",
@@ -134,7 +185,7 @@ pub fn resolve_args_with(
     Ok(ResolvedArgs {
         args,
         sensitive,
-        has_binding: !launch.bindings.is_empty(),
+        has_binding: !launch.bindings.is_empty() || server.env.iter().any(|e| e.secret),
     })
 }
 
@@ -154,6 +205,7 @@ mod tests {
                     secret: false,
                     required: true,
                     value: Some("AC123".into()),
+                    unknown_fields: Default::default(),
                 },
                 LaunchInput {
                     key: "KEY".into(),
@@ -161,15 +213,26 @@ mod tests {
                     secret: true,
                     required: true,
                     value: None,
+                    unknown_fields: Default::default(),
                 },
             ],
             bindings: vec![ArgBinding {
                 index: 2,
                 parts: vec![
-                    ArgPart::Input { key: "SID".into() },
-                    ArgPart::Literal { value: "/".into() },
-                    ArgPart::Input { key: "KEY".into() },
+                    ArgPart::Input {
+                        key: "SID".into(),
+                        unknown_fields: Default::default(),
+                    },
+                    ArgPart::Literal {
+                        value: "/".into(),
+                        unknown_fields: Default::default(),
+                    },
+                    ArgPart::Input {
+                        key: "KEY".into(),
+                        unknown_fields: Default::default(),
+                    },
                 ],
+                unknown_fields: Default::default(),
             }],
             ..Default::default()
         });
@@ -197,10 +260,15 @@ mod tests {
                 secret: false,
                 required: true,
                 value: Some("-e".into()),
+                unknown_fields: Default::default(),
             }],
             bindings: vec![ArgBinding {
                 index: 0,
-                parts: vec![ArgPart::Input { key: "FLAG".into() }],
+                parts: vec![ArgPart::Input {
+                    key: "FLAG".into(),
+                    unknown_fields: Default::default(),
+                }],
+                unknown_fields: Default::default(),
             }],
             ..Default::default()
         });
@@ -211,6 +279,9 @@ mod tests {
 
     #[test]
     fn prewarm_allows_missing_environment_credentials_after_binding_args() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "prewarm_allows_missing_environment_credentials_after_binding_args",
+        );
         let mut server: ServerEntry = serde_json::from_str(
             r#"{"name":"Example","transport":"stdio","command":"npx","args":["-y","example-server","<launch-input>"],"env":[{"key":"API_KEY","secret":true}]}"#,
         )
@@ -222,17 +293,30 @@ mod tests {
                 secret: false,
                 required: true,
                 value: Some("/tmp".into()),
+                unknown_fields: Default::default(),
             }],
             bindings: vec![ArgBinding {
                 index: 2,
                 parts: vec![ArgPart::Input {
                     key: "DIRECTORY".into(),
+                    unknown_fields: Default::default(),
                 }],
+                unknown_fields: Default::default(),
             }],
             required_env: vec!["API_KEY".into()],
             ..Default::default()
         });
         assert_eq!(resolve_args_for_prewarm(&server).unwrap().args[2], "/tmp");
         assert!(resolve_args(&server).is_err());
+    }
+}
+
+#[cfg(test)]
+mod reference_enable_regression {
+    #[test]
+    fn configured_reference_input_can_be_enabled_without_desktop_resolution() {
+        let server:crate::registry::ServerEntry=serde_json::from_value(serde_json::json!({"id":"ready","name":"Ready","transport":"stdio","command":"fixture","args":["<launch-input>"],"env":[],"launch":{"inputs":[{"key":"TOKEN","label":"Token","secret":true,"required":true,"source":{"ref":"op://Private/My Token/key"}}],"bindings":[{"index":0,"parts":[{"kind":"input","key":"TOKEN"}]}]}})).unwrap();
+        super::check_ready_for_enable(&server).unwrap();
+        assert!(server.launch.unwrap().inputs[0].value.is_none());
     }
 }

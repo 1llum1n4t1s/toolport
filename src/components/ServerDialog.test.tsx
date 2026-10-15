@@ -5,6 +5,8 @@ import type { ProbeResult, Registry, ServerEntry } from "@/lib/types";
 
 const api = vi.hoisted(() => ({
   addServer: vi.fn(),
+  addSnippetServers: vi.fn(),
+  setServerEnabled: vi.fn(),
   parseServerSnippet: vi.fn(),
   setSecret: vi.fn(),
   setLaunchSecret: vi.fn(),
@@ -80,6 +82,23 @@ async function fillServer(user: ReturnType<typeof userEvent.setup>, command: str
 describe("ServerDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    api.setServerEnabled.mockResolvedValue(savedRegistry("demo"));
+  });
+
+  it("waits for each field to blur before showing its validation error", async () => {
+    const user = userEvent.setup();
+    render(<ServerDialog autoOpen onSaved={vi.fn()} />);
+    expect(screen.queryByText("Give the server a name.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Enter the command to run/)).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText("Name"));
+    await user.tab();
+    expect(screen.getByText("Give the server a name.")).toBeInTheDocument();
+    expect(screen.queryByText(/Enter the command to run/)).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText("Name"), "demo");
+    expect(screen.queryByText("Give the server a name.")).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText("Command"));
+    await user.tab();
+    expect(screen.getByText(/Enter the command to run/)).toBeInTheDocument();
   });
 
   it("vaults composed launch inputs and clears bindings when arguments change", async () => {
@@ -229,6 +248,65 @@ describe("ServerDialog", () => {
     );
   });
 
+  it("keeps fields the dialog does not show and saves the shell environment switch", async () => {
+    const initial = {
+      id: "local",
+      name: "Local",
+      transport: "stdio",
+      command: "local-server",
+      args: [],
+      env: [],
+      url: null,
+      source: "manual",
+      disabledTools: ["delete_everything"],
+      inheritEnv: true,
+      futureField: "kept",
+    } as ServerEntry;
+    api.updateServer.mockResolvedValue(savedRegistry("local"));
+    const user = userEvent.setup();
+
+    render(<ServerDialog autoOpen editId="local" initial={initial} onSaved={vi.fn()} />);
+    const inherit = screen.getByRole("switch", { name: "Use my shell environment" });
+    expect(inherit).toBeChecked();
+    await user.type(screen.getByLabelText("Name"), " renamed");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(api.updateServer).toHaveBeenCalledTimes(1));
+    expect(api.updateServer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Local renamed",
+        disabledTools: ["delete_everything"],
+        inheritEnv: true,
+        futureField: "kept",
+      }),
+    );
+  });
+
+  it("turns the shell environment off for a server", async () => {
+    const initial: ServerEntry = {
+      id: "local",
+      name: "Local",
+      transport: "stdio",
+      command: "local-server",
+      args: [],
+      env: [],
+      url: null,
+      source: "manual",
+      inheritEnv: true,
+    };
+    api.updateServer.mockResolvedValue(savedRegistry("local"));
+    const user = userEvent.setup();
+
+    render(<ServerDialog autoOpen editId="local" initial={initial} onSaved={vi.fn()} />);
+    await user.click(screen.getByRole("switch", { name: "Use my shell environment" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(api.updateServer).toHaveBeenCalledTimes(1));
+    expect(api.updateServer).toHaveBeenCalledWith(
+      expect.objectContaining({ inheritEnv: false }),
+    );
+  });
+
   it("saves the startup timeout in milliseconds", async () => {
     const initial: ServerEntry = {
       id: "remote",
@@ -346,6 +424,45 @@ describe("ServerDialog", () => {
     expect(screen.queryByText("Edit server")).not.toBeInTheDocument();
   });
 
+  it("leaves a new plain value's sync choice to the default unless changed", async () => {
+    api.addServer.mockResolvedValueOnce(savedRegistry("demo"));
+    const user = userEvent.setup();
+    render(<ServerDialog trigger={<button>Add server</button>} onSaved={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Add server" }));
+    await fillServer(user, "npx");
+    for (let i = 0; i < 3; i += 1) {
+      await user.click(screen.getByRole("button", { name: "Add variable" }));
+    }
+    const keyInputs = screen.getAllByPlaceholderText("ENV_NAME");
+    for (const [i, [key, value]] of [
+      ["REGION", "west"],
+      ["NOTES_DIR", "/home/me/notes"],
+      ["NODE_OPTIONS", "--max-old-space-size=4096"],
+    ].entries()) {
+      await user.type(keyInputs[i], key);
+      await user.click(screen.getByRole("checkbox", { name: `Keep ${key} in keychain` }));
+      await user.type(screen.getAllByPlaceholderText("value")[i], value);
+    }
+    const sync = screen.getAllByRole("checkbox", { name: "Same on every machine" });
+    expect(sync.map((box) => (box as HTMLInputElement).checked)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    expect(sync[2]).toBeDisabled();
+    await user.click(sync[1]);
+
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    await waitFor(() => expect(api.addServer).toHaveBeenCalledTimes(1));
+    const env = api.addServer.mock.calls[0][0].env;
+    expect(env).toEqual([
+      { key: "REGION", value: "west", secret: false },
+      { key: "NOTES_DIR", value: "/home/me/notes", secret: false, portable: true },
+      { key: "NODE_OPTIONS", value: "--max-old-space-size=4096", secret: false },
+    ]);
+  });
+
   it("keeps an edited in-flight test busy and discards its result", async () => {
     const request = deferred<ProbeResult>();
     api.testServer.mockReturnValueOnce(request.promise);
@@ -451,4 +568,18 @@ describe("ServerDialog", () => {
     expect(screen.getByText(failure.error as string)).toBeInTheDocument();
     expect(screen.queryByText(/Connected\. Found/)).not.toBeInTheDocument();
   });
+});
+
+it("marks a new server local-only in its first saved definition", async () => {
+  const user = userEvent.setup();
+  api.addServer.mockResolvedValue(savedRegistry("demo"));
+  render(<ServerDialog autoOpen onSaved={vi.fn()} />);
+  await fillServer(user, "echo");
+  await user.click(screen.getByRole("checkbox", { name: "This machine only" }));
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  await waitFor(() =>
+    expect(api.addServer).toHaveBeenCalledWith(
+      expect.objectContaining({ syncLocalOnly: true }),
+    ),
+  );
 });

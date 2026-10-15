@@ -13,9 +13,9 @@ Reproduce it yourself: [`benchmark/`](benchmark/).
 - **Two modes**, same tasks, same model:
   - **flat**, every downstream tool exposed directly (`TOOLPORT_DISCOVERY=full`), the normal MCP setup.
   - **lazy**, Toolport advertises a small, fixed set of meta-tools and the agent searches and
-    calls on demand (`TOOLPORT_DISCOVERY=lazy`). With Code Mode on (the default) that is seven
-    tools; the core four are `toolport_status`, `toolport_search_tools`, `toolport_call_tool`,
-    and `toolport_fetch_result`.
+    calls on demand (`TOOLPORT_DISCOVERY=lazy`). With Code Mode off (the default) that is the
+    four core tools: `toolport_status`, `toolport_search_tools`, `toolport_call_tool`, and
+    `toolport_fetch_result`; enabling Code Mode adds `toolport_run_script`.
 - **Model:** GPT-5.5 (frontier, via the Vercel AI Gateway), so model capability is not the
   variable, both modes can actually complete every task.
 - **Tasks (5 runs each):** list Stripe products; list Neon projects; list Vercel projects
@@ -40,46 +40,9 @@ Two things stand out:
 - **The savings grow with your catalog.** Flat's cost more than doubled as servers went
   3 → 6 (it re-sends every tool schema on every call), while lazy's actually _dropped_
   (47K → 40K), it pays a fixed tool-definition floor no matter how many servers you
-  connect. Measured with `tiktoken o200k_base`, the lazy floor is about 2,200 tokens
-  with Code Mode on (about 940 for the core four tools) and is flat regardless of
+  connect. Measured with `tiktoken o200k_base`, the lazy floor is about 870 tokens
+  with Code Mode on and about 500 for the core four tools, and is flat regardless of
   server count.
-
-## Claude Code with a 1,707-tool catalog
-
-A second test runs real AI clients against a large fixture catalog instead of calling a
-model directly. It uses Toolport 2.0.0-preview.9 (release build of `639fc0af`), measured
-2026-10-11.
-
-- **Catalog:** 1,707 tools from public MCP server schemas across 18 namespaces, served by
-  local mock servers. No real accounts or services.
-- **Tasks:** 30 fixed development tasks, one run per task in each mode. A task passes only
-  if the client makes the expected downstream calls with the expected arguments; the
-  scorer is strict and unchanged, and no failure was rescored.
-- **Clients:** Claude Code 2.1.296 with `claude-haiku-5-5`, and opencode 1.19.0 with
-  `deepseek-v4.1-flash`.
-- **Modes:** Full advertises the whole catalog (Claude Code can still use its own tool
-  search over it). Lazy advertises Toolport's search and call tools.
-- **Tokens:** cumulative input the client reported, including cache reads and writes.
-  Runs that failed still count; missing usage is not counted as zero.
-
-| Client      | Mode | Passed | Mean reported input |
-| ----------- | ---- | ------ | ------------------- |
-| Claude Code | Full | 25/30  | 132,372             |
-| Claude Code | Lazy | 28/30  | 24,505              |
-| opencode    | Full | 0/2    | not reported        |
-| opencode    | Lazy | 27/30  | 14,540              |
-
-In Claude Code, Lazy used **81.5% less reported input** than Full and passed three more
-tasks. opencode with the full catalog did not finish either of two bounded attempts (one
-timed out, one was rejected by the provider), so no opencode reduction can be computed.
-
-Failures include three runs where the fixture's own Cloudflare schema is invalid and five
-tied to an ambiguous Supabase prompt; both affect Full and Lazy runs. Each cell is one
-run per task on a development split, not a held-out evaluation. This does not show the
-same percentage for other clients, models or catalogs, and it says nothing about billing,
-quota use or latency. In 2.0, Codex and Cursor default to Full. The driver is on the
-[`bench/live-clients`](https://github.com/btsouth/toolport/blob/bench/live-clients/docs/live-client-benchmark.md)
-branch.
 
 ## Why flat is so expensive
 
@@ -98,18 +61,20 @@ full and lazy modes and pass the JSON responses to
 `tiktoken o200k_base` (the GPT-4o/GPT-5 family tokenizer) on a registry of up to 20
 servers, 416 tools in full mode:
 
-| Advertised set               | Tools | Tools + instructions (o200k) |
-| ---------------------------- | ----- | ---------------------------- |
-| Full catalog (20 servers)    | 416   | ≈38,800                      |
-| Lazy, Code Mode on (default) | 7     | ≈2,200                       |
-| Lazy, core four only         | 4     | ≈940                         |
+| Advertised set            | Tools | Tools + instructions (o200k) |
+| ------------------------- | ----- | ---------------------------- |
+| Full catalog (20 servers) | 416   | ≈38,800                      |
+| Lazy, Code Mode on        | 5     | ≈870                         |
+| Lazy, core four (default) | 4     | ≈500                         |
 
-The lazy floor is flat: about 2,200 tokens whether one server or twenty are connected.
+The lazy floor is flat: about 500 tokens with Code Mode off (about 870 with it on), whether one server or twenty are connected.
 Because the floor is fixed, lazy discovery only pays off once the catalog it replaces is
 large enough. The same sweep measured 78% fewer tool-definition tokens at 5 servers, 90%
 at 10, and 95% at 20; savings start at roughly 10 to 25 tools, and a single small server
 (fetch or time) costs slightly more with lazy mode than without it. The in-app Activity
-figure is a separate bytes/4 estimate; the table above is tokenizer output.
+figure uses cl100k_base, net of discovery responses and counted once per session
+and catalog hash. Historical bytes/4 estimates are excluded; the table above
+is tokenizer output.
 
 ## Latency: the gateway is not the bottleneck
 

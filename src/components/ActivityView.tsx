@@ -1,3 +1,12 @@
+import {
+  dismissalIndex,
+  dismissalKey,
+  eventSeverity,
+  securityKey,
+  selectSecurityEvents,
+} from "@/lib/securityReview";
+import { ToolChanges } from "./ToolChanges";
+import { activityClientName, clientIdentityTooltip } from "@/lib/clientIdentity";
 import { useWindowVisible } from "@/lib/windowVisible";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -13,6 +22,9 @@ import {
   Share2,
   ShieldAlert,
   ShieldCheck,
+  ShieldX,
+  Clock,
+  Undo2,
   Sparkles,
   Trash2,
   X,
@@ -21,6 +33,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import {
+  fmtAgo,
   fmtBytes,
   fmtMs,
   fmtPercent,
@@ -35,6 +48,9 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   clearActivityLogs,
   exportAuditToPath,
+  getActivityRevision,
+  releaseActivityRevision,
+  getActivityHealth,
   getAuditLog,
   getAuditStats,
   getInspectLog,
@@ -64,32 +80,42 @@ import {
 
 /** A badge describing one security event by kind. */
 function eventBadge(e: SecurityEvent): { label: string; cls: string } {
+  const cls =
+    e.blocked || e.type === "result_injection_blocked"
+      ? "bg-destructive/15 text-destructive"
+      : "bg-muted text-muted-foreground";
+  if (e.type === "sync_change_refused") {
+    return {
+      label: "synced change blocked",
+      cls: "bg-destructive/15 text-destructive",
+    };
+  }
   if (e.type === "result_injection_blocked") {
     return {
       label: "injection blocked",
-      cls: "bg-destructive/15 text-destructive",
+      cls,
     };
   }
   if (e.type === "result_injection") {
     return {
       label: "injected result",
-      cls: "bg-destructive/15 text-destructive",
+      cls,
     };
   }
   if (e.type === "tool_poison_flag") {
     return {
       label: "suspicious content",
-      cls: "bg-destructive/15 text-destructive",
+      cls,
     };
   }
   if (e.type === "pins_load_failed") {
     return {
       label: "integrity baseline lost",
-      cls: "bg-destructive/15 text-destructive",
+      cls,
     };
   }
   if (e.change === "changed") {
-    return { label: "changed", cls: "bg-warning/15 text-warning" };
+    return { label: "changed", cls: "bg-muted text-muted-foreground" };
   }
   return { label: "new tool", cls: "bg-owned/15 text-owned" };
 }
@@ -97,63 +123,11 @@ function eventBadge(e: SecurityEvent): { label: string; cls: string } {
 const SECURITY_DISMISSED_KEY = "toolport.security.dismissed";
 const SECURITY_DISMISSED_KEY_LEGACY = "conduit.security.dismissed";
 
-/** High-signal, interrupting events vs benign, quiet-history churn. The backend now
- * tags a `severity`; for events written before that (no field) we classify by type:
- * poison / injected-result / lost-baseline are high, a plain tool_drift is benign. */
-function eventSeverity(e: SecurityEvent): "high" | "info" {
-  if (e.severity === "high" || e.severity === "info") return e.severity;
-  if (
-    e.type === "tool_poison_flag" ||
-    e.type === "result_injection" ||
-    e.type === "result_injection_blocked" ||
-    e.type === "pins_load_failed"
-  ) {
-    return "high";
-  }
-  return "info";
-}
-
-/** Durable per-event key for dismissal: identity (type, server, tool, change, severity),
- * NOT the timestamp. A benign drift that re-flags later (e.g. RevenueCat revising a beta
- * tool again) collapses to the same key, so dismissing it once keeps it dismissed instead
- * of returning as a brand-new, undismissable notice. Server + change are kept so tool-less
- * events (e.g. pins_load_failed) don't collide and dismiss each other. Severity is kept so
- * dismissing a tool's benign change never masks a later HIGH-severity change on that same
- * tool (e.g. it turns destructive) - that must still interrupt. */
-function securityKey(e: SecurityEvent): string {
-  return `${e.type}:${e.server ?? ""}:${e.tool ?? ""}:${e.change}:${eventSeverity(e)}`;
-}
-
 /** Unique React list key. `securityKey` is deliberately timestamp-free (so dismissal is
  * durable), but two un-collapsed instances of the same drift can be on screen at once,
  * so the render key still needs the timestamp to stay unique. */
 function renderKey(e: SecurityEvent): string {
   return `${securityKey(e)}:${e.ts}`;
-}
-
-/** Each connected client runs its own gateway process, so a single server tool change
- * is flagged once PER client against the shared baseline, producing identical notices.
- * Collapse those: keep only the newest of any (type, server, tool, change, severity) seen
- * within a short window, so genuinely-separate changes over time are preserved. Severity
- * is part of the identity so a benign `info` revision can never collapse (and hide) a
- * later `high` one on the same tool - that loud signal must survive the dedupe. */
-function dedupeSecurity(events: SecurityEvent[]): SecurityEvent[] {
-  const WINDOW_MS = 10 * 60 * 1000;
-  const newestFirst = [...events].sort((a, b) => b.ts - a.ts);
-  const kept: SecurityEvent[] = [];
-  for (const e of newestFirst) {
-    const dupe = kept.some(
-      (k) =>
-        k.type === e.type &&
-        k.server === e.server &&
-        k.tool === e.tool &&
-        k.change === e.change &&
-        eventSeverity(k) === eventSeverity(e) &&
-        Math.abs(k.ts - e.ts) <= WINDOW_MS,
-    );
-    if (!dupe) kept.push(e);
-  }
-  return kept;
 }
 
 /** Collapse the loud notices to one row per finding identity (securityKey), keeping the
@@ -192,8 +166,8 @@ function loadDismissed(): Set<string> {
 }
 
 /** Upper bound on remembered dismissals, so the persisted set can't grow without
- * limit across sessions. Well above any realistic count of distinct findings. */
-const MAX_DISMISSED = 500;
+ * limit across sessions. Covers the complete bounded security retention window. */
+const MAX_DISMISSED = 2000;
 
 /** Add keys to the dismissed set, cap it to the most-recent MAX_DISMISSED (Set
  * preserves insertion order, so slicing the tail keeps the newest), and persist.
@@ -221,8 +195,9 @@ function SecurityResting() {
     <div className="mb-4 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-4 py-2.5 text-xs text-muted-foreground">
       <ShieldCheck className="size-4 shrink-0 text-owned" />
       <span>
-        <span className="font-medium text-foreground">Protection active.</span> Toolport
-        is watching tool definitions and results. Nothing needs your attention right now.
+        <span className="block font-semibold text-foreground">Protection active.</span>{" "}
+        Toolport is watching tool definitions and results. Nothing needs your attention
+        right now.
       </span>
     </div>
   );
@@ -255,11 +230,11 @@ function SecurityLoadNotice({
   return (
     <div
       role="alert"
-      className="mb-4 flex items-center gap-3 rounded-lg border border-warning/40 bg-warning/5 px-4 py-2.5 text-xs"
+      className="mb-4 flex items-center gap-3 toolport-alert border-warning bg-warning/8 px-4 py-2.5 text-xs"
     >
-      <AlertTriangle className="size-4 shrink-0 text-warning" />
+      <AlertTriangle className="size-4 shrink-0 text-muted-foreground" />
       <span className="text-muted-foreground">
-        <span className="font-medium text-foreground">
+        <span className="block font-semibold text-foreground">
           {stale
             ? "Security status may be out of date."
             : "Couldn't verify protection status."}
@@ -284,11 +259,13 @@ function AuditStaleNotice({ onRetry }: { onRetry: () => void }) {
   return (
     <div
       role="alert"
-      className="mb-4 flex items-center gap-3 rounded-lg border border-warning/40 bg-warning/5 px-4 py-2.5 text-xs"
+      className="mb-4 flex items-center gap-3 toolport-alert border-warning bg-warning/8 px-4 py-2.5 text-xs"
     >
       <AlertTriangle className="size-4 shrink-0 text-warning" />
       <span className="text-muted-foreground">
-        <span className="font-medium text-foreground">Activity may be out of date.</span>{" "}
+        <span className="block font-semibold text-foreground">
+          Activity may be out of date.
+        </span>{" "}
         Showing the last calls Toolport read successfully; the latest refresh failed.
       </span>
       <button
@@ -318,20 +295,27 @@ function SecurityNotices({
   const [open, setOpen] = useState(true);
   // One row per finding, newest first, with a recurrence count. See collapseByIdentity.
   const collapsed = collapseByIdentity(events);
+  const blocked = events.some(
+    (event) => event.blocked || event.type === "result_injection_blocked",
+  );
   return (
-    <div className="mb-4 rounded-lg border border-warning/40 bg-warning/5 p-4">
+    <div
+      className={`mb-4 toolport-alert p-4 ${blocked ? "border-destructive/40 bg-destructive/5" : "border-border bg-muted/20"}`}
+    >
       <button
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         className="flex w-full items-center gap-2 text-left"
       >
-        <ShieldAlert className="size-4 shrink-0 text-warning" />
-        <h3 className="text-sm font-medium text-warning">Tool security notices</h3>
-        <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning">
+        <ShieldAlert className="size-4 shrink-0 text-muted-foreground" />
+        <h3 className="text-sm font-medium text-muted-foreground">
+          Tool security notices
+        </h3>
+        <span className="rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
           {collapsed.length}
         </span>
         <ChevronRight
-          className={`ml-auto size-4 text-warning/70 transition-transform ${
+          className={`ml-auto size-4 text-muted-foreground/70 transition-transform ${
             open ? "rotate-90" : ""
           }`}
         />
@@ -364,7 +348,7 @@ function SecurityNotices({
                     )}
                     {count > 1 && (
                       <span
-                        className="rounded-full bg-warning/15 px-1.5 py-0.5 font-medium text-warning"
+                        className="rounded-full bg-muted px-1.5 py-0.5 font-medium text-muted-foreground"
                         title={`Recurred in ${count} separate time windows`}
                       >
                         ×{count}
@@ -382,6 +366,11 @@ function SecurityNotices({
                       <X className="size-3.5" />
                     </button>
                   </div>
+                  {e.detail && (
+                    <p className="ml-1 max-w-2xl text-[11px] leading-relaxed break-words text-muted-foreground">
+                      {e.detail}
+                    </p>
+                  )}
                   {e.evidence && (
                     <p className="ml-1 max-w-2xl border-l-2 border-warning/40 pl-2 font-mono text-[11px] leading-relaxed break-words text-muted-foreground">
                       <span className="mr-1 select-none font-sans text-muted-foreground/70">
@@ -473,105 +462,110 @@ function QuietDriftHistory({
   );
 }
 
-/** Catalog exposure: exact serialized bytes with a provider-independent estimate. */
+/** One session baseline minus every catalog response and search response. */
 function SavingsBanner({ savings }: { savings: SavingsSummary }) {
-  const hasCatalog = savings.listLoads > 0;
-  const measured = (savings.measuredLoads ?? 0) > 0;
+  const hasCatalog = (savings.tokenizedLoads ?? 0) > 0;
   const discovered = (savings.discoveryCount ?? 0) > 0;
-  const avoided = savings.avoidedSurfaceBytes ?? 0;
-  const legacy =
-    savings.legacyEstimatedTokensAvoided ?? (measured ? 0 : savings.tokensSaved);
-  const since = savings.sinceTs > 0 ? fmtTs(savings.sinceTs, "monthDay") : null;
-  const details = [
-    hasCatalog
-      ? `across ${savings.listLoads.toLocaleString()} tool-list load${savings.listLoads === 1 ? "" : "s"}`
-      : null,
-    hasCatalog
-      ? `≈${fmtTokens(Math.round(savings.tokensSaved / savings.listLoads))} per load`
-      : null,
-    hasCatalog && savings.peakCatalog > 4
-      ? `peak catalog ${savings.peakCatalog.toLocaleString()} tools`
-      : null,
-    since ? `since ${since}` : null,
-  ].filter(Boolean);
-
+  const method =
+    "The baseline is the full-mode tools array for the same allowed servers and policies at the first tools/list in each session. We count compact JSON and search response text with cl100k_base, then subtract every tools/list and search response. Sessionless HTTP, initial catalogs above known client limits, and older records are excluded. Client caching and formatting may change model usage; this is not a billing figure.";
+  const exact = (value: number | undefined) => (value ?? 0).toLocaleString();
   const share = async () => {
-    const text = hasCatalog
-      ? `Toolport kept ≈${fmtTokens(savings.tokensSaved)} tokens of MCP tool definitions out of my agent's context across ${savings.listLoads.toLocaleString()} loads. Estimated from serialized size (UTF-8 bytes / 4), not model billing. toolport.app`
-      : `Toolport recorded ${savings.discoveryCount ?? 0} discovery searches returning ${fmtBytes(savings.discoveryResponseBytes ?? 0)} of text at its MCP boundary. toolport.app`;
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(
+        `Toolport measured ${fmtTokens(savings.tokensSaved)} net tokens saved across ${savings.tokenizedLoads} client sessions. Full catalog baselines minus all catalog and search responses, counted locally with cl100k_base; not a billing figure. toolport.app`,
+      );
       toast.success("Savings copied, paste them anywhere");
     } catch {
       toastError("Couldn't copy to clipboard");
     }
   };
-
   return (
-    <div className="mb-6 rounded-lg border border-success/30 bg-success/[0.06] p-4">
+    <div className="mb-6 toolport-alert border-success bg-success/8 p-4">
       <div className="flex items-center gap-2">
         <Sparkles className="size-4 text-success" />
         <span className="text-sm font-medium text-muted-foreground">
           {hasCatalog
-            ? "Tool definitions kept out of your agent's context"
-            : "Discovery payload returned"}
+            ? "Net tool description savings"
+            : discovered
+              ? "Discovery payload returned"
+              : "Savings history"}
         </span>
       </div>
       <div className="mt-2 flex flex-wrap items-end gap-x-6 gap-y-1">
-        <span className="text-3xl font-semibold tabular-nums text-success">
+        <span className="text-3xl font-semibold tabular-nums text-success" title={method}>
           {hasCatalog
-            ? `≈ ${fmtTokens(savings.tokensSaved)}`
-            : fmtBytes(savings.discoveryResponseBytes ?? 0)}{" "}
+            ? fmtTokens(savings.tokensSaved)
+            : discovered
+              ? fmtBytes(savings.discoveryResponseBytes ?? 0)
+              : "Not measured yet"}{" "}
           <span className="text-base font-normal text-muted-foreground">
-            {hasCatalog ? "tokens saved" : "discovery text"}
+            {hasCatalog ? "net tokens saved" : discovered ? "discovery text" : ""}
           </span>
         </span>
       </div>
-      {(savings.latestCatalogTs ?? 0) > 0 && (
-        <div className="mt-2 text-sm text-muted-foreground">
-          Latest load: {fmtBytes(savings.latestFullSurfaceBytes ?? 0)} /{" "}
-          {(savings.latestFullToolCount ?? 0).toLocaleString()} tools full
-          {" → "}
-          {fmtBytes(savings.latestExposedSurfaceBytes ?? 0)} /{" "}
-          {(savings.latestExposedToolCount ?? 0).toLocaleString()} tools exposed
+      <p className="mt-2 text-xs text-muted-foreground">
+        {hasCatalog
+          ? "Full catalog baselines minus all catalog and search responses. Counted locally; not a billing figure."
+          : "Older records remain available below. Comparable session measurements start with this version."}
+      </p>
+      {(savings.previousReportedTokensSaved ?? 0) !== 0 && (
+        <div className="mt-3 border-t border-success/20 pt-3 text-xs text-muted-foreground">
+          <p className="font-medium">
+            Old estimate: {exact(savings.previousReportedTokensSaved)} tokens
+          </p>
+          <p className="mt-1">From previous versions; excluded from new savings.</p>
         </div>
       )}
-      {measured && (
-        <div
-          className="mt-2 text-sm text-muted-foreground"
-          title={`${avoided.toLocaleString()} exact UTF-8 bytes avoided`}
-        >
-          {fmtBytes(savings.fullSurfaceBytes ?? 0)} full ·{" "}
-          {fmtBytes(savings.exposedSurfaceBytes ?? 0)} exposed · {fmtBytes(avoided)}{" "}
-          avoided across measured loads
-          {` · ${fmtBytes(Math.round((savings.fullSurfaceBytes ?? 0) / (savings.measuredLoads ?? 1)))} full/load`}
-          {(savings.extraExposedSurfaceBytes ?? 0) > 0 &&
-            ` · ${fmtBytes(savings.extraExposedSurfaceBytes ?? 0)} extra exposure on small catalogs`}
-        </div>
-      )}
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      {hasCatalog && (
         <button
           onClick={share}
-          className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition hover:text-foreground"
+          className="mt-3 inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition hover:text-foreground"
         >
           <Share2 className="size-3.5" /> Share
         </button>
-      </div>
-      <p className="mt-2.5 text-xs text-muted-foreground">
-        {details.length > 0 ? `${details.join(" · ")}. ` : ""}
-        {measured
-          ? `${(savings.measuredLoads ?? 0).toLocaleString()} measured load${savings.measuredLoads === 1 ? "" : "s"}. `
-          : ""}
-        {discovered
-          ? `${(savings.discoveryCount ?? 0).toLocaleString()} searches returned ${fmtBytes(savings.discoveryResponseBytes ?? 0)} of discovery text. `
-          : ""}
-        {legacy > 0
-          ? `Includes ≈${fmtTokens(legacy)} from older estimated records. `
-          : ""}
-        {hasCatalog
-          ? "Estimate: serialized UTF-8 bytes ÷ 4. Actual model usage depends on the client, model, and caching."
-          : "Exact text bytes at Toolport's MCP boundary; model token usage may differ."}
-      </p>
+      )}
+      <details className="mt-3 text-xs text-muted-foreground">
+        <summary className="cursor-pointer">How this is measured</summary>
+        <div className="mt-2 space-y-2">
+          <p>{method}</p>
+          {hasCatalog && (
+            <p>
+              {exact(savings.fullTokens)} baseline tokens − {exact(savings.exposedTokens)}{" "}
+              catalog response tokens − {exact(savings.discoveryTokens)} search response
+              tokens = {exact(savings.tokensSaved)} net tokens saved.
+            </p>
+          )}
+          {(hasCatalog || discovered) && (
+            <>
+              <p>
+                {exact(savings.tokenizedLoads)} client sessions;{" "}
+                {exact(savings.listLoads)} catalog responses;{" "}
+                {exact(savings.discoveryCount)} search responses.
+              </p>
+              <p>
+                {fmtBytes(savings.fullSurfaceBytes ?? 0)} baseline catalog text;{" "}
+                {fmtBytes(savings.exposedSurfaceBytes ?? 0)} catalog text sent;{" "}
+                {fmtBytes(savings.discoveryResponseBytes ?? 0)} search text sent.
+              </p>
+            </>
+          )}
+          {(savings.historicalListLoads ?? 0) > 0 && (
+            <p>
+              Excluded history: {exact(savings.historicalListLoads)} catalog records (
+              {exact(savings.historicalMeasuredLoads)} with byte measurements). Session
+              identity and repeat loads cannot be verified.
+            </p>
+          )}
+          {((savings.legacyEstimatedTokensAvoided ?? 0) > 0 ||
+            (savings.estimatedTokensAvoided ?? 0) > 0) && (
+            <p>
+              Older estimated records: {exact(savings.legacyEstimatedTokensAvoided)}{" "}
+              legacy tokens and {exact(savings.estimatedTokensAvoided)} size-based tokens,
+              excluded.
+            </p>
+          )}
+        </div>
+      </details>
     </div>
   );
 }
@@ -692,10 +686,10 @@ function PiiBadge({ entry }: { entry: AuditEntry }) {
     return (
       <span
         className="flex shrink-0 items-center gap-1 rounded bg-warning/15 px-1.5 py-0.5 text-[10px] text-warning"
-        title={`${replaced} value${replaced === 1 ? "" : "s"} pseudonymized, but the pass did not fully apply — some values reached the model in the clear (the session map was full, or the result exceeded the scan cap).`}
+        title={`${replaced} value${replaced === 1 ? "" : "s"} masked, but the pass did not fully apply: some values reached the model in the clear (the session map was full, or the result exceeded the scan cap).`}
       >
         <ShieldAlert aria-hidden="true" className="size-3" />
-        {replaced} pseudonymized, incomplete
+        {replaced} {replaced === 1 ? "value" : "values"} masked, incomplete
       </span>
     );
   }
@@ -703,19 +697,56 @@ function PiiBadge({ entry }: { entry: AuditEntry }) {
   return (
     <span
       className="flex shrink-0 items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
-      title={`${replaced} value${replaced === 1 ? "" : "s"} in this result were replaced with pseudonyms before the model saw them. The values themselves are never logged.`}
+      title="Personal values in this result were replaced before reaching the model. The values themselves are never logged."
     >
       <ShieldCheck aria-hidden="true" className="size-3" />
-      {replaced} pseudonymized
+      {replaced} {replaced === 1 ? "value" : "values"} masked
     </span>
+  );
+}
+
+function internalActivityLabel(tool: string): string {
+  return (
+    (
+      {
+        search: "Searched tools",
+        describe: "Looked up a tool",
+        status: "Checked Toolport status",
+        fetch: "Retrieved a tool result",
+      } as Record<string, string>
+    )[tool] ?? "Used Toolport"
   );
 }
 
 function CallRow({ e }: { e: AuditEntry }) {
   const [open, setOpen] = useState(false);
-  const hasDetail = !e.ok && !!e.error;
+  const approvalOutcome =
+    e.kind === "approval"
+      ? (APPROVAL_OUTCOME[e.decision ?? ""] ?? UNKNOWN_APPROVAL)
+      : null;
+  const RowIcon =
+    approvalOutcome?.Icon ??
+    (e.kind === "internal"
+      ? Clock
+      : e.held
+        ? ShieldAlert
+        : e.ok
+          ? CheckCircle2
+          : XCircle);
+  const duration = approvalOutcome ? e.heldMs : e.durationMs;
+  const meta = [
+    activityClientName(e),
+    fmtAgo(e.ts),
+    ...(e.failureKind ? [e.failureKind.replace(/_/g, " ")] : []),
+    ...(duration == null
+      ? []
+      : [approvalOutcome ? `waited ${fmtMs(duration)}` : fmtMs(duration)]),
+  ].join(" · ");
+  const hasDetail = !approvalOutcome && !e.ok && (!!e.error || !!e.runId);
   return (
-    <div className="rounded-md border border-border/50 text-sm">
+    <div
+      className={`border-b border-border text-sm ${e.kind === "internal" ? "bg-muted/30" : ""}`}
+    >
       <div
         className={`flex items-center gap-3 rounded-md px-3 py-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
           hasDetail ? "cursor-pointer hover:bg-muted/30" : ""
@@ -745,38 +776,145 @@ function CallRow({ e }: { e: AuditEntry }) {
         ) : (
           <span className="inline-block size-3.5 shrink-0" />
         )}
-        {e.held ? (
-          <ShieldAlert className="size-4 shrink-0 text-warning" />
-        ) : e.ok ? (
-          <CheckCircle2 className="size-4 shrink-0 text-success" />
-        ) : (
-          <XCircle className="size-4 shrink-0 text-destructive" />
-        )}
-        <span className="min-w-0 truncate font-medium">{e.server}</span>
-        <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
-          {e.tool}
-        </span>
-        {(e.clientName || e.client) && (
-          <span
-            className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
-            title={e.client ? `Client: ${e.client}` : "Client that made this call"}
+        <RowIcon
+          className={`size-4 shrink-0 ${approvalOutcome?.iconClass ?? (e.kind === "internal" && e.ok ? "text-muted-foreground" : e.held ? "text-warning" : e.ok ? "text-success" : "text-destructive")}`}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="min-w-0 truncate font-medium">
+              {e.kind === "internal" ? internalActivityLabel(e.tool) : e.server}
+            </span>
+            {e.kind !== "internal" && (
+              <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+                {e.tool}
+              </span>
+            )}
+          </div>
+          <div
+            className="mt-1 truncate text-xs text-muted-foreground"
+            title={[
+              meta,
+              clientIdentityTooltip(e),
+              e.client && `Client: ${e.client}`,
+              e.sessionId && `Session: ${e.sessionId}`,
+              e.runId && `Run: ${e.runId}`,
+              e.cold != null && (e.cold ? "cold catalog" : "warm catalog"),
+              e.dispatchMs != null && `dispatch ${fmtMs(e.dispatchMs)}`,
+              e.kind === "internal" && `Toolport: ${e.tool}`,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+            dir="auto"
           >
-            {e.clientName ?? e.client}
+            {meta}
+          </div>
+        </div>
+        {approvalOutcome && (
+          <span
+            className={`shrink-0 rounded border px-2 py-0.5 text-xs ${approvalOutcome.className}`}
+          >
+            {approvalOutcome.label}
           </span>
         )}
         <PiiBadge entry={e} />
-        <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
-          {fmtMs(e.durationMs ?? e.heldMs ?? null)}
-        </span>
-        <span className="shrink-0 text-xs text-muted-foreground">{fmtTs(e.ts)}</span>
       </div>
-      {open && e.error && (
+      {open && hasDetail && (
         <div className="border-t border-border/50 bg-destructive/5 px-3 py-2 pl-9">
           <p className="font-mono text-xs whitespace-pre-wrap break-words text-destructive">
-            {e.error}
+            {e.error ?? e.failureKind?.replace(/_/g, " ")}
           </p>
+          {e.runId && <p className="mt-1 font-mono text-xs">Run: {e.runId}</p>}
         </div>
       )}
+    </div>
+  );
+}
+
+const APPROVAL_OUTCOME: Record<
+  string,
+  { label: string; Icon: LucideIcon; iconClass: string; className: string }
+> = {
+  approved: {
+    label: "Approved",
+    Icon: ShieldCheck,
+    iconClass: "text-success",
+    className: "border-success/30 bg-success/10 text-success",
+  },
+  denied: {
+    label: "Denied",
+    Icon: ShieldX,
+    iconClass: "text-destructive",
+    className: "border-destructive/50 text-destructive",
+  },
+  no_response: {
+    label: "No answer",
+    Icon: Clock,
+    iconClass: "text-warning",
+    className: "border-warning/30 bg-warning/10 text-warning",
+  },
+  withdrawn: {
+    label: "Withdrawn",
+    Icon: Undo2,
+    iconClass: "text-muted-foreground",
+    className: "border-border text-muted-foreground",
+  },
+  stale_state: {
+    label: "Changed after approval",
+    Icon: AlertTriangle,
+    iconClass: "text-warning",
+    className: "border-warning/30 bg-warning/10 text-warning",
+  },
+  unreachable: {
+    label: "No approver available",
+    Icon: AlertTriangle,
+    iconClass: "text-warning",
+    className: "border-warning/30 bg-warning/10 text-warning",
+  },
+};
+const UNKNOWN_APPROVAL = {
+  label: "Approval event",
+  Icon: ShieldAlert,
+  iconClass: "text-muted-foreground",
+  className: "border-border text-muted-foreground",
+};
+
+export function TelemetryNotice({
+  stats,
+}: {
+  stats: Pick<AuditStats, "telemetry" | "gatewayNotes"> | null;
+}) {
+  const health = stats?.telemetry;
+  const messages = [...(stats?.gatewayNotes ?? [])];
+  if (
+    health &&
+    (health.queueDropped ||
+      health.writeFailedRecords ||
+      health.writeFailures ||
+      health.incompleteFlushes)
+  ) {
+    messages.push(
+      `Activity, savings, Teams reporting and diagnostics may be incomplete: ${health.queueDropped} records dropped, ${health.writeFailedRecords} records with unconfirmed writes, ${health.writeFailures} write failures, ${health.incompleteFlushes} incomplete flushes since gateway start.`,
+    );
+  }
+  if (health?.retainedDropped) {
+    messages.push(
+      `${health.retainedDropped} dropped telemetry records are recorded in retained history. Activity and savings may be incomplete.`,
+    );
+  }
+  if (health?.unavailable) {
+    messages.push(
+      "Gateway telemetry health is unavailable. Activity and savings may be incomplete.",
+    );
+  }
+  if (messages.length === 0) return null;
+  return (
+    <div
+      role="status"
+      className="mb-4 toolport-alert border-warning bg-warning/8 px-4 py-2.5 text-xs"
+    >
+      {messages.map((message) => (
+        <p key={message}>{message}</p>
+      ))}
     </div>
   );
 }
@@ -796,8 +934,10 @@ function StatsPanel({ stats }: { stats: AuditStats }) {
     <div className="mb-6 flex flex-col gap-3">
       <div className="grid grid-cols-3 gap-3">
         <div className="rounded-lg border p-3">
-          <div className="text-2xl font-semibold tabular-nums">{stats.total}</div>
-          <div className="text-xs text-muted-foreground">calls logged</div>
+          <div className="text-2xl font-semibold tabular-nums">
+            {stats.total.toLocaleString()}
+          </div>
+          <div className="text-xs text-muted-foreground">calls recorded</div>
         </div>
         <div
           className={`rounded-lg border p-3 ${stats.errors > 0 ? "border-destructive/40 bg-destructive/[0.04]" : ""}`}
@@ -813,7 +953,7 @@ function StatsPanel({ stats }: { stats: AuditStats }) {
           <div className="text-2xl font-semibold tabular-nums">
             {stats.servers.length}
           </div>
-          <div className="text-xs text-muted-foreground">active servers</div>
+          <div className="text-xs text-muted-foreground">servers used</div>
         </div>
       </div>
 
@@ -880,7 +1020,7 @@ function fmtBody(v: unknown): string {
 function InspectRow({ e }: { e: InspectEntry }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="rounded-md border border-border/50 text-sm">
+    <div className="border-b border-border text-sm">
       <div
         className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-muted/30"
         onClick={() => setOpen((o) => !o)}
@@ -954,7 +1094,7 @@ function DiscoveryRow({ t }: { t: SearchTrace }) {
       ? `${t.returned} of ${t.total}`
       : "no match";
   return (
-    <div className="rounded-md border border-border/50 text-sm">
+    <div className="border-b border-border text-sm">
       <div
         className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-muted/30"
         onClick={() => setOpen((o) => !o)}
@@ -1095,11 +1235,11 @@ function PanelErrorNotice({ label, onRetry }: { label: string; onRetry: () => vo
   return (
     <div
       role="alert"
-      className="mb-6 flex items-center gap-3 rounded-lg border border-warning/40 bg-warning/5 p-4 text-xs"
+      className="mb-6 flex items-center gap-3 toolport-alert border-warning bg-warning/8 p-4 text-xs"
     >
       <AlertTriangle className="size-4 shrink-0 text-warning" />
       <span className="text-muted-foreground">
-        <span className="font-medium text-foreground">
+        <span className="block font-semibold text-foreground">
           Couldn't load {label.toLowerCase()}.
         </span>{" "}
         This isn't necessarily empty — Toolport couldn't check.
@@ -1116,7 +1256,13 @@ function PanelErrorNotice({ label, onRetry }: { label: string; onRetry: () => vo
   );
 }
 
-function DiscoveryTraces({ refreshKey }: { refreshKey: number }) {
+function DiscoveryTraces({
+  refreshKey,
+  searches,
+}: {
+  refreshKey: number;
+  searches: number;
+}) {
   const [entries, setEntries] = useState<SearchTrace[]>([]);
   // Collapsed by default: this is glanceable telemetry, not an alert, and the list can run
   // to 100 rows. Leading with it open was a big part of the Activity tab feeling busy.
@@ -1128,6 +1274,7 @@ function DiscoveryTraces({ refreshKey }: { refreshKey: number }) {
 
   useEffect(() => {
     let alive = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the retry error before the new backend request starts.
     setStatus((s) => (s === "error" ? "loading" : s));
     getSearchTraces(100)
       .then((e) => {
@@ -1161,13 +1308,14 @@ function DiscoveryTraces({ refreshKey }: { refreshKey: number }) {
           <Search className="size-4 shrink-0 text-owned" />
           <span className="font-medium text-foreground/80">Discovery</span>
         </div>
-        With lazy discovery on, this shows every tool search your agents run, what
-        matched, why it ranked, and the returned MCP payload size. Nothing searched yet.
+        {searches > 0
+          ? `${searches} searches in recent activity; detailed search records are not available.`
+          : "Nothing searched yet."}
       </div>
     );
 
   return (
-    <div className="mb-6 rounded-lg border border-owned/30 bg-owned/[0.04] p-4">
+    <div className="mb-6 toolport-alert border-owned bg-owned/8 p-4">
       <button
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
@@ -1210,7 +1358,7 @@ function ToolIdentityRow({ t }: { t: ToolIdentity }) {
   const fpShort = t.fingerprint.replace(/^v\d+:/, "").slice(0, 12) || "-";
   const fmtDate = (ms: number) => (ms > 0 ? fmtTs(ms, "date") : "-");
   return (
-    <div className="rounded-md border border-border/50 text-sm">
+    <div className="border-b border-border text-sm">
       <div
         className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-muted/30"
         onClick={() => setOpen((o) => !o)}
@@ -1296,7 +1444,7 @@ function IdentityServerGroup({
   const shown = forceOpen || open;
   const quarantined = items.filter((t) => t.quarantined).length;
   return (
-    <div className="rounded-md border border-border/50">
+    <div className="border-b border-border">
       <button
         onClick={() => setOpen((v) => !v)}
         aria-expanded={shown}
@@ -1344,6 +1492,7 @@ function ToolIdentities({ refreshKey }: { refreshKey: number }) {
 
   useEffect(() => {
     let alive = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the retry error before the new backend request starts.
     setStatus((s) => (s === "error" ? "loading" : s));
     getToolIdentities()
       .then((r) => {
@@ -1491,6 +1640,7 @@ function LiveInspector({ refreshKey }: { refreshKey: number }) {
 
   useEffect(() => {
     let alive = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the retry error before the new backend request starts.
     setStatus((s) => (s === "error" ? "loading" : s));
     getInspectLog(50)
       .then((e) => {
@@ -1508,7 +1658,7 @@ function LiveInspector({ refreshKey }: { refreshKey: number }) {
   }, [refreshKey, retryTick]);
 
   return (
-    <div className="mb-6 rounded-lg border border-info/30 bg-info/[0.04] p-4">
+    <div className="mb-6 toolport-alert border-info bg-info/8 p-4">
       <button
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
@@ -1564,9 +1714,11 @@ function LiveInspector({ refreshKey }: { refreshKey: number }) {
 export function ActivityView({
   refreshKey,
   registry,
+  onReviewQuarantine,
 }: {
   refreshKey: number;
   registry: Registry | null;
+  onReviewQuarantine?: () => void;
 }) {
   const [entries, setEntries] = useState<AuditEntry[] | null>(null);
   const [stats, setStats] = useState<AuditStats | null>(null);
@@ -1622,21 +1774,95 @@ export function ActivityView({
     }
   }
 
-  // Native visibility also covers a window hidden to the tray, where the
-  // webview may keep reporting "visible". Pause file reads and rerenders while
-  // the user is elsewhere; resume within one tick when they return.
+  // Poll a cached content revision. Idle pages keep rows, stats and open panels;
+  // native visibility also pauses this cheap check while hidden to the tray.
   const windowVisible = useWindowVisible();
   const [liveTick, setLiveTick] = useState(0);
+  const [revisionUnavailable, setRevisionUnavailable] = useState(false);
+  const revisionChecking = useRef(false);
   useEffect(() => {
     if (!windowVisible) return;
-    const id = setInterval(() => setLiveTick((t) => t + 1), 3000);
-    return () => clearInterval(id);
+    let alive = true;
+    let previous: string | undefined;
+    async function checkRevision() {
+      if (revisionChecking.current) return;
+      revisionChecking.current = true;
+      try {
+        const revision = await getActivityRevision();
+        if (!alive) return;
+        setRevisionUnavailable(false);
+        // Initial panel reads can precede a delayed digest. Reconcile once after
+        // the first successful baseline, then leave genuinely idle rows alone.
+        if (previous !== revision) setLiveTick((t) => t + 1);
+        previous = revision;
+      } catch {
+        // Let panel readers surface an unreadable store rather than masking it
+        // with a successful old revision.
+        if (alive) {
+          setRevisionUnavailable(true);
+          setLiveTick((t) => t + 1);
+        }
+      } finally {
+        revisionChecking.current = false;
+      }
+    }
+    void checkRevision();
+    const id = setInterval(() => void checkRevision(), 3000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+      void releaseActivityRevision().catch(() => {});
+    };
   }, [windowVisible]);
+  const [liveHealth, setLiveHealth] = useState<Pick<
+    AuditStats,
+    "telemetry" | "gatewayNotes"
+  > | null>(null);
+  const [healthUnavailable, setHealthUnavailable] = useState(false);
+  const healthChecking = useRef(false);
+  useEffect(() => {
+    if (!windowVisible) return;
+    let alive = true;
+    async function checkHealth() {
+      if (healthChecking.current) return;
+      healthChecking.current = true;
+      try {
+        const health = await getActivityHealth();
+        if (alive) {
+          setLiveHealth(health);
+          setHealthUnavailable(false);
+        }
+      } catch {
+        if (alive) setHealthUnavailable(true);
+      } finally {
+        healthChecking.current = false;
+      }
+    }
+    const id = setInterval(() => void checkHealth(), 15_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [windowVisible]);
+  const noticeHealth = liveHealth ?? stats;
+  const noticeStats = {
+    gatewayNotes: noticeHealth?.gatewayNotes,
+    telemetry: {
+      queueDropped: 0,
+      writeFailedRecords: 0,
+      writeFailures: 0,
+      incompleteFlushes: 0,
+      ...noticeHealth?.telemetry,
+      retainedDropped: stats?.telemetry?.retainedDropped,
+      ...(healthUnavailable ? { unavailable: true } : {}),
+    },
+  };
   // Combined so panels refetch on either a registry change or a live tick. Both counters
   // only increase, so the sum always changes when either does (no collisions).
   const liveKey = refreshKey + liveTick;
 
   useEffect(() => {
+    if (!windowVisible) return;
     let alive = true;
     const generation = auditGeneration.current;
     getAuditLog(200)
@@ -1667,10 +1893,12 @@ export function ActivityView({
           status === "ready" || status === "stale" ? "stale" : "error",
         );
       });
-    getSecurityEvents(50)
+    getSecurityEvents(2000)
       .then((s) => {
         if (!alive) return;
-        setSecurity(s);
+        setSecurity((previous) =>
+          JSON.stringify(previous) === JSON.stringify(s) ? previous : s,
+        );
         setSecurityLoadStatus("ready");
       })
       .catch(() => {
@@ -1684,7 +1912,7 @@ export function ActivityView({
     return () => {
       alive = false;
     };
-  }, [liveKey, reloadTick]);
+  }, [liveKey, reloadTick, windowVisible]);
 
   // Export the full retained audit log. The save dialog offers CSV and JSON; the
   // chosen extension picks the format. CSV is formula-injection-safe in the backend.
@@ -1707,8 +1935,10 @@ export function ActivityView({
     }
   }
 
-  const liveSecurity = dedupeSecurity(security).filter(
-    (e) => !dismissed.has(securityKey(e)),
+  const reviewedIndex = useMemo(() => dismissalIndex(dismissed), [dismissed]);
+  const liveSecurity = useMemo(
+    () => selectSecurityEvents(security, dismissed, reviewedIndex),
+    [security, dismissed, reviewedIndex],
   );
   // Split loud/actionable signal from benign churn so vendor revisions don't bury a real
   // poison or privilege-escalation flag (the failure this whole surface exists to avoid).
@@ -1724,30 +1954,66 @@ export function ActivityView({
     e.type !== "tool_poison_flag" &&
     e.type !== "result_injection" &&
     e.type !== "result_injection_blocked";
+  const toolChanges = useMemo(
+    () => liveSecurity.filter((e) => e.type === "tool_drift" && !e.historical),
+    [liveSecurity],
+  );
+  const olderToolChanges = useMemo(
+    () => liveSecurity.filter((e) => e.type === "tool_drift" && e.historical),
+    [liveSecurity],
+  );
   const highSecurity = liveSecurity.filter(
-    (e) => eventSeverity(e) === "high" && !isNewTool(e),
+    (e) => e.type !== "tool_drift" && eventSeverity(e) === "high" && !isNewTool(e),
   );
   const infoSecurity = liveSecurity.filter(
-    (e) => eventSeverity(e) !== "high" || isNewTool(e),
+    (e) => e.type !== "tool_drift" && (eventSeverity(e) !== "high" || isNewTool(e)),
   );
   const dismissSecurity = (e: SecurityEvent) => {
-    setDismissed((prev) => addDismissed(prev, [securityKey(e)]));
+    setDismissed((prev) => addDismissed(prev, [dismissalKey(e)]));
   };
   // Clear a whole batch at once (the quiet lane can hold dozens of first-sightings after
   // a re-baseline; making the user dismiss each would just recreate the noise problem).
   const dismissAllSecurity = (events: SecurityEvent[]) => {
-    setDismissed((prev) => addDismissed(prev, events.map(securityKey)));
+    setDismissed((prev) => addDismissed(prev, events.map(dismissalKey)));
   };
 
   const banner = (
     <>
+      <TelemetryNotice stats={noticeStats} />
+      {revisionUnavailable ? (
+        <p role="status" className="mb-4 text-sm text-destructive">
+          Activity change checks are unavailable. Displayed activity may be stale.
+        </p>
+      ) : null}
       {/* Loud lane: the only thing here that may need a decision. */}
       {securityLoadStatus !== "ready" ? (
         <SecurityLoadNotice status={securityLoadStatus} onRetry={retryLoads} />
       ) : null}
+      {toolChanges.length > 0 ? (
+        <ToolChanges
+          events={toolChanges}
+          registry={registry}
+          onAccept={dismissAllSecurity}
+          onReview={onReviewQuarantine}
+        />
+      ) : null}
+      {olderToolChanges.length > 0 ? (
+        <details className="mb-4 rounded-lg border border-border p-4">
+          <summary className="cursor-pointer text-sm">
+            {olderToolChanges.length} older tool-change records. Open history to review
+            them.
+          </summary>
+          <ToolChanges
+            events={olderToolChanges}
+            registry={registry}
+            onAccept={dismissAllSecurity}
+            onReview={onReviewQuarantine}
+          />
+        </details>
+      ) : null}
       {highSecurity.length > 0 ? (
         <SecurityNotices events={highSecurity} onDismiss={dismissSecurity} />
-      ) : securityLoadStatus === "ready" ? (
+      ) : securityLoadStatus === "ready" && toolChanges.length === 0 ? (
         <SecurityResting />
       ) : null}
       {infoSecurity.length > 0 ? (
@@ -1767,10 +2033,20 @@ export function ActivityView({
             : "Catalog telemetry unavailable. Retry Activity to load measurements."}
         </p>
       )}
-      {savings && (savings.listLoads > 0 || (savings.discoveryCount ?? 0) > 0) ? (
+      {savings &&
+      ((savings.tokenizedLoads ?? 0) > 0 ||
+        (savings.discoveryCount ?? 0) > 0 ||
+        (savings.historicalListLoads ?? 0) > 0 ||
+        (savings.previousReportedTokensSaved ?? 0) !== 0) ? (
         <SavingsBanner savings={savings} />
       ) : null}
-      <DiscoveryTraces refreshKey={liveKey} />
+      <DiscoveryTraces
+        refreshKey={liveKey}
+        searches={
+          (entries ?? []).filter((e) => e.kind === "internal" && e.tool === "search")
+            .length
+        }
+      />
       <ToolIdentities refreshKey={liveKey} />
       {registry?.liveInspect ? <LiveInspector refreshKey={liveKey} /> : null}
     </>
@@ -1782,7 +2058,9 @@ export function ActivityView({
   );
 
   const visible = (entries ?? []).filter(
-    (e) => (!serverFilter || e.server === serverFilter) && (!errorsOnly || !e.ok),
+    (e) =>
+      (!serverFilter || e.server === serverFilter) &&
+      (!errorsOnly || (e.kind !== "approval" && !e.ok)),
   );
 
   if (entries === null && auditLoadStatus === "loading") {
@@ -1861,10 +2139,10 @@ export function ActivityView({
         <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
           <ScrollText className="size-10 text-muted-foreground/50" />
           <div>
-            <p className="font-medium">No tool calls yet</p>
+            <p className="font-medium">No activity yet</p>
             <p className="max-w-md text-sm text-muted-foreground">
-              Once a client runs a tool through Toolport, every call is recorded here,
-              with per-server latency and error rates.
+              Calls and approval outcomes appear here. Call totals and error rates count
+              tools that ran.
             </p>
           </div>
         </div>
@@ -1887,9 +2165,9 @@ export function ActivityView({
           <ChevronRight
             className={`size-4 transition-transform ${logOpen ? "rotate-90" : ""}`}
           />
-          Recent calls
+          Recent calls and approvals
           <span className="text-xs font-normal text-muted-foreground/70">
-            last {entries.length} {entries.length === 1 ? "call" : "calls"}
+            latest {entries.length}
           </span>
         </button>
         <button
@@ -1917,6 +2195,17 @@ export function ActivityView({
           onConfirm={clearActivity}
         />
       </div>
+
+      <p className="mb-2 text-xs text-muted-foreground">
+        {stats
+          ? `${stats.total.toLocaleString()} ${stats.total === 1 ? "call" : "calls"} recorded on this computer. `
+          : ""}
+        {logOpen
+          ? visible.length === entries.length
+            ? `Showing the latest ${visible.length.toLocaleString()}.`
+            : `Showing ${visible.length.toLocaleString()} matching rows from the latest ${entries.length.toLocaleString()}.`
+          : `Latest ${entries.length.toLocaleString()} available.`}
+      </p>
 
       {logOpen && (
         <>
@@ -1949,7 +2238,7 @@ export function ActivityView({
               Errors only
             </button>
             <span className="ml-auto text-xs text-muted-foreground">
-              {visible.length} of {entries.length}
+              {serverFilter || errorsOnly ? "Filtered" : ""}
             </span>
           </div>
 

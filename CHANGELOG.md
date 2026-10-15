@@ -6,6 +6,53 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-14
+
+Toolport 2.0 is here. Existing 1.24.x installs are not updated to it
+automatically yet. To upgrade now, download and install the matching package from
+the [GitHub release assets](https://github.com/btsouth/toolport/releases/tag/v2.0.0).
+Read the [upgrade guide](https://github.com/btsouth/toolport/blob/next/2.0/docs/migration.md)
+for preserved settings, removed features and rollback steps.
+
+### Added
+
+- One local gateway shared by your AI clients, with supervised server lifecycles
+  and client access sets that control which servers each client can use.
+- Teams configuration sharing with member review of changes and team safety floors.
+- Personal sync across your machines with Pro, plus password manager references
+  for credentials that you approve locally on each machine.
+- A native GTK shell for Linux, shipped in `.deb` and `.rpm` packages. The AppImage
+  remains available for older distributions.
+- Local tool search that prioritizes literal tool names and uses bundled
+  bge-small semantic ranking on the CPU, with no model download or external service.
+  The model loads when needed and unloads while idle.
+- Command Code client support.
+
+### Changed
+
+- A simpler sidebar: Servers, Clients, Activity and Settings. Browse the catalog
+  in Servers and try tools in each server's Tools tab.
+- Code Mode is opt-in. New installs start with Safety Ask and Code Mode off;
+  upgrades keep your 1.x Safety, Code Mode and discovery choices.
+- Agents receive a compact tool menu instead of repeated full catalogs when
+  using lazy discovery. Activity shows callers, approval outcomes and tool changes
+  grouped by server; tokens saved reflect net savings per client session.
+- Tool results reach clients as the server sent them. Safety findings remain
+  visible in Activity, and blocking stops flagged results.
+- Agent rules, permissions, activity hooks, routines, Collections and the global
+  profile switcher are retired. The upgrade guide explains exports and rollback.
+
+### Fixed
+
+- Faster cold starts and client connections without waiting for every server's
+  catalog, with more reliable initial discovery and recovery after upgrades.
+- GTK responsiveness during registry reads and Activity monitoring, plus idle
+  polling, gateway memory use and search resource cleanup.
+- Tokens saved history across sessions and Activity lifecycle updates.
+- Client configuration conflicts, disconnect restoration and retryable data removal.
+- Windows installs and updates while MCP clients are open, with guidance to
+  restart clients afterward.
+
 ## [1.24.1] - 2026-10-14
 
 The last planned 1.x feature release before Toolport 2.0. The 1.24 line keeps
@@ -888,7 +935,7 @@ makepkg -si` builds the identical package with no AUR account). The AppImage
   `apply_instructions_to` only recorded a target when `write_target` returned
   `Applied`. Error, TooLong (a Devin Desktop char-cap miss) and BlockedOverride then
   hit `remove_recorded`, which stripped the working v1 block, persisted the new
-  content watermark, and left later syncs with nothing to retry — coverage of
+  content watermark, and left later syncs with nothing to retry; coverage of
   the missing file against too-long v2 is `TooLong`, not `Stale`. Last-good now
   stays on disk and in the recorded set when a rewrite is refused; a real
   removal (org cleared, client gone, path moved) still cleans up. (SBS-917)
@@ -1467,8 +1514,8 @@ If we missed you, open an issue.
 
 Two features ship for the first time. PII pseudonymization replaces personal data in
 tool results with tokens before the model sees them, restoring the real values only
-for the server that provided them. OAuth client credentials let a headless server —
-one nobody can click a browser sign-in for — get a real token. Both are off or opt-in
+for the server that provided them. OAuth client credentials let a headless server
+(one nobody can click a browser sign-in for) get a real token. Both are off or opt-in
 by default.
 
 Several things that were only safe within one process are now safe across processes:
@@ -1495,7 +1542,7 @@ release. See Changed below before rolling it out.
   command at startup, so stopping the process is not enough. Settings and a launch
   notification list which apps need restarting, each entry clears itself, and Settings
   now reports processes it could not stop. (SOU-435)
-- **Keyboard shortcuts.** `Ctrl/Cmd+1`–`6` switch view, `/` or `Ctrl/Cmd+F` focuses
+- **Keyboard shortcuts.** `Ctrl/Cmd+1`-`6` switch view, `/` or `Ctrl/Cmd+F` focuses
   search, `Ctrl/Cmd+N` adds a server, `Ctrl/Cmd+R` refreshes, `?` lists them.
   (SBS-143)
 - **The window reopens where you left it** instead of resetting to a fixed centered
@@ -1571,7 +1618,7 @@ release. See Changed below before rolling it out.
 - Connect, rescope, disconnect and migrate leave a restart reminder in the panel
   rather than only a toast that fades, with wording matched to the action. (SBS-336)
 - The "Stop old gateways" panel no longer reads as though it contradicts itself. It
-  could report nothing running directly above a list of apps still launching one —
+  could report nothing running directly above a list of apps still launching one;
   both true, since a client spawns the gateway on its next tool call. It now says so,
   and each row shows the process id so near-identical entries can be told apart.
 - The Activity list no longer comes up short when the audit log holds an unreadable
@@ -1855,7 +1902,7 @@ Existing registries that already store `"codeMode": false` stay off. (SOU-397)
 
 **Code mode parallel calls and typed stubs.** Scripts get `callAsync` / `Promise.all`
 with bounded host parallelism, scoped `servers.*` typed stubs, full intermediate
-results and `fetchResult` handoff. (#480–#483 / SOU-348)
+results and `fetchResult` handoff. (#480-#483 / SOU-348)
 
 ### Added
 
@@ -1867,7 +1914,7 @@ bridge. Tokens are vaulted; ownership records never store bearers. (SOU-407)
 
 **Native MCP resource subscriptions.** Subscribe/unsubscribe and `resources/updated`
 fanout (with producer verification), resource templates + completions, paginated
-catalogs preserved. (#474–#479, #484)
+catalogs preserved. (#474-#479, #484)
 
 ### Fixed
 
@@ -1984,7 +2031,7 @@ Connect; Connect pins profile and Activity attribution.
 **Invalid discovery / HTTP / budget env values warn** instead of failing quietly.
 (#453)
 
-**CI runs Rust integration tests**; notarytool submit is time-bounded. (#454, #441)
+**CI runs Rust integration tests**: notarytool submit is time-bounded. (#454, #441)
 
 ### Docs
 
@@ -2433,7 +2480,7 @@ line. (#226, #228)
 
 ### Fixed
 
-- **Windows NSIS install with locked gateway** — `NSIS_HOOK_PREINSTALL` runs
+- **Windows NSIS install with locked gateway**: `NSIS_HOOK_PREINSTALL` runs
   `taskkill` on `toolport-gateway.exe` / `conduit-gateway.exe` before file copy.
   1.6.1 only stopped gateways during in-app update from an already-updated app, so
   manual installs and upgrades from 1.6.0 still failed when Cursor held the gateway.
@@ -2447,7 +2494,7 @@ spawned gateway processes before install.
 
 ### Fixed
 
-- **Windows auto-update with locked gateway** — MCP configs point at a versioned
+- **Windows auto-update with locked gateway**: MCP configs point at a versioned
   `toolport-gateway-{version}.exe` under `%APPDATA%\\Roaming\\Conduit\\bin` instead of
   the install-dir copy; before updating, Toolport stops only spawned gateway processes so
   NSIS can replace locked binaries without closing Cursor or other agents. (#244)
@@ -2460,42 +2507,42 @@ support, Teams usage rollups, and registry safety fixes.
 
 ### Added
 
-- **Headless / container gateway** — run without the desktop app: `POST /mcp`
+- **Headless / container gateway**: run without the desktop app: `POST /mcp`
   streamable-HTTP, env-file secrets (`CONDUIT_SECRET_KEY`), Docker +
   `docker-compose.example.yml`. See `docs/headless.md`. (#214)
-- **MCP listen stream** — `GET /mcp` SSE for server→client JSON-RPC (30s keepalive when
+- **MCP listen stream**: `GET /mcp` SSE for server→client JSON-RPC (30s keepalive when
   idle). (#216)
-- **MCP server-initiated RPC passthrough (#167)** — when the upstream client declares
+- **MCP server-initiated RPC passthrough (#167)**: when the upstream client declares
   `roots`, `sampling`, or `elicitation` at `initialize`, downstream servers can call
   `roots/list`, `sampling/createMessage`, and `elicitation/create`; the gateway forwards
   over stdio or HTTP MCP (inline during SSE `POST` responses). (#217, #218, #219)
-- **Prebuilt gateway image on GHCR** — `ghcr.io/btsouth/toolport-gateway:latest`
+- **Prebuilt gateway image on GHCR**: `ghcr.io/btsouth/toolport-gateway:latest`
   (CI-built binary + slim runtime; ~3 min builds vs ~8 min). (#222, #223, #225)
-- **AnythingLLM client** — connect from the Clients view. (#213)
-- **Teams per-server usage rollups** — members report tool-call counts to the team
+- **AnythingLLM client**: connect from the Clients view. (#213)
+- **Teams per-server usage rollups**: members report tool-call counts to the team
   dashboard (counts/estimates only; tool names stay local). (#221)
 
 ### Fixed
 
-- **npx/uvx cold-start false errors** — download launchers (`npx -y`, `uvx`, `pnpm dlx`,
+- **npx/uvx cold-start false errors**: download launchers (`npx -y`, `uvx`, `pnpm dlx`,
   …) get a 120s first-`initialize` budget (10s for everything else), **"Installing…"**
   UI while downloading, and background pre-warm on add. (#237)
-- **SSE streaming for inline server-initiated RPC** — HTTP downstream no longer buffers
+- **SSE streaming for inline server-initiated RPC**: HTTP downstream no longer buffers
   the full body before forwarding JSON-RPC to the upstream client. (#220)
-- **Registry preserved on read failure** — a corrupt or unreadable `registry.json` is
+- **Registry preserved on read failure**: a corrupt or unreadable `registry.json` is
   quarantined and restored from `.bak` instead of silently reset. (#224)
 
 ### Changed
 
-- **Gateway-only compile** — `cargo build --no-default-features --bin toolport-gateway`
+- **Gateway-only compile**: `cargo build --no-default-features --bin toolport-gateway`
   skips Tauri/WebKit for headless/CI builds; desktop default unchanged. (#225)
 
 ### Documentation
 
-- **Headless production checklist and security guidance** — deploy checklist, inherited
+- **Headless production checklist and security guidance**: deploy checklist, inherited
   vs new security surface, and audit recommendations in `docs/headless.md`. (#242)
-- **Release notes draft** — `docs/release-notes/v1.6.0.md`; updated `docs/RELEASING.md`.
-- **Headless smoke tests** — `scripts/smoke-headless.ps1` (auth, MCP handshake, HITL
+- **Release notes draft**: `docs/release-notes/v1.6.0.md`; updated `docs/RELEASING.md`.
+- **Headless smoke tests**: `scripts/smoke-headless.ps1` (auth, MCP handshake, HITL
   fail-closed).
 
 ## [1.5.3] - 2026-07-08

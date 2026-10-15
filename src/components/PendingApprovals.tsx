@@ -1,20 +1,16 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
-import {
-  Check,
-  FileCode2,
-  Globe,
-  Loader2,
-  Monitor,
-  ShieldAlert,
-  Trash2,
-  X,
-} from "lucide-react";
+import { Check, Globe, Loader2, ShieldAlert, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { decideApproval, listPendingApprovals, type ApprovalScope } from "@/lib/api";
 import type { PendingApproval } from "@/lib/types";
 import { openExternal } from "@/lib/openUrl";
+import {
+  trustedClientName,
+  shortenClientLabel,
+  clientIdentityTooltip,
+} from "@/lib/clientIdentity";
 import { toastError } from "@/lib/toast";
 
 /** Fail-closed window (must match approval::DEFAULT_TIMEOUT_SECS on the gateway). A
@@ -22,25 +18,6 @@ import { toastError } from "@/lib/toast";
 const TIMEOUT_MS = 120_000;
 
 type Reason = PendingApproval["reason"];
-
-function routineApprovalView(value: unknown) {
-  if (!value || typeof value !== "object") return null;
-  const payload = value as Record<string, unknown>;
-  const evidence =
-    payload.evidence && typeof payload.evidence === "object"
-      ? (payload.evidence as Record<string, unknown>)
-      : undefined;
-  const dependencies = evidence?.observedDependencies;
-  return {
-    name: typeof payload.name === "string" ? payload.name : "Unnamed routine",
-    description: typeof payload.description === "string" ? payload.description : null,
-    risk: typeof payload.riskClass === "string" ? payload.riskClass : "unknown",
-    calls: evidence?.calls,
-    dependencies: Array.isArray(dependencies) ? dependencies : [],
-    synthesized: payload.provenance === "synthesized_from_observed_calls",
-    technical: payload,
-  };
-}
 
 /** How each gate reason presents: label, badge tone, and an icon. */
 const REASON: Record<Reason, { label: string; className: string; Icon: typeof Trash2 }> =
@@ -60,19 +37,9 @@ const REASON: Record<Reason, { label: string; className: string; Icon: typeof Tr
       className: "bg-destructive/10 text-destructive",
       Icon: Trash2,
     },
-    persistent_code_write: {
-      label: "Persistent code",
-      className: "bg-warning/15 text-warning",
-      Icon: FileCode2,
-    },
     pii_cross_server: {
       label: "Releases private data",
       className: "bg-destructive/10 text-destructive",
-      Icon: ShieldAlert,
-    },
-    agent_permission: {
-      label: "Ask first",
-      className: "bg-warning/15 text-warning",
       Icon: ShieldAlert,
     },
   };
@@ -84,7 +51,9 @@ const REASON: Record<Reason, { label: string; className: string; Icon: typeof Tr
  * safety net and refreshes immediately on the gateway's `approval-pending` /
  * `approval-resolved` events.
  */
-export function PendingApprovals() {
+export function PendingApprovals({
+  onCountChange,
+}: { onCountChange?: (count: number) => void } = {}) {
   const [pending, setPending] = useState<PendingApproval[]>([]);
   // Ids with a decision in flight: shown dimmed + disabled, removed authoritatively by the
   // resolved event / poll (NOT optimistically), so a poll landing before the backend
@@ -98,16 +67,18 @@ export function PendingApprovals() {
   const prevCount = useRef(0);
   // Monotonic request id: the interval poll, both event listeners, and a decision's error
   // path can all start a refresh, so an older response can land last and momentarily
-  // resurrect a resolved row (or hide a new one). Only the newest request may write,
-  // the same guard the sidebar badge and the quarantine card already carry.
+  // resurrect a resolved row (or hide a new one). Order applied responses rather than
+  // outstanding requests so a slow IPC call is not starved by every newer poll.
   const reqId = useRef(0);
+  const appliedId = useRef(0);
 
   const refresh = useCallback(async () => {
     const id = ++reqId.current;
     try {
       const list = await listPendingApprovals();
-      // A stale response must not write: the newer list is the authority.
-      if (id !== reqId.current) return;
+      // A response older than the last applied list must not write.
+      if (id <= appliedId.current) return;
+      appliedId.current = id;
       setPending(list);
       // Prune resolving ids the backend has confirmed gone (authoritative removal).
       setResolving((s) => {
@@ -121,6 +92,7 @@ export function PendingApprovals() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Start the initial broker poll on mount.
     void refresh();
     const poll = setInterval(() => void refresh(), 2000);
     const unlisten = Promise.all([
@@ -132,6 +104,10 @@ export function PendingApprovals() {
       void unlisten.then((fns) => fns.forEach((f) => f()));
     };
   }, [refresh]);
+
+  useEffect(() => {
+    onCountChange?.(pending.length);
+  }, [pending.length, onCountChange]);
 
   // Tick once a second while anything is pending, to drive the countdown.
   useEffect(() => {
@@ -152,7 +128,9 @@ export function PendingApprovals() {
     setResolving((s) => new Set(s).add(id));
     try {
       await decideApproval(id, approved, scope);
-      // Intentionally NOT removed here — the approval-resolved event + poll remove it.
+      // Read the authoritative queue after the acknowledgement as well as on
+      // events. A delayed or missed event must not leave the decision onscreen.
+      await refresh();
     } catch (e) {
       toastError(`Couldn't record your decision: ${e}`);
       setResolving((s) => {
@@ -193,7 +171,7 @@ export function PendingApprovals() {
         role="alertdialog"
         aria-modal="false"
         aria-label="Tool calls awaiting your approval"
-        className="animate-in fade-in slide-in-from-top-2 pointer-events-auto relative w-full max-w-lg overflow-hidden rounded-xl border border-warning/40 bg-popover/95 shadow-2xl ring-1 ring-warning/10 backdrop-blur outline-none focus-visible:ring-2 focus-visible:ring-warning"
+        className="animate-in fade-in slide-in-from-top-2 pointer-events-auto relative flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-r-[10px] border-l-[3px] border-warning bg-popover shadow-2xl outline-none focus-visible:ring-2 focus-visible:ring-warning"
       >
         {/* Announce count changes to screen readers without re-announcing on every countdown
          * tick (the visible timer lives elsewhere; this text only changes when the count does). */}
@@ -201,7 +179,7 @@ export function PendingApprovals() {
           {pending.length} request{pending.length > 1 ? "s" : ""} awaiting your action.
           Press Escape to cancel.
         </div>
-        <header className="flex items-center gap-3 border-b border-border/60 px-4 py-3">
+        <header className="flex shrink-0 items-center gap-3 border-b border-border/60 px-4 py-3">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-warning/15 text-warning">
             <ShieldAlert className="size-4" />
           </span>
@@ -214,9 +192,18 @@ export function PendingApprovals() {
           </div>
         </header>
 
-        <ul className="max-h-[70vh] divide-y divide-border/60 overflow-auto">
+        <ul className="min-h-0 divide-y divide-border/60 overflow-y-auto overscroll-contain">
+          {/* First-sighting refs are read for the existing countdown, never mutated during render. */}
+          {/* eslint-disable-next-line react-hooks/refs -- Preserve broker deadline and first-sighting fallback timing. */}
           {pending.map((a) => {
             const reason = REASON[a.reason];
+            const clientName = trustedClientName(a);
+            const reportedLabel =
+              a.clientLabel &&
+              a.clientLabel !== clientName &&
+              !clientName.endsWith(" (reported)")
+                ? a.clientLabel
+                : null;
             const urlElicitation = a.urlElicitation;
             const piiRelease = a.piiRelease;
             // Count down to the broker's authoritative deadline; fall back to
@@ -253,17 +240,26 @@ export function PendingApprovals() {
                         </>
                       )}
                     </div>
-                    {a.client && (
-                      <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <Monitor className="size-3" />
-                        Requested by {a.client}
-                      </div>
-                    )}
-                    {a.agentRule && (
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        Your rule{" "}
-                        <span className="font-mono text-foreground">{a.agentRule}</span>{" "}
-                        asks before this.
+                    <div
+                      className="mt-1 text-xs"
+                      title={clientIdentityTooltip(a) ?? a.client ?? undefined}
+                    >
+                      {clientName} wants to run this ·{" "}
+                      {a.reason === "destructive"
+                        ? "destructive tool"
+                        : a.reason === "destructive_and_untrusted"
+                          ? "destructive tool from an untrusted source"
+                          : a.reason === "pii_cross_server"
+                            ? "cross-server data release"
+                            : "untrusted source"}
+                    </div>
+                    {reportedLabel && (
+                      <div
+                        className="mt-1 break-words text-xs text-muted-foreground [overflow-wrap:anywhere]"
+                        title={reportedLabel}
+                        dir="auto"
+                      >
+                        Reports itself as: {shortenClientLabel(reportedLabel, 60)}
                       </div>
                     )}
                   </div>
@@ -289,7 +285,7 @@ export function PendingApprovals() {
                     <div className="mb-1 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
                       Would send to {piiRelease.server}
                     </div>
-                    <ul className="divide-y divide-border/60 rounded-md border border-destructive/40 bg-destructive/5">
+                    <ul className="divide-y divide-border/60 toolport-alert border-destructive bg-destructive/8">
                       {piiRelease.values.map((v) => (
                         <li key={v.token} className="p-2.5 text-xs">
                           <div className="font-mono break-all text-foreground">
@@ -312,79 +308,12 @@ export function PendingApprovals() {
 
                 <div className="mb-3">
                   <div className="mb-1 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
-                    {urlElicitation
-                      ? "Why this is needed"
-                      : a.reason === "persistent_code_write"
-                        ? "Routine definition"
-                        : "Arguments"}
+                    {urlElicitation ? "Why this is needed" : "Arguments"}
                   </div>
                   {urlElicitation ? (
                     <div className="rounded-md border border-border/60 bg-muted/40 p-2.5 text-sm leading-relaxed">
                       {urlElicitation.message}
                     </div>
-                  ) : a.reason === "persistent_code_write" ? (
-                    (() => {
-                      const routine = routineApprovalView(a.arguments);
-                      // Fail visible: a payload the structured view cannot render
-                      // must still be shown raw - never an empty card with a live
-                      // Approve button on a persistent write.
-                      if (!routine) {
-                        return (
-                          <pre className="max-h-36 overflow-auto rounded-md border border-border/60 bg-muted/40 p-2.5 font-mono text-xs leading-relaxed">
-                            {JSON.stringify(a.arguments, null, 2)}
-                          </pre>
-                        );
-                      }
-                      return (
-                        <div className="space-y-2 rounded-md border border-border/60 bg-muted/40 p-2.5 text-sm">
-                          <div className="font-medium text-foreground">
-                            {routine.name}
-                          </div>
-                          {routine.description && (
-                            <div className="text-xs leading-relaxed text-muted-foreground">
-                              {routine.description}
-                            </div>
-                          )}
-                          {routine.synthesized && (
-                            <div className="rounded border border-warning/40 bg-warning/10 px-2 py-1 text-xs leading-relaxed text-warning">
-                              Synthesized by Toolport from observed direct calls: every
-                              listed call really ran, but the surrounding script was
-                              generated and statically validated, not yet executed.
-                            </div>
-                          )}
-                          <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                            <span>Risk: {routine.risk}</span>
-                            {routine.calls !== undefined && (
-                              <span>Calls: {String(routine.calls)}</span>
-                            )}
-                            {routine.dependencies.length > 0 && (
-                              <span>
-                                Dependencies:{" "}
-                                {routine.dependencies
-                                  .map((dependency) =>
-                                    dependency &&
-                                    typeof dependency === "object" &&
-                                    "name" in dependency
-                                      ? String(
-                                          (dependency as Record<string, unknown>).name,
-                                        )
-                                      : String(dependency),
-                                  )
-                                  .join(", ")}
-                              </span>
-                            )}
-                          </div>
-                          <details>
-                            <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
-                              Technical details
-                            </summary>
-                            <pre className="mt-2 max-h-36 overflow-auto rounded border border-border/60 bg-background/60 p-2 font-mono text-[0.7rem] leading-relaxed">
-                              {JSON.stringify(routine.technical, null, 2)}
-                            </pre>
-                          </details>
-                        </div>
-                      );
-                    })()
                   ) : (
                     <pre className="max-h-36 overflow-auto rounded-md border border-border/60 bg-muted/40 p-2.5 font-mono text-xs leading-relaxed">
                       {JSON.stringify(a.arguments, null, 2)}
@@ -447,36 +376,29 @@ export function PendingApprovals() {
                 </div>
 
                 {/* Skip the prompt for this tool next time - curbs approval fatigue.
-                    Never offered for a persistent code write (saving a routine is
-                    always a one-shot decision on an exact definition), nor for a PII
-                    release: the allow key binds a tool definition, and the broker
-                    deliberately refuses to auto-approve a release on one (SBS-696).
-                    Nor for an agent "ask first" rule: its tool is a class of calls,
-                    and the rule itself is the place to stop asking (SBS-1059).
-                    Offering it here would promise a bypass that never fires. */}
-                {!urlElicitation &&
-                  a.reason !== "persistent_code_write" &&
-                  a.reason !== "agent_permission" &&
-                  !piiRelease && (
-                    <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
-                      <span>Skip next time?</span>
-                      <button
-                        disabled={isBusy}
-                        onClick={() => void decide(a.id, true, "session")}
-                        className="font-medium text-foreground/80 underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
-                      >
-                        Allow for this session
-                      </button>
-                      <span className="text-muted-foreground/40">·</span>
-                      <button
-                        disabled={isBusy}
-                        onClick={() => void decide(a.id, true, "always")}
-                        className="font-medium text-foreground/80 underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
-                      >
-                        Always allow this tool
-                      </button>
-                    </div>
-                  )}
+                    Never offered for a PII release: the allow key binds a tool
+                    definition, and the broker deliberately refuses to auto-approve a
+                    release on one (SBS-696). */}
+                {!urlElicitation && !piiRelease && (
+                  <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
+                    <span>Skip next time?</span>
+                    <button
+                      disabled={isBusy}
+                      onClick={() => void decide(a.id, true, "session")}
+                      className="font-medium text-foreground/80 underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+                    >
+                      Allow for this session
+                    </button>
+                    <span className="text-muted-foreground/40">·</span>
+                    <button
+                      disabled={isBusy}
+                      onClick={() => void decide(a.id, true, "always")}
+                      className="font-medium text-foreground/80 underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+                    >
+                      Always allow this tool
+                    </button>
+                  </div>
+                )}
               </li>
             );
           })}

@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 import { PendingApprovals } from "./PendingApprovals";
 import type { PendingApproval } from "@/lib/types";
 
@@ -92,102 +91,66 @@ describe("PendingApprovals PII release", () => {
   });
 });
 
-describe("PendingApprovals agent permission ask", () => {
-  const ask = approval({
-    id: "ask-1",
-    client: "cursor",
-    server: "cursor",
-    tool: "Bash",
-    reason: "agent_permission",
-    arguments: { command: "git push origin main" },
-    agentRule: "Bash(git push*)",
+describe("PendingApprovals refresh ordering", () => {
+  it("applies the decision refresh while a newer poll is still pending", async () => {
+    vi.useFakeTimers();
+    try {
+      let settleDecision!: (value: PendingApproval[]) => void;
+      const decision = new Promise<PendingApproval[]>(
+        (resolve) => (settleDecision = resolve),
+      );
+      const poll = new Promise<PendingApproval[]>(() => {});
+      listPendingApprovals
+        .mockResolvedValueOnce([approval()])
+        .mockReturnValueOnce(decision)
+        .mockReturnValueOnce(poll);
+      decideApproval.mockResolvedValue(null);
+      render(<PendingApprovals />);
+      await act(async () => {});
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /^Deny$/ }));
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(listPendingApprovals).toHaveBeenCalledTimes(3);
+      await act(async () => settleDecision([]));
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("names the rule that asked and never offers to skip it", async () => {
-    // SBS-1059: the "tool" is a class of calls, so a skip would be a blanket grant;
-    // the rule itself is where the user stops asking.
-    listPendingApprovals.mockResolvedValue([ask]);
+  it("refreshes after Deny without waiting for an event or poll", async () => {
+    vi.useFakeTimers();
+    try {
+      listPendingApprovals.mockResolvedValueOnce([approval()]).mockResolvedValue([]);
+      decideApproval.mockResolvedValue(null);
+      render(<PendingApprovals />);
+      await act(async () => {});
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /^Deny$/ }));
+      });
+      expect(decideApproval).toHaveBeenCalledWith("req-1", false, "once");
+      expect(listPendingApprovals).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a decided row until the authoritative queue removes it", async () => {
+    listPendingApprovals.mockResolvedValue([approval()]);
+    decideApproval.mockResolvedValue(null);
     render(<PendingApprovals />);
     await act(async () => {});
-
-    expect(screen.getByText("Bash(git push*)")).toBeInTheDocument();
-    expect(screen.getByText("Ask first")).toBeInTheDocument();
-    expect(screen.queryByText("Skip next time?")).not.toBeInTheDocument();
-  });
-});
-
-const routineSave = (argumentsOver: Record<string, unknown> = {}) =>
-  approval({
-    id: "routine-save-1",
-    client: "cursor",
-    server: "toolport",
-    tool: "save_routine",
-    reason: "persistent_code_write",
-    arguments: {
-      runId: "run_abc",
-      name: "daily-report",
-      description: "Create a daily report",
-      source: "return input.value;",
-      inputSchema: { type: "object" },
-      limits: { maxCalls: 64 },
-      riskClass: "medium",
-      evidence: {
-        calls: 2,
-        observedDependencies: [{ name: "github__issues" }],
-      },
-      contentHash: "sha256:abc",
-      ...argumentsOver,
-    },
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Deny$/ }));
+    });
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Deny$/ })).toBeDisabled();
   });
 
-describe("PendingApprovals persistent routine writes", () => {
-  it("shows the exact definition and permits only one-shot approval", async () => {
-    listPendingApprovals.mockResolvedValue([routineSave()]);
-    const user = userEvent.setup();
-    render(<PendingApprovals />);
-
-    expect(
-      await screen.findByRole("alertdialog", {
-        name: /tool calls awaiting your approval/i,
-      }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Persistent code")).toBeInTheDocument();
-    expect(screen.getByText("Routine definition")).toBeInTheDocument();
-    expect(screen.getByText("daily-report")).toBeInTheDocument();
-    expect(screen.getByText("Risk: medium")).toBeInTheDocument();
-    expect(screen.getByText("Calls: 2")).toBeInTheDocument();
-    expect(screen.getByText(/return input\.value/)).toBeInTheDocument();
-    expect(screen.getByText(/sha256:abc/)).toBeInTheDocument();
-    expect(screen.queryByText("Allow for this session")).not.toBeInTheDocument();
-    expect(screen.queryByText("Always allow this tool")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Approve" }));
-    expect(decideApproval).toHaveBeenCalledWith("routine-save-1", true, "once");
-  });
-
-  it("hides the synthesized-provenance banner for real immutable runs", async () => {
-    listPendingApprovals.mockResolvedValue([routineSave()]);
-    render(<PendingApprovals />);
-    await screen.findByText("daily-report");
-    expect(screen.queryByText(/Synthesized by Toolport/)).not.toBeInTheDocument();
-  });
-
-  it("discloses synthesized provenance so the user knows the glue never executed", async () => {
-    listPendingApprovals.mockResolvedValue([
-      routineSave({ provenance: "synthesized_from_observed_calls" }),
-    ]);
-    render(<PendingApprovals />);
-    await screen.findByText("daily-report");
-    expect(
-      screen.getByText(/Synthesized by Toolport from observed direct calls/),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/statically validated, not yet executed/),
-    ).toBeInTheDocument();
-  });
-});
-
-describe("PendingApprovals refresh ordering", () => {
   it("discards a stale list that lands after a newer one", async () => {
     // The mount refresh is still in flight when the 2s poll starts a newer one, so the
     // older response can land last. Writing it would resurrect a row the newer list had
@@ -221,4 +184,40 @@ describe("PendingApprovals refresh ordering", () => {
       vi.useRealTimers();
     }
   });
+});
+
+describe("PendingApprovals client identity", () => {
+  it("shows the authenticated client before an escaped secondary label", async () => {
+    listPendingApprovals.mockResolvedValue([
+      {
+        ...approval({ client: "client:c1", clientName: "Claude Code" }),
+        clientLabel: "<b>Claude Code</b> 1",
+      },
+    ]);
+    const { container } = render(<PendingApprovals />);
+    await act(async () => {});
+    expect(
+      screen.getByText("Claude Code wants to run this · destructive tool"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Reports itself as: <b>Claude Code</b> 1"),
+    ).toBeInTheDocument();
+    expect(container.querySelector("b")).toBeNull();
+    expect(container.textContent!.indexOf("Claude Code wants")).toBeLessThan(
+      container.textContent!.indexOf("<b>Claude Code"),
+    );
+  });
+});
+
+it("omits a redundant report and limits long reports with a full tooltip", async () => {
+  const label = "界".repeat(70);
+  listPendingApprovals.mockResolvedValue([
+    approval({ id: "same", clientName: "Claude Code", clientLabel: "Claude Code" }),
+    approval({ id: "long", clientName: "Claude Code", clientLabel: label }),
+  ]);
+  render(<PendingApprovals />);
+  await act(async () => {});
+  const report = screen.getByText(/Reports itself as:/);
+  expect(report).toHaveAttribute("title", label);
+  expect(report.textContent).toBe(`Reports itself as: ${"界".repeat(59)}…`);
 });

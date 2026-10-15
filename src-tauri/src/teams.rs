@@ -8,6 +8,7 @@
 //!
 //! The HTTP calls (join/pull/push) are thin; the value and the risk live in the merge,
 //! which is pure and unit-tested below.
+use crate::http_client::{RequestHeaderExt as _, ResponseResultExt as _};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -53,7 +54,7 @@ fn require_secure_team_url(server_url: &str) -> Result<(), String> {
         || host
             .parse::<std::net::IpAddr>()
             .ok()
-            .map_or(false, |ip| match ip {
+            .is_some_and(|ip| match ip {
                 std::net::IpAddr::V4(v4) => v4.is_loopback(),
                 std::net::IpAddr::V6(v6) => {
                     v6.is_loopback()
@@ -75,7 +76,7 @@ fn require_secure_team_url(server_url: &str) -> Result<(), String> {
 
 /// Public team hosts must not rebind onto the LAN; loopback/LAN team URLs (local
 /// `conduit-teams`) still connect. Link-local / cloud-metadata is always refused
-/// inside [`crate::oauth::screened_resolve`].
+/// inside [`crate::http_client::screened_agent`].
 ///
 /// Switching the rebind guard OFF is granting LAN trust, so it needs
 /// [`crate::oauth::host_is_definitely_private`], not the negation of
@@ -111,11 +112,11 @@ fn agent(server_url: &str) -> ureq::Agent {
 /// decides when to return.
 fn agent_with_timeout(server_url: &str, secs: u64) -> ureq::Agent {
     let block_private = block_private_for_team_url(server_url);
-    ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(secs))
-        .redirects(0)
-        .resolver(move |netloc: &str| crate::oauth::screened_resolve(netloc, block_private))
-        .build()
+    let config = crate::http_client::config_builder!()
+        .timeout_global(Some(std::time::Duration::from_secs(secs)))
+        .max_redirects(0)
+        .build();
+    crate::http_client::screened_agent(config, block_private, crate::oauth::screen_addrs)
 }
 
 /// `300 Multiple Choices` is a redirect too, and excluding it made it read as
@@ -131,8 +132,10 @@ fn is_redirect_status(status: u16) -> bool {
 
 /// ureq with `redirects(0)` returns 3xx as a successful response. Treat those as
 /// errors so a team API never follows (or silently accepts) a bearer-bearing hop.
-fn require_no_redirect(resp: ureq::Response) -> Result<ureq::Response, String> {
-    if is_redirect_status(resp.status()) {
+fn require_no_redirect(
+    resp: ureq::http::Response<ureq::Body>,
+) -> Result<ureq::http::Response<ureq::Body>, String> {
+    if is_redirect_status(resp.status().as_u16()) {
         Err("team server redirected; Toolport does not follow redirects on team API calls".into())
     } else {
         Ok(resp)
@@ -180,14 +183,20 @@ pub fn join(
 ) -> Result<JoinResult, String> {
     require_secure_team_url(server_url)?;
     let url = format!("{}/join", base(server_url));
-    let body = serde_json::json!({ "invite_code": invite_code, "member_name": member_name });
+    let body = serde_json::json!({ "invite_code": invite_code, "member_name": member_name, "device_name": device_name() });
     let resp = require_no_redirect(
         agent(server_url)
             .post(&url)
             .send_json(body)
+            .retain_status_body()
             .map_err(stringify)?,
     )?;
-    let v: Value = resp.into_json().map_err(|e| e.to_string())?;
+    let v: Value = resp
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json()
+        .map_err(|e| e.to_string())?;
     // An approval-gated link hands back a request token instead of a member token.
     if v["pending"].as_bool().unwrap_or(false) {
         let request_token = v["request_token"].as_str().unwrap_or_default().to_string();
@@ -225,9 +234,15 @@ pub fn poll_join(
         agent(server_url)
             .post(&url)
             .send_json(body)
+            .retain_status_body()
             .map_err(stringify)?,
     )?;
-    let v: Value = resp.into_json().map_err(|e| e.to_string())?;
+    let v: Value = resp
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json()
+        .map_err(|e| e.to_string())?;
     match v["status"].as_str().unwrap_or("") {
         "approved" => {
             complete_join(server_url, member_name, joined_from(&v)?).map(JoinPoll::Connected)
@@ -268,17 +283,26 @@ pub fn pull_config(
         .unwrap_or_else(|| format!("\"v{last_version}\""));
     let req = ag
         .get(&url)
-        .set("authorization", &format!("Bearer {token}"))
-        .set("if-none-match", &etag);
-    match req.call() {
+        .set_header("authorization", &format!("Bearer {token}"))
+        .set_header("if-none-match", &etag);
+    match req.call().retain_status_body() {
         Ok(resp) => {
-            if resp.status() == 304 {
+            if resp.status().as_u16() == 304 {
                 return Ok(None);
             }
             let resp = require_no_redirect(resp)?;
             // Capture the fresh ETag before the body consumes `resp`.
-            let new_etag = resp.header("etag").map(str::to_string);
-            let v: Value = resp.into_json().map_err(|e| e.to_string())?;
+            let new_etag = resp
+                .headers()
+                .get("etag")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            let v: Value = resp
+                .into_body()
+                .with_config()
+                .limit(u64::MAX)
+                .read_json()
+                .map_err(|e| e.to_string())?;
             // Guard a malformed-but-200 body: without a real server list we must NOT
             // proceed, since apply_team_config would read the missing list as "the team
             // removed every server" and wipe the user's merged team servers. An empty
@@ -293,7 +317,7 @@ pub fn pull_config(
                 .ok_or("team server returned a config without a version")?;
             Ok(Some((version, config, new_etag)))
         }
-        Err(ureq::Error::Status(304, _)) => Ok(None),
+        Err(crate::http_client::Error::Status(304, _)) => Ok(None),
         // A team that has never had a config pushed yet returns 404 (no config row on the
         // server). That is "nothing to sync," not a failure: without this, the first
         // pull_config in `connect` errors out and rolls the just-saved member token back, so
@@ -301,7 +325,7 @@ pub fn pull_config(
         // `{servers:[]}` 200 for this case; this keeps a new client working against an older
         // self-hosted server that still 404s. Mirrors `fetch_me`/`post_usage_day` below,
         // which likewise treat a 404 as "resource/endpoint absent, degrade gracefully."
-        Err(ureq::Error::Status(404, _)) => Ok(None),
+        Err(crate::http_client::Error::Status(404, _)) => Ok(None),
         Err(e) => Err(stringify(e)),
     }
 }
@@ -331,12 +355,18 @@ pub fn fetch_me(server_url: &str, team_id: &str, token: &str) -> Result<Membersh
     let url = format!("{}/teams/{}/me", base(server_url), team_id);
     match agent(server_url)
         .get(&url)
-        .set("authorization", &format!("Bearer {token}"))
+        .set_header("authorization", &format!("Bearer {token}"))
         .call()
+        .retain_status_body()
     {
         Ok(resp) => {
             let resp = require_no_redirect(resp)?;
-            let v: Value = resp.into_json().map_err(|e| e.to_string())?;
+            let v: Value = resp
+                .into_body()
+                .with_config()
+                .limit(u64::MAX)
+                .read_json()
+                .map_err(|e| e.to_string())?;
             // Fail noisily on a malformed 200 rather than defaulting to "member": a
             // silent default would demote an admin's persisted role on a buggy response.
             let role = v["role"]
@@ -349,35 +379,133 @@ pub fn fetch_me(server_url: &str, team_id: &str, token: &str) -> Result<Membersh
                 account_linked: v["accountLinked"].as_bool(),
             })
         }
-        Err(ureq::Error::Status(401 | 403, _)) => Ok(MembershipCheck::Removed),
-        Err(ureq::Error::Status(404, _)) => Ok(MembershipCheck::Unsupported),
+        Err(crate::http_client::Error::Status(401 | 403, _)) => Ok(MembershipCheck::Removed),
+        Err(crate::http_client::Error::Status(404, _)) => Ok(MembershipCheck::Unsupported),
         Err(e) => Err(stringify(e)),
     }
 }
 
+/// Entitlements and personal mode are asserted by the authenticated service.
+/// An older service keeps the governed flow; never infer ownership from role.
+pub fn fetch_account_status(conn: &TeamConnection, token: &str) -> Result<Option<Value>, String> {
+    require_secure_team_url(&conn.server_url)?;
+    let url = format!(
+        "{}/teams/{}/account/status",
+        base(&conn.server_url),
+        conn.team_id
+    );
+    match agent(&conn.server_url)
+        .get(&url)
+        .set_header("authorization", &format!("Bearer {token}"))
+        .call()
+        .retain_status_body()
+    {
+        Ok(resp) => {
+            let value: Value = require_no_redirect(resp)?
+                .into_body()
+                .with_config()
+                .limit(u64::MAX)
+                .read_json()
+                .map_err(|e| e.to_string())?;
+            if !value["plan"].is_string() || !value["canReceiveConfig"].is_boolean() {
+                return Err("Account status response is incomplete".into());
+            }
+            Ok(Some(value))
+        }
+        Err(crate::http_client::Error::Status(404, _)) => Ok(None),
+        Err(e) => Err(stringify(e)),
+    }
+}
+
+fn apply_account_status(
+    reg: &mut Registry,
+    result: Result<Option<Value>, String>,
+    was_personal: bool,
+) -> Result<(), String> {
+    if let Some(t) = &mut reg.team {
+        match result {
+            Ok(Some(value)) => {
+                t.unknown_fields.insert("accountStatus".into(), value);
+                t.unknown_fields.remove("accountStatusError");
+                t.unknown_fields.remove("accountStatusMissingCount");
+            }
+            Ok(None) => {
+                let count = t
+                    .unknown_fields
+                    .get("accountStatusMissingCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    .saturating_add(1)
+                    .min(2);
+                t.unknown_fields
+                    .insert("accountStatusMissingCount".into(), json!(count));
+                if count >= 2 || !was_personal {
+                    t.unknown_fields.insert("accountStatus".into(), Value::Null);
+                    t.unknown_fields.remove("accountStatusError");
+                } else {
+                    t.unknown_fields.insert(
+                        "accountStatusError".into(),
+                        json!("Account status is temporarily unavailable. Retrying sync."),
+                    );
+                }
+            }
+            // A legacy device token or a transient service failure must not
+            // prevent governed sync or invent a mode transition.
+            Err(error) => {
+                t.unknown_fields.remove("accountStatusMissingCount");
+                t.unknown_fields
+                    .insert("accountStatusError".into(), json!(error));
+            }
+        }
+    }
+    crate::personal_sync::mode_changed(reg, was_personal)
+}
+
 /// A dashboard edit that lands between the preflight GET and PUT must never be overwritten.
 /// Keep this message stable and actionable: it is surfaced directly in the Teams UI.
-const STALE_PUSH_MESSAGE: &str =
+pub(crate) const STALE_PUSH_MESSAGE: &str =
     "The team config changed before this update could be saved. Sync to review the latest settings, then try again; nothing was overwritten.";
 
 /// Fetch the complete current config before an admin replaces its server list. Unlike the
-/// sync pull, this request is intentionally unconditional: the caller needs the full object so
-/// instructions, policies, and future top-level fields can be round-tripped unchanged.
-fn fetch_config_for_update(
+/// sync pull, this request uses the management view and is unconditional: disabled
+/// entries, dashboard metadata, policies and future fields must survive publishing.
+pub(crate) fn fetch_config_for_update(
     server_url: &str,
     team_id: &str,
     token: &str,
 ) -> Result<(i64, Value), String> {
+    fetch_config_mode(server_url, team_id, token, false)
+}
+pub(crate) fn fetch_personal_config(
+    server_url: &str,
+    team_id: &str,
+    token: &str,
+) -> Result<(i64, Value), String> {
+    fetch_config_mode(server_url, team_id, token, true)
+}
+fn fetch_config_mode(
+    server_url: &str,
+    team_id: &str,
+    token: &str,
+    personal: bool,
+) -> Result<(i64, Value), String> {
     require_secure_team_url(server_url)?;
-    let url = format!("{}/teams/{}/config", base(server_url), team_id);
-    match agent(server_url)
+    let url = format!("{}/teams/{}/config?manage=1", base(server_url), team_id);
+    let mut request = agent(server_url)
         .get(&url)
-        .set("authorization", &format!("Bearer {token}"))
-        .call()
-    {
+        .set_header("authorization", &format!("Bearer {token}"));
+    if personal {
+        request = request.set_header("x-toolport-personal-sync", "1");
+    }
+    match request.call().retain_status_body() {
         Ok(resp) => {
             let resp = require_no_redirect(resp)?;
-            let v: Value = resp.into_json().map_err(|e| e.to_string())?;
+            let v: Value = resp
+                .into_body()
+                .with_config()
+                .limit(u64::MAX)
+                .read_json()
+                .map_err(|e| e.to_string())?;
             let version = v["version"]
                 .as_i64()
                 .ok_or("team server returned a config without a version")?;
@@ -389,7 +517,7 @@ fn fetch_config_for_update(
         }
         // Older self-hosted servers can have no config row until the first push. Version zero
         // is the optimistic-concurrency baseline used by current servers for that empty state.
-        Err(ureq::Error::Status(404, _)) => Ok((0, json!({ "servers": [] }))),
+        Err(crate::http_client::Error::Status(404, _)) => Ok((0, json!({ "servers": [] }))),
         Err(e) => Err(stringify(e)),
     }
 }
@@ -411,7 +539,10 @@ fn push_body(config: &Value, base_version: i64) -> Value {
 }
 
 fn push_status_message(status: u16) -> Option<&'static str> {
-    (status == 409).then_some(STALE_PUSH_MESSAGE)
+    match status {
+        409 => Some(STALE_PUSH_MESSAGE),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -428,7 +559,7 @@ pub struct PushPreview {
 }
 
 /// How one selected personal server relates to the Team, and what sharing it will
-/// do in the active profile. Both desktop shells render these sentences as-is.
+/// do in the local access context. Both desktop shells render these sentences as-is.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShareSelectionPreview {
@@ -442,7 +573,7 @@ pub struct ShareSelectionPreview {
     pub local: LocalHandoff,
 }
 
-/// What sharing does, or did, to one selected server in the active profile.
+/// What sharing does, or did, to one selected server in the local access context.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalHandoff {
@@ -695,35 +826,125 @@ pub(crate) fn build_push_preview(
     })
 }
 
-/// Admin push of a servers-only config update. Returns the new version.
+/// A desktop push either publishes directly or waits for dashboard confirmation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigProposal {
+    pub id: String,
+    pub base_version: i64,
+    pub confirm_url: String,
+}
+
+#[derive(Debug)]
+pub enum PushOutcome {
+    Published(i64),
+    Confirmation(ConfigProposal),
+}
+
+impl From<i64> for PushOutcome {
+    fn from(version: i64) -> Self {
+        Self::Published(version)
+    }
+}
+
+pub fn validate_confirmation_url(server_url: &str, confirm_url: &str) -> Result<(), String> {
+    let server = url::Url::parse(server_url).map_err(|_| "Invalid Teams service URL")?;
+    let confirm = url::Url::parse(confirm_url).map_err(|_| "Invalid confirmation URL")?;
+    if confirm.scheme() != "https"
+        || confirm.host_str() != server.host_str()
+        || confirm.port_or_known_default() != server.port_or_known_default()
+        || !confirm.username().is_empty()
+        || confirm.password().is_some()
+    {
+        return Err("Confirmation must open on the HTTPS Teams service host.".into());
+    }
+    Ok(())
+}
+
+pub fn open_confirmation(confirm_url: &str) -> Result<(), String> {
+    let reg = crate::registry::load()?;
+    let team = reg.team.as_ref().ok_or("not connected to a team")?;
+    validate_confirmation_url(&team.server_url, confirm_url)?;
+    crate::oauth::open_web_url(confirm_url)
+}
+
+fn parse_push_response(server_url: &str, status: u16, value: Value) -> Result<PushOutcome, String> {
+    if status == 202 {
+        let proposal: ConfigProposal = serde_json::from_value(value["proposal"].clone())
+            .map_err(|_| "Team server returned an invalid confirmation proposal")?;
+        if proposal.id.is_empty() || proposal.id.len() > 128 || proposal.base_version < 0 {
+            return Err("Team server returned an invalid confirmation proposal".into());
+        }
+        validate_confirmation_url(server_url, &proposal.confirm_url)?;
+        return Ok(PushOutcome::Confirmation(proposal));
+    }
+    value["version"]
+        .as_i64()
+        .map(PushOutcome::Published)
+        .ok_or_else(|| "team server did not return a version after push".to_string())
+}
+
 pub fn push_config(
     server_url: &str,
     team_id: &str,
     token: &str,
     config: &Value,
     base_version: i64,
-) -> Result<i64, String> {
+) -> Result<PushOutcome, String> {
+    push_config_mode(server_url, team_id, token, config, base_version, false)
+}
+pub(crate) fn push_personal_config(
+    server_url: &str,
+    team_id: &str,
+    token: &str,
+    config: &Value,
+    base_version: i64,
+) -> Result<PushOutcome, String> {
+    push_config_mode(server_url, team_id, token, config, base_version, true)
+}
+fn push_config_mode(
+    server_url: &str,
+    team_id: &str,
+    token: &str,
+    config: &Value,
+    base_version: i64,
+    personal: bool,
+) -> Result<PushOutcome, String> {
     require_secure_team_url(server_url)?;
     let url = format!("{}/teams/{}/config", base(server_url), team_id);
     let body = push_body(config, base_version);
-    let resp = match agent(server_url)
+    let mut request = agent(server_url)
         .put(&url)
-        .set("authorization", &format!("Bearer {token}"))
-        .send_json(body)
-    {
+        .set_header("authorization", &format!("Bearer {token}"));
+    if personal {
+        request = request.set_header("x-toolport-personal-sync", "1");
+    }
+    let resp = match request.send_json(body).retain_status_body() {
         Ok(resp) => require_no_redirect(resp)?,
-        Err(e @ ureq::Error::Status(status, _)) => {
+        Err(crate::http_client::Error::Status(status, resp)) => {
             if let Some(message) = push_status_message(status) {
                 return Err(message.into());
             }
-            return Err(stringify(e));
+            let body = resp.into_body().read_to_string().unwrap_or_default();
+            let not_admin_session = serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|value| value["error"].as_str().map(str::to_owned))
+                .is_some_and(|message| message.contains("not an admin session"));
+            if status == 403 && not_admin_session {
+                return Err("Finish this in the Teams dashboard".into());
+            }
+            return Err(format!("server returned {status}: {}", body.trim()));
         }
         Err(e) => return Err(stringify(e)),
     };
-    let v: Value = resp.into_json().map_err(|e| e.to_string())?;
-    v["version"]
-        .as_i64()
-        .ok_or_else(|| "team server did not return a version after push".to_string())
+    let status = resp.status().as_u16();
+    let v: Value = resp
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json()
+        .map_err(|e| e.to_string())?;
+    parse_push_response(server_url, status, v)
 }
 
 /// Report one UTC day's usage rollup (counts + estimates only, see `usage_report`).
@@ -754,25 +975,41 @@ fn post_usage_day(
     }
     match agent(server_url)
         .post(&url)
-        .set("authorization", &format!("Bearer {token}"))
+        .set_header("authorization", &format!("Bearer {token}"))
         .send_json(body)
+        .retain_status_body()
     {
         Ok(resp) => {
             require_no_redirect(resp)?;
             Ok(true)
         }
-        Err(ureq::Error::Status(404 | 405, _)) => Ok(false),
+        Err(crate::http_client::Error::Status(404 | 405, _)) => Ok(false),
         Err(e) => Err(stringify(e)),
     }
 }
 
-fn stringify(e: ureq::Error) -> String {
+#[cfg(test)]
+#[test]
+fn connect_errors_keep_socket_wording_in_team_messages() {
+    let io = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+    let expected = format!("could not reach the team server: {io}");
+    let error = crate::http_client::mark_connect_failure(ureq::Error::Io(io));
+    assert_eq!(
+        stringify(crate::http_client::Error::Transport(error)),
+        expected
+    );
+}
+
+fn stringify(e: crate::http_client::Error) -> String {
     match e {
-        ureq::Error::Status(code, resp) => {
-            let msg = resp.into_string().unwrap_or_default();
+        crate::http_client::Error::Status(code, resp) => {
+            let msg = resp.into_body().read_to_string().unwrap_or_default();
             format!("server returned {code}: {}", msg.trim())
         }
-        ureq::Error::Transport(t) => format!("could not reach the team server: {t}"),
+        crate::http_client::Error::Transport(t) => format!(
+            "could not reach the team server: {}",
+            crate::http_client::transport_error_message(&t)
+        ),
     }
 }
 
@@ -780,8 +1017,10 @@ fn stringify(e: ureq::Error) -> String {
 /// A portal link for this installation's existing Team opens it without replacing
 /// the connection or resetting local review/authentication. This is not a health check.
 pub fn pair_target_is_current(reg: &Registry, origin: &str, team: &str) -> bool {
-    reg.team.as_ref().is_some_and(|current| current.team_id == team
-        && current.server_url.trim_end_matches('/') == origin.trim_end_matches('/'))
+    reg.team.as_ref().is_some_and(|current| {
+        current.team_id == team
+            && current.server_url.trim_end_matches('/') == origin.trim_end_matches('/')
+    })
 }
 
 pub fn parse_pair_link(raw: &str) -> Option<(String, String)> {
@@ -816,6 +1055,32 @@ pub fn parse_pair_link(raw: &str) -> Option<(String, String)> {
     }
     Some((u.origin().ascii_serialization(), team))
 }
+fn device_name() -> Option<String> {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|s| s.trim().to_string())
+        })
+}
+
+fn pairing_body(
+    team: &str,
+    challenge: &str,
+    device_name: Option<&str>,
+    os: &str,
+    app_version: &str,
+) -> Value {
+    let truncate = |value: &str| value.chars().take(128).collect::<String>();
+    let mut body = json!({"teamId":team, "challenge":challenge, "os":truncate(os), "appVersion":truncate(app_version)});
+    if let Some(name) = device_name.filter(|name| !name.trim().is_empty()) {
+        body["deviceName"] = json!(truncate(name));
+    }
+    body
+}
+
 static PAIRING_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Returned by [`pair_device`] when the person cancelled the request in the app.
 pub const PAIRING_CANCELLED: &str = "Connection request cancelled.";
@@ -840,10 +1105,20 @@ pub fn pair_device(
     let challenge = crate::registry::sha256_hex(&verifier);
     let response = agent(origin)
         .post(&format!("{}/pairing/start", base(origin)))
-        .send_json(json!({"teamId":team,"challenge":challenge}))
+        .send_json(pairing_body(
+            team,
+            &challenge,
+            device_name().as_deref(),
+            std::env::consts::OS,
+            env!("CARGO_PKG_VERSION"),
+        ))
+        .retain_status_body()
         .map_err(stringify)?;
     let data: Value = require_no_redirect(response)?
-        .into_json()
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json()
         .map_err(|e| e.to_string())?;
     let transaction = data["transaction"]
         .as_str()
@@ -860,14 +1135,18 @@ pub fn pair_device(
         let response = agent(origin)
             .post(&format!("{}/pairing/{transaction}/poll", base(origin)))
             .send_json(json!({"verifier":verifier}))
+            .retain_status_body()
             .map_err(stringify)?;
         let data: Value = require_no_redirect(response)?
-            .into_json()
+            .into_body()
+            .with_config()
+            .limit(u64::MAX)
+            .read_json()
             .map_err(|e| e.to_string())?;
         if let Some(code) = data["connectCode"].as_str() {
             match connect(origin, code, None)? {
                 ConnectOutcome::Connected(_) => {
-                    let _ = sync_now();
+                    sync_now()?;
                     return crate::registry::load();
                 }
                 _ => return Err("Unexpected approval state".into()),
@@ -927,6 +1206,27 @@ fn complete_join(
         })
 }
 
+/// Carry this machine's own bookkeeping into a reconnected session. The fresh
+/// connection's role, token-derived status and names win; a stale status error
+/// from the lost session does not carry over.
+fn keep_local_bookkeeping(conn: &mut TeamConnection, previous: TeamConnection) {
+    conn.managed_server_ids = previous.managed_server_ids;
+    conn.reporting_device_id = previous.reporting_device_id;
+    conn.usage_reported = previous.usage_reported;
+    conn.last_version = previous.last_version;
+    conn.last_etag = previous.last_etag;
+    conn.team_instructions_content = previous.team_instructions_content;
+    conn.team_instructions_version = previous.team_instructions_version;
+    conn.team_instructions_targets = previous.team_instructions_targets;
+    conn.call_audit_export_cursor = previous.call_audit_export_cursor;
+    conn.call_audit_export = previous.call_audit_export;
+    for (key, value) in previous.unknown_fields {
+        if key != "accountStatusError" {
+            conn.unknown_fields.entry(key).or_insert(value);
+        }
+    }
+}
+
 fn finish_connect(
     server_url: &str,
     member_name: Option<&str>,
@@ -954,19 +1254,47 @@ fn finish_connect(
         call_audit_export_cursor: None,
         call_audit_export: false,
         rate_limits: Vec::new(),
+        unknown_fields: Default::default(),
     };
     // Pull BEFORE loading the registry, then load a FRESH copy AFTER the (possibly
     // multi-second) network round trip and apply onto that — mirroring `sync_inner`.
     // Loading first and saving here would clobber any change another command made to the
     // registry while we were waiting on the join window's pull.
-    let pulled = pull_config(
-        &base(server_url),
-        &joined.team_id,
-        &joined.member_token,
-        0,
-        None,
-        0,
-    )?;
+    match fetch_account_status(&conn, &joined.member_token) {
+        Ok(Some(status)) => {
+            conn.unknown_fields.insert("accountStatus".into(), status);
+        }
+        Ok(None) => {}
+        Err(error) => {
+            conn.unknown_fields
+                .insert("accountStatusError".into(), json!(error));
+        }
+    }
+    let personal = conn.role == "admin"
+        && conn
+            .unknown_fields
+            .get("accountStatus")
+            .is_some_and(|s| s["personalSync"] == true);
+    let delivery_blocked = conn
+        .unknown_fields
+        .get("accountStatus")
+        .is_some_and(|s| s["canReceiveConfig"] == false);
+    let pulled = if delivery_blocked {
+        None
+    } else if personal {
+        let (version, config) =
+            fetch_personal_config(server_url, &joined.team_id, &joined.member_token)?;
+        Some((version, config, None))
+    } else {
+        pull_config(
+            &base(server_url),
+            &joined.team_id,
+            &joined.member_token,
+            0,
+            None,
+            0,
+        )?
+    };
     if let Ok(MembershipCheck::Active {
         team_name,
         account_linked,
@@ -976,19 +1304,39 @@ fn finish_connect(
         conn.team_name = team_name;
         conn.account_linked = account_linked;
     }
-    // Capture the org instructions before the closure consumes `pulled`; applied to disk after
-    // the save (outside the lock).
-    let desired_instr = pulled
-        .as_ref()
-        .map(|(version, cfg, _)| (*version, desired_instructions(cfg)));
+    let labels = match pulled.as_ref() {
+        Some((version, _, _)) => {
+            fetch_change_labels(&conn, &joined.member_token, 0, *version).unwrap_or_default()
+        }
+        None => vec![],
+    };
     // Load-modify-save the fresh registry under the cross-process lock, so a concurrent write
     // during the join window's pull isn't reverted (SOU-23).
     let (reg, outcome) = crate::registry::update(|reg| {
-        if let Some(previous) = reg.team.as_ref().map(|t| t.team_id.clone()) { remove_team(reg, &previous); }
+        // Signing in again to the same account on the same service reconnects
+        // this machine. Its servers, approvals and sync bookkeeping stay; only
+        // a different account or service starts over.
+        let reconnect = reg.team.as_ref().is_some_and(|previous| {
+            previous.team_id == conn.team_id && base(&previous.server_url) == conn.server_url
+        });
+        let was_personal = reconnect && crate::personal_sync::is_personal(reg);
+        if reconnect {
+            keep_local_bookkeeping(&mut conn, reg.team.take().expect("checked above"));
+        } else if let Some(previous) = reg.team.as_ref().map(|t| t.team_id.clone()) {
+            remove_team(reg, &previous);
+        }
         reg.team = Some(conn);
+        crate::personal_sync::mode_changed(reg, was_personal)?;
+        if reconnect {
+            crate::personal_sync::clear_sign_in_required(reg)?;
+        }
         let mut outcome = MergeOutcome::default();
         if let Some((version, cfg, etag)) = pulled {
-            outcome = apply_team_config(reg, &joined.team_id, &cfg);
+            outcome = if crate::personal_sync::is_personal(reg) {
+                crate::personal_sync::apply(reg, &cfg, version)?
+            } else {
+                stage_team_config(reg, &joined.team_id, &cfg, version, &labels)?
+            };
             if let Some(t) = reg.team.as_mut() {
                 t.last_version = version;
                 t.last_etag = etag;
@@ -996,9 +1344,6 @@ fn finish_connect(
         }
         Ok(outcome)
     })?;
-    if let Some((version, desired)) = desired_instr {
-        apply_instructions(&joined.team_id, version, desired.as_deref());
-    }
     let conn = reg
         .team
         .clone()
@@ -1023,7 +1368,9 @@ pub enum SyncResult {
 }
 
 pub fn sync_now() -> Result<SyncResult, String> {
-    sync_inner(0)
+    let result = sync_recorded(0);
+    crate::personal_sync::record_error(result.as_ref().err().map(String::as_str));
+    result
 }
 
 /// Long-polling variant of [`sync_now`]: the config pull parks on the server for up to
@@ -1031,10 +1378,43 @@ pub fn sync_now() -> Result<SyncResult, String> {
 /// edit enforces in about a second. The membership heartbeat still runs first each cycle,
 /// so removal and role changes are caught at least once per cycle. The caller loops.
 pub fn sync_wait(wait_secs: u64) -> Result<SyncResult, String> {
-    sync_inner(wait_secs)
+    let result = sync_recorded(wait_secs);
+    crate::personal_sync::record_error(result.as_ref().err().map(String::as_str));
+    result
 }
 
 /// Bounded retry pacing for native lifecycle owners; independent of window visibility.
+pub fn sync_retry_seconds(reg: &Registry, failures: u32) -> u64 {
+    if crate::personal_sync::is_personal(reg)
+        && reg
+            .team
+            .as_ref()
+            .is_some_and(|t| t.unknown_fields["accountStatus"]["canReceiveConfig"] == false)
+    {
+        60 * (1u64 << failures.saturating_sub(1).min(4))
+    } else {
+        retry_delay_seconds(failures)
+    }
+}
+/// The app-side pairing link for reconnecting this machine to its own account.
+pub fn reconnect_link(origin: &str, team: &str) -> Result<String, String> {
+    require_secure_team_url(origin)?;
+    let mut url = url::Url::parse("toolport://teams/connect").map_err(|e| e.to_string())?;
+    url.query_pairs_mut()
+        .append_pair("origin", origin.trim().trim_end_matches('/'))
+        .append_pair("team", team);
+    Ok(url.to_string())
+}
+pub fn sync_sign_in_url(origin: &str) -> Result<String, String> {
+    require_secure_team_url(origin)?;
+    let mut url = url::Url::parse(origin.trim()).map_err(|e| e.to_string())?;
+    url.set_query(Some("intent=pro&from=app-sync"));
+    url.set_fragment(None);
+    Ok(url.to_string())
+}
+pub fn pairing_confirm_copy(origin: &str, connected: bool) -> String {
+    format!("Sync service: {origin}\n\nOnly continue if you trust this address. Your browser will show your account and setup before approval.{}", if connected { " Signing in replaces this machine's current sync connection." } else { "" })
+}
 pub fn retry_delay_seconds(failures: u32) -> u64 {
     if failures == 0 {
         3
@@ -1045,7 +1425,7 @@ pub fn retry_delay_seconds(failures: u32) -> u64 {
 
 static SYNC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn sync_inner(wait_secs: u64) -> Result<SyncResult, String> {
+fn sync_recorded(wait_secs: u64) -> Result<SyncResult, String> {
     let _sync = SYNC_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1060,12 +1440,35 @@ fn sync_inner(wait_secs: u64) -> Result<SyncResult, String> {
         }
         Ok(())
     })?;
+    let conn = crate::registry::load()?.team;
+    let result = sync_inner(wait_secs);
+    if let Some(conn) = conn {
+        // The status receipt is private local metadata. Keep the network failure
+        // visible even if its receipt cannot be saved.
+        if let Err(status_error) = crate::team_sync_status::record(
+            &conn,
+            result.as_ref().map(|_| ()).map_err(|e| e.as_str()),
+        ) {
+            return Err(match result {
+                Err(sync_error) => {
+                    format!("{sync_error}. Sync status could not be saved: {status_error}")
+                }
+                Ok(_) => {
+                    format!("Sync completed, but its status could not be saved: {status_error}")
+                }
+            });
+        }
+    }
+    result
+}
+
+fn sync_inner(wait_secs: u64) -> Result<SyncResult, String> {
     // Snapshot only what the network calls need; do NOT hold this copy to save later.
     let conn = {
         let reg = crate::registry::load()?;
         reg.team.clone().ok_or("not connected to a team")?
     };
-    let token = load_token()?.ok_or("team token is missing from the keychain")?;
+    let token = load_token()?.ok_or("Sync sign-in is missing from this machine. Sign in again.")?;
 
     // Membership heartbeat first. This catches two things a config pull can't: removal
     // (a config pull would just error on the now-invalid token, indistinguishable from a
@@ -1092,21 +1495,70 @@ fn sync_inner(wait_secs: u64) -> Result<SyncResult, String> {
         ),
     };
     let role_changed = role != conn.role;
+    let status_result = fetch_account_status(&conn, &token);
+    let status = status_result.as_ref().ok().and_then(|v| v.clone());
+    let (fresh, _) = crate::personal_sync::remote_update(|| {
+        crate::registry::update(|reg| {
+            let was_personal = crate::personal_sync::is_personal(reg);
+            if let Some(t) = reg.team.as_mut().filter(|t| {
+                t.team_id == conn.team_id
+                    && t.server_url == conn.server_url
+                    && t.reporting_device_id == conn.reporting_device_id
+            }) {
+                t.role = role.clone();
+                t.team_name = team_name.clone();
+                t.account_linked = account_linked;
+            }
+            if reg.team.as_ref().is_some_and(|t| {
+                t.team_id == conn.team_id
+                    && t.server_url == conn.server_url
+                    && t.reporting_device_id == conn.reporting_device_id
+            }) {
+                apply_account_status(reg, status_result.clone(), was_personal)?;
+            }
+            Ok(())
+        })
+    })?;
+    if !fresh.team.as_ref().is_some_and(|t| {
+        t.team_id == conn.team_id
+            && t.server_url == conn.server_url
+            && t.reporting_device_id == conn.reporting_device_id
+    }) {
+        return Ok(SyncResult::Ok {
+            role,
+            role_changed,
+            applied: None,
+        });
+    }
+    if let Some(status) = &status {
+        if status["canReceiveConfig"] == false {
+            return Err(status["reason"].as_str().unwrap_or("Sync is unavailable on this device. Open Your account to choose your active device.").into());
+        }
+    }
+    if crate::personal_sync::is_personal(&fresh) {
+        let personal = fresh.team.as_ref().ok_or("Sign in to sync first")?;
+        let result = crate::personal_sync::sync(personal, &token)?;
+        report_activation(personal, &token)?;
+        report_usage(personal, &token)?;
+        return Ok(result);
+    }
 
     let pulled = pull_config(
         &conn.server_url,
         &conn.team_id,
         &token,
         conn.last_version,
-        conn.last_etag.as_deref(),
+        fresh.team.as_ref().and_then(|t| t.last_etag.as_deref()),
         wait_secs,
     )?;
 
-    // Capture the org instructions before the closure consumes `pulled`; applied to disk after
-    // the save (outside the lock). `None` on a 304 (config unchanged) — nothing to reconcile.
-    let desired_instr = pulled
-        .as_ref()
-        .map(|(version, cfg, _)| (*version, desired_instructions(cfg)));
+    let since = member_review(&crate::registry::load()?)?.accepted_version;
+    let labels = match pulled.as_ref() {
+        Some((version, _, _)) => {
+            fetch_change_labels(&conn, &token, since, *version).unwrap_or_default()
+        }
+        None => vec![],
+    };
     // Re-load a FRESH registry now, AFTER the (possibly multi-second) network round
     // trips, and apply the deltas to it. Loading at the top and saving here would clobber
     // any change another command made to the registry while we were on the network.
@@ -1128,7 +1580,7 @@ fn sync_inner(wait_secs: u64) -> Result<SyncResult, String> {
         let applied = match pulled {
             None => None,
             Some((version, cfg, etag)) => {
-                let outcome = apply_team_config(reg, &conn.team_id, &cfg);
+                let outcome = stage_team_config(reg, &conn.team_id, &cfg, version, &labels)?;
                 if let Some(t) = reg.team.as_mut() {
                     t.last_version = version;
                     t.last_etag = etag;
@@ -1157,32 +1609,40 @@ fn sync_inner(wait_secs: u64) -> Result<SyncResult, String> {
         Some(applied) => applied,
     };
     // Write/refresh the org instructions to each installed client's rules file (skips unless the
-    // content actually changed, or a target moved). Outside the lock, best-effort, never fails
-    // the sync.
-    match desired_instr {
-        Some((version, desired)) => apply_instructions(&conn.team_id, version, desired.as_deref()),
-        // A 304 means the org text is unchanged, but a release can still move where a client
-        // reads its rules from (Goose/Zed under XDG, SBS-899). Re-run against the content we
-        // already applied so the block relocates on the next quiet cycle rather than waiting for
-        // an admin edit; `apply_instructions` returns immediately unless a target really moved.
-        None => relocate_stored_instructions(&conn.team_id),
-    }
+    // content actually changed, or a target moved). Config is already durable;
+    // subsequent state-save failures return explicit partial success.
+    let mut state_errors = Vec::new();
+    let mut check_state = |result: Result<(), String>| {
+        if let Err(error) = result {
+            state_errors.push(error);
+        }
+    };
+    // Only accepted instructions can be written or relocated after a sync.
+    check_state(apply_accepted_instructions(&conn.team_id));
     // Best-effort showback after the config work: report today's/yesterday's per-server
-    // usage rollup to the team server. Any failure here must never affect the sync
-    // result — the member's config is already applied and saved.
-    if let Err(error) = report_activation(&conn, &token) {
-        eprintln!("Toolport: Teams activation reporting pending: {error}");
-    }
-    report_usage(&conn, &token);
+    // usage rollup to the team server. Network failures retry next cycle;
+    // local state-save failures must be visible after the config was applied.
+    check_state(report_activation(&conn, &token));
+    check_state(report_usage(&conn, &token));
     // Report each installed client's instructions coverage (spec W5), every cycle, deduped so an
     // unchanged receipt isn't re-sent. Independent of the config change above, so a client
     // installed after the last edit is reflected as soon as it appears.
-    report_instructions_status(&conn, &token);
+    check_state(report_instructions_status(&conn, &token));
     // Report as-enforced screening-policy flags (SOU-339) so the org can prove cooperative
     // enforcement took effect on this machine. Deduped like the instructions receipt.
-    report_policy_status(&conn, &token);
+    check_state(report_policy_status(&conn, &token));
     // Opt-in per-call audit export (SOU-171): tool name/ts/duration/ok/argsHash only.
-    report_call_events(&conn, &token);
+    check_state(report_call_events(&conn, &token));
+    if !state_errors.is_empty() {
+        crate::daemon::add_status_note(
+            "Team config applied, but some Teams state was not saved. Retry sync.",
+        );
+        crate::gatewaylog::append("Teams sync partially completed: state persistence failed");
+        return Err(format!(
+            "Team config applied, but some Teams state was not saved. Retry sync: {}",
+            state_errors.join("; ")
+        ));
+    }
     Ok(SyncResult::Ok {
         role,
         role_changed,
@@ -1202,14 +1662,13 @@ fn report_activation(conn: &TeamConnection, token: &str) -> Result<(), String> {
         return Ok(());
     };
     let journal = crate::team_activity::snapshot(&current.reporting_device_id)?;
-    let enabled = reg.enabled_servers_for(&reg.active_profile_id());
     let pending = reg
         .servers
         .iter()
         .filter(|s| {
             s.source.as_deref() == Some(tag_for(&conn.team_id).as_str())
                 && s.needs_team_enable_review()
-                && !enabled.iter().any(|e| e.id == s.id)
+                && !reg.enabled_here(&s.id)
         })
         .count();
     let clients = crate::clients::detect_clients();
@@ -1223,7 +1682,7 @@ fn report_activation(conn: &TeamConnection, token: &str) -> Result<(), String> {
         let Some(raw) = current.managed_server_ids.get(&server.id) else {
             continue;
         };
-        let enabled_here = reg.is_enabled(&reg.active_profile_id(), &server.id);
+        let enabled_here = reg.enabled_here(&server.id);
         let mut missing = 0usize;
         let mut known = true;
         for env in &server.env {
@@ -1235,7 +1694,9 @@ fn report_activation(conn: &TeamConnection, token: &str) -> Result<(), String> {
             {
                 continue;
             }
-            if env.value.as_deref().is_some_and(|v| !v.is_empty()) {
+            if crate::secret_refs::reference_for(env).is_some()
+                || env.value.as_deref().is_some_and(|v| !v.is_empty())
+            {
                 continue;
             }
             match crate::secrets::get_secret_result(&server.id, &env.key) {
@@ -1246,6 +1707,13 @@ fn report_activation(conn: &TeamConnection, token: &str) -> Result<(), String> {
         }
         if let Some(launch) = &server.launch {
             for input in launch.inputs.iter().filter(|input| input.required) {
+                if crate::secret_refs::source(&input.unknown_fields)
+                    .ok()
+                    .flatten()
+                    .is_some()
+                {
+                    continue;
+                }
                 if !input.secret {
                     if !input
                         .value
@@ -1286,7 +1754,7 @@ fn report_activation(conn: &TeamConnection, token: &str) -> Result<(), String> {
                     .get(&c.id)
                     .filter(|s| !s.is_empty())
                     .cloned()
-                    .unwrap_or_else(|| reg.active_profile_id());
+                    .unwrap_or_else(|| reg.default_access_id());
                 reg.enabled_servers_for(&scope)
                     .iter()
                     .any(|s| s.id == server.id)
@@ -1303,24 +1771,39 @@ fn report_activation(conn: &TeamConnection, token: &str) -> Result<(), String> {
         "routeConfigured": states.values().any(|s| s["routeConfigured"] == true),
         "servers": states,
     });
-    require_secure_team_url(&conn.server_url)?;
-    let response = agent(&conn.server_url)
-        .post(&format!(
-            "{}/teams/{}/activation",
-            base(&conn.server_url),
-            conn.team_id
-        ))
-        .set("authorization", &format!("Bearer {token}"))
-        .send_json(body)
-        .map_err(stringify)?;
-    let response = require_no_redirect(response)?;
-    let ack: Value = response.into_json().map_err(|e| e.to_string())?;
-    let revision = ack
-        .get("acknowledgedRevision")
-        .and_then(Value::as_u64)
-        .ok_or("Teams did not acknowledge activity revision")?;
-    if revision < journal.revision {
-        return Err("Teams acknowledged an older activity revision".into());
+    // Network reporting still retries next cycle. A local acknowledgement save
+    // failure is returned to sync, which must show partial success to its caller.
+    let reported = (|| -> Result<(), String> {
+        require_secure_team_url(&conn.server_url)?;
+        let response = agent(&conn.server_url)
+            .post(&format!(
+                "{}/teams/{}/activation",
+                base(&conn.server_url),
+                conn.team_id
+            ))
+            .set_header("authorization", &format!("Bearer {token}"))
+            .send_json(body)
+            .retain_status_body()
+            .map_err(stringify)?;
+        let response = require_no_redirect(response)?;
+        let ack: Value = response
+            .into_body()
+            .with_config()
+            .limit(u64::MAX)
+            .read_json()
+            .map_err(|e| e.to_string())?;
+        let revision = ack
+            .get("acknowledgedRevision")
+            .and_then(Value::as_u64)
+            .ok_or("Teams did not acknowledge activity revision")?;
+        if revision < journal.revision {
+            return Err("Teams acknowledged an older activity revision".into());
+        }
+        Ok(())
+    })();
+    if let Err(error) = reported {
+        eprintln!("Toolport: Teams activation reporting pending: {error}");
+        return Ok(());
     }
     crate::team_activity::acknowledge(&current.reporting_device_id, journal.revision)
 }
@@ -1366,17 +1849,16 @@ fn canonical_team_audit(lines: &[Value], ids: &[String], team_id: &str) -> Vec<V
 /// only (`source = "team:<id>"` — a member's personal servers are never reported) and
 /// POST the rollups. Counts and token/dollar estimates only; tool names stay local
 /// (rows are per server). Skips silently when there is nothing new, the server is too
-/// old for the endpoint, or the network is down — never fails the sync it rides on.
-fn report_usage(conn: &TeamConnection, token: &str) {
+/// old for the endpoint, or the network is down. Failed local watermark saves are
+/// returned so the sync caller reports partial success.
+fn report_usage(conn: &TeamConnection, token: &str) -> Result<(), String> {
     let tag = tag_for(&conn.team_id);
     let (team_servers, reported, all_ids) = {
-        let Ok(reg) = crate::registry::load() else {
-            return;
-        };
+        let reg = crate::registry::load()?;
         // The user disconnected or switched teams mid-sync: report nothing.
         match reg.team.as_ref() {
             Some(t) if t.team_id == conn.team_id => {}
-            _ => return,
+            _ => return Ok(()),
         }
         let ids: HashSet<String> = reg
             .servers
@@ -1396,16 +1878,16 @@ fn report_usage(conn: &TeamConnection, token: &str) {
         )
     };
     if team_servers.is_empty() {
-        return;
+        return Ok(());
     }
     // An unreadable audit log is not "zero usage". Skip this cycle rather than
     // POST a false empty report (SBS-873).
     let Ok(audit_lines) = crate::audit::read_recent(usize::MAX) else {
-        return;
+        return Ok(());
     };
     let audit_lines = canonical_team_audit(&audit_lines, &all_ids, &conn.team_id);
     let Ok(savings_lines) = crate::savings::try_entries() else {
-        return;
+        return Ok(());
     };
     let mut new_state: HashMap<String, HashMap<String, [u64; 2]>> = HashMap::new();
     let mut changed = false;
@@ -1448,7 +1930,7 @@ fn report_usage(conn: &TeamConnection, token: &str) {
             }
             // Old server without the endpoint: nothing to persist, don't retry the
             // other day either.
-            Ok(false) => return,
+            Ok(false) => return Ok(()),
             // Transient failure: keep the previous watermark for this day so the next
             // sync re-sends the full daily total.
             Err(_) => {
@@ -1459,19 +1941,20 @@ fn report_usage(conn: &TeamConnection, token: &str) {
         }
     }
     if !changed {
-        return;
+        return Ok(());
     }
     // Persist the watermarks on a FRESH registry (same clobber-avoidance as sync_inner:
     // the POSTs above are network round trips another command may have raced past).
     // `new_state` only ever holds today + yesterday, so old days prune themselves.
-    let _ = crate::registry::update(|reg| {
+    crate::registry::update(|reg| {
         if let Some(t) = reg.team.as_mut() {
             if t.team_id == conn.team_id {
                 t.usage_reported = new_state;
             }
         }
         Ok(())
-    });
+    })?;
+    Ok(())
 }
 
 /// The org instructions the pulled config wants applied: the `content` string when the block
@@ -1529,24 +2012,24 @@ fn targets_need_apply(
 /// org content is unchanged since the last write (hash match) and every client's rules file is
 /// still at the path we wrote it to, so the ~25s sync loop only ever touches rules files when an
 /// admin actually edits the instructions or a target needs repair ([`targets_need_apply`]).
-fn apply_instructions(team_id: &str, version: i64, desired: Option<&str>) {
-    apply_instructions_to(team_id, version, desired, &installed_rules_targets());
+fn apply_instructions(team_id: &str, version: i64, desired: Option<&str>) -> Result<(), String> {
+    apply_instructions_to(team_id, version, desired, &installed_rules_targets())?;
+    Ok(())
 }
 
 /// Re-run [`apply_instructions`] with the content already on record, so a moved rules path is
 /// still picked up on a cycle that pulled nothing (HTTP 304). A no-op when the team has no
 /// instructions, and [`apply_instructions`] itself is a no-op unless a target moved.
-fn relocate_stored_instructions(team_id: &str) {
-    let Ok(reg) = crate::registry::load() else {
-        return;
-    };
+fn relocate_stored_instructions(team_id: &str) -> Result<(), String> {
+    let reg = crate::registry::load()?;
     let Some(team) = reg.team.as_ref().filter(|t| t.team_id == team_id) else {
-        return;
+        return Ok(());
     };
     let Some(content) = team.team_instructions_content.clone() else {
-        return;
+        return Ok(());
     };
-    apply_instructions(team_id, team.team_instructions_version, Some(&content));
+    apply_instructions(team_id, team.team_instructions_version, Some(&content))?;
+    Ok(())
 }
 
 /// [`apply_instructions`] over an explicit target set.
@@ -1555,19 +2038,19 @@ fn apply_instructions_to(
     version: i64,
     desired: Option<&str>,
     targets: &[crate::instructions::Target],
-) {
+) -> Result<(), String> {
     use crate::instructions::{self, ApplyState};
     // Prior state: only act if still connected to THIS team.
-    let (prev_content, prev_version, prev_targets) = match crate::registry::load() {
-        Ok(reg) => match reg.team.as_ref() {
+    let (prev_content, prev_version, prev_targets) = {
+        let reg = crate::registry::load()?;
+        match reg.team.as_ref() {
             Some(t) if t.team_id == team_id => (
                 t.team_instructions_content.clone(),
                 t.team_instructions_version,
                 t.team_instructions_targets.clone(),
             ),
-            _ => return,
-        },
-        Err(_) => return,
+            _ => return Ok(()),
+        }
     };
     // Skip only when the content is unchanged and every target already holds it. A moved target
     // or a refusal that has since cleared leaves the org text identical but its current state
@@ -1594,7 +2077,7 @@ fn apply_instructions_to(
         .collect();
     if content_unchanged && !needs_apply {
         if obsolete.is_empty() {
-            return; // content unchanged and every target is still where we left it
+            return Ok(()); // content unchanged and every target is still where we left it
         }
         // Only the target set changed (or nothing is wanted any more). Clean up without
         // rewriting still-current files or advancing their marker to an unrelated config version.
@@ -1611,7 +2094,7 @@ fn apply_instructions_to(
                 retained.push(old);
             }
         }
-        let _ = crate::registry::update(|reg| {
+        crate::registry::update(|reg| {
             if let Some(t) = reg.team.as_mut() {
                 if t.team_id == team_id
                     && t.team_instructions_content == prev_content
@@ -1621,8 +2104,8 @@ fn apply_instructions_to(
                 }
             }
             Ok(())
-        });
-        return;
+        })?;
+        return Ok(());
     }
 
     let mut written: Vec<String> = Vec::new();
@@ -1672,7 +2155,8 @@ fn apply_instructions_to(
     let new_content = desired.map(str::to_string);
     let mut recorded_targets = written.clone();
     recorded_targets.extend(keep);
-    record_applied_instructions(team_id, new_content, version, recorded_targets, &written);
+    record_applied_instructions(team_id, new_content, version, recorded_targets, &written)?;
+    Ok(())
 }
 
 /// Persist the outcome of one apply: the content+version watermark and the recorded set, by
@@ -1697,7 +2181,7 @@ fn record_applied_instructions(
     version: i64,
     recorded_targets: Vec<String>,
     written: &[String],
-) {
+) -> Result<(), String> {
     use crate::instructions;
     let recorded = crate::registry::update(|reg| {
         if let Some(t) = reg.team.as_mut() {
@@ -1709,9 +2193,9 @@ fn record_applied_instructions(
             }
         }
         Ok(false)
-    });
-    if matches!(recorded, Ok((_, true))) {
-        return;
+    })?;
+    if recorded.1 {
+        return Ok(());
     }
     // Adopt into whichever team is connected, content or not. A winner still mid-connect has
     // content None for a moment and fills it right after, so "no content" cannot be read as
@@ -1728,8 +2212,8 @@ fn record_applied_instructions(
             return Ok(true);
         }
         Ok(false)
-    });
-    if !matches!(adopted, Ok((_, true))) {
+    })?;
+    if !adopted.1 {
         for path in written {
             let _ = instructions::remove_recorded(
                 std::path::Path::new(path),
@@ -1737,6 +2221,7 @@ fn record_applied_instructions(
             );
         }
     }
+    Ok(())
 }
 
 /// Build the apply-status receipt (spec W5): for each INSTALLED client, the current on-disk state
@@ -1836,10 +2321,7 @@ fn receipt_fresh(reported: Option<&str>, reported_at: Option<i64>, fingerprint: 
     if reported != Some(fingerprint) {
         return false;
     }
-    match reported_at {
-        Some(at) if now_ms().saturating_sub(at) < RECEIPT_HEARTBEAT_MS => true,
-        _ => false,
-    }
+    matches!(reported_at, Some(at) if now_ms().saturating_sub(at) < RECEIPT_HEARTBEAT_MS)
 }
 
 /// Report this member's instructions coverage to the team server, once per sync cycle. Sends
@@ -1847,12 +2329,10 @@ fn receipt_fresh(reported: Option<&str>, reported_at: Option<i64>, fingerprint: 
 /// [`RECEIPT_HEARTBEAT_MS`] (so the server's `instructions_status_at` does not go false-stale
 /// while the member keeps syncing). Best-effort; a failure just retries next cycle. No-op
 /// when the team has no active instructions.
-fn report_instructions_status(conn: &TeamConnection, token: &str) {
+fn report_instructions_status(conn: &TeamConnection, token: &str) -> Result<(), String> {
     use crate::instructions;
     let (content, version, reported, reported_at) = {
-        let Ok(reg) = crate::registry::load() else {
-            return;
-        };
+        let reg = crate::registry::load()?;
         match reg.team.as_ref() {
             Some(t) if t.team_id == conn.team_id => (
                 t.team_instructions_content.clone(),
@@ -1860,22 +2340,23 @@ fn report_instructions_status(conn: &TeamConnection, token: &str) {
                 t.team_instructions_reported.clone(),
                 t.team_instructions_reported_at,
             ),
-            _ => return,
+            _ => return Ok(()),
         }
     };
     let Some(content) = content else {
-        return; // no instructions active for this team
+        return Ok(()); // no instructions active for this team
     };
     let receipt = build_instructions_receipt(&conn.team_id, version, &content);
     let Ok(receipt_json) = serde_json::to_value(&receipt) else {
-        return;
+        return Ok(());
     };
     let fingerprint = instructions::content_hash(&receipt_json.to_string());
     if receipt_fresh(reported.as_deref(), reported_at, &fingerprint) {
-        return;
+        return Ok(());
     }
     let day = usage_report::utc_day_back(0);
-    match post_usage_day(
+    // Old servers and transient failures leave `reported` unset for a later retry.
+    if let Ok(true) = post_usage_day(
         &conn.server_url,
         &conn.team_id,
         token,
@@ -1884,28 +2365,25 @@ fn report_instructions_status(conn: &TeamConnection, token: &str) {
         Some(&receipt_json),
         None,
     ) {
-        Ok(true) => {
-            let at = now_ms();
-            let _ = crate::registry::update(|reg| {
-                if let Some(t) = reg.team.as_mut() {
-                    if t.team_id == conn.team_id {
-                        t.team_instructions_reported = Some(fingerprint.clone());
-                        t.team_instructions_reported_at = Some(at);
-                    }
+        let at = now_ms();
+        crate::registry::update(|reg| {
+            if let Some(t) = reg.team.as_mut() {
+                if t.team_id == conn.team_id {
+                    t.team_instructions_reported = Some(fingerprint.clone());
+                    t.team_instructions_reported_at = Some(at);
                 }
-                Ok(())
-            });
-        }
-        // Old server without the endpoint, or a transient failure: leave `reported` unset so we
-        // retry on a later cycle.
-        _ => {}
+            }
+            Ok(())
+        })?;
     }
+    Ok(())
 }
 
 /// Build the screening-policy apply receipt (SOU-339 / SOU-345): safety flags as currently
 /// enforced on this machine (member's own setting OR team force, whichever is stricter).
 fn build_policy_receipt(reg: &crate::registry::Registry) -> Value {
     json!({
+        "safetyLevel": reg.safety_level_effective(),
         "denyDestructive": reg.deny_destructive_effective(),
         "forceContentDefense": reg.content_defense_effective(),
         "forceQuarantineOnDrift": reg.quarantine_on_drift_effective(),
@@ -1916,15 +2394,13 @@ fn build_policy_receipt(reg: &crate::registry::Registry) -> Value {
 
 /// Upload new local audit lines for team servers when org has `callAuditExport` on (SOU-171).
 /// Fields: ts, server, tool, ok, durationMs, argsHash, client — never args/results.
-fn report_call_events(conn: &TeamConnection, token: &str) {
+fn report_call_events(conn: &TeamConnection, token: &str) -> Result<(), String> {
     let tag = tag_for(&conn.team_id);
     let (enabled, cursor, team_servers, all_ids) = {
-        let Ok(reg) = crate::registry::load() else {
-            return;
-        };
+        let reg = crate::registry::load()?;
         match reg.team.as_ref() {
             Some(t) if t.team_id == conn.team_id && t.call_audit_export => {}
-            _ => return,
+            _ => return Ok(()),
         }
         let team_servers: HashSet<String> = reg
             .servers
@@ -1933,7 +2409,7 @@ fn report_call_events(conn: &TeamConnection, token: &str) {
             .map(|s| s.id.clone())
             .collect();
         if team_servers.is_empty() {
-            return;
+            return Ok(());
         }
         let cursor = reg
             .team
@@ -1948,12 +2424,12 @@ fn report_call_events(conn: &TeamConnection, token: &str) {
         )
     };
     if !enabled {
-        return;
+        return Ok(());
     }
     // An unreadable audit log is not "no new calls". Skip this cycle rather
     // than POST an empty batch that would advance nothing honestly (SBS-873).
     let Ok(lines) = crate::audit::read_recent(usize::MAX) else {
-        return;
+        return Ok(());
     };
     let lines = canonical_team_audit(&lines, &all_ids, &conn.team_id);
     let mut batch: Vec<Value> = Vec::new();
@@ -1995,21 +2471,19 @@ fn report_call_events(conn: &TeamConnection, token: &str) {
         }
     }
     if batch.is_empty() {
-        return;
+        return Ok(());
     }
-    match post_call_events(&conn.server_url, &conn.team_id, token, &batch) {
-        Ok(true) => {
-            let _ = crate::registry::update(|reg| {
-                if let Some(t) = reg.team.as_mut() {
-                    if t.team_id == conn.team_id {
-                        t.call_audit_export_cursor = Some(max_ts);
-                    }
+    if let Ok(true) = post_call_events(&conn.server_url, &conn.team_id, token, &batch) {
+        crate::registry::update(|reg| {
+            if let Some(t) = reg.team.as_mut() {
+                if t.team_id == conn.team_id {
+                    t.call_audit_export_cursor = Some(max_ts);
                 }
-                Ok(())
-            });
-        }
-        _ => {}
+            }
+            Ok(())
+        })?;
     }
+    Ok(())
 }
 
 fn post_call_events(
@@ -2023,33 +2497,32 @@ fn post_call_events(
     let body = json!({ "events": events });
     match agent(server_url)
         .post(&url)
-        .set("authorization", &format!("Bearer {token}"))
+        .set_header("authorization", &format!("Bearer {token}"))
         .send_json(body)
+        .retain_status_body()
     {
         Ok(resp) => {
             require_no_redirect(resp)?;
             Ok(true)
         }
-        Err(ureq::Error::Status(404 | 405, _)) => Ok(false),
+        Err(crate::http_client::Error::Status(404 | 405, _)) => Ok(false),
         Err(e) => Err(stringify(e)),
     }
 }
 
 /// Report this member's as-enforced screening policy to the team server once per sync cycle.
 /// Deduped by receipt hash, with a 12h heartbeat so `policy_status_at` stays fresh. Best-effort.
-fn report_policy_status(conn: &TeamConnection, token: &str) {
+fn report_policy_status(conn: &TeamConnection, token: &str) -> Result<(), String> {
     use crate::instructions;
     let (receipt_json, fingerprint, reported, reported_at) = {
-        let Ok(reg) = crate::registry::load() else {
-            return;
-        };
+        let reg = crate::registry::load()?;
         match reg.team.as_ref() {
             Some(t) if t.team_id == conn.team_id => {}
-            _ => return,
+            _ => return Ok(()),
         }
         let receipt = build_policy_receipt(&reg);
         let Ok(receipt_json) = serde_json::to_value(&receipt) else {
-            return;
+            return Ok(());
         };
         let fingerprint = instructions::content_hash(&receipt_json.to_string());
         let (reported, reported_at) = reg
@@ -2060,10 +2533,10 @@ fn report_policy_status(conn: &TeamConnection, token: &str) {
         (receipt_json, fingerprint, reported, reported_at)
     };
     if receipt_fresh(reported.as_deref(), reported_at, &fingerprint) {
-        return;
+        return Ok(());
     }
     let day = usage_report::utc_day_back(0);
-    match post_usage_day(
+    if let Ok(true) = post_usage_day(
         &conn.server_url,
         &conn.team_id,
         token,
@@ -2072,20 +2545,18 @@ fn report_policy_status(conn: &TeamConnection, token: &str) {
         None,
         Some(&receipt_json),
     ) {
-        Ok(true) => {
-            let at = now_ms();
-            let _ = crate::registry::update(|reg| {
-                if let Some(t) = reg.team.as_mut() {
-                    if t.team_id == conn.team_id {
-                        t.team_policy_reported = Some(fingerprint.clone());
-                        t.team_policy_reported_at = Some(at);
-                    }
+        let at = now_ms();
+        crate::registry::update(|reg| {
+            if let Some(t) = reg.team.as_mut() {
+                if t.team_id == conn.team_id {
+                    t.team_policy_reported = Some(fingerprint.clone());
+                    t.team_policy_reported_at = Some(at);
                 }
-                Ok(())
-            });
-        }
-        _ => {}
+            }
+            Ok(())
+        })?;
     }
+    Ok(())
 }
 
 /// Leave the team: remove its merged servers, clear the connection and the token.
@@ -2096,18 +2567,22 @@ pub fn account_link() -> Result<String, String> {
         .team
         .ok_or("not connected to a team")?;
     require_secure_team_url(&conn.server_url)?;
-    let token = load_token()?.ok_or("team token is missing from the keychain")?;
+    let token = load_token()?.ok_or("Sync sign-in is missing from this machine. Sign in again.")?;
     let response = agent(&conn.server_url)
         .post(&format!(
             "{}/teams/{}/account-link",
             base(&conn.server_url),
             conn.team_id
         ))
-        .set("authorization", &format!("Bearer {token}"))
+        .set_header("authorization", &format!("Bearer {token}"))
         .send_json(json!({}))
+        .retain_status_body()
         .map_err(stringify)?;
     let body: Value = require_no_redirect(response)?
-        .into_json()
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json()
         .map_err(|e| e.to_string())?;
     let url = body
         .get("url")
@@ -2207,6 +2682,9 @@ pub fn use_managed_server(managed_id: &str) -> Result<Registry, String> {
 }
 
 fn apply_use_managed(reg: &mut Registry, managed_id: &str, profile: &str) -> Result<(), String> {
+    if server_change_held(reg, managed_id) {
+        return Err("Review this change in Teams before using it.".into());
+    }
     let team = reg.team.as_ref().ok_or("not connected to a team")?;
     let personal_id = team
         .managed_server_ids
@@ -2231,10 +2709,10 @@ fn apply_use_managed(reg: &mut Registry, managed_id: &str, profile: &str) -> Res
         || serde_json::to_value(&managed.client_credentials).ok()
             != serde_json::to_value(&personal.client_credentials).ok()
     {
-        return Err("The managed definition differs from your personal server. Complete its setup separately before switching profiles.".into());
+        return Err("The managed definition differs from your personal server. Complete its setup separately before using the Team copy.".into());
     }
     if !reg.profiles.iter().any(|p| p.id == profile) {
-        return Err("active profile unavailable".into());
+        return Err("local access context unavailable".into());
     }
     crate::local_auth::ensure_unconfigured(reg, &managed)?;
     // One local vault owner also shares OAuth refresh state and its lock.
@@ -2282,6 +2760,7 @@ fn apply_use_managed(reg: &mut Registry, managed_id: &str, profile: &str) -> Res
     if !p.enabled_server_ids.iter().any(|id| id == managed_id) {
         p.enabled_server_ids.push(managed_id.into());
     }
+    reg.set_server_enabled(profile, managed_id, true)?;
     reg.set_server_enabled(profile, &personal.id, false)?;
     reg.secrets_generation = reg.secrets_generation.wrapping_add(1);
     Ok(())
@@ -2298,17 +2777,33 @@ pub struct PublishResult {
     pub handoffs: Vec<LocalHandoff>,
     /// The notice both desktop shells show after sharing.
     pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<ConfigProposal>,
 }
 
 impl PublishResult {
     /// A whole-set push has no selections and no local handoff.
-    pub fn whole_set(version: i64) -> Self {
+    pub fn whole_set(outcome: impl Into<PushOutcome>) -> Self {
+        let version = match outcome.into() {
+            PushOutcome::Published(version) => version,
+            PushOutcome::Confirmation(proposal) => {
+                return Self {
+                    version: proposal.base_version,
+                    published: false,
+                    local_setup_error: None,
+                    handoffs: vec![],
+                    summary: "Sent for confirmation".into(),
+                    proposal: Some(proposal),
+                }
+            }
+        };
         Self {
             version,
             published: true,
             local_setup_error: None,
             handoffs: Vec::new(),
             summary: publish_summary(version, true, None, &[]),
+            proposal: None,
         }
     }
 
@@ -2367,7 +2862,7 @@ fn managed_copy_of(reg: &Registry, original: &str) -> Result<String, String> {
     }
 }
 
-/// Hand each selected server that is in use in the active profile over to its
+/// Hand each selected server that is in use in the local access context over to its
 /// Team copy. Each selection is staged on its own, so one that needs separate
 /// setup leaves the others switched, and a failed one keeps a working route.
 /// `before` is the registry the share was confirmed against; `reg` already has
@@ -2388,12 +2883,19 @@ fn stage_publisher_handoffs(
             .find(|s| &s.id == id)
             .map(|s| s.name.clone())
             .unwrap_or_else(|| id.clone());
-        let personal_on = before.is_enabled(&profile, id);
+        let personal_on = before.enabled_here(id);
         // A personal server that an earlier share handed off is off here only
         // because its Team copy is in use. Re-sharing a change must keep that route.
-        let using_team_copy =
-            !personal_on && crate::local_auth::bound_copy_enabled(before, &profile, id);
-        let (outcome, message) = if !personal_on && !using_team_copy {
+        let using_team_copy = !personal_on && crate::local_auth::bound_copy_enabled(before, id);
+        // Sync may revoke this route after the share was confirmed. A stale
+        // handoff snapshot must not turn its personal original back on.
+        let removed_shared_route = using_team_copy && managed_copy_of(reg, id).is_err();
+        let (outcome, message) = if removed_shared_route {
+            (
+                HandoffOutcome::NotEnabled,
+                "Removed or disabled by the team. Your personal server stays off.".to_string(),
+            )
+        } else if !personal_on && !using_team_copy {
             (
                 HandoffOutcome::NotEnabled,
                 if predicted {
@@ -2418,9 +2920,9 @@ fn stage_publisher_handoffs(
                     }
                 }
                 Err(reason) => {
-                    let team_on = managed_copy_of(reg, id)
-                        .is_ok_and(|managed| reg.is_enabled(&profile, &managed));
-                    let route = if reg.is_enabled(&profile, id) {
+                    let team_on =
+                        managed_copy_of(reg, id).is_ok_and(|managed| reg.enabled_here(&managed));
+                    let route = if reg.enabled_here(id) {
                         "Your personal server stays on in this profile."
                     } else if team_on {
                         "The Team copy stays on in this profile."
@@ -2506,8 +3008,13 @@ fn same_display_name(a: &str, b: &str) -> bool {
 /// whether a different Team server has the same name. The React picker applies
 /// the same rules.
 pub fn personal_share_hint(reg: &Registry, personal: &ServerEntry) -> Option<&'static str> {
+    if personal.unknown_fields.get("teamRouteRemoved") == Some(&json!(true))
+        && !reg.enabled_here(&personal.id)
+    {
+        return Some("Removed or disabled by the team. Your personal server stays off.");
+    }
     if let Ok(copy) = managed_copy_of(reg, &personal.id) {
-        return Some(if reg.is_enabled(&reg.active_profile_id(), &copy) {
+        return Some(if reg.enabled_here(&copy) {
             "Shared. The Team copy is in use in this profile."
         } else {
             "Shared. The Team copy is not in use in this profile."
@@ -2517,7 +3024,9 @@ pub fn personal_share_hint(reg: &Registry, personal: &ServerEntry) -> Option<&'s
     reg.servers
         .iter()
         .any(|s| is_team_server(s, &tag) && same_display_name(&s.name, &personal.name))
-        .then_some("The team has a different server with this name. Sharing adds a separate definition.")
+        .then_some(
+            "The team has a different server with this name. Sharing adds a separate definition.",
+        )
 }
 
 /// The preview's explanation for each selection, including a dry run of the local
@@ -2530,8 +3039,14 @@ fn share_selections(
     selected: &Value,
     published: &Value,
 ) -> Result<Vec<ShareSelectionPreview>, String> {
-    let team_id = reg.team.as_ref().ok_or("not connected to a team")?.team_id.clone();
+    let team_id = reg
+        .team
+        .as_ref()
+        .ok_or("not connected to a team")?
+        .team_id
+        .clone();
     let remote = server_index(remote)?;
+    let published_servers = server_index(&published["servers"])?;
     let selected = server_index(selected)?;
     let ids: Vec<String> = selected.keys().cloned().collect();
     let mut simulated = reg.clone();
@@ -2545,7 +3060,7 @@ fn share_selections(
             let name = preview_name(server, id);
             let (team_change, team_detail) = match remote.get(id) {
                 None => ("New", "Adds a new Team definition."),
-                Some(current) if !same_definition(current, server) => (
+                Some(current) if !same_definition(current, published_servers[id]) => (
                     "Update",
                     "Replaces the Team definition with the same server ID. Members review the change before it runs for them.",
                 ),
@@ -2584,7 +3099,14 @@ fn additive_server_set(remote: &Value, selected: &Value) -> Result<Value, String
         .map(|(id, s)| (id, s.clone()))
         .collect();
     for (id, server) in server_index(selected)? {
-        merged.insert(id, server.clone());
+        // The desktop owns only the fields in its export. Keep dashboard notes,
+        // disablement and future metadata even when updating this same identity.
+        let mut definition = merged.remove(&id).unwrap_or_else(|| json!({}));
+        definition
+            .as_object_mut()
+            .unwrap()
+            .extend(server.as_object().unwrap().clone());
+        merged.insert(id, definition);
     }
     Ok(Value::Array(merged.into_values().collect()))
 }
@@ -2595,7 +3117,7 @@ pub fn preview_push_selected(ids: &[String]) -> Result<PushPreview, String> {
         return Err("only a team admin can share servers".into());
     }
     let selected = selected_export(&reg, ids)?;
-    let token = load_token()?.ok_or("team token is missing from the keychain")?;
+    let token = load_token()?.ok_or("Sync sign-in is missing from this machine. Sign in again.")?;
     let (version, config) = fetch_config_for_update(&conn.server_url, &conn.team_id, &token)?;
     let remote = config
         .get("servers")
@@ -2621,7 +3143,7 @@ pub fn push_selected(
     if publisher_fingerprint(&reg, ids)? != fingerprint {
         return Err("Selected servers changed. Review the share again.".into());
     }
-    let token = load_token()?.ok_or("team token is missing from the keychain")?;
+    let token = load_token()?.ok_or("Sync sign-in is missing from this machine. Sign in again.")?;
     let (version, config) = fetch_config_for_update(&conn.server_url, &conn.team_id, &token)?;
     if version != expected_version {
         return Err(STALE_PUSH_MESSAGE.into());
@@ -2632,12 +3154,17 @@ pub fn push_selected(
     let servers = additive_server_set(remote, &selected)?;
     // Re-sharing definitions the Team already has unchanged only runs the local step.
     let before = server_index(remote)?;
-    let published = server_index(&servers)?
-        .iter()
-        .any(|(id, server)| before.get(id).is_none_or(|current| !same_definition(current, server)));
+    let published = server_index(&servers)?.iter().any(|(id, server)| {
+        before
+            .get(id)
+            .is_none_or(|current| !same_definition(current, server))
+    });
     let version = if published {
         let config = replace_server_set(config, servers)?;
-        push_config(&conn.server_url, &conn.team_id, &token, &config, version)?
+        match push_config(&conn.server_url, &conn.team_id, &token, &config, version)? {
+            PushOutcome::Published(version) => version,
+            outcome @ PushOutcome::Confirmation(_) => return Ok(PublishResult::whole_set(outcome)),
+        }
     } else {
         version
     };
@@ -2647,14 +3174,17 @@ pub fn push_selected(
         let applied = crate::registry::load()?;
         let _authentication = lock_handoff_authentication(&applied, ids)?;
         let (_, staged) = crate::registry::update(|current| {
-            if current.team.as_ref().map(|t| &t.managed_server_ids) != applied.team.as_ref().map(|t| &t.managed_server_ids) {
+            if current.team.as_ref().map(|t| &t.managed_server_ids)
+                != applied.team.as_ref().map(|t| &t.managed_server_ids)
+            {
                 return Err("Team server identities changed. Review local setup again.".into());
             }
             finish_publisher_share(current, &reg, ids, version)
         })?;
         handoffs = staged;
         Ok::<_, String>(())
-    })().err();
+    })()
+    .err();
     let summary = publish_summary(version, published, local_setup_error.as_deref(), &handoffs);
     Ok(PublishResult {
         version,
@@ -2662,6 +3192,7 @@ pub fn push_selected(
         local_setup_error,
         handoffs,
         summary,
+        proposal: None,
     })
 }
 
@@ -2673,7 +3204,7 @@ pub fn preview_push_current() -> Result<PushPreview, String> {
     if conn.role != "admin" {
         return Err("only a team admin can push the shared config".into());
     }
-    let token = load_token()?.ok_or("team token is missing from the keychain")?;
+    let token = load_token()?.ok_or("Sync sign-in is missing from this machine. Sign in again.")?;
     let local_servers = team_server_export(&reg);
     let (base_version, remote_config) =
         fetch_config_for_update(&conn.server_url, &conn.team_id, &token)?;
@@ -2692,13 +3223,13 @@ pub fn preview_push_current() -> Result<PushPreview, String> {
 pub fn push_current(
     expected_base_version: i64,
     expected_local_fingerprint: &str,
-) -> Result<i64, String> {
+) -> Result<PushOutcome, String> {
     let reg = crate::registry::load()?;
     let conn = reg.team.clone().ok_or("not connected to a team")?;
     if conn.role != "admin" {
         return Err("only a team admin can push the shared config".into());
     }
-    let token = load_token()?.ok_or("team token is missing from the keychain")?;
+    let token = load_token()?.ok_or("Sync sign-in is missing from this machine. Sign in again.")?;
     let servers = team_server_export(&reg);
     if crate::audit::args_hash(&servers) != expected_local_fingerprint {
         return Err(
@@ -2757,7 +3288,8 @@ fn team_server_export(reg: &Registry) -> Value {
                 "launch": s.launch.as_ref().map(|launch| launch.without_values()),
                 "cwd": s.cwd,
                 "url": url,
-                "env": s.env.iter().map(|e| serde_json::json!({ "key": e.key, "secret": e.secret })).collect::<Vec<_>>(),
+                "env": s.env.iter().map(|e| { let mut value = serde_json::json!({ "key": e.key, "secret": e.secret }); if let Some(source) = e.unknown_fields.get("source") { value["source"] = source.clone(); } value }).collect::<Vec<_>>(),
+                "headerKeys": s.unknown_fields.get("headerKeys"),
                 "disabledTools": s.disabled_tools,
                 "requestTimeoutMs": s.request_timeout_ms,
                 "initializeTimeoutMs": s.initialize_timeout_ms,
@@ -2776,6 +3308,940 @@ fn team_server_export(reg: &Registry) -> Value {
     Value::Array(servers)
 }
 
+// Stored in TeamConnection's forward-compatible fields. Older registry readers preserve
+// this state and the existing server review flag, so no schema migration is needed.
+const MEMBER_REVIEW_FIELD: &str = "memberReview";
+const HELD_CHANGE_FIELD: &str = "teamHeldChange";
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MemberReview {
+    accepted: BTreeMap<String, Value>,
+    latest: BTreeMap<String, Value>,
+    pub pending: BTreeMap<String, MemberChange>,
+    rejected: BTreeMap<String, Vec<String>>,
+    pub accepted_version: i64,
+    version: i64,
+    instructions_version: i64,
+    accepted_instructions_version: i64,
+    held_access: BTreeMap<String, HeldAccess>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct HeldAccess {
+    existed: bool,
+    enabled: bool,
+    profiles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MemberChange {
+    pub key: String,
+    pub title: String,
+    pub hash: String,
+    pub fields: Vec<MemberChangeField>,
+    pub labels: Vec<Value>,
+    before: Value,
+    after: Value,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct MemberChangeField {
+    pub field: String,
+    pub before: String,
+    pub after: String,
+}
+
+pub fn member_review(reg: &Registry) -> Result<MemberReview, String> {
+    match reg
+        .team
+        .as_ref()
+        .and_then(|t| t.unknown_fields.get(MEMBER_REVIEW_FIELD))
+    {
+        Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
+            "Team review state could not be read. Reconnect before accepting changes.".into()
+        }),
+        None => Ok(MemberReview::default()),
+    }
+}
+
+fn save_member_review(reg: &mut Registry, review: &MemberReview) {
+    if let Some(team) = &mut reg.team {
+        team.unknown_fields
+            .insert(MEMBER_REVIEW_FIELD.into(), json!(review));
+    }
+}
+
+fn review_items(config: &Value) -> BTreeMap<String, Value> {
+    let mut items = BTreeMap::new();
+    for server in config["servers"].as_array().into_iter().flatten() {
+        if let Some(id) = team_entry_original_id(server) {
+            let key = format!("server:{id}");
+            // Duplicate identities are blocked by the existing merge. Never approve one
+            // ambiguous definition while displaying another.
+            if items.insert(key.clone(), server.clone()).is_some() {
+                items.insert(key, Value::Null);
+            }
+        }
+    }
+    items.insert(
+        "instructions".into(),
+        desired_instructions(config).map_or(Value::Null, |s| json!(s)),
+    );
+    let screening = config.get("screeningPolicy").cloned().unwrap_or(json!({}));
+    let screening = if screening.is_object() {
+        screening
+    } else {
+        json!({"minSafetyLevel":"strict"})
+    };
+    items.insert(
+        "policy".into(),
+        json!({
+            "denyDestructive": config["denyDestructive"].as_bool().unwrap_or(false),
+            "screeningPolicy": screening,
+            "rateLimits": config.get("rateLimits").cloned().unwrap_or(json!([])),
+            "secretSources": config.get("secretSources").cloned().unwrap_or(Value::Null),
+        }),
+    );
+    items.insert(
+        "callAuditExport".into(),
+        json!(config["callAuditExport"].as_bool().unwrap_or(false)),
+    );
+    items
+}
+
+fn normalized_server(value: &Value) -> Value {
+    match classify_team_server(value, "team:member-review") {
+        TeamClass::Ready(entry) | TeamClass::Review(entry) => {
+            let mut imported = json!(entry);
+            // Tool scopes are applied separately from the imported server entry.
+            imported["allowedTools"] = json!(parse_allowed_tools(value));
+            imported
+        }
+        // Invalid definitions remain distinct and cannot gain consent by normalization.
+        _ => value.clone(),
+    }
+}
+
+fn comparable_item(key: &str, value: &Value) -> Value {
+    if key.starts_with("server:") {
+        normalized_server(value)
+    } else {
+        value.clone()
+    }
+}
+
+fn raw_item_hash(key: &str, value: &Value) -> String {
+    crate::registry::sha256_hex(&json!(["team-member-review-v1", key, value]).to_string())
+}
+
+fn item_hash(key: &str, value: &Value) -> String {
+    // Compare what is actually imported, including secret flags and launch literals.
+    raw_item_hash(key, &comparable_item(key, value))
+}
+
+fn floor(policy: &Value) -> crate::registry::SafetyLevel {
+    use crate::registry::SafetyLevel::{Ask, Off, Strict};
+    match policy["screeningPolicy"]["minSafetyLevel"].as_str() {
+        Some("strict") => Strict,
+        Some("ask") => Ask,
+        Some("off") => Off,
+        // Invalid floors fail closed; missing floors keep legacy semantics.
+        Some(_) => Strict,
+        None if policy["denyDestructive"] == true => Strict,
+        None if policy["screeningPolicy"]["forceHumanApproval"] == true => Ask,
+        None => Off,
+    }
+}
+
+fn current_policy(reg: &Registry) -> Value {
+    json!({"denyDestructive": reg.team_forced_deny_destructive,
+        "screeningPolicy": {
+            "minSafetyLevel": reg.team_min_safety_level,
+            "forceHumanApproval": reg.team_forced_human_approval,
+            "forceContentDefense": reg.team_forced_content_defense,
+            "forceQuarantineOnDrift": reg.team_forced_quarantine_on_drift,
+            "forceBlockOnInjection": reg.team_forced_block_on_injection,
+            "forcePiiRedaction": reg.team_forced_pii_redaction,
+        },
+        "rateLimits": reg.team.as_ref().map(|t| &t.rate_limits),
+        "secretSources": reg.servers.iter().filter(|s| reg.team.as_ref().is_some_and(|t| is_team_server(s, &tag_for(&t.team_id)))).find_map(|s| s.unknown_fields.get("secretSources")).cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn immediate_floors(policy: &mut Value, incoming: &Value, accepted: &Value) {
+    policy["screeningPolicy"]["minSafetyLevel"] = json!(floor(incoming).max(floor(accepted)));
+    for key in [
+        "forceHumanApproval",
+        "forceContentDefense",
+        "forceQuarantineOnDrift",
+        "forceBlockOnInjection",
+        "forcePiiRedaction",
+    ] {
+        policy["screeningPolicy"][key] = json!(
+            incoming["screeningPolicy"][key] == true || accepted["screeningPolicy"][key] == true
+        );
+    }
+    policy["denyDestructive"] =
+        json!(incoming["denyDestructive"] == true || accepted["denyDestructive"] == true);
+}
+
+fn immediate_rate_limits(policy: &mut Value, incoming: &Value) {
+    let mut caps = crate::rate_limits::parse_caps(policy);
+    for cap in crate::rate_limits::parse_caps(incoming) {
+        // Counters use window and tool scope, not the cap's display id. Keep both
+        // scopes when one changes so tightening cannot release an accepted limit.
+        if let Some(accepted) = caps
+            .iter_mut()
+            .find(|old| old.window == cap.window && old.tool == cap.tool)
+        {
+            accepted.max_calls = accepted.max_calls.min(cap.max_calls);
+        } else {
+            caps.push(cap);
+        }
+    }
+    policy["rateLimits"] = json!(caps);
+}
+
+fn diff_fields(before: &Value, after: &Value, prefix: &str, fields: &mut Vec<MemberChangeField>) {
+    if before == after {
+        return;
+    }
+    if before.is_object() || after.is_object() {
+        let keys: std::collections::BTreeSet<_> = before
+            .as_object()
+            .into_iter()
+            .flat_map(|o| o.keys())
+            .chain(after.as_object().into_iter().flat_map(|o| o.keys()))
+            .collect();
+        for key in keys {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            diff_fields(&before[key], &after[key], &path, fields);
+        }
+    } else {
+        let text = |value: &Value| match value {
+            Value::Null => "None".into(),
+            Value::String(s) => s.clone(),
+            _ => serde_json::to_string_pretty(value).unwrap_or_default(),
+        };
+        fields.push(MemberChangeField {
+            field: if prefix.is_empty() {
+                "Content".into()
+            } else {
+                prefix.into()
+            },
+            before: text(before),
+            after: text(after),
+        });
+    }
+}
+
+fn display_server(value: &Value) -> Value {
+    if value.is_null() {
+        return Value::Null;
+    }
+    let mut display = serde_json::Map::new();
+    for key in [
+        "id",
+        "name",
+        "transport",
+        "command",
+        "args",
+        "cwd",
+        "launch",
+        "url",
+        "env",
+        "headerKeys",
+        "allowedTools",
+        "disabledTools",
+        "clientCredentials",
+        "requestTimeoutMs",
+        "initializeTimeoutMs",
+    ] {
+        if let Some(field) = value.get(key) {
+            display.insert(key.into(), field.clone());
+        }
+    }
+    if let Some(env) = display.get_mut("env").and_then(Value::as_array_mut) {
+        for entry in env.iter_mut().filter_map(Value::as_object_mut) {
+            entry.remove("value");
+        }
+    }
+    if let Some(inputs) = display
+        .get_mut("launch")
+        .and_then(|launch| launch.get_mut("inputs"))
+        .and_then(Value::as_array_mut)
+    {
+        for input in inputs.iter_mut().filter_map(Value::as_object_mut) {
+            input.remove("value");
+        }
+    }
+    if let Some(args) = value["args"].as_array() {
+        let args: Vec<String> = args
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+        display.insert(
+            "args".into(),
+            json!(args
+                .iter()
+                .zip(crate::registry::secret_arg_mask(&args))
+                .map(|(arg, secret)| if secret { "<redacted>" } else { arg.as_str() })
+                .collect::<Vec<_>>()),
+        );
+    }
+    if let Some(endpoint) = value["url"].as_str() {
+        display.insert("url".into(), json!(preview_endpoint(endpoint)));
+    }
+    if let Some(credentials) = value.get("clientCredentials").filter(|v| !v.is_null()) {
+        if let Ok(mut credentials) =
+            serde_json::from_value::<crate::registry::ClientCredentials>(credentials.clone())
+        {
+            credentials.strip_secret_fields();
+            display.insert("clientCredentials".into(), json!(credentials));
+        } else {
+            display.insert(
+                "clientCredentials".into(),
+                json!("Invalid authentication definition"),
+            );
+        }
+    }
+    Value::Object(display)
+}
+
+fn change_labels(key: &str, changes: &[Value]) -> Vec<Value> {
+    let text = |value: &Value, fallback: &str| {
+        value
+            .as_str()
+            .unwrap_or(fallback)
+            .chars()
+            .take(128)
+            .collect::<String>()
+    };
+    changes.iter().filter(|change| {
+        if let Some(id) = key.strip_prefix("server:") {
+            ["serversAdded", "serversChanged", "serversRemoved"].iter().any(|field| change["summary"][field].as_array().is_some_and(|ids| ids.iter().any(|v| v == id)))
+        } else { change["summary"][key] == true }
+    }).map(|change| json!({
+        "author": {"name": text(&change["author"]["name"], "Unknown author")},
+        "at": change["at"].as_i64(),
+        "via": text(&change["via"], "unknown"),
+        "approvedBy": change.get("approvedBy").filter(|v| !v.is_null()).map(|value| json!({"name":text(&value["name"], "Unknown approver")})),
+    })).collect()
+}
+
+/// Metadata is useful only when it covers the entire interval since member consent.
+/// Missing version/baseVersion or a capped history yields an unlabelled full diff.
+fn covered_changes(data: Value, since: i64, version: i64) -> Vec<Value> {
+    let Some(changes) = data["changes"].as_array() else {
+        return vec![];
+    };
+    let mut expected = version;
+    for change in changes {
+        if change["version"].as_i64() != Some(expected) {
+            return vec![];
+        }
+        let Some(base) = change["baseVersion"].as_i64() else {
+            return vec![];
+        };
+        if base >= expected {
+            return vec![];
+        }
+        expected = base;
+        if expected <= since {
+            return changes
+                .iter()
+                .take_while(|c| c["version"].as_i64().unwrap_or(0) > since)
+                .cloned()
+                .collect();
+        }
+    }
+    vec![]
+}
+
+fn fetch_change_labels(
+    conn: &TeamConnection,
+    token: &str,
+    since: i64,
+    version: i64,
+) -> Result<Vec<Value>, String> {
+    let response = match agent(&conn.server_url)
+        .get(&format!(
+            "{}/teams/{}/config/changes?since={since}",
+            base(&conn.server_url),
+            conn.team_id
+        ))
+        .set_header("authorization", &format!("Bearer {token}"))
+        .call()
+        .retain_status_body()
+    {
+        Ok(response) => require_no_redirect(response)?,
+        Err(crate::http_client::Error::Status(404, _)) => return Ok(vec![]),
+        Err(error) => return Err(stringify(error)),
+    };
+    let data = response
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json()
+        .map_err(|e| e.to_string())?;
+    Ok(covered_changes(data, since, version))
+}
+
+fn seed_member_review(reg: &Registry, team_id: &str, config: &Value, review: &mut MemberReview) {
+    review.accepted = review_items(&json!({"servers":[]}));
+    review.accepted.insert("policy".into(), current_policy(reg));
+    if let Some(team) = &reg.team {
+        review.accepted_version = team.last_version;
+        review.accepted_instructions_version = team.team_instructions_version;
+        if let Some(content) = &team.team_instructions_content {
+            review
+                .accepted
+                .insert("instructions".into(), json!(content));
+        }
+        review
+            .accepted
+            .insert("callAuditExport".into(), json!(team.call_audit_export));
+    }
+    for server in reg
+        .servers
+        .iter()
+        .filter(|s| s.source.as_deref() == Some(&tag_for(team_id)))
+    {
+        let original = saved_team_original_id(server).or_else(|| {
+            reg.team
+                .as_ref()?
+                .managed_server_ids
+                .get(&server.id)
+                .map(String::as_str)
+        });
+        let incoming = config["servers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|item| {
+                team_entry_original_id(item) == original
+                    || original.is_none()
+                        && format!(
+                            "team_{}",
+                            slugify_id(team_entry_original_id(item).unwrap_or(""))
+                        ) == server.id
+            });
+        let Some(original) = original.or_else(|| incoming.and_then(team_entry_original_id)) else {
+            continue;
+        };
+        let mut saved = json!(server);
+        // Compare the imported definition, excluding member-local setup and switches.
+        saved["id"] = json!(format!("team_{}", slugify_id(original)));
+        saved["enabled"] = json!(false);
+        saved.as_object_mut().unwrap().remove("inheritEnv");
+        if let Some(launch) = &server.launch {
+            saved["launch"] = json!(launch.without_values());
+        }
+        for env in saved["env"].as_array_mut().into_iter().flatten() {
+            if let Some(object) = env.as_object_mut() {
+                object.remove("value");
+            }
+        }
+        if let Some(object) = saved.as_object_mut() {
+            object.remove(HELD_CHANGE_FIELD);
+            object.remove("teamEnableReview");
+        }
+        let matches = incoming.is_some_and(|item| {
+            let entry = match classify_team_server(item, &tag_for(team_id)) {
+                TeamClass::Ready(entry) | TeamClass::Review(entry) => entry,
+                _ => return false,
+            };
+            let mut imported = json!(entry);
+            // Old rows may have no original-id marker.
+            imported
+                .as_object_mut()
+                .unwrap()
+                .remove(TEAM_ORIGINAL_ID_FIELD);
+            let mut saved = saved.clone();
+            saved
+                .as_object_mut()
+                .unwrap()
+                .remove(TEAM_ORIGINAL_ID_FIELD);
+            imported == saved
+        });
+        let mut definition = incoming.filter(|_| matches).cloned().unwrap_or_else(|| {
+            let mut definition = saved.clone();
+            definition["id"] = json!(original);
+            definition
+        });
+        // The profile overlays own the already-applied team allow-list.
+        if let Some(scope) = reg
+            .profiles
+            .iter()
+            .find_map(|profile| profile.tool_scope.get(&server.id))
+        {
+            definition["allowedTools"] = json!(scope);
+        }
+        review
+            .accepted
+            .insert(format!("server:{original}"), definition);
+    }
+    // Equivalent policy representations should not invent a migration review.
+    let incoming = review_items(config)["policy"].clone();
+    let mut comparable = incoming.clone();
+    immediate_floors(&mut comparable, &incoming, &json!({}));
+    let mut current = current_policy(reg);
+    immediate_floors(&mut current, &current_policy(reg), &json!({}));
+    if comparable == current {
+        review.accepted.insert("policy".into(), incoming);
+    }
+}
+
+/// Stage every changed control-plane item. Definitions use the existing review gate;
+/// instructions, policy and export use the same queue and member decision.
+pub fn stage_team_config(
+    reg: &mut Registry,
+    team_id: &str,
+    config: &Value,
+    version: i64,
+    labels: &[Value],
+) -> Result<MergeOutcome, String> {
+    let mut review = member_review(reg)?;
+    if review.accepted.is_empty() {
+        seed_member_review(reg, team_id, config, &mut review);
+    }
+    let mut latest = review_items(config);
+    // The merge drops unusable, blocked and duplicate definitions. They revoke
+    // prior consent just like removal, rather than offering to keep an old copy.
+    latest.retain(|key, value| {
+        !key.starts_with("server:")
+            || matches!(
+                classify_team_server(value, &tag_for(team_id)),
+                TeamClass::Ready(_) | TeamClass::Review(_)
+            )
+    });
+    if latest.get("instructions") != review.latest.get("instructions") {
+        review.instructions_version = version;
+    }
+    let previous_keys: Vec<_> = review.latest.keys().cloned().collect();
+    review.latest = latest;
+    // Stopping export revokes prior acceptance. Rejected enablement hashes stay rejected.
+    if review.latest.get("callAuditExport") == Some(&json!(false)) {
+        review
+            .accepted
+            .insert("callAuditExport".into(), json!(false));
+    }
+    review.version = version;
+    review.pending.clear();
+    let keys: std::collections::BTreeSet<String> = review
+        .latest
+        .keys()
+        .chain(review.accepted.keys())
+        .chain(review.rejected.keys())
+        .chain(previous_keys.iter())
+        .cloned()
+        .collect();
+    for key in keys {
+        let before = review.accepted.get(&key).cloned().unwrap_or(Value::Null);
+        let after = review.latest.get(&key).cloned().unwrap_or(Value::Null);
+        // Removal is a tightening. Forget consent and rejection history so the
+        // same identity returning later always starts a fresh new-server review.
+        if key.starts_with("server:") && !review.latest.contains_key(&key) {
+            if let Some(managed) = reg
+                .servers
+                .iter()
+                .find(|server| {
+                    server.source.as_deref() == Some(&tag_for(team_id))
+                        && saved_team_original_id(server) == Some(&key[7..])
+                })
+                .map(|server| server.id.clone())
+            {
+                crate::local_auth::revoke_personal_route(reg, team_id, &managed);
+            }
+            review.accepted.remove(&key);
+            review.rejected.remove(&key);
+            review.held_access.remove(&key[7..]);
+            continue;
+        }
+        if comparable_item(&key, &before) == comparable_item(&key, &after)
+            || (before.is_null()
+                && (after == false
+                    || (key == "policy"
+                        && after
+                            == json!({"denyDestructive":false,"screeningPolicy":{},"rateLimits":[]}))))
+        {
+            continue;
+        }
+        let hash = item_hash(&key, &after);
+        if review.rejected.get(&key).is_some_and(|hashes| {
+            hashes.contains(&hash) || hashes.contains(&raw_item_hash(&key, &after))
+        }) {
+            continue;
+        }
+        let title = if let Some(server_id) = key.strip_prefix("server:") {
+            format!(
+                "Server: {}",
+                after["name"]
+                    .as_str()
+                    .or(before["name"].as_str())
+                    .unwrap_or(server_id)
+            )
+        } else {
+            match key.as_str() {
+                "instructions" => "Team instructions",
+                "policy" => "Team policy",
+                _ => "Call-log export",
+            }
+            .into()
+        };
+        let (a, b) = if key.starts_with("server:") {
+            (display_server(&before), display_server(&after))
+        } else {
+            (before.clone(), after.clone())
+        };
+        let mut fields = Vec::new();
+        diff_fields(&a, &b, "", &mut fields);
+        if fields.is_empty() {
+            fields.push(MemberChangeField {
+                field: "Hidden or secret fields changed".into(),
+                before: "Previously accepted hidden fields".into(),
+                after: "Changed hidden fields (values redacted)".into(),
+            });
+        }
+        review.pending.insert(
+            key.clone(),
+            MemberChange {
+                key: key.clone(),
+                title,
+                hash,
+                fields,
+                labels: change_labels(&key, labels),
+                before,
+                after,
+            },
+        );
+    }
+    for key in review
+        .pending
+        .keys()
+        .filter(|key| key.starts_with("server:"))
+    {
+        let original = &key[7..];
+        review
+            .held_access
+            .entry(original.into())
+            .or_insert_with(|| {
+                let server = reg.servers.iter().find(|s| {
+                    s.source.as_deref() == Some(&tag_for(team_id))
+                        && saved_team_original_id(s) == Some(original)
+                });
+                HeldAccess {
+                    existed: server.is_some(),
+                    enabled: server.is_some_and(|s| reg.server_enabled(&s.id)),
+                    profiles: server
+                        .map(|s| {
+                            reg.profiles
+                                .iter()
+                                .filter(|p| p.enabled_server_ids.contains(&s.id))
+                                .map(|p| p.id.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                }
+            });
+    }
+    let outcome = apply_review_state(reg, team_id, &review, true)?;
+    if review.latest.len() == review.accepted.len()
+        && review.latest.iter().all(|(key, value)| {
+            comparable_item(key, value)
+                == comparable_item(key, review.accepted.get(key).unwrap_or(&Value::Null))
+        })
+    {
+        review.accepted_version = version;
+    }
+    review.held_access.retain(|id, _| {
+        review.pending.contains_key(&format!("server:{id}"))
+            || !review.accepted.contains_key(&format!("server:{id}"))
+    });
+    save_member_review(reg, &review);
+    Ok(outcome)
+}
+
+fn apply_review_state(
+    reg: &mut Registry,
+    team_id: &str,
+    review: &MemberReview,
+    tighten: bool,
+) -> Result<MergeOutcome, String> {
+    let mut policy = review
+        .accepted
+        .get("policy")
+        .cloned()
+        .unwrap_or(json!({"denyDestructive":false,"screeningPolicy":{},"rateLimits":[]}));
+    if tighten {
+        let accepted = policy.clone();
+        let latest = review.latest.get("policy").unwrap_or(&Value::Null);
+        immediate_floors(&mut policy, latest, &accepted);
+        immediate_rate_limits(&mut policy, latest);
+    }
+    policy["screeningPolicy"]["minSafetyLevel"] = json!(floor(&policy));
+    // Secret-source restrictions apply immediately, including while policy review is pending.
+    policy["secretSources"] = review
+        .latest
+        .get("policy")
+        .and_then(|v| v.get("secretSources"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut effective = policy;
+    effective["callAuditExport"] = review
+        .accepted
+        .get("callAuditExport")
+        .cloned()
+        .unwrap_or(json!(false));
+    // Export can stop immediately; re-enabling always requires a new decision.
+    if review.latest.get("callAuditExport") == Some(&json!(false)) {
+        effective["callAuditExport"] = json!(false);
+    }
+    let keys: std::collections::BTreeSet<_> = review
+        .latest
+        .keys()
+        .chain(review.accepted.keys())
+        .filter(|k| k.starts_with("server:"))
+        .collect();
+    let mut held = HashSet::new();
+    let servers: Vec<Value> = keys
+        .into_iter()
+        .filter_map(|key| {
+            let accepted = review.accepted.get(key).cloned().unwrap_or(Value::Null);
+            let latest = review.latest.get(key).cloned().unwrap_or(Value::Null);
+            if review.pending.contains_key(key) || accepted.is_null() && !latest.is_null() {
+                held.insert(key[7..].to_string());
+            }
+            // Keep the accepted definition and local authentication until consent.
+            // New, rejected definitions stay visible but cannot run.
+            let definition = if accepted.is_null() { latest } else { accepted };
+            (!definition.is_null()).then_some(definition)
+        })
+        .collect();
+    effective["servers"] = json!(servers);
+    let mut outcome = apply_team_config(reg, team_id, &effective);
+    for server in reg
+        .servers
+        .iter_mut()
+        .filter(|s| s.source.as_deref() == Some(&tag_for(team_id)))
+    {
+        if saved_team_original_id(server).is_some_and(|id| held.contains(id)) {
+            server.require_team_enable_review();
+            server
+                .unknown_fields
+                .insert(HELD_CHANGE_FIELD.into(), json!(true));
+            server.enabled = false;
+            for profile in &mut reg.profiles {
+                profile.enabled_server_ids.retain(|id| id != &server.id);
+            }
+        } else {
+            server.unknown_fields.remove(HELD_CHANGE_FIELD);
+            if let Some(access) =
+                saved_team_original_id(server).and_then(|id| review.held_access.get(id))
+            {
+                if access.existed {
+                    server.enabled = access.enabled;
+                    // Content review is complete even when the member's switch stays off.
+                    server.unknown_fields.remove("teamEnableReview");
+                    for profile in &mut reg.profiles {
+                        profile.enabled_server_ids.retain(|id| id != &server.id);
+                        if access.profiles.contains(&profile.id) {
+                            profile.enabled_server_ids.push(server.id.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    outcome.review = review.pending.len();
+    Ok(outcome)
+}
+
+pub fn server_change_held(reg: &Registry, server_id: &str) -> bool {
+    reg.servers
+        .iter()
+        .any(|s| s.id == server_id && s.unknown_fields.get(HELD_CHANGE_FIELD) == Some(&json!(true)))
+}
+
+fn decide_member_change(
+    reg: &mut Registry,
+    key: &str,
+    hash: &str,
+    accept: bool,
+) -> Result<(), String> {
+    let team_id = reg
+        .team
+        .as_ref()
+        .ok_or("not connected to a team")?
+        .team_id
+        .clone();
+    let mut review = member_review(reg)?;
+    let change = review
+        .pending
+        .get(key)
+        .ok_or("This change is no longer pending. Review the current queue.")?
+        .clone();
+    if change.hash != hash || item_hash(key, review.latest.get(key).unwrap_or(&Value::Null)) != hash
+    {
+        return Err("The team change was updated. Review its new content before accepting.".into());
+    }
+    if accept {
+        if change.after.is_null() && key.starts_with("server:") {
+            review.accepted.remove(key);
+        } else {
+            review.accepted.insert(key.into(), change.after);
+            if key == "instructions" {
+                review.accepted_instructions_version = review.instructions_version;
+            }
+        }
+    } else {
+        review
+            .rejected
+            .entry(key.into())
+            .or_default()
+            .push(hash.into());
+    }
+    review.pending.remove(key);
+    // Accepting another item must never release a safety floor still awaiting review.
+    apply_review_state(reg, &team_id, &review, !(accept && key == "policy"))?;
+    let mut references_reviewed = true;
+    if accept {
+        if let Some(original) = key.strip_prefix("server:") {
+            if let Some(server) = reg.servers.iter_mut().find(|s| {
+                saved_team_original_id(s) == Some(original)
+                    && s.source.as_deref() == Some(&tag_for(&team_id))
+            }) {
+                let reviewed = match classify_team_server(&review.latest[key], &tag_for(&team_id)) {
+                    TeamClass::Review(mut entry) | TeamClass::Ready(mut entry) => {
+                        entry.id = server.id.clone();
+                        Some(entry)
+                    }
+                    _ => None,
+                };
+                references_reviewed =
+                    crate::secret_refs::check_reviewed_definition(server, reviewed.as_ref())
+                        .is_ok();
+                if !references_reviewed {
+                    server.require_team_enable_review();
+                    server.enabled = false;
+                    for profile in &mut reg.profiles {
+                        profile.enabled_server_ids.retain(|id| id != &server.id);
+                    }
+                }
+            }
+        }
+    }
+    if accept && references_reviewed {
+        if let Some(original) = key.strip_prefix("server:").filter(|id| {
+            review
+                .held_access
+                .get(*id)
+                .is_none_or(|access| !access.existed)
+        }) {
+            if let Some(id) = reg
+                .servers
+                .iter()
+                .find(|s| {
+                    saved_team_original_id(s) == Some(original)
+                        && s.source.as_deref() == Some(&tag_for(&team_id))
+                })
+                .map(|s| s.id.clone())
+            {
+                let profile = reg.active_profile_id();
+                crate::registry_controller::apply_server_enabled(reg, &profile, &id, true, true)?;
+            }
+        }
+    }
+    if let Some(original) = key.strip_prefix("server:") {
+        review.held_access.remove(original);
+    }
+    if review.latest.len() == review.accepted.len()
+        && review.latest.iter().all(|(key, value)| {
+            comparable_item(key, value)
+                == comparable_item(key, review.accepted.get(key).unwrap_or(&Value::Null))
+        })
+    {
+        review.accepted_version = review.version;
+    }
+    save_member_review(reg, &review);
+    Ok(())
+}
+
+fn apply_accepted_instructions(team_id: &str) -> Result<(), String> {
+    let path = crate::registry::resolved_path().ok_or("Could not resolve registry path")?;
+    // Serialize desktop and daemon writers before reading the accepted content.
+    let _instructions = crate::registry::lock_at(&path.with_file_name("team-instructions"))
+        .map_err(|e| e.replace("registry", "team instructions file"))?;
+    let reg = crate::registry::load()?;
+    let Some(team) = reg.team.as_ref().filter(|team| team.team_id == team_id) else {
+        return Ok(());
+    };
+    let review = member_review(&reg)?;
+    if let Some(content) = review.accepted.get("instructions") {
+        apply_instructions(
+            team_id,
+            review.accepted_instructions_version,
+            content.as_str(),
+        )
+    } else {
+        relocate_stored_instructions(&team.team_id)
+    }
+}
+
+pub fn review_team_change(key: &str, hash: &str, accept: bool) -> Result<Registry, String> {
+    let (reg, ()) = crate::registry::update(|reg| decide_member_change(reg, key, hash, accept))?;
+    if accept && key == "instructions" {
+        let team = reg.team.as_ref().ok_or("not connected to a team")?;
+        apply_accepted_instructions(&team.team_id)
+            .map_err(|e| format!("Instructions accepted, but local setup needs attention: {e}"))?;
+    }
+    crate::registry::load()
+}
+
+/// Keep a member's explicit off decision while a replacement is awaiting review.
+pub(crate) fn remember_held_disable(
+    reg: &mut Registry,
+    profile_id: &str,
+    server_id: &str,
+) -> Result<(), String> {
+    if !server_change_held(reg, server_id) {
+        return Ok(());
+    }
+    let original = reg
+        .servers
+        .iter()
+        .find(|s| s.id == server_id)
+        .and_then(saved_team_original_id)
+        .map(str::to_string);
+    let mut review = member_review(reg)?;
+    if let Some(access) = original.and_then(|id| review.held_access.get_mut(&id)) {
+        if reg.version >= 3 {
+            access.enabled = false;
+        } else {
+            access.profiles.retain(|id| id != profile_id);
+            access.enabled = !access.profiles.is_empty();
+        }
+    }
+    save_member_review(reg, &review);
+    Ok(())
+}
+
+/// Member access before a held change, used to restore a personal route on leave.
+pub(crate) fn held_server_access(reg: &Registry, server_id: &str) -> Option<(bool, Vec<String>)> {
+    let original = saved_team_original_id(reg.servers.iter().find(|s| s.id == server_id)?)?;
+    let review = member_review(reg).ok()?;
+    let access = review.held_access.get(original)?;
+    Some((access.enabled, access.profiles.clone()))
+}
+
 // --- merge (pure, testable) ---
 
 fn tag_for(team_id: &str) -> String {
@@ -2788,7 +4254,7 @@ fn is_team_server(s: &ServerEntry, tag: &str) -> bool {
 
 /// Merge a team config (registry-format JSON `{ servers, denyDestructive?, screeningPolicy? }`)
 /// into the local registry. Team servers are tagged `source = "team:<id>"`, their ids prefixed
-/// `team_`, and enabled in the active profile so they're actually exposed. Re-running
+/// `team_`, with local consent and global enablement preserved. Re-running
 /// REPLACES this team's servers (a removed team server disappears) while leaving the
 /// member's own servers and profiles untouched. A team `denyDestructive: true` and any
 /// `screeningPolicy` force-flags are adopted tighten-only: policy can only raise safety,
@@ -2805,7 +4271,7 @@ pub struct MergeOutcome {
 }
 
 /// How one team-config server is treated on the member's machine.
-enum TeamClass {
+pub(crate) enum TeamClass {
     /// No name/id, or an unusable shape — ignored silently.
     Skip,
     /// Link-local / cloud-metadata URL: SSRF-to-credentials, never synced.
@@ -2911,6 +4377,25 @@ fn local_team_server_id(
     candidate
 }
 
+fn restore_personal_definition(entry: &mut ServerEntry, old: &ServerEntry) {
+    if old.unknown_fields.get("personalSyncEntry") != Some(&json!(true)) {
+        restore_local_references(entry, old);
+        return;
+    }
+    // Capture the cloud reference before applying the member-local override.
+    crate::personal_sync::restore_local(entry, old);
+    // Keep destination namespaces and the local review snapshot across governance.
+    for key in [
+        "personalSyncEntry",
+        "personalSyncCredentialDestination",
+        "syncExecutionReview",
+    ] {
+        if let Some(value) = old.unknown_fields.get(key) {
+            entry.unknown_fields.insert(key.into(), value.clone());
+        }
+    }
+}
+
 pub fn apply_team_config(reg: &mut Registry, team_id: &str, team_cfg: &Value) -> MergeOutcome {
     let tag = tag_for(team_id);
     let previous: Vec<ServerEntry> = reg
@@ -2945,11 +4430,10 @@ pub fn apply_team_config(reg: &mut Registry, team_id: &str, team_cfg: &Value) ->
     }
 
     // 1. Capture the prior generation of this team's servers, and which of them the
-    //    member had ENABLED IN EACH PROFILE. That enablement is their standing consent for
+    //    member had INCLUDED IN EACH ACCESS SET. That enablement is their standing consent for
     //    the review-required ones, so we re-apply it per profile after the replace instead
-    //    of forcing a re-approval on every sync. Capturing per-profile (not just the active
-    //    one) is what keeps a team server the member enabled in a NON-active profile from
-    //    being stripped on every sync and never restored.
+    //    of forcing a re-approval on every sync. Capturing each set keeps an explicitly
+    //    scoped client's membership from being stripped on every sync.
     let old_ids: Vec<String> = previous.iter().map(|server| server.id.clone()).collect();
     // What the member actually consented to, per id: the execution-relevant fields of the
     // entry as it stood when they enabled it. Standing consent is restored below only for a
@@ -2983,6 +4467,11 @@ pub fn apply_team_config(reg: &mut Registry, team_id: &str, team_cfg: &Value) ->
         .iter()
         .filter(|server| saved_team_original_id(server).is_none())
         .map(|server| (server.id.clone(), plain_launch_values(server)))
+        .collect();
+    let previous_global: HashMap<String, bool> = reg
+        .servers
+        .iter()
+        .map(|s| (s.id.clone(), s.enabled))
         .collect();
     let prev_enabled_by_profile: std::collections::HashMap<
         String,
@@ -3046,7 +4535,34 @@ pub fn apply_team_config(reg: &mut Registry, team_id: &str, team_cfg: &Value) ->
             }
             let shared_id = team_entry_original_id(s).unwrap_or_default().to_string();
             let allowed = parse_allowed_tools(s);
-            match classify_team_server(s, &tag) {
+            let classified = match classify_team_server(s, &tag) {
+                TeamClass::Ready(mut entry) => {
+                    if let Some(policy) = team_cfg.get("secretSources").filter(|v| !v.is_null()) {
+                        entry
+                            .unknown_fields
+                            .insert("secretSources".into(), policy.clone());
+                    }
+                    if crate::secret_refs::validate_server(&entry).is_err() {
+                        TeamClass::Blocked
+                    } else {
+                        TeamClass::Ready(entry)
+                    }
+                }
+                TeamClass::Review(mut entry) => {
+                    if let Some(policy) = team_cfg.get("secretSources").filter(|v| !v.is_null()) {
+                        entry
+                            .unknown_fields
+                            .insert("secretSources".into(), policy.clone());
+                    }
+                    if crate::secret_refs::validate_server(&entry).is_err() {
+                        TeamClass::Blocked
+                    } else {
+                        TeamClass::Review(entry)
+                    }
+                }
+                other => other,
+            };
+            match classified {
                 TeamClass::Ready(mut entry) => {
                     let collides = slug_counts.get(&entry.id).copied().unwrap_or(0) > 1;
                     entry.id = local_team_server_id(&entry, &tag, &previous, &used_ids, collides);
@@ -3055,10 +4571,15 @@ pub fn apply_team_config(reg: &mut Registry, team_id: &str, team_cfg: &Value) ->
                         &local_launch_values_by_original,
                         &legacy_launch_values_by_id,
                     );
+                    if let Some(old) = previous.iter().find(|old| old.id == entry.id) {
+                        restore_personal_definition(&mut entry, old);
+                    }
                     used_ids.push(entry.id.clone());
                     managed_server_ids.insert(entry.id.clone(), shared_id.clone());
                     tool_allows.insert(entry.id.clone(), allowed);
-                    if prev_consent.contains_key(&entry.id) {
+                    if prev_consent.contains_key(&entry.id)
+                        || crate::secret_refs::has_references(&entry)
+                    {
                         // Existing public remotes may own bearer tokens. A new
                         // destination cannot inherit enablement, and an unchanged
                         // re-sync must preserve a member's decision to leave it off.
@@ -3073,7 +4594,10 @@ pub fn apply_team_config(reg: &mut Registry, team_id: &str, team_cfg: &Value) ->
                         review_ids.push(entry.id.clone());
                         review_fingerprints.insert(entry.id.clone(), fingerprint);
                     } else {
-                        if !reg.servers.iter().any(|s| s.id == shared_id && !s.source.as_deref().unwrap_or("").starts_with("team:")) {
+                        if !reg.servers.iter().any(|s| {
+                            s.id == shared_id
+                                && !s.source.as_deref().unwrap_or("").starts_with("team:")
+                        }) {
                             auto_enable.push(entry.id.clone());
                         }
                     }
@@ -3088,6 +4612,9 @@ pub fn apply_team_config(reg: &mut Registry, team_id: &str, team_cfg: &Value) ->
                         &local_launch_values_by_original,
                         &legacy_launch_values_by_id,
                     );
+                    if let Some(old) = previous.iter().find(|old| old.id == entry.id) {
+                        restore_personal_definition(&mut entry, old);
+                    }
                     used_ids.push(entry.id.clone());
                     managed_server_ids.insert(entry.id.clone(), shared_id.clone());
                     tool_allows.insert(entry.id.clone(), allowed);
@@ -3101,18 +4628,48 @@ pub fn apply_team_config(reg: &mut Registry, team_id: &str, team_cfg: &Value) ->
         }
     }
 
+    // The governed delivery view can omit disabled personal definitions. During
+    // the mode handoff keep their installed setup as an off, local-only copy,
+    // instead of destroying arguments, setup values and credential ownership.
+    let transitioning = reg.team.as_mut().is_some_and(|t| {
+        t.unknown_fields.remove("personalSyncGovernanceTransition") == Some(json!(true))
+    });
+    if transitioning {
+        for old in previous
+            .iter()
+            .filter(|old| old.unknown_fields.get("personalSyncEntry") == Some(&json!(true)))
+        {
+            if !reg.servers.iter().any(|s| s.id == old.id) {
+                let mut kept = old.clone();
+                kept.source = Some("shared".into());
+                kept.enabled = false;
+                kept.unknown_fields
+                    .insert("syncLocalOnly".into(), json!(true));
+                kept.require_team_enable_review();
+                for p in &mut reg.profiles {
+                    p.enabled_server_ids.retain(|id| id != &kept.id);
+                    p.tool_scope.remove(&kept.id);
+                }
+                reg.servers.push(kept);
+            }
+        }
+    }
+
     // Only rows that exist keep a mapping. A definition deleted from the Team and
     // shared again later can get a new local id; its old mapping must not linger
     // beside the new one for the same original.
-    managed_server_ids.retain(|id, _| reg.servers.iter().any(|s| &s.id == id && is_team_server(s, &tag)));
+    managed_server_ids.retain(|id, _| {
+        reg.servers
+            .iter()
+            .any(|s| &s.id == id && is_team_server(s, &tag))
+    });
     if let Some(conn) = reg.team.as_mut().filter(|c| c.team_id == team_id) {
         conn.managed_server_ids = managed_server_ids;
     }
 
-    // 3. Enable per profile. New public remotes auto-enable in the ACTIVE profile
-    //    (first-run convenience). EVERY profile then restores the exact team servers the
-    //    member had enabled in THAT profile before this sync — their standing consent — so a
-    //    server enabled in a non-active profile survives the replace. Review servers the
+    // 3. Restore access-set membership. New public remotes join the local context
+    //    (first-run convenience). Each set keeps the exact team servers it included before
+    //    this sync. In v1/v2 that membership is also enablement. Review servers the
     //    member never consented to stay off, so nothing local runs without an explicit opt-in.
     //
     //    For a review server, consent is to a DEFINITION, not to an id: it is carried over
@@ -3142,8 +4699,20 @@ pub fn apply_team_config(reg: &mut Registry, team_id: &str, team_cfg: &Value) ->
             }
         }
     }
-    // What the member still has to look at: review servers that are OFF in the active
-    // profile after consent was restored. Counting every review server here (as before)
+    if reg.version >= 3 {
+        for server in reg.servers.iter_mut().filter(|s| is_team_server(s, &tag)) {
+            // Keep the user's switch across sync. A changed review-required
+            // definition still loses consent, regardless of access membership.
+            server.enabled = if review_ids.contains(&server.id) {
+                previous_global.get(&server.id).copied().unwrap_or(false)
+                    && consent_holds(&server.id)
+            } else {
+                previous_global.get(&server.id).copied().unwrap_or(true)
+            };
+        }
+    }
+    // What the member still has to look at: review servers missing consent in the local
+    // access context after the prior consent was restored. Counting every review server here (as before)
     // told the member that servers they had already enabled were "off until you review
     // them", which was untrue for the carried-over ones and hid the changed ones among them.
     let active_enabled: HashSet<&String> = reg
@@ -3175,6 +4744,25 @@ pub fn apply_team_config(reg: &mut Registry, team_id: &str, team_cfg: &Value) ->
     };
     reg.team_forced_deny_destructive =
         team_cfg.get("denyDestructive").and_then(Value::as_bool) == Some(true);
+    reg.team_min_safety_level = team_cfg
+        .get("screeningPolicy")
+        .and_then(|sp| sp.get("minSafetyLevel"))
+        .and_then(Value::as_str)
+        .and_then(|level| match level {
+            "off" => Some(crate::registry::SafetyLevel::Off),
+            "ask" => Some(crate::registry::SafetyLevel::Ask),
+            "strict" => Some(crate::registry::SafetyLevel::Strict),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            if reg.team_forced_deny_destructive {
+                crate::registry::SafetyLevel::Strict
+            } else if policy_forces("forceHumanApproval") {
+                crate::registry::SafetyLevel::Ask
+            } else {
+                crate::registry::SafetyLevel::Off
+            }
+        });
     reg.team_forced_content_defense = policy_forces("forceContentDefense");
     reg.team_forced_quarantine_on_drift = policy_forces("forceQuarantineOnDrift");
     reg.team_forced_human_approval = policy_forces("forceHumanApproval");
@@ -3206,18 +4794,15 @@ pub fn apply_team_config(reg: &mut Registry, team_id: &str, team_cfg: &Value) ->
 /// `allowedTools` on a team-config server JSON: `None` = key absent (unrestricted),
 /// `Some(list)` = allow-list (empty list = block every tool on that server).
 fn parse_allowed_tools(s: &Value) -> Option<Vec<String>> {
-    match s.get("allowedTools") {
-        None => None,
-        Some(v) => Some(
-            v.as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(String::from))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default(),
-        ),
-    }
+    s.get("allowedTools").map(|v| {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    })
 }
 
 /// Apply or clear per-server allow-lists onto every profile's `tool_scope`.
@@ -3280,6 +4865,59 @@ fn restore_local_launch_values(
     }
 }
 
+pub(crate) fn restore_local_references(entry: &mut ServerEntry, old: &ServerEntry) {
+    if let Some(overrides) = old
+        .unknown_fields
+        .get("memberSecretRefs")
+        .and_then(Value::as_object)
+    {
+        entry
+            .unknown_fields
+            .insert("memberSecretRefs".into(), json!(overrides));
+        for (location, reference) in overrides {
+            let Some((field, key)) = location.split_once(':') else {
+                continue;
+            };
+            match field {
+                "env" => {
+                    if let Some(env) = entry.env.iter_mut().find(|e| e.key == key) {
+                        env.secret = true;
+                        env.value = None;
+                        env.unknown_fields
+                            .insert("source".into(), json!({"ref":reference}));
+                    }
+                }
+                "input" => {
+                    if let Some(input) = entry
+                        .launch
+                        .iter_mut()
+                        .flat_map(|l| &mut l.inputs)
+                        .find(|i| i.key == key)
+                    {
+                        input.secret = true;
+                        input.value = None;
+                        input
+                            .unknown_fields
+                            .insert("source".into(), json!({"ref":reference}));
+                    }
+                }
+                "header" => {
+                    if let Some(headers) = entry
+                        .unknown_fields
+                        .get_mut("headerKeys")
+                        .and_then(Value::as_array_mut)
+                    {
+                        for h in headers.iter_mut().filter(|h| h["key"] == key) {
+                            h["source"] = json!({"ref":reference});
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 fn plain_launch_values(entry: &ServerEntry) -> HashMap<String, String> {
     entry
         .launch
@@ -3330,6 +4968,16 @@ pub(crate) fn consent_fingerprint(entry: &ServerEntry) -> String {
     for key in env_keys {
         field("env", key);
     }
+    for e in &entry.env {
+        if let Some(r) = crate::secret_refs::reference_for(e) {
+            field("secretRef", &format!("{}:{r}", e.key));
+        }
+    }
+    for h in crate::secret_refs::headers(entry).unwrap_or_default() {
+        if let Some(r) = h.source {
+            field("headerRef", &format!("{}:{}", h.key, r.r#ref));
+        }
+    }
     field("cwd", entry.cwd.as_deref().unwrap_or(""));
     field("url", entry.url.as_deref().unwrap_or(""));
     if let Some(credentials) = &entry.client_credentials {
@@ -3360,7 +5008,49 @@ fn team_launch_value(value: &Value) -> Value {
     value
 }
 
-fn classify_team_server(s: &Value, tag: &str) -> TeamClass {
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static PUBLIC_TEST_HOST: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Thread-local host classification fixture. Never built into shipping binaries.
+#[cfg(any(test, feature = "test-support"))]
+pub struct PublicTeamHostOverride(Option<String>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl PublicTeamHostOverride {
+    pub fn set(host: &str) -> Self {
+        Self(PUBLIC_TEST_HOST.with(|value| value.replace(Some(host.into()))))
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for PublicTeamHostOverride {
+    fn drop(&mut self) {
+        PUBLIC_TEST_HOST.with(|value| value.replace(self.0.take()));
+    }
+}
+
+pub(crate) fn team_host_is_private(host: &str) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    if PUBLIC_TEST_HOST.with(|value| value.borrow().as_deref() == Some(host)) {
+        return false;
+    }
+    crate::oauth::host_is_private(host)
+}
+
+pub(crate) fn classify_team_server(s: &Value, tag: &str) -> TeamClass {
+    if s["env"].as_array().into_iter().flatten().any(|e| {
+        e["key"]
+            .as_str()
+            .is_some_and(crate::personal_sync::risky_sync_env)
+    }) {
+        return TeamClass::Blocked;
+    }
+    // Management views include these rows; they must never become runtime routes.
+    if s.get("disabled").and_then(Value::as_bool) == Some(true) {
+        return TeamClass::Skip;
+    }
     let str_field = |k: &str| s.get(k).and_then(Value::as_str).filter(|x| !x.is_empty());
     let orig_id = str_field("id");
     let name = match str_field("name").or(orig_id) {
@@ -3373,6 +5063,9 @@ fn classify_team_server(s: &Value, tag: &str) -> TeamClass {
         TEAM_ORIGINAL_ID_FIELD.into(),
         Value::String(orig_id.unwrap_or(name).to_string()),
     );
+    if let Some(headers) = s.get("headerKeys").filter(|v| !v.is_null()) {
+        unknown_fields.insert("headerKeys".into(), headers.clone());
+    }
     let str_array = |k: &str| {
         s.get(k)
             .and_then(Value::as_array)
@@ -3394,6 +5087,10 @@ fn classify_team_server(s: &Value, tag: &str) -> TeamClass {
                         key,
                         value: None,
                         secret: e.get("secret").and_then(Value::as_bool).unwrap_or(true),
+                        unknown_fields: e
+                            .get("source")
+                            .map(|s| [("source".into(), s.clone())].into_iter().collect())
+                            .unwrap_or_default(),
                     })
                 })
                 .collect()
@@ -3449,15 +5146,18 @@ fn classify_team_server(s: &Value, tag: &str) -> TeamClass {
     let transport = str_field("transport").unwrap_or("stdio").to_string();
     let command = str_field("command").map(String::from);
     let launch = match s.get("launch").filter(|value| !value.is_null()) {
-        Some(value) => match serde_json::from_value::<crate::registry::LaunchConfig>(
-            team_launch_value(value),
-        ) {
-            Ok(launch) => Some(launch.without_values()),
-            Err(_) => return TeamClass::Blocked,
-        },
+        Some(value) => {
+            match serde_json::from_value::<crate::registry::LaunchConfig>(team_launch_value(value))
+            {
+                Ok(launch) => Some(launch.without_values()),
+                Err(_) => return TeamClass::Blocked,
+            }
+        }
         None => None,
     };
     let mut entry = ServerEntry {
+        enabled: false,
+        inherit_env: false,
         id,
         name: name.to_string(),
         transport,
@@ -3488,6 +5188,9 @@ fn classify_team_server(s: &Value, tag: &str) -> TeamClass {
     // A server that runs a local command (stdio, or any command-bearing entry) is the RCE
     // case: carry the command so the member CAN run it, but only after they enable it.
     // Nothing here runs at sync time; the gateway only starts servers enabled in a profile.
+    if crate::secret_refs::validate_server(&entry).is_err() {
+        return TeamClass::Blocked;
+    }
     if entry.transport == "stdio" || command.is_some() {
         match command {
             Some(c) => entry.command = Some(c),
@@ -3554,7 +5257,7 @@ fn classify_team_server(s: &Value, tag: &str) -> TeamClass {
         None => None,
     };
     // Loopback / LAN (RFC1918) is a legit internal server, but require opt-in like stdio.
-    if crate::oauth::host_is_private(&host) {
+    if team_host_is_private(&host) || crate::secret_refs::has_references(&entry) {
         return TeamClass::Review(entry);
     }
     TeamClass::Ready(entry)
@@ -3596,6 +5299,7 @@ pub fn remove_team(reg: &mut Registry, team_id: &str) {
     // Release ALL of this team's forced safety locks: the member is no longer in the team, so
     // an org-forced policy (HITL, destructive-block, content defense, drift-quarantine,
     // block-on-injection) must not keep applying. Their OWN settings are left untouched.
+    reg.team_min_safety_level = crate::registry::SafetyLevel::Off;
     reg.team_forced_human_approval = false;
     reg.team_forced_deny_destructive = false;
     reg.team_forced_content_defense = false;
@@ -3607,6 +5311,402 @@ pub fn remove_team(reg: &mut Registry, team_id: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reconnecting_keeps_this_machines_servers_and_sync_state() {
+        let previous: TeamConnection = serde_json::from_value(json!({
+            "serverUrl":"https://sync.example.com","teamId":"solo","role":"admin",
+            "reportingDeviceId":"device-1","lastVersion":7,
+            "managedServerIds":{"docs":"docs-local"},
+            "accountStatus":{"personalSync":true,"plan":"pro"},
+            "accountStatusError":"sign-in missing",
+            "personalSyncState":{"signInRequired":true}
+        }))
+        .unwrap();
+        let mut conn: TeamConnection = serde_json::from_value(json!({
+            "serverUrl":"https://sync.example.com","teamId":"solo","role":"admin",
+            "reportingDeviceId":"device-2","lastVersion":0,
+            "accountStatus":{"personalSync":true,"plan":"pro","trialActive":false}
+        }))
+        .unwrap();
+        keep_local_bookkeeping(&mut conn, previous);
+        assert_eq!(conn.reporting_device_id, "device-1");
+        assert_eq!(conn.last_version, 7);
+        assert_eq!(conn.managed_server_ids["docs"], "docs-local");
+        assert_eq!(conn.unknown_fields["accountStatus"]["trialActive"], false);
+        assert!(!conn.unknown_fields.contains_key("accountStatusError"));
+        assert!(conn.unknown_fields.contains_key("personalSyncState"));
+    }
+
+    fn personal_http_fixture(
+        method: &'static str,
+        path: &'static str,
+        personal: bool,
+        status: u16,
+        body: Value,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let endpoint = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", endpoint.server_addr());
+        let worker = std::thread::spawn(move || {
+            let mut request = endpoint
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert_eq!(request.method().as_str(), method);
+            assert_eq!(request.url(), path);
+            let header = |name: &'static str| {
+                request
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv(name))
+                    .map(|h| h.value.as_str())
+            };
+            assert_eq!(header("authorization"), Some("Bearer fixture-token"));
+            assert_eq!(header("x-toolport-personal-sync"), personal.then_some("1"));
+            if method == "PUT" {
+                let sent: Value = serde_json::from_reader(request.as_reader()).unwrap();
+                assert_eq!(sent, json!({"base_version":7,"config":{"servers":[]}}));
+            }
+            request
+                .respond(
+                    tiny_http::Response::from_string(body.to_string()).with_status_code(status),
+                )
+                .unwrap();
+        });
+        (origin, worker)
+    }
+
+    #[test]
+    fn personal_http_account_status_keeps_legacy_and_error_semantics() {
+        for status in [200, 302, 404, 401, 403, 500] {
+            let body = json!({"plan":"pro","canReceiveConfig":true,"personalSync":true,"error":"fixture failure"});
+            let (origin, worker) = personal_http_fixture(
+                "GET",
+                "/teams/solo/account/status",
+                false,
+                status,
+                body.clone(),
+            );
+            let conn =
+                serde_json::from_value(json!({"serverUrl":origin,"teamId":"solo","role":"admin"}))
+                    .unwrap();
+            let result = fetch_account_status(&conn, "fixture-token");
+            worker.join().unwrap();
+            match status {
+                200 => assert_eq!(result.unwrap(), Some(body)),
+                404 => assert_eq!(result.unwrap(), None),
+                302 => assert!(result.unwrap_err().contains("does not follow redirects")),
+                _ => assert_eq!(
+                    result.unwrap_err(),
+                    format!("server returned {status}: {body}")
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn personal_http_config_get_keeps_personal_header_and_status_body() {
+        for status in [200, 302, 404, 401, 403, 500] {
+            let body = json!({"version":7,"config":{"servers":[]},"error":"fixture failure"});
+            let (origin, worker) = personal_http_fixture(
+                "GET",
+                "/teams/solo/config?manage=1",
+                true,
+                status,
+                body.clone(),
+            );
+            let result = fetch_personal_config(&origin, "solo", "fixture-token");
+            worker.join().unwrap();
+            match status {
+                200 => assert_eq!(result.unwrap(), (7, json!({"servers":[]}))),
+                404 => assert_eq!(result.unwrap(), (0, json!({"servers":[]}))),
+                302 => assert!(result.unwrap_err().contains("does not follow redirects")),
+                _ => assert_eq!(
+                    result.unwrap_err(),
+                    format!("server returned {status}: {body}")
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn personal_http_config_put_keeps_conflict_and_service_errors() {
+        for status in [200, 302, 401, 403, 409, 500] {
+            let body = if status == 403 {
+                json!({"error":"not an admin session"})
+            } else {
+                json!({"version":8,"error":"fixture failure"})
+            };
+            let (origin, worker) =
+                personal_http_fixture("PUT", "/teams/solo/config", true, status, body.clone());
+            let result =
+                push_personal_config(&origin, "solo", "fixture-token", &json!({"servers":[]}), 7);
+            worker.join().unwrap();
+            match status {
+                200 => assert!(matches!(result, Ok(PushOutcome::Published(8)))),
+                302 => assert!(result.unwrap_err().contains("does not follow redirects")),
+                403 => assert_eq!(result.unwrap_err(), "Finish this in the Teams dashboard"),
+                409 => assert_eq!(result.unwrap_err(), STALE_PUSH_MESSAGE),
+                _ => assert_eq!(
+                    result.unwrap_err(),
+                    format!("server returned {status}: {body}")
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn account_status_mode_flips_preserve_unpublished_personal_journal() {
+        let _data = crate::registry::DataDirTestEnv::new("account-mode-journal");
+        let mut reg = Registry { team: Some(serde_json::from_value(json!({"serverUrl":"https://example.com","teamId":"solo","role":"admin","accountStatus":{"personalSync":true,"plan":"pro","canReceiveConfig":true},"personalSyncState":{"initialized":true,"pending":{"s":{"localId":"s","after":{"id":"s","name":"Unpublished"}}}}})).unwrap()), ..Default::default() };
+        reg.servers.push(serde_json::from_value(json!({"id":"s","name":"Unpublished","transport":"http","url":"https://example.com/mcp","args":[],"env":[],"enabled":true,"source":"team:solo"})).unwrap());
+        reg.profiles[0].enabled_server_ids.push("s".into());
+        let original = crate::personal_sync::state(&reg).unwrap().pending;
+        apply_account_status(&mut reg, Ok(None), true).unwrap();
+        assert!(crate::personal_sync::is_personal(&reg));
+        apply_account_status(&mut reg, Ok(Some(json!({"personalSync":true}))), true).unwrap();
+        apply_account_status(&mut reg, Ok(None), true).unwrap();
+        assert!(crate::personal_sync::is_personal(&reg));
+        apply_account_status(&mut reg, Ok(None), true).unwrap();
+        assert!(!crate::personal_sync::is_personal(&reg));
+        reg.servers[0].name = "Governed replacement".into();
+        reg.profiles[0].enabled_server_ids.clear();
+        apply_account_status(&mut reg, Ok(Some(json!({"personalSync":true}))), false).unwrap();
+        assert_eq!(reg.servers[0].name, "Unpublished");
+        assert!(reg.profiles[0].enabled_server_ids.contains(&"s".into()));
+        assert_eq!(crate::personal_sync::state(&reg).unwrap().pending, original);
+        assert!(
+            !crate::personal_sync::state(&reg)
+                .unwrap()
+                .choose_local_servers
+        );
+    }
+    #[test]
+    fn account_status_errors_keep_governed_and_personal_sync_modes() {
+        let _data = crate::registry::DataDirTestEnv::new("account-status-fallback");
+        for code in [401, 403, 500, 503] {
+            let endpoint = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let origin = format!("http://{}", endpoint.server_addr());
+            let worker = std::thread::spawn(move || {
+                let request = endpoint
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                request
+                    .respond(tiny_http::Response::from_string("unavailable").with_status_code(code))
+                    .unwrap();
+            });
+            let mut reg = base_registry();
+            reg.team = Some(serde_json::from_value(json!({"serverUrl":origin,"teamId":"t","role":"admin","reportingDeviceId":"legacy"})).unwrap());
+            let error =
+                fetch_account_status(reg.team.as_ref().unwrap(), "legacy-without-device-id")
+                    .unwrap_err();
+            worker.join().unwrap();
+            apply_account_status(&mut reg, Err(error.clone()), false).unwrap();
+            assert!(!crate::personal_sync::is_personal(&reg));
+            assert!(reg.team.as_ref().unwrap().unknown_fields["accountStatusError"].is_string());
+            stage_team_config(&mut reg, "t", &json!({"servers":[{"id":"safe","transport":"http","url":"https://example.com/mcp"}]}), 1, &[]).unwrap();
+            assert!(!member_review(&reg).unwrap().pending.is_empty());
+            reg.team
+                .as_mut()
+                .unwrap()
+                .unknown_fields
+                .insert("accountStatus".into(), json!({"personalSync":true}));
+            apply_account_status(&mut reg, Err(error), true).unwrap();
+            assert!(crate::personal_sync::is_personal(&reg));
+            apply_account_status(&mut reg, Ok(None), true).unwrap();
+            assert!(crate::personal_sync::is_personal(&reg));
+            apply_account_status(&mut reg, Ok(None), true).unwrap();
+            assert!(!crate::personal_sync::is_personal(&reg));
+            assert!(!reg
+                .team
+                .as_ref()
+                .unwrap()
+                .unknown_fields
+                .contains_key("accountStatusError"));
+        }
+    }
+    #[test]
+    fn activation_counts_reference_inputs_as_configured_without_reading_keychain() {
+        crate::secrets::tests::with_isolated_vault(|| {
+            let endpoint = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let mut reg = publisher_registry();
+            let conn = reg.team.as_mut().unwrap();
+            conn.server_url = format!("http://{}", endpoint.server_addr());
+            conn.reporting_device_id = "0123456789abcdef0123456789abcdef".into();
+            conn.managed_server_ids
+                .insert("refs".into(), "shared-refs".into());
+            let conn = conn.clone();
+            reg.servers.push(serde_json::from_value(json!({"id":"refs","name":"Refs","source":"team:publisher-test","transport":"stdio","command":"fixture","args":["<launch-input>"],"env":[{"key":"TOKEN","secret":true,"source":{"ref":"op://Private/Token/key"}}],"launch":{"inputs":[{"key":"INPUT","label":"Input","secret":true,"required":true,"source":{"ref":"vault://secret/service#key"}}],"bindings":[{"index":0,"parts":[{"kind":"input","key":"INPUT"}]}],"requiredEnv":["TOKEN"]}})).unwrap());
+            crate::registry::save(&reg).unwrap();
+            let worker = std::thread::spawn(move || {
+                let mut request = endpoint
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let mut body = String::new();
+                request.as_reader().read_to_string(&mut body).unwrap();
+                let body: Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(body["missingCredentials"], 0);
+                assert_eq!(body["servers"]["shared-refs"]["missingCredentials"], 0);
+                request
+                    .respond(tiny_http::Response::from_string(
+                        json!({"acknowledgedRevision":body["revision"]}).to_string(),
+                    ))
+                    .unwrap();
+            });
+            report_activation(&conn, "fixture-token").unwrap();
+            worker.join().unwrap();
+        });
+    }
+    #[test]
+    fn member_override_wins_over_shared_reference_and_is_never_exported() {
+        let mut reg = base_registry();
+        let config = json!({"servers":[{"id":"service","name":"Service","transport":"stdio","command":"fixture","env":[{"key":"TOKEN","source":{"ref":"op://Team/Token/key"}}]}]});
+        apply_team_config(&mut reg, "t", &config);
+        let id = reg
+            .servers
+            .iter()
+            .find(|s| s.source.as_deref() == Some("team:t"))
+            .unwrap()
+            .id
+            .clone();
+        crate::registry_controller::apply_secret_reference(
+            &mut reg,
+            &id,
+            "TOKEN",
+            "op://Private/My Token/key",
+        )
+        .unwrap();
+        apply_team_config(&mut reg, "t", &config);
+        let s = reg.servers.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(
+            crate::secret_refs::reference_for(&s.env[0]),
+            Some("op://Private/My Token/key")
+        );
+        let export = crate::sharing_controller::build_export(&reg, None, None, None);
+        assert!(!export.to_string().contains("memberSecretRefs"));
+    }
+    #[test]
+    fn public_remote_references_are_reviewed_and_environment_attacks_blocked() {
+        let config = json!({"id":"ref","name":"Ref","transport":"http","url":"https://example.com/mcp","headerKeys":[{"key":"X-Api-Key","source":{"ref":"op://Private/GitHub Token/credential"}}]});
+        assert!(matches!(
+            classify_team_server(&config, "team:t"),
+            TeamClass::Review(_)
+        ));
+        let mut env_attack = config;
+        env_attack["headerKeys"][0]["source"]["ref"] = json!("env:BWS_ACCESS_TOKEN");
+        assert!(matches!(
+            classify_team_server(&env_attack, "team:t"),
+            TeamClass::Blocked
+        ));
+    }
+    #[test]
+    fn legacy_team_headers_do_not_change_consent_fingerprint() {
+        let plain:ServerEntry=serde_json::from_value(json!({"id":"legacy","name":"Legacy","transport":"http","url":"https://example.com/mcp","env":[{"key":"API_TOKEN","secret":true}]})).unwrap();
+        let mut team_shaped = plain.clone();
+        team_shaped.unknown_fields.insert(
+            "headerKeys".into(),
+            json!([{"key":"X-Api-Key","env":"API_TOKEN"}]),
+        );
+        assert_eq!(
+            consent_fingerprint(&plain),
+            consent_fingerprint(&team_shaped)
+        );
+    }
+    #[test]
+    fn member_local_references_survive_repeated_team_sync() {
+        let mut reg = base_registry();
+        let config = json!({"servers":[{"id":"service","name":"Service","transport":"stdio","command":"fixture","env":[{"key":"TOKEN"}],"headerKeys":[{"key":"X-Api-Key","env":"API_TOKEN"}]}]});
+        apply_team_config(&mut reg, "t", &config);
+        let s = reg
+            .servers
+            .iter_mut()
+            .find(|s| s.source.as_deref() == Some("team:t"))
+            .unwrap();
+        s.unknown_fields.insert("memberSecretRefs".into(),json!({"env:TOKEN":"op://Private/My Token/credential", "header:X-Api-Key":"vault://secret/service#key"}));
+        s.env[0].unknown_fields.insert(
+            "source".into(),
+            json!({"ref":"op://Private/My Token/credential"}),
+        );
+        s.unknown_fields.get_mut("headerKeys").unwrap()[0]["source"] =
+            json!({"ref":"vault://secret/service#key"});
+        for _ in 0..2 {
+            apply_team_config(&mut reg, "t", &config);
+            let s = reg
+                .servers
+                .iter()
+                .find(|s| s.source.as_deref() == Some("team:t"))
+                .unwrap();
+            assert_eq!(
+                crate::secret_refs::reference_for(&s.env[0]),
+                Some("op://Private/My Token/credential")
+            );
+            assert_eq!(
+                s.unknown_fields["headerKeys"][0]["source"]["ref"],
+                "vault://secret/service#key"
+            );
+        }
+    }
+    #[test]
+    fn team_header_token_names_do_not_block_existing_servers() {
+        for key in ["1.Key", "X~Key", "!#$%&'*+-.^_`|~"] {
+            let config = json!({"id":"token","name":"Token","transport":"http","url":"https://example.com/mcp","headerKeys":[{"key":key,"env":"AUTH"}]});
+            assert!(
+                matches!(classify_team_server(&config, "team:t"), TeamClass::Ready(_)),
+                "{key}"
+            );
+        }
+        for key in ["Bad Header", "Bad:Header", "Bad\r\nHeader"] {
+            let config = json!({"id":"token","name":"Token","transport":"http","url":"https://example.com/mcp","headerKeys":[{"key":key,"env":"AUTH"}]});
+            assert!(
+                matches!(classify_team_server(&config, "team:t"), TeamClass::Blocked),
+                "{key}"
+            );
+        }
+    }
+    #[test]
+    fn removed_team_references_are_not_restored_as_member_overrides() {
+        let mut old: ServerEntry = serde_json::from_value(json!({"id":"s","name":"S","transport":"stdio","command":"fixture","env":[{"key":"TOKEN","secret":true,"source":{"ref":"op://Team/Token/key"}}],"headerKeys":[{"key":"X-Key","source":{"ref":"op://Team/Token/key"}}],"launch":{"inputs":[{"key":"KEY","label":"Key","secret":true,"source":{"ref":"op://Team/Token/key"}}],"bindings":[]}})).unwrap();
+        let mut new = old.clone();
+        new.env[0].unknown_fields.remove("source");
+        new.launch.as_mut().unwrap().inputs[0]
+            .unknown_fields
+            .remove("source");
+        new.unknown_fields["headerKeys"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("source");
+        restore_local_references(&mut new, &old);
+        assert!(!crate::secret_refs::has_references(&new));
+        old.unknown_fields.insert("memberSecretRefs".into(),json!({"env:TOKEN":"op://Private/Token/key","input:KEY":"op://Private/Token/key","header:X-Key":"op://Private/Token/key"}));
+        restore_local_references(&mut new, &old);
+        assert_eq!(
+            crate::secret_refs::reference_for(&new.env[0]),
+            Some("op://Private/Token/key")
+        );
+        assert_eq!(
+            new.launch.unwrap().inputs[0].unknown_fields["source"]["ref"],
+            "op://Private/Token/key"
+        );
+        assert_eq!(
+            new.unknown_fields["headerKeys"][0]["source"]["ref"],
+            "op://Private/Token/key"
+        );
+    }
+    #[test]
+    fn current_secret_policy_uses_connected_team_only() {
+        let mut reg = base_registry();
+        let other:ServerEntry=serde_json::from_value(json!({"id":"other","name":"Other","transport":"http","url":"https://example.com/mcp","source":"team:other","secretSources":{"allowedPrefixes":["op://Other/"]}})).unwrap();
+        reg.servers.insert(0, other);
+        reg.team = publisher_registry().team;
+        reg.team.as_mut().unwrap().team_id = "t".into();
+        let config = json!({"secretSources":{"allowedPrefixes":["op://Own/"]},"servers":[{"id":"own","name":"Own","transport":"http","url":"https://example.com/mcp"}]});
+        apply_team_config(&mut reg, "t", &config);
+        assert_eq!(
+            current_policy(&reg)["secretSources"]["allowedPrefixes"],
+            json!(["op://Own/"])
+        );
+    }
     #[test]
     fn pairing_links_accept_only_team_and_secure_origin() {
         assert_eq!(
@@ -3653,7 +5753,9 @@ mod tests {
         let updated = json!([{"id":"unrelated","name":"Updated"}, {"id":"second","name":"Second"}]);
         let merged = additive_server_set(&remote, &updated).unwrap();
         assert_eq!(merged.as_array().unwrap().len(), 2);
-        assert!(merged.as_array().unwrap().contains(&updated[0]));
+        let indexed = server_index(&merged).unwrap();
+        assert_eq!(indexed["unrelated"]["name"], updated[0]["name"]);
+        assert_eq!(indexed["unrelated"]["url"], remote[0]["url"]);
     }
 
     #[test]
@@ -3716,8 +5818,8 @@ mod tests {
 
         // Both guards: the test sets GOOSE_PATH_ROOT and redirects the data dir, and both are
         // process-global.
-        let _env = crate::clients::env_test_lock();
         let _dirs = crate::registry::data_dir_test_lock();
+        let _env = crate::clients::env_test_lock();
         let base = std::env::temp_dir().join(format!("toolport-relocate-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let _data_dir = crate::registry::DataDirOverride::set(base.join("data"));
@@ -3768,7 +5870,7 @@ mod tests {
         );
 
         // Same content, same version. Only the PATH moved.
-        apply_instructions_to(TEAM, VERSION, Some(CONTENT), std::slice::from_ref(&target));
+        apply_instructions_to(TEAM, VERSION, Some(CONTENT), std::slice::from_ref(&target)).unwrap();
 
         let moved = std::fs::read_to_string(&target.path).unwrap_or_default();
         let recorded = crate::registry::load()
@@ -3799,8 +5901,8 @@ mod tests {
     fn unchanged_instructions_ignore_an_unrelated_config_version_bump() {
         use crate::instructions::{Scope, Strategy, Target};
 
-        let _env = crate::clients::env_test_lock();
         let _dirs = crate::registry::data_dir_test_lock();
+        let _env = crate::clients::env_test_lock();
         let scratch =
             std::env::temp_dir().join(format!("toolport-sbs917-version-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
@@ -3819,7 +5921,7 @@ mod tests {
         };
         let before = std::fs::read_to_string(&path).unwrap();
 
-        apply_instructions_to(TEAM, 5, Some(CONTENT), std::slice::from_ref(&target));
+        apply_instructions_to(TEAM, 5, Some(CONTENT), std::slice::from_ref(&target)).unwrap();
 
         let after = std::fs::read_to_string(&path).unwrap();
         let (_, version, recorded) = loaded_instructions();
@@ -3867,6 +5969,51 @@ mod tests {
         .expect("seed the registry");
     }
 
+    #[test]
+    fn instructions_state_save_failure_is_reported_without_deleting_previous_data() {
+        use crate::registry::tests::{with_atomic_failure, FailingAtomicWriteStep::*};
+        let _lock = crate::registry::data_dir_test_lock();
+        let root = std::env::temp_dir().join(format!(
+            "toolport-teams-state-failure-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let _data = crate::registry::DataDirOverride::set(&root);
+        let rules = root.join("rules.md");
+        seed_applied_instructions("team_test", 1, "previous instructions", &rules);
+        let registry = crate::registry::resolved_path().unwrap();
+        let before = std::fs::read(&registry).unwrap();
+        let rules_before = std::fs::read(&rules).unwrap();
+        let key = rules.to_string_lossy().to_string();
+        for step in [Permissions, Write, Rename] {
+            let result = with_atomic_failure(step, || {
+                record_applied_instructions(
+                    "team_test",
+                    Some("next instructions".into()),
+                    2,
+                    vec![key.clone()],
+                    std::slice::from_ref(&key),
+                )
+            });
+            assert!(
+                result.is_err(),
+                "a failed save must not be complete success"
+            );
+            assert_eq!(std::fs::read(&registry).unwrap(), before);
+            assert_eq!(std::fs::read(&rules).unwrap(), rules_before);
+        }
+        record_applied_instructions(
+            "team_test",
+            Some("next instructions".into()),
+            2,
+            vec![key.clone()],
+            &[key],
+        )
+        .unwrap();
+        assert_eq!(loaded_instructions().1, 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn loaded_instructions() -> (Option<String>, i64, Vec<String>) {
         match crate::registry::load().ok().and_then(|reg| reg.team) {
             Some(t) => (
@@ -3887,8 +6034,8 @@ mod tests {
     fn apply_instructions_keeps_last_good_when_rewrite_is_refused() {
         use crate::instructions::{ApplyState, Scope, Strategy, Target};
 
-        let _env = crate::clients::env_test_lock();
         let _dirs = crate::registry::data_dir_test_lock();
+        let _env = crate::clients::env_test_lock();
         let scratch =
             std::env::temp_dir().join(format!("toolport-sbs917-keep-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
@@ -3909,7 +6056,7 @@ mod tests {
             char_cap: Some(20),
             blocked_if_present: None,
         };
-        apply_instructions_to(TEAM, 2, Some(V2), std::slice::from_ref(&too_long_target));
+        apply_instructions_to(TEAM, 2, Some(V2), std::slice::from_ref(&too_long_target)).unwrap();
         let on_disk = std::fs::read_to_string(&too_long_path).unwrap_or_default();
         let (content, version, recorded) = loaded_instructions();
         assert!(
@@ -3944,7 +6091,7 @@ mod tests {
             blocked_if_present: None,
         };
         let poisoned = format!("{} injected", crate::instructions::SENTINEL_START_PREFIX);
-        apply_instructions_to(TEAM, 3, Some(&poisoned), std::slice::from_ref(&err_target));
+        apply_instructions_to(TEAM, 3, Some(&poisoned), std::slice::from_ref(&err_target)).unwrap();
         let on_disk = std::fs::read_to_string(&err_path).unwrap_or_default();
         let (_, _, recorded) = loaded_instructions();
         assert!(
@@ -3965,7 +6112,7 @@ mod tests {
             char_cap: None,
             blocked_if_present: Some(shadow.clone()),
         };
-        apply_instructions_to(TEAM, 4, Some(V2), std::slice::from_ref(&blocked_target));
+        apply_instructions_to(TEAM, 4, Some(V2), std::slice::from_ref(&blocked_target)).unwrap();
         let on_disk = std::fs::read_to_string(&blocked_path).unwrap_or_default();
         let (_, _, recorded) = loaded_instructions();
         assert!(
@@ -3975,7 +6122,7 @@ mod tests {
         assert_eq!(recorded, vec![blocked_path.to_string_lossy().to_string()]);
 
         std::fs::remove_file(&shadow).unwrap();
-        apply_instructions_to(TEAM, 4, Some(V2), std::slice::from_ref(&blocked_target));
+        apply_instructions_to(TEAM, 4, Some(V2), std::slice::from_ref(&blocked_target)).unwrap();
         let retried = std::fs::read_to_string(&blocked_path).unwrap_or_default();
         assert!(
             retried.contains(V2) && !retried.contains(V1),
@@ -3989,8 +6136,8 @@ mod tests {
     fn unchanged_instructions_remove_a_retained_path_when_its_client_disappears() {
         use crate::instructions::{Scope, Strategy, Target};
 
-        let _env = crate::clients::env_test_lock();
         let _dirs = crate::registry::data_dir_test_lock();
+        let _env = crate::clients::env_test_lock();
         let scratch = std::env::temp_dir().join(format!(
             "toolport-sbs917-uninstalled-{}",
             std::process::id()
@@ -4010,10 +6157,10 @@ mod tests {
             char_cap: Some(20),
             blocked_if_present: None,
         };
-        apply_instructions_to(TEAM, 2, Some(V2), std::slice::from_ref(&target));
+        apply_instructions_to(TEAM, 2, Some(V2), std::slice::from_ref(&target)).unwrap();
         assert!(path.exists(), "fixture: refused rewrite keeps last-good");
 
-        apply_instructions_to(TEAM, 2, Some(V2), &[]);
+        apply_instructions_to(TEAM, 2, Some(V2), &[]).unwrap();
 
         let (_, version, recorded) = loaded_instructions();
         let leftover = std::fs::read_to_string(&path).unwrap_or_default();
@@ -4038,8 +6185,8 @@ mod tests {
     fn apply_instructions_still_removes_last_good_when_org_clears_instructions() {
         use crate::instructions::{Scope, Strategy, Target};
 
-        let _env = crate::clients::env_test_lock();
         let _dirs = crate::registry::data_dir_test_lock();
+        let _env = crate::clients::env_test_lock();
         let scratch =
             std::env::temp_dir().join(format!("toolport-sbs917-clear-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
@@ -4056,7 +6203,7 @@ mod tests {
             char_cap: None,
             blocked_if_present: None,
         };
-        apply_instructions_to(TEAM, 2, None, std::slice::from_ref(&target));
+        apply_instructions_to(TEAM, 2, None, std::slice::from_ref(&target)).unwrap();
         let leftover = std::fs::read_to_string(&path).unwrap_or_default();
         let (_, _, recorded) = loaded_instructions();
         let _ = std::fs::remove_dir_all(&scratch);
@@ -4072,8 +6219,8 @@ mod tests {
 
     #[test]
     fn failed_instruction_cleanup_stays_recorded_and_retries() {
-        let _env = crate::clients::env_test_lock();
         let _dirs = crate::registry::data_dir_test_lock();
+        let _env = crate::clients::env_test_lock();
         let scratch =
             std::env::temp_dir().join(format!("toolport-sbs917-cleanup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
@@ -4095,7 +6242,7 @@ mod tests {
             ),
         )
         .unwrap();
-        apply_instructions_to(TEAM, 2, None, &[]);
+        apply_instructions_to(TEAM, 2, None, &[]).unwrap();
         let (content, version, recorded) = loaded_instructions();
         assert_eq!(content, None);
         assert_eq!(version, 2);
@@ -4104,7 +6251,7 @@ mod tests {
         // Once the file is readable and well-formed again, the unchanged-content cleanup path
         // retries the recorded location and can finally forget it.
         std::fs::write(&path, valid).unwrap();
-        apply_instructions_to(TEAM, 2, None, &[]);
+        apply_instructions_to(TEAM, 2, None, &[]).unwrap();
         let (_, _, recorded) = loaded_instructions();
         assert!(
             !path.exists(),
@@ -4124,8 +6271,8 @@ mod tests {
     fn a_lost_record_race_hands_written_paths_to_the_winner_instead_of_deleting_them() {
         use crate::instructions::{self, ApplyState, Scope, Strategy, Target};
 
-        let _env = crate::clients::env_test_lock();
         let _dirs = crate::registry::data_dir_test_lock();
+        let _env = crate::clients::env_test_lock();
         let scratch =
             std::env::temp_dir().join(format!("toolport-sbs914-race-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
@@ -4173,8 +6320,9 @@ mod tests {
             Some("a's rules".into()),
             3,
             vec![key.clone()],
-            &[key.clone()],
-        );
+            std::slice::from_ref(&key),
+        )
+        .unwrap();
         assert!(
             instructions::is_present(&path, Scope::Team),
             "the block is left for the winner to reconcile, not deleted"
@@ -4209,8 +6357,9 @@ mod tests {
             Some("a's rules".into()),
             3,
             vec![key.clone()],
-            &[key.clone()],
-        );
+            std::slice::from_ref(&key),
+        )
+        .unwrap();
         assert!(path.exists(), "adoption never deletes");
         let (_, _, recorded) = loaded_instructions();
         assert_eq!(
@@ -4218,7 +6367,7 @@ mod tests {
             vec![key.clone()],
             "the content-less winner now owns the path"
         );
-        apply_instructions_to("team_c", 1, None, &[target.clone()]);
+        apply_instructions_to("team_c", 1, None, std::slice::from_ref(&target)).unwrap();
         assert!(
             !path.exists(),
             "the winner's no-content pass cleans the adopted block"
@@ -4241,8 +6390,9 @@ mod tests {
             Some("a's rules".into()),
             4,
             vec![key.clone()],
-            &[key.clone()],
-        );
+            std::slice::from_ref(&key),
+        )
+        .unwrap();
         assert!(
             !path.exists(),
             "with no team left, our block (and the file we created) is removed"
@@ -4259,8 +6409,9 @@ mod tests {
             Some("a's rules".into()),
             5,
             vec![key.clone()],
-            &[key.clone()],
-        );
+            std::slice::from_ref(&key),
+        )
+        .unwrap();
         let (content, version, recorded) = loaded_instructions();
         assert_eq!(content.as_deref(), Some("a's rules"));
         assert_eq!(version, 5);
@@ -4304,9 +6455,34 @@ mod tests {
         assert_eq!(merged["github"], [5, 50]);
     }
 
+    #[test]
+    fn v3_reviewed_global_enable_keeps_consent_and_global_off_survives_sync() {
+        let mut registry = Registry::default();
+        let config = json!({"servers":[{"id":"reviewed","name":"Reviewed","transport":"stdio","command":"fixture-only","args":[],"env":[]}]});
+        apply_team_config(&mut registry, "t1", &config);
+        let id = registry.servers[0].id.clone();
+        assert!(!registry.server_enabled(&id));
+        crate::registry_controller::apply_server_enabled(&mut registry, "default", &id, true, true)
+            .unwrap();
+        assert!(registry.profiles[0].enabled_server_ids.contains(&id));
+        apply_team_config(&mut registry, "t1", &config);
+        assert!(registry.server_enabled(&id));
+        registry.set_global_server_enabled(&id, false).unwrap();
+        apply_team_config(&mut registry, "t1", &config);
+        assert!(!registry.server_enabled(&id));
+        assert!(registry.profiles[0].enabled_server_ids.contains(&id));
+    }
+
     fn base_registry() -> Registry {
-        let mut r = Registry::default();
+        // Exercise retained v1 fields and releasable team overlays.
+        let mut r = Registry {
+            version: 1,
+            safety_level: None,
+            ..Default::default()
+        };
         r.servers.push(ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "mine".into(),
             name: "Mine".into(),
             transport: "stdio".into(),
@@ -4336,11 +6512,27 @@ mod tests {
     #[test]
     fn pair_target_matching_never_reuses_another_team_or_origin() {
         let mut reg = publisher_registry();
-        assert!(pair_target_is_current(&reg, "https://teams.example.test", "publisher-test"));
-        assert!(!pair_target_is_current(&reg, "https://other.example.test", "publisher-test"));
-        assert!(!pair_target_is_current(&reg, "https://teams.example.test", "other"));
+        assert!(pair_target_is_current(
+            &reg,
+            "https://teams.example.test",
+            "publisher-test"
+        ));
+        assert!(!pair_target_is_current(
+            &reg,
+            "https://other.example.test",
+            "publisher-test"
+        ));
+        assert!(!pair_target_is_current(
+            &reg,
+            "https://teams.example.test",
+            "other"
+        ));
         reg.team = None;
-        assert!(!pair_target_is_current(&reg, "https://teams.example.test", "publisher-test"));
+        assert!(!pair_target_is_current(
+            &reg,
+            "https://teams.example.test",
+            "publisher-test"
+        ));
     }
 
     fn publisher_registry() -> Registry {
@@ -4412,15 +6604,24 @@ mod tests {
     fn publisher_changed_scope_or_target_fails_without_partial_handoff() {
         crate::secrets::tests::with_isolated_vault(|| {
             let before = publisher_registry();
-            for field in ["team", "origin", "device", "role", "profile", "target", "version"] {
+            for field in [
+                "team", "origin", "device", "role", "profile", "target", "version",
+            ] {
                 let mut r = sync_publisher(&before);
                 let id = member_id(&r, "mine");
                 match field {
                     "team" => r.team.as_mut().unwrap().team_id = "other".into(),
-                    "origin" => r.team.as_mut().unwrap().server_url = "https://other.example.test".into(),
+                    "origin" => {
+                        r.team.as_mut().unwrap().server_url = "https://other.example.test".into()
+                    }
                     "device" => r.team.as_mut().unwrap().reporting_device_id = "other".into(),
                     "role" => r.team.as_mut().unwrap().role = "member".into(),
-                    "profile" => { let mut other = r.profiles[0].clone(); other.id = "other".into(); r.profiles.push(other); r.active_profile_id = Some("other".into()); },
+                    "profile" => {
+                        let mut other = r.profiles[0].clone();
+                        other.id = "other".into();
+                        r.profiles.push(other);
+                        r.active_profile_id = Some("other".into());
+                    }
                     "version" => r.team.as_mut().unwrap().last_version = 3,
                     _ => {
                         r.servers.iter_mut().find(|s| s.id == id).unwrap().command =
@@ -4434,7 +6635,9 @@ mod tests {
                     // the working personal route.
                     let handoffs = result.unwrap();
                     assert_eq!(handoffs[0].outcome, HandoffOutcome::Attention);
-                    assert!(handoffs[0].message.ends_with("Your personal server stays on in this profile."));
+                    assert!(handoffs[0]
+                        .message
+                        .ends_with("Your personal server stays on in this profile."));
                 } else {
                     assert!(result.is_err(), "{field}");
                 }
@@ -4744,6 +6947,7 @@ mod tests {
             enabled_server_ids: Vec::new(),
             tool_scope: Default::default(),
             instructions: None,
+            unknown_fields: Default::default(),
         });
         let cfg = json!({ "servers": [
             { "id": "review1", "name": "Review1", "transport": "stdio", "command": "run-me" }
@@ -4967,6 +7171,8 @@ mod tests {
         // sync would overwrite the member's own server's secrets/profile/tool routing.
         let mut r = base_registry();
         r.servers.push(ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "team_github".into(),
             name: "My own".into(),
             transport: "stdio".into(),
@@ -5107,6 +7313,8 @@ mod tests {
         let mut r = base_registry();
         // Occupy the natural team id so the team server gets a stable alternate id.
         r.servers.push(ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "team_github".into(),
             name: "Local GitHub".into(),
             transport: "stdio".into(),
@@ -5170,41 +7378,170 @@ mod tests {
     }
 
     #[test]
-    fn team_forced_deny_destructive_is_releasable_and_leaves_the_member_untouched() {
+    fn service_payloads_apply_floors_without_coupling_independent_protections() {
+        // GET /config payloads from toolport-teams commit 89a1828 on a synthetic database.
+        let cases: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/team-safety-policy.json"))
+                .unwrap();
+        for case in cases.as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let floor = match name {
+                "ask" | "legacy-approval" => crate::registry::SafetyLevel::Ask,
+                "strict" | "legacy-deny" => crate::registry::SafetyLevel::Strict,
+                _ => crate::registry::SafetyLevel::Off,
+            };
+            for member in [
+                crate::registry::SafetyLevel::Off,
+                crate::registry::SafetyLevel::Ask,
+                crate::registry::SafetyLevel::Strict,
+            ] {
+                let mut r = base_registry();
+                r.set_safety_level(member);
+                apply_team_config(&mut r, "t1", &case["config"]);
+                assert_eq!(r.safety_level_effective(), member.max(floor), "{name}");
+                assert_eq!(
+                    r.deny_destructive_effective(),
+                    member.max(floor) == crate::registry::SafetyLevel::Strict,
+                    "{name}"
+                );
+                assert_eq!(
+                    r.quarantine_on_drift_effective(),
+                    member == crate::registry::SafetyLevel::Strict
+                        || floor == crate::registry::SafetyLevel::Strict
+                        || name == "quarantine",
+                    "{name}"
+                );
+                assert_eq!(
+                    r.block_on_injection_effective(),
+                    member == crate::registry::SafetyLevel::Strict
+                        || floor == crate::registry::SafetyLevel::Strict
+                        || name == "injection",
+                    "{name}"
+                );
+                assert_eq!(
+                    build_policy_receipt(&r)["safetyLevel"],
+                    serde_json::to_value(member.max(floor)).unwrap()
+                );
+                assert_eq!(r.safety_level_selected(), member);
+                apply_team_config(&mut r, "t1", &json!({"servers": []}));
+                assert_eq!(
+                    r.safety_level_effective(),
+                    member,
+                    "sync releases the floor"
+                );
+                apply_team_config(&mut r, "t1", &case["config"]);
+                remove_team(&mut r, "t1");
+                assert_eq!(
+                    r.safety_level_effective(),
+                    member,
+                    "leaving releases the floor"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn old_service_approval_and_invalid_or_missing_floor_have_safe_defaults() {
         let mut r = base_registry();
-        r.deny_destructive = false; // member's own choice: off
+        r.set_safety_level(crate::registry::SafetyLevel::Off);
+        for level in [json!(null), json!("unknown"), json!(2)] {
+            apply_team_config(
+                &mut r,
+                "t1",
+                &json!({"servers": [], "screeningPolicy": {"minSafetyLevel": level, "forceHumanApproval": true}}),
+            );
+            assert_eq!(r.team_min_safety_level, crate::registry::SafetyLevel::Ask);
+            assert_eq!(
+                r.safety_level_effective(),
+                crate::registry::SafetyLevel::Ask
+            );
+        }
         apply_team_config(
             &mut r,
             "t1",
-            &json!({ "servers": [], "denyDestructive": true }),
+            &json!({"servers": [], "screeningPolicy": {"forceHumanApproval": true}}),
         );
-        assert!(
-            r.team_forced_deny_destructive,
-            "org force recorded separately"
+        assert_eq!(
+            r.safety_level_effective(),
+            crate::registry::SafetyLevel::Ask
         );
-        assert!(!r.deny_destructive, "member's own setting is untouched");
-        assert!(
-            r.deny_destructive_effective(),
-            "enforced while the org forces it"
-        );
-        // Org drops the flag -> released, gate follows the member's own (off).
-        apply_team_config(&mut r, "t1", &json!({ "servers": [] }));
-        assert!(!r.deny_destructive_effective(), "org released the lock");
-        // And leaving the team releases it too.
         apply_team_config(
             &mut r,
             "t1",
-            &json!({ "servers": [], "denyDestructive": true }),
+            &json!({"servers": [], "screeningPolicy": {"minSafetyLevel": "off", "forceHumanApproval": true}}),
         );
-        remove_team(&mut r, "t1");
-        assert!(!r.team_forced_deny_destructive, "leaving clears the lock");
-        assert!(!r.deny_destructive_effective());
+        assert_eq!(
+            r.safety_level_effective(),
+            crate::registry::SafetyLevel::Ask,
+            "legacy approval remains tighten-only"
+        );
+    }
+
+    #[test]
+    fn old_service_lockdown_derives_a_strict_floor_and_releases_it() {
+        for floor in [
+            None,
+            Some(json!(null)),
+            Some(json!("unknown")),
+            Some(json!(2)),
+        ] {
+            let mut r = base_registry();
+            r.set_safety_level(crate::registry::SafetyLevel::Off);
+            let mut config = json!({"servers": [], "denyDestructive": true});
+            if let Some(floor) = floor {
+                config["screeningPolicy"] =
+                    json!({"minSafetyLevel": floor, "forceHumanApproval": true});
+            }
+            apply_team_config(&mut r, "t1", &config);
+            assert!(r.team_forced_deny_destructive);
+            assert_eq!(
+                r.team_min_safety_level,
+                crate::registry::SafetyLevel::Strict
+            );
+            assert_eq!(
+                r.safety_level_effective(),
+                crate::registry::SafetyLevel::Strict
+            );
+            assert!(r.deny_destructive_effective());
+            assert_eq!(r.safety_level_selected(), crate::registry::SafetyLevel::Off);
+            apply_team_config(&mut r, "t1", &json!({"servers": []}));
+            assert_eq!(r.team_min_safety_level, crate::registry::SafetyLevel::Off);
+            assert!(!r.deny_destructive_effective());
+            apply_team_config(&mut r, "t1", &config);
+            remove_team(&mut r, "t1");
+            assert_eq!(r.team_min_safety_level, crate::registry::SafetyLevel::Off);
+            assert!(!r.team_forced_deny_destructive);
+            assert!(!r.deny_destructive_effective());
+        }
+    }
+
+    #[test]
+    fn valid_team_floor_takes_precedence_over_legacy_destructive_deny() {
+        for (level, floor) in [
+            ("off", crate::registry::SafetyLevel::Off),
+            ("ask", crate::registry::SafetyLevel::Ask),
+            ("strict", crate::registry::SafetyLevel::Strict),
+        ] {
+            let mut r = base_registry();
+            r.set_safety_level(crate::registry::SafetyLevel::Off);
+            apply_team_config(
+                &mut r,
+                "t1",
+                &json!({"servers": [], "denyDestructive": true,
+                "screeningPolicy": {"minSafetyLevel": level}}),
+            );
+            assert_eq!(r.team_min_safety_level, floor);
+            assert_eq!(r.safety_level_effective(), floor);
+            assert_eq!(
+                r.deny_destructive_effective(),
+                floor == crate::registry::SafetyLevel::Strict
+            );
+        }
     }
 
     #[test]
     fn forced_content_defense_and_drift_quarantine_are_releasable() {
         let mut r = base_registry();
-        r.content_defense = false;
         r.quarantine_on_drift = false;
 
         apply_team_config(
@@ -5223,14 +7560,13 @@ mod tests {
             r.quarantine_on_drift_effective(),
             "org forced drift-quarantine on"
         );
-        assert!(
-            !r.content_defense,
-            "member's own content-defense is untouched"
-        );
 
         // Org dropping the policy releases both to the member's own (off), no permanent lock.
         apply_team_config(&mut r, "t1", &json!({ "servers": [] }));
-        assert!(!r.content_defense_effective(), "content defense released");
+        assert!(
+            r.content_defense_effective(),
+            "labeling stays on after the team lock releases"
+        );
         assert!(
             !r.quarantine_on_drift_effective(),
             "drift-quarantine released"
@@ -5240,17 +7576,16 @@ mod tests {
     #[test]
     fn leaving_a_team_releases_every_forced_safety_lock() {
         let mut r = base_registry();
-        // Member's OWN settings all off, so "effective" is driven purely by the org lock
-        // (content_defense defaults on, so set it explicitly to isolate the forced overlay).
+        // Member's OWN settings all off, so "effective" is driven purely by the org lock.
         r.human_approval = false;
         r.deny_destructive = false;
-        r.content_defense = false;
         r.quarantine_on_drift = false;
         r.block_on_injection = false;
         apply_team_config(
             &mut r,
             "t1",
             &json!({ "servers": [], "denyDestructive": true, "screeningPolicy": {
+                "minSafetyLevel": "strict",
                 "forceHumanApproval": true,
                 "forceContentDefense": true,
                 "forceQuarantineOnDrift": true,
@@ -5267,7 +7602,8 @@ mod tests {
         );
         remove_team(&mut r, "t1");
         assert!(
-            !r.team_forced_human_approval
+            r.team_min_safety_level == crate::registry::SafetyLevel::Off
+                && !r.team_forced_human_approval
                 && !r.team_forced_deny_destructive
                 && !r.team_forced_content_defense
                 && !r.team_forced_quarantine_on_drift
@@ -5277,7 +7613,7 @@ mod tests {
         assert!(
             !r.human_approval_effective()
                 && !r.deny_destructive_effective()
-                && !r.content_defense_effective()
+                && r.content_defense_effective()
                 && !r.quarantine_on_drift_effective()
                 && !r.block_on_injection_effective(),
             "no team -> every flag follows the member's own (off) settings"
@@ -5408,7 +7744,6 @@ mod tests {
         // overlay, so an admin sees what is actually enforced on the member's machine.
         let mut r = base_registry();
         r.deny_destructive = true; // member's own on
-        r.content_defense = false;
         r.quarantine_on_drift = false;
         r.human_approval = false;
         r.block_on_injection = false;
@@ -5435,7 +7770,10 @@ mod tests {
             receipt["forceContentDefense"], true,
             "org force makes content defense effective"
         );
-        assert_eq!(receipt["forceQuarantineOnDrift"], false);
+        assert_eq!(
+            receipt["forceQuarantineOnDrift"], false,
+            "a member's own 1.x deny never implied drift quarantine"
+        );
         assert_eq!(receipt["forceHumanApproval"], true);
         assert_eq!(
             receipt["forceBlockOnInjection"], true,
@@ -5580,6 +7918,8 @@ mod tests {
     fn team_id_never_collides_with_a_local_id_under_sanitize() {
         let mut r = base_registry();
         r.servers.push(ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "team-acme-crm".into(),
             name: "Team Acme CRM".into(),
             transport: "http".into(),
@@ -5827,6 +8167,7 @@ mod tests {
             key: "GITHUB_TOKEN".into(),
             secret: true,
             value: Some("SYNTHETIC_ENV_SECRET".into()),
+            unknown_fields: Default::default(),
         }];
         let exported = team_server_export(&reg);
         let before = exported.clone();
@@ -6071,6 +8412,8 @@ mod tests {
         let mut r = base_registry(); // has "mine" (manual)
                                      // Toolport's own gateway entry: infra, must never be pushed to the team.
         r.servers.push(ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "toolport".into(),
             name: "Toolport".into(),
             transport: "stdio".into(),
@@ -6091,6 +8434,8 @@ mod tests {
         });
         // A team-sourced server: excluded too (don't echo the team's own set back).
         r.servers.push(ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "shared".into(),
             name: "Shared".into(),
             transport: "http".into(),
@@ -6495,6 +8840,38 @@ mod tests {
     }
 
     #[test]
+    fn older_sorted_registry_keeps_consent_for_unchanged_team_credentials() {
+        let config: Value = serde_json::from_str(r#"{"servers":[{"id":"remote","name":"Remote","transport":"http","url":"https://1.2.3.4/mcp","clientCredentials":{"tokenEndpointAuthMethod":"client_secret_post","scope":"read","clientId":"client-a"}}]}"#).unwrap();
+        for version in [1, 4] {
+            let mut reg = base_registry();
+            reg.version = version;
+            apply_team_config(&mut reg, "t1", &config);
+            let id = member_id(&reg, "remote");
+            // v1.24.0 persisted all nested JSON objects in sorted order.
+            let mut persisted = serde_json::to_value(&reg).unwrap();
+            persisted.sort_all_objects();
+            let mut reg: Registry = serde_json::from_str(&persisted.to_string()).unwrap();
+            let before = consent_fingerprint(reg.servers.iter().find(|s| s.id == id).unwrap());
+            assert!(active_enabled(&reg).contains(&id));
+            let outcome = apply_team_config(&mut reg, "t1", &config);
+            assert_eq!(outcome.review, 0);
+            assert!(
+                active_enabled(&reg).contains(&id),
+                "access-set membership was removed"
+            );
+            let server = reg.servers.iter().find(|s| s.id == id).unwrap();
+            assert!(
+                reg.enabled_servers().iter().any(|server| server.id == id),
+                "unchanged legacy server was disabled"
+            );
+            assert_eq!(consent_fingerprint(server), before);
+            if version >= 3 {
+                assert!(server.enabled, "unchanged migrated server was disabled");
+            }
+        }
+    }
+
+    #[test]
     fn changed_team_client_authentication_requires_consent() {
         let initial = json!({"clientId":"client-a", "scope":"read"});
         for next in [
@@ -6535,6 +8912,8 @@ mod tests {
     #[test]
     fn consent_fingerprint_tracks_only_what_runs() {
         let base = ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "team_x".into(),
             name: "X".into(),
             transport: "stdio".into(),
@@ -6545,11 +8924,13 @@ mod tests {
                     key: "B".into(),
                     value: None,
                     secret: true,
+                    unknown_fields: Default::default(),
                 },
                 EnvVar {
                     key: "A".into(),
                     value: None,
                     secret: true,
+                    unknown_fields: Default::default(),
                 },
             ],
             url: None,
@@ -6573,17 +8954,26 @@ mod tests {
                 secret: false,
                 required: true,
                 value: None,
+                unknown_fields: Default::default(),
             }],
             bindings: vec![crate::registry::ArgBinding {
                 index: 2,
-                parts: vec![crate::registry::ArgPart::Input { key: "SID".into() }],
+                parts: vec![crate::registry::ArgPart::Input {
+                    key: "SID".into(),
+                    unknown_fields: Default::default(),
+                }],
+                unknown_fields: Default::default(),
             }],
             ..Default::default()
         });
         let before_binding_change = consent_fingerprint(&bound);
-        bound.launch.as_mut().unwrap().bindings[0]
-            .parts
-            .insert(0, crate::registry::ArgPart::Literal { value: "/".into() });
+        bound.launch.as_mut().unwrap().bindings[0].parts.insert(
+            0,
+            crate::registry::ArgPart::Literal {
+                value: "/".into(),
+                unknown_fields: Default::default(),
+            },
+        );
         assert_ne!(
             consent_fingerprint(&bound),
             before_binding_change,
@@ -6660,9 +9050,14 @@ mod tests {
         }
 
         /// Publish, sync and hand off. Returns the registry and the published set.
-        fn share(before: &Registry, remote: &Value, ids: &[&str]) -> (Registry, Value, Vec<LocalHandoff>) {
+        fn share(
+            before: &Registry,
+            remote: &Value,
+            ids: &[&str],
+        ) -> (Registry, Value, Vec<LocalHandoff>) {
             let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
-            let merged = additive_server_set(remote, &selected_export(before, &ids).unwrap()).unwrap();
+            let merged =
+                additive_server_set(remote, &selected_export(before, &ids).unwrap()).unwrap();
             let mut r = synced(before, &merged, 2);
             let handoffs = finish_publisher_share(&mut r, before, &ids, 2).unwrap();
             (r, merged, handoffs)
@@ -6722,6 +9117,54 @@ mod tests {
         }
 
         #[test]
+        fn access_review_team_sync_preserves_switch_without_membership() {
+            crate::secrets::tests::with_isolated_vault(|| {
+                let mut personal = publisher_registry();
+                personal.version = 3;
+                personal.servers[0].enabled = true;
+                let remote = team_server_export(&personal);
+                let mut reg = synced(&personal, &remote, 1);
+                let managed = team_copy(&reg, "mine");
+                apply_use_managed(&mut reg, &managed, "default").unwrap();
+                assert!(reg.server_enabled(&managed));
+                for profile in &mut reg.profiles {
+                    profile.enabled_server_ids.clear();
+                }
+                reg = synced(&reg, &remote, 2);
+                assert!(reg.server_enabled(&managed));
+                reg.set_global_server_enabled(&managed, false).unwrap();
+                reg = synced(&reg, &remote, 3);
+                assert!(!reg.server_enabled(&managed));
+            });
+        }
+
+        #[test]
+        fn access_review_team_copy_turns_personal_off_globally_keeps_membership() {
+            crate::secrets::tests::with_isolated_vault(|| {
+                let mut personal = publisher_registry();
+                personal.version = 3;
+                personal.servers[0].enabled = true;
+                let other = personal.add_profile("Other");
+                personal.set_access_server(&other, "mine", true).unwrap();
+                let mut reg = synced(&personal, &team_server_export(&personal), 1);
+                let managed = team_copy(&reg, "mine");
+                apply_use_managed(&mut reg, &managed, "default").unwrap();
+                assert!(!reg.server_enabled("mine"));
+                assert!(reg.server_enabled(&managed));
+                assert!(reg
+                    .profiles
+                    .iter()
+                    .all(|p| p.enabled_server_ids.iter().any(|id| id == "mine")));
+                let all = reg
+                    .enabled_servers_for(crate::registry::ALL_ENABLED_ACCESS)
+                    .iter()
+                    .map(|s| s.id.clone())
+                    .collect::<Vec<_>>();
+                assert_eq!(all, [managed]);
+            });
+        }
+
+        #[test]
         fn preview_explains_each_relationship_to_the_team() {
             crate::secrets::tests::with_isolated_vault(|| {
                 let personal = publisher_registry();
@@ -6732,20 +9175,29 @@ mod tests {
                 assert_eq!(already[0].local.outcome, HandoffOutcome::Switched);
                 assert!(already[0].notes.is_empty());
 
-                let remote = json!([{"id":"mine","name":"Mine","transport":"stdio","command":"old"}]);
+                let remote =
+                    json!([{"id":"mine","name":"Mine","transport":"stdio","command":"old"}]);
                 let update = preview(&synced(&personal, &remote, 1), &remote, &["mine"]);
                 assert_eq!(update[0].team_change, "Update");
                 assert_eq!(update[0].local.outcome, HandoffOutcome::Switched);
 
-                let remote = json!([{"id":"mine-portal","name":" mine ","transport":"stdio","command":"x"}]);
+                let remote =
+                    json!([{"id":"mine-portal","name":" mine ","transport":"stdio","command":"x"}]);
                 let before = synced(&personal, &remote, 1);
                 let new = preview(&before, &remote, &["mine"]);
                 assert_eq!(new[0].team_change, "New");
                 assert_eq!(new[0].notes.len(), 1);
-                assert!(new[0].notes[0].contains("(ID mine-portal)"), "{:?}", new[0].notes);
+                assert!(
+                    new[0].notes[0].contains("(ID mine-portal)"),
+                    "{:?}",
+                    new[0].notes
+                );
                 let (after, _, _) = share(&before, &remote, &["mine"]);
                 assert!(
-                    after.servers.iter().any(|s| saved_team_original_id(s) == Some("mine-portal")),
+                    after
+                        .servers
+                        .iter()
+                        .any(|s| saved_team_original_id(s) == Some("mine-portal")),
                     "a same-name definition is never merged away"
                 );
 
@@ -6771,12 +9223,20 @@ mod tests {
                 let before = synced(&personal, &remote, 1);
                 let managed = team_copy(&before, "mine");
                 crate::registry::save(&before).unwrap();
-                crate::secrets::set_secret(&managed, crate::secrets::HTTP_AUTH_KEY, "independent-synthetic").unwrap();
+                crate::secrets::set_secret(
+                    &managed,
+                    crate::secrets::HTTP_AUTH_KEY,
+                    "independent-synthetic",
+                )
+                .unwrap();
 
                 let predicted = preview(&before, &remote, &["mine"]);
                 assert_eq!(predicted[0].local.outcome, HandoffOutcome::Attention);
                 assert!(predicted[0].local.message.contains("own local credentials"));
-                assert!(predicted[0].local.message.ends_with("Your personal server stays on in this profile."));
+                assert!(predicted[0]
+                    .local
+                    .message
+                    .ends_with("Your personal server stays on in this profile."));
                 assert!(!predicted[0].local.message.contains("independent-synthetic"));
 
                 let (r, _, handoffs) = share(&before, &remote, &["mine"]);
@@ -6785,7 +9245,10 @@ mod tests {
                 let profile = r.active_profile_id();
                 assert!(r.is_enabled(&profile, "mine"));
                 assert!(!r.is_enabled(&profile, &managed));
-                assert_eq!(crate::secrets::get_secret(&managed, crate::secrets::HTTP_AUTH_KEY).as_deref(), Some("independent-synthetic"));
+                assert_eq!(
+                    crate::secrets::get_secret(&managed, crate::secrets::HTTP_AUTH_KEY).as_deref(),
+                    Some("independent-synthetic")
+                );
                 crate::secrets::delete_secret(&managed, crate::secrets::HTTP_AUTH_KEY).unwrap();
             });
         }
@@ -6796,17 +9259,36 @@ mod tests {
                 let mut two = publisher_registry();
                 let profile = two.active_profile_id();
                 two.servers.push(stdio("other", "Other", "y"));
-                two.profiles.iter_mut().find(|p| p.id == profile).unwrap().enabled_server_ids.push("other".into());
+                two.profiles
+                    .iter_mut()
+                    .find(|p| p.id == profile)
+                    .unwrap()
+                    .enabled_server_ids
+                    .push("other".into());
                 let remote = team_server_export(&two);
                 let before = synced(&two, &remote, 1);
                 let other = team_copy(&before, "other");
                 crate::registry::save(&before).unwrap();
-                crate::secrets::set_secret(&other, crate::secrets::HTTP_AUTH_KEY, "independent-synthetic").unwrap();
+                crate::secrets::set_secret(
+                    &other,
+                    crate::secrets::HTTP_AUTH_KEY,
+                    "independent-synthetic",
+                )
+                .unwrap();
 
                 let (r, _, handoffs) = share(&before, &remote, &["mine", "other"]);
 
-                let outcomes: Vec<_> = handoffs.iter().map(|h| (h.id.as_str(), h.outcome)).collect();
-                assert_eq!(outcomes, [("mine", HandoffOutcome::Switched), ("other", HandoffOutcome::Attention)]);
+                let outcomes: Vec<_> = handoffs
+                    .iter()
+                    .map(|h| (h.id.as_str(), h.outcome))
+                    .collect();
+                assert_eq!(
+                    outcomes,
+                    [
+                        ("mine", HandoffOutcome::Switched),
+                        ("other", HandoffOutcome::Attention)
+                    ]
+                );
                 let mine = team_copy(&r, "mine");
                 assert!(r.is_enabled(&profile, &mine) && !r.is_enabled(&profile, "mine"));
                 assert!(r.is_enabled(&profile, "other") && !r.is_enabled(&profile, &other));
@@ -6824,10 +9306,16 @@ mod tests {
                     let expected = local_value(&edited.servers[0]);
                     let profile = edited.active_profile_id();
                     assert!(
-                        crate::local_auth::bound_copy_enabled(&edited, &profile, "mine"),
+                        crate::local_auth::bound_copy_enabled(&edited, "mine"),
                         "the first share handed off"
                     );
-                    edited.servers.iter_mut().find(|s| s.id == "mine").unwrap().args.push("--new".into());
+                    edited
+                        .servers
+                        .iter_mut()
+                        .find(|s| s.id == "mine")
+                        .unwrap()
+                        .args
+                        .push("--new".into());
 
                     let predicted = preview(&edited, &merged, &["mine"]);
                     assert_eq!(predicted[0].team_change, "Update");
@@ -6839,7 +9327,12 @@ mod tests {
                     );
 
                     let (r, _, handoffs) = share(&edited, &merged, &["mine"]);
-                    assert_eq!(handoffs[0].outcome, HandoffOutcome::Kept, "{:?}", handoffs[0]);
+                    assert_eq!(
+                        handoffs[0].outcome,
+                        HandoffOutcome::Kept,
+                        "{:?}",
+                        handoffs[0]
+                    );
                     let copy = team_copy(&r, "mine");
                     assert!(r.is_enabled(&profile, &copy), "the Team copy stays in use");
                     assert!(!r.is_enabled(&profile, "mine"));
@@ -6863,14 +9356,23 @@ mod tests {
                 let predicted = preview(&personal, &json!([]), &["mine"]);
                 assert_eq!(predicted[0].local.outcome, HandoffOutcome::Switched);
                 let (r, published, handoffs) = share(&personal, &json!([]), &["mine"]);
-                assert_eq!(handoffs[0].outcome, HandoffOutcome::Switched, "{:?}", handoffs[0]);
+                assert_eq!(
+                    handoffs[0].outcome,
+                    HandoffOutcome::Switched,
+                    "{:?}",
+                    handoffs[0]
+                );
                 let copy = team_copy(&r, "mine");
                 assert!(r.is_enabled(&profile, &copy) && !r.is_enabled(&profile, "mine"));
                 assert_eq!(crate::local_auth::owner_in(&r, &copy).unwrap(), "mine");
 
                 // The next sync keeps the owner's local value and binding.
                 let mut again = r.clone();
-                apply_team_config(&mut again, "publisher-test", &stored_definition(&json!({"servers": published})));
+                apply_team_config(
+                    &mut again,
+                    "publisher-test",
+                    &stored_definition(&json!({"servers": published})),
+                );
                 let owner_copy = again.servers.iter().find(|s| s.id == copy).unwrap();
                 assert_eq!(local_value(owner_copy).as_deref(), Some("/work"));
                 assert!(again.is_enabled(&profile, &copy));
@@ -6879,7 +9381,11 @@ mod tests {
                 // A member receives a Team copy to set up, with the input vaulted.
                 let mut member = base_registry();
                 member.servers.clear();
-                let outcome = apply_team_config(&mut member, "publisher-test", &stored_definition(&json!({"servers": published})));
+                let outcome = apply_team_config(
+                    &mut member,
+                    "publisher-test",
+                    &stored_definition(&json!({"servers": published})),
+                );
                 assert_eq!((outcome.blocked, outcome.review), (0, 1));
                 let input = &member.servers[0].launch.as_ref().unwrap().inputs[0];
                 assert!(input.secret && input.value.is_none());
@@ -6903,22 +9409,37 @@ mod tests {
             crate::secrets::tests::with_isolated_vault(|| {
                 let (mut edited, merged) = handed_off();
                 let profile = edited.active_profile_id();
-                edited.servers.iter_mut().find(|s| s.id == "mine").unwrap().args = vec!["--new".into()];
+                edited
+                    .servers
+                    .iter_mut()
+                    .find(|s| s.id == "mine")
+                    .unwrap()
+                    .args = vec!["--new".into()];
                 let ids = vec!["mine".to_string()];
-                let published = additive_server_set(&merged, &selected_export(&edited, &ids).unwrap()).unwrap();
+                let published =
+                    additive_server_set(&merged, &selected_export(&edited, &ids).unwrap()).unwrap();
                 let mut r = synced(&edited, &published, 2);
                 let copy = team_copy(&r, "mine");
                 // Something the owner typed into the Team copy on its own.
-                r.servers.iter_mut().find(|s| s.id == copy).unwrap().env = vec![serde_json::from_value(
-                    json!({"key":"REGION","value":"independent","secret":false}),
-                ).unwrap()];
+                r.servers.iter_mut().find(|s| s.id == copy).unwrap().env =
+                    vec![serde_json::from_value(
+                        json!({"key":"REGION","value":"independent","secret":false}),
+                    )
+                    .unwrap()];
 
                 let handoffs = finish_publisher_share(&mut r, &edited, &ids, 2).unwrap();
 
                 assert_eq!(handoffs[0].outcome, HandoffOutcome::Attention);
-                assert!(handoffs[0].message.ends_with("Your personal server is back on in this profile."));
+                assert!(handoffs[0]
+                    .message
+                    .ends_with("Your personal server is back on in this profile."));
                 assert!(r.is_enabled(&profile, "mine"));
-                assert_eq!(r.servers.iter().find(|s| s.id == copy).unwrap().env[0].value.as_deref(), Some("independent"));
+                assert_eq!(
+                    r.servers.iter().find(|s| s.id == copy).unwrap().env[0]
+                        .value
+                        .as_deref(),
+                    Some("independent")
+                );
             });
         }
 
@@ -6934,17 +9455,35 @@ mod tests {
                         "a deleted definition leaves no mapping behind"
                     );
                     let mut changed = deleted.clone();
-                    changed.servers.iter_mut().find(|s| s.id == "mine").unwrap().args = vec![format!("--round-{round}")];
+                    changed
+                        .servers
+                        .iter_mut()
+                        .find(|s| s.id == "mine")
+                        .unwrap()
+                        .args = vec![format!("--round-{round}")];
                     let (r, _, handoffs) = share(&changed, &json!([]), &["mine"]);
-                    assert_eq!(handoffs[0].outcome, HandoffOutcome::Switched, "round {round}: {:?}", handoffs[0]);
+                    assert_eq!(
+                        handoffs[0].outcome,
+                        HandoffOutcome::Switched,
+                        "round {round}: {:?}",
+                        handoffs[0]
+                    );
                     assert_eq!(r.team.as_ref().unwrap().managed_server_ids.len(), 1);
                 }
                 // A leftover mapping from an older client never decides the handoff.
                 let remote = team_server_export(&personal);
                 let mut r = synced(&personal, &remote, 2);
-                r.team.as_mut().unwrap().managed_server_ids.insert("team_mine-stale".into(), "mine".into());
+                r.team
+                    .as_mut()
+                    .unwrap()
+                    .managed_server_ids
+                    .insert("team_mine-stale".into(), "mine".into());
                 assert_eq!(team_copy(&r, "mine"), member_id(&r, "mine"));
-                assert_eq!(finish_publisher_share(&mut r, &personal, &["mine".into()], 2).unwrap()[0].outcome, HandoffOutcome::Switched);
+                assert_eq!(
+                    finish_publisher_share(&mut r, &personal, &["mine".into()], 2).unwrap()[0]
+                        .outcome,
+                    HandoffOutcome::Switched
+                );
             });
         }
 
@@ -6952,10 +9491,8 @@ mod tests {
         fn definitions_compare_in_the_form_the_service_stores() {
             crate::secrets::tests::with_isolated_vault(|| {
                 let mut personal = publisher_registry();
-                personal.servers[0].env = vec![serde_json::from_value(
-                    json!({"key":"API_TOKEN","secret":true}),
-                )
-                .unwrap()];
+                personal.servers[0].env =
+                    vec![serde_json::from_value(json!({"key":"API_TOKEN","secret":true})).unwrap()];
                 // The service drops every `secret` flag and `value` before saving.
                 let stored = stored_definition(&team_server_export(&personal));
                 assert!(!stored.to_string().contains("\"secret\""));
@@ -6966,8 +9503,11 @@ mod tests {
                 assert_eq!(selections[0].team_change, "Already shared");
                 assert_eq!(selections[0].local.outcome, HandoffOutcome::Switched);
 
-                personal.servers[0].env.push(serde_json::from_value(json!({"key":"REGION","secret":false})).unwrap());
-                let compared = build_push_preview(1, &stored, &team_server_export(&personal)).unwrap();
+                personal.servers[0]
+                    .env
+                    .push(serde_json::from_value(json!({"key":"REGION","secret":false})).unwrap());
+                let compared =
+                    build_push_preview(1, &stored, &team_server_export(&personal)).unwrap();
                 assert_eq!(compared.changed, ["Mine"], "a new key is a real change");
             });
         }
@@ -6976,7 +9516,8 @@ mod tests {
         fn the_share_picker_hint_uses_the_last_sync() {
             crate::secrets::tests::with_isolated_vault(|| {
                 let personal = publisher_registry();
-                let mine = |r: &Registry| r.servers.iter().find(|s| s.id == "mine").unwrap().clone();
+                let mine =
+                    |r: &Registry| r.servers.iter().find(|s| s.id == "mine").unwrap().clone();
                 assert_eq!(personal_share_hint(&personal, &mine(&personal)), None);
 
                 let remote = team_server_export(&personal);
@@ -6990,7 +9531,8 @@ mod tests {
                     personal_share_hint(&handed, &mine(&handed)),
                     Some("Shared. The Team copy is in use in this profile.")
                 );
-                let remote = json!([{"id":"mine-portal","name":"MINE","transport":"stdio","command":"x"}]);
+                let remote =
+                    json!([{"id":"mine-portal","name":"MINE","transport":"stdio","command":"x"}]);
                 let other = synced(&personal, &remote, 1);
                 assert_eq!(
                     personal_share_hint(&other, &mine(&other)),
@@ -7012,15 +9554,1344 @@ mod tests {
                 "Already shared with your team (version 4). Nothing new was uploaded.\nLinear: Now uses the Team copy in this profile."
             );
             let result = PublishResult {
+                proposal: None,
                 version: 5,
                 published: true,
                 local_setup_error: None,
-                handoffs: vec![handoff("Vercel", HandoffOutcome::Attention, "Needs setup. Your personal server stays on in this profile.")],
+                handoffs: vec![handoff(
+                    "Vercel",
+                    HandoffOutcome::Attention,
+                    "Needs setup. Your personal server stays on in this profile.",
+                )],
                 summary: String::new(),
             };
             assert!(result.needs_attention());
             assert!(!PublishResult::whole_set(5).needs_attention());
-            assert_eq!(PublishResult::whole_set(5).summary, "Shared with your team (version 5).");
+            assert_eq!(
+                PublishResult::whole_set(5).summary,
+                "Shared with your team (version 5)."
+            );
         }
+    }
+}
+
+#[cfg(test)]
+mod member_review_tests {
+    use super::*;
+
+    #[test]
+    fn sync_regression_publish_preserves_disabled_servers_and_metadata() {
+        let complete = json!({"servers":[
+            {"id":"paused", "name":"Paused", "transport":"http", "url":"https://1.2.3.4/mcp",
+             "disabled":true, "note":"Keep until renewal", "future":{"owner":"ops"}},
+            {"id":"existing", "name":"Existing", "transport":"http", "url":"https://1.2.3.4/old",
+             "note":"Dashboard notes", "future":{"owner":"finance"}}
+        ], "futurePolicy":{"keep":true}});
+        let fixture = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", fixture.server_addr());
+        let stored = complete.clone();
+        let server = std::thread::spawn(move || {
+            let request = fixture
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            let mut view = stored;
+            if !request.url().ends_with("?manage=1") {
+                view["servers"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|s| s["disabled"] != true);
+                for entry in view["servers"].as_array_mut().unwrap() {
+                    entry.as_object_mut().unwrap().remove("note");
+                }
+            }
+            request
+                .respond(tiny_http::Response::from_string(
+                    json!({"version":4,"config":view}).to_string(),
+                ))
+                .unwrap();
+            let mut request = fixture
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            let mut body = String::new();
+            request.as_reader().read_to_string(&mut body).unwrap();
+            request
+                .respond(tiny_http::Response::from_string(
+                    json!({"version":5}).to_string(),
+                ))
+                .unwrap();
+            serde_json::from_str::<Value>(&body).unwrap()
+        });
+        let (version, config) =
+            fetch_config_for_update(&url, "review-team", "fixture-token").unwrap();
+        let selected = json!([
+            {"id":"new", "name":"New", "transport":"http", "url":"https://1.2.3.4/new"},
+            {"id":"existing", "name":"Edited", "transport":"http", "url":"https://1.2.3.4/edited"}
+        ]);
+        let servers = additive_server_set(&config["servers"], &selected).unwrap();
+        let config = replace_server_set(config, servers).unwrap();
+        push_config(&url, "review-team", "fixture-token", &config, version).unwrap();
+        let published = server.join().unwrap();
+        let index = server_index(&published["config"]["servers"]).unwrap();
+        assert_eq!(index.get("paused"), Some(&&complete["servers"][0]));
+        assert_eq!(index["existing"]["note"], complete["servers"][1]["note"]);
+        assert_eq!(
+            index["existing"]["future"],
+            complete["servers"][1]["future"]
+        );
+        assert_eq!(index["existing"]["url"], selected[1]["url"]);
+        assert!(index.contains_key("new"));
+        assert_eq!(
+            published["config"]["futurePolicy"],
+            complete["futurePolicy"]
+        );
+        assert_eq!(published["base_version"], 4);
+    }
+
+    #[test]
+    fn sync_regression_editing_disabled_definition_keeps_it_disabled() {
+        let mut reg = bound_personal_registry();
+        let before = reg.clone();
+        let selected = selected_export(&reg, &["remote".into()]).unwrap();
+        let mut remote = selected.clone();
+        remote[0]["disabled"] = json!(true);
+        remote[0]["note"] = json!("Paused in dashboard");
+        let merged = additive_server_set(&remote, &selected).unwrap();
+        assert_eq!(merged, remote);
+        let preview =
+            share_selections(&reg, &remote, &selected, &json!({"servers":merged})).unwrap();
+        assert_eq!(preview[0].team_change, "Already shared");
+        assert_eq!(preview[0].local.outcome, HandoffOutcome::NotEnabled);
+        assert_eq!(
+            preview[0].local.message,
+            "Removed or disabled by the team. Your personal server stays off."
+        );
+        let mut edited = selected;
+        edited[0]["url"] = json!("https://1.2.3.4/edited");
+        let merged = additive_server_set(&remote, &edited).unwrap();
+        assert_eq!(merged[0]["disabled"], true);
+        assert_eq!(merged[0]["note"], remote[0]["note"]);
+        assert_eq!(merged[0]["url"], edited[0]["url"]);
+        stage_team_config(&mut reg, "review-team", &json!({"servers":merged}), 3, &[]).unwrap();
+        assert!(reg
+            .servers
+            .iter()
+            .all(|s| s.source.as_deref() != Some("team:review-team")));
+        let handoffs = stage_publisher_handoffs(&mut reg, &before, &["remote".into()], false);
+        assert_eq!(handoffs[0].outcome, HandoffOutcome::NotEnabled);
+        assert!(!reg.server_enabled("remote"));
+    }
+
+    fn bound_personal_registry() -> Registry {
+        let mut reg = registry();
+        reg.version = 3;
+        stage_team_config(&mut reg, "review-team", &config("first"), 1, &[]).unwrap();
+        decide(&mut reg, "server:remote", true);
+        let managed = reg
+            .servers
+            .iter()
+            .find(|s| s.id == remote_id(&reg))
+            .unwrap()
+            .clone();
+        let mut personal = managed.clone();
+        personal.id = "remote".into();
+        personal.source = None;
+        personal.unknown_fields.remove(TEAM_ORIGINAL_ID_FIELD);
+        personal.enabled = false;
+        reg.servers.push(personal.clone());
+        crate::local_auth::bind(&mut reg, &managed, &personal).unwrap();
+        reg
+    }
+
+    #[test]
+    fn sync_regression_remote_delete_or_disable_keeps_personal_off() {
+        for role in ["admin", "member"] {
+            // A dashboard disable is absent from the runtime view, just like deletion.
+            // Also accept a full management payload without importing a disabled row.
+            let mut disabled = config("first");
+            disabled["servers"][1]["disabled"] = json!(true);
+            for removed in [json!({"servers":[]}), disabled] {
+                let mut reg = bound_personal_registry();
+                reg.team.as_mut().unwrap().role = role.into();
+                let mut other = reg.profiles[0].clone();
+                other.id = "other".into();
+                other.enabled_server_ids.push("remote".into());
+                reg.profiles.push(other);
+                stage_team_config(&mut reg, "review-team", &removed, 2, &[]).unwrap();
+                assert!(!reg.server_enabled("remote"), "role={role}");
+                assert!(reg
+                    .profiles
+                    .iter()
+                    .all(|p| !p.enabled_server_ids.contains(&"remote".into())));
+                assert!(reg
+                    .servers
+                    .iter()
+                    .all(|s| saved_team_original_id(s) != Some("remote")));
+                assert_eq!(
+                    reg.servers
+                        .iter()
+                        .find(|s| s.id == "remote")
+                        .unwrap()
+                        .url
+                        .as_deref(),
+                    Some("https://1.2.3.4/mcp")
+                );
+                let personal = reg.servers.iter().find(|s| s.id == "remote").unwrap();
+                assert_eq!(
+                    personal_share_hint(&reg, personal),
+                    Some("Removed or disabled by the team. Your personal server stays off.")
+                );
+                // The off state and its explanation survive a registry round trip.
+                reg = serde_json::from_value(json!(reg)).unwrap();
+                stage_team_config(&mut reg, "review-team", &removed, 3, &[]).unwrap();
+                // Re-enable from the dashboard needs fresh review, with neither route running.
+                stage_team_config(&mut reg, "review-team", &config("first"), 4, &[]).unwrap();
+                let id = remote_id(&reg);
+                assert!(server_change_held(&reg, &id));
+                assert!(!reg.server_enabled(&id));
+                assert!(!reg.server_enabled("remote"));
+                decide(&mut reg, "server:remote", true);
+                assert!(reg.server_enabled(&id));
+                assert!(!reg.server_enabled("remote"));
+                // An old binding must not resurrect the revoked original when leaving later.
+                remove_team(&mut reg, "review-team");
+                assert!(!reg.server_enabled("remote"));
+            }
+        }
+    }
+
+    #[test]
+    fn sync_regression_disconnect_restores_bound_personal_route() {
+        let mut reg = bound_personal_registry();
+        remove_team(&mut reg, "review-team");
+        assert!(reg.server_enabled("remote"));
+        assert!(reg.is_enabled("default", "remote"));
+    }
+
+    #[test]
+    fn sync_regression_member_cannot_publish_management_config() {
+        // This helper holds the data-dir test lock and installs DataDirOverride.
+        crate::secrets::tests::with_isolated_vault(|| {
+            crate::registry::save(&registry()).unwrap();
+            assert_eq!(
+                preview_push_selected(&["remote".into()]).unwrap_err(),
+                "only a team admin can share servers"
+            );
+            assert_eq!(
+                push_selected(&["remote".into()], 1, "unused").unwrap_err(),
+                "only a team admin can share servers"
+            );
+            assert_eq!(
+                preview_push_current().unwrap_err(),
+                "only a team admin can push the shared config"
+            );
+            assert_eq!(
+                push_current(1, "unused").unwrap_err(),
+                "only a team admin can push the shared config"
+            );
+        });
+    }
+    fn registry() -> Registry {
+        Registry { team: Some(serde_json::from_value(json!({"teamId":"review-team", "serverUrl":"https://teams.toolport.app", "role":"member"})).unwrap()), ..Default::default() }
+    }
+
+    fn config(command: &str) -> Value {
+        json!({"servers":[
+            {"id":"stdio", "name":"Local tool", "transport":"stdio", "command":command, "args":[], "env":[]},
+            {"id":"remote", "name":"Public tool", "transport":"http", "url":"https://1.2.3.4/mcp", "env":[]}
+        ], "instructions":{"content":"Reviewed instructions"}, "screeningPolicy":{"minSafetyLevel":"ask"},
+            "rateLimits":[{"id":"daily-calls", "window":"day", "maxCalls":5, "tool":"stdio/echo"}], "callAuditExport":true})
+    }
+
+    fn decide(reg: &mut Registry, key: &str, accept: bool) {
+        let hash = member_review(reg).unwrap().pending[key].hash.clone();
+        decide_member_change(reg, key, &hash, accept).unwrap();
+    }
+
+    fn remote_id(reg: &Registry) -> String {
+        reg.servers
+            .iter()
+            .find(|s| saved_team_original_id(s) == Some("remote"))
+            .unwrap()
+            .id
+            .clone()
+    }
+
+    #[test]
+    fn member_review_removal_or_invalid_definition_revokes_consent() {
+        let mut reg = registry();
+        reg.version = 3;
+        let cfg = config("first");
+        stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+        decide(&mut reg, "server:remote", true);
+        let managed = reg
+            .servers
+            .iter()
+            .find(|s| s.id == remote_id(&reg))
+            .unwrap()
+            .clone();
+        let mut personal = managed.clone();
+        personal.id = "remote".into();
+        personal.source = None;
+        personal.unknown_fields.remove(TEAM_ORIGINAL_ID_FIELD);
+        personal.enabled = false;
+        reg.servers.push(personal.clone());
+        crate::local_auth::bind(&mut reg, &managed, &personal).unwrap();
+        let duplicate = json!({"servers":[cfg["servers"][1].clone(), cfg["servers"][1].clone()]});
+        let invalid = json!({"servers":[{"id":"remote", "transport":"http", "url":"invalid"}]});
+        let unusable = json!({"servers":[{"id":"remote", "transport":"stdio"}]});
+        for (index, removed) in [json!({"servers":[]}), duplicate, invalid, unusable]
+            .into_iter()
+            .enumerate()
+        {
+            let version = 2 + index as i64 * 3;
+            stage_team_config(&mut reg, "review-team", &removed, version, &[]).unwrap();
+            let review = member_review(&reg).unwrap();
+            assert!(!review.pending.contains_key("server:remote"));
+            assert!(!review.accepted.contains_key("server:remote"));
+            assert!(!review.held_access.contains_key("remote"));
+            assert!(reg
+                .servers
+                .iter()
+                .all(|s| s.source.as_deref() != Some("team:review-team")));
+            assert!(!reg.server_enabled("remote") && !reg.is_enabled("default", "remote"));
+            assert_eq!(
+                reg.servers.iter().find(|s| s.id == "remote").unwrap().url,
+                personal.url
+            );
+            stage_team_config(&mut reg, "review-team", &removed, version + 1, &[]).unwrap();
+            assert_eq!(reg.servers.len(), 1);
+            stage_team_config(&mut reg, "review-team", &cfg, version + 2, &[]).unwrap();
+            assert!(member_review(&reg)
+                .unwrap()
+                .pending
+                .contains_key("server:remote"));
+            let id = remote_id(&reg);
+            assert!(server_change_held(&reg, &id));
+            assert!(!reg.server_enabled(&id));
+            decide(&mut reg, "server:remote", true);
+        }
+    }
+
+    #[test]
+    fn member_review_round2_reverted_floors_return_to_accepted_policy() {
+        use crate::registry::SafetyLevel::{Off, Strict};
+        let mut reg = registry();
+        let accepted = json!({"servers":[], "denyDestructive":false, "screeningPolicy":{"minSafetyLevel":"off"}});
+        stage_team_config(&mut reg, "review-team", &accepted, 1, &[]).unwrap();
+        // Off already matches the member's accepted policy when review is seeded.
+        let strict = json!({"servers":[], "denyDestructive":true, "screeningPolicy":{
+            "minSafetyLevel":"strict", "forceHumanApproval":true, "forceContentDefense":true,
+            "forceQuarantineOnDrift":true, "forceBlockOnInjection":true, "forcePiiRedaction":true}});
+        stage_team_config(&mut reg, "review-team", &strict, 2, &[]).unwrap();
+        assert_eq!(reg.team_min_safety_level, Strict);
+        assert!(reg.team_forced_deny_destructive);
+        stage_team_config(&mut reg, "review-team", &accepted, 3, &[]).unwrap();
+        assert!(member_review(&reg).unwrap().pending.is_empty());
+        assert_eq!(reg.team_min_safety_level, Off);
+        assert!(
+            !reg.team_forced_deny_destructive
+                && !reg.team_forced_human_approval
+                && !reg.team_forced_content_defense
+                && !reg.team_forced_quarantine_on_drift
+                && !reg.team_forced_block_on_injection
+                && !reg.team_forced_pii_redaction
+        );
+    }
+
+    #[test]
+    fn member_review_round2_description_does_not_hold_working_server() {
+        ignored_field_does_not_hold("description");
+    }
+
+    #[test]
+    fn member_review_round2_env_value_does_not_hold_working_server() {
+        ignored_field_does_not_hold("env-value");
+    }
+
+    fn ignored_field_does_not_hold(field: &str) {
+        let mut reg = registry();
+        let mut cfg = config("first");
+        cfg["servers"][1]["env"] = json!([{"key":"TOKEN", "secret":true}]);
+        stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+        decide(&mut reg, "server:remote", true);
+        let id = remote_id(&reg);
+        if field == "description" {
+            cfg["servers"][1]["description"] = json!("Documentation only");
+        } else {
+            cfg["servers"][1]["env"][0]["value"] = json!("ignored-value");
+        }
+        stage_team_config(&mut reg, "review-team", &cfg, 2, &[]).unwrap();
+        assert!(!member_review(&reg)
+            .unwrap()
+            .pending
+            .contains_key("server:remote"));
+        assert!(!server_change_held(&reg, &id));
+        assert!(reg.server_enabled(&id));
+        cfg["servers"][1]["env"][0]["secret"] = json!(false);
+        stage_team_config(&mut reg, "review-team", &cfg, 4, &[]).unwrap();
+        assert!(server_change_held(&reg, &id));
+        assert!(!reg.server_enabled(&id));
+    }
+
+    #[test]
+    fn member_review_round2_launch_literal_changes_still_require_review() {
+        let mut reg = registry();
+        let mut cfg = config("first");
+        cfg["servers"][0]["args"] = json!(["<launch-input>"]);
+        cfg["servers"][0]["launch"] =
+            json!({"bindings":[{"index":0,"parts":[{"kind":"literal","value":"/"}]}],"inputs":[]});
+        stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+        decide(&mut reg, "server:stdio", true);
+        cfg["servers"][0]["launch"]["bindings"][0]["parts"][0]["value"] = json!(":");
+        stage_team_config(&mut reg, "review-team", &cfg, 2, &[]).unwrap();
+        assert!(
+            member_review(&reg).unwrap().pending["server:stdio"]
+                .fields
+                .iter()
+                .any(|f| f.before.contains("\"value\": \"/\"")
+                    && f.after.contains("\"value\": \":\""))
+        );
+    }
+
+    #[test]
+    fn member_review_round2_push_403_preserves_authorization_errors() {
+        for body in [
+            json!({"error":"forbidden"}),
+            json!({"error":"admin role was revoked"}),
+            json!({"error":"Confirm two-factor authentication to continue", "code":"step_up_required"}),
+        ] {
+            let (url, server) = serve(403, body.clone());
+            let error = push_config(
+                &url,
+                "review-team",
+                "fixture-token",
+                &json!({"servers":[]}),
+                4,
+            )
+            .unwrap_err();
+            server.join().unwrap();
+            assert_eq!(error, format!("server returned 403: {body}"));
+        }
+    }
+
+    #[test]
+    fn member_review_round2_new_and_stricter_rate_caps_apply_immediately() {
+        let mut reg = registry();
+        let mut cfg =
+            json!({"servers":[], "rateLimits":[{"id":"calls", "window":"day", "maxCalls":10}]});
+        stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+        assert_eq!(reg.team.as_ref().unwrap().rate_limits[0].max_calls, 10);
+        decide(&mut reg, "policy", true);
+        cfg["rateLimits"][0]["maxCalls"] = json!(5);
+        stage_team_config(&mut reg, "review-team", &cfg, 2, &[]).unwrap();
+        assert_eq!(reg.team.as_ref().unwrap().rate_limits[0].max_calls, 5);
+        cfg["rateLimits"][0]["maxCalls"] = json!(10);
+        stage_team_config(&mut reg, "review-team", &cfg, 3, &[]).unwrap();
+        assert_eq!(reg.team.as_ref().unwrap().rate_limits[0].max_calls, 10);
+        assert!(member_review(&reg).unwrap().pending.is_empty());
+    }
+
+    #[test]
+    fn member_review_round2_stricter_rate_cap_applies_before_review() {
+        let mut reg = registry();
+        let mut cfg =
+            json!({"servers":[], "rateLimits":[{"id":"calls", "window":"day", "maxCalls":10}]});
+        apply_team_config(&mut reg, "review-team", &cfg);
+        stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+        cfg["rateLimits"][0]["maxCalls"] = json!(5);
+        stage_team_config(&mut reg, "review-team", &cfg, 2, &[]).unwrap();
+        assert_eq!(reg.team.as_ref().unwrap().rate_limits[0].max_calls, 5);
+        assert!(member_review(&reg).unwrap().pending.contains_key("policy"));
+    }
+
+    #[test]
+    fn member_review_round2_removed_rejected_new_server_returns_as_fresh_review() {
+        let mut reg = registry();
+        let cfg = config("first");
+        stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+        decide(&mut reg, "server:remote", false);
+        stage_team_config(&mut reg, "review-team", &json!({"servers":[]}), 2, &[]).unwrap();
+        assert!(reg.servers.is_empty());
+        stage_team_config(&mut reg, "review-team", &cfg, 3, &[]).unwrap();
+        assert!(member_review(&reg)
+            .unwrap()
+            .pending
+            .contains_key("server:remote"));
+        assert!(server_change_held(&reg, &remote_id(&reg)));
+    }
+
+    #[test]
+    fn member_review_round2_rate_cap_loosening_and_removal_wait_for_consent() {
+        let mut reg = registry();
+        let mut cfg =
+            json!({"servers":[], "rateLimits":[{"id":"calls", "window":"day", "maxCalls":5}]});
+        stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+        decide(&mut reg, "policy", true);
+        cfg["rateLimits"][0]["maxCalls"] = json!(10);
+        // A simultaneous new cap applies, but cannot release the accepted cap.
+        cfg["rateLimits"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":"monthly", "window":"month", "maxCalls":100}));
+        stage_team_config(&mut reg, "review-team", &cfg, 2, &[]).unwrap();
+        assert_eq!(reg.team.as_ref().unwrap().rate_limits[0].max_calls, 5);
+        assert_eq!(reg.team.as_ref().unwrap().rate_limits.len(), 2);
+        decide(&mut reg, "policy", false);
+        stage_team_config(&mut reg, "review-team", &cfg, 3, &[]).unwrap();
+        assert_eq!(reg.team.as_ref().unwrap().rate_limits[0].max_calls, 5);
+        cfg["rateLimits"] = json!([]);
+        stage_team_config(&mut reg, "review-team", &cfg, 4, &[]).unwrap();
+        assert_eq!(reg.team.as_ref().unwrap().rate_limits[0].max_calls, 5);
+        assert!(member_review(&reg).unwrap().pending.contains_key("policy"));
+        decide(&mut reg, "policy", true);
+        assert!(reg.team.as_ref().unwrap().rate_limits.is_empty());
+    }
+
+    #[test]
+    fn member_review_preserves_every_access_set_and_disabled_switch() {
+        for version in [2, 3] {
+            for enabled in [false, true] {
+                let mut reg = registry();
+                reg.version = version;
+                let mut cfg = config("first");
+                stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+                decide(&mut reg, "server:remote", true);
+                let id = remote_id(&reg);
+                let second = reg.add_profile("Second");
+                reg.profiles
+                    .iter_mut()
+                    .find(|p| p.id == second)
+                    .unwrap()
+                    .enabled_server_ids
+                    .push(id.clone());
+                reg.set_server_enabled("default", &id, enabled).unwrap();
+                let profiles: Vec<_> = reg
+                    .profiles
+                    .iter()
+                    .filter(|p| p.enabled_server_ids.contains(&id))
+                    .map(|p| p.id.clone())
+                    .collect();
+                cfg["servers"][1]["url"] = json!("https://1.2.3.5/mcp");
+                stage_team_config(&mut reg, "review-team", &cfg, 2, &[]).unwrap();
+                assert!(!reg.is_enabled("default", &id));
+                stage_team_config(&mut reg, "review-team", &cfg, 3, &[]).unwrap();
+                decide(&mut reg, "server:remote", true);
+                let restored: Vec<_> = reg
+                    .profiles
+                    .iter()
+                    .filter(|p| p.enabled_server_ids.contains(&id))
+                    .map(|p| p.id.clone())
+                    .collect();
+                assert_eq!(restored, profiles, "version={version}, enabled={enabled}");
+                assert_eq!(
+                    reg.server_enabled(&id),
+                    enabled || version < 3 && !profiles.is_empty()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn member_review_accept_keeps_an_explicit_off_during_the_hold() {
+        for bulk in [false, true] {
+            let mut reg = registry();
+            reg.version = 3;
+            let mut cfg = config("first");
+            stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+            decide(&mut reg, "server:remote", true);
+            let id = remote_id(&reg);
+            cfg["servers"][1]["url"] = json!("https://1.2.3.5/mcp");
+            stage_team_config(&mut reg, "review-team", &cfg, 2, &[]).unwrap();
+            if bulk {
+                reg.set_all_enabled("default", false).unwrap();
+            } else {
+                crate::registry_controller::apply_server_enabled(
+                    &mut reg, "default", &id, false, false,
+                )
+                .unwrap();
+            }
+            decide(&mut reg, "server:remote", true);
+            assert!(!reg.server_enabled(&id));
+        }
+    }
+
+    #[test]
+    fn member_review_upgrade_keeps_applied_servers_and_caps() {
+        let mut reg = registry();
+        let cfg = config("first");
+        apply_team_config(&mut reg, "review-team", &cfg);
+        let id = remote_id(&reg);
+        let second = reg.add_profile("Second");
+        reg.profiles
+            .iter_mut()
+            .find(|p| p.id == second)
+            .unwrap()
+            .enabled_server_ids
+            .push(id.clone());
+        let before = reg.team.as_ref().unwrap().rate_limits.clone();
+        assert_eq!(before.len(), 1);
+        stage_team_config(&mut reg, "review-team", &cfg, 2, &[]).unwrap();
+        assert_eq!(reg.team.as_ref().unwrap().rate_limits, before);
+        assert!(!server_change_held(&reg, &id));
+        assert!(reg.is_enabled("default", &id) && reg.is_enabled(&second, &id));
+        assert!(!member_review(&reg)
+            .unwrap()
+            .pending
+            .contains_key("server:remote"));
+    }
+
+    #[test]
+    fn member_review_upgrade_keeps_saved_secret_arguments_while_held() {
+        let mut reg = registry();
+        let mut cfg = config("first");
+        cfg["servers"][0]["args"] = json!(["--token", "saved-secret"]);
+        apply_team_config(&mut reg, "review-team", &cfg);
+        cfg["servers"][0]["args"] = json!(["--token", "changed-secret"]);
+        stage_team_config(&mut reg, "review-team", &cfg, 2, &[]).unwrap();
+        let server = reg
+            .servers
+            .iter()
+            .find(|s| saved_team_original_id(s) == Some("stdio"))
+            .unwrap();
+        assert_eq!(server.args, ["--token", "saved-secret"]);
+        assert!(server_change_held(&reg, &server.id));
+        let review = member_review(&reg).unwrap();
+        assert!(!json!(review.pending["server:stdio"].fields)
+            .to_string()
+            .contains("saved-secret"));
+    }
+
+    #[test]
+    fn member_review_rejected_replacement_runs_accepted_definition() {
+        let mut reg = registry();
+        let mut cfg = config("first");
+        stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+        decide(&mut reg, "server:remote", true);
+        let id = remote_id(&reg);
+        cfg["servers"][1]["url"] = json!("https://1.2.3.5/mcp");
+        stage_team_config(&mut reg, "review-team", &cfg, 2, &[]).unwrap();
+        decide(&mut reg, "server:remote", false);
+        stage_team_config(&mut reg, "review-team", &cfg, 3, &[]).unwrap();
+        assert_eq!(
+            reg.servers
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap()
+                .url
+                .as_deref(),
+            Some("https://1.2.3.4/mcp")
+        );
+        assert!(!server_change_held(&reg, &id));
+        assert!(reg.is_enabled("default", &id));
+    }
+
+    #[test]
+    fn member_review_hidden_changes_always_have_a_visible_diff() {
+        let mut reg = registry();
+        let mut cfg = config("first");
+        cfg["servers"][0]["args"] = json!(["--token", "old-secret"]);
+        stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+        decide(&mut reg, "server:stdio", true);
+        cfg["servers"][0]["args"] = json!(["--token", "new-secret"]);
+        stage_team_config(&mut reg, "review-team", &cfg, 2, &[]).unwrap();
+        let review = member_review(&reg).unwrap();
+        let fields = &review.pending["server:stdio"].fields;
+        assert!(!fields.is_empty());
+        assert!(!json!(fields).to_string().contains("new-secret"));
+        assert_eq!(
+            display_server(&json!({"launch":{"args":[{"type":"literal","value":"visible"}]}}))
+                ["launch"]["args"][0]["value"],
+            "visible"
+        );
+        assert_ne!(
+            display_server(&json!({"env":[{"key":"X","secret":true}]})),
+            display_server(&json!({"env":[{"key":"X","secret":false}]}))
+        );
+    }
+
+    #[test]
+    fn member_review_labels_are_bounded_strings() {
+        let labels = change_labels(
+            "instructions",
+            &[
+                json!({"summary":{"instructions":true},"author":{"name":{"bad":"object"}},"via":"界".repeat(150),"approvedBy":{"name":"a".repeat(150)},"at":{"bad":1}}),
+            ],
+        );
+        assert!(labels[0]["author"]["name"].is_string());
+        assert_eq!(labels[0]["via"].as_str().unwrap().chars().count(), 128);
+        assert_eq!(labels[0]["approvedBy"]["name"].as_str().unwrap().len(), 128);
+        assert!(labels[0]["at"].is_null());
+    }
+
+    #[test]
+    fn member_review_pull_403_retains_the_service_error() {
+        let (url, server) = serve(403, json!({"error":"member access revoked"}));
+        let mut conn = registry().team.unwrap();
+        conn.server_url = url;
+        let error = fetch_change_labels(&conn, "fixture-token", 4, 5).unwrap_err();
+        server.join().unwrap();
+        assert!(
+            error.contains("403") && error.contains("member access revoked"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn member_review_pairing_omits_empty_device_name() {
+        for name in ["", "  "] {
+            assert!(pairing_body("t", "c", Some(name), "linux", "2.0")
+                .get("deviceName")
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn member_review_decisions_do_not_wait_for_network_sync() {
+        let _data_lock = crate::registry::data_dir_test_lock();
+        let temp =
+            std::env::temp_dir().join(format!("toolport-review-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let _data = crate::registry::DataDirOverride::set(&temp);
+        let mut reg = registry();
+        stage_team_config(&mut reg, "review-team", &config("first"), 1, &[]).unwrap();
+        crate::registry::save(&reg).unwrap();
+        let hash = member_review(&reg).unwrap().pending["server:remote"]
+            .hash
+            .clone();
+        std::thread::scope(|scope| {
+            let (locked_tx, locked_rx) = std::sync::mpsc::sync_channel(0);
+            let (done_tx, done_rx) = std::sync::mpsc::sync_channel(0);
+            let owner = scope.spawn(move || {
+                let _sync = SYNC_LOCK
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                locked_tx.send(()).unwrap();
+                // Release only when the real decision path has completed. The test
+                // runner's process watchdog bounds a regression that deadlocks here.
+                done_rx.recv().unwrap();
+            });
+            locked_rx.recv().unwrap();
+            let result = review_team_change("server:remote", &hash, true);
+            done_tx.send(()).unwrap();
+            owner.join().unwrap();
+            result.unwrap();
+        });
+    }
+
+    #[test]
+    fn member_review_instructions_keep_their_content_version() {
+        let mut reg = registry();
+        let mut cfg = config("first");
+        stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+        cfg["servers"][0]["command"] = json!("later");
+        stage_team_config(&mut reg, "review-team", &cfg, 9, &[]).unwrap();
+        decide(&mut reg, "instructions", true);
+        assert_eq!(
+            json!(member_review(&reg).unwrap())["acceptedInstructionsVersion"],
+            1
+        );
+        stage_team_config(&mut reg, "review-team", &cfg, 10, &[]).unwrap();
+        assert_eq!(
+            json!(member_review(&reg).unwrap())["acceptedInstructionsVersion"],
+            1
+        );
+    }
+
+    #[test]
+    fn member_review_leaving_restores_personal_route_while_held() {
+        let mut reg = registry();
+        reg.version = 3;
+        let mut cfg = config("first");
+        stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+        decide(&mut reg, "server:remote", true);
+        let id = remote_id(&reg);
+        let managed = reg.servers.iter().find(|s| s.id == id).unwrap().clone();
+        let mut personal = managed.clone();
+        personal.id = "remote".into();
+        personal.source = None;
+        personal.enabled = false;
+        reg.servers.push(personal.clone());
+        crate::local_auth::bind(&mut reg, &managed, &personal).unwrap();
+        cfg["servers"][1]["url"] = json!("https://1.2.3.5/mcp");
+        stage_team_config(&mut reg, "review-team", &cfg, 2, &[]).unwrap();
+        assert!(!reg.server_enabled(&id) && !reg.server_enabled("remote"));
+        remove_team(&mut reg, "review-team");
+        assert!(reg.server_enabled("remote"));
+        assert!(reg.is_enabled("default", "remote"));
+    }
+
+    #[test]
+    fn member_review_sync_holds_all_control_plane_changes() {
+        let mut reg = registry();
+        stage_team_config(&mut reg, "review-team", &config("fixture-only"), 1, &[]).unwrap();
+        assert_eq!(member_review(&reg).unwrap().pending.len(), 5);
+        assert_eq!(reg.servers.len(), 2);
+        for server in &reg.servers {
+            assert!(!server.enabled);
+            assert!(!reg.is_enabled(&reg.active_profile_id(), &server.id));
+            assert!(server.needs_team_enable_review());
+            assert!(server.check_enable_allowed(false).is_err());
+        }
+        assert!(reg
+            .team
+            .as_ref()
+            .unwrap()
+            .team_instructions_content
+            .is_none());
+        assert!(!reg.team.as_ref().unwrap().call_audit_export);
+        assert_eq!(reg.team.as_ref().unwrap().rate_limits[0].max_calls, 5);
+        // The required safety floor still takes effect before consent.
+        assert_eq!(reg.team_min_safety_level, crate::registry::SafetyLevel::Ask);
+        let id = reg.servers[0].id.clone();
+        let profile = reg.active_profile_id();
+        assert!(crate::registry_controller::apply_server_enabled(
+            &mut reg, &profile, &id, true, true
+        )
+        .is_err());
+        reg.set_all_enabled(&profile, true).unwrap();
+        assert!(reg.servers.iter().all(|s| !reg.is_enabled(&profile, &s.id)));
+    }
+
+    #[test]
+    fn member_review_rejection_survives_save_sync_and_content_return() {
+        let mut reg = registry();
+        let first = config("first");
+        stage_team_config(&mut reg, "review-team", &first, 1, &[]).unwrap();
+        decide(&mut reg, "server:stdio", false);
+        decide(&mut reg, "instructions", false);
+        decide(&mut reg, "policy", false);
+        decide(&mut reg, "callAuditExport", false);
+        reg = serde_json::from_value(serde_json::to_value(&reg).unwrap()).unwrap();
+        stage_team_config(&mut reg, "review-team", &first, 2, &[]).unwrap();
+        assert_eq!(member_review(&reg).unwrap().pending.len(), 1);
+        let mut next = config("next");
+        next["instructions"]["content"] = json!("Different instructions");
+        next["screeningPolicy"]["forceBlockOnInjection"] = json!(true);
+        stage_team_config(&mut reg, "review-team", &next, 3, &[]).unwrap();
+        let pending = member_review(&reg).unwrap().pending;
+        assert!(pending.contains_key("server:stdio"));
+        assert!(pending.contains_key("instructions"));
+        assert!(pending.contains_key("policy"));
+        assert!(!pending.contains_key("callAuditExport"));
+        stage_team_config(&mut reg, "review-team", &first, 4, &[]).unwrap();
+        assert!(!member_review(&reg)
+            .unwrap()
+            .pending
+            .contains_key("server:stdio"));
+        assert!(reg.servers.iter().all(|s| !s.enabled));
+        assert!(!reg.team.as_ref().unwrap().call_audit_export);
+    }
+
+    #[test]
+    fn accepting_team_change_does_not_approve_unshown_member_references() {
+        crate::secrets::tests::with_isolated_vault(|| {
+            let mut reg = registry();
+            stage_team_config(&mut reg, "review-team", &config("fixture"), 1, &[]).unwrap();
+            let id = reg
+                .servers
+                .iter()
+                .find(|s| saved_team_original_id(s) == Some("stdio"))
+                .unwrap()
+                .id
+                .clone();
+            // The team definition under review has no refs; this local override is not in its hash.
+            let server = reg.servers.iter_mut().find(|s| s.id == id).unwrap();
+            server.env.push(
+                serde_json::from_value(
+                    json!({"key":"TOKEN","secret":true,"source":{"ref":"op://Private/Token/key"}}),
+                )
+                .unwrap(),
+            );
+            server.unknown_fields.insert(
+                "memberSecretRefs".into(),
+                json!({"env:TOKEN":"op://Private/Token/key"}),
+            );
+            // Keep the output key in the team change so the local source can merge.
+            let mut changed = config("changed");
+            changed["servers"][0]["env"] = json!([{"key":"TOKEN"}]);
+            stage_team_config(&mut reg, "review-team", &changed, 2, &[]).unwrap();
+            decide(&mut reg, "server:stdio", true);
+            let server = reg.servers.iter().find(|s| s.id == id).unwrap();
+            assert!(!server.enabled);
+            assert!(server.unknown_fields.get("teamEnableReview").is_some());
+            assert!(!reg.is_enabled(&reg.active_profile_id(), &id));
+            assert!(crate::secret_refs::check_approval(server).is_err());
+        });
+    }
+    #[test]
+    fn member_review_stale_accept_cannot_accept_a_later_definition() {
+        let mut reg = registry();
+        stage_team_config(&mut reg, "review-team", &config("first"), 1, &[]).unwrap();
+        let hash = member_review(&reg).unwrap().pending["server:stdio"]
+            .hash
+            .clone();
+        stage_team_config(&mut reg, "review-team", &config("changed"), 2, &[]).unwrap();
+        let before = serde_json::to_value(&reg).unwrap();
+        assert!(decide_member_change(&mut reg, "server:stdio", &hash, true)
+            .unwrap_err()
+            .contains("updated"));
+        assert_eq!(serde_json::to_value(&reg).unwrap(), before);
+        decide(&mut reg, "server:stdio", true);
+        let server = reg
+            .servers
+            .iter()
+            .find(|s| saved_team_original_id(s) == Some("stdio"))
+            .unwrap();
+        assert_eq!(server.command.as_deref(), Some("changed"));
+        assert!(server.enabled);
+        assert!(reg.is_enabled(&reg.active_profile_id(), &server.id));
+        assert!(!server_change_held(&reg, &server.id));
+        stage_team_config(&mut reg, "review-team", &config("changed"), 3, &[]).unwrap();
+        assert!(!member_review(&reg)
+            .unwrap()
+            .pending
+            .contains_key("server:stdio"));
+    }
+
+    #[test]
+    fn member_review_changed_remote_is_held_and_removal_is_immediate() {
+        let mut reg = registry();
+        let mut cfg = config("first");
+        stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+        decide(&mut reg, "server:remote", true);
+        cfg["servers"][1]["url"] = json!("https://1.2.3.5/mcp");
+        stage_team_config(&mut reg, "review-team", &cfg, 2, &[]).unwrap();
+        assert!(member_review(&reg).unwrap().pending["server:remote"]
+            .fields
+            .iter()
+            .any(|f| f.before.contains("1.2.3.4") && f.after.contains("1.2.3.5")));
+        assert!(reg.servers.iter().all(|s| !s.enabled));
+        cfg["servers"] = json!([]);
+        stage_team_config(&mut reg, "review-team", &cfg, 3, &[]).unwrap();
+        assert!(!member_review(&reg)
+            .unwrap()
+            .pending
+            .contains_key("server:remote"));
+        assert!(!reg
+            .servers
+            .iter()
+            .any(|s| saved_team_original_id(s) == Some("remote")));
+    }
+
+    #[test]
+    fn member_review_floor_tightens_immediately_and_loosening_waits() {
+        use crate::registry::SafetyLevel::{Off, Strict};
+        let mut reg = registry();
+        let strict = json!({"servers":[], "screeningPolicy":{"minSafetyLevel":"strict", "forceQuarantineOnDrift":true,"forceBlockOnInjection":true}});
+        stage_team_config(&mut reg, "review-team", &strict, 1, &[]).unwrap();
+        assert_eq!(reg.team_min_safety_level, Strict);
+        assert!(reg.team_forced_quarantine_on_drift && reg.team_forced_block_on_injection);
+        decide(&mut reg, "policy", true);
+        let loose = json!({"servers":[], "screeningPolicy":{"minSafetyLevel":"off", "forceQuarantineOnDrift":false,"forceBlockOnInjection":false}});
+        stage_team_config(&mut reg, "review-team", &loose, 2, &[]).unwrap();
+        assert_eq!(reg.team_min_safety_level, Strict);
+        assert!(reg.team_forced_quarantine_on_drift && reg.team_forced_block_on_injection);
+        decide(&mut reg, "policy", false);
+        stage_team_config(&mut reg, "review-team", &loose, 3, &[]).unwrap();
+        assert_eq!(reg.team_min_safety_level, Strict);
+        assert!(member_review(&reg).unwrap().pending.is_empty());
+        let mut different = loose.clone();
+        different["screeningPolicy"]["forcePiiRedaction"] = json!(true);
+        stage_team_config(&mut reg, "review-team", &different, 4, &[]).unwrap();
+        decide(&mut reg, "policy", true);
+        assert_eq!(reg.team_min_safety_level, Off);
+        assert!(!reg.team_forced_quarantine_on_drift && !reg.team_forced_block_on_injection);
+    }
+
+    #[test]
+    fn member_review_export_turn_off_revokes_prior_consent() {
+        let mut reg = registry();
+        let mut cfg = config("first");
+        stage_team_config(&mut reg, "review-team", &cfg, 1, &[]).unwrap();
+        decide(&mut reg, "callAuditExport", true);
+        assert!(reg.team.as_ref().unwrap().call_audit_export);
+        cfg["callAuditExport"] = json!(false);
+        stage_team_config(&mut reg, "review-team", &cfg, 2, &[]).unwrap();
+        assert!(!reg.team.as_ref().unwrap().call_audit_export);
+        cfg["callAuditExport"] = json!(true);
+        stage_team_config(&mut reg, "review-team", &cfg, 3, &[]).unwrap();
+        assert!(!reg.team.as_ref().unwrap().call_audit_export);
+        assert!(member_review(&reg)
+            .unwrap()
+            .pending
+            .contains_key("callAuditExport"));
+    }
+
+    #[test]
+    fn member_review_malformed_floor_fails_closed() {
+        let mut reg = registry();
+        for screening in [json!("invalid"), json!({"minSafetyLevel":"invalid"})] {
+            stage_team_config(
+                &mut reg,
+                "review-team",
+                &json!({"servers":[], "screeningPolicy":screening}),
+                1,
+                &[],
+            )
+            .unwrap();
+            assert_eq!(
+                reg.team_min_safety_level,
+                crate::registry::SafetyLevel::Strict
+            );
+            decide(&mut reg, "policy", true);
+            assert_eq!(
+                reg.team_min_safety_level,
+                crate::registry::SafetyLevel::Strict
+            );
+        }
+    }
+
+    #[test]
+    fn member_review_hash_is_full_content_and_stable_for_object_key_order() {
+        assert_eq!(
+            item_hash("server:s", &json!({"a":1,"b":2})),
+            "39a19e608154ffad20cc48d432a464924de7c6afce3108d138285a511556464e"
+        );
+        assert_eq!(
+            item_hash("server:s", &json!({"a":1,"b":2})),
+            item_hash("server:s", &json!({"b":2,"a":1}))
+        );
+        assert_ne!(
+            item_hash("server:s", &json!({"a":1})),
+            item_hash("server:s", &json!({"a":2}))
+        );
+        assert_ne!(
+            item_hash("server:s", &json!({"args":["a","b"]})),
+            item_hash("server:s", &json!({"args":["b","a"]}))
+        );
+        assert_ne!(
+            item_hash("server:s", &json!({})),
+            item_hash("server:t", &json!({}))
+        );
+    }
+
+    #[test]
+    fn member_review_labels_require_a_complete_version_chain() {
+        let changes = json!({"changes":[
+            {"version":12,"baseVersion":11,"author":{"name":"Alice"},"at":1,"via":"dashboard","approvedBy":{"name":"Bob"},"summary":{"serversChanged":["stdio"]}},
+            {"version":11,"baseVersion":9,"summary":{"instructions":true}}
+        ]});
+        assert_eq!(covered_changes(changes.clone(), 9, 12).len(), 2);
+        assert!(covered_changes(changes.clone(), 8, 12).is_empty());
+        let mut missing = changes.clone();
+        missing["changes"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("baseVersion");
+        assert!(covered_changes(missing, 9, 12).is_empty());
+        let labels = change_labels("server:stdio", &covered_changes(changes, 9, 12));
+        assert_eq!(labels[0]["author"]["name"], "Alice");
+        assert_eq!(labels[0]["approvedBy"]["name"], "Bob");
+        assert_eq!(labels[0]["via"], "dashboard");
+    }
+
+    fn serve(status: u16, mut body: Value) -> (String, std::thread::JoinHandle<(String, Value)>) {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", server.server_addr());
+        if body["proposal"]["confirmUrl"] == "<service>" {
+            body["proposal"]["confirmUrl"] = json!(format!(
+                "{}/#changes=team/p1",
+                address.replacen("http://", "https://", 1)
+            ));
+        }
+        let handle = std::thread::spawn(move || {
+            let mut request = server
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .expect("Teams request");
+            let path = request.url().to_string();
+            let mut payload = String::new();
+            request.as_reader().read_to_string(&mut payload).unwrap();
+            request
+                .respond(
+                    tiny_http::Response::from_string(body.to_string()).with_status_code(status),
+                )
+                .unwrap();
+            (path, serde_json::from_str(&payload).unwrap_or(Value::Null))
+        });
+        (address, handle)
+    }
+
+    #[test]
+    fn member_review_http_404_is_unlabelled_and_403_explains_dashboard() {
+        let (url, server) = serve(404, json!({}));
+        let mut conn = registry().team.unwrap();
+        conn.server_url = url;
+        assert!(fetch_change_labels(&conn, "fixture-token", 4, 5)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            server.join().unwrap().0,
+            "/teams/review-team/config/changes?since=4"
+        );
+        let (url, server) = serve(403, json!({"error":"device token is not an admin session"}));
+        assert_eq!(
+            push_config(
+                &url,
+                "review-team",
+                "fixture-token",
+                &json!({"servers":[]}),
+                4
+            )
+            .unwrap_err(),
+            "Finish this in the Teams dashboard"
+        );
+        server.join().unwrap();
+        assert_eq!(push_status_message(403), None);
+    }
+
+    #[test]
+    fn member_review_202_and_safe_confirmation_url() {
+        let proposal = json!({"proposal":{"id":"p1","baseVersion":7,"confirmUrl":"https://teams.toolport.app/#changes=team/p1"}});
+        let outcome = parse_push_response(HOSTED_TEAMS_URL, 202, proposal).unwrap();
+        let result = PublishResult::whole_set(outcome);
+        assert_eq!(result.summary, "Sent for confirmation");
+        assert!(!result.published);
+        assert!(result.handoffs.is_empty());
+        assert_eq!(result.proposal.unwrap().base_version, 7);
+        for url in [
+            "http://teams.toolport.app/#changes=p1",
+            "https://evil.example/",
+            "https://teams.toolport.app.evil.example/",
+            "https://user@teams.toolport.app/",
+            "file:///tmp/config",
+            "https://teams.toolport.app:444/",
+        ] {
+            assert!(
+                validate_confirmation_url(HOSTED_TEAMS_URL, url).is_err(),
+                "{url}"
+            );
+        }
+        assert!(matches!(
+            parse_push_response(HOSTED_TEAMS_URL, 200, json!({"version":8})).unwrap(),
+            PushOutcome::Published(8)
+        ));
+    }
+
+    #[test]
+    fn member_review_pairing_start_sends_device_fields_and_push_202_is_not_an_error() {
+        let (origin, server) = serve(200, json!({"transaction":"a".repeat(64)}));
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        assert_eq!(
+            pair_device(&origin, "review-team", &cancel, |_, _| cancel
+                .store(true, std::sync::atomic::Ordering::SeqCst))
+            .unwrap_err(),
+            PAIRING_CANCELLED
+        );
+        let (path, body) = server.join().unwrap();
+        assert_eq!(path, "/pairing/start");
+        assert_eq!(body["os"], std::env::consts::OS);
+        assert_eq!(body["appVersion"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(body["teamId"], "review-team");
+        assert_eq!(body["challenge"].as_str().unwrap().len(), 64);
+        let (origin, server) = serve(
+            202,
+            json!({"proposal":{"id":"p1", "baseVersion":3,"confirmUrl":"<service>"}}),
+        );
+        let outcome = push_config(
+            &origin,
+            "review-team",
+            "fixture-token",
+            &json!({"servers":[]}),
+            3,
+        )
+        .unwrap();
+        assert!(matches!(outcome, PushOutcome::Confirmation(_)));
+        assert_eq!(server.join().unwrap().1["base_version"], 3);
+    }
+
+    #[test]
+    fn member_review_pairing_device_fields_are_optional_and_bounded() {
+        let body = pairing_body(
+            "t",
+            "challenge",
+            Some(&"界".repeat(150)),
+            &"o".repeat(140),
+            &"v".repeat(140),
+        );
+        assert_eq!(body["teamId"], "t");
+        assert_eq!(body["challenge"], "challenge");
+        for key in ["deviceName", "os", "appVersion"] {
+            assert_eq!(body[key].as_str().unwrap().chars().count(), 128);
+        }
+        assert!(pairing_body("t", "c", None, "linux", "2.0")
+            .get("deviceName")
+            .is_none());
+    }
+
+    #[test]
+    fn member_review_survives_v1_v2_v3_round_trip() {
+        let mut reg = registry();
+        stage_team_config(&mut reg, "review-team", &config("fixture-only"), 1, &[]).unwrap();
+        decide(&mut reg, "instructions", false);
+        let expected = reg.team.as_ref().unwrap().unknown_fields[MEMBER_REVIEW_FIELD].clone();
+        for version in [1, 2, 3] {
+            let mut value = serde_json::to_value(&reg).unwrap();
+            value["version"] = json!(version);
+            let reloaded: Registry = serde_json::from_value(value).unwrap();
+            assert_eq!(
+                reloaded.team.unwrap().unknown_fields[MEMBER_REVIEW_FIELD],
+                expected
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod member_pairing_regression {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires private omabox HOME for before-change instructions writes"]
+    fn pairing_holds_servers_instructions_policy_and_export() {
+        assert_eq!(std::env::var("HOME").unwrap(), "/home/sbx");
+        let _lock = crate::registry::data_dir_test_lock();
+        let root =
+            std::env::temp_dir().join(format!("toolport-member-pairing-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let _data = crate::registry::DataDirOverride::set(&root);
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", server.server_addr());
+        let config = json!({"servers":[
+            {"id":"remote", "name":"Public tool", "transport":"http", "url":"https://1.2.3.4/mcp", "env":[]},
+            {"id":"stdio", "name":"Local tool", "transport":"stdio", "command":"fixture-only", "args":[], "env":[]}
+        ], "instructions":{"content":"Do not apply before member acceptance."}, "callAuditExport":true,
+            "screeningPolicy":{"minSafetyLevel":"ask"}, "rateLimits":[{"id":"daily-calls","window":"day","maxCalls":5,"tool":"stdio/echo"}]});
+        let service = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+            while std::time::Instant::now() < deadline {
+                let Some(request) = server
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .unwrap()
+                else {
+                    break;
+                };
+                let (status, body) = if request.url().contains("/config/changes") {
+                    (404, json!({}))
+                } else if request.url().ends_with("/config") {
+                    (200, json!({"version":1,"config":config}))
+                } else if request.url().ends_with("/me") {
+                    (200, json!({"role":"member"}))
+                } else {
+                    (404, json!({}))
+                };
+                request
+                    .respond(
+                        tiny_http::Response::from_string(body.to_string()).with_status_code(status),
+                    )
+                    .unwrap();
+            }
+        });
+        let result = finish_connect(
+            &origin,
+            None,
+            Joined {
+                team_id: "review-team".into(),
+                member_token: "fixture-token".into(),
+                role: "member".into(),
+            },
+        );
+        service.join().unwrap();
+        result.unwrap();
+        let registry = crate::registry::load().unwrap();
+        assert_eq!(registry.servers.len(), 2);
+        assert!(
+            registry.servers.iter().all(|server| !server.enabled),
+            "pairing enabled an unreviewed server"
+        );
+        assert!(
+            registry
+                .team
+                .as_ref()
+                .unwrap()
+                .team_instructions_content
+                .is_none(),
+            "pairing applied unreviewed instructions"
+        );
+        assert!(
+            !registry.team.as_ref().unwrap().call_audit_export,
+            "pairing enabled unreviewed call-log export"
+        );
+        assert!(
+            registry.team.as_ref().unwrap().rate_limits[0].max_calls == 5,
+            "pairing did not apply the tightening rate cap"
+        );
+        assert_eq!(
+            registry.team_min_safety_level,
+            crate::registry::SafetyLevel::Ask
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod secret_reference_sync_tests {
+    use super::*;
+    #[test]
+    fn team_and_personal_workspace_roundtrip_refs_without_values() {
+        let mut local = Registry::default();
+        local.servers.push(serde_json::from_value(json!({"id":"docs", "name":"Docs", "transport":"http", "url":"https://example.invalid/mcp", "env":[{"key":"TOKEN", "secret":true,"source":{"ref":"op://Engineering/Docs/key"}}],"headerKeys":[{"key":"X-Api-Key","source":{"ref":"vault://secret/docs#token"}}]})).unwrap());
+        let exported = team_server_export(&local);
+        assert_eq!(
+            exported[0]["env"][0]["source"]["ref"],
+            "op://Engineering/Docs/key"
+        );
+        assert!(exported[0]["env"][0].get("value").is_none());
+        for team in ["team", "personal-pro"] {
+            let mut target = Registry::default();
+            let result = apply_team_config(
+                &mut target,
+                team,
+                &json!({"servers":exported,"secretSources":{"allowedPrefixes":["op://", "vault://"]}}),
+            );
+            assert_eq!(result.blocked, 0);
+            assert_eq!(target.servers.len(), 1);
+            assert_eq!(
+                crate::secret_refs::reference_for(&target.servers[0].env[0]),
+                Some("op://Engineering/Docs/key")
+            );
+            assert_eq!(
+                target.servers[0].unknown_fields["headerKeys"][0]["source"]["ref"],
+                "vault://secret/docs#token"
+            );
+            assert_eq!(
+                target.servers[0].unknown_fields["secretSources"]["allowedPrefixes"],
+                json!(["op://", "vault://"])
+            );
+            let result = apply_team_config(
+                &mut target,
+                team,
+                &json!({"servers":exported,"secretSources":{"allowedPrefixes":["env:"]}}),
+            );
+            assert_eq!(result.blocked, 1);
+            assert!(target.servers.is_empty());
+        }
+    }
+    #[test]
+    fn executable_sources_are_blocked_instead_of_dropped() {
+        for source in [
+            json!({"ref":"exec:steal"}),
+            json!({"ref":"env:TOKEN","command":"steal"}),
+            json!({"ref":"op://-out/tmp/key"}),
+        ] {
+            assert!(matches!(
+                classify_team_server(
+                    &json!({"id":"x","name":"X","transport":"http","url":"https://example.invalid/mcp","env":[{"key":"TOKEN","source":source}]}),
+                    "team:t"
+                ),
+                TeamClass::Blocked
+            ));
+        }
+    }
+    #[test]
+    fn changed_reference_revokes_existing_command_consent() {
+        let a:ServerEntry=serde_json::from_value(json!({"id":"x","name":"X","transport":"stdio","command":"mock","env":[{"key":"TOKEN","secret":true,"source":{"ref":"op://v/i/key"}}]})).unwrap();
+        let mut b = a.clone();
+        b.env[0]
+            .unknown_fields
+            .insert("source".into(), json!({"ref":"op://v/other/key"}));
+        assert_ne!(consent_fingerprint(&a), consent_fingerprint(&b));
     }
 }

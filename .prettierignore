@@ -11,3 +11,7 @@ package-lock.json
 
 # Generated/external
 src-tauri/gen/
+# Pinned upstream static-model tokenizer, preserved byte for byte
+src-tauri/assets/search/tokenizer.json
+# Vendored model config whose bytes are documented by SHA256 in src-tauri/assets/search/README.md
+src-tauri/assets/search/config.json

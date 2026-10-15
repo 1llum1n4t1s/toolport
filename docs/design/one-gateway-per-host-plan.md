@@ -90,7 +90,7 @@ updater has automated process tests; no signed desktop update run is recorded.
 ### Remaining structural cleanup and implementation notes
 
 - P1.3 `HostState` (in progress). The host runtime now lives on `HostState` (registry and
-  its trust flag, router, catalog snapshot, routine candidates and advisor, ready/dirty
+  its trust flag, router, catalog snapshot, ready/dirty
   flags, rebuild lock, listener config, server handler, resource subscriptions and the
   `resources/updated` sink), together with its session table, its daemon runtime (daemon
   flag and activity lease), its rebuild streak map, its quarantine read flag, its code-mode
@@ -117,8 +117,8 @@ updater has automated process tests; no signed desktop update run is recorded.
   `notifications/progress` frame through the hand-off, without the `list_changed` /
   `resources/updated` check on the peer's declared era. Pre-existing, unchanged by the
   threading work, and on the list so it is not read as an oversight.
-- The registry has a `gateway_topology` choice. An absent value selects the daemon;
-  explicit `legacy` keeps the separate in-process role.
+- The daemon is the only topology in 2.0. The v2 registry migration drops the v1
+  `gateway_topology` field; existing Shared HTTP client configs are preserved.
 - Two tests resolved the data directory per call on paths `DataDirOverride` was not
   guarding, so the gateway suite wrote into the developer's real data dir: the audit writer
   (`audit::audit_path`) and the search-trace writer (`searchtrace::path`). A full run
@@ -150,8 +150,7 @@ updater has automated process tests; no signed desktop update run is recorded.
 - Reusable primitives that already exist: the approval broker's `EndpointDescriptor`
   (`approval.rs`), `registry::atomic_write`, and the registry cross-process `FileLock`.
 - Client launch: `clients.rs::gateway_entry` builds the stdio entry and sets
-  `TOOLPORT_CLIENT_ID`. With authoritative registry state it selects the stdio
-  adapter by default. Desktop Shared HTTP starts a lightweight `--http-proxy`
+  `TOOLPORT_CLIENT_ID`. It selects the stdio adapter for client launches. Desktop Shared HTTP starts a lightweight `--http-proxy`
   child, which releases its host service lease when the app closes its pipe.
 
 ## Delivery shape
@@ -167,7 +166,7 @@ updater has automated process tests; no signed desktop update run is recorded.
 | 7   | P3.1 union catalog built once, allowed-set enforced per session                                                                                                                 | opt-in only                                 | landed; profile, tool, and notification scope pass the matrix                       |
 | 8   | P3.2 downstream pooling by `LaunchKey` and `${ROOT}` sharding                                                                                                                   | opt-in only, the big win                    | landed; ordinary slots share and rooted slots shard by launch key                   |
 | 9   | P4.1 dogfood flag, telemetry, acceptance run                                                                                                                                    | opt-in only                                 | landed (#940, #941, #942); configured-server and real-client evidence recorded      |
-| 10  | P4.2 adapter topology becomes default; legacy kill switch remains                                                                                                               | default flip                                | daemon default selected; explicit registry and launch rollback retained             |
+| 10  | P4.2 adapter topology becomes default; 2.0 retires legacy selection                                                                                                             | default flip                                | daemon is the only topology; registry and launch legacy choices ignored             |
 | 11  | P4.3 desktop Shared HTTP converges onto a daemon service lease                                                                                                                  | opt-in Shared HTTP                          | landed; lease, proxy, and guarded updater tests pass                                |
 
 Slices 1 through 9 were initially opt-in. P4.2 changed the default for
@@ -252,14 +251,12 @@ routing that P1.3 takes.
   live behind a `SessionStore` with explicit TTL and cap. Landed: `session_store::SessionStore`
   (#894) plus the PII map, shaped-result cursors, and modern HITL approvals moved onto it,
   with reap-on-close and reap-on-TTL/cap tests, owned by `SessionTables`.
-- Guards: the search-thrash streak and the pending destructive confirmations are session
-  state. Landed: `SessionState` owns them for both faces, a request with an MCP session id
-  on the HTTP bridge uses that session's pair, and only a request with no session record
-  keeps the listener-level pair. Tests cover a second session neither inheriting the streak
-  nor redeeming the token. Consequence worth knowing: a confirmation is now redeemable only
-  from the session that minted it (a session closed or re-initialized inside the
-  confirmation window loses its pending token) and only on the surface that minted it
-  (`/mcp` with a session id vs. the OpenAPI path, which mints against the listener pair).
+- Guards: the search-thrash streak is session state. Landed: `SessionState` owns it for
+  both faces, a request with an MCP session id on the HTTP bridge uses that session's
+  guard, and only a request with no session record keeps the listener-level guard. Tests
+  cover a second session not inheriting the streak. (The pending destructive
+  confirmations the guard pair once also held were removed in 2.0 with the agent-token
+  confirm flow.)
 - Known duplication: `watch_registry`/`watch_tick` still take the stdio session and its
   `${ROOT}` separately, although the root is a field of that session since #898. Harmless
   (both come from the same startup resolution) and it collapses with the `HostState` move.
@@ -272,7 +269,7 @@ the host-scoped call sites reading `state.registry`, `state.router`, and friends
 ownership did not rewrite several hundred lines.
 
 - Landed: `HostState` holds the registry and its trust flag, the live router, the catalog
-  snapshot, the routine candidate registry and advisor ledger, the ready and dirty flags,
+  snapshot, the ready and dirty flags,
   the rebuild lock, the listener configuration (`lazy`, `http`, bind host, allowed
   origins), the server-request handler, the resource subscription table, and the
   `resources/updated` dispatch sink. `GatewayState` keeps the session-side fields: the
@@ -318,11 +315,8 @@ ownership did not rewrite several hundred lines.
   reload and asserts a second host's flag is untouched. Both were checked by sabotage, and
   between them each assertion is load-bearing. Worth knowing for the same move next time: the
   migrated off-path assertions cannot detect a gate that is silently always-off (they assert
-  refusal, which a dead gate also produces), so the switch is kept honest by the new pair, by
-  `run_script_respects_live_code_mode_flag`, and by the three migrated tests that assert the on
-  path (`flattened_routine_tools_are_advertised_and_run`,
-  `routine_write_opt_in_defaults_off_and_controls_advertisement`, and
-  `immutable_code_run_returns_promotion_candidate_without_retaining_input`).
+  refusal, which a dead gate also produces), so the switch is kept honest by the new pair and
+  by `run_script_respects_live_code_mode_flag`.
 - Fifth increment, landed: the host owns its discovery mode. `DISCOVERY_MODE` is gone,
   and with it `DISCOVERY_MODE_TEST_LOCK`, `DiscoveryModeGuard`, and the free
   `discovery_mode()` / `set_discovery_mode()` / `grouped_discovery()`. `HostState` owns a
@@ -358,8 +352,8 @@ ownership did not rewrite several hundred lines.
   `handle_request_with_cancel`), which deliberately takes narrow parameters rather than
   the whole state, so moving them means threading a host handle through that core. That
   threading is wider than it looks: `handle_request` is a test-only wrapper with 63 call
-  sites, all of them tests, and `execute_call` is reached through the routine and script
-  dispatch helpers, so the slice needs a deliberate decision about how the test helper gets
+  sites, all of them tests, and `execute_call` is reached through the script
+  dispatch helper, so the slice needs a deliberate decision about how the test helper gets
   its host. The code-mode increment answered it (see below); the rest can reuse the answer.
   `PROGRESS_DISPATCH` and `PROGRESS_ROUTES` stay where they are for the same reason: the
   dispatch is read by `prepare_progress`, three layers below anything that holds the state,
@@ -409,9 +403,8 @@ attempt should reuse rather than re-derive.
   which is deliberate: tests pass `lazy`, their own `reg` and `router`, and a profile, and the
   wrapper builds the `CatalogSearchIndex` those need. The host it is handed supplies
   host-scoped state and nothing else, so tests bind one host per body (the `dispatch_host`
-  helper) rather than one per call: 5 tests dispatch twice or more under one code-mode state
-  (`routine_write_opt_in_defaults_off_and_controls_advertisement` 2 calls,
-  `code_mode_flag_fails_closed_when_registry_load_fails` 2,
+  helper) rather than one per call: 4 tests dispatch twice or more under one code-mode state
+  (`code_mode_flag_fails_closed_when_registry_load_fails` 2,
   `toolport_extension_reports_active_features_without_gating_core_tools` 3,
   `a_corrupt_quarantine_store_keeps_the_current_set_instead_of_un_blocking` 23,
   `watch_tick_marks_a_recovered_registry_untrusted` 21), and a per-call host would reset the
@@ -425,11 +418,9 @@ attempt should reuse rather than re-derive.
   inside them": both helpers call `handle_request` with `lazy = true`, which short-circuits the
   mode before any host read, so their per-call hosts never carry discovery state.)
 - What the `CODE_MODE` half cost, measured, so the remaining two can be sized against a
-  number that actually landed. 8 functions gained a host parameter: the 6 readers
-  (`gateway_capabilities`, `grouped_tool_defs`, `append_routine_tool_defs`,
-  `save_routine_dispatch`, `save_routine_promotion_dispatch`, `advise_after_direct_call`,
-  which between them carried 11 production and 11 test call sites) plus `handle_request` and
-  `handle_request_with_cancel`. 89 call sites moved in all, 13 production and 76 test, the test
+  number that actually landed. The readers `gateway_capabilities` and `grouped_tool_defs`,
+  together with `handle_request` and `handle_request_with_cancel`, gained a host parameter,
+  carrying 11 production and 11 test call sites between them. 89 call sites moved in all, 13 production and 76 test, the test
   wrapper being 61 of them and 63 in the tree now. 53
   test bodies build a host they now own; the 18 `CodeModeGuard::acquire()` sites and 19
   `set_code_mode_flag` sites in tests are 21 setter calls on that host now, and three of the
@@ -443,8 +434,7 @@ attempt should reuse rather than re-derive.
   trusting either number. The `#[cfg(test)]` definition sits outside `mod tests`, which is why
   counting the identifier alone reads one higher (64 here; a first pass on this doc wrote that
   occurrence count down as the call-site count, hence the old 62), and
-  `execute_call` is reached through `run_routine_dispatch`, `execute_script_dispatch`, and
-  `execute_script_dispatch_with_candidate`. Threading `host: &HostState` through that chain
+  `execute_call` is reached through `execute_script_dispatch`. Threading `host: &HostState` through that chain
   is mechanical except for how the tests receive their host. Tests that assert PII or HITL
   continuity across calls (for example
   `clearing_a_pii_session_drops_the_previous_conversations_map`) need one host for the

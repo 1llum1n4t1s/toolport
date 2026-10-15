@@ -1,15 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
   Check,
   Copy,
   Download,
-  FileText,
   KeyRound,
   Link2,
   Loader2,
-  Plus,
   ShieldCheck,
   Sparkles,
   Store,
@@ -19,36 +17,22 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { toastError } from "@/lib/toast";
-import {
-  addCatalogServer,
-  getAuditLog,
-  importServers,
-  installGateway,
-  listStacks,
-  previewImportServers,
-  teamConnect,
-  teamJoinPoll,
-} from "@/lib/api";
+import { getAuditLog, teamConnect, teamJoinPoll } from "@/lib/api";
 import { ClientLogo } from "@/components/ClientLogo";
 import { clientRestartHint } from "@/lib/clientConnect";
 import { HOSTED_TEAMS_URL, TEAMS_MARKETING_URL, teamUrlError } from "@/lib/teamUrl";
 import { Input } from "@/components/ui/input";
 import {
-  importableServers,
-  isEnabled,
   isGatewayServer,
   type AuditEntry,
   type DetectedClient,
-  type ImportItem,
   type ProbeResult,
   type Registry,
-  type Stack,
 } from "@/lib/types";
 import { openExternal } from "@/lib/openUrl";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { ImportReviewDialog } from "@/components/ImportReviewDialog";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogFooter, DialogTitle } from "@/components/ui/dialog";
+import { ConnectReviewDialog } from "@/components/ConnectReviewDialog";
 
 interface Props {
   /** Step to open at (0 = Welcome). Used to resume mid-flow. */
@@ -62,10 +46,8 @@ interface Props {
   onBrowseCatalog: () => void;
   /** Probe server health for the Done step (returns per-server results). */
   onProbe: () => Promise<ProbeResult[]>;
-  /** Close the wizard and open the Playground (the in-app verify fallback). */
-  onOpenPlayground: () => void;
-  /** Close the wizard and open Agent rules, for someone who came for that and not MCP. */
-  onOpenRules: () => void;
+  /** Close the wizard and open the server’s Tools tab (the in-app verify fallback). */
+  onOpenTools: () => void;
   /** Mark onboarding complete (skipped or finished) and close. */
   onFinish: () => void;
 }
@@ -82,31 +64,16 @@ export function Onboarding({
   onClientsRefresh,
   onBrowseCatalog,
   onProbe,
-  onOpenPlayground,
-  onOpenRules,
+  onOpenTools,
   onFinish,
 }: Props) {
   const [step, setStep] = useState(initialStep);
-  /**
-   * Which door the user came through (SBS-826).
-   *
-   * Toolport's first run used to assume MCP: the second step was "add a server", so someone
-   * who installed it to sync their agent rules had to add an MCP server they did not want, or
-   * bail. `rules` drops that step. Both paths still run client detection, because connecting a
-   * client is what makes either feature do anything.
-   */
-  const [path, setPath] = useState<"mcp" | "rules">("mcp");
   // A team member who was handed an invite code shouldn't have to click through
   // the solo flow to find a place to enter it. This branch drops them straight
   // into the join step and, on success, the team's servers arrive locally.
   const [joining, setJoining] = useState(false);
 
   const present = clients.filter((c) => c.appPresent);
-  const importable = new Set(
-    clients.flatMap((c) =>
-      importableServers(c, registry).map((s) => s.name.toLowerCase()),
-    ),
-  ).size;
   // Live progress, so the final step reflects what the user actually did.
   const serverCount = registry.servers.filter((s) => !isGatewayServer(s)).length;
   const connectedCount = clients.filter((c) => c.gatewayInstalled).length;
@@ -115,10 +82,7 @@ export function Onboarding({
     <Welcome
       key="welcome"
       present={present}
-      onChoosePath={(chosen) => {
-        setPath(chosen);
-        setStep(1);
-      }}
+      onStart={() => setStep(1)}
       onJoinTeam={() => setJoining(true)}
     />
   );
@@ -127,42 +91,28 @@ export function Onboarding({
       key="connect"
       present={present}
       onConnected={onClientsRefresh}
-      onNext={() => setStep(path === "rules" ? 2 : 3)}
+      onNext={() => setStep(3)}
     />
   );
   const done = (
     <Done
       key="done"
-      path={path}
       registry={registry}
       clients={clients}
       serverCount={serverCount}
       connectedCount={connectedCount}
       onProbe={onProbe}
-      onOpenPlayground={onOpenPlayground}
-      onOpenRules={onOpenRules}
+      onOpenTools={onOpenTools}
       onFinish={onFinish}
     />
   );
 
-  // The rules path has no "add a server" step, so the array is shorter and the progress
-  // indicator counts the steps this user will actually see rather than the MCP ones.
-  const steps =
-    path === "rules"
-      ? [welcome, connect, done]
-      : [
-          welcome,
-          <AddServers
-            key="add"
-            registry={registry}
-            importable={importable}
-            onImport={onRegistryChange}
-            onBrowseCatalog={onBrowseCatalog}
-            onNext={() => setStep(2)}
-          />,
-          connect,
-          done,
-        ];
+  const steps = [
+    welcome,
+    <AddServers key="add" onBrowseCatalog={onBrowseCatalog} onNext={() => setStep(2)} />,
+    connect,
+    done,
+  ];
 
   return (
     <Dialog open onOpenChange={(o) => !o && onFinish()}>
@@ -176,41 +126,40 @@ export function Onboarding({
               onFinish={onFinish}
             />
           ) : (
-            <>
-              {steps[step]}
-
-              <div className="flex items-center justify-between border-t pt-4">
-                <div
-                  className="flex items-center gap-1.5"
-                  role="progressbar"
-                  aria-valuenow={step + 1}
-                  aria-valuemin={1}
-                  aria-valuemax={steps.length}
-                  aria-label={`Setup step ${step + 1} of ${steps.length}`}
-                >
-                  {steps.map((_, i) => (
-                    <span
-                      key={i}
-                      aria-hidden="true"
-                      className={`size-1.5 rounded-full transition-colors ${
-                        i === step ? "bg-success" : "bg-muted-foreground/30"
-                      }`}
-                    />
-                  ))}
-                </div>
-                {step < steps.length - 1 && (
-                  <button
-                    type="button"
-                    onClick={onFinish}
-                    className="text-xs text-muted-foreground transition hover:text-foreground"
-                  >
-                    Skip setup
-                  </button>
-                )}
-              </div>
-            </>
+            steps[step]
           )}
         </div>
+        {!joining && (
+          <DialogFooter className="justify-between">
+            <div
+              className="flex items-center gap-1.5"
+              role="progressbar"
+              aria-valuenow={step + 1}
+              aria-valuemin={1}
+              aria-valuemax={steps.length}
+              aria-label={`Setup step ${step + 1} of ${steps.length}`}
+            >
+              {steps.map((_, i) => (
+                <span
+                  key={i}
+                  aria-hidden="true"
+                  className={`size-1.5 rounded-full transition-colors ${
+                    i === step ? "bg-success" : "bg-muted-foreground/30"
+                  }`}
+                />
+              ))}
+            </div>
+            {step < steps.length - 1 && (
+              <button
+                type="button"
+                onClick={onFinish}
+                className="text-xs text-muted-foreground transition hover:text-foreground"
+              >
+                Skip setup
+              </button>
+            )}
+          </DialogFooter>
+        )}
       </DialogContent>
     </Dialog>
   );
@@ -246,11 +195,11 @@ function StepHeader({
 
 function Welcome({
   present,
-  onChoosePath,
+  onStart,
   onJoinTeam,
 }: {
   present: DetectedClient[];
-  onChoosePath: (path: "mcp" | "rules") => void;
+  onStart: () => void;
   onJoinTeam: () => void;
 }) {
   const names = present.map((c) => c.name);
@@ -267,12 +216,12 @@ function Welcome({
     {
       icon: Sparkles,
       title: "Up to 91% fewer tokens",
-      body: "Your agent loads a few meta-tools instead of hundreds of schemas.",
+      body: "In Lazy mode your agent loads a few tools and searches for the rest.",
     },
     {
       icon: ShieldCheck,
       title: "Watched for tampering",
-      body: "Every server is checked for rug-pulls and prompt injection.",
+      body: "Changed tool definitions are flagged for review, and results that look like prompt injection show up in Activity.",
     },
   ];
   return (
@@ -280,7 +229,7 @@ function Welcome({
       <StepHeader icon={<Waypoints className="size-5" />} title="Welcome to Toolport">
         One place to set up and control every AI tool on your machine.
       </StepHeader>
-      <div className="grid gap-2.5">
+      <div className="onboarding-hero grid gap-2.5">
         {benefits.map(({ icon: Icon, title, body }) => (
           <div key={title} className="flex items-start gap-3">
             <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -294,33 +243,13 @@ function Welcome({
         ))}
       </div>
       <p className="text-sm text-muted-foreground">{found}</p>
-      {/* Two doors, because two different people install this (SBS-826). Someone here for
-          rules used to be walked into "add an MCP server" and had to add one they did not
-          want, or leave. Both paths still connect a client, which is what makes either
-          feature reach anything. */}
       <div className="grid gap-2">
-        <Button
-          onClick={() => onChoosePath("mcp")}
-          className="h-auto justify-start py-2 whitespace-normal"
-        >
+        <Button onClick={onStart} className="h-auto justify-start py-2 whitespace-normal">
           <Waypoints className="size-4" />
           <span className="flex flex-col items-start">
             <span>Set up MCP servers</span>
             <span className="text-2xs font-normal opacity-80">
               Connect servers once and share them with every AI tool
-            </span>
-          </span>
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => onChoosePath("rules")}
-          className="h-auto justify-start py-2 whitespace-normal"
-        >
-          <FileText className="size-4" />
-          <span className="flex flex-col items-start">
-            <span>Write rules for my agents</span>
-            <span className="text-2xs font-normal text-muted-foreground">
-              One set of instructions, applied to every AI tool. No MCP server needed
             </span>
           </span>
         </Button>
@@ -451,8 +380,8 @@ function JoinTeam({
     return (
       <>
         <StepHeader icon={<Check className="size-5" />} title="You're on the team">
-          Your team's shared servers were added to your active profile. Local and LAN
-          servers stay off until you review and enable them.
+          Your team's shared servers were added to Toolport. Local and LAN servers stay
+          off until you review and enable them.
         </StepHeader>
         <Button onClick={onFinish} className="self-start">
           Finish setup
@@ -554,255 +483,32 @@ function JoinTeam({
 }
 
 function AddServers({
-  registry,
-  importable,
-  onImport,
   onBrowseCatalog,
   onNext,
 }: {
-  registry: Registry;
-  importable: number;
-  onImport: (r: Registry) => void;
   onBrowseCatalog: () => void;
   onNext: () => void;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [importPreview, setImportPreview] = useState<ImportItem[] | null>(null);
-  const [imported, setImported] = useState<{ added: number; on: number } | null>(null);
-  const [stacks, setStacks] = useState<Stack[]>([]);
-  const [stacksLoading, setStacksLoading] = useState(true);
-  const [stacksError, setStacksError] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [applying, setApplying] = useState(false);
-  // True once the user has added a stack or imported, so "Next" replaces "later".
-  const [touched, setTouched] = useState(false);
-
-  const reloadStacks = useCallback(() => {
-    setStacksLoading(true);
-    setStacksError(false);
-    listStacks()
-      .then(setStacks)
-      .catch(() => setStacksError(true))
-      .finally(() => setStacksLoading(false));
-  }, []);
-
-  useEffect(() => {
-    reloadStacks();
-  }, [reloadStacks]);
-
-  const have = new Set(registry.servers.map((s) => s.name.toLowerCase()));
-  const stack = stacks.find((s) => s.id === selected) ?? null;
-
-  async function doImport() {
-    setBusy(true);
-    try {
-      const preview = await previewImportServers();
-      if (preview.length === 0) {
-        toast.success("No new servers found in your clients");
-        return;
-      }
-      setImportPreview(preview);
-    } catch (e) {
-      toastError(`Couldn't prepare import: ${e}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function confirmImport(selected: string[]) {
-    setBusy(true);
-    try {
-      const next = await importServers(selected);
-      onImport(next);
-      const before = new Set(registry.servers.map((s) => s.id));
-      const added = next.servers.filter((s) => !isGatewayServer(s) && !before.has(s.id));
-      setImported({
-        added: added.length,
-        on: added.filter((s) => isEnabled(next, s.id)).length,
-      });
-      setTouched(true);
-      toast.success("Imported servers from your clients");
-      setImportPreview(null);
-    } catch (e) {
-      toastError(`Import failed: ${e}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  /** Add every server in the chosen stack that isn't already in Toolport. */
-  async function applyStack(s: Stack) {
-    setApplying(true);
-    const existing = new Set(registry.servers.map((x) => x.name.toLowerCase()));
-    let last = registry;
-    let added = 0;
-    let needCreds = 0;
-    try {
-      for (const entry of s.servers) {
-        if (existing.has(entry.name.toLowerCase())) continue;
-        last = await addCatalogServer(entry);
-        added++;
-        if (
-          entry.credentialsUrl ||
-          entry.envKeys.length > 0 ||
-          entry.launch?.inputs.length
-        )
-          needCreds++;
-      }
-      onImport(last);
-      setTouched(true);
-      toast.success(
-        added > 0
-          ? `Added ${added} server${added === 1 ? "" : "s"} from ${s.name}`
-          : `${s.name}: every server is already in Toolport`,
-        {
-          description:
-            needCreds > 0
-              ? `${needCreds} need setup values. Complete their Launch setup or credentials under Servers, then enable them.`
-              : "Enable them next.",
-        },
-      );
-    } catch (e) {
-      toastError(`Couldn't set up ${s.name}: ${e}`);
-    } finally {
-      setApplying(false);
-    }
-  }
-
   return (
     <>
       <StepHeader icon={<Download className="size-5" />} title="Add your first servers">
-        Pick what you work on and Toolport sets up a matching stack. You can also import
-        from your other tools or browse the full catalog.
+        Review and connect a client to import your existing servers, or browse the full
+        catalog.
       </StepHeader>
-
       <div className="flex flex-col gap-3">
-        {/* Role picker: each stack is a use case / role. */}
-        {stacksLoading ? (
-          <div
-            role="status"
-            aria-label="Loading starter stacks"
-            className="flex flex-wrap gap-1.5"
-          >
-            {Array.from({ length: 3 }).map((_, i) => (
-              <Skeleton key={i} className="h-7 w-24 rounded-full" />
-            ))}
-          </div>
-        ) : stacksError ? (
-          <div
-            role="status"
-            aria-live="polite"
-            className="flex items-center justify-between gap-3 rounded-md border px-3 py-2.5"
-          >
-            <div>
-              <p className="text-sm font-medium">Starter stacks couldn't load</p>
-              <p className="text-xs text-muted-foreground">
-                Try again to see role-based recommendations.
-              </p>
-            </div>
-            <Button variant="outline" size="sm" onClick={reloadStacks}>
-              Try again
-            </Button>
-          </div>
-        ) : stacks.length > 0 ? (
-          <div className="flex flex-col gap-1.5">
-            <span className="text-xs text-muted-foreground">What do you work on?</span>
-            <div className="flex flex-wrap gap-1.5">
-              {stacks.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  aria-pressed={s.id === selected}
-                  onClick={() => setSelected(s.id === selected ? null : s.id)}
-                  className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
-                    s.id === selected
-                      ? "border-success/50 bg-success/10 text-success"
-                      : "hover:bg-accent"
-                  }`}
-                >
-                  {s.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {/* The recommended stack for the chosen role. */}
-        {stack && (
-          <div className="flex flex-col gap-2 rounded-md border bg-muted/20 p-2.5">
-            <p className="text-xs text-muted-foreground">{stack.description}</p>
-            <div className="flex flex-col gap-1">
-              {stack.servers.map((e) => (
-                <div key={e.name} className="flex items-center gap-1.5 text-[11px]">
-                  {have.has(e.name.toLowerCase()) ? (
-                    <Check className="size-3 shrink-0 text-success" />
-                  ) : (
-                    <span className="inline-block size-3 shrink-0" />
-                  )}
-                  <span className="font-medium text-foreground">{e.name}</span>
-                  {e.credentialsUrl && (
-                    <button
-                      onClick={() => openExternal(e.credentialsUrl)}
-                      className="text-info hover:underline"
-                    >
-                      get key
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-            <Button
-              size="sm"
-              className="self-start"
-              disabled={applying}
-              onClick={() => applyStack(stack)}
-            >
-              {applying ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <Plus className="size-3.5" />
-              )}
-              Add this stack
-            </Button>
-          </div>
-        )}
-
-        {importable > 0 && imported === null && (
-          <Button variant="outline" onClick={doImport} disabled={busy}>
-            {busy ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Download className="size-4" />
-            )}
-            Import {importable} from your clients
-          </Button>
-        )}
-        {imported !== null && (
-          <div className="flex items-center gap-2 rounded-md bg-success/10 px-3 py-2 text-sm text-success">
-            <Check className="size-4" />
-            {importedSummary(imported.added, imported.on)}
-          </div>
-        )}
-
+        <Button onClick={onNext}>
+          <Download className="size-4" />
+          Review and connect your clients
+        </Button>
         <Button variant="outline" onClick={onBrowseCatalog}>
           <Store className="size-4" />
           Browse the full catalog
         </Button>
       </div>
-
       <Button variant="ghost" onClick={onNext} className="self-start">
-        {touched ? "Next" : "I'll add servers later"}
+        I'll add servers later
         <ArrowRight className="size-4" />
       </Button>
-      <ImportReviewDialog
-        open={importPreview !== null}
-        items={importPreview ?? []}
-        busy={busy}
-        onOpenChange={(open) => {
-          if (!open && !busy) setImportPreview(null);
-        }}
-        onConfirm={confirmImport}
-      />
     </>
   );
 }
@@ -816,30 +522,22 @@ function ConnectClients({
   onConnected: () => void;
   onNext: () => void;
 }) {
-  const [busyId, setBusyId] = useState<string | null>(null);
   const [done, setDone] = useState<Set<string>>(new Set());
 
-  async function connect(client: DetectedClient) {
-    setBusyId(client.id);
-    try {
-      await installGateway(client.id);
-      setDone((prev) => new Set(prev).add(client.id));
-      onConnected();
-      // Same trap as ClientDetail (SOU-317): config is written now, but the client
-      // usually only loads it on restart. Verify step also says this; put it on the
-      // success toast so it is not delayed until that step.
-      toast.success(`Connected Toolport to ${client.name}`, {
-        description: clientRestartHint(client.name),
-      });
-    } catch (e) {
-      toastError(`Couldn't connect: ${e}`);
-    } finally {
-      setBusyId(null);
-    }
-  }
-
+  const [reviewClient, setReviewClient] = useState<DetectedClient | null>(null);
   return (
     <>
+      {reviewClient && (
+        <ConnectReviewDialog
+          clientId={reviewClient.id}
+          clientName={reviewClient.name}
+          onClose={() => setReviewClient(null)}
+          onConnected={() => {
+            setDone((previous) => new Set(previous).add(reviewClient.id));
+            onConnected();
+          }}
+        />
+      )}
       <StepHeader icon={<Link2 className="size-5" />} title="Connect a client">
         Point a tool at Toolport. It connects once, then sees every server you enable
         here, no per-tool setup.
@@ -870,14 +568,10 @@ function ConnectClients({
                     size="sm"
                     variant="outline"
                     className="h-7 shrink-0 px-2 text-xs"
-                    onClick={() => connect(client)}
-                    disabled={busyId === client.id}
+                    onClick={() => setReviewClient(client)}
+                    disabled={false}
                   >
-                    {busyId === client.id ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
-                      <Link2 className="size-3.5" />
-                    )}
+                    <Link2 className="size-3.5" />
                     Connect
                   </Button>
                 )}
@@ -899,12 +593,6 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-/** What an import actually turned on, not just what Toolport now lists (UX-01). */
-function importedSummary(added: number, on: number): string {
-  if (on === added) return `Imported ${plural(added, "server")} and turned them on.`;
-  return `Imported ${plural(added, "server")}, ${on} turned on. Turn on the rest from Servers.`;
-}
-
 /** Count servers that answered the health probe, not every server in the registry (UX-01). */
 function servingSummary(health: ProbeResult[], connectedCount: number): string {
   const serving = health.filter((r) => r.ok).length;
@@ -917,30 +605,22 @@ function servingSummary(health: ProbeResult[], connectedCount: number): string {
 }
 
 function Done({
-  path,
   registry,
   clients,
   serverCount,
   connectedCount,
   onProbe,
-  onOpenPlayground,
-  onOpenRules,
+  onOpenTools,
   onFinish,
 }: {
-  path: "mcp" | "rules";
   registry: Registry;
   clients: DetectedClient[];
   serverCount: number;
   connectedCount: number;
   onProbe: () => Promise<ProbeResult[]>;
-  onOpenPlayground: () => void;
-  onOpenRules: () => void;
+  onOpenTools: () => void;
   onFinish: () => void;
 }) {
-  // Someone who came for rules has no servers ON PURPOSE. Judging their setup by server
-  // count would tell them they have not finished when they have, which is the bounce
-  // SBS-826 exists to remove.
-  const rulesPath = path === "rules";
   // Probe what was just added so we report the truth, not a blanket "you're set up"
   // over a server that can't actually start (a missing runtime is the #1 first-run
   // failure). Auth-pending servers are an expected next step, not a fault, so they're
@@ -953,6 +633,7 @@ function Done({
   const [probeAttempt, setProbeAttempt] = useState(0);
   useEffect(() => {
     if (serverCount === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear stale probe results before checking the current server set.
       setHealth([]);
       setProbeFailed(false);
       return;
@@ -976,28 +657,22 @@ function Done({
   }, [serverCount, onProbe, probeAttempt]);
 
   const nameFor = (id: string) => registry.servers.find((s) => s.id === id)?.name ?? id;
-  const broken = (health ?? []).filter((r) => !r.ok && !r.authRequired);
+  const broken = (health ?? []).filter((r) => !r.ok);
 
-  const configured = rulesPath
-    ? connectedCount > 0
-    : serverCount > 0 && connectedCount > 0;
-  // The probe is about servers, and the rules path is the only way to be `configured`
-  // with none. Gating the verification states on there being something to verify keeps
-  // a rules finish from painting "Checking your setup" and the "Checking server
-  // health…" status — a live region a screen reader announces — for servers that do
-  // not exist. `health` is null on the first paint even when the effect sets it to []
-  // synchronously, so without this the flash is guaranteed, not a race (SBS-826 review).
+  const configured = serverCount > 0 && connectedCount > 0;
   const verifying = serverCount > 0;
   // Verification states only apply once setup is actually complete: with no client
   // connected the step reports what's missing, and must not dress the finish button
   // or the status blocks in "Checking…" / "couldn't verify" language.
   const checkingHealth = configured && verifying && health === null && !probeFailed;
   const verificationFailed = configured && verifying && probeFailed;
-  const ready = configured && (!verifying || (health !== null && !probeFailed));
+  const ready =
+    configured &&
+    (!verifying || (health !== null && !probeFailed && broken.length === 0));
   // The client to verify against: the first one Toolport is actually wired into.
   const verifyClient = clients.find((c) => c.gatewayInstalled) ?? null;
   const missingParts = [
-    !rulesPath && serverCount === 0 ? "added a server" : null,
+    serverCount === 0 ? "added a server" : null,
     connectedCount === 0 ? "connected a client" : null,
   ].filter((part): part is string => part !== null);
   const missing = missingParts.join(" or ");
@@ -1012,23 +687,18 @@ function Done({
               ? "Checking your setup"
               : configured && probeFailed
                 ? "Setup couldn't be verified"
-                : "Setup started"
+                : broken.length > 0
+                  ? "Some servers need attention"
+                  : "Setup started"
         }
       >
-        {ready && rulesPath ? (
-          <>
-            Toolport is wired into {connectedCount} tool
-            {connectedCount === 1 ? "" : "s"}. Write your rules once on the next screen
-            and Toolport puts them in each tool&apos;s own rules file, so they all follow
-            the same instructions without you editing each tool's file by hand.
-          </>
-        ) : ready ? (
+        {ready ? (
           <>
             {servingSummary(health ?? [], connectedCount)} Toggle one on or off and your
-            clients update live, no restart. Each client loads a handful of Toolport
-            meta-tools instead of every downstream tool, up to 91% fewer tokens at the
-            same task success. And Toolport watches every server for tampering and prompt
-            injection, see Activity.
+            clients update live, no restart. In Lazy mode a client loads a handful of
+            Toolport tools instead of every downstream tool, up to 91% fewer tokens at the
+            same task success in our benchmark. Toolport also flags changed tool
+            definitions and results that look like prompt injection in Activity.
           </>
         ) : configured && checkingHealth ? (
           <>
@@ -1039,15 +709,8 @@ function Done({
             Your servers and client are connected, but Toolport could not verify server
             health. Retry the check below or continue without verification.
           </>
-        ) : rulesPath ? (
-          // The MCP wording below would send a rules user to add the very thing they
-          // just declined, and "do both" is wrong when only one thing is missing
-          // (SBS-826 review).
-          <>
-            You haven't connected a client yet. Connect one any time from the main screen
-            and Toolport writes your rules into that tool's own rules file. No MCP server
-            needed.
-          </>
+        ) : broken.length > 0 ? (
+          <>Complete the missing credentials or fix the server command, then retry.</>
         ) : (
           <>
             You haven't {missing} yet. You can{" "}
@@ -1110,45 +773,33 @@ function Done({
         </div>
       )}
 
-      {ready && !rulesPath && verifyClient && (
-        <VerifyCall client={verifyClient} onOpenPlayground={onOpenPlayground} />
+      {ready && verifyClient && (
+        <VerifyCall client={verifyClient} onOpenTools={onOpenTools} />
       )}
 
-      {rulesPath ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button onClick={onOpenRules}>
-            Set up agent rules
-            <ArrowRight className="size-4" />
-          </Button>
-          <Button variant="ghost" onClick={onFinish}>
-            Not now
-          </Button>
-        </div>
-      ) : (
-        <Button onClick={onFinish} className="self-start">
-          {checkingHealth || verificationFailed
-            ? "Continue without verification"
-            : ready
-              ? "Start using Toolport"
-              : "Got it"}
-          <ArrowRight className="size-4" />
-        </Button>
-      )}
+      <Button onClick={onFinish} className="self-start">
+        {checkingHealth || verificationFailed
+          ? "Continue without verification"
+          : ready
+            ? "Start using Toolport"
+            : "Got it"}
+        <ArrowRight className="size-4" />
+      </Button>
     </>
   );
 }
 
 /** Proves a real call actually reached Toolport: shows a safe copy-paste prompt for the
  *  connected client, then watches the LOCAL audit log for the first new call (nothing is
- *  sent anywhere). Optional and non-blocking; Playground is the in-app fallback. */
+ *  sent anywhere). Optional and non-blocking; Tools tab is the in-app fallback. */
 export function VerifyCall({
   client,
-  onOpenPlayground,
+  onOpenTools,
   pollMs = 2000,
   timeoutMs = 75_000,
 }: {
   client: DetectedClient;
-  onOpenPlayground: () => void;
+  onOpenTools: () => void;
   /** Poll interval and give-up deadline; overridable so tests run fast. */
   pollMs?: number;
   timeoutMs?: number;
@@ -1164,6 +815,7 @@ export function VerifyCall({
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = Date.now() + timeoutMs;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear a previous verification result before taking the new audit snapshot.
     setHit(null);
     setStatus("snapshot");
     void (async () => {
@@ -1277,7 +929,7 @@ export function VerifyCall({
               </span>
               <span className="text-muted-foreground">
                 An older or unrelated call will not be treated as proof. Retry when the
-                log is available, or use the Playground.
+                log is available, or use the server’s Tools tab.
               </span>
               <button
                 type="button"
@@ -1301,10 +953,10 @@ export function VerifyCall({
 
           <button
             type="button"
-            onClick={onOpenPlayground}
+            onClick={onOpenTools}
             className="self-start text-xs font-medium text-primary hover:underline"
           >
-            Or test a tool in the Playground instead
+            Or test a tool in the server’s Tools tab instead
           </button>
         </>
       )}

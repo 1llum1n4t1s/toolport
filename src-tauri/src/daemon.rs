@@ -9,6 +9,7 @@
 //! The pieces deliberately mirror the approval broker's endpoint descriptor
 //! (`crate::approval`) and reuse the registry's cross-process lock
 //! ([`crate::registry::lock_at`]) rather than inventing new primitives.
+use crate::http_client::{RequestHeaderExt as _, ResponseResultExt as _};
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -41,8 +42,11 @@ pub const READY_TIMEOUT: Duration = Duration::from_secs(10);
 /// one in-flight poll past its deadline, so a blocked contender never gives up
 /// first.
 const ELECTION_TIMEOUT: Duration = Duration::from_secs(20);
-/// Per-probe network budget for the authenticated handshake.
+/// Per-sample network budget for repeated readiness and liveness checks.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// One-shot installer/control requests cannot rely on a later health sample.
+/// Give one response the same total budget used to judge a silent live daemon.
+const CONTROL_TIMEOUT: Duration = SILENT_RETRY_TIMEOUT;
 /// Descriptor publication and cleanup are short filesystem operations. Keep
 /// their lock separate from election, which is deliberately held across spawn
 /// and readiness polling.
@@ -51,7 +55,12 @@ const DESCRIPTOR_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 /// on it. A loaded machine can outrun [`PROBE_TIMEOUT`] while its daemon is
 /// perfectly live. Twenty concurrent adapters exceeded the old six-second
 /// budget on macOS CI; silence alone is never evidence against the pointer.
-const SILENT_RETRY_TIMEOUT: Duration = Duration::from_secs(15);
+///
+/// It is also the bound after which an adapter treats a daemon as wedged and
+/// moves its client to a private gateway. The identity probe is answered
+/// outside the request worker pool, so this much silence means the process is
+/// stopped or its accept path is stuck, not that it is busy with calls.
+pub const SILENT_RETRY_TIMEOUT: Duration = Duration::from_secs(15);
 const READY_POLL: Duration = Duration::from_millis(50);
 /// Operational idle grace: the daemon exits after this long with no requests.
 /// A default, not a user setting, in the first release.
@@ -119,6 +128,8 @@ pub struct DaemonIdentity {
     pub protocol: u32,
     pub pid: u32,
     pub gateway_version: String,
+    #[serde(default)]
+    pub telemetry: Option<crate::telemetry::Health>,
 }
 
 impl DaemonIdentity {
@@ -185,6 +196,60 @@ fn restrict_to_owner(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Remove descriptors, from any build, whose daemon process is gone, so dead
+/// daemons do not accumulate pointers in the data directory. A descriptor whose
+/// pid is in use stays: the rendezvous probe, not a pid, decides whether it is
+/// live. Lock files stay too. They are advisory locks the OS releases when
+/// their holder exits and carry no owner, and deleting one another process has
+/// open would break the mutual exclusion it provides. Returns how many went.
+pub fn clear_dead_descriptors(data_dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(data_dir) else {
+        return 0;
+    };
+    let mut cleared = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_descriptor = path.extension().is_some_and(|ext| ext == "json")
+            && path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("daemon-"));
+        if !is_descriptor {
+            continue;
+        }
+        let Some(seen) = read_descriptor(&path) else {
+            continue;
+        };
+        if process_exists(seen.pid) {
+            continue;
+        }
+        let Ok(_descriptor_lock) = registry::lock_at_for(&path, DESCRIPTOR_LOCK_TIMEOUT) else {
+            continue;
+        };
+        if read_descriptor(&path).as_ref() == Some(&seen) {
+            clear_descriptor_locked(&path);
+            cleared += 1;
+        }
+    }
+    cleared
+}
+
+/// Whether any process has `pid`. Where that cannot be asked, assume one does,
+/// so nothing is removed.
+#[cfg(unix)]
+pub(crate) fn process_exists(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return true;
+    };
+    // SAFETY: signal 0 only checks that the pid exists and may be signalled.
+    let signalled = unsafe { libc::kill(pid, 0) } == 0;
+    signalled || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn process_exists(pid: u32) -> bool {
+    crate::gateway_publish::pid_is_running(pid)
+}
+
 /// A fresh bearer for the internal endpoint.
 pub fn new_token() -> Result<String, String> {
     let mut bytes = [0u8; 32];
@@ -194,13 +259,59 @@ pub fn new_token() -> Result<String, String> {
 
 /// Authenticated `GET /host/identity`. Verifies nothing about compatibility
 /// itself; the caller compares the returned identity against its own
-/// [`CompatKey`]. Any transport error is a failed probe, not a hard error.
+/// [`CompatKey`]. This one-shot control request uses the full silence budget;
+/// repeated readiness and health samples keep their short per-probe budget.
+/// Any transport error is a failed probe, not a hard error.
 pub fn probe_identity(descriptor: &DaemonDescriptor) -> Result<DaemonIdentity, String> {
-    attempt_identity_probe(descriptor).map_err(|failure| match failure {
+    identity_probe_with_timeout(descriptor, CONTROL_TIMEOUT).map_err(|failure| match failure {
         ProbeFailure::Answered(detail) => detail,
         ProbeFailure::Unreachable => "the daemon endpoint is not reachable".to_string(),
         ProbeFailure::Silent => "the daemon did not answer within the probe budget".to_string(),
     })
+}
+
+/// What one authenticated identity probe says about a daemon an adapter is
+/// already using.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Health {
+    /// It answered the handshake.
+    Answering,
+    /// It accepted the connection, or answered busy, but gave no identity
+    /// within the probe budget.
+    Silent,
+    /// Nothing usable is there any more.
+    Gone,
+}
+
+/// One bounded liveness check against a daemon this process already trusts.
+pub fn probe_health(descriptor: &DaemonDescriptor) -> Health {
+    match attempt_identity_probe(descriptor) {
+        Ok(_) => Health::Answering,
+        Err(ProbeFailure::Silent) => Health::Silent,
+        Err(ProbeFailure::Answered(_) | ProbeFailure::Unreachable) => Health::Gone,
+    }
+}
+
+/// One-line health notes `toolport_status` shows for this process, such as a
+/// client moved to a private gateway because the shared daemon stopped answering.
+static STATUS_NOTES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Record a note for `toolport_status`. Repeats are kept once.
+pub fn add_status_note(note: impl Into<String>) {
+    let note = note.into();
+    let mut notes = STATUS_NOTES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !notes.contains(&note) {
+        notes.push(note);
+    }
+}
+
+pub fn status_notes() -> Vec<String> {
+    STATUS_NOTES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 /// Request a graceful exit. The daemon keeps serving while any session, public
@@ -213,21 +324,171 @@ pub fn request_shutdown_if_idle(descriptor: &DaemonDescriptor) -> Result<(), Str
     if !address.ip().is_loopback() {
         return Err("daemon endpoint must be a loopback address".to_string());
     }
-    ureq::post(&format!(
-        "http://{}{}",
-        descriptor.endpoint, SHUTDOWN_IF_IDLE_PATH
-    ))
-    .timeout(PROBE_TIMEOUT)
-    .set("Authorization", &format!("Bearer {}", descriptor.token))
-    .call()
-    .map(|_| ())
-    .map_err(|error| format!("could not request idle daemon shutdown: {error}"))
+    crate::http_client::agent()
+        .post(&format!(
+            "http://{}{}",
+            descriptor.endpoint, SHUTDOWN_IF_IDLE_PATH
+        ))
+        .config()
+        .timeout_global(Some(CONTROL_TIMEOUT))
+        .build()
+        .set_header("Authorization", &format!("Bearer {}", descriptor.token))
+        .send_empty()
+        .retain_status_body()
+        .map(|_| ())
+        .map_err(|error| format!("could not request idle daemon shutdown: {error}"))
+}
+
+/// Stale or malformed descriptors are data, not live-process evidence.
+fn purge_descriptors(data_dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(data_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            (name.starts_with("daemon-") && name.ends_with(".json")).then(|| entry.path())
+        })
+        .collect()
+}
+
+fn purge_descriptor_process(
+    pid: u32,
+    processes: &[crate::gateway_publish::GatewayProcess],
+    owned: impl FnOnce(u32) -> bool,
+) -> Result<bool, String> {
+    let Some(process) = processes.iter().find(|process| process.pid == pid) else {
+        // Process inventory includes known gateway images even when query access is denied.
+        return Ok(false);
+    };
+    match process.is_host_daemon {
+        Some(false) => return Ok(false),
+        None => {
+            return Err("Could not verify this gateway's daemon role; close it and retry".into())
+        }
+        Some(true) => {}
+    }
+    if !owned(pid) {
+        return Err("Could not verify this daemon belongs to your user and session".into());
+    }
+    Ok(true)
+}
+
+fn verified_purge_descriptor(path: &Path) -> Result<Option<DaemonDescriptor>, String> {
+    let Some(descriptor) = read_descriptor(path) else {
+        return Ok(None);
+    };
+    // PID liveness alone is unsafe: it may now be a completely unrelated process.
+    let processes = crate::gateway_publish::list_gateway_processes();
+    if !purge_descriptor_process(
+        descriptor.pid,
+        &processes,
+        crate::gateway_publish::purge_process_owned,
+    )? {
+        return Ok(None);
+    }
+    match attempt_identity_probe(&descriptor) {
+        Ok(identity)
+            if identity.pid == descriptor.pid
+                && identity.compat == descriptor.compat
+                && identity.protocol == descriptor.protocol =>
+        {
+            Ok(Some(descriptor))
+        }
+        Ok(_) => {
+            Err("Live daemon identity does not match its descriptor; close it and retry".into())
+        }
+        Err(ProbeFailure::Answered(_) | ProbeFailure::Unreachable) => {
+            Err("Live daemon could not prove its authenticated identity; close it and retry".into())
+        }
+        Err(ProbeFailure::Silent) => {
+            Err("Daemon did not answer its authenticated identity probe; close it and retry".into())
+        }
+    }
+}
+
+fn probe_purge_idle(descriptor: &DaemonDescriptor) -> Result<(), String> {
+    let topology: serde_json::Value = crate::http_client::agent()
+        .get(&format!("http://{}{}", descriptor.endpoint, TOPOLOGY_PATH))
+        .config()
+        .timeout_global(Some(CONTROL_TIMEOUT))
+        .build()
+        .set_header("Authorization", &format!("Bearer {}", descriptor.token))
+        .call()
+        .map_err(|error| error.to_string())?
+        .body_mut()
+        .read_json()
+        .map_err(|error| error.to_string())?;
+    if topology["pid"].as_u64() != Some(descriptor.pid as u64)
+        || topology["compat"].as_str() != Some(descriptor.compat.as_str())
+    {
+        return Err("Daemon topology does not match its descriptor".into());
+    }
+    if topology["purgeIdle"].as_bool() != Some(true) {
+        return Err("Daemon has active requests, listeners or a service lease, or cannot prove it is idle. Close sessions and retry using the current gateway.".into());
+    }
+    Ok(())
+}
+
+/// Read-only preflight: do not disconnect clients or request shutdown yet.
+pub(crate) fn purge_idle_blockers(data_dir: &Path) -> Vec<crate::purge::Leftover> {
+    let mut leftovers = Vec::new();
+    for path in purge_descriptors(data_dir) {
+        let result = verified_purge_descriptor(&path).and_then(|descriptor| {
+            descriptor.map_or(Ok(()), |descriptor| probe_purge_idle(&descriptor))
+        });
+        if let Err(error) = result {
+            leftovers.push(crate::purge::Leftover {
+                path: path.display().to_string(),
+                error,
+            });
+        }
+    }
+    leftovers
+}
+
+/// Stop only authenticated, idle daemons advertised by this data directory.
+pub(crate) fn stop_for_purge(data_dir: &Path) -> Vec<crate::purge::Leftover> {
+    let mut leftovers = Vec::new();
+    for path in purge_descriptors(data_dir) {
+        let result = (|| {
+            let Some(descriptor) = verified_purge_descriptor(&path)? else {
+                return Ok(());
+            };
+            probe_purge_idle(&descriptor)?;
+            request_shutdown_if_idle(&descriptor)?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while process_exists(descriptor.pid) {
+                // Recheck image identity too: never wait forever on a reused PID.
+                if !purge_descriptor_process(
+                    descriptor.pid,
+                    &crate::gateway_publish::list_gateway_processes(),
+                    crate::gateway_publish::purge_process_owned,
+                )? {
+                    return Ok(());
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!("Daemon PID {} remains busy or could not exit. Close active sessions and retry.", descriptor.pid));
+                }
+                std::thread::park_timeout(Duration::from_millis(100));
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            leftovers.push(crate::purge::Leftover {
+                path: path.display().to_string(),
+                error,
+            });
+        }
+    }
+    leftovers
 }
 
 /// Why an identity probe failed, in the terms the rendezvous decides on: what
 /// may be cleared, and what may spawn.
 #[derive(Debug)]
-enum ProbeFailure {
+pub(crate) enum ProbeFailure {
     /// The endpoint answered, but not as a compatible daemon would: a refused
     /// status or a body that is not an identity. A stale pointer.
     Answered(String),
@@ -243,74 +504,102 @@ enum ProbeFailure {
 /// Read the outcome out of a ureq error. A refused or reset connection, or an
 /// endpoint that cannot be parsed or resolved, says the pointer is unusable
 /// garbage; an answered status or a mangled response says someone else owns
-/// the port; silence alone says nothing either way.
-fn classify_probe_error(error: ureq::Error) -> ProbeFailure {
-    match &error {
-        ureq::Error::Status(..) => ProbeFailure::Answered(error.to_string()),
-        ureq::Error::Transport(transport) => {
-            let io_kind = transport_io_kind(transport);
-            match transport.kind() {
-                ureq::ErrorKind::ConnectionFailed if is_timeout_io_kind(io_kind) => {
+/// the port; silence alone says nothing either way. A busy answer (503 or 429)
+/// is a live daemon shedding load, so it counts as silence: clearing its
+/// pointer would elect a second daemon beside it.
+fn classify_probe_error(error: crate::http_client::Error) -> ProbeFailure {
+    if let crate::http_client::Error::Transport(transport) = &error {
+        if let Some(connect) = crate::http_client::connect_error(transport) {
+            return match connect {
+                ureq::Error::Timeout(_) => ProbeFailure::Silent,
+                ureq::Error::Io(io)
+                    if matches!(
+                        io.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
                     ProbeFailure::Silent
                 }
-                ureq::ErrorKind::ConnectionFailed
-                | ureq::ErrorKind::InvalidUrl
-                | ureq::ErrorKind::UnknownScheme
-                | ureq::ErrorKind::Dns => ProbeFailure::Unreachable,
-                ureq::ErrorKind::BadStatus | ureq::ErrorKind::BadHeader => {
-                    ProbeFailure::Answered(error.to_string())
-                }
-                ureq::ErrorKind::Io => match io_kind {
-                    Some(std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => {
-                        ProbeFailure::Silent
-                    }
-                    Some(
-                        std::io::ErrorKind::ConnectionReset
-                        | std::io::ErrorKind::ConnectionAborted
-                        | std::io::ErrorKind::BrokenPipe,
-                    ) => ProbeFailure::Unreachable,
-                    _ => ProbeFailure::Silent,
-                },
-                _ => ProbeFailure::Silent,
+                _ => ProbeFailure::Unreachable,
+            };
+        }
+    }
+    match &error {
+        crate::http_client::Error::Status(429 | 503, _) => ProbeFailure::Silent,
+        crate::http_client::Error::Status(..) => ProbeFailure::Answered(error.to_string()),
+        crate::http_client::Error::Transport(transport) => match transport {
+            ureq::Error::Timeout(_) => ProbeFailure::Silent,
+            ureq::Error::ConnectionFailed | ureq::Error::BadUri(_) | ureq::Error::HostNotFound => {
+                ProbeFailure::Unreachable
             }
-        }
+            ureq::Error::Protocol(_)
+            | ureq::Error::LargeResponseHeader(..)
+            | ureq::Error::Http(_) => ProbeFailure::Answered(error.to_string()),
+            ureq::Error::Io(io) => match io.kind() {
+                std::io::ErrorKind::ConnectionRefused
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe => ProbeFailure::Unreachable,
+                _ => ProbeFailure::Silent,
+            },
+            _ => ProbeFailure::Silent,
+        },
     }
-}
-
-/// Find an I/O cause anywhere in ureq's transport error chain. Connect
-/// timeouts are wrapped as `ConnectionFailed`, while read timeouts are `Io`;
-/// rendezvous must treat both as silence rather than evidence of a dead daemon.
-fn transport_io_kind(transport: &ureq::Transport) -> Option<std::io::ErrorKind> {
-    use std::error::Error as _;
-    let mut source = transport.source();
-    while let Some(error) = source {
-        if let Some(io) = error.downcast_ref::<std::io::Error>() {
-            return Some(io.kind());
-        }
-        source = error.source();
-    }
-    None
-}
-
-fn is_timeout_io_kind(kind: Option<std::io::ErrorKind>) -> bool {
-    matches!(
-        kind,
-        Some(std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)
-    )
 }
 
 /// One authenticated attempt against `GET /host/identity`, keeping the
 /// failure kind so the rendezvous can decide on it.
-fn attempt_identity_probe(descriptor: &DaemonDescriptor) -> Result<DaemonIdentity, ProbeFailure> {
+pub(crate) fn attempt_identity_probe(
+    descriptor: &DaemonDescriptor,
+) -> Result<DaemonIdentity, ProbeFailure> {
+    identity_probe_with_timeout(descriptor, PROBE_TIMEOUT)
+}
+
+fn identity_probe_with_timeout(
+    descriptor: &DaemonDescriptor,
+    timeout: Duration,
+) -> Result<DaemonIdentity, ProbeFailure> {
     let url = format!("http://{}{}", descriptor.endpoint, IDENTITY_PATH);
-    let response = ureq::get(&url)
-        .set("Authorization", &format!("Bearer {}", descriptor.token))
-        .timeout(PROBE_TIMEOUT)
+    let response = crate::http_client::agent()
+        .get(&url)
+        .set_header("Authorization", &format!("Bearer {}", descriptor.token))
+        .config()
+        .timeout_global(Some(timeout))
+        .build()
         .call()
+        .retain_status_body()
         .map_err(classify_probe_error)?;
     response
-        .into_json::<DaemonIdentity>()
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json::<DaemonIdentity>()
         .map_err(|e| ProbeFailure::Answered(format!("Daemon identity was not valid JSON: {e}")))
+}
+
+/// Why [`Rendezvous::ensure`] could not hand back a daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnsureError {
+    /// A daemon owns the pointer but stayed silent for [`SILENT_RETRY_TIMEOUT`].
+    /// Its descriptor was left in place and nothing was spawned beside it.
+    Unresponsive(DaemonDescriptor),
+    /// Anything else: the election, the spawn, or readiness failed.
+    Failed(String),
+}
+
+impl std::fmt::Display for EnsureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unresponsive(descriptor) => f.write_str(&unresponsive_daemon_error(descriptor)),
+            Self::Failed(detail) => f.write_str(detail),
+        }
+    }
+}
+
+impl From<String> for EnsureError {
+    fn from(detail: String) -> Self {
+        Self::Failed(detail)
+    }
 }
 
 /// One compatibility domain's rendezvous: the data directory and the build it may
@@ -343,7 +632,7 @@ impl Rendezvous {
     pub fn ensure(
         &self,
         mut spawn: impl FnMut() -> Result<(), String>,
-    ) -> Result<DaemonDescriptor, String> {
+    ) -> Result<DaemonDescriptor, EnsureError> {
         let path = self.descriptor_path();
         // A descriptor may appear while we wait for the election lock. If it
         // then stays silent, retry outside the lock so other adapters are not
@@ -356,7 +645,7 @@ impl Rendezvous {
                 Probe::Live(descriptor) => return Ok(descriptor),
                 // A silent daemon may still be alive: reuse is unproven, and
                 // clearing or spawning beside it is the double-election defect.
-                Probe::Silent(descriptor) => return Err(unresponsive_daemon_error(&descriptor)),
+                Probe::Silent(descriptor) => return Err(EnsureError::Unresponsive(descriptor)),
                 Probe::Gone => {}
             }
 
@@ -374,7 +663,7 @@ impl Rendezvous {
                 match self.probe_for_reuse(&path) {
                     Probe::Live(descriptor) => return Ok(descriptor),
                     Probe::Silent(descriptor) => {
-                        return Err(unresponsive_daemon_error(&descriptor));
+                        return Err(EnsureError::Unresponsive(descriptor));
                     }
                     Probe::Gone => continue,
                 }
@@ -390,7 +679,7 @@ impl Rendezvous {
                     match self.probe_for_reuse(&path) {
                         Probe::Live(descriptor) => return Ok(descriptor),
                         Probe::Silent(descriptor) => {
-                            return Err(unresponsive_daemon_error(&descriptor));
+                            return Err(EnsureError::Unresponsive(descriptor));
                         }
                         Probe::Gone => continue,
                     }
@@ -414,9 +703,13 @@ impl Rendezvous {
                 }
                 std::thread::sleep(READY_POLL);
             }
-            return Err("the daemon did not become ready before the deadline".to_string());
+            return Err("the daemon did not become ready before the deadline"
+                .to_string()
+                .into());
         }
-        Err("the daemon descriptor changed repeatedly during startup".to_string())
+        Err("the daemon descriptor changed repeatedly during startup"
+            .to_string()
+            .into())
     }
 
     /// Read, claim-check, then prove with the authenticated handshake. A
@@ -435,7 +728,9 @@ impl Rendezvous {
             Ok(identity) if identity.is_compatible_with(&self.compat) => Probe::Live(descriptor),
             Ok(_) | Err(ProbeFailure::Answered(_)) => Probe::Gone,
             Err(ProbeFailure::Unreachable) => match attempt_identity_probe(&descriptor) {
-                Ok(identity) if identity.is_compatible_with(&self.compat) => Probe::Live(descriptor),
+                Ok(identity) if identity.is_compatible_with(&self.compat) => {
+                    Probe::Live(descriptor)
+                }
                 Err(ProbeFailure::Silent) => Probe::Silent(descriptor),
                 _ => Probe::Gone,
             },
@@ -503,6 +798,7 @@ pub fn serve_identity(
         protocol: PROTOCOL_GENERATION,
         pid: std::process::id(),
         gateway_version: env!("CARGO_PKG_VERSION").to_string(),
+        telemetry: Some(crate::telemetry::health()),
     };
     let descriptor = DaemonDescriptor::new(format!("127.0.0.1:{port}"), token.clone(), compat);
     write_descriptor(descriptor_path, &descriptor)?;
@@ -528,8 +824,11 @@ pub fn serve_identity(
                 } else if !authorized {
                     text_response(401, "unauthorized")
                 } else {
-                    let body =
-                        serde_json::to_string(&identity).unwrap_or_else(|_| "{}".to_string());
+                    let body = serde_json::to_string(&DaemonIdentity {
+                        telemetry: Some(crate::telemetry::health()),
+                        ..identity.clone()
+                    })
+                    .unwrap_or_else(|_| "{}".to_string());
                     tiny_http::Response::from_string(body)
                         .with_status_code(200)
                         .with_header(json_header())
@@ -547,9 +846,7 @@ pub fn serve_identity(
     // but only ours. If another daemon has already published over this path,
     // the file is the survivor's, and deleting it would strand every later
     // rendezvous with the wrong daemon.
-    if let Ok(_descriptor_lock) =
-        registry::lock_at_for(descriptor_path, DESCRIPTOR_LOCK_TIMEOUT)
-    {
+    if let Ok(_descriptor_lock) = registry::lock_at_for(descriptor_path, DESCRIPTOR_LOCK_TIMEOUT) {
         if let Some(current) = read_descriptor(descriptor_path) {
             if current.token == token && current.endpoint == descriptor.endpoint {
                 clear_descriptor_locked(descriptor_path);
@@ -667,6 +964,66 @@ mod tests {
         endpoint
     }
 
+    /// A listener that answers every request with `status`, as a saturated
+    /// daemon used to answer its own identity probe.
+    fn start_status_responder(status: &'static str) -> String {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut scratch = [0u8; 1024];
+                let _ = stream.read(&mut scratch);
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 {status}\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        endpoint
+    }
+
+    #[test]
+    fn a_busy_answer_is_silence_not_a_stale_pointer() {
+        let key = CompatKey::new("test", "scratch");
+        for status in ["503 Service Unavailable", "429 Too Many Requests"] {
+            let descriptor = DaemonDescriptor::new(start_status_responder(status), "busy", &key);
+            assert!(
+                matches!(
+                    attempt_identity_probe(&descriptor),
+                    Err(ProbeFailure::Silent)
+                ),
+                "{status} must not let the rendezvous clear a live daemon's pointer"
+            );
+            assert_eq!(probe_health(&descriptor), Health::Silent);
+        }
+        let refused = DaemonDescriptor::new(start_status_responder("401 Unauthorized"), "x", &key);
+        assert!(matches!(
+            attempt_identity_probe(&refused),
+            Err(ProbeFailure::Answered(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dead_daemons_descriptors_are_cleared_and_live_ones_kept() {
+        let dir = temp_dir("dead-descriptors");
+        let live = DaemonDescriptor::new("127.0.0.1:9", "live", &compat("1.0.0", &dir));
+        let mut dead = DaemonDescriptor::new("127.0.0.1:9", "dead", &compat("0.9.0", &dir));
+        // Far above any real pid_max, so no process can have it.
+        dead.pid = 999_999_999;
+        let live_path = descriptor_path(&dir, &compat("1.0.0", &dir));
+        let dead_path = descriptor_path(&dir, &compat("0.9.0", &dir));
+        write_descriptor(&live_path, &live).unwrap();
+        write_descriptor(&dead_path, &dead).unwrap();
+        assert_eq!(clear_dead_descriptors(&dir), 1);
+        assert!(!dead_path.exists());
+        assert_eq!(read_descriptor(&live_path), Some(live));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn descriptor_path_is_keyed_by_compat() {
         let dir = temp_dir("keyed");
@@ -689,6 +1046,72 @@ mod tests {
     }
 
     #[test]
+    fn one_shot_identity_probe_survives_a_delayed_control_response() {
+        delayed_control_response(false);
+    }
+
+    #[test]
+    fn one_shot_idle_shutdown_survives_a_delayed_control_response() {
+        delayed_control_response(true);
+    }
+
+    fn delayed_control_response(shutdown: bool) {
+        use std::io::{Read as _, Write as _};
+        use std::sync::mpsc;
+        let dir = temp_dir("probe-delayed-control");
+        let key = compat("1.0.0", &dir);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let descriptor =
+            DaemonDescriptor::new(listener.local_addr().unwrap().to_string(), "x", &key);
+        let identity = DaemonIdentity {
+            compat: key.fingerprint(),
+            protocol: PROTOCOL_GENERATION,
+            pid: std::process::id(),
+            gateway_version: "test".into(),
+            telemetry: None,
+        };
+        let expected = (!shutdown).then(|| identity.clone());
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(READY_TIMEOUT)).unwrap();
+            let mut scratch = [0; 4096];
+            // This fixture needs the request arrival, not the complete request body.
+            let _received = stream.read(&mut scratch).unwrap();
+            accepted_tx.send(()).unwrap();
+            // Hold the real response until the caller has outlived a health
+            // sample. Channels control the order; no retry or startup race.
+            release_rx.recv_timeout(READY_TIMEOUT).unwrap();
+            let body = serde_json::to_string(&identity).unwrap();
+            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        });
+        let (result_tx, result_rx) = mpsc::channel();
+        let probe = std::thread::spawn(move || {
+            let result = if shutdown {
+                request_shutdown_if_idle(&descriptor).map(|()| None)
+            } else {
+                probe_identity(&descriptor).map(Some)
+            };
+            result_tx.send(result).unwrap();
+        });
+        accepted_rx.recv_timeout(READY_TIMEOUT).unwrap();
+        let early = result_rx.recv_timeout(PROBE_TIMEOUT + Duration::from_millis(250));
+        release_tx.send(()).unwrap();
+        server.join().unwrap();
+        probe.join().unwrap();
+        assert!(
+            matches!(early, Err(mpsc::RecvTimeoutError::Timeout)),
+            "control probe used the health sample budget: {early:?}"
+        );
+        assert_eq!(
+            result_rx.recv_timeout(READY_TIMEOUT).unwrap().unwrap(),
+            expected
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn probe_rejects_a_wrong_token() {
         let dir = temp_dir("probe-token");
         let compat = compat("1.0.0", &dir);
@@ -700,11 +1123,39 @@ mod tests {
 
     #[test]
     fn connect_timeouts_are_silence_not_evidence_of_a_dead_daemon() {
-        assert!(is_timeout_io_kind(Some(std::io::ErrorKind::TimedOut)));
-        assert!(is_timeout_io_kind(Some(std::io::ErrorKind::WouldBlock)));
-        assert!(!is_timeout_io_kind(Some(
-            std::io::ErrorKind::ConnectionRefused
-        )));
+        for wrapped in [false, true] {
+            for error in [
+                ureq::Error::Timeout(ureq::Timeout::Connect),
+                ureq::Error::Timeout(ureq::Timeout::Global),
+                ureq::Error::Io(std::io::Error::from(std::io::ErrorKind::TimedOut)),
+                ureq::Error::Io(std::io::Error::from(std::io::ErrorKind::WouldBlock)),
+            ] {
+                let error = if wrapped {
+                    crate::http_client::mark_connect_failure(error)
+                } else {
+                    error
+                };
+                assert!(matches!(
+                    classify_probe_error(crate::http_client::Error::Transport(error)),
+                    ProbeFailure::Silent
+                ));
+            }
+            for kind in [
+                std::io::ErrorKind::ConnectionRefused,
+                std::io::ErrorKind::ConnectionReset,
+            ] {
+                let error = ureq::Error::Io(std::io::Error::from(kind));
+                let error = if wrapped {
+                    crate::http_client::mark_connect_failure(error)
+                } else {
+                    error
+                };
+                assert!(matches!(
+                    classify_probe_error(crate::http_client::Error::Transport(error)),
+                    ProbeFailure::Unreachable
+                ));
+            }
+        }
     }
 
     #[test]
@@ -848,7 +1299,8 @@ mod tests {
                 let _ = start_listener(&closure_dir, &closure_compat);
                 Ok(())
             })
-            .expect_err("a silent daemon must not be silently replaced");
+            .expect_err("a silent daemon must not be silently replaced")
+            .to_string();
         assert!(
             error.contains(&wedged.endpoint),
             "the error must name the unresponsive daemon: {error}"
@@ -880,6 +1332,7 @@ mod tests {
             protocol: PROTOCOL_GENERATION,
             pid: std::process::id(),
             gateway_version: "1.0.0".to_string(),
+            telemetry: Some(crate::telemetry::Health::default()),
         };
         let endpoint = start_delayed_responder(Duration::from_secs(8), identity);
         let descriptor = DaemonDescriptor::new(endpoint, "delayed", &key);
@@ -911,9 +1364,8 @@ mod tests {
         let worker_key = key.clone();
         let worker = std::thread::spawn(move || {
             started_tx.send(()).unwrap();
-            Rendezvous::new(&worker_dir, worker_key).ensure(|| {
-                Err("must not spawn beside a published daemon".to_string())
-            })
+            Rendezvous::new(&worker_dir, worker_key)
+                .ensure(|| Err("must not spawn beside a published daemon".to_string()))
         });
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         // Let the worker observe an absent descriptor and block on our lock.
@@ -924,6 +1376,7 @@ mod tests {
             protocol: PROTOCOL_GENERATION,
             pid: std::process::id(),
             gateway_version: "1.0.0".to_string(),
+            telemetry: Some(crate::telemetry::Health::default()),
         };
         let endpoint = start_delayed_responder(Duration::from_secs(6), identity);
         let descriptor = DaemonDescriptor::new(endpoint, "delayed", &key);
@@ -961,7 +1414,9 @@ mod tests {
             .expect("a squatter's pointer is stale and gets replaced");
         assert_eq!(spawns.load(Ordering::SeqCst), 1);
         assert_ne!(descriptor.endpoint, squatter.endpoint);
-        assert!(probe_identity(&descriptor).unwrap().is_compatible_with(&compat));
+        assert!(probe_identity(&descriptor)
+            .unwrap()
+            .is_compatible_with(&compat));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -986,7 +1441,9 @@ mod tests {
             .expect("an endpoint that cannot parse is garbage, not a live daemon");
         assert_eq!(spawns.load(Ordering::SeqCst), 1);
         assert_ne!(descriptor.endpoint, broken.endpoint);
-        assert!(probe_identity(&descriptor).unwrap().is_compatible_with(&compat));
+        assert!(probe_identity(&descriptor)
+            .unwrap()
+            .is_compatible_with(&compat));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -994,8 +1451,7 @@ mod tests {
     fn unresolvable_host_is_replaced() {
         let dir = temp_dir("unresolvable");
         let compat = compat("1.0.0", &dir);
-        let broken =
-            DaemonDescriptor::new("no-such-host.toolport.invalid:9123", "broken", &compat);
+        let broken = DaemonDescriptor::new("no-such-host.toolport.invalid:9123", "broken", &compat);
         write_descriptor(&descriptor_path(&dir, &compat), &broken).unwrap();
 
         let spawns = Arc::new(AtomicUsize::new(0));
@@ -1012,7 +1468,9 @@ mod tests {
             .expect("a host that cannot resolve is garbage, not a live daemon");
         assert_eq!(spawns.load(Ordering::SeqCst), 1);
         assert_ne!(descriptor.endpoint, broken.endpoint);
-        assert!(probe_identity(&descriptor).unwrap().is_compatible_with(&compat));
+        assert!(probe_identity(&descriptor)
+            .unwrap()
+            .is_compatible_with(&compat));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1076,5 +1534,51 @@ mod tests {
         assert_eq!(spawns.load(Ordering::SeqCst), 2);
         assert_ne!(endpoints[0], endpoints[1]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn purge_malformed_descriptor_and_reused_pid_are_stale() {
+        let env = crate::registry::DataDirTestEnv::new("purge_stale_descriptors");
+        let malformed = env.dir.join("daemon-broken.json");
+        std::fs::write(&malformed, "invalid json").unwrap();
+        assert!(verified_purge_descriptor(&malformed).unwrap().is_none());
+        let reused = env.dir.join("daemon-reused.json");
+        std::fs::write(
+            &reused,
+            serde_json::to_vec(&DaemonDescriptor {
+                endpoint: "127.0.0.1:1".into(),
+                token: "fixture".into(),
+                pid: std::process::id(),
+                compat: "fixture".into(),
+                protocol: PROTOCOL_GENERATION,
+                created_at_ms: 0,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(verified_purge_descriptor(&reused).unwrap().is_none());
+        assert!(purge_idle_blockers(&env.dir).is_empty());
+        assert!(stop_for_purge(&env.dir).is_empty());
+        assert!(malformed.exists() && reused.exists());
+    }
+
+    #[test]
+    fn purge_unknown_daemon_role_or_owner_blocks_instead_of_becoming_stale() {
+        let mut process = crate::gateway_publish::GatewayProcess {
+            pid: 42,
+            start_time: None,
+            is_host_daemon: None,
+            path: None,
+            basename: "toolport-gateway.exe".into(),
+            parent: None,
+        };
+        assert!(purge_descriptor_process(42, &[process.clone()], |_| false).is_err());
+        process.is_host_daemon = Some(true);
+        assert!(purge_descriptor_process(42, &[process.clone()], |_| false).is_err());
+        assert!(purge_descriptor_process(42, &[process.clone()], |_| true).unwrap());
+        process.is_host_daemon = Some(false);
+        assert!(
+            !purge_descriptor_process(42, &[process], |_| panic!("proven other role")).unwrap()
+        );
+        assert!(!purge_descriptor_process(42, &[], |_| panic!("no gateway process")).unwrap());
     }
 }

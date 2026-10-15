@@ -1,6 +1,6 @@
 # `app.toolport/gateway` MCP extension
 
-Version: `1.0.0`
+Version: `2.0.0`
 
 Toolport advertises this third-party extension in the `extensions` object of its
 modern `server/discover` capability response. The vendor prefix is the reverse of
@@ -14,11 +14,9 @@ extension retain the same behavior.
 
 ```json
 {
-  "version": "1.0.0",
+  "version": "2.0.0",
   "discoveryMode": "lazy",
   "codeMode": true,
-  "agentControl": false,
-  "destructiveConfirmation": false,
   "humanApproval": true
 }
 ```
@@ -26,17 +24,22 @@ extension retain the same behavior.
 - `version` is the independent version of this extension settings schema.
 - `discoveryMode` is `lazy`, `grouped`, or `full` for the requesting client.
 - `codeMode` reports whether `toolport_run_script` is available.
-- `agentControl` reports whether the server enable/disable tools are available.
-- `destructiveConfirmation` reports whether destructive calls use the
-  agent-facing `toolport_confirm` flow. It is `false` when human approval
-  supersedes that flow.
 - `humanApproval` reports whether the effective human approval gate is active,
   including a Teams-enforced gate.
 
-Servers implementing this extension MUST return all six fields. Clients MUST NOT
+Servers implementing this extension MUST return all four fields. Clients MUST NOT
 treat any `true` value as permission to bypass Toolport policy; the ordinary tool
 call remains the enforcement point. Clients SHOULD treat an unknown `version` as
 unsupported and continue through core MCP discovery and tool calls.
+
+## Version history
+
+- `2.0.0`: current settings schema. Removed the `agentControl` and
+  `destructiveConfirmation` fields along with the agent-token confirm flow and
+  agent-facing server enable/disable tools, so servers now return the four
+  fields listed above.
+- `1.0.0`: introduced the extension with `agentControl` and
+  `destructiveConfirmation` in addition to the current fields.
 
 ## Graceful degradation
 

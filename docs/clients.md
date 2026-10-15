@@ -74,7 +74,7 @@ manual setup. Toolport checks these before importing or migrating a ZCode config
 Use this when Codex has already created its home directory (`$CODEX_HOME`, or `~/.codex/` when that env is unset).
 
 1. In Toolport, add or enable the MCP servers you want Codex to use.
-2. Open **Clients**, select **Codex**, optionally choose a profile, and click **Connect to Toolport**.
+2. Open **Clients**, select **Codex**, choose its Access, and click **Connect to Toolport**.
 3. Toolport updates `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) with a single `[mcp_servers.toolport]` entry. That entry runs the resolved `toolport-gateway` binary; existing Codex TOML keys and other MCP servers are preserved, and an existing config is backed up before the write. (Older installs that still have `[mcp_servers.conduit]` are renamed to `toolport` on the next Toolport launch.)
 4. Start a new Codex session so it re-reads the config. In Toolport, the Codex row changes to **connected to Toolport**; in Codex, Toolport-managed tools are served through the one `toolport` MCP server. With lazy discovery enabled, Codex gets Toolport's compact search tools instead of every downstream tool up front.
 
@@ -115,3 +115,45 @@ in [packaging/agent-plugin/toolport/README.md](../packaging/agent-plugin/toolpor
 ## Headless gateway
 
 For Docker and MCP over HTTP, see [Headless gateway](headless.md).
+
+## Client access in 2.0
+
+Servers have one on/off switch. An off server is hidden from every client. On the
+Clients page, Access can select **All enabled servers** or a named **access set**.
+Access sets narrow server and tool access; manage them and project folder routing
+under **Settings > Advanced**. Folder routing takes precedence over client access,
+then `TOOLPORT_PROFILE`, then the default access. Unknown access sets fail closed.
+
+The v3 registry migration backs up the original document and turns on the union
+of servers included in existing profiles. If the old active profile was narrower,
+it pins that profile as the default. Existing client bindings, folder mappings,
+tool scopes and integrity stores keep their stable profile IDs. When the server
+sets match, the old default tool policy is retained until you explicitly choose
+All enabled servers in Settings. The default integrity store remains the same.
+
+Shared HTTP tokens keep their existing full connected set when no access set is
+selected. Named access sets narrow their servers; tool restrictions apply to
+stdio clients. This preserves HTTP access during the upgrade.
+
+### Disconnect and original configs
+
+Before its first edit, Toolport saves exact original bytes or a file-absent record
+under its data directory's `backups/<client>/original-<path hash>.json`. The record
+includes the path, content hash, capture time and Toolport version. It is separate
+from the rotating backups and uses owner-only permissions (Unix modes or a
+private Windows ACL). Original provenance is retained after disconnect, so
+repeated removal and a later uninstaller preserve the restored config. Reconnecting
+captures a fresh original and replaces the completed snapshot payloads. Client
+config writes and restoration preserve the existing file mode.
+
+Disconnect restores exact original bytes when the config still matches Toolport's
+last write and no intervening native edits were observed. Otherwise it preserves
+your edits and reverses Toolport's changes, restoring moved entries without
+replacing entries you re-added. A snapshot first captured after an older Toolport
+install uses this merge path and the existing move record. The original pre-install
+bytes of that older installation may be unavailable.
+
+Settings offers **Remove Toolport from all clients**, with confirmation and
+per-client results. The same operation is available through the gateway CLI; see
+[headless usage](headless.md#remove-client-connections). Package uninstall hooks
+are separate from this command.

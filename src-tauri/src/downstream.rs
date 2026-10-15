@@ -5,14 +5,16 @@
 //! one downstream server over a transport, does the handshake, and lists/calls
 //! its tools. The transport is abstracted so the router can be tested with a mock
 //! instead of spawning real processes.
+use crate::http_client::{RequestHeaderExt as _, ResponseResultExt as _};
 
-use std::collections::{HashMap, HashSet};
+use crate::tool_definitions::SerializedTools;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -61,7 +63,7 @@ impl SubscriptionFilter {
 use serde_json::{json, Value};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct HeaderParamSpec {
+pub(crate) struct HeaderParamSpec {
     header_name: String,
     path: Vec<String>,
 }
@@ -209,7 +211,7 @@ fn collect_header_param_specs(
     Ok(())
 }
 
-fn header_param_specs(tool: &Value) -> Result<Vec<HeaderParamSpec>, String> {
+pub(crate) fn header_param_specs(tool: &Value) -> Result<Vec<HeaderParamSpec>, String> {
     let Some(schema) = tool.get("inputSchema") else {
         return Ok(Vec::new());
     };
@@ -262,6 +264,7 @@ fn encode_header_param(value: &Value) -> Result<Option<String>, TransportError> 
     }
 }
 
+#[cfg(test)]
 fn tool_request_headers(
     tools: &[Value],
     tool_name: &str,
@@ -274,11 +277,18 @@ fn tool_request_headers(
         return Ok(Vec::new());
     };
     let specs = header_param_specs(tool).map_err(TransportError::Fatal)?;
+    headers_from_specs(&specs, arguments)
+}
+
+fn headers_from_specs(
+    specs: &[HeaderParamSpec],
+    arguments: &Value,
+) -> Result<Vec<(String, String)>, TransportError> {
     let mut headers = Vec::new();
     for spec in specs {
         if let Some(value) = value_at_path(arguments, &spec.path) {
             if let Some(encoded) = encode_header_param(value)? {
-                headers.push((spec.header_name, encoded));
+                headers.push((spec.header_name.clone(), encoded));
             }
         }
     }
@@ -345,27 +355,52 @@ pub const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
 /// aggregated result. `refresh_after` normally matches it; after a failed refresh
 /// it moves forward briefly to avoid retrying on every one-second watcher tick
 /// while the advertised remaining TTL correctly stays at zero.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CacheHint {
     expires_at: Option<Instant>,
     refresh_after: Option<Instant>,
     public: bool,
 }
 
-impl Default for CacheHint {
-    fn default() -> Self {
-        Self {
-            expires_at: None,
-            refresh_after: None,
-            public: false,
-        }
+#[cfg(feature = "test-support")]
+thread_local! {
+    static CACHE_HINT_TEST_TIME: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+fn cache_hint_now() -> Instant {
+    #[cfg(feature = "test-support")]
+    if let Some(now) = CACHE_HINT_TEST_TIME.with(std::cell::Cell::get) {
+        return now;
+    }
+    Instant::now()
+}
+
+#[cfg(feature = "test-support")]
+pub struct CacheHintClockGuard {
+    previous: Option<Instant>,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(feature = "test-support")]
+impl Drop for CacheHintClockGuard {
+    fn drop(&mut self) {
+        CACHE_HINT_TEST_TIME.with(|clock| clock.set(self.previous));
     }
 }
 
 impl CacheHint {
+    /// Freeze this thread's cache clock without changing production TTL behavior.
+    #[cfg(feature = "test-support")]
+    pub fn freeze_clock_for_test() -> CacheHintClockGuard {
+        CacheHintClockGuard {
+            previous: CACHE_HINT_TEST_TIME.with(|clock| clock.replace(Some(Instant::now()))),
+            _thread: std::marker::PhantomData,
+        }
+    }
+
     pub fn from_result(result: &Value) -> Self {
         let ttl_ms = result.get("ttlMs").and_then(Value::as_u64).unwrap_or(0);
-        let now = Instant::now();
+        let now = cache_hint_now();
         let expires_at = (ttl_ms > 0)
             .then(|| Duration::from_millis(ttl_ms))
             .and_then(|ttl| now.checked_add(ttl));
@@ -378,7 +413,7 @@ impl CacheHint {
     }
 
     pub fn local(ttl_ms: u64) -> Self {
-        let now = Instant::now();
+        let now = cache_hint_now();
         let expires_at = (ttl_ms > 0)
             .then(|| Duration::from_millis(ttl_ms))
             .and_then(|ttl| now.checked_add(ttl));
@@ -408,7 +443,7 @@ impl CacheHint {
 
     pub fn remaining_ttl_ms(&self) -> u64 {
         self.expires_at
-            .and_then(|expires| expires.checked_duration_since(Instant::now()))
+            .and_then(|expires| expires.checked_duration_since(cache_hint_now()))
             .map(|remaining| remaining.as_millis().min(u128::from(u64::MAX)) as u64)
             .unwrap_or(0)
     }
@@ -421,7 +456,7 @@ impl CacheHint {
     /// stale, but the protocol does not require clients to hammer the server; the
     /// existing list-changed notification path remains the invalidation mechanism.
     pub fn needs_refresh(&self) -> bool {
-        self.refresh_after.is_some_and(|at| Instant::now() >= at)
+        self.refresh_after.is_some_and(|at| cache_hint_now() >= at)
     }
 
     fn mark_stale_and_defer(&mut self) {
@@ -459,6 +494,20 @@ pub fn is_implausible_shrink(previous: usize, new: usize) -> bool {
     new * 2 < previous
 }
 
+trait CatalogStorage: From<Vec<Value>> {
+    fn item_count(&self) -> usize;
+}
+impl CatalogStorage for Vec<Value> {
+    fn item_count(&self) -> usize {
+        self.len()
+    }
+}
+impl CatalogStorage for SerializedTools {
+    fn item_count(&self) -> usize {
+        self.len()
+    }
+}
+
 /// Apply a successful list refresh, holding off on an implausible collapse.
 ///
 /// - A refresh that keeps at least half the previous catalog always replaces it
@@ -469,7 +518,7 @@ pub fn is_implausible_shrink(previous: usize, new: usize) -> bool {
 ///   downsizing (revoked scopes, an admin pruning tools) from being pinned to a
 ///   stale catalog forever.
 fn apply_catalog_refresh(
-    previous: &mut Vec<Value>,
+    previous: &mut impl CatalogStorage,
     new_items: Vec<Value>,
     shrink_streak: &mut u8,
     cache_hint: &mut CacheHint,
@@ -477,9 +526,9 @@ fn apply_catalog_refresh(
     server_id: &str,
     kind: &str,
 ) -> bool {
-    if is_implausible_shrink(previous.len(), new_items.len()) {
+    if is_implausible_shrink(previous.item_count(), new_items.len()) {
         *shrink_streak = shrink_streak.saturating_add(1);
-        let (before, after) = (previous.len(), new_items.len());
+        let (before, after) = (previous.item_count(), new_items.len());
         if *shrink_streak < EMPTY_CATALOG_CONFIRMATIONS {
             cache_hint.mark_stale_and_defer();
             let msg = format!(
@@ -496,12 +545,12 @@ fn apply_catalog_refresh(
         crate::gatewaylog::append(&msg);
         *shrink_streak = 0;
         *cache_hint = new_hint;
-        *previous = new_items;
+        *previous = new_items.into();
         return true;
     }
     *shrink_streak = 0;
     *cache_hint = new_hint;
-    *previous = new_items;
+    *previous = new_items.into();
     true
 }
 
@@ -556,7 +605,7 @@ pub fn relayable_meta(meta: Option<&Value>) -> Option<Value> {
         })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    (!kept.is_empty()).then(|| Value::Object(kept))
+    (!kept.is_empty()).then_some(Value::Object(kept))
 }
 
 /// Apply the same per-hop discipline to a params object that is forwarded
@@ -797,12 +846,20 @@ fn protocol_meta_for_catalog(version: &str, server_capabilities: Option<&Value>)
 /// Max time to wait for a single stdio response before giving up. Without this a
 /// server that never replies would block its thread (and the batch health probe)
 /// forever.
-const STDIO_READ_TIMEOUT: Duration = Duration::from_secs(30);
-/// Tighter bound for the connect handshake (initialize + tools/list). The batch
+pub const STDIO_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// Leave time for private setup discovery to return its verified-tool diagnostic
+/// before the caller's stdio read deadline expires.
+pub const SETUP_CATALOG_WAIT_BUDGET: Duration =
+    STDIO_READ_TIMEOUT.saturating_sub(Duration::from_secs(5));
+/// Tighter bound for initialize and subsequent catalog refreshes. The batch
 /// probe and every router rebuild connect to all servers and wait on the slowest,
 /// so one hung server should fail in seconds, not stall everything for the full
 /// live-call timeout. Restored to STDIO_READ_TIMEOUT once connected.
 const STDIO_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// A first catalog can legitimately take 15 seconds plus schema publication work.
+/// Thirty seconds matches the existing traversal/live-call cap without giving a
+/// hung server an unbounded connection or extending initialize.
+const FIRST_CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
 /// Budget for the `server/discover` era probe, deliberately far tighter than any
 /// connect timeout.
 ///
@@ -861,6 +918,48 @@ fn read_capped_line<R: BufRead>(
     // decoded length again would be both unnecessary and capable of dropping a real newline.
     line.push_str(&decoded);
     Ok(n)
+}
+
+/// Read one raw frame without a decoded copy or an allocation past the cap.
+/// On a full unterminated frame the connection must reset; never drain its tail.
+fn read_downstream_frame<R: BufRead>(
+    reader: &mut R,
+    bytes: &mut Vec<u8>,
+    max_bytes: usize,
+    delimiter: Option<u8>,
+) -> std::io::Result<usize> {
+    loop {
+        if delimiter.is_some() && bytes.len() == max_bytes {
+            return Err(oversized_frame_error(max_bytes));
+        }
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(bytes.len());
+        }
+        let remaining = max_bytes.saturating_sub(bytes.len());
+        if remaining == 0 {
+            return Err(oversized_frame_error(max_bytes));
+        }
+        let chunk = &available[..available.len().min(remaining)];
+        let newline =
+            delimiter.and_then(|delimiter| chunk.iter().position(|byte| *byte == delimiter));
+        let count = newline.map_or(chunk.len(), |index| index + 1);
+        if bytes.len() + count > bytes.capacity() {
+            let capacity =
+                (bytes.capacity().saturating_mul(2).max(bytes.len() + count)).min(max_bytes);
+            bytes.reserve_exact(capacity - bytes.len());
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+        reader.consume(count);
+        if newline.is_some() {
+            return Ok(bytes.len());
+        }
+    }
+}
+
+fn oversized_frame_error(max_bytes: usize) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData,
+        format!("downstream frame exceeded the {max_bytes}-byte limit; connection reset. In-flight operations may have completed; check before retrying them"))
 }
 
 fn is_unterminated_capped_line(n: usize, line: &str, max_bytes: u64) -> bool {
@@ -950,10 +1049,15 @@ static HTTP_CANCEL_THREADS_INFLIGHT: std::sync::atomic::AtomicUsize =
 /// instead of blocking every other agent queued on the same server.
 #[derive(Debug, Clone)]
 pub enum TransportError {
+    /// Typed call failure, preserving stage and auth ownership through dispatch.
+    Classified(crate::call_failure::CallFailureKind, String),
     /// Non-retryable protocol/application error: the request reached the server and it
     /// responded with an error (or the response was structurally invalid). Does NOT
     /// count against server health - a bad tool call is not a dead server.
     Fatal(String),
+    /// An oversized frame retired the connection. Counts against health, but a
+    /// dispatched operation must never be replayed, even when it is read-only.
+    FrameRejected(String),
     /// The server returned a JSON-RPC *error object*, preserved structurally.
     ///
     /// Previously these were flattened with `Fatal(err.to_string())`, which threw
@@ -965,10 +1069,15 @@ pub enum TransportError {
     /// died). Distinct from `Fatal` so the circuit breaker can trip on a genuinely
     /// dead/hung server without counting ordinary error responses against it.
     Unavailable(String),
-    /// Retryable: a 429 rate-limit or a connection that never reached the server.
+    /// Retryable connection failure that never reached the server.
     /// `retry_after` carries the server-advertised delay (Retry-After) if present;
     /// the caller falls back to its own exponential backoff when `None`.
     Retry {
+        retry_after: Option<Duration>,
+        message: String,
+    },
+    /// The endpoint explicitly rejected the request with HTTP 429.
+    RateLimited {
         retry_after: Option<Duration>,
         message: String,
     },
@@ -988,26 +1097,31 @@ pub struct CancelRegistry {
     inner: Arc<Mutex<CancelState>>,
 }
 
+type CancelCallback = Arc<dyn Fn(Option<String>) + Send + Sync>;
+
 #[derive(Default)]
 struct CancelState {
     active: HashSet<String>,
-    cancelled: HashMap<String, CancelledRequest>,
-    in_flight: HashMap<String, CancelEntry>,
-}
-
-#[derive(Clone, Default)]
-struct CancelledRequest {
-    reason: Option<String>,
-    forwarded: bool,
+    cancelled: HashMap<String, Option<String>>,
+    hooks: HashMap<String, HashMap<u64, CancelCallback>>,
+    next_hook: u64,
+    closed: bool,
+    finished: bool,
 }
 
 #[derive(Clone)]
 struct CancelEntry {
     stdin: Arc<Mutex<ChildStdin>>,
+    forwarder: StdioForwarder,
     downstream_id: Value,
+    /// The stdio request waiting on `downstream_id`, woken with `Cancelled` so a
+    /// cancelled call stops waiting instead of holding its thread until the read
+    /// timeout. `None` when nothing waits (a suspended legacy MRTR request).
+    waiter: Option<Weak<StdioCore>>,
+    forwarded: Arc<AtomicBool>,
 }
 
-/// Cancellation context for one proxied client request.
+/// Cancellation follows the owned call, including suspended multi-round trips.
 #[derive(Clone)]
 pub struct CancelContext {
     client_request_id: String,
@@ -1015,12 +1129,9 @@ pub struct CancelContext {
 }
 
 impl CancelContext {
-    /// Whether the upstream client has cancelled this request.
-    ///
-    /// Request handlers that are waiting before a downstream request is registered (for
-    /// example, a resource-subscription single-flight follower) use this to stop occupying a
-    /// worker as soon as the caller gives up. Once a downstream request exists, the registry's
-    /// normal forwarding path still sends `notifications/cancelled` to that server.
+    pub fn request_key(&self) -> String {
+        self.client_request_id.clone()
+    }
     pub fn is_cancelled(&self) -> bool {
         self.registry.is_cancelled(&self.client_request_id)
     }
@@ -1032,13 +1143,54 @@ impl CancelContext {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .cancelled
             .get(&self.client_request_id)
-            .and_then(|cancelled| cancelled.reason.clone())
+            .cloned()
+            .flatten()
+    }
+
+    /// Keep an owned resource cancellable after its upstream round returns.
+    pub fn on_cancel(&self, callback: CancelCallback) -> CancelGuard {
+        let (key, cancelled) = {
+            let mut state = self
+                .registry
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.next_hook += 1;
+            let key = state.next_hook;
+            let cancelled = if state.closed || state.cancelled.contains_key(&self.client_request_id)
+            {
+                Some(
+                    state
+                        .cancelled
+                        .get(&self.client_request_id)
+                        .cloned()
+                        .flatten(),
+                )
+            } else {
+                None
+            };
+            state
+                .hooks
+                .entry(self.client_request_id.clone())
+                .or_default()
+                .insert(key, callback.clone());
+            (key, cancelled)
+        };
+        if let Some(reason) = cancelled {
+            callback(reason);
+        }
+        CancelGuard {
+            client_request_id: self.client_request_id.clone(),
+            registry: self.registry.clone(),
+            key,
+        }
     }
 }
 
-struct CancelGuard {
+pub struct CancelGuard {
     client_request_id: String,
     registry: CancelRegistry,
+    key: u64,
 }
 
 impl CancelRegistry {
@@ -1051,9 +1203,10 @@ impl CancelRegistry {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.active.contains(&client_request_id) {
+        if state.closed || state.active.contains(&client_request_id) {
             return false;
         }
+        state.cancelled.remove(&client_request_id);
         state.active.insert(client_request_id);
         true
     }
@@ -1064,8 +1217,9 @@ impl CancelRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.active.remove(client_request_id);
-        state.cancelled.remove(client_request_id);
-        state.in_flight.remove(client_request_id);
+        if !state.hooks.contains_key(client_request_id) {
+            state.cancelled.remove(client_request_id);
+        }
     }
 
     pub fn context(&self, client_request_id: String) -> CancelContext {
@@ -1075,98 +1229,159 @@ impl CancelRegistry {
         }
     }
 
-    /// Mark an active client request as cancelled and, if it has already reached a
-    /// stdio downstream, forward `notifications/cancelled` with that downstream id.
-    /// Returns true when the referenced client request is still active.
     pub fn cancel(&self, client_request_id: &str, reason: Option<&str>) -> bool {
-        let forward = {
+        let (hooks, reason) = {
             let mut state = self
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !state.active.contains(client_request_id) {
+            if !state.active.contains(client_request_id)
+                && !state.hooks.contains_key(client_request_id)
+            {
                 return false;
             }
-            let reason = normalize_cancel_reason(reason);
-            let cancelled = state
-                .cancelled
-                .entry(client_request_id.to_string())
-                .or_default();
-            if reason.is_some() {
-                cancelled.reason = reason;
+            if state.cancelled.contains_key(client_request_id) {
+                return true;
             }
-            prepare_cancel_forward(&mut state, client_request_id)
+            let reason = normalize_cancel_reason(reason);
+            state
+                .cancelled
+                .insert(client_request_id.to_string(), reason.clone());
+            let hooks = state
+                .hooks
+                .get(client_request_id)
+                .map(|hooks| hooks.values().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            (hooks, reason)
         };
-        if let Some((entry, reason)) = forward {
-            entry.send_cancel_async(reason);
+        for hook in hooks {
+            hook(reason.clone());
         }
         true
     }
 
-    pub fn is_cancelled(&self, client_request_id: &str) -> bool {
+    /// A finite HTTP exchange completed. Its suspended work belongs to the
+    /// next round, so closing this old socket must no longer cancel it.
+    pub fn finish_connection(&self) {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .cancelled
-            .contains_key(client_request_id)
+            .finished = true;
     }
 
-    fn forward_cancel_if_ready(&self, client_request_id: &str) {
-        let forward = {
+    /// Closing is terminal: even a worker arriving after close cannot dispatch.
+    pub fn close(&self) {
+        let hooks = {
             let mut state = self
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            prepare_cancel_forward(&mut state, client_request_id)
+            if state.closed || state.finished {
+                return;
+            }
+            state.closed = true;
+            let ids = state
+                .active
+                .iter()
+                .chain(state.hooks.keys())
+                .cloned()
+                .collect::<HashSet<_>>();
+            let mut hooks = Vec::new();
+            for id in ids {
+                if state.cancelled.contains_key(&id) {
+                    continue;
+                }
+                state
+                    .cancelled
+                    .insert(id.clone(), Some("upstream caller disconnected".into()));
+                if let Some(owned) = state.hooks.get(&id) {
+                    hooks.extend(owned.values().cloned());
+                }
+            }
+            hooks
         };
-        if let Some((entry, reason)) = forward {
-            entry.send_cancel_async(reason);
+        for hook in hooks {
+            hook(Some("upstream caller disconnected".into()));
         }
     }
 
-    fn register(&self, client_request_id: String, entry: CancelEntry) -> CancelGuard {
-        let mut state = self
+    pub fn is_cancelled(&self, client_request_id: &str) -> bool {
+        let state = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.in_flight.insert(client_request_id.clone(), entry);
-        if let Some(cancelled) = state.cancelled.get_mut(&client_request_id) {
-            cancelled.forwarded = false;
+        state.closed || state.cancelled.contains_key(client_request_id)
+    }
+
+    fn register(&self, client_request_id: String, entry: CancelEntry) -> CancelGuard {
+        self.context(client_request_id)
+            .on_cancel(Arc::new(move |reason| entry.send_cancel_async(reason)))
+    }
+}
+
+/// Each stdio connection has one writer for cancels and refusals. A stuck
+/// child cannot occupy another server's writer or accumulate unlimited work.
+/// Budget one cancel and one refusal per allowed in-flight request, plus the
+/// existing unsolicited server-request allowance. Overflow retires the child.
+const MAX_STDIO_PENDING: usize = 256;
+const MAX_STDIO_FORWARDS: usize = 2 * MAX_STDIO_PENDING + MAX_UNCLAIMED_SERVER_REQUESTS;
+type ForwardWork = Box<dyn FnOnce() + Send>;
+#[derive(Clone)]
+struct StdioForwarder {
+    tx: std::sync::mpsc::SyncSender<ForwardWork>,
+    retired: Arc<AtomicBool>,
+    child: Weak<Mutex<Child>>,
+}
+
+impl StdioForwarder {
+    fn new(child: Weak<Mutex<Child>>) -> Self {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ForwardWork>(MAX_STDIO_FORWARDS);
+        let retired = Arc::new(AtomicBool::new(false));
+        let stopped = retired.clone();
+        std::thread::spawn(move || {
+            while let Ok(work) = rx.recv() {
+                if stopped.load(Ordering::Acquire) {
+                    break;
+                }
+                work();
+            }
+        });
+        Self { tx, retired, child }
+    }
+
+    fn enqueue(&self, work: ForwardWork) {
+        if self.retired.load(Ordering::Acquire) || self.tx.try_send(work).is_ok() {
+            return;
         }
-        CancelGuard {
-            client_request_id,
-            registry: self.clone(),
+        if !self.retired.swap(true, Ordering::AcqRel) {
+            eprintln!("toolport: retiring downstream with a saturated cancel/refusal queue");
+            if let Some(child) = self.child.upgrade() {
+                let mut child = child
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                #[cfg(unix)]
+                kill_process_group(&mut child);
+                #[cfg(not(unix))]
+                let _ = child.kill();
+            }
         }
     }
 }
 
-/// Cap on concurrently-forwarding cancellation threads. The forward is a best-effort
-/// `writeln!` to the child's stdin, which blocks if the child isn't draining its pipe.
-/// Without a cap, repeated cancellation of a wedged downstream would leak one blocked
-/// thread per cancel; past the cap we drop the notification instead.
-static CANCEL_THREADS_INFLIGHT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-const MAX_CANCEL_THREADS: usize = 64;
-
 impl CancelEntry {
     fn send_cancel_async(&self, reason: Option<String>) {
-        // Reserve a slot; if too many forwards are already blocked (a downstream that
-        // stopped draining its stdin), drop this one rather than leak another thread.
-        if CANCEL_THREADS_INFLIGHT.fetch_add(1, Ordering::SeqCst) >= MAX_CANCEL_THREADS {
-            CANCEL_THREADS_INFLIGHT.fetch_sub(1, Ordering::SeqCst);
-            eprintln!(
-                "toolport: dropping cancellation forward (>{MAX_CANCEL_THREADS} already blocked; \
-                 downstream not draining stdin)"
-            );
+        if self.forwarded.swap(true, Ordering::SeqCst) {
             return;
         }
+        if let Some(core) = self.waiter.as_ref().and_then(Weak::upgrade) {
+            core.cancel_waiter(&self.downstream_id);
+        }
         let entry = self.clone();
-        std::thread::spawn(move || {
+        self.forwarder.enqueue(Box::new(move || {
             if let Err(err) = entry.send_cancel(reason.as_deref()) {
                 eprintln!("toolport: failed to forward cancellation downstream: {err}");
             }
-            CANCEL_THREADS_INFLIGHT.fetch_sub(1, Ordering::SeqCst);
-        });
+        }));
     }
 
     fn send_cancel(&self, reason: Option<&str>) -> Result<(), String> {
@@ -1195,27 +1410,24 @@ fn normalize_cancel_reason(reason: Option<&str>) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-fn prepare_cancel_forward(
-    state: &mut CancelState,
-    client_request_id: &str,
-) -> Option<(CancelEntry, Option<String>)> {
-    let cancelled = state.cancelled.get_mut(client_request_id)?;
-    if cancelled.forwarded {
-        return None;
-    }
-    let entry = state.in_flight.get(client_request_id)?.clone();
-    cancelled.forwarded = true;
-    Some((entry, cancelled.reason.clone()))
-}
-
 impl Drop for CancelGuard {
     fn drop(&mut self) {
-        self.registry
+        let mut state = self
+            .registry
             .inner
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .in_flight
-            .remove(&self.client_request_id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(hooks) = state.hooks.get_mut(&self.client_request_id) {
+            hooks.remove(&self.key);
+            if hooks.is_empty() {
+                state.hooks.remove(&self.client_request_id);
+            }
+        }
+        if !state.active.contains(&self.client_request_id)
+            && !state.hooks.contains_key(&self.client_request_id)
+        {
+            state.cancelled.remove(&self.client_request_id);
+        }
     }
 }
 
@@ -1229,8 +1441,31 @@ impl TransportError {
     pub fn is_health_failure(&self) -> bool {
         matches!(
             self,
-            TransportError::Unavailable(_) | TransportError::Retry { .. }
+            TransportError::Unavailable(_)
+                | TransportError::Classified(
+                    crate::call_failure::CallFailureKind::Timeout { .. }
+                        | crate::call_failure::CallFailureKind::Unavailable { .. },
+                    _
+                )
+                | TransportError::FrameRejected(_)
+                | TransportError::Retry { .. }
+                | TransportError::RateLimited { .. }
         )
+    }
+
+    pub fn call_failure(&self) -> crate::call_failure::CallFailure {
+        use crate::call_failure::{CallFailure, CallFailureKind as K};
+        let kind = match self {
+            Self::Classified(kind, _) => kind.clone(),
+            Self::Rpc(error) => K::rpc(error),
+            Self::Unavailable(_) | Self::FrameRejected(_) => K::Unavailable { after_send: true },
+            Self::RateLimited { .. } => K::Quota,
+            Self::Retry { .. } => K::Unavailable { after_send: false },
+            Self::Cancelled(_) => K::Cancelled,
+            Self::Busy(_) => K::Unavailable { after_send: false },
+            Self::Fatal(_) => K::Internal,
+        };
+        CallFailure::new(kind, self.to_string())
     }
 
     /// The JSON-RPC `code`, when the failure was an error *response* from the
@@ -1262,6 +1497,9 @@ impl TransportError {
         }
 
         match self {
+            TransportError::Classified(crate::call_failure::CallFailureKind::Auth { .. }, _) => {
+                true
+            }
             TransportError::Rpc(error) => {
                 matches!(error.get("code").and_then(Value::as_i64), Some(401 | 403))
                     || error
@@ -1313,12 +1551,16 @@ impl TransportError {
 impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TransportError::Fatal(msg) => write!(f, "{msg}"),
+            TransportError::Classified(_, msg)
+            | TransportError::Fatal(msg)
+            | TransportError::FrameRejected(msg) => write!(f, "{msg}"),
             // Rendered exactly as the flattened form was, so nothing user-facing
             // changes now that the error is carried structurally.
             TransportError::Rpc(err) => write!(f, "{err}"),
             TransportError::Unavailable(msg) => write!(f, "{msg}"),
-            TransportError::Retry { message, .. } => write!(f, "{message}"),
+            TransportError::Retry { message, .. } | TransportError::RateLimited { message, .. } => {
+                write!(f, "{message}")
+            }
             TransportError::Cancelled(message) | TransportError::Busy(message) => {
                 write!(f, "{message}")
             }
@@ -1334,9 +1576,13 @@ impl From<String> for TransportError {
 
 /// Read up to `max` bytes of a ureq response body, lossily as text, never more than
 /// the cap even if the server keeps streaming.
-fn read_capped(resp: ureq::Response, max: u64) -> String {
+fn read_capped(resp: ureq::http::Response<ureq::Body>, max: u64) -> String {
     let mut buf = Vec::new();
-    let _ = resp.into_reader().take(max).read_to_end(&mut buf);
+    let _ = resp
+        .into_body()
+        .into_reader()
+        .take(max)
+        .read_to_end(&mut buf);
     String::from_utf8_lossy(&buf).into_owned()
 }
 
@@ -1365,8 +1611,15 @@ fn retry_after_delay(value: &str) -> Option<Duration> {
 /// Record a 429 into the shared cross-process backoff window and return the
 /// parsed Retry-After, so every egress path (POST, inline POST, and the
 /// subscriptions/listen worker) records and reports rate limits identically.
-fn record_shared_rate_limit(url: &str, resp: &ureq::Response) -> Option<Duration> {
-    let retry_after = resp.header("retry-after").and_then(retry_after_delay);
+fn record_shared_rate_limit(
+    url: &str,
+    resp: &ureq::http::Response<ureq::Body>,
+) -> Option<Duration> {
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(retry_after_delay);
     crate::downstream_backoff::record_rate_limited(url, retry_after);
     retry_after
 }
@@ -1375,11 +1628,96 @@ fn record_shared_rate_limit(url: &str, resp: &ureq::Response) -> Option<Duration
 /// connection failure), so even a non-idempotent `tools/call` is safe to retry.
 /// Post-send I/O errors (e.g. a read timeout after the server got the request)
 /// are deliberately excluded, since the call may already have run.
-fn is_retryable_transport(t: &ureq::Transport) -> bool {
+fn is_retryable_transport(error: &ureq::Error) -> bool {
+    let cause = crate::http_client::connect_error(error).unwrap_or(error);
+    // A resolver policy denial is permanent, even though no request was sent.
+    if matches!(cause, ureq::Error::Io(io) if io.kind() == std::io::ErrorKind::PermissionDenied) {
+        return false;
+    }
+    if crate::http_client::connect_error(error).is_some() {
+        return true;
+    }
     matches!(
-        t.kind(),
-        ureq::ErrorKind::Dns | ureq::ErrorKind::ConnectionFailed
-    )
+        error,
+        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed
+    ) || matches!(error, ureq::Error::Io(io) if io.kind() == std::io::ErrorKind::ConnectionRefused)
+}
+
+fn http_read_error(error: std::io::Error) -> TransportError {
+    if let Some(ureq) = error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<ureq::Error>())
+    {
+        if http_metadata_rejected(ureq) {
+            return http_metadata_error(ureq, true);
+        }
+        if matches!(ureq, ureq::Error::Timeout(_)) {
+            return TransportError::Classified(
+                crate::call_failure::CallFailureKind::Timeout { after_send: true },
+                error.to_string(),
+            );
+        }
+    }
+    if error
+        .to_string()
+        .starts_with("downstream frame exceeded the ")
+    {
+        return TransportError::FrameRejected(error.to_string());
+    }
+    use crate::call_failure::CallFailureKind as K;
+    let kind = match error.kind() {
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
+            K::Timeout { after_send: true }
+        }
+        std::io::ErrorKind::InvalidData => return TransportError::Fatal(error.to_string()),
+        _ => K::Unavailable { after_send: true },
+    };
+    TransportError::Classified(kind, error.to_string())
+}
+
+fn http_transport_io_error(error: ureq::Error) -> TransportError {
+    if http_metadata_rejected(&error) {
+        return http_metadata_error(&error, false);
+    }
+    if matches!(&error, ureq::Error::Io(io) if io.kind() == std::io::ErrorKind::PermissionDenied) {
+        return TransportError::Fatal(error.to_string());
+    }
+    match error {
+        ureq::Error::Timeout(_) => http_read_error(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            error.to_string(),
+        )),
+        ureq::Error::Io(_) => http_read_error(error.into_io()),
+        _ => TransportError::Fatal(crate::http_client::transport_error_message(&error)),
+    }
+}
+
+const HTTP_METADATA_BYTES: usize = 64 * 1024;
+
+fn http_metadata_rejected(error: &ureq::Error) -> bool {
+    matches!(
+        error,
+        ureq::Error::BodyStalled | ureq::Error::LargeResponseHeader(..)
+    ) || matches!(error, ureq::Error::Protocol(error)
+            if matches!(error, ureq_proto::Error::ChunkExpectedCrLf | ureq_proto::Error::HttpParseTooManyHeaders))
+}
+
+fn http_metadata_error(error: &ureq::Error, response_body: bool) -> TransportError {
+    let message = if matches!(
+        error,
+        ureq::Error::Protocol(ureq_proto::Error::ChunkExpectedCrLf)
+    ) || (response_body && matches!(error, ureq::Error::BodyStalled))
+    {
+        "malformed or unsupported chunked framing from the server".to_string()
+    } else if matches!(
+        error,
+        ureq::Error::Protocol(ureq_proto::Error::HttpParseTooManyHeaders)
+    ) {
+        "downstream response contained too many header fields".to_string()
+    } else {
+        format!("downstream response headers exceeded the {HTTP_METADATA_BYTES}-byte limit")
+    };
+    TransportError::FrameRejected(message)
 }
 
 /// Build an `Authorization` header value from a raw token, adding the `Bearer`
@@ -1510,6 +1848,7 @@ fn cwd_validation_error(dir: &str, expanded: &Path, empty_variables: &[String]) 
             "; expanded empty environment variables: {variables}"
         ));
     }
+    message.push_str(". Create the directory on this machine or update the working directory in Servers, then retry.");
     message
 }
 
@@ -1636,8 +1975,8 @@ pub fn augmented_path() -> &'static str {
             .ok()
             .map(|p| p.split(':').map(String::from).collect())
             .unwrap_or_default();
-        let mut push = |d: String, list: &mut Vec<String>| {
-            if !d.is_empty() && !list.iter().any(|x| *x == d) {
+        let push = |d: String, list: &mut Vec<String>| {
+            if !d.is_empty() && !list.contains(&d) {
                 list.push(d);
             }
         };
@@ -1701,7 +2040,15 @@ pub fn resolve_command(command: &str) -> String {
     if command.contains('/') {
         return command.to_string();
     }
-    for dir in augmented_path().split(':').filter(|d| !d.is_empty()) {
+    resolve_command_in_path(command, augmented_path())
+}
+
+#[cfg(not(windows))]
+fn resolve_command_in_path(command: &str, path: &str) -> String {
+    if command.contains('/') {
+        return command.to_string();
+    }
+    for dir in path.split(':').filter(|d| !d.is_empty()) {
         let candidate = Path::new(dir).join(command);
         if candidate.is_file() {
             return candidate.to_string_lossy().into_owned();
@@ -2146,17 +2493,83 @@ pub trait Transport: Send {
     /// Handle server→client JSON-RPC (roots/list, sampling, …) by forwarding to the
     /// upstream MCP client. Default no-op: unsupported server requests are ignored.
     fn set_server_request_handler(&mut self, _handler: ServerRequestHandler) {}
+    /// Credential owner for transports that recover from a shared vault.
+    fn set_server_id(&mut self, _id: &str) {}
+    /// A request path that can run alongside other requests on this connection,
+    /// carrying the current protocol metadata and read timeout. `None` (the
+    /// default) keeps every request on the serialized `&mut self` path.
+    fn concurrent(&self) -> Option<Arc<dyn ConcurrentTransport>> {
+        None
+    }
+    /// Response activity on this connection, including error responses.
+    fn response_count(&self) -> u64 {
+        0
+    }
+
+    /// A protocol violation invalidated this connection. Only a fresh caller may
+    /// reconnect; calls dispatched on the rejected stream must never replay.
+    fn connection_reset_reason(&self) -> Option<String> {
+        None
+    }
+
+    /// Transports with direct shared-state getters avoid constructing a snapshot.
+    /// Keep the concurrent-handle fallback for other multiplexed transports.
+    fn connection_closed(&self) -> Option<bool> {
+        self.concurrent().map(|transport| transport.is_closed())
+    }
+    fn suspended_calls(&self) -> usize {
+        self.concurrent()
+            .map(|transport| transport.suspended_calls())
+            .unwrap_or(0)
+    }
+}
+
+/// The part of a [`Transport`] that is safe to call from several threads at once,
+/// so one slow call does not hold up other calls to the same server.
+pub trait ConcurrentTransport: Send + Sync {
+    fn request_with_cancel_and_headers(
+        &self,
+        method: &str,
+        params: Value,
+        cancel: Option<CancelContext>,
+        headers: &[(String, String)],
+    ) -> Result<Value, TransportError>;
+    fn request_with_cancel(
+        &self,
+        method: &str,
+        params: Value,
+        cancel: Option<CancelContext>,
+    ) -> Result<Value, TransportError> {
+        self.request_with_cancel_and_headers(method, params, cancel, &[])
+    }
+    /// True once the connection is gone for good (the child exited). A call
+    /// that only timed out leaves it open for the calls still in flight.
+    fn is_closed(&self) -> bool {
+        false
+    }
+    /// Calls suspended for a modern upstream round trip: the server is still
+    /// working on them, though no thread is waiting.
+    fn suspended_calls(&self) -> usize {
+        0
+    }
+}
+
+fn redact_trace_urls(msg: &str) -> String {
+    static URL: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r#"https?://[^\s\"'<>]+"#).unwrap());
+    URL.replace_all(msg, "<redacted endpoint>").into_owned()
 }
 
 fn downstream_trace(msg: &str) {
     if crate::brand::env_var_os("TOOLPORT_DEBUG", "CONDUIT_DEBUG").is_none() {
         return;
     }
+    let msg = redact_trace_urls(msg);
     if crate::registry::gateway_log_path().is_none() {
         eprintln!("toolport: {msg}");
         return;
     }
-    crate::gatewaylog::append(msg);
+    crate::gatewaylog::append(&msg);
 }
 
 /// Bitmask of which downstream list a `notifications/.../list_changed` announces.
@@ -2501,7 +2914,7 @@ fn deno_dangerous(args: &[String]) -> Option<&str> {
         "-L",
     ];
     let (sub, si) = next_operand(args, 0, VALUE_OPTS);
-    let Some(sub) = sub else { return None };
+    let sub = sub?;
     if sub.eq_ignore_ascii_case("eval") {
         return Some(sub);
     }
@@ -2526,7 +2939,7 @@ fn bun_dangerous(args: &[String]) -> Option<&str> {
     // `bun --cwd x run https://evil` is caught while a URL passed as an app arg is ignored.
     const VALUE_OPTS: &[&str] = &["--cwd", "--config", "-c"];
     let (sub, si) = next_operand(args, 0, VALUE_OPTS);
-    let Some(sub) = sub else { return None };
+    let sub = sub?;
     let (target, _) = if sub.eq_ignore_ascii_case("run")
         || sub.eq_ignore_ascii_case("x")
         || sub.eq_ignore_ascii_case("exec")
@@ -2993,21 +3406,17 @@ fn inject_container_env(command: &str, args: &[String], env: &[(String, String)]
 }
 
 /// Talks to a downstream MCP server over its stdio (a spawned child process).
-/// Stdout is drained on a background thread into a channel so reads can time out
-/// (a blocking `read_line` on an unresponsive child would otherwise hang forever).
+/// Stdout is drained on a background thread into a channel, and a demux thread
+/// routes each line to the request waiting on its id, so several requests can be
+/// in flight on the one pipe and each wait times out on its own (a blocking
+/// `read_line` on an unresponsive child would otherwise hang forever).
 pub struct StdioTransport {
-    child: Child,
+    /// Request machinery, shared with concurrent calls on this connection.
+    core: Arc<StdioCore>,
     /// Windows Job Object that owns the complete launcher process tree. Closing
     /// it terminates descendants that outlive an `npx`/`uvx` wrapper.
     #[cfg(windows)]
     job: Option<WindowsJob>,
-    stdin: Arc<Mutex<ChildStdin>>,
-    rx: Receiver<String>,
-    /// Tail of the child's stderr, drained on a background thread. A server that
-    /// dies on startup (bad package name, missing API key) explains itself here,
-    /// so we can report that instead of a bare "closed the connection".
-    stderr: Arc<Mutex<String>>,
-    next_id: i64,
     /// How long a single request waits for its response. Lowered during the
     /// connect handshake, then restored for (potentially slow) live tool calls.
     read_timeout: Duration,
@@ -3018,17 +3427,6 @@ pub struct StdioTransport {
     /// once this is set, so tool-list changes announced during startup are
     /// ignored. Flipped on by `arm_tools_watch` after the handshake.
     armed: Arc<AtomicBool>,
-    /// The command is a download-then-run launcher (npx, uvx, ...): its first
-    /// `initialize` gets the long connect budget, and a connect timeout is
-    /// reported as "still installing" rather than a dead server.
-    launcher: bool,
-    /// Answers server-initiated JSON-RPC (e.g. `roots/list`) by forwarding to the
-    /// upstream MCP client. Set by the gateway before the connect handshake.
-    server_handler: Option<ServerRequestHandler>,
-    /// A legacy server request suspended between two modern upstream round trips.
-    /// The child keeps processing the original request; the retry only supplies
-    /// the requested input and must not start a second downstream call.
-    pending_mrtr: Option<PendingLegacyMrtr>,
     /// Routes `notifications/progress` back to the client that minted the token
     /// (SOU-444). Shared with the stdout drain thread so the gateway can bind it
     /// after the transport is spawned, keeping `spawn_watched`'s signature stable.
@@ -3038,6 +3436,1130 @@ pub struct StdioTransport {
     protocol_meta: Option<Value>,
     /// Request id of the current long-lived `subscriptions/listen` request.
     subscription_listener_id: Option<i64>,
+}
+
+/// Whom a downstream request serves. The gateway's server-request handler reads
+/// thread-locals (upstream era, capabilities, MCP session), so a stdio server's
+/// roots, sampling or elicitation request must be handled on a thread serving the
+/// same upstream client.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RequestContext {
+    /// An upstream client is waiting on the request. Requests with the same key
+    /// serve the same client.
+    Client(String),
+    /// Work no client is waiting on (connect, catalog refresh). It never owns a
+    /// server request and never makes the in-flight clients look mixed.
+    Background {
+        /// The handler can answer for the one upstream client without any
+        /// per-request context (the stdio gateway), so a server request that
+        /// arrives while only background work is in flight is handled on its
+        /// thread, as before multiplexing. Otherwise it is refused at once: no
+        /// client can answer it before the background request gives up.
+        sole_client: bool,
+    },
+}
+
+impl RequestContext {
+    fn client(&self) -> Option<&str> {
+        match self {
+            RequestContext::Client(key) => Some(key),
+            RequestContext::Background { .. } => None,
+        }
+    }
+}
+
+/// Names the [`RequestContext`] of the calling thread. Unset means every request
+/// shares one client context.
+pub type RequestContextProvider = Arc<dyn Fn() -> RequestContext + Send + Sync>;
+
+static REQUEST_CONTEXT_PROVIDER: OnceLock<RequestContextProvider> = OnceLock::new();
+
+/// Install the process-wide [`RequestContextProvider`]. The first call wins.
+pub fn set_request_context_provider(provider: RequestContextProvider) {
+    let _ = REQUEST_CONTEXT_PROVIDER.set(provider);
+}
+
+fn request_context() -> RequestContext {
+    match REQUEST_CONTEXT_PROVIDER.get() {
+        Some(provider) => provider(),
+        None => RequestContext::Client(String::new()),
+    }
+}
+
+/// Server requests a stdio server may send while nothing is in flight. They go to
+/// the next request, as they did when they sat in the read channel; past this
+/// many the oldest is refused.
+const MAX_UNCLAIMED_SERVER_REQUESTS: usize = 16;
+/// Legacy server requests suspended for a modern upstream round trip, per server.
+/// Past this many the oldest is cancelled downstream.
+const MAX_SUSPENDED_LEGACY_MRTR: usize = 32;
+/// How long a suspended legacy server request waits for the client's retry.
+const SUSPENDED_LEGACY_MRTR_TTL: Duration = Duration::from_secs(15 * 60);
+/// JSON-RPC internal error, used to refuse a server request Toolport cannot route.
+const JSONRPC_INTERNAL_ERROR: i64 = -32603;
+/// Refusal for a server request that arrived during background work only.
+const NO_CLIENT_IN_FLIGHT: &str = "Toolport had no client request in flight to answer this";
+/// Refusal for a server request whose call Toolport no longer waits on.
+const CALL_ENDED: &str = "Toolport stopped waiting on the call this request belongs to";
+
+/// What the demux thread hands one waiting stdio request.
+enum Delivery {
+    Response(Value),
+    ServerRequest(Value),
+    Cancelled,
+    Closed(String),
+    Rejected(String),
+}
+
+/// One request waiting for its response.
+struct StdioWaiter {
+    /// Registration order, so a server request goes to the oldest waiter.
+    seq: u64,
+    /// [`request_context`] of the thread waiting on this request.
+    context: RequestContext,
+    tx: Sender<Delivery>,
+    /// False while suspended for a modern upstream round trip: no thread is
+    /// waiting, so this request cannot handle a server request.
+    active: bool,
+}
+
+/// A legacy server request suspended between two modern upstream round trips.
+/// The child keeps processing the original request; the retry only supplies the
+/// requested input, then keeps waiting on the original downstream id through `rx`.
+struct SuspendedLegacyMrtr {
+    pending: PendingLegacyMrtr,
+    rx: Receiver<Delivery>,
+    since: Instant,
+    /// Client context of the suspended call, which owns the server requests
+    /// queued for it.
+    owner: Option<String>,
+    _cancel_guard: Option<CancelGuard>,
+    forwarded: Arc<AtomicBool>,
+}
+
+/// How a request relates to the suspended legacy MRTR requests.
+enum Continuation {
+    /// A new downstream request.
+    Fresh,
+    /// The retry did not answer the input request yet; repeat it.
+    StillWaiting(Value),
+    /// The retry answers a suspended request: send `response`, then keep
+    /// waiting on the original downstream id.
+    Resume {
+        downstream_id: Value,
+        response: Value,
+        rx: Receiver<Delivery>,
+        forwarded: Arc<AtomicBool>,
+    },
+}
+
+/// A server request no waiting thread could take yet.
+struct UnclaimedRequest {
+    /// Context of the suspended requests pending when it arrived, if any: only
+    /// that client may answer it. `None` when nothing was pending at all.
+    owner: Option<String>,
+    request: Value,
+}
+
+#[derive(Default)]
+struct StdioCoreState {
+    pending: HashMap<String, StdioWaiter>,
+    next_seq: u64,
+    suspended: Vec<SuspendedLegacyMrtr>,
+    unclaimed: VecDeque<UnclaimedRequest>,
+    /// Set once the child's stdout closed; every later request fails with it.
+    closed: Option<String>,
+}
+
+/// The request machinery of one stdio connection. A request registers a waiter
+/// under its id, writes its frame, and waits on its own channel; the demux thread
+/// routes each response to its waiter, with bounded concurrent requests on the pipe.
+struct StdioCore {
+    child: Arc<Mutex<Child>>,
+    forwarder: StdioForwarder,
+    stdin: Arc<Mutex<ChildStdin>>,
+    /// Tail of the child's stderr, drained on a background thread. A server that
+    /// dies on startup (bad package name, missing API key) explains itself here,
+    /// so we can report that instead of a bare "closed the connection".
+    stderr: Arc<Mutex<String>>,
+    read_failure: Arc<Mutex<Option<String>>>,
+    next_id: AtomicI64,
+    responses: AtomicU64,
+    state: Mutex<StdioCoreState>,
+    /// Answers server-initiated JSON-RPC (e.g. `roots/list`) by forwarding to the
+    /// upstream MCP client. Set by the gateway before the connect handshake.
+    server_handler: Mutex<Option<ServerRequestHandler>>,
+    /// The command is a download-then-run launcher (npx, uvx, ...): a connect
+    /// timeout is reported as "still installing" rather than a dead server.
+    launcher: bool,
+    /// Command name, for the one log line about unattributable server requests.
+    label: String,
+    /// Set once a server request arrived while calls from different upstream
+    /// contexts were in flight. Requests then hold `exclusive_gate`, one in flight
+    /// as before multiplexing, so every later server request has one owner.
+    exclusive: AtomicBool,
+    exclusive_gate: Mutex<()>,
+}
+
+fn waiter_key(id: &Value) -> String {
+    id_key(id).unwrap_or_default()
+}
+
+/// Removes a request's waiter when its call ends, unless it was suspended.
+struct WaiterGuard<'a> {
+    core: &'a StdioCore,
+    downstream_id: Value,
+    armed: bool,
+}
+
+impl Drop for WaiterGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let orphaned = {
+                let mut state = self.core.lock_state();
+                let owner = state
+                    .pending
+                    .remove(&waiter_key(&self.downstream_id))
+                    .and_then(|waiter| waiter.context.client().map(str::to_string));
+                state.take_orphaned(owner.as_deref())
+            };
+            self.core.refuse_orphaned(orphaned);
+        }
+    }
+}
+
+impl StdioCoreState {
+    /// Unclaimed server requests reserved for `owner`, once no request of that
+    /// client is pending: no call of it remains to answer them.
+    fn take_orphaned(&mut self, owner: Option<&str>) -> Vec<Value> {
+        let Some(owner) = owner else {
+            return Vec::new();
+        };
+        if self
+            .pending
+            .values()
+            .any(|waiter| waiter.context.client() == Some(owner))
+        {
+            return Vec::new();
+        }
+        let (orphaned, kept): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut self.unclaimed)
+            .into_iter()
+            .partition(|unclaimed| unclaimed.owner.as_deref() == Some(owner));
+        self.unclaimed = kept;
+        orphaned
+            .into_iter()
+            .map(|unclaimed| unclaimed.request)
+            .collect()
+    }
+}
+
+impl StdioCore {
+    #[cfg(test)]
+    fn start(
+        child: Child,
+        stdin: Arc<Mutex<ChildStdin>>,
+        stderr: Arc<Mutex<String>>,
+        lines: Receiver<String>,
+        launcher: bool,
+        label: String,
+    ) -> Arc<Self> {
+        Self::start_with_failure(
+            child,
+            stdin,
+            stderr,
+            lines,
+            launcher,
+            label,
+            Arc::new(Mutex::new(None)),
+        )
+    }
+
+    fn start_with_failure(
+        child: Child,
+        stdin: Arc<Mutex<ChildStdin>>,
+        stderr: Arc<Mutex<String>>,
+        lines: Receiver<String>,
+        launcher: bool,
+        label: String,
+        read_failure: Arc<Mutex<Option<String>>>,
+    ) -> Arc<Self> {
+        let child = Arc::new(Mutex::new(child));
+        let core = Arc::new(StdioCore {
+            forwarder: StdioForwarder::new(Arc::downgrade(&child)),
+            child,
+            stdin,
+            stderr,
+            read_failure,
+            next_id: AtomicI64::new(1),
+            responses: AtomicU64::new(0),
+            state: Mutex::new(StdioCoreState::default()),
+            server_handler: Mutex::new(None),
+            launcher,
+            label,
+            exclusive: AtomicBool::new(false),
+            exclusive_gate: Mutex::new(()),
+        });
+        // The demux holds only a weak reference, so dropping the transport and
+        // its calls frees the core; it ends with the drain channel either way.
+        let weak = Arc::downgrade(&core);
+        std::thread::spawn(move || {
+            while let Ok(line) = lines.recv() {
+                let Some(core) = weak.upgrade() else {
+                    return;
+                };
+                if core
+                    .read_failure
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_some()
+                {
+                    core.close();
+                    return;
+                }
+                core.route_line(&line);
+            }
+            if let Some(core) = weak.upgrade() {
+                core.close();
+            }
+        });
+        core
+    }
+
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, StdioCoreState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn write_line(&self, message: &Value) -> std::io::Result<()> {
+        let mut stdin = self
+            .stdin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        writeln!(stdin, "{message}")?;
+        stdin.flush()
+    }
+
+    /// Build a useful error for when the child's stdout closed (it exited or
+    /// crashed). Includes the exit status and the tail of stderr when available -
+    /// that is where "package not found" or "missing API key" actually shows up.
+    fn closed_error(&self) -> String {
+        // The child just exited; give its stderr drain a brief moment to flush.
+        std::thread::sleep(Duration::from_millis(150));
+        let status = self
+            .child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .try_wait()
+            .ok()
+            .flatten();
+        let tail = self
+            .stderr
+            .lock()
+            .map(|b| b.trim().to_string())
+            .unwrap_or_default();
+        let mut msg = String::from("downstream server exited");
+        if let Some(code) = status.and_then(|s| s.code()) {
+            msg.push_str(&format!(" (status {code})"));
+        }
+        if tail.is_empty() {
+            msg.push_str(
+                " without stderr output. Check the command, args, and any required setup values.",
+            );
+        } else {
+            msg.push_str(":\n");
+            msg.push_str(&tail);
+        }
+        msg
+    }
+
+    fn request(
+        self: &Arc<Self>,
+        method: &str,
+        params: Value,
+        cancel: Option<CancelContext>,
+        protocol: Option<&Value>,
+        timeout: Duration,
+    ) -> Result<Value, TransportError> {
+        self.expire_suspended();
+        if cancel.as_ref().is_some_and(CancelContext::is_cancelled)
+            && !self.lock_state().suspended.is_empty()
+        {
+            if let Some(cancel) = cancel.as_ref() {
+                self.cancel_matching_suspended(method, &params, cancel);
+            }
+            return Err(TransportError::Cancelled(
+                "request cancelled before it reached the downstream server".to_string(),
+            ));
+        }
+        let mut params = params;
+        if let Some(protocol) = protocol {
+            merge_protocol_meta(&mut params, protocol);
+        }
+        let _exclusive = self.exclusive.load(Ordering::SeqCst).then(|| {
+            self.exclusive_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
+        // A legacy connection has no downstream requestState of its own, so one
+        // here can only be ours; never replay the call for an unknown one.
+        let (downstream_id, outbound, rx, forwarded) =
+            match self.continuation(method, &params, protocol.is_none())? {
+                Continuation::StillWaiting(input_required) => return Ok(input_required),
+                Continuation::Resume {
+                    downstream_id,
+                    response,
+                    rx,
+                    forwarded,
+                } => {
+                    self.resume(&downstream_id);
+                    (downstream_id, response, rx, forwarded)
+                }
+                Continuation::Fresh => {
+                    let downstream_id = json!(self.next_id.fetch_add(1, Ordering::SeqCst));
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    self.register(&downstream_id, tx)?;
+                    let request = json!({
+                        "jsonrpc": "2.0",
+                        "id": downstream_id.clone(),
+                        "method": method,
+                        "params": params
+                    });
+                    (downstream_id, request, rx, Arc::new(AtomicBool::new(false)))
+                }
+            };
+        let waiter = WaiterGuard {
+            core: self,
+            downstream_id: downstream_id.clone(),
+            armed: true,
+        };
+
+        // A broken stdin pipe means the child is gone: a health failure, not a protocol error.
+        if cancel.as_ref().is_some_and(CancelContext::is_cancelled) {
+            return Err(TransportError::Cancelled(
+                "caller left before dispatch".into(),
+            ));
+        }
+        {
+            let mut stdin = self
+                .stdin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            writeln!(stdin, "{outbound}")
+                .map_err(|e| TransportError::Unavailable(e.to_string()))?;
+            stdin
+                .flush()
+                .map_err(|e| TransportError::Unavailable(e.to_string()))?;
+        }
+        let cancel_guard = cancel.map(|ctx| {
+            ctx.registry.register(
+                ctx.client_request_id.clone(),
+                CancelEntry {
+                    stdin: Arc::clone(&self.stdin),
+                    forwarder: self.forwarder.clone(),
+                    downstream_id: downstream_id.clone(),
+                    waiter: Some(Arc::downgrade(self)),
+                    forwarded: forwarded.clone(),
+                },
+            )
+        });
+        self.wait(
+            waiter,
+            rx,
+            method,
+            &params,
+            timeout,
+            cancel_guard,
+            forwarded,
+        )
+    }
+
+    /// Wait for this request's response, handling server requests attributed to
+    /// it on this thread. The deadline bounds the whole wait so an unresponsive
+    /// server fails fast instead of hanging the thread indefinitely.
+    // The wait must carry the request context and both cancellation guards together.
+    #[allow(clippy::too_many_arguments)]
+    fn wait(
+        &self,
+        mut waiter: WaiterGuard<'_>,
+        rx: Receiver<Delivery>,
+        method: &str,
+        params: &Value,
+        timeout: Duration,
+        cancel_guard: Option<CancelGuard>,
+        forwarded: Arc<AtomicBool>,
+    ) -> Result<Value, TransportError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .unwrap_or_default();
+            match rx.recv_timeout(remaining) {
+                Ok(Delivery::Response(value)) => {
+                    if let Some(err) = value.get("error") {
+                        return Err(TransportError::Rpc(err.clone()));
+                    }
+                    return Ok(value.get("result").cloned().unwrap_or(Value::Null));
+                }
+                Ok(Delivery::ServerRequest(mut value)) => {
+                    // Every early exit refuses this request and abandons the
+                    // waiter, so the server is never left without an answer.
+                    if let Err(message) = screen_url_elicitation_request(&mut value) {
+                        let message = format!("Toolport refused unsafe URL elicitation: {message}");
+                        self.refuse(&value, &message);
+                        self.abandon(&mut waiter, &rx);
+                        return Err(TransportError::Fatal(message));
+                    }
+                    let handler = self
+                        .server_handler
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    match handler.and_then(|handler| handler(&value)) {
+                        Some(ServerRequestAction::Respond(response)) => {
+                            if let Err(e) = self.write_line(&response) {
+                                self.abandon(&mut waiter, &rx);
+                                return Err(TransportError::Unavailable(e.to_string()));
+                            }
+                        }
+                        Some(ServerRequestAction::InputRequired) => {
+                            let pending = match PendingLegacyMrtr::new(
+                                value.clone(),
+                                waiter.downstream_id.clone(),
+                                method,
+                                params,
+                            ) {
+                                Ok(pending) => pending,
+                                Err(e) => {
+                                    self.refuse(&value, &e.to_string());
+                                    self.abandon(&mut waiter, &rx);
+                                    return Err(e);
+                                }
+                            };
+                            if !self
+                                .lock_state()
+                                .pending
+                                .contains_key(&waiter_key(&waiter.downstream_id))
+                            {
+                                self.refuse(&value, CALL_ENDED);
+                                return Err(TransportError::Cancelled(
+                                    "caller left during input request".into(),
+                                ));
+                            }
+                            let result = pending.input_required();
+                            if !self.suspend(&mut waiter, pending, rx, cancel_guard, forwarded) {
+                                self.refuse(&value, CALL_ENDED);
+                                return Err(TransportError::Cancelled(
+                                    "caller left during input request".into(),
+                                ));
+                            }
+                            return Ok(result);
+                        }
+                        None => {}
+                    }
+                }
+                Ok(Delivery::Cancelled) => {
+                    self.abandon(&mut waiter, &rx);
+                    return Err(TransportError::Cancelled(format!(
+                        "'{method}' cancelled by the client"
+                    )));
+                }
+                Ok(Delivery::Closed(message)) => return Err(TransportError::Unavailable(message)),
+                Ok(Delivery::Rejected(message)) => {
+                    return Err(TransportError::FrameRejected(message))
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    self.abandon(&mut waiter, &rx);
+                    // A launcher child that is alive but never answered `initialize`
+                    // even after the long budget is almost certainly still installing
+                    // its package (cold npm/PyPI cache, slow network). Say so: a bare
+                    // timeout reads as a broken server when it isn't. A dead child
+                    // never reaches here (its stdout closing ends the wait above).
+                    let alive = self
+                        .child
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .try_wait()
+                        .map(|s| s.is_none())
+                        .unwrap_or(false);
+                    if self.launcher && alive && method == "initialize" {
+                        return Err(TransportError::Unavailable(
+                            "timed out waiting for 'initialize'; the launcher is likely \
+                             still downloading the server package (first run on a cold \
+                             cache). It usually connects on the next refresh."
+                                .to_string(),
+                        ));
+                    }
+                    return Err(TransportError::Classified(
+                        crate::call_failure::CallFailureKind::Timeout { after_send: true },
+                        format!("timed out waiting for '{method}' response"),
+                    ));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(TransportError::Unavailable(
+                        "downstream connection closed".to_string(),
+                    ))
+                }
+            }
+        }
+    }
+
+    fn continuation(
+        &self,
+        method: &str,
+        params: &Value,
+        legacy: bool,
+    ) -> Result<Continuation, TransportError> {
+        let Some(token) = params.get("requestState").and_then(Value::as_str) else {
+            return Ok(Continuation::Fresh);
+        };
+        let mut state = self.lock_state();
+        let Some(index) = state
+            .suspended
+            .iter()
+            .position(|suspended| suspended.pending.token == token)
+        else {
+            if legacy {
+                return Err(TransportError::Rpc(json!({
+                    "code": -32602,
+                    "message": "unknown or expired requestState; start the call again \
+                                without requestState"
+                })));
+            }
+            return Ok(Continuation::Fresh);
+        };
+        match state.suspended[index]
+            .pending
+            .response_for_retry(method, params)?
+        {
+            None => Ok(Continuation::StillWaiting(
+                state.suspended[index].pending.input_required(),
+            )),
+            Some(response) => {
+                let suspended = state.suspended.remove(index);
+                Ok(Continuation::Resume {
+                    downstream_id: suspended.pending.downstream_request_id,
+                    response,
+                    rx: suspended.rx,
+                    forwarded: suspended.forwarded,
+                })
+            }
+        }
+    }
+
+    fn register(&self, downstream_id: &Value, tx: Sender<Delivery>) -> Result<(), TransportError> {
+        let context = request_context();
+        let refused = {
+            let mut state = self.lock_state();
+            if let Some(closed) = &state.closed {
+                return Err(TransportError::Unavailable(closed.clone()));
+            }
+            if state.pending.len() >= MAX_STDIO_PENDING
+                || self.forwarder.retired.load(Ordering::Acquire)
+            {
+                return Err(TransportError::Busy(
+                    "downstream stdio connection is busy".into(),
+                ));
+            }
+            let seq = state.next_seq;
+            state.next_seq += 1;
+            // A server request that arrived while nothing was in flight goes to
+            // the next request, as it did when it waited in the read channel.
+            // Background work takes all of them: while it holds the server for a
+            // connect or refresh, no client call can claim them, and the server
+            // may be holding the background response until they are answered.
+            let (claimed, refused) = match &context {
+                RequestContext::Client(key) => (Self::claim_unclaimed(&mut state, key), Vec::new()),
+                RequestContext::Background { sole_client } => {
+                    let all: Vec<Value> = state
+                        .unclaimed
+                        .drain(..)
+                        .map(|unclaimed| unclaimed.request)
+                        .collect();
+                    if *sole_client {
+                        (all, Vec::new())
+                    } else {
+                        (Vec::new(), all)
+                    }
+                }
+            };
+            for request in claimed {
+                let _ = tx.send(Delivery::ServerRequest(request));
+            }
+            state.pending.insert(
+                waiter_key(downstream_id),
+                StdioWaiter {
+                    seq,
+                    context,
+                    tx,
+                    active: true,
+                },
+            );
+            refused
+        };
+        for request in refused {
+            self.refuse(&request, NO_CLIENT_IN_FLIGHT);
+        }
+        Ok(())
+    }
+
+    /// A retry resumed a suspended request: this thread now waits on it. The
+    /// waiter keeps the context it was registered with: the retry proved it
+    /// continues that call by presenting its requestState, but a sessionless
+    /// retry is a new upstream request with a new key.
+    fn resume(&self, downstream_id: &Value) {
+        let mut state = self.lock_state();
+        let state = &mut *state;
+        let Some(waiter) = state.pending.get_mut(&waiter_key(downstream_id)) else {
+            // Its response or the close already reached the receiver.
+            return;
+        };
+        waiter.active = true;
+        let tx = waiter.tx.clone();
+        if let Some(context) = waiter.context.client().map(str::to_string) {
+            for request in Self::claim_unclaimed(state, &context) {
+                let _ = tx.send(Delivery::ServerRequest(request));
+            }
+        }
+    }
+
+    /// Take the unclaimed server requests a waiter serving `context` may answer.
+    fn claim_unclaimed(state: &mut StdioCoreState, context: &str) -> Vec<Value> {
+        let (mine, others): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut state.unclaimed)
+            .into_iter()
+            .partition(|unclaimed| {
+                unclaimed
+                    .owner
+                    .as_deref()
+                    .is_none_or(|owner| owner == context)
+            });
+        state.unclaimed = others;
+        mine.into_iter()
+            .map(|unclaimed| unclaimed.request)
+            .collect()
+    }
+
+    /// Stop waiting: drop this waiter, and pass any server request it was handed
+    /// but did not handle to another call from the same client. With none
+    /// waiting, the request is refused: it belonged to this client, so no other
+    /// client may answer it.
+    fn abandon(&self, waiter: &mut WaiterGuard<'_>, rx: &Receiver<Delivery>) {
+        waiter.armed = false;
+        let owner = self
+            .lock_state()
+            .pending
+            .remove(&waiter_key(&waiter.downstream_id))
+            .and_then(|waiter| waiter.context.client().map(str::to_string));
+        self.drain_deliveries(rx, owner.as_deref());
+    }
+
+    /// Pass on the server requests a call that stopped waiting was handed, then
+    /// refuse the requests queued for its client if it was that client's last.
+    fn drain_deliveries(&self, rx: &Receiver<Delivery>, owner: Option<&str>) {
+        while let Ok(delivery) = rx.try_recv() {
+            if let Delivery::ServerRequest(request) = delivery {
+                self.reroute_server_request(request, owner);
+            }
+        }
+        let orphaned = self.lock_state().take_orphaned(owner);
+        self.refuse_orphaned(orphaned);
+    }
+
+    fn refuse_orphaned(&self, orphaned: Vec<Value>) {
+        for request in orphaned {
+            self.refuse(&request, CALL_ENDED);
+        }
+    }
+
+    /// Hand a server request whose call ended to the oldest active call with the
+    /// same owner, or refuse it.
+    fn reroute_server_request(&self, request: Value, owner: Option<&str>) {
+        let undelivered = {
+            let state = self.lock_state();
+            let next = owner.and_then(|owner| {
+                state
+                    .pending
+                    .values()
+                    .filter(|waiter| waiter.active && waiter.context.client() == Some(owner))
+                    .min_by_key(|waiter| waiter.seq)
+            });
+            match next {
+                Some(waiter) => match waiter.tx.send(Delivery::ServerRequest(request)) {
+                    Ok(()) => None,
+                    Err(std::sync::mpsc::SendError(Delivery::ServerRequest(request))) => {
+                        Some(request)
+                    }
+                    Err(_) => None,
+                },
+                None => Some(request),
+            }
+        };
+        if let Some(request) = undelivered {
+            self.refuse(&request, CALL_ENDED);
+        }
+    }
+
+    fn suspend(
+        &self,
+        waiter: &mut WaiterGuard<'_>,
+        pending: PendingLegacyMrtr,
+        rx: Receiver<Delivery>,
+        cancel_guard: Option<CancelGuard>,
+        forwarded: Arc<AtomicBool>,
+    ) -> bool {
+        let evicted = {
+            let mut state = self.lock_state();
+            if !state
+                .pending
+                .contains_key(&waiter_key(&waiter.downstream_id))
+            {
+                return false;
+            }
+            waiter.armed = false;
+            let mut owner = None;
+            if let Some(entry) = state.pending.get_mut(&waiter_key(&waiter.downstream_id)) {
+                entry.active = false;
+                owner = entry.context.client().map(str::to_string);
+            }
+            state.suspended.push(SuspendedLegacyMrtr {
+                pending,
+                rx,
+                since: Instant::now(),
+                owner,
+                _cancel_guard: cancel_guard,
+                forwarded,
+            });
+            let overflow = state
+                .suspended
+                .len()
+                .saturating_sub(MAX_SUSPENDED_LEGACY_MRTR);
+            let evicted: Vec<SuspendedLegacyMrtr> = state.suspended.drain(..overflow).collect();
+            for suspended in &evicted {
+                state
+                    .pending
+                    .remove(&waiter_key(&suspended.pending.downstream_request_id));
+            }
+            evicted
+        };
+        for suspended in evicted {
+            self.retire(
+                suspended,
+                Some("Toolport dropped an unanswered input request".to_string()),
+            );
+        }
+        true
+    }
+
+    /// A suspended request no retry will resume; its waiter is already gone.
+    /// Cancel it downstream and answer every server request still waiting on
+    /// it: the one it was suspended for, those handed to it meanwhile, and
+    /// those queued for its client if no call of that client remains.
+    fn retire(&self, suspended: SuspendedLegacyMrtr, reason: Option<String>) {
+        CancelEntry {
+            stdin: Arc::clone(&self.stdin),
+            forwarder: self.forwarder.clone(),
+            downstream_id: suspended.pending.downstream_request_id.clone(),
+            waiter: None,
+            forwarded: suspended.forwarded.clone(),
+        }
+        .send_cancel_async(reason);
+        self.refuse(&suspended.pending.server_request, CALL_ENDED);
+        self.drain_deliveries(&suspended.rx, suspended.owner.as_deref());
+    }
+
+    fn expire_suspended(&self) {
+        let expired = {
+            let mut state = self.lock_state();
+            if state.suspended.is_empty() {
+                return;
+            }
+            let now = Instant::now();
+            let (expired, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut state.suspended)
+                .into_iter()
+                .partition(|suspended| {
+                    now.duration_since(suspended.since) >= SUSPENDED_LEGACY_MRTR_TTL
+                });
+            state.suspended = kept;
+            for suspended in &expired {
+                state
+                    .pending
+                    .remove(&waiter_key(&suspended.pending.downstream_request_id));
+            }
+            expired
+        };
+        for suspended in expired {
+            self.retire(
+                suspended,
+                Some("Toolport's input request expired".to_string()),
+            );
+        }
+    }
+
+    /// Cancel and retire the suspended request this exact continuation belongs to.
+    fn cancel_matching_suspended(
+        &self,
+        method: &str,
+        params: &Value,
+        cancel: &CancelContext,
+    ) -> bool {
+        let suspended =
+            {
+                let mut state = self.lock_state();
+                let Some(index) = state.suspended.iter().position(|suspended| {
+                    suspended.pending.response_for_retry(method, params).is_ok()
+                }) else {
+                    return false;
+                };
+                let suspended = state.suspended.remove(index);
+                state
+                    .pending
+                    .remove(&waiter_key(&suspended.pending.downstream_request_id));
+                suspended
+            };
+        self.retire(suspended, cancel.reason());
+        true
+    }
+
+    /// The client cancelled: stop waiting now. A late response is dropped.
+    fn cancel_waiter(&self, downstream_id: &Value) {
+        let (waiter, orphaned, suspended) = {
+            let mut state = self.lock_state();
+            let suspended = state
+                .suspended
+                .iter()
+                .position(|entry| entry.pending.downstream_request_id == *downstream_id)
+                .map(|index| state.suspended.remove(index));
+            let waiter = state.pending.remove(&waiter_key(downstream_id));
+            let owner = waiter
+                .as_ref()
+                .and_then(|waiter| waiter.context.client().map(str::to_string));
+            let orphaned = state.take_orphaned(owner.as_deref());
+            (waiter, orphaned, suspended)
+        };
+        if let Some(suspended) = suspended {
+            self.refuse(&suspended.pending.server_request, CALL_ENDED);
+            self.drain_deliveries(&suspended.rx, suspended.owner.as_deref());
+        }
+        if let Some(waiter) = waiter {
+            let _ = waiter.tx.send(Delivery::Cancelled);
+        }
+        self.refuse_orphaned(orphaned);
+    }
+
+    fn route_line(&self, line: &str) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            return;
+        };
+        if is_server_initiated_request(&value) {
+            self.route_server_request(value);
+            return;
+        }
+        // Notifications were already handled by the stdout drain.
+        if value.get("method").is_some() {
+            return;
+        }
+        let Some(key) = value.get("id").and_then(id_key) else {
+            return;
+        };
+        self.responses.fetch_add(1, Ordering::AcqRel);
+        // The waiter's guard can no longer find it to clean up after its client,
+        // so release that client's queued server requests here if this was its
+        // last call.
+        let (waiter, orphaned) = {
+            let mut state = self.lock_state();
+            let waiter = state.pending.remove(&key);
+            let owner = waiter
+                .as_ref()
+                .and_then(|waiter| waiter.context.client().map(str::to_string));
+            let orphaned = state.take_orphaned(owner.as_deref());
+            (waiter, orphaned)
+        };
+        if let Some(waiter) = waiter {
+            let _ = waiter.tx.send(Delivery::Response(value));
+        }
+        self.refuse_orphaned(orphaned);
+    }
+
+    /// Hand a server request to the thread whose client it belongs to. JSON-RPC
+    /// does not say which of our requests caused it, so it goes to the oldest
+    /// waiting thread only when every pending request, suspended ones included,
+    /// serves the same upstream context. Otherwise it is refused: one client's
+    /// roots, sampling or elicitation must never reach another client.
+    fn route_server_request(&self, request: Value) {
+        const UNANSWERABLE: &str = "Toolport had no request in flight to answer this";
+        let refused = {
+            let mut state = self.lock_state();
+            // A request no client is waiting on (a background refresh) cannot
+            // answer for anyone, so it neither owns nor mixes.
+            let mut contexts = state
+                .pending
+                .values()
+                .filter_map(|waiter| waiter.context.client());
+            let owner = contexts.next();
+            let mixed = owner.is_some_and(|owner| !contexts.all(|context| context == owner));
+            let owner = owner.map(str::to_string);
+            if mixed {
+                drop(state);
+                self.exclusive.store(true, Ordering::SeqCst);
+                let msg = format!(
+                    "toolport: '{}' sent a server request while calls from different \
+                     clients were in flight; refused it and now sending it one request \
+                     at a time",
+                    self.label
+                );
+                eprintln!("{msg}");
+                crate::gatewaylog::append(&msg);
+                Some((
+                    request,
+                    "Toolport could not attribute this request to one client",
+                ))
+            } else if let Some(oldest) = state
+                .pending
+                .values()
+                .filter(|waiter| waiter.active && waiter.context.client().is_some())
+                .min_by_key(|waiter| waiter.seq)
+                // With only background work active, it cannot finish until the
+                // server hears back, and it holds the server so no client call
+                // can start to answer. Handle the request there when that is
+                // safe for the one client, otherwise refuse it now.
+                .or_else(|| {
+                    state
+                        .pending
+                        .values()
+                        .filter(|waiter| waiter.active)
+                        .min_by_key(|waiter| waiter.seq)
+                })
+            {
+                if oldest.context == (RequestContext::Background { sole_client: false }) {
+                    Some((request, NO_CLIENT_IN_FLIGHT))
+                } else {
+                    match oldest.tx.send(Delivery::ServerRequest(request)) {
+                        Ok(()) => None,
+                        Err(std::sync::mpsc::SendError(Delivery::ServerRequest(request))) => {
+                            Some((request, UNANSWERABLE))
+                        }
+                        Err(_) => None,
+                    }
+                }
+            } else {
+                state
+                    .unclaimed
+                    .push_back(UnclaimedRequest { owner, request });
+                if state.unclaimed.len() > MAX_UNCLAIMED_SERVER_REQUESTS {
+                    state
+                        .unclaimed
+                        .pop_front()
+                        .map(|oldest| (oldest.request, UNANSWERABLE))
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some((request, message)) = refused {
+            self.refuse(&request, message);
+        }
+    }
+
+    /// Answer a server request with an error, off the demux thread: a child that
+    /// stopped reading stdin must not stall the routing of its own responses.
+    fn refuse(&self, request: &Value, message: &str) {
+        let reply = json!({
+            "jsonrpc": "2.0",
+            "id": request.get("id").cloned().unwrap_or(Value::Null),
+            "error": { "code": JSONRPC_INTERNAL_ERROR, "message": message }
+        });
+        let stdin = Arc::clone(&self.stdin);
+        self.forwarder.enqueue(Box::new(move || {
+            let mut stdin = stdin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _ = writeln!(stdin, "{reply}").and_then(|()| stdin.flush());
+        }));
+    }
+
+    fn is_closed(&self) -> bool {
+        self.lock_state().closed.is_some()
+            || self
+                .child
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .try_wait()
+                .is_ok_and(|status| status.is_some())
+    }
+
+    /// The child's stdout closed: fail every waiter, and every later request,
+    /// with the exit status and stderr tail.
+    fn close(&self) {
+        let rejected = self
+            .read_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let message = rejected.clone().unwrap_or_else(|| self.closed_error());
+        {
+            let mut state = self.lock_state();
+            state.closed = Some(message.clone());
+            for (_, waiter) in state.pending.drain() {
+                let delivery = if rejected.is_some() {
+                    Delivery::Rejected(message.clone())
+                } else {
+                    Delivery::Closed(message.clone())
+                };
+                let _ = waiter.tx.send(delivery);
+            }
+            state.unclaimed.clear();
+            state.suspended.clear();
+        }
+        if rejected.is_some() {
+            let mut child = self
+                .child
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            #[cfg(unix)]
+            kill_process_group(&mut child);
+            #[cfg(not(unix))]
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// One concurrent call's view of a stdio connection: the shared core plus the
+/// protocol metadata and read timeout current when the call started.
+struct StdioCall {
+    core: Arc<StdioCore>,
+    protocol_meta: Option<Value>,
+    read_timeout: Duration,
+}
+
+impl ConcurrentTransport for StdioCall {
+    fn request_with_cancel_and_headers(
+        &self,
+        method: &str,
+        params: Value,
+        cancel: Option<CancelContext>,
+        _headers: &[(String, String)],
+    ) -> Result<Value, TransportError> {
+        self.core.request(
+            method,
+            params,
+            cancel,
+            self.protocol_meta.as_ref(),
+            self.read_timeout,
+        )
+    }
+
+    fn is_closed(&self) -> bool {
+        self.core.is_closed()
+    }
+
+    fn suspended_calls(&self) -> usize {
+        self.core.lock_state().suspended.len()
+    }
 }
 
 /// Owns a Windows Job Object configured to terminate every assigned process
@@ -3260,15 +4782,6 @@ pub fn stdio_connect_timeout(command: &str, args: &[String]) -> Duration {
     }
 }
 
-/// Strip the gateway's own control-plane environment from a spawned downstream
-/// server. A downstream MCP server is untrusted code, and a compromised package
-/// can read its own process environment; in the file-backend and `--http`
-/// bridge deployments that inherited env carries the vault master key
-/// (`TOOLPORT_SECRET_KEY` / legacy `CONDUIT_SECRET_KEY`) or the local tool-bridge
-/// token (`TOOLPORT_HTTP_TOKEN` / legacy `CONDUIT_HTTP_TOKEN`). Neither is meant
-/// for a downstream server, so remove the whole inherited `TOOLPORT_*` and
-/// `CONDUIT_*` namespaces (covers both, plus any future control var). A var the
-/// server set for itself via its own `env` is exempt and left untouched.
 /// Put each spawned downstream server in its own process group so terminal
 /// job-control signals (SIGTTIN/SIGTTOU) generated by or directed at a child
 /// cannot propagate to the gateway's process group (and through it, to the AI
@@ -3289,14 +4802,364 @@ fn apply_process_group_isolation(cmd: &mut Command) {
     }
 }
 
-fn strip_gateway_control_env(cmd: &mut Command, configured: &std::collections::HashSet<&str>) {
-    for (key, _) in std::env::vars_os() {
-        let Some(k) = key.to_str() else { continue };
-        let is_control = k.starts_with("TOOLPORT_") || k.starts_with("CONDUIT_");
-        if is_control && !configured.contains(k) {
-            cmd.env_remove(&key);
+/// Whether a name is one of Toolport's own control-plane variables.
+///
+/// A downstream MCP server is untrusted code, and a compromised package can read
+/// its own process environment. In the file-backend and `--http` bridge
+/// deployments that inherited env carries the vault master key
+/// (`TOOLPORT_SECRET_KEY` / legacy `CONDUIT_SECRET_KEY`) or the local tool-bridge
+/// token (`TOOLPORT_HTTP_TOKEN` / legacy `CONDUIT_HTTP_TOKEN`). Neither is meant
+/// for a downstream server, so both whole namespaces are excluded - today they
+/// match no allowlist entry, and this keeps the guarantee if one ever does.
+/// A var the server set for itself via its own `env` is exempt and left untouched.
+pub(crate) fn is_control_env_name(name: &str) -> bool {
+    name.starts_with("TOOLPORT_") || name.starts_with("CONDUIT_")
+}
+/// Environment variable names copied from the gateway process into a spawned
+/// stdio child (SEC-04).
+///
+/// A downstream MCP server is third-party code that can read its own process
+/// environment, so it must not inherit the launching client's credentials
+/// (`AWS_*`, `GITHUB_TOKEN`, `OPENAI_API_KEY`, ...). The child starts with a
+/// cleared environment ([`child_environment`]) and receives only these non-secret
+/// system and toolchain locators: everything a launcher (`npx`, `uvx`, `bunx`,
+/// ...) needs to find its interpreter, package cache and version manager, the
+/// user and locale a tool expects, the terminal it may render to, and the proxy
+/// settings a package manager uses to reach the network. Nothing here grants
+/// access to a third party's service on the user's behalf.
+///
+/// Deliberately NOT a `strip_gateway_control_env` inverse: the control namespaces
+/// are excluded even if they would match (see [`is_control_env_name`]).
+pub(crate) const CHILD_ENV_ALLOWLIST: &[&str] = &[
+    // Process/user locating and shell.
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    // Locale, timezone and terminal.
+    "LANG",
+    "LANGUAGE",
+    "TZ",
+    "TERM",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    // TLS trust stores a package manager or native module may need.
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    // Version managers and package caches, so a launcher finds the toolchain
+    // without re-downloading it or falling back to a system one.
+    "NVM_DIR",
+    "NVM_BIN",
+    "VOLTA_HOME",
+    "PNPM_HOME",
+    "BUN_INSTALL",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "GOPATH",
+    "GOROOT",
+    "JAVA_HOME",
+    "PYENV_ROOT",
+    "PIPX_HOME",
+    "UV_CACHE_DIR",
+    "NPM_CONFIG_PREFIX",
+    "npm_config_cache",
+    "DENO_DIR",
+    // Container CLIs, so `docker run`/`podman run` servers reach the user's
+    // engine or remote context. Locators only; credentials stay in their files.
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "DOCKER_CONFIG",
+    "DOCKER_CERT_PATH",
+    "DOCKER_TLS_VERIFY",
+    "CONTAINER_HOST",
+    // Proxies, in both the conventional and the lowercase tool conventions.
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "all_proxy",
+];
+
+/// Open-ended allowlisted name families: locale (`LC_*`), desktop (`XDG_*`) and
+/// the two version managers that export a variable per tool (`MISE_*`, `ASDF_*`).
+pub(crate) const CHILD_ENV_ALLOWLIST_PREFIXES: &[&str] = &["LC_", "XDG_", "MISE_", "ASDF_"];
+
+/// Windows additionally needs the system, shell and profile locators the OS and
+/// its launchers read. Matched case-insensitively there (Windows environment
+/// names are case-insensitive); kept separate because the Unix allowlist does
+/// not use them.
+pub(crate) const CHILD_ENV_ALLOWLIST_WINDOWS: &[&str] = &[
+    // OS and shell locating: where Windows and its command processor live, and
+    // the extensions a `.cmd`/`.bat` shim runs under. A child that cannot locate
+    // the OS cannot start anything at all.
+    "SystemRoot",
+    "SYSTEMROOT",
+    "SystemDrive",
+    "windir",
+    "WINDIR",
+    "ComSpec",
+    "PATHEXT",
+    // Per-user and shared application-data roots. Tools and PowerShell providers
+    // read these to find their cache, config and staged files; ALLUSERSPROFILE is
+    // the legacy name for PROGRAMDATA and PUBLIC is the shared user profile.
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "ALLUSERSPROFILE",
+    "PUBLIC",
+    // Program-file roots, including the 32-bit and 64-bit common-component
+    // directories a native launcher searches for shared runtime DLLs, and the
+    // driver data directory the OS stages driver files in.
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+    "CommonProgramW6432",
+    "DriverData",
+    // User profile locators.
+    "USERPROFILE",
+    "USERNAME",
+    "USERDOMAIN",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "COMPUTERNAME",
+    // Machine and CPU descriptors Windows sets for every process; native modules
+    // and the .NET runtime probe them.
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_IDENTIFIER",
+    "PROCESSOR_LEVEL",
+    "PROCESSOR_REVISION",
+    "OS",
+    // PowerShell locates the modules that define its own cmdlets (`Start-Process`,
+    // `Wait-Process`, ...) through this list, and a child PowerShell started with
+    // it absent does not reliably discover the modules shipped with it, so a
+    // PowerShell shim or launcher fails on its own cmdlets. The parent's value is
+    // the same module path list the pre-SEC-04 child inherited.
+    "PSModulePath",
+    // Where a pre-built module analysis cache lives. Without it a child
+    // PowerShell re-analyzes every module on PSModulePath before its first
+    // command lookup, which takes tens of seconds on a machine with large
+    // module sets (CI images set it for exactly this reason).
+    "PSModuleAnalysisCachePath",
+];
+
+/// Whether `name` may be copied from the gateway's environment into a spawned
+/// stdio child. `case_insensitive` is the Windows environment-name rule, a flag
+/// rather than a `cfg` so the matcher is testable on every host.
+pub(crate) fn is_allowed_child_env_name_with(name: &str, case_insensitive: bool) -> bool {
+    if is_control_env_name(name) {
+        return false;
+    }
+    let matches = |candidate: &str| {
+        if case_insensitive {
+            candidate.eq_ignore_ascii_case(name)
+        } else {
+            candidate == name
+        }
+    };
+    if CHILD_ENV_ALLOWLIST.iter().any(|allowed| matches(allowed)) {
+        return true;
+    }
+    if case_insensitive
+        && CHILD_ENV_ALLOWLIST_WINDOWS
+            .iter()
+            .any(|allowed| matches(allowed))
+    {
+        return true;
+    }
+    CHILD_ENV_ALLOWLIST_PREFIXES.iter().any(|prefix| {
+        if case_insensitive {
+            name.get(..prefix.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        } else {
+            name.starts_with(prefix)
+        }
+    })
+}
+
+/// [`is_allowed_child_env_name_with`] under this platform's own name rules.
+pub(crate) fn is_allowed_child_env_name(name: &str) -> bool {
+    is_allowed_child_env_name_with(name, cfg!(windows))
+}
+
+/// The gateway's own environment as an owned map. Non-UTF-8 entries are skipped:
+/// the allowlist matches UTF-8 names, and a value is handed to the child as a
+/// `String` at every spawn site anyway.
+fn process_env_map() -> std::collections::BTreeMap<String, String> {
+    std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .collect()
+}
+
+// Cache both success and fallback so a broken shell is tried only once per
+// registry generation. Holding the lock also serializes concurrent first spawns.
+static LOGIN_ENV: Mutex<Option<std::collections::BTreeMap<String, String>>> = Mutex::new(None);
+
+/// Re-source the opt-in environment on the next spawn after a registry reload.
+pub fn invalidate_login_environment() {
+    *LOGIN_ENV
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
+fn inherited_environment() -> std::collections::BTreeMap<String, String> {
+    #[cfg(windows)]
+    return process_env_map();
+    #[cfg(not(windows))]
+    {
+        let process = process_env_map();
+        let mut cached = LOGIN_ENV
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let login = cached
+            .get_or_insert_with(|| login_environment_or_process(&process, Duration::from_secs(5)))
+            .clone();
+        with_client_environment(login, &process)
+    }
+}
+
+/// The login environment, plus any name only the client's environment has.
+/// 1.x children inherited the client's environment, so variables a user
+/// exported in the terminal that started the client keep working. Login values
+/// win where both define a name, so a GUI client's bare PATH cannot hide the
+/// user's shell PATH.
+#[cfg(not(windows))]
+fn with_client_environment(
+    mut login: std::collections::BTreeMap<String, String>,
+    process: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    for (name, value) in process {
+        login.entry(name.clone()).or_insert_with(|| value.clone());
+    }
+    login
+}
+
+#[cfg(not(windows))]
+fn login_environment_or_process(
+    parent: &std::collections::BTreeMap<String, String>,
+    timeout: Duration,
+) -> std::collections::BTreeMap<String, String> {
+    source_login_environment(parent, timeout).unwrap_or_else(|| parent.clone())
+}
+
+#[cfg(not(windows))]
+fn source_login_environment(
+    parent: &std::collections::BTreeMap<String, String>,
+    timeout: Duration,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    use std::os::unix::process::CommandExt;
+    let shell = parent.get("SHELL")?;
+    let mut command = Command::new(shell);
+    // Start from locators, not whichever client's credentials started the daemon.
+    // Login startup files supply the user's explicitly opted-in environment.
+    command
+        .env_clear()
+        .envs(child_environment(parent, &[], false));
+    command
+        .args(["-lc", "env -0"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0);
+    let mut child = command.spawn().ok()?;
+    let stdout = child.stdout.take()?;
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stdout
+            .take(4 * 1024 * 1024)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes);
+        let _ = send.send(result);
+    });
+    let deadline = Instant::now() + timeout;
+    let result = (|| {
+        loop {
+            if let Some(status) = child.try_wait().ok()? {
+                if !status.success() {
+                    return None;
+                }
+                break;
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let bytes = receive
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .ok()?
+            .ok()?;
+        if bytes.is_empty() || bytes.len() >= 4 * 1024 * 1024 || !bytes.ends_with(&[0]) {
+            return None;
+        }
+        let mut env = std::collections::BTreeMap::new();
+        for entry in bytes[..bytes.len() - 1].split(|byte| *byte == 0) {
+            let entry = std::str::from_utf8(entry).ok()?;
+            let (name, value) = entry.split_once('=')?;
+            if name.is_empty() || name.contains('\n') {
+                return None;
+            }
+            env.insert(name.to_string(), value.to_string());
+        }
+        Some(env)
+    })();
+    if result.is_none() {
+        // Include shell descendants so a hung startup command cannot retain stdout.
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
         }
     }
+    let _ = child.wait();
+    result
+}
+
+/// Build the explicit environment a spawned stdio child receives (SEC-04).
+///
+/// `parent` is the gateway's own environment, `configured` the server's `env`
+/// plus injected secrets, and `inherit_env` the per-server compatibility opt-in:
+///
+/// * default - only the [`CHILD_ENV_ALLOWLIST`] names present in `parent`;
+/// * `inherit_env = true` - every name from the selected login or fallback
+///   environment except the `TOOLPORT_*` /
+///   `CONDUIT_*` control namespaces (the pre-SEC-04 behavior).
+///
+/// The copied subset is passed through the AppImage bundled-env strip so the
+/// bundle's own paths cannot re-enter through the allowlist. `configured` is
+/// applied last, so an explicit per-server value overrides an allowlisted one and
+/// a server may set a control-prefixed variable for itself.
+fn child_environment(
+    parent: &std::collections::BTreeMap<String, String>,
+    configured: &[(String, String)],
+    inherit_env: bool,
+) -> Vec<(String, String)> {
+    let mut env: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for (name, value) in parent {
+        if is_control_env_name(name) {
+            continue;
+        }
+        if inherit_env || is_allowed_child_env_name(name) {
+            env.insert(name.clone(), value.clone());
+        }
+    }
+    crate::hostenv::strip_bundled_from_env(&mut env);
+    for (name, value) in configured {
+        env.insert(name.clone(), value.clone());
+    }
+    env.into_iter().collect()
 }
 
 impl StdioTransport {
@@ -3308,8 +5171,9 @@ impl StdioTransport {
         args: &[String],
         env: &[(String, String)],
         cwd: Option<&str>,
+        inherit_env: bool,
     ) -> Result<Self, String> {
-        Self::spawn_inner(command, args, env, cwd, None, None)
+        Self::spawn_inner(command, args, env, cwd, inherit_env, None, None)
     }
 
     /// Like [`spawn`], but sets a [`change`] bit in `dirty` whenever the downstream
@@ -3326,10 +5190,19 @@ impl StdioTransport {
         args: &[String],
         env: &[(String, String)],
         cwd: Option<&str>,
+        inherit_env: bool,
         dirty: Arc<AtomicU8>,
         resource_updated: Option<ResourceUpdatedSink>,
     ) -> Result<Self, String> {
-        Self::spawn_inner(command, args, env, cwd, Some(dirty), resource_updated)
+        Self::spawn_inner(
+            command,
+            args,
+            env,
+            cwd,
+            inherit_env,
+            Some(dirty),
+            resource_updated,
+        )
     }
 
     fn spawn_inner(
@@ -3337,6 +5210,7 @@ impl StdioTransport {
         args: &[String],
         env: &[(String, String)],
         cwd: Option<&str>,
+        inherit_env: bool,
         dirty: Option<Arc<AtomicU8>>,
         resource_updated: Option<ResourceUpdatedSink>,
     ) -> Result<Self, String> {
@@ -3379,23 +5253,39 @@ impl StdioTransport {
         };
         let container_args = inject_container_env(spawn_command, spawn_args, env);
         let spawn_args = container_args.as_slice();
+        // Start the child from a cleared environment (SEC-04): a downstream server
+        // is third-party code that can read its own process environment, so it must
+        // not inherit the client's cloud credentials or API keys. `child_environment`
+        // adds back only the non-secret system and toolchain locators a launcher
+        // needs (or, when the server opted in, the whole environment minus
+        // Toolport's control variables), and applies the server's own `env` last so
+        // anything it configured deliberately still wins.
+        let parent_env = if inherit_env {
+            inherited_environment()
+        } else {
+            process_env_map()
+        };
+        let child_env = child_environment(&parent_env, env, inherit_env);
+        #[cfg(not(windows))]
+        let resolved = if inherit_env {
+            let path = child_env
+                .iter()
+                .find(|(name, _)| name == "PATH")
+                .map(|(_, value)| value.as_str())
+                .unwrap_or("");
+            resolve_command_in_path(spawn_command, path)
+        } else {
+            resolve_command(spawn_command)
+        };
+        #[cfg(windows)]
         let resolved = resolve_command(spawn_command);
         let mut cmd = Command::new(&resolved);
-        // A downstream server is not our bundled payload, so it must not inherit
-        // an AppImage's library and plugin paths (see hostenv). Applied BEFORE the
-        // server's own `env` below, so anything it configures deliberately wins.
-        crate::hostenv::strip_bundled_env(&mut cmd);
+        cmd.env_clear();
         cmd.args(spawn_args)
-            .envs(env.iter().cloned())
+            .envs(child_env.iter().cloned())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // Never hand the gateway's own control-plane env (vault master key /
-        // HTTP-bridge token) to an untrusted downstream server. Anything the server
-        // configured for itself in `env` is exempt. See strip_gateway_control_env.
-        let configured: std::collections::HashSet<&str> =
-            env.iter().map(|(k, _)| k.as_str()).collect();
-        strip_gateway_control_env(&mut cmd, &configured);
         // Optional per-server working directory (issue #239). Unset (or blank)
         // means inherit the gateway's cwd, the previous behavior. `~` and `${VAR}`
         // are expanded so a config can pin a server to a project dir. Validate the
@@ -3405,14 +5295,24 @@ impl StdioTransport {
         }
         // Give the child the augmented PATH too, so e.g. `npx` can find `node`.
         #[cfg(not(windows))]
-        cmd.env("PATH", augmented_path());
+        if !inherit_env {
+            cmd.env("PATH", augmented_path());
+        }
         // Replacing the launcher means also replacing the PATH it set up: the
         // package's own `node_modules/.bin`. Servers that shell out to a sibling
         // binary would otherwise stop finding it. Prepend to whatever PATH the child
         // would have received anyway, so a rewrite only ever ADDS an entry and never
         // changes which PATH wins.
         if let Some(dir) = direct.as_ref().and_then(|d| d.bin_dir.as_ref()) {
-            let base = base_child_path(env);
+            let base = if inherit_env && !cfg!(windows) {
+                child_env
+                    .iter()
+                    .find(|(name, _)| name == "PATH")
+                    .map(|(_, value)| value.clone())
+                    .unwrap_or_default()
+            } else {
+                base_child_path(env)
+            };
             let mut merged = dir.to_string_lossy().into_owned();
             if !base.is_empty() {
                 merged.push(if cfg!(windows) { ';' } else { ':' });
@@ -3438,9 +5338,18 @@ impl StdioTransport {
         }
         #[cfg(windows)]
         let job = WindowsJob::new()?;
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("failed to spawn '{command}': {e}"))?;
+        let mut child =
+            spawn_server(cmd).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    let install = match command.rsplit(['/', '\\']).next().unwrap_or(command) {
+                        "npx" | "npx.cmd" => "Install Node.js (which includes npx)",
+                        "uvx" => "Install uv (which includes uvx)",
+                        "docker" => "Install Docker and start its service",
+                        _ => "Install this executable or correct its path in Servers",
+                    };
+                    format!("Executable '{command}' was not found on this machine. {install}, then restart your MCP client and retry.")
+                } else { format!("failed to spawn '{command}': {e}") }
+            })?;
         #[cfg(windows)]
         if let Err(error) = job.assign(&child).and_then(|_| WindowsJob::resume(&child)) {
             let _ = child.kill();
@@ -3456,6 +5365,8 @@ impl StdioTransport {
         // when the receiver is dropped (transport closed). `forward_line` also
         // flags `dirty` when an armed server announces a tool-list change.
         let (tx, rx) = std::sync::mpsc::channel();
+        let read_failure = Arc::new(Mutex::new(None));
+        let rejected = read_failure.clone();
         let armed = Arc::new(AtomicBool::new(false));
         let drain_armed = Arc::clone(&armed);
         let progress: Arc<Mutex<Option<ProgressSink>>> = Arc::new(Mutex::new(None));
@@ -3463,21 +5374,27 @@ impl StdioTransport {
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             loop {
-                let mut line = String::new();
-                // Bound each line to the same cap as an HTTP response body: a broken or
-                // hostile server that emits one newline-less multi-gigabyte line can't
-                // grow this String without limit (a plain `read_line` would). `take`
-                // stops at the cap; a full-cap line with no terminator is a protocol
-                // violation, so we close the connection.
-                match read_capped_line(&mut reader, &mut line, MAX_RESPONSE_BYTES) {
+                let mut bytes = Vec::new();
+                match read_downstream_frame(
+                    &mut reader,
+                    &mut bytes,
+                    MAX_RESPONSE_BYTES as usize,
+                    Some(b'\n'),
+                ) {
                     Ok(0) => break,
-                    Ok(n) => {
-                        if is_unterminated_capped_line(n, &line, MAX_RESPONSE_BYTES) {
-                            eprintln!(
-                                "toolport: downstream emitted an unterminated line >= {MAX_RESPONSE_BYTES} bytes; closing connection"
-                            );
-                            break;
-                        }
+                    Ok(_) => {
+                        let line = match String::from_utf8(bytes) {
+                            Ok(line) => line,
+                            Err(_) => {
+                                *rejected
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
+                                    "downstream stdout frame was not UTF-8; connection reset"
+                                        .into(),
+                                );
+                                break;
+                            }
+                        };
                         if !forward_line(
                             line,
                             &tx,
@@ -3489,7 +5406,15 @@ impl StdioTransport {
                             break;
                         }
                     }
-                    Err(_) => break,
+                    Err(error) => {
+                        if error.kind() == std::io::ErrorKind::InvalidData {
+                            *rejected
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                Some(error.to_string());
+                        }
+                        break;
+                    }
                 }
             }
         });
@@ -3510,20 +5435,22 @@ impl StdioTransport {
             );
         });
 
-        Ok(StdioTransport {
+        let core = StdioCore::start_with_failure(
             child,
+            stdin,
+            stderr_buf,
+            rx,
+            launcher,
+            command_basename(command),
+            read_failure,
+        );
+        Ok(StdioTransport {
+            core,
             #[cfg(windows)]
             job: Some(job),
-            stdin,
-            rx,
-            stderr: stderr_buf,
-            next_id: 1,
             read_timeout: STDIO_READ_TIMEOUT,
             connect_timeout: stdio_connect_timeout(command, args),
             armed,
-            launcher,
-            server_handler: None,
-            pending_mrtr: None,
             progress,
             protocol_meta: None,
             subscription_listener_id: None,
@@ -3543,36 +5470,13 @@ impl StdioTransport {
     pub fn set_connect_timeout(&mut self, timeout: Duration) {
         self.connect_timeout = timeout;
     }
-
-    /// Build a useful error for when the child's stdout closed (it exited or
-    /// crashed). Includes the exit status and the tail of stderr when available -
-    /// that is where "package not found" or "missing API key" actually shows up.
-    fn closed_error(&mut self) -> String {
-        // The child just exited; give its stderr drain a brief moment to flush.
-        std::thread::sleep(Duration::from_millis(150));
-        let status = self.child.try_wait().ok().flatten();
-        let tail = self
-            .stderr
-            .lock()
-            .map(|b| b.trim().to_string())
-            .unwrap_or_default();
-        let mut msg = String::from("downstream server exited");
-        if let Some(code) = status.and_then(|s| s.code()) {
-            msg.push_str(&format!(" (status {code})"));
-        }
-        if tail.is_empty() {
-            msg.push_str(
-                " without stderr output. Check the command, args, and any required setup values.",
-            );
-        } else {
-            msg.push_str(":\n");
-            msg.push_str(&tail);
-        }
-        msg
-    }
 }
 
 impl Transport for StdioTransport {
+    fn response_count(&self) -> u64 {
+        self.core.responses.load(Ordering::Acquire)
+    }
+
     fn request(&mut self, method: &str, params: Value) -> Result<Value, TransportError> {
         self.request_with_cancel(method, params, None)
     }
@@ -3583,162 +5487,13 @@ impl Transport for StdioTransport {
         params: Value,
         cancel: Option<CancelContext>,
     ) -> Result<Value, TransportError> {
-        if self.pending_mrtr.is_some() && cancel.as_ref().is_some_and(CancelContext::is_cancelled) {
-            if let Some(cancel) = cancel.as_ref() {
-                self.cancel_matching_pending_request(method, &params, cancel);
-            }
-            return Err(TransportError::Cancelled(
-                "request cancelled before it reached the downstream server".to_string(),
-            ));
-        }
-        let mut params = params;
-        if let Some(protocol) = &self.protocol_meta {
-            merge_protocol_meta(&mut params, protocol);
-        }
-        let (downstream_id, outbound) = if let Some(pending) = self.pending_mrtr.take() {
-            let input_required = pending.input_required();
-            let response = match pending.response_for_retry(method, &params) {
-                Err(error) => {
-                    self.pending_mrtr = Some(pending);
-                    return Err(error);
-                }
-                Ok(Some(response)) => response,
-                Ok(None) => {
-                    self.pending_mrtr = Some(pending);
-                    return Ok(input_required);
-                }
-            };
-            (pending.downstream_request_id.clone(), response)
-        } else {
-            let id = self.next_id;
-            self.next_id += 1;
-            let downstream_id = json!(id);
-            let request = json!({
-                "jsonrpc": "2.0",
-                "id": downstream_id.clone(),
-                "method": method,
-                "params": params
-            });
-            (downstream_id, request)
-        };
-
-        // A broken stdin pipe means the child is gone: a health failure, not a protocol error.
-        let mut cancel_after_write = None;
-        let cancel_guard;
-        {
-            let mut stdin = self.stdin.lock().map_err(|_| {
-                TransportError::Unavailable("downstream stdin lock poisoned".into())
-            })?;
-            cancel_guard = if let Some(ctx) = cancel {
-                let client_request_id = ctx.client_request_id.clone();
-                let registry = ctx.registry.clone();
-                let guard = registry.register(
-                    client_request_id.clone(),
-                    CancelEntry {
-                        stdin: Arc::clone(&self.stdin),
-                        downstream_id: downstream_id.clone(),
-                    },
-                );
-                cancel_after_write = Some((registry, client_request_id));
-                Some(guard)
-            } else {
-                None
-            };
-            writeln!(stdin, "{outbound}")
-                .map_err(|e| TransportError::Unavailable(e.to_string()))?;
-            stdin
-                .flush()
-                .map_err(|e| TransportError::Unavailable(e.to_string()))?;
-        }
-        if let Some((registry, client_request_id)) = cancel_after_write {
-            if registry.is_cancelled(&client_request_id) {
-                registry.forward_cancel_if_ready(&client_request_id);
-            }
-        }
-        let _cancel_guard = cancel_guard;
-
-        // Read until the response with our id arrives, skipping notifications.
-        // The deadline bounds the whole wait so an unresponsive server fails fast
-        // instead of hanging the thread (and the batch probe) indefinitely.
-        let deadline = Instant::now() + self.read_timeout;
-        loop {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .unwrap_or_default();
-            let line = match self.rx.recv_timeout(remaining) {
-                Ok(l) => l,
-                Err(RecvTimeoutError::Timeout) => {
-                    // A launcher child that is alive but never answered `initialize`
-                    // even after the long budget is almost certainly still installing
-                    // its package (cold npm/PyPI cache, slow network). Say so: a bare
-                    // timeout reads as a broken server when it isn't. A dead child
-                    // never reaches here (its stdout closing ends the wait below).
-                    let alive = self.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
-                    if self.launcher && alive && method == "initialize" {
-                        return Err(TransportError::Unavailable(
-                            "timed out waiting for 'initialize'; the launcher is likely \
-                             still downloading the server package (first run on a cold \
-                             cache). It usually connects on the next refresh."
-                                .to_string(),
-                        ));
-                    }
-                    return Err(TransportError::Unavailable(format!(
-                        "timed out waiting for '{method}' response"
-                    )));
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Err(TransportError::Unavailable(self.closed_error()))
-                }
-            };
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let mut value: Value = match serde_json::from_str(trimmed) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if is_server_initiated_request(&value) {
-                screen_url_elicitation_request(&mut value).map_err(|message| {
-                    TransportError::Fatal(format!(
-                        "Toolport refused unsafe URL elicitation: {message}"
-                    ))
-                })?;
-                if let Some(handler) = &self.server_handler {
-                    match handler(&value) {
-                        Some(ServerRequestAction::Respond(response)) => {
-                            let mut stdin = self.stdin.lock().map_err(|_| {
-                                TransportError::Unavailable("downstream stdin lock poisoned".into())
-                            })?;
-                            writeln!(stdin, "{response}")
-                                .map_err(|e| TransportError::Unavailable(e.to_string()))?;
-                            stdin
-                                .flush()
-                                .map_err(|e| TransportError::Unavailable(e.to_string()))?;
-                            continue;
-                        }
-                        Some(ServerRequestAction::InputRequired) => {
-                            let pending = PendingLegacyMrtr::new(
-                                value,
-                                downstream_id.clone(),
-                                method,
-                                &params,
-                            )?;
-                            let result = pending.input_required();
-                            self.pending_mrtr = Some(pending);
-                            return Ok(result);
-                        }
-                        None => {}
-                    }
-                }
-            }
-            if ids_match(value.get("id"), Some(&downstream_id)) {
-                if let Some(err) = value.get("error") {
-                    return Err(TransportError::Rpc(err.clone()));
-                }
-                return Ok(value.get("result").cloned().unwrap_or(Value::Null));
-            }
-        }
+        self.core.request(
+            method,
+            params,
+            cancel,
+            self.protocol_meta.as_ref(),
+            self.read_timeout,
+        )
     }
 
     fn cancel_matching_pending_request(
@@ -3747,22 +5502,7 @@ impl Transport for StdioTransport {
         params: &Value,
         cancel: &CancelContext,
     ) -> bool {
-        let Some(pending) = self.pending_mrtr.as_ref() else {
-            return false;
-        };
-        if pending.response_for_retry(method, params).is_err() {
-            return false;
-        }
-        let pending = self
-            .pending_mrtr
-            .take()
-            .expect("matching pending request exists");
-        CancelEntry {
-            stdin: Arc::clone(&self.stdin),
-            downstream_id: pending.downstream_request_id,
-        }
-        .send_cancel_async(cancel.reason());
-        true
+        self.core.cancel_matching_suspended(method, params, cancel)
     }
 
     fn notify(&mut self, method: &str, params: Value) -> Result<(), TransportError> {
@@ -3773,13 +5513,8 @@ impl Transport for StdioTransport {
             merge_protocol_meta(&mut params, protocol);
         }
         let msg = json!({ "jsonrpc": "2.0", "method": method, "params": params });
-        let mut stdin = self
-            .stdin
-            .lock()
-            .map_err(|_| TransportError::Fatal("downstream stdin lock poisoned".into()))?;
-        writeln!(stdin, "{msg}").map_err(|e| TransportError::Fatal(e.to_string()))?;
-        stdin
-            .flush()
+        self.core
+            .write_line(&msg)
             .map_err(|e| TransportError::Fatal(e.to_string()))
     }
 
@@ -3796,7 +5531,11 @@ impl Transport for StdioTransport {
     }
 
     fn set_server_request_handler(&mut self, handler: ServerRequestHandler) {
-        self.server_handler = Some(handler);
+        *self
+            .core
+            .server_handler
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handler);
     }
 
     fn set_protocol_meta(&mut self, meta: Option<Value>) {
@@ -3816,8 +5555,7 @@ impl Transport for StdioTransport {
                 }),
             )?;
         }
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = self.core.next_id.fetch_add(1, Ordering::SeqCst);
         let mut params = filter.params();
         if let Some(protocol) = &self.protocol_meta {
             merge_protocol_meta(&mut params, protocol);
@@ -3828,18 +5566,114 @@ impl Transport for StdioTransport {
             "method": "subscriptions/listen",
             "params": params,
         });
-        let mut stdin = self
-            .stdin
-            .lock()
-            .map_err(|_| TransportError::Fatal("downstream stdin lock poisoned".into()))?;
-        writeln!(stdin, "{message}")
-            .map_err(|error| TransportError::Unavailable(error.to_string()))?;
-        stdin
-            .flush()
+        self.core
+            .write_line(&message)
             .map_err(|error| TransportError::Unavailable(error.to_string()))?;
         self.subscription_listener_id = Some(id);
         Ok(())
     }
+
+    fn connection_reset_reason(&self) -> Option<String> {
+        self.core
+            .read_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn connection_closed(&self) -> Option<bool> {
+        Some(self.core.is_closed())
+    }
+
+    fn suspended_calls(&self) -> usize {
+        self.core.lock_state().suspended.len()
+    }
+
+    fn concurrent(&self) -> Option<Arc<dyn ConcurrentTransport>> {
+        Some(Arc::new(StdioCall {
+            core: Arc::clone(&self.core),
+            protocol_meta: self.protocol_meta.clone(),
+            read_timeout: self.read_timeout,
+        }))
+    }
+}
+
+/// Spawn a downstream server and record it in [`crate::child_ledger`], so a
+/// gateway that starts after this one was killed can stop what it left behind.
+///
+/// On Linux the server also gets SIGTERM the moment the gateway dies
+/// (`PR_SET_PDEATHSIG`), so a killed gateway does not leave it running until the
+/// next start. That signal fires when the *thread* that spawned the child ends,
+/// not the process, so every server is spawned from one thread that lives as
+/// long as the process. It reaches only the direct child: a launcher's own
+/// children stay in its process group for the next start to reap.
+#[cfg(target_os = "linux")]
+fn spawn_server(mut cmd: Command) -> std::io::Result<Child> {
+    use std::os::unix::process::CommandExt;
+    let tag = crate::child_ledger::new_tag();
+    cmd.env(crate::child_ledger::TAG_VAR, &tag);
+    use std::sync::mpsc;
+    type Job = (Command, mpsc::Sender<std::io::Result<Child>>);
+    static SPAWNER: std::sync::OnceLock<Option<Mutex<mpsc::Sender<Job>>>> =
+        std::sync::OnceLock::new();
+    let spawner = SPAWNER.get_or_init(|| {
+        let (sender, jobs) = mpsc::channel::<Job>();
+        std::thread::Builder::new()
+            .name("toolport-server-spawner".to_string())
+            .spawn(move || {
+                for (mut cmd, reply) in jobs {
+                    let _ = reply.send(cmd.spawn());
+                }
+            })
+            .ok()
+            .map(|_| Mutex::new(sender))
+    });
+    let Some(spawner) = spawner else {
+        // No long-lived thread to bind the signal to: spawn without it.
+        return record_spawned(cmd.spawn(), &tag);
+    };
+    let parent = std::process::id() as libc::pid_t;
+    // SAFETY: prctl, getppid and _exit are async-signal-safe, as pre_exec requires.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // The gateway died between fork and prctl, so the signal never comes.
+            if libc::getppid() != parent {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+    let (reply, spawned) = mpsc::channel();
+    spawner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .send((cmd, reply))
+        .map_err(|_| std::io::Error::other("the server spawner thread is gone"))?;
+    record_spawned(
+        spawned
+            .recv()
+            .map_err(|_| std::io::Error::other("the server spawner thread is gone"))?,
+        &tag,
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn spawn_server(mut cmd: Command) -> std::io::Result<Child> {
+    let tag = crate::child_ledger::new_tag();
+    cmd.env(crate::child_ledger::TAG_VAR, &tag);
+    record_spawned(cmd.spawn(), &tag)
+}
+
+/// The tag lets the next gateway prove a leftover process is this server's
+/// even after the server itself is gone; see [`crate::child_ledger`].
+fn record_spawned(spawned: std::io::Result<Child>, tag: &str) -> std::io::Result<Child> {
+    if let Ok(child) = &spawned {
+        crate::child_ledger::record(child.id(), tag);
+    }
+    spawned
 }
 
 /// Kill the whole process group a downstream server was spawned into, so
@@ -3889,11 +5723,17 @@ impl Drop for StdioTransport {
     fn drop(&mut self) {
         #[cfg(windows)]
         drop(self.job.take());
+        let mut child = self
+            .core
+            .child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         #[cfg(unix)]
-        kill_process_group(&mut self.child);
+        kill_process_group(&mut child);
         // Reaps the direct child. Grandchildren were signalled above but are not
         // ours to reap; they are reparented to init, which reaps them.
-        let _ = self.child.wait();
+        let _ = child.wait();
+        crate::child_ledger::forget(child.id());
     }
 }
 
@@ -3922,22 +5762,34 @@ fn ids_match(got: Option<&Value>, wanted: Option<&Value>) -> bool {
 /// A callback that can proactively mint a fresh token before expiry or force a
 /// refresh after a 401/403. `force = false` returns `Ok(None)` when the current
 /// token is still fresh. A proactive error may fall back to the current token;
-/// a forced error is surfaced as a per-server authentication failure.
-pub type RefreshFn = Box<dyn Fn(bool) -> Result<Option<String>, String> + Send + Sync>;
+/// a forced error is surfaced as a per-server authentication failure. Forced calls
+/// pass the rejected bearer so the callback can adopt or exchange atomically.
+pub type RefreshFn =
+    Box<dyn Fn(bool, Option<&str>) -> Result<Option<String>, String> + Send + Sync>;
 
 /// Interactive OAuth step-up callback. Unlike a refresh-token exchange, this
 /// obtains user consent for the challenged scope and returns a new access token.
 pub type ScopeReauthorizeFn = Box<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 
 fn insufficient_scope_challenge(
-    response: &ureq::Response,
+    response: &ureq::http::Response<ureq::Body>,
 ) -> Option<crate::oauth::BearerChallenge> {
-    let values = response.all("www-authenticate");
-    let challenge = crate::oauth::bearer_challenge(values.iter().copied())?;
+    let values = response.headers().get_all("www-authenticate");
+    let challenge =
+        crate::oauth::bearer_challenge(values.iter().filter_map(|value| value.to_str().ok()))?;
     challenge
         .error
         .as_deref()
         .is_some_and(|error| error.eq_ignore_ascii_case("insufficient_scope"))
+        .then_some(())
+        .or_else(|| {
+            challenge
+                .scope
+                .as_ref()
+                .filter(|scope| !scope.is_empty())
+                .map(|_| ())
+        })
+        .is_some()
         .then_some(challenge)
 }
 
@@ -3983,13 +5835,13 @@ fn screen_resolved_addrs(
         if crate::oauth::ip_is_link_local(&ip) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
-                format!("SSRF guard: refusing link-local / cloud-metadata address {ip}"),
+                format!("blocked: private or local address (link-local / cloud-metadata {ip})"),
             ));
         }
         if block_private && crate::oauth::ip_is_private(&ip) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
-                format!("SSRF guard: refusing private / loopback address {ip}"),
+                format!("blocked: private or local address ({ip})"),
             ));
         }
     }
@@ -4006,20 +5858,15 @@ pub(crate) fn guarded_agent_with_timeout(
     block_private: bool,
     timeout: std::time::Duration,
 ) -> ureq::Agent {
-    use std::net::{SocketAddr, ToSocketAddrs};
-    ureq::AgentBuilder::new()
-        .timeout(timeout)
-        // Never follow redirects. MCP Streamable HTTP doesn't need cross-host
-        // redirects, and following one would let a malicious server bounce us to an
-        // internal address (SSRF, e.g. cloud metadata) or replay our Authorization
-        // bearer to a host of its choosing (token theft).
-        .redirects(0)
-        .resolver(move |netloc: &str| -> std::io::Result<Vec<SocketAddr>> {
-            let addrs: Vec<SocketAddr> = netloc.to_socket_addrs()?.collect();
-            screen_resolved_addrs(&addrs, block_private)?;
-            Ok(addrs)
-        })
-        .build()
+    let config = crate::http_client::config_builder!()
+        .timeout_global(Some(timeout))
+        // Metadata must fit in one fixed buffer; decoded bodies keep their own cap.
+        .input_buffer_size(HTTP_METADATA_BYTES)
+        .max_response_header_size(HTTP_METADATA_BYTES)
+        // Credential-bearing MCP calls never follow redirects.
+        .max_redirects(0)
+        .build();
+    crate::http_client::screened_agent(config, block_private, screen_resolved_addrs)
 }
 
 /// Talks to a remote MCP server over the Streamable HTTP transport: each request
@@ -4027,6 +5874,8 @@ pub(crate) fn guarded_agent_with_timeout(
 /// the JSON-RPC message. A session id from `initialize` is echoed on later calls.
 pub struct HttpTransport {
     url: String,
+    credential_headers: Vec<(String, String)>,
+    reference_credentials: bool,
     agent: ureq::Agent,
     /// Separate pool so inline replies can POST while an SSE body is still open.
     inline_agent: ureq::Agent,
@@ -4035,18 +5884,21 @@ pub struct HttpTransport {
     connect_timeout: Duration,
     /// Ordinary HTTP request deadline restored immediately after `initialize`.
     request_timeout: Duration,
-    session_id: Option<String>,
-    next_id: i64,
+    session_id: Arc<Mutex<Option<String>>>,
+    next_id: Arc<AtomicI64>,
     /// Raw bearer token (without the "Bearer " prefix), if the server needs auth.
     auth: Arc<Mutex<Option<String>>>,
     /// Called before each POST to refresh a token nearing expiry, and forced once
     /// after a 401/403 to recover from an already-expired token. A proactive
     /// `None` or error keeps the current token; a forced refresh must return a new
     /// raw token or the authentication failure is surfaced.
-    refresh: Option<Arc<Mutex<RefreshFn>>>,
+    refresh: Option<Arc<RefreshFn>>,
+    /// Read only after a bearer rejection, to adopt another process's credential.
+    auth_owner: Option<String>,
+    auth_credential_owner: Option<String>,
     /// Separate from token refresh: `insufficient_scope` requires interactive
     /// consent and a new authorization, not another token from the old grant.
-    scope_reauthorize: Option<Arc<Mutex<ScopeReauthorizeFn>>>,
+    scope_reauthorize: Option<Arc<ScopeReauthorizeFn>>,
     /// Bound repeated browser prompts and retries per operation+scope on this
     /// connection, as required by the MCP step-up guidance.
     scope_upgrade_attempts: Arc<Mutex<HashSet<(String, String)>>>,
@@ -4067,7 +5919,13 @@ pub struct HttpTransport {
     /// with a working refresh token in the vault - the exact case the reactive
     /// fallback exists to serve. Only a token the server has never accepted keeps
     /// the budget spent.
-    forced_refresh_token: Option<String>,
+    forced_refresh_token: Arc<Mutex<Option<String>>>,
+    refresh_failure: Arc<Mutex<Option<HttpRefreshFailure>>>,
+    concurrency: Arc<HttpConcurrency>,
+    deadline: Option<Instant>,
+    auth_gate: Arc<HttpAuthGate>,
+    wire_cancel: Option<HttpCancelSignal>,
+    send_started: Option<Arc<AtomicBool>>,
     server_handler: Option<ServerRequestHandler>,
     /// Open legacy SSE response suspended while a modern upstream client
     /// fulfills a server-initiated request in a separate round trip.
@@ -4103,9 +5961,421 @@ pub struct HttpTransport {
     draining: Option<Receiver<HttpAttemptOutcome>>,
 }
 
+struct HttpRefreshFailure {
+    recorded_at: Instant,
+    token: Option<String>,
+    error: String,
+}
+
+#[derive(Default)]
+struct HttpAuthGate {
+    busy: Mutex<bool>,
+    ready: std::sync::Condvar,
+}
+
+struct HttpAuthGuard<'a>(&'a HttpAuthGate);
+
+impl Drop for HttpAuthGuard<'_> {
+    fn drop(&mut self) {
+        *self
+            .0
+            .busy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+        self.0.ready.notify_all();
+    }
+}
+
+/// Independent POSTs share connection state, never response readers. The worker
+/// cap includes cancelled attempts that ureq must drain until its socket deadline.
+#[derive(Default)]
+struct HttpConcurrency {
+    closed: AtomicBool,
+    session_invalid: AtomicBool,
+    responses: AtomicU64,
+    workers: AtomicUsize,
+    pending: Mutex<HashMap<String, (Instant, PendingHttpMrtr)>>,
+}
+
+struct HttpCallTransport {
+    template: Mutex<HttpTransport>,
+}
+
+enum HttpDelivery {
+    ServerRequest(
+        Value,
+        std::sync::mpsc::SyncSender<Option<ServerRequestAction>>,
+    ),
+    Done(Box<HttpCallOutcome>),
+}
+
+struct HttpWorkerGuard(Arc<HttpConcurrency>);
+
+impl Drop for HttpWorkerGuard {
+    fn drop(&mut self) {
+        self.0.workers.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl HttpTransport {
+    fn retire_http_pending(&mut self) {
+        if let Some(pending) = self.pending_mrtr.take() {
+            let response = json!({ "jsonrpc": "2.0", "id": pending.common.server_request["id"],
+                "error": { "code": JSONRPC_INTERNAL_ERROR, "message": CALL_ENDED } });
+            // Retirement uses the current bearer, without invoking auth callbacks.
+            self.refresh = None;
+            self.scope_reauthorize = None;
+            self.deadline = None;
+            self.wire_cancel = None;
+            self.inline_agent =
+                guarded_agent_with_timeout(self.block_private, HTTP_CANCEL_FORWARD_TIMEOUT);
+            let _ = self.send_post_no_response(&response);
+        }
+    }
+}
+
+impl ConcurrentTransport for HttpCallTransport {
+    fn is_closed(&self) -> bool {
+        self.template
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .concurrency
+            .closed
+            .load(Ordering::SeqCst)
+    }
+
+    fn suspended_calls(&self) -> usize {
+        self.template
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .concurrency
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    fn request_with_cancel_and_headers(
+        &self,
+        method: &str,
+        params: Value,
+        cancel: Option<CancelContext>,
+        headers: &[(String, String)],
+    ) -> Result<Value, TransportError> {
+        // Template -> pending is the only structural lock order. Neither is held
+        // over I/O, callbacks, channel waits, or a caller's server-request handler.
+        let mut owned = self
+            .template
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .request_shell();
+        let shared = Arc::clone(&owned.concurrency);
+        if shared.closed.load(Ordering::SeqCst) {
+            return Err(TransportError::Unavailable(
+                "HTTP transport is closed".into(),
+            ));
+        }
+        if shared.workers.fetch_add(1, Ordering::SeqCst) >= 128 {
+            shared.workers.fetch_sub(1, Ordering::SeqCst);
+            return Err(TransportError::Busy(
+                "HTTP wire worker limit reached".into(),
+            ));
+        }
+        let guard = HttpWorkerGuard(Arc::clone(&shared));
+        let context = request_context();
+        let deadline = Instant::now() + owned.request_timeout;
+        owned.deadline = Some(deadline);
+        let send_started = Arc::new(AtomicBool::new(owned.pending_mrtr.is_some()));
+        owned.send_started = Some(Arc::clone(&send_started));
+        let mut retired = Vec::new();
+        let mut continuation_error = None;
+        let mut suspended_since = None;
+        {
+            let mut pending = shared
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            pending.retain(|_, (since, request)| {
+                if since.elapsed() < SUSPENDED_LEGACY_MRTR_TTL {
+                    return true;
+                }
+                // Move the reader out without performing network I/O under lock.
+                retired.push(PendingHttpMrtr {
+                    common: request.common.clone(),
+                    reader: std::mem::replace(
+                        &mut request.reader,
+                        Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+                    ),
+                    bytes_read: request.bytes_read,
+                    cancel_guard: request.cancel_guard.take(),
+                    cancel_signal: request.cancel_signal.take(),
+                });
+                false
+            });
+            if let Some(token) = params.get("requestState").and_then(Value::as_str) {
+                // Like stdio, the random requestState plus method/base params is
+                // continuation proof. A sessionless retry has a new context nonce.
+                if let Some((since, request)) = pending.remove(token) {
+                    suspended_since = Some(since);
+                    let mut request = request;
+                    request.cancel_guard.take();
+                    owned.pending_mrtr = Some(request);
+                } else if !owned.is_modern() {
+                    continuation_error = Some(TransportError::Rpc(json!({"code":-32602,
+                        "message":"unknown or expired requestState; start the call again"})));
+                }
+            }
+        }
+        if !retired.is_empty() {
+            let mut shell = owned.request_shell();
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + HTTP_CANCEL_FORWARD_TIMEOUT;
+                for pending in retired {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    shell.pending_mrtr = Some(pending);
+                    shell.retire_http_pending();
+                }
+            });
+        }
+        // Reserve exactly one id before the worker starts. A continuation keeps
+        // the id of its original POST; new calls use the shared atomic allocator.
+        let downstream_id = if let Some(pending) = &owned.pending_mrtr {
+            pending.common.downstream_request_id.clone()
+        } else {
+            let id = owned.next_id.fetch_add(1, Ordering::SeqCst);
+            owned.next_id = Arc::new(AtomicI64::new(id));
+            json!(id)
+        };
+        let signal = cancel.clone().map(|cancel| {
+            let mut signal = HttpCancelSignal::new(cancel, owned.pending_mrtr.is_some());
+            if let Some(previous) = owned
+                .pending_mrtr
+                .as_ref()
+                .and_then(|pending| pending.cancel_signal.as_ref())
+            {
+                signal.state = previous.state.clone();
+            }
+            signal
+        });
+        let cancel_guard = signal.as_ref().map(|signal| {
+            let signal = signal.clone();
+            let id = downstream_id.clone();
+            let weak = Arc::downgrade(&shared);
+            let mut shell = owned.request_shell();
+            shell.concurrency = Arc::new(HttpConcurrency::default());
+            let shell = Mutex::new(shell);
+            cancel.as_ref().unwrap().on_cancel(Arc::new(move |_| {
+                if signal.cancel() {
+                    shell
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .forward_cancel_async(id.clone(), &signal.context);
+                }
+                if let Some(shared) = weak.upgrade() {
+                    let retired = {
+                        let mut pending = shared
+                            .pending
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let token = pending
+                            .iter()
+                            .find(|(_, (_, p))| p.common.downstream_request_id == id)
+                            .map(|(token, _)| token.clone());
+                        token.and_then(|token| pending.remove(&token))
+                    };
+                    if let Some((_, request)) = retired {
+                        let mut shell = shell
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .request_shell();
+                        std::thread::spawn(move || {
+                            shell.pending_mrtr = Some(request);
+                            shell.retire_http_pending();
+                        });
+                    }
+                }
+            }))
+        });
+        let worker_signal = signal.clone();
+        let handler = owned.server_handler.clone();
+        let cancellation_shell = owned.request_shell();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let server_sender = sender.clone();
+        owned.server_handler = Some(Arc::new(move |request| {
+            let (reply, answer) = std::sync::mpsc::sync_channel(1);
+            if server_sender
+                .send(HttpDelivery::ServerRequest(request.clone(), reply))
+                .is_ok()
+            {
+                if let Ok(action) =
+                    answer.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                {
+                    return action;
+                }
+            }
+            Some(ServerRequestAction::Respond(
+                json!({"jsonrpc":"2.0", "id":request["id"],
+                "error":{"code":JSONRPC_INTERNAL_ERROR,"message":CALL_ENDED}}),
+            ))
+        }));
+        let method = method.to_string();
+        let headers = headers.to_vec();
+        std::thread::spawn(move || {
+            let _guard = guard;
+            let result = match continuation_error {
+                Some(error) => Err(error),
+                None => owned.request_inner_with_cancel(
+                    &method,
+                    params,
+                    &headers,
+                    worker_signal.as_ref(),
+                ),
+            };
+            if worker_signal
+                .as_ref()
+                .is_some_and(HttpCancelSignal::is_cancelled)
+                || owned.concurrency.closed.load(Ordering::SeqCst)
+                || Instant::now() >= deadline
+            {
+                owned.retire_http_pending();
+            }
+            if let Err(error) = sender.send(HttpDelivery::Done(Box::new(HttpCallOutcome {
+                transport: owned,
+                result,
+            }))) {
+                if let HttpDelivery::Done(mut outcome) = error.0 {
+                    outcome.transport.retire_http_pending();
+                }
+            }
+        });
+        loop {
+            if shared.closed.load(Ordering::SeqCst)
+                || Instant::now() >= deadline
+                || cancel.as_ref().is_some_and(CancelContext::is_cancelled)
+            {
+                if let Some(signal) = &signal {
+                    if signal.cancel() {
+                        cancellation_shell
+                            .forward_cancel_async(downstream_id, cancel.as_ref().unwrap());
+                    }
+                }
+                retire_http_deliveries(&receiver);
+                return if shared.closed.load(Ordering::SeqCst) {
+                    Err(TransportError::Unavailable(
+                        "HTTP transport closed while waiting".into(),
+                    ))
+                } else if cancel.as_ref().is_some_and(CancelContext::is_cancelled) {
+                    Err(TransportError::Cancelled(
+                        "HTTP request cancelled by upstream client".into(),
+                    ))
+                } else {
+                    Err(TransportError::Classified(
+                        crate::call_failure::CallFailureKind::Timeout {
+                            after_send: send_started.load(Ordering::Acquire),
+                        },
+                        "HTTP request timed out".into(),
+                    ))
+                };
+            }
+            match receiver.recv_timeout(
+                HTTP_CANCEL_POLL.min(deadline.saturating_duration_since(Instant::now())),
+            ) {
+                Ok(HttpDelivery::ServerRequest(request, reply)) => {
+                    let eligible =
+                        !matches!(context, RequestContext::Background { sole_client: false });
+                    let action = if eligible {
+                        handler.as_ref().and_then(|handler| handler(&request))
+                    } else {
+                        None
+                    };
+                    let _ = reply.send(action.or_else(|| Some(ServerRequestAction::Respond(json!({
+                        "jsonrpc":"2.0", "id":request["id"], "error":{"code":JSONRPC_INTERNAL_ERROR,"message":NO_CLIENT_IN_FLIGHT}
+                    })))));
+                }
+                Ok(HttpDelivery::Done(mut outcome)) => {
+                    if cancel.as_ref().is_some_and(CancelContext::is_cancelled) {
+                        if signal.as_ref().is_some_and(HttpCancelSignal::cancel) {
+                            cancellation_shell
+                                .forward_cancel_async(downstream_id, cancel.as_ref().unwrap());
+                        }
+                        drop(outcome);
+                        retire_http_deliveries(&receiver);
+                        return Err(TransportError::Cancelled(
+                            "HTTP request cancelled by upstream client".into(),
+                        ));
+                    }
+                    if let Some(mut request) = outcome.transport.pending_mrtr.take() {
+                        request.cancel_guard = cancel_guard;
+                        request.cancel_signal = signal.clone();
+                        let mut pending = shared
+                            .pending
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if pending.len() >= MAX_SUSPENDED_LEGACY_MRTR
+                            || shared.closed.load(Ordering::SeqCst)
+                            || signal.as_ref().is_some_and(HttpCancelSignal::is_cancelled)
+                        {
+                            drop(pending);
+                            outcome.transport.pending_mrtr = Some(request);
+                            drop(outcome);
+                            retire_http_deliveries(&receiver);
+                            return Err(TransportError::Busy(
+                                "HTTP suspended call limit reached".into(),
+                            ));
+                        }
+                        pending.insert(
+                            request.common.token.clone(),
+                            (suspended_since.unwrap_or_else(Instant::now), request),
+                        );
+                    }
+                    return std::mem::replace(&mut outcome.result, Ok(Value::Null));
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    retire_http_deliveries(&receiver);
+                    return Err(TransportError::Fatal(
+                        "HTTP worker exited without a response".into(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
 struct HttpAttemptOutcome {
     transport: HttpTransport,
     result: Result<Value, TransportError>,
+}
+
+// A result can be queued just as its caller exits. Ownership of a suspended
+// reader must retire with the outcome even when nobody receives the channel item.
+struct HttpCallOutcome {
+    transport: HttpTransport,
+    result: Result<Value, TransportError>,
+}
+
+impl Drop for HttpCallOutcome {
+    fn drop(&mut self) {
+        if let Some(pending) = self.transport.pending_mrtr.take() {
+            let mut shell = self.transport.request_shell();
+            shell.pending_mrtr = Some(pending);
+            std::thread::spawn(move || shell.retire_http_pending());
+        }
+    }
+}
+
+fn retire_http_deliveries(receiver: &Receiver<HttpDelivery>) {
+    while let Ok(delivery) = receiver.try_recv() {
+        if let HttpDelivery::ServerRequest(request, reply) = delivery {
+            let _ = reply.send(Some(ServerRequestAction::Respond(json!({
+                "jsonrpc":"2.0", "id":request["id"],
+                "error":{"code":JSONRPC_INTERNAL_ERROR,"message":CALL_ENDED}
+            }))));
+        }
+        // Done outcomes retire any suspended reader through Drop.
+    }
 }
 
 /// Per-wire-attempt cancellation state. Unlike CancelRegistry, this survives the
@@ -4171,6 +6441,8 @@ struct PendingHttpMrtr {
     common: PendingLegacyMrtr,
     reader: Box<dyn BufRead + Send>,
     bytes_read: u64,
+    cancel_guard: Option<CancelGuard>,
+    cancel_signal: Option<HttpCancelSignal>,
 }
 
 impl HttpTransport {
@@ -4226,17 +6498,27 @@ impl HttpTransport {
     ) -> Self {
         HttpTransport {
             url: url.to_string(),
+            credential_headers: Vec::new(),
+            reference_credentials: false,
             agent: guarded_agent_with_timeout(block_private, request_timeout),
             inline_agent: guarded_agent_with_timeout(block_private, request_timeout),
             connect_timeout: request_timeout,
             request_timeout,
-            session_id: None,
-            next_id: 1,
+            session_id: Arc::new(Mutex::new(None)),
+            next_id: Arc::new(AtomicI64::new(1)),
             auth: Arc::new(Mutex::new(auth)),
-            refresh: refresh.map(|refresh| Arc::new(Mutex::new(refresh))),
+            refresh: refresh.map(Arc::new),
+            auth_owner: None,
+            auth_credential_owner: None,
             scope_reauthorize: None,
             scope_upgrade_attempts: Arc::new(Mutex::new(HashSet::new())),
-            forced_refresh_token: None,
+            forced_refresh_token: Arc::new(Mutex::new(None)),
+            refresh_failure: Arc::new(Mutex::new(None)),
+            concurrency: Arc::new(HttpConcurrency::default()),
+            deadline: None,
+            auth_gate: Arc::new(HttpAuthGate::default()),
+            wire_cancel: None,
+            send_started: None,
             server_handler: None,
             pending_mrtr: None,
             resource_updated: None,
@@ -4252,8 +6534,37 @@ impl HttpTransport {
         }
     }
 
+    pub fn set_reference_credentials(&mut self, enabled: bool) {
+        self.reference_credentials = enabled;
+    }
+
+    pub fn set_credential_headers(&mut self, headers: Vec<(String, String)>) -> Result<(), String> {
+        for (name, value) in &headers {
+            if !crate::secret_refs::header_name(name)
+                || value.chars().any(char::is_control)
+                || [
+                    "host",
+                    "content-length",
+                    "transfer-encoding",
+                    "connection",
+                    "content-type",
+                    "accept",
+                ]
+                .contains(&name.to_ascii_lowercase().as_str())
+                || name.to_ascii_lowercase().starts_with("mcp-")
+            {
+                return Err(
+                    "Invalid credential header. Use an API key header without control characters."
+                        .into(),
+                );
+            }
+        }
+        self.credential_headers = headers;
+        Ok(())
+    }
+
     pub fn set_scope_reauthorize(&mut self, callback: Option<ScopeReauthorizeFn>) {
-        self.scope_reauthorize = callback.map(|callback| Arc::new(Mutex::new(callback)));
+        self.scope_reauthorize = callback.map(Arc::new);
     }
 
     pub fn set_connect_timeout(&mut self, timeout: Duration) {
@@ -4322,20 +6633,37 @@ impl HttpTransport {
         self.protocol_meta.is_some()
     }
 
+    fn request_shell(&self) -> Self {
+        let (_, receiver) = std::sync::mpsc::channel();
+        let mut shell = self.draining_shell(receiver);
+        shell.draining = None;
+        shell
+    }
+
     fn draining_shell(&self, receiver: Receiver<HttpAttemptOutcome>) -> Self {
         Self {
             url: self.url.clone(),
+            credential_headers: self.credential_headers.clone(),
+            reference_credentials: self.reference_credentials,
             agent: self.agent.clone(),
             inline_agent: self.inline_agent.clone(),
             connect_timeout: self.connect_timeout,
             request_timeout: self.request_timeout,
             session_id: self.session_id.clone(),
-            next_id: self.next_id,
+            next_id: Arc::clone(&self.next_id),
             auth: Arc::clone(&self.auth),
             refresh: self.refresh.clone(),
+            auth_owner: self.auth_owner.clone(),
+            auth_credential_owner: self.auth_credential_owner.clone(),
             scope_reauthorize: self.scope_reauthorize.clone(),
             scope_upgrade_attempts: Arc::clone(&self.scope_upgrade_attempts),
-            forced_refresh_token: self.forced_refresh_token.clone(),
+            forced_refresh_token: Arc::clone(&self.forced_refresh_token),
+            refresh_failure: Arc::clone(&self.refresh_failure),
+            concurrency: Arc::clone(&self.concurrency),
+            deadline: self.deadline,
+            auth_gate: Arc::clone(&self.auth_gate),
+            wire_cancel: self.wire_cancel.clone(),
+            send_started: self.send_started.clone(),
             server_handler: self.server_handler.clone(),
             pending_mrtr: None,
             resource_updated: self.resource_updated.clone(),
@@ -4382,7 +6710,7 @@ impl HttpTransport {
         self.pending_mrtr
             .as_ref()
             .map(|pending| pending.common.downstream_request_id.clone())
-            .unwrap_or_else(|| json!(self.next_id))
+            .unwrap_or_else(|| json!(self.next_id.load(Ordering::SeqCst)))
     }
 
     fn forward_cancel_async(&self, downstream_id: Value, cancel: &CancelContext) {
@@ -4394,7 +6722,12 @@ impl HttpTransport {
         let agent = guarded_agent_with_timeout(self.block_private, HTTP_CANCEL_FORWARD_TIMEOUT);
         let url = self.url.clone();
         let auth = Arc::clone(&self.auth);
-        let session_id = self.session_id.clone();
+        let credential_headers = self.credential_headers.clone();
+        let session_id = self
+            .session_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let protocol_meta = self.protocol_meta.clone();
         let wire_version = self.wire_protocol_version();
         let reason = cancel.reason();
@@ -4413,16 +6746,16 @@ impl HttpTransport {
             });
             let mut request = agent
                 .post(&url)
-                .set("Content-Type", "application/json")
-                .set("Accept", "application/json, text/event-stream")
-                .set("MCP-Protocol-Version", &wire_version);
+                .set_header("Content-Type", "application/json")
+                .set_header("Accept", "application/json, text/event-stream")
+                .set_header("MCP-Protocol-Version", &wire_version);
             if protocol_meta.is_none() {
                 if let Some(session_id) = session_id.as_deref() {
-                    request = request.set("Mcp-Session-Id", session_id);
+                    request = request.set_header("Mcp-Session-Id", session_id);
                 }
             } else if let Ok(headers) = modern_standard_headers(&body) {
                 for (name, value) in headers {
-                    request = request.set(&name, &value);
+                    request = request.set_header(&name, &value);
                 }
             }
             let token = auth
@@ -4430,9 +6763,12 @@ impl HttpTransport {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             if let Some(token) = token.as_deref() {
-                request = request.set("Authorization", &bearer_header(token));
+                request = request.set_header("Authorization", &bearer_header(token));
             }
-            if let Err(error) = request.send_string(&body.to_string()) {
+            for (name, value) in &credential_headers {
+                request = request.set_header(name, value);
+            }
+            if let Err(error) = request.send(&body.to_string()).retain_status_body() {
                 downstream_trace(&format!("HTTP cancellation forward failed: {error}"));
             }
             HTTP_CANCEL_THREADS_INFLIGHT.fetch_sub(1, Ordering::SeqCst);
@@ -4455,6 +6791,7 @@ impl HttpTransport {
         headers: &[(String, String)],
         cancel: Option<&HttpCancelSignal>,
     ) -> Result<Value, TransportError> {
+        self.wire_cancel = cancel.cloned();
         if cancel.is_some_and(HttpCancelSignal::is_cancelled) {
             return Err(TransportError::Cancelled(
                 "request cancelled before it reached the HTTP server".to_string(),
@@ -4502,8 +6839,7 @@ impl HttpTransport {
             return Ok(resp.get("result").cloned().unwrap_or(Value::Null));
         }
 
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let body = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         let resp = self
             .post_with_headers_cancel(&body, true, headers, cancel)?
@@ -4518,23 +6854,124 @@ impl HttpTransport {
         if !is_server_initiated_request(v) {
             return None;
         }
+        if self.deadline.is_none()
+            && matches!(
+                request_context(),
+                RequestContext::Background { sole_client: false }
+            )
+        {
+            return Some(ServerRequestAction::Respond(
+                json!({"jsonrpc":"2.0", "id":v["id"],
+                "error":{"code":JSONRPC_INTERNAL_ERROR,"message":NO_CLIENT_IN_FLIGHT}}),
+            ));
+        }
         self.server_handler.as_ref().and_then(|handler| handler(v))
     }
 
-    /// Try to replace a token nearing expiry. Failure here is non-fatal because
-    /// the current token may remain valid throughout the safety window; a real
-    /// 401/403 will force one refresh attempt below.
-    fn refresh_before_send(&mut self) {
+    /// Proactive work skips a busy auth gate. Contention keeps the current token;
+    /// storage failures reach the caller. Both leave later calls free to reread
+    /// the vault and recover without an unlocked exchange.
+    fn refresh_before_send(&mut self) -> Result<(), TransportError> {
         if let Some(refresh) = &self.refresh {
-            if let Ok(refresh) = refresh.lock() {
-                if let Ok(Some(token)) = refresh(false) {
+            let mut busy = match self.auth_gate.busy.try_lock() {
+                Ok(busy) => busy,
+                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => return Ok(()),
+            };
+            if *busy {
+                return Ok(());
+            }
+            *busy = true;
+            drop(busy);
+            let _gate = HttpAuthGuard(&self.auth_gate);
+            let current = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let failed = self
+                .refresh_failure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some();
+            // A read failure cannot revoke the token already in hand. The refresh
+            // callback can still return a valid pending rotation on this path.
+            if failed && self.reuse_stored_auth(&current).unwrap_or(false) {
+                return Ok(());
+            }
+            match refresh(false, None) {
+                Ok(Some(token)) => {
                     *self
                         .auth
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(token);
+                    *self
+                        .refresh_failure
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 }
+                Err(error) => {
+                    self.record_refresh_failure(current, error.clone());
+                    if crate::remote::is_refresh_storage_or_lock_error(&error)
+                        && !crate::remote::is_refresh_lock_error(&error)
+                    {
+                        return Err(TransportError::Classified(
+                            crate::call_failure::CallFailureKind::Auth {
+                                target: crate::call_failure::AuthTarget::OAuthRefresh,
+                            },
+                            error,
+                        ));
+                    }
+                }
+                Ok(None) => {}
             }
         }
+        Ok(())
+    }
+
+    fn record_refresh_failure(&self, token: Option<String>, error: String) {
+        if crate::remote::is_refresh_lock_error(&error) {
+            return;
+        }
+        *self
+            .refresh_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(HttpRefreshFailure {
+            recorded_at: Instant::now(),
+            token,
+            error,
+        });
+    }
+
+    fn reuse_stored_auth(&self, rejected: &Option<String>) -> Result<bool, TransportError> {
+        let Some(owner) = &self.auth_owner else {
+            return Ok(false);
+        };
+        let _owner = self
+            .auth_credential_owner
+            .as_ref()
+            .map(|physical| crate::local_auth::pin_credential_owner(owner, physical));
+        let stored = match rejected.as_deref() {
+            Some(rejected) => crate::remote::newer_credential(owner, rejected),
+            None => crate::remote::current_credential(owner),
+        }
+        .map_err(|detail| {
+            TransportError::Classified(
+                crate::call_failure::CallFailureKind::Auth {
+                    target: crate::call_failure::AuthTarget::OAuthRefresh,
+                },
+                detail,
+            )
+        })?;
+        if let Some(token) = stored {
+            self.publish_refreshed_auth(token);
+            *self
+                .refresh_failure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// True when the token currently in hand is one a forced refresh already
@@ -4544,35 +6981,131 @@ impl HttpTransport {
             .auth
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        auth.is_some() && *auth == self.forced_refresh_token
+        auth.is_some()
+            && *auth
+                == *self
+                    .forced_refresh_token
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    #[cfg(test)]
     fn force_refresh_after_auth_error(&mut self, code: u16) -> Result<(), TransportError> {
-        let Some(refresh) = self.refresh.as_ref() else {
-            return Err(TransportError::Fatal(format!(
-                "HTTP {code} (needs authentication): no refresh callback configured"
-            )));
-        };
-        let refresh = refresh
+        let rejected = self
+            .auth
             .lock()
-            .map_err(|_| TransportError::Fatal("OAuth refresh callback lock poisoned".into()))?;
-        match refresh(true) {
-            Ok(Some(token)) => {
-                *self
-                    .auth
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(token.clone());
-                // Spend the budget for this token, so a later POST on the same
-                // connection does not force a second exchange for it (SOU-474).
-                self.forced_refresh_token = Some(token);
-                Ok(())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        self.force_refresh_for_token(code, rejected)
+    }
+
+    fn force_refresh_for_token(
+        &mut self,
+        code: u16,
+        rejected: Option<String>,
+    ) -> Result<(), TransportError> {
+        let rejected_at = Instant::now();
+        // Lock order: auth gate, auth, budget/failure. Recheck after taking
+        // the callback gate: siblings rejected with the old bearer share its result.
+        let _gate = self.auth_gate_lock()?;
+        let current = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if current != rejected {
+            return Ok(());
+        }
+        if let Some(failure) = self
+            .refresh_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            if failure.token == rejected && rejected_at <= failure.recorded_at {
+                return Err(TransportError::Classified(
+                    crate::call_failure::CallFailureKind::Auth {
+                        target: crate::call_failure::AuthTarget::OAuthRefresh,
+                    },
+                    failure.error.clone(),
+                ));
             }
-            Ok(None) => Err(TransportError::Fatal(format!(
-                "HTTP {code} (needs authentication): token refresh returned no token"
-            ))),
-            Err(e) => Err(TransportError::Fatal(format!(
-                "HTTP {code} (needs authentication): token refresh failed: {e}"
-            ))),
+        }
+        let Some(refresh) = self.refresh.as_ref() else {
+            return Err(TransportError::Classified(
+                crate::call_failure::CallFailureKind::Auth {
+                    target: crate::call_failure::AuthTarget::OAuthRefresh,
+                },
+                format!("HTTP {code} (needs authentication): no refresh callback configured"),
+            ));
+        };
+        if self.forced_refresh_spent() {
+            // Adoption is still allowed after spending the exchange budget. This
+            // lookup never leads to an exchange, so there is no check-then-act race.
+            if self.reuse_stored_auth(&rejected)? {
+                return Ok(());
+            }
+            return Err(TransportError::Classified(
+                crate::call_failure::CallFailureKind::Auth {
+                    target: crate::call_failure::AuthTarget::OAuthRefresh,
+                },
+                format!("HTTP {code} (needs authentication): refreshed token rejected"),
+            ));
+        }
+        let result = match refresh(true, rejected.as_deref()) {
+            Ok(Some(token)) => {
+                self.publish_refreshed_auth(token);
+                return Ok(());
+            }
+            Ok(None) => {
+                format!("HTTP {code} (needs authentication): token refresh returned no token")
+            }
+            Err(e) if crate::remote::is_refresh_storage_or_lock_error(&e) => e,
+            Err(e) => format!("HTTP {code} (needs authentication): token refresh failed: {e}"),
+        };
+        self.record_refresh_failure(rejected, result.clone());
+        Err(TransportError::Classified(
+            crate::call_failure::CallFailureKind::Auth {
+                target: crate::call_failure::AuthTarget::OAuthRefresh,
+            },
+            result,
+        ))
+    }
+
+    fn auth_gate_lock(&self) -> Result<HttpAuthGuard<'_>, TransportError> {
+        let deadline = self
+            .deadline
+            .unwrap_or_else(|| Instant::now() + self.request_timeout);
+        let mut busy = self
+            .auth_gate
+            .busy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if Instant::now() >= deadline
+                || self.concurrency.closed.load(Ordering::SeqCst)
+                || self
+                    .wire_cancel
+                    .as_ref()
+                    .is_some_and(HttpCancelSignal::is_cancelled)
+            {
+                return Err(TransportError::Busy(
+                    "OAuth callback wait ended with the HTTP request".into(),
+                ));
+            }
+            if !*busy {
+                *busy = true;
+                return Ok(HttpAuthGuard(&self.auth_gate));
+            }
+            let (guard, _) = self
+                .auth_gate
+                .ready
+                .wait_timeout(
+                    busy,
+                    HTTP_CANCEL_POLL.min(deadline.saturating_duration_since(Instant::now())),
+                )
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            busy = guard;
         }
     }
 
@@ -4581,49 +7114,106 @@ impl HttpTransport {
         code: u16,
         operation: &str,
         challenge: crate::oauth::BearerChallenge,
+        rejected: Option<String>,
     ) -> Result<(), TransportError> {
         let required_scope = challenge
             .scope
             .map(|scope| canonical_scope_set(&scope))
             .filter(|scope| !scope.is_empty())
             .ok_or_else(|| {
-                TransportError::Fatal(format!(
+                TransportError::Classified(crate::call_failure::CallFailureKind::Auth { target: crate::call_failure::AuthTarget::Scope }, format!(
                     "HTTP {code} (needs authentication): OAuth reported insufficient_scope without the required scope"
                 ))
             })?;
+        let callback = self.scope_reauthorize.as_ref().ok_or_else(|| {
+            TransportError::Classified(crate::call_failure::CallFailureKind::Auth { target: crate::call_failure::AuthTarget::Scope }, format!("HTTP {code} (needs authentication): OAuth scope '{required_scope}' requires interactive authorization"))
+        })?;
+        let _gate = self.auth_gate_lock()?;
+        if *self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            != rejected
+        {
+            return Ok(());
+        }
         let attempt_key = (operation.to_string(), required_scope.clone());
         let first_attempt = self
             .scope_upgrade_attempts
             .lock()
-            .map_err(|_| TransportError::Fatal("OAuth scope-attempt lock poisoned".into()))?
+            .map_err(|_| {
+                TransportError::Classified(
+                    crate::call_failure::CallFailureKind::Internal,
+                    "OAuth scope-attempt lock poisoned".into(),
+                )
+            })?
             .insert(attempt_key);
         if !first_attempt {
-            return Err(TransportError::Fatal(format!(
-                "HTTP {code} (needs authentication): OAuth scope '{required_scope}' was already requested for {operation} and remains insufficient"
-            )));
+            return Err(TransportError::Classified(crate::call_failure::CallFailureKind::Auth { target: crate::call_failure::AuthTarget::Scope }, format!("HTTP {code} (needs authentication): OAuth scope '{required_scope}' was already requested for {operation} and remains insufficient")));
         }
-        let callback = self.scope_reauthorize.as_ref().ok_or_else(|| {
-            TransportError::Fatal(format!(
-                "HTTP {code} (needs authentication): OAuth scope '{required_scope}' requires interactive authorization"
-            ))
-        })?;
-        let token = callback
-            .lock()
-            .map_err(|_| TransportError::Fatal("OAuth scope callback lock poisoned".into()))?
-            (&required_scope)
+        let token = callback(&required_scope)
             .map_err(|e| {
-                TransportError::Fatal(format!(
+                TransportError::Classified(crate::call_failure::CallFailureKind::Auth { target: crate::call_failure::AuthTarget::Scope }, format!(
                     "HTTP {code} (needs authentication): OAuth scope authorization failed for '{required_scope}': {e}"
                 ))
             })?;
-        *self
+        // A newly-authorized token shares the rejected-token budget too.
+        self.publish_refreshed_auth(token);
+        Ok(())
+    }
+
+    fn publish_refreshed_auth(&self, token: String) {
+        let mut auth = self
             .auth
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(token.clone());
-        // Do not follow a freshly-authorized token's rejection with an automatic
-        // refresh-token exchange: it cannot add a scope the user did not grant.
-        self.forced_refresh_token = Some(token);
-        Ok(())
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *auth = Some(token.clone());
+        *self
+            .forced_refresh_token
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(token);
+    }
+
+    fn accept_auth(&self, accepted: Option<String>) {
+        // A late success for an older bearer cannot reset the current budget.
+        let auth = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *auth == accepted {
+            *self
+                .forced_refresh_token
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            *self
+                .refresh_failure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+    }
+
+    fn http_status_failure(&self, code: u16) -> crate::call_failure::CallFailureKind {
+        if matches!(code, 400 | 404) {
+            let has_session = !self.is_modern()
+                && self
+                    .session_id
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_some();
+            if has_session {
+                // Recover on a new demand, never replay the rejected POST.
+                self.concurrency
+                    .session_invalid
+                    .store(true, Ordering::Release);
+                self.concurrency.closed.store(true, Ordering::Release);
+            }
+            return if !has_session && code == 404 {
+                crate::call_failure::CallFailureKind::ServerError { after_send: true }
+            } else {
+                crate::call_failure::CallFailureKind::http_status(code, has_session)
+            };
+        }
+        crate::call_failure::CallFailureKind::http_status(code, true)
     }
 
     /// POST JSON-RPC without waiting for a response body (inline replies mid-SSE).
@@ -4640,10 +7230,26 @@ impl HttpTransport {
         // inline reply is still egress and must not slip past an open window.
         self.shared_backoff_gate()?;
         let payload = body.to_string();
-        self.refresh_before_send();
-        let mut refreshed = self.forced_refresh_spent();
+        self.refresh_before_send()?;
+        let mut refreshed = false;
+        let mut scope_upgraded = false;
         let wire_version = self.wire_protocol_version();
-        let resp = loop {
+        let (resp, accepted_auth) = loop {
+            if self
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+                || (self.deadline.is_some() && self.concurrency.closed.load(Ordering::SeqCst))
+            {
+                return Err(TransportError::Classified(
+                    crate::call_failure::CallFailureKind::Timeout {
+                        after_send: self
+                            .send_started
+                            .as_ref()
+                            .is_some_and(|s| s.load(Ordering::Acquire)),
+                    },
+                    "HTTP request deadline ended before POST".into(),
+                ));
+            }
             if cancel.is_some_and(HttpCancelSignal::is_cancelled) {
                 return Err(TransportError::Cancelled(
                     "HTTP request cancelled by upstream client".to_string(),
@@ -4652,17 +7258,22 @@ impl HttpTransport {
             let mut req = self
                 .inline_agent
                 .post(&self.url)
-                .set("Content-Type", "application/json")
-                .set("Accept", "application/json, text/event-stream")
-                .set("MCP-Protocol-Version", &wire_version);
+                .set_header("Content-Type", "application/json")
+                .set_header("Accept", "application/json, text/event-stream")
+                .set_header("MCP-Protocol-Version", &wire_version);
             if !self.is_modern() {
-                if let Some(sid) = &self.session_id {
-                    req = req.set("Mcp-Session-Id", sid);
+                if let Some(sid) = self
+                    .session_id
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                {
+                    req = req.set_header("Mcp-Session-Id", sid);
                 }
             }
             if self.is_modern() {
                 for (name, value) in modern_standard_headers(body)? {
-                    req = req.set(&name, &value);
+                    req = req.set_header(&name, &value);
                 }
             }
             let auth = self
@@ -4671,22 +7282,34 @@ impl HttpTransport {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             if let Some(token) = auth.as_deref() {
-                req = req.set("Authorization", &bearer_header(token));
+                req = req.set_header("Authorization", &bearer_header(token));
+            }
+            for (name, value) in &self.credential_headers {
+                req = req.set_header(name, value);
             }
             if cancel.is_some_and(|signal| !signal.mark_sending()) {
                 return Err(TransportError::Cancelled(
                     "HTTP request cancelled by upstream client".to_string(),
                 ));
             }
-            let response = req.send_string(&payload);
+            if let Some(deadline) = self.deadline {
+                req = req
+                    .config()
+                    .timeout_global(Some(deadline.saturating_duration_since(Instant::now())))
+                    .build();
+            }
+            let response = req.send(&payload).retain_status_body();
+            if matches!(&response, Err(crate::http_client::Error::Status(_, _))) {
+                self.concurrency.responses.fetch_add(1, Ordering::AcqRel);
+            }
             if cancel.is_some_and(HttpCancelSignal::is_cancelled) {
                 return Err(TransportError::Cancelled(
                     "HTTP request cancelled by upstream client".to_string(),
                 ));
             }
             match response {
-                Ok(resp) => break resp,
-                Err(ureq::Error::Status(code, resp))
+                Ok(resp) => break (resp, auth),
+                Err(crate::http_client::Error::Status(code, resp))
                     if (code == 401 || code == 403)
                         && insufficient_scope_challenge(&resp).is_some() =>
                 {
@@ -4694,36 +7317,64 @@ impl HttpTransport {
                         .expect("match guard established an insufficient-scope challenge");
                     let _ = read_capped(resp, 8 * 1024);
                     let operation = authorization_operation(body);
-                    self.reauthorize_after_scope_challenge(code, &operation, challenge)?;
+                    self.reauthorize_after_scope_challenge(code, &operation, challenge, auth)?;
                     refreshed = true;
+                    scope_upgraded = true;
                 }
-                Err(ureq::Error::Status(code, resp))
-                    if (code == 401 || code == 403) && !refreshed && self.refresh.is_some() =>
+                Err(crate::http_client::Error::Status(code, resp))
+                    if code == 401 && !refreshed && self.refresh.is_some() =>
                 {
                     let _ = read_capped(resp, 8 * 1024);
                     refreshed = true;
-                    self.force_refresh_after_auth_error(code)?;
+                    self.force_refresh_for_token(code, auth)?;
                 }
-                Err(ureq::Error::Status(429, r)) => {
+                Err(crate::http_client::Error::Status(429, r)) => {
                     // Record into the shared window like the main POST path
                     // and surface a Retry signal so the Router backs off.
                     let retry_after = record_shared_rate_limit(&self.url, &r);
                     let _ = read_capped(r, 8 * 1024);
-                    return Err(TransportError::Retry {
+                    return Err(TransportError::RateLimited {
                         retry_after,
                         message: "HTTP 429: rate limited".to_string(),
                     });
                 }
-                Err(e) => return Err(TransportError::Fatal(e.to_string())),
+                Err(crate::http_client::Error::Status(code, response)) => {
+                    let detail = read_capped(response, 8 * 1024);
+                    return Err(TransportError::Classified(
+                        if code == 401 && scope_upgraded {
+                            crate::call_failure::CallFailureKind::Auth {
+                                target: crate::call_failure::AuthTarget::Scope,
+                            }
+                        } else {
+                            self.http_status_failure(code)
+                        },
+                        format!(
+                            "HTTP {code}: {}",
+                            detail.chars().take(200).collect::<String>()
+                        ),
+                    ));
+                }
+                Err(crate::http_client::Error::Transport(error)) => {
+                    return Err(http_transport_io_error(error));
+                }
             }
         };
         if !self.is_modern() {
-            if let Some(sid) = resp.header("Mcp-Session-Id") {
-                self.session_id = Some(sid.to_string());
+            if let Some(sid) = resp
+                .headers()
+                .get("Mcp-Session-Id")
+                .and_then(|value| value.to_str().ok())
+            {
+                *self
+                    .session_id
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sid.to_string());
             }
         }
+        self.accept_auth(accepted_auth);
         // Drain so the connection returns to the pool without leaving bytes unread.
         let _ = read_capped(resp, 64 * 1024);
+        self.concurrency.responses.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -4732,7 +7383,7 @@ impl HttpTransport {
     /// server waits for our inline reply before sending the final response).
     fn read_sse_response(
         &mut self,
-        resp: ureq::Response,
+        resp: ureq::http::Response<ureq::Body>,
         request: &Value,
     ) -> Result<Option<Value>, TransportError> {
         let wanted = request.get("id").cloned().unwrap_or(Value::Null);
@@ -4741,9 +7392,8 @@ impl HttpTransport {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
-        let reader: Box<dyn BufRead + Send> = Box::new(BufReader::new(
-            resp.into_reader().take(MAX_RESPONSE_BYTES + 1),
-        ));
+        let reader: Box<dyn BufRead + Send> =
+            Box::new(BufReader::new(resp.into_body().into_reader()));
         self.read_sse_stream(reader, wanted, method, &params, 0)
     }
 
@@ -4755,21 +7405,19 @@ impl HttpTransport {
         params: &Value,
         mut bytes_read: u64,
     ) -> Result<Option<Value>, TransportError> {
-        let mut line = String::new();
+        let mut mismatched_response = false;
         loop {
-            line.clear();
-            let n = reader
-                .read_line(&mut line)
-                .map_err(|e| TransportError::Fatal(e.to_string()))?;
+            let mut bytes = Vec::new();
+            let remaining = MAX_RESPONSE_BYTES.saturating_sub(bytes_read) as usize;
+            let n = read_downstream_frame(&mut reader, &mut bytes, remaining, Some(b'\n'))
+                .map_err(http_read_error)?;
+            let line = String::from_utf8(bytes).map_err(|error| {
+                TransportError::Fatal(format!("SSE response was not UTF-8: {error}"))
+            })?;
             if n == 0 {
                 break;
             }
             bytes_read += n as u64;
-            if bytes_read > MAX_RESPONSE_BYTES {
-                return Err(TransportError::Fatal(format!(
-                    "SSE response exceeded {MAX_RESPONSE_BYTES} bytes"
-                )));
-            }
             let trimmed = line.trim_start();
             if let Some(data) = trimmed.strip_prefix("data:") {
                 let data = data.trim();
@@ -4797,11 +7445,13 @@ impl HttpTransport {
                     }
                 }
                 if is_server_initiated_request(&v) {
-                    screen_url_elicitation_request(&mut v).map_err(|message| {
-                        TransportError::Fatal(format!(
+                    if let Err(message) = screen_url_elicitation_request(&mut v) {
+                        let _ = self.send_post_no_response(&json!({"jsonrpc":"2.0", "id":v["id"],
+                            "error":{"code":JSONRPC_INTERNAL_ERROR,"message":"Toolport refused unsafe URL elicitation"}}));
+                        return Err(TransportError::Fatal(format!(
                             "Toolport refused unsafe URL elicitation: {message}"
-                        ))
-                    })?;
+                        )));
+                    }
                 }
                 match self.inline_server_action(&v) {
                     Some(ServerRequestAction::Respond(response)) => {
@@ -4815,6 +7465,8 @@ impl HttpTransport {
                             common,
                             reader,
                             bytes_read,
+                            cancel_guard: None,
+                            cancel_signal: None,
                         });
                         return Ok(Some(json!({
                             "jsonrpc": "2.0",
@@ -4822,14 +7474,29 @@ impl HttpTransport {
                             "result": result
                         })));
                     }
+                    None if is_server_initiated_request(&v) => {
+                        self.send_post_no_response(&json!({"jsonrpc":"2.0", "id":v["id"], "error":{"code":JSONRPC_INTERNAL_ERROR, "message":NO_CLIENT_IN_FLIGHT}}))?;
+                        continue;
+                    }
                     None => {}
                 }
-                if ids_match(v.get("id"), Some(&wanted)) {
+                if v.get("result").is_some() || v.get("error").is_some() {
+                    self.concurrency.responses.fetch_add(1, Ordering::AcqRel);
+                }
+                if http_response_id_matches(&v, Some(&wanted)) {
                     return Ok(Some(v));
                 }
+                mismatched_response |= v.get("result").is_some() || v.get("error").is_some();
             }
         }
-        Err(TransportError::Fatal(
+        if mismatched_response {
+            return Err(TransportError::Classified(
+                crate::call_failure::CallFailureKind::ServerError { after_send: true },
+                "SSE response id did not match its request".into(),
+            ));
+        }
+        Err(TransportError::Classified(
+            crate::call_failure::CallFailureKind::Unavailable { after_send: true },
             "no matching message in SSE stream".to_string(),
         ))
     }
@@ -4840,7 +7507,7 @@ impl HttpTransport {
     /// session-start handshake, which never reaches the Router's retry loop.
     fn shared_backoff_gate(&self) -> Result<(), TransportError> {
         match crate::downstream_backoff::remaining_for_url(&self.url) {
-            Some(remaining) => Err(TransportError::Retry {
+            Some(remaining) => Err(TransportError::RateLimited {
                 retry_after: Some(remaining),
                 message: format!(
                     "HTTP 429: rate limited (shared backoff: {}s)",
@@ -4883,7 +7550,7 @@ impl HttpTransport {
         // Refresh shortly before the known expiry, including before initialize.
         // The callback keeps the deadline in memory, so this is a cheap no-op on
         // ordinary calls and only touches vaulted OAuth state when refresh is due.
-        self.refresh_before_send();
+        self.refresh_before_send()?;
 
         // Token refresh is handled internally (it doesn't sleep, so no lock
         // contention). Only 429 and transport-retry signals bubble up as
@@ -4891,9 +7558,25 @@ impl HttpTransport {
         // Per-token, not per-call: connect alone posts twice (`initialize`, then
         // the `server/discover` era probe) and must not spend two forced
         // exchanges on one expired token (SOU-474).
-        let mut refreshed = self.forced_refresh_spent();
+        let mut refreshed = false;
+        let mut scope_upgraded = false;
         let wire_version = self.wire_protocol_version();
-        let resp = loop {
+        let (resp, accepted_auth) = loop {
+            if self
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+                || (self.deadline.is_some() && self.concurrency.closed.load(Ordering::SeqCst))
+            {
+                return Err(TransportError::Classified(
+                    crate::call_failure::CallFailureKind::Timeout {
+                        after_send: self
+                            .send_started
+                            .as_ref()
+                            .is_some_and(|s| s.load(Ordering::Acquire)),
+                    },
+                    "HTTP request deadline ended before POST".into(),
+                ));
+            }
             if cancel.is_some_and(HttpCancelSignal::is_cancelled) {
                 return Err(TransportError::Cancelled(
                     "request cancelled before it reached the HTTP server".to_string(),
@@ -4902,20 +7585,25 @@ impl HttpTransport {
             let mut req = self
                 .agent
                 .post(&self.url)
-                .set("Content-Type", "application/json")
-                .set("Accept", "application/json, text/event-stream")
-                .set("MCP-Protocol-Version", &wire_version);
+                .set_header("Content-Type", "application/json")
+                .set_header("Accept", "application/json, text/event-stream")
+                .set_header("MCP-Protocol-Version", &wire_version);
             if !self.is_modern() {
-                if let Some(sid) = &self.session_id {
-                    req = req.set("Mcp-Session-Id", sid);
+                if let Some(sid) = self
+                    .session_id
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                {
+                    req = req.set_header("Mcp-Session-Id", sid);
                 }
             }
             if self.is_modern() {
                 for (name, value) in modern_standard_headers(body)? {
-                    req = req.set(&name, &value);
+                    req = req.set_header(&name, &value);
                 }
                 for (name, value) in extra_headers {
-                    req = req.set(name, value);
+                    req = req.set_header(name, value);
                 }
             }
             let auth = self
@@ -4924,15 +7612,30 @@ impl HttpTransport {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             if let Some(token) = auth.as_deref() {
-                req = req.set("Authorization", &bearer_header(token));
+                req = req.set_header("Authorization", &bearer_header(token));
             }
 
+            for (name, value) in &self.credential_headers {
+                req = req.set_header(name, value);
+            }
             if cancel.is_some_and(|signal| !signal.mark_sending()) {
                 return Err(TransportError::Cancelled(
                     "request cancelled before it reached the HTTP server".to_string(),
                 ));
             }
-            let response = req.send_string(&payload);
+            if let Some(deadline) = self.deadline {
+                req = req
+                    .config()
+                    .timeout_global(Some(deadline.saturating_duration_since(Instant::now())))
+                    .build();
+            }
+            if let Some(started) = &self.send_started {
+                started.store(true, Ordering::Release);
+            }
+            let response = req.send(&payload).retain_status_body();
+            if matches!(&response, Err(crate::http_client::Error::Status(_, _))) {
+                self.concurrency.responses.fetch_add(1, Ordering::AcqRel);
+            }
             // Cancellation wins even when the socket becomes readable at the same
             // instant. In particular, never launch scope reauthorization or rotate
             // an OAuth token for a request whose caller already abandoned it.
@@ -4942,21 +7645,21 @@ impl HttpTransport {
                 ));
             }
             match response {
-                Ok(r) => break r,
+                Ok(r) => break (r, auth),
                 // Rate limited: return a Retry signal so the Router sleeps
                 // *outside* the per-server Mutex.
-                Err(ureq::Error::Status(429, r)) => {
+                Err(crate::http_client::Error::Status(429, r)) => {
                     // Persist the window so the other gateway processes on this
                     // host (one per client session) also hold off instead of
                     // re-hitting the same provider limit at their next start.
                     let retry_after = record_shared_rate_limit(&self.url, &r);
                     let _ = read_capped(r, 8 * 1024);
-                    return Err(TransportError::Retry {
+                    return Err(TransportError::RateLimited {
                         retry_after,
                         message: "HTTP 429: rate limited".to_string(),
                     });
                 }
-                Err(ureq::Error::Status(code, r))
+                Err(crate::http_client::Error::Status(code, r))
                     if (code == 401 || code == 403)
                         && insufficient_scope_challenge(&r).is_some() =>
                 {
@@ -4964,28 +7667,31 @@ impl HttpTransport {
                         .expect("match guard established an insufficient-scope challenge");
                     let _ = read_capped(r, 8 * 1024);
                     let operation = authorization_operation(body);
-                    self.reauthorize_after_scope_challenge(code, &operation, challenge)?;
+                    self.reauthorize_after_scope_challenge(code, &operation, challenge, auth)?;
                     refreshed = true;
+                    scope_upgraded = true;
                     continue;
                 }
                 // The access token likely expired: refresh it once and retry with
                 // the new token, so a long-running session self-heals instead of
                 // 401ing until the server is manually reconnected.
-                Err(ureq::Error::Status(code, r))
-                    if (code == 401 || code == 403) && !refreshed && self.refresh.is_some() =>
+                Err(crate::http_client::Error::Status(code, r))
+                    if code == 401 && !refreshed && self.refresh.is_some() =>
                 {
                     let _ = read_capped(r, 8 * 1024);
                     refreshed = true;
-                    self.force_refresh_after_auth_error(code)?;
+                    self.force_refresh_for_token(code, auth)?;
                     continue;
                 }
-                Err(ureq::Error::Status(code, r)) => {
+                Err(crate::http_client::Error::Status(code, r)) => {
                     let detail = read_capped(r, 64 * 1024);
-                    if code == 400 && self.is_modern() && expect_response {
+                    if code == 400 && expect_response {
                         if let Ok(response) = serde_json::from_str::<Value>(&detail) {
                             let request_id = body.get("id");
-                            if ids_match(response.get("id"), request_id) {
-                                if let Some(error) = response.get("error") {
+                            if let Some(error) = response.get("error") {
+                                if ids_match(response.get("id"), request_id)
+                                    || error.get("code").and_then(Value::as_i64) == Some(-32602)
+                                {
                                     return Err(TransportError::Rpc(error.clone()));
                                 }
                             }
@@ -4997,50 +7703,124 @@ impl HttpTransport {
                     } else {
                         ""
                     };
-                    return Err(TransportError::Fatal(format!(
-                        "HTTP {code}{hint}: {detail}"
-                    )));
+                    return Err(TransportError::Classified(
+                        if code == 401 && scope_upgraded {
+                            crate::call_failure::CallFailureKind::Auth {
+                                target: crate::call_failure::AuthTarget::Scope,
+                            }
+                        } else {
+                            self.http_status_failure(code)
+                        },
+                        format!("HTTP {code}{hint}: {detail}"),
+                    ));
                 }
                 // Transport error (DNS / connection failure): retryable, but
                 // the Router owns the backoff sleep so the Mutex is released.
-                Err(ureq::Error::Transport(t)) if is_retryable_transport(&t) => {
+                Err(crate::http_client::Error::Transport(t)) if is_retryable_transport(&t) => {
                     return Err(TransportError::Retry {
                         retry_after: None,
-                        message: format!("transport error (retryable): {t}"),
+                        message: format!(
+                            "transport error (retryable): {}",
+                            crate::http_client::transport_error_message(&t)
+                        ),
                     });
                 }
-                Err(e) => return Err(TransportError::Fatal(e.to_string())),
+                Err(crate::http_client::Error::Transport(t)) => {
+                    return Err(http_transport_io_error(t));
+                }
             }
         };
         // The server accepted this token, so its forced-refresh budget is spent
         // on nothing and must be returned. See [`Self::forced_refresh_token`].
-        self.forced_refresh_token = None;
+        // A late success for an older token must not reset a newer token's budget.
+        self.accept_auth(accepted_auth);
 
         if !self.is_modern() {
-            if let Some(sid) = resp.header("Mcp-Session-Id") {
-                self.session_id = Some(sid.to_string());
+            if let Some(sid) = resp
+                .headers()
+                .get("Mcp-Session-Id")
+                .and_then(|value| value.to_str().ok())
+            {
+                *self
+                    .session_id
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sid.to_string());
             }
         }
         if !expect_response {
+            self.concurrency.responses.fetch_add(1, Ordering::AcqRel);
             return Ok(None);
         }
 
         let is_sse = resp
-            .header("content-type")
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
             .map(|c| c.to_lowercase().contains("text/event-stream"))
             .unwrap_or(false);
         if is_sse {
             return self.read_sse_response(resp, body);
         }
 
-        let text = read_capped(resp, MAX_RESPONSE_BYTES);
-        serde_json::from_str(&text)
-            .map(Some)
-            .map_err(|e| TransportError::Fatal(format!("bad JSON response: {e}")))
+        let mut reader = BufReader::new(resp.into_body().into_reader());
+        let mut bytes = Vec::new();
+        read_downstream_frame(&mut reader, &mut bytes, MAX_RESPONSE_BYTES as usize, None)
+            .map_err(http_read_error)?;
+        let response: Value = serde_json::from_slice(&bytes)
+            .map_err(|e| TransportError::Fatal(format!("bad JSON response: {e}")))?;
+        // Headers alone do not show that a pending MCP call is making progress:
+        // a wedged server can accept POSTs and never finish any response body.
+        self.concurrency.responses.fetch_add(1, Ordering::AcqRel);
+        if !http_response_id_matches(&response, body.get("id")) {
+            return Err(TransportError::Classified(
+                crate::call_failure::CallFailureKind::ServerError { after_send: true },
+                "HTTP response id did not match its request".into(),
+            ));
+        }
+        Ok(Some(response))
     }
 }
 
+fn http_response_id_matches(response: &Value, request_id: Option<&Value>) -> bool {
+    ids_match(response.get("id"), request_id)
+        || (response.get("id").is_some_and(Value::is_null) && response.get("error").is_some())
+}
+
 impl Transport for HttpTransport {
+    fn response_count(&self) -> u64 {
+        self.concurrency.responses.load(Ordering::Acquire)
+    }
+
+    fn connection_reset_reason(&self) -> Option<String> {
+        self.concurrency
+            .session_invalid
+            .load(Ordering::Acquire)
+            .then(|| "MCP endpoint rejected the session".to_string())
+    }
+
+    fn set_server_id(&mut self, id: &str) {
+        self.auth_owner = Some(id.to_string());
+        self.auth_credential_owner = crate::local_auth::pinned_owner(id);
+    }
+
+    fn connection_closed(&self) -> Option<bool> {
+        Some(self.concurrency.closed.load(Ordering::SeqCst))
+    }
+
+    fn suspended_calls(&self) -> usize {
+        self.concurrency
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    fn concurrent(&self) -> Option<Arc<dyn ConcurrentTransport>> {
+        Some(Arc::new(HttpCallTransport {
+            template: Mutex::new(self.request_shell()),
+        }))
+    }
+
     fn request(&mut self, method: &str, params: Value) -> Result<Value, TransportError> {
         self.restore_drained()?;
         self.request_inner(method, params, &[])
@@ -5081,7 +7861,7 @@ impl Transport for HttpTransport {
             ));
         }
 
-        // ureq 2.x has no request abort handle. Move the complete mutable transport
+        // ureq has no request abort handle. Move the complete mutable transport
         // state to exactly one bounded wire worker, leaving this slot with only a
         // receiver and immutable cancellation context. On cancellation the caller
         // returns within HTTP_CANCEL_POLL; the worker owns no Router/ServerSlot borrow
@@ -5193,7 +7973,10 @@ impl Transport for HttpTransport {
             merge_declared_extensions(meta, &self.declared_extensions);
         }
         if self.protocol_meta.is_some() {
-            self.session_id = None;
+            *self
+                .session_id
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
     }
 
@@ -5202,8 +7985,8 @@ impl Transport for HttpTransport {
         filter: SubscriptionFilter,
     ) -> Result<(), TransportError> {
         self.restore_drained()?;
-        let id = self.next_id;
-        self.next_id += 1;
+        self.refresh_before_send()?;
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let mut params = filter.params();
         if let Some(protocol) = &self.protocol_meta {
             merge_protocol_meta(&mut params, protocol);
@@ -5220,9 +8003,8 @@ impl Transport for HttpTransport {
         let agent = self.agent.clone();
         let url = self.url.clone();
         let auth = Arc::clone(&self.auth);
-        let refresh = self.refresh.clone();
-        let scope_reauthorize = self.scope_reauthorize.clone();
-        let scope_upgrade_attempts = Arc::clone(&self.scope_upgrade_attempts);
+        let credential_headers = self.credential_headers.clone();
+        let mut auth_shell = self.request_shell();
         let wire_version = self.wire_protocol_version();
         let dirty = self.change_dirty.clone();
         let resource_updated = self.resource_updated.clone();
@@ -5231,15 +8013,8 @@ impl Transport for HttpTransport {
         std::thread::spawn(move || {
             let mut retry_delay = Duration::from_millis(250);
             while live_generation.load(Ordering::SeqCst) == generation {
-                if let Some(refresh) = &refresh {
-                    if let Ok(refresh) = refresh.lock() {
-                        if let Ok(Some(token)) = refresh(false) {
-                            *auth
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(token);
-                        }
-                    }
-                }
+                auth_shell.deadline = Some(Instant::now() + auth_shell.request_timeout);
+                let proactive = auth_shell.refresh_before_send();
                 // Shared 429 backoff (#874): the listener is its own egress
                 // path, so never connect while another gateway process holds
                 // the provider's window open. Re-consult after each capped
@@ -5250,22 +8025,49 @@ impl Transport for HttpTransport {
                 }
                 let mut forced_refresh = false;
                 let response = loop {
+                    if let Err(error) = &proactive {
+                        downstream_trace(&format!(
+                            "HTTP subscription proactive refresh failed: {error}"
+                        ));
+                        break None;
+                    }
                     let mut request = agent
                         .post(&url)
-                        .set("Content-Type", "application/json")
-                        .set("Accept", "text/event-stream")
-                        .set("MCP-Protocol-Version", &wire_version)
-                        .set("Mcp-Method", "subscriptions/listen");
+                        .set_header("Content-Type", "application/json")
+                        .set_header("Accept", "text/event-stream")
+                        .set_header("MCP-Protocol-Version", &wire_version)
+                        .set_header("Mcp-Method", "subscriptions/listen");
                     let token = auth
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .clone();
                     if let Some(token) = token.as_deref() {
-                        request = request.set("Authorization", &bearer_header(token));
+                        request = request.set_header("Authorization", &bearer_header(token));
                     }
-                    match request.send_string(&payload) {
-                        Ok(response) => break Some(response),
-                        Err(ureq::Error::Status(429, response)) => {
+                    for (name, value) in &credential_headers {
+                        request = request.set_header(name, value);
+                    }
+                    match request.send(&payload).retain_status_body() {
+                        Ok(response) => {
+                            auth_shell.accept_auth(token);
+                            break Some(response);
+                        }
+                        Err(crate::http_client::Error::Status(code, response))
+                            if (code == 401 || code == 403) && auth_shell.reference_credentials =>
+                        {
+                            let _ = read_capped(response, 8 * 1024);
+                            // Let the supervisor retire this transport and resolve
+                            // the reference again instead of retrying a stale key.
+                            auth_shell
+                                .concurrency
+                                .session_invalid
+                                .store(true, Ordering::Release);
+                            downstream_trace(
+                                "subscriptions/listen credential rejected; reconnecting",
+                            );
+                            return;
+                        }
+                        Err(crate::http_client::Error::Status(429, response)) => {
                             // Rate limited: record the shared window like
                             // every other egress path, then fall into the
                             // reconnect backoff below, which re-consults the
@@ -5277,78 +8079,40 @@ impl Transport for HttpTransport {
                             );
                             break None;
                         }
-                        Err(ureq::Error::Status(code, response))
+                        Err(crate::http_client::Error::Status(code, response))
                             if (code == 401 || code == 403)
                                 && insufficient_scope_challenge(&response).is_some() =>
                         {
                             let challenge = insufficient_scope_challenge(&response)
                                 .expect("match guard established an insufficient-scope challenge");
                             let _ = read_capped(response, 8 * 1024);
-                            let Some(scope) = challenge
-                                .scope
-                                .map(|scope| canonical_scope_set(&scope))
-                                .filter(|scope| !scope.is_empty())
-                            else {
-                                downstream_trace(
-                                    "subscriptions/listen insufficient_scope challenge omitted scope",
-                                );
-                                break None;
-                            };
-                            let attempt_key = ("subscriptions/listen".to_string(), scope.clone());
-                            let first_attempt = scope_upgrade_attempts
-                                .lock()
-                                .map(|mut attempts| attempts.insert(attempt_key))
-                                .unwrap_or(false);
-                            let upgraded = if first_attempt {
-                                scope_reauthorize.as_ref().and_then(|callback| {
-                                    callback
-                                        .lock()
-                                        .ok()
-                                        .and_then(|callback| callback(&scope).ok())
-                                })
-                            } else {
-                                None
-                            };
-                            match upgraded {
-                                Some(token) => {
-                                    *auth
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                                        Some(token);
+                            match auth_shell.reauthorize_after_scope_challenge(
+                                code,
+                                "subscriptions/listen",
+                                challenge,
+                                token,
+                            ) {
+                                Ok(()) => {
                                     forced_refresh = true;
                                     continue;
                                 }
-                                None => {
-                                    downstream_trace(&format!(
-                                        "subscriptions/listen needs interactive OAuth scope '{scope}'"
-                                    ));
+                                Err(error) => {
+                                    downstream_trace(&error.to_string());
                                     break None;
                                 }
                             }
                         }
-                        Err(ureq::Error::Status(code, response))
-                            if (code == 401 || code == 403)
-                                && !forced_refresh
-                                && refresh.is_some() =>
+                        Err(crate::http_client::Error::Status(code, response))
+                            if code == 401 && !forced_refresh && auth_shell.refresh.is_some() =>
                         {
                             let _ = read_capped(response, 8 * 1024);
                             forced_refresh = true;
-                            let refreshed = refresh.as_ref().and_then(|refresh| {
-                                refresh
-                                    .lock()
-                                    .ok()
-                                    .and_then(|refresh| refresh(true).ok())
-                                    .flatten()
-                            });
-                            match refreshed {
-                                Some(token) => {
-                                    *auth
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                                        Some(token);
-                                    continue;
+                            match auth_shell.force_refresh_for_token(code, token) {
+                                Ok(()) => continue,
+                                Err(error) => {
+                                    downstream_trace(&error.to_string());
+                                    break None;
                                 }
-                                None => break None,
                             }
                         }
                         Err(error) => {
@@ -5365,27 +8129,33 @@ impl Transport for HttpTransport {
                     continue;
                 };
                 let is_sse = response
-                    .header("content-type")
+                    .headers()
+                    .get("content-type")
+                    .and_then(|value| value.to_str().ok())
                     .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"));
                 if !is_sse {
-                    let detail: String =
-                        read_capped(response, 64 * 1024).chars().take(200).collect();
-                    downstream_trace(&format!(
-                        "subscriptions/listen returned a non-SSE response: {detail}"
-                    ));
+                    // Provider bodies can echo API keys, including fragments. Drain
+                    // within the bound, but never copy the response into diagnostics.
+                    let _ = read_capped(response, 64 * 1024);
+                    downstream_trace("subscriptions/listen returned a non-SSE response");
                     std::thread::sleep(retry_delay);
                     retry_delay = (retry_delay * 2).min(Duration::from_secs(5));
                     continue;
                 }
 
                 retry_delay = Duration::from_millis(250);
-                let mut reader = BufReader::new(response.into_reader());
+                let mut reader = BufReader::new(response.into_body().into_reader());
                 loop {
                     if live_generation.load(Ordering::SeqCst) != generation {
                         return;
                     }
-                    let mut line = String::new();
-                    let read = match (&mut reader).take(MAX_RESPONSE_BYTES).read_line(&mut line) {
+                    let mut bytes = Vec::new();
+                    let read = match read_downstream_frame(
+                        &mut reader,
+                        &mut bytes,
+                        MAX_RESPONSE_BYTES as usize,
+                        Some(b'\n'),
+                    ) {
                         Ok(read) => read,
                         Err(error) => {
                             downstream_trace(&format!(
@@ -5397,10 +8167,10 @@ impl Transport for HttpTransport {
                     if read == 0 {
                         break;
                     }
-                    if read as u64 >= MAX_RESPONSE_BYTES && !line.ends_with('\n') {
-                        downstream_trace("subscriptions/listen emitted an oversized SSE line");
+                    let Ok(line) = String::from_utf8(bytes) else {
+                        downstream_trace("subscriptions/listen emitted a non-UTF-8 SSE line");
                         break;
-                    }
+                    };
                     if live_generation.load(Ordering::SeqCst) != generation {
                         return;
                     }
@@ -5455,8 +8225,40 @@ impl Transport for HttpTransport {
 impl Drop for HttpTransport {
     fn drop(&mut self) {
         if self.owns_listener_generation {
+            self.concurrency.closed.store(true, Ordering::SeqCst);
             self.listener_generation.fetch_add(1, Ordering::SeqCst);
+            let pending = std::mem::take(
+                &mut *self
+                    .concurrency
+                    .pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            if !pending.is_empty() {
+                let mut shell = self.request_shell();
+                std::thread::spawn(move || {
+                    let deadline = Instant::now() + HTTP_CANCEL_FORWARD_TIMEOUT;
+                    for (_, (_, pending)) in pending {
+                        if Instant::now() >= deadline {
+                            break;
+                        }
+                        shell.pending_mrtr = Some(pending);
+                        shell.retire_http_pending();
+                    }
+                });
+            }
         }
+    }
+}
+
+struct StoppedTransport;
+
+impl Transport for StoppedTransport {
+    fn notify(&mut self, _method: &str, _params: Value) -> Result<(), TransportError> {
+        Err(TransportError::Unavailable("server is stopped".to_string()))
+    }
+    fn request(&mut self, _method: &str, _params: Value) -> Result<Value, TransportError> {
+        Err(TransportError::Unavailable("server is stopped".to_string()))
     }
 }
 
@@ -5465,7 +8267,7 @@ impl Drop for HttpTransport {
 pub struct DownstreamServer {
     pub id: String,
     transport: Box<dyn Transport>,
-    pub tools: Vec<Value>,
+    pub tools: SerializedTools,
     pub resources: Vec<Value>,
     /// Parameterized resource URI templates (`resources/templates/list`).
     /// Refreshed with concrete resources on `resources/list_changed` because
@@ -5523,7 +8325,16 @@ impl DownstreamServer {
     /// so the health probe (which connects to every server in one batch) stays
     /// tools-only and fast and can't stall on a slow or hanging resources/prompts
     /// endpoint. The gateway calls `load_resources_prompts` to populate them.
-    pub fn connect(id: String, mut transport: Box<dyn Transport>) -> Result<Self, String> {
+    pub fn connect(id: String, transport: Box<dyn Transport>) -> Result<Self, String> {
+        Self::connect_classified(id, transport).map_err(|error| error.to_string())
+    }
+
+    /// Preserve transport categories for health and recovery UI.
+    pub fn connect_classified(
+        id: String,
+        mut transport: Box<dyn Transport>,
+    ) -> Result<Self, crate::call_failure::CallFailure> {
+        transport.set_server_id(&id);
         // Fail the handshake fast so one unresponsive server can't stall the whole
         // batch probe / router rebuild for the full live-call timeout. The transport
         // picks the budget: download-then-run launchers (npx, uvx, ...) get a long
@@ -5563,16 +8374,16 @@ impl DownstreamServer {
                 let caps = init.get("capabilities").cloned();
                 transport
                     .notify("notifications/initialized", json!({}))
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| e.call_failure())?;
                 (Era::Legacy { version }, caps)
             }
             // A dead or unresponsive server is not a modern server. Probing it
             // again would just double the wait before reporting the same failure.
-            Err(err) if err.is_health_failure() => return Err(err.to_string()),
+            Err(err) if err.is_health_failure() => return Err(err.call_failure()),
             // Authentication is independent of the protocol era. Probing after
             // an explicit rejection can only replace the actionable error with a
             // secondary protocol failure (#914).
-            Err(err) if err.is_auth_failure() => return Err(err.to_string()),
+            Err(err) if err.is_auth_failure() => return Err(err.call_failure()),
             Err(init_err) => {
                 // The server answered, but refused `initialize`. A modern server
                 // has no such method. Confirm with `server/discover`, which every
@@ -5588,7 +8399,7 @@ impl DownstreamServer {
                 // slowest server. A server that implements `server/discover`
                 // answers it locally and immediately, so it needs none of that
                 // budget.
-                // The post-match `set_read_timeout(STDIO_CONNECT_TIMEOUT)` below
+                // The post-match first-catalog timeout below
                 // restores a normal budget for the rest of the handshake.
                 transport.set_read_timeout(PROBE_TIMEOUT);
 
@@ -5623,25 +8434,24 @@ impl DownstreamServer {
                                 transport.set_protocol_meta(Some(protocol_meta_for(version)));
                                 transport
                                     .request("server/discover", json!({}))
-                                    .map_err(|e| e.to_string())?
+                                    .map_err(|e| e.call_failure())?
                             }
                             None => {
                                 return Err(format!(
                                     "server speaks MCP {offered:?}; Toolport speaks \
                                      {MODERN_PROTOCOL_VERSION} and cannot negotiate a \
                                      common version ({probe_err})"
-                                ))
+                                )
+                                .into())
                             }
                         }
                     }
-                    // Anything else (an unrecognized error, or silence) identifies
-                    // a legacy server, so the `initialize` refusal is the
-                    // actionable error. Carry the probe failure too: if discover
-                    // timed out rather than being refused, reporting only the
-                    // initialize error hides that connect paid a read timeout.
+                    // Preserve the probe's actionable category while retaining
+                    // the initialize refusal as handshake context.
                     Err(probe_err) => {
-                        return Err(format!(
-                            "{init_err} (server/discover probe also failed: {probe_err})"
+                        return Err(crate::call_failure::CallFailure::new(
+                            probe_err.call_failure().kind,
+                            format!("{init_err} (server/discover probe also failed: {probe_err})"),
                         ))
                     }
                 };
@@ -5677,12 +8487,15 @@ impl DownstreamServer {
             serde_json::Map::new()
         };
 
-        // `initialize` answered, so any launcher download is done: the rest of the
-        // handshake goes back to the tight budget - a server that comes up but then
-        // hangs on `tools/list` should still fail in seconds.
-        transport.set_read_timeout(STDIO_CONNECT_TIMEOUT);
-        let listed = fetch_paginated_list(&mut *transport, "tools/list", "tools")
-            .map_err(|e| e.to_string())?;
+        // Initialize and first-catalog work have separate bounds. Apply one
+        // deadline across all pages, so pagination cannot multiply the budget.
+        let listed = fetch_paginated_list_with_deadline(
+            &mut *transport,
+            "tools/list",
+            "tools",
+            Some(Instant::now() + FIRST_CATALOG_TIMEOUT),
+        )
+        .map_err(|e| e.call_failure())?;
         if let Some(warning) = &listed.warning {
             let msg = format!(
                 "server '{id}' returned a partial tool catalog ({} tool(s)): {warning}",
@@ -5708,7 +8521,8 @@ impl DownstreamServer {
                 "incomplete tool catalog for '{id}' ({} tool(s) before traversal stopped): {}",
                 listed.items.len(),
                 listed.warning.unwrap_or_default()
-            ));
+            )
+            .into());
         }
         let modern_http = matches!(era, Era::Modern { .. }) && transport.supports_request_headers();
         let tools = if modern_http {
@@ -5737,13 +8551,13 @@ impl DownstreamServer {
                     resources_list_changed: caps_resources,
                     resource_subscriptions: Vec::new(),
                 })
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.call_failure())?;
         }
 
         Ok(DownstreamServer {
             id,
             transport,
-            tools,
+            tools: tools.into(),
             resources: Vec::new(),
             resource_templates: Vec::new(),
             prompts: Vec::new(),
@@ -5767,6 +8581,42 @@ impl DownstreamServer {
         })
     }
 
+    /// A catalog without a live connection. The supervisor replaces it after
+    /// discovery and retains metadata when releasing an idle connection.
+    pub fn stopped(id: String, tools: Vec<Value>) -> Self {
+        Self {
+            id,
+            transport: Box::new(StoppedTransport),
+            tools: tools.into(),
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            prompts: Vec::new(),
+            tool_cache_hint: CacheHint::default(),
+            resource_cache_hint: CacheHint::default(),
+            resource_template_cache_hint: CacheHint::default(),
+            prompt_cache_hint: CacheHint::default(),
+            shrink_tools_streak: 0,
+            shrink_resources_streak: 0,
+            shrink_templates_streak: 0,
+            shrink_prompts_streak: 0,
+            caps_resources: false,
+            caps_prompts: false,
+            caps_completions: false,
+            caps_extensions: serde_json::Map::new(),
+            era: Era::Legacy {
+                version: PROTOCOL_VERSION.to_string(),
+            },
+            modern_http: false,
+            modern_resource_subscriptions: HashSet::new(),
+            call_timeout: STDIO_READ_TIMEOUT,
+            server_handler: None,
+        }
+    }
+
+    pub fn stop(&mut self) {
+        self.transport = Box::new(StoppedTransport);
+    }
+
     /// Widen the live-call read deadline for this server (per-server
     /// `requestTimeoutMs`). Post-handshake requests only: initialize and probe
     /// budgets keep their own bounds, and a zero configured value is rejected by
@@ -5774,6 +8624,46 @@ impl DownstreamServer {
     pub fn set_call_timeout(&mut self, timeout: Duration) {
         self.call_timeout = timeout;
         self.transport.set_read_timeout(timeout);
+    }
+
+    /// An owned handle for one call that need not hold this server's lock, when
+    /// the transport supports concurrent requests. State-changing operations
+    /// (catalog refresh, subscriptions, reconnect) keep using `&mut self`.
+    /// Whether a multiplexed connection has closed; `None` when calls to this
+    /// server run one at a time.
+    pub fn response_count(&self) -> u64 {
+        self.transport.response_count()
+    }
+
+    pub fn connection_reset_reason(&self) -> Option<String> {
+        self.transport.connection_reset_reason()
+    }
+
+    pub fn connection_closed(&self) -> Option<bool> {
+        self.transport.connection_closed()
+    }
+
+    /// Calls on a multiplexed connection that wait for the client's input.
+    pub fn suspended_calls(&self) -> usize {
+        self.transport.suspended_calls()
+    }
+
+    pub fn call_handle(&self) -> Option<CallHandle> {
+        let transport = self.transport.concurrent()?;
+        Some(CallHandle {
+            transport,
+            id: self.id.clone(),
+            era: self.era.clone(),
+            modern_http: self.modern_http,
+            tools: if self.modern_http {
+                self.tools.clone()
+            } else {
+                SerializedTools::default()
+            },
+            caps_extensions: self.caps_extensions.clone(),
+            call_timeout: self.call_timeout,
+            server_handler: self.server_handler.clone(),
+        })
     }
 
     /// Install the upstream request bridge on both this server wrapper and its
@@ -5792,165 +8682,6 @@ impl DownstreamServer {
         self.transport
             .set_server_request_handler(Arc::clone(&stamped));
         self.server_handler = Some(stamped);
-    }
-
-    fn fulfill_input_required(
-        &self,
-        result: &Value,
-    ) -> Result<Option<MrtrRequest>, TransportError> {
-        let requests = match result.get("inputRequests") {
-            None => None,
-            Some(Value::Object(requests)) => Some(requests),
-            Some(_) => {
-                return Err(TransportError::Fatal(
-                    "modern server returned non-object inputRequests".to_string(),
-                ))
-            }
-        };
-        let request_state = match result.get("requestState") {
-            None => None,
-            Some(Value::String(state)) => Some(Value::String(state.clone())),
-            Some(_) => {
-                return Err(TransportError::Fatal(
-                    "modern server returned non-string requestState".to_string(),
-                ))
-            }
-        };
-        if requests.map_or(true, serde_json::Map::is_empty) && request_state.is_none() {
-            return Err(TransportError::Fatal(
-                "modern server returned input_required without inputRequests or requestState"
-                    .to_string(),
-            ));
-        }
-
-        let mut input_responses = serde_json::Map::new();
-        if let Some(requests) = requests {
-            let handler = self.server_handler.as_ref().ok_or_else(|| {
-                TransportError::Fatal(
-                    "upstream client cannot fulfill the server's input_required result".to_string(),
-                )
-            })?;
-            for (key, input) in requests {
-                let mut input = input.clone();
-                screen_url_elicitation_request(&mut input).map_err(|message| {
-                    TransportError::Fatal(format!(
-                        "Toolport refused unsafe URL elicitation: {message}"
-                    ))
-                })?;
-                let method = input.get("method").and_then(Value::as_str).ok_or_else(|| {
-                    TransportError::Fatal(format!("input request '{key}' is missing a method"))
-                })?;
-                if !matches!(
-                    method,
-                    "roots/list" | "sampling/createMessage" | "elicitation/create"
-                ) {
-                    return Err(TransportError::Fatal(format!(
-                        "input request '{key}' uses unsupported method '{method}'"
-                    )));
-                }
-                let id = json!(format!(
-                    "toolport-mrtr-{}",
-                    MRTR_LEGACY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-                ));
-                let request = json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "method": method,
-                    "params": input.get("params").cloned().unwrap_or_else(|| json!({}))
-                });
-                let response = match handler(&request) {
-                    Some(ServerRequestAction::Respond(response)) => response,
-                    Some(ServerRequestAction::InputRequired) => return Ok(None),
-                    None => {
-                        return Err(TransportError::Fatal(format!(
-                            "upstream client did not handle input request '{key}' ({method})"
-                        )))
-                    }
-                };
-                if let Some(error) = response.get("error") {
-                    return Err(TransportError::Rpc(error.clone()));
-                }
-                let response = response.get("result").cloned().ok_or_else(|| {
-                    TransportError::Fatal(format!(
-                        "upstream client returned no result for input request '{key}'"
-                    ))
-                })?;
-                input_responses.insert(key.clone(), response);
-            }
-        }
-
-        if input_responses.is_empty() {
-            std::thread::sleep(MRTR_STATE_ONLY_DELAY);
-        }
-        Ok(Some(MrtrRequest {
-            input_responses: (!input_responses.is_empty()).then(|| Value::Object(input_responses)),
-            request_state,
-        }))
-    }
-
-    fn request_with_mrtr(
-        &mut self,
-        method: &str,
-        params: Value,
-        cancel: Option<CancelContext>,
-        meta: Option<&Value>,
-        mrtr: Option<&MrtrRequest>,
-        headers: &[(String, String)],
-    ) -> Result<Value, TransportError> {
-        let modern_upstream = upstream_is_modern(meta);
-        let modern_downstream = matches!(self.era, Era::Modern { .. });
-        let mut retry = mrtr.cloned().unwrap_or_default();
-        for round in 0..=MRTR_LEGACY_MAX_ROUNDS {
-            let mut params = with_meta_and_mrtr(params.clone(), meta, Some(&retry));
-            if modern_downstream {
-                attach_serviceable_client_capabilities(&mut params, meta);
-            }
-            let mut result = self.transport.request_with_cancel_and_headers(
-                method,
-                params,
-                cancel.clone(),
-                headers,
-            )?;
-            strip_private_envelope(&mut result);
-            if result.get("resultType").and_then(Value::as_str) == Some("input_required") {
-                screen_input_required(&mut result, &self.id)?;
-            }
-            if result.get("resultType").and_then(Value::as_str) != Some("input_required") {
-                return Ok(result);
-            }
-            if modern_upstream && modern_client_supports_input_required(meta, &result) {
-                return Ok(result);
-            }
-            if round == MRTR_LEGACY_MAX_ROUNDS {
-                return Err(TransportError::Fatal(format!(
-                    "modern server exceeded the {MRTR_LEGACY_MAX_ROUNDS}-round input_required limit"
-                )));
-            }
-            match self.fulfill_input_required(&result) {
-                Ok(Some(next)) => retry = next,
-                Ok(None) if modern_upstream => return Ok(result),
-                Ok(None) => {
-                    return Err(TransportError::Fatal(
-                        "cannot nest an input_required bridge while fulfilling one".to_string(),
-                    ))
-                }
-                Err(TransportError::Rpc(error))
-                    if modern_upstream
-                        && error.get("code").and_then(Value::as_i64)
-                            == Some(MISSING_REQUIRED_CLIENT_CAPABILITY) =>
-                {
-                    return Ok(json!({
-                        "_toolportProtocolError": {
-                            "code": MISSING_REQUIRED_CLIENT_CAPABILITY,
-                            "message": error.get("message").cloned().unwrap_or_else(|| json!("URL elicitation requires client support or a running Toolport desktop broker")),
-                            "requiredCapability": "elicitation"
-                        }
-                    }));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        unreachable!("bounded MRTR loop always returns")
     }
 
     /// Re-fetch the server's tool list on the existing connection, after it
@@ -6247,19 +8978,7 @@ impl DownstreamServer {
         meta: Option<&Value>,
         mrtr: Option<&MrtrRequest>,
     ) -> Result<Value, TransportError> {
-        let headers = if self.modern_http {
-            tool_request_headers(&self.tools, tool, &arguments)?
-        } else {
-            Vec::new()
-        };
-        self.request_with_mrtr(
-            "tools/call",
-            json!({ "name": tool, "arguments": arguments }),
-            cancel,
-            meta,
-            mrtr,
-            &headers,
-        )
+        ServerDispatch::call_with_cancel_and_mrtr(self, tool, arguments, cancel, meta, mrtr)
     }
 
     /// Read one resource by its (original, downstream) uri.
@@ -6283,14 +9002,7 @@ impl DownstreamServer {
         meta: Option<&Value>,
         mrtr: Option<&MrtrRequest>,
     ) -> Result<Value, TransportError> {
-        self.request_with_mrtr(
-            "resources/read",
-            json!({ "uri": uri }),
-            cancel,
-            meta,
-            mrtr,
-            &[],
-        )
+        ServerDispatch::read_resource_with_cancel_and_mrtr(self, uri, cancel, meta, mrtr)
     }
 
     /// Subscribe to `notifications/resources/updated` for one resource URI on
@@ -6370,14 +9082,7 @@ impl DownstreamServer {
         meta: Option<&Value>,
         mrtr: Option<&MrtrRequest>,
     ) -> Result<Value, TransportError> {
-        self.request_with_mrtr(
-            "prompts/get",
-            json!({ "name": name, "arguments": arguments }),
-            cancel,
-            meta,
-            mrtr,
-            &[],
-        )
+        ServerDispatch::get_prompt_with_cancel_and_mrtr(self, name, arguments, cancel, meta, mrtr)
     }
 
     /// Whether this server advertised the completions utility at initialize.
@@ -6417,16 +9122,7 @@ impl DownstreamServer {
         cancel: Option<CancelContext>,
         meta: Option<&Value>,
     ) -> Result<Value, TransportError> {
-        if !self
-            .caps_extensions
-            .contains_key("io.modelcontextprotocol/tasks")
-        {
-            return Err(TransportError::Fatal(format!(
-                "server '{}' did not advertise io.modelcontextprotocol/tasks",
-                self.id
-            )));
-        }
-        self.request_with_mrtr(method, params, cancel, meta, None, &[])
+        ServerDispatch::task_request(self, method, params, cancel, meta)
     }
 
     /// The protocol era and version this connection negotiated (SOU-445).
@@ -6442,16 +9138,10 @@ impl DownstreamServer {
 
     pub fn complete_with_cancel(
         &mut self,
-        mut params: Value,
+        params: Value,
         cancel: Option<CancelContext>,
     ) -> Result<Value, TransportError> {
-        let original_meta = params.get("_meta").cloned();
-        sanitize_forwarded_meta(&mut params);
-        if matches!(self.era, Era::Modern { .. }) {
-            attach_serviceable_client_capabilities(&mut params, original_meta.as_ref());
-        }
-        self.transport
-            .request_with_cancel("completion/complete", params, cancel)
+        ServerDispatch::complete_with_cancel(self, params, cancel)
     }
 
     /// Forward a JSON-RPC notification to this downstream server.
@@ -6460,13 +9150,405 @@ impl DownstreamServer {
     }
 }
 
-/// Pull a named array field out of a JSON-RPC result, or an empty vec.
-fn extract_array(result: &Value, key: &str) -> Vec<Value> {
-    result
-        .get(key)
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default()
+/// Request dispatch shared by a locked [`DownstreamServer`] and an unlocked
+/// [`CallHandle`], so each call path (MRTR handling, routing headers, Tasks,
+/// completions) has one implementation whichever way the router reaches the server.
+pub trait ServerDispatch {
+    fn server_id(&self) -> &str;
+    fn era(&self) -> &Era;
+    fn modern_http(&self) -> bool;
+    /// Tool definitions, for modern HTTP routing headers.
+    fn tools(&self) -> &SerializedTools;
+    fn extensions(&self) -> &serde_json::Map<String, Value>;
+    fn server_handler(&self) -> Option<&ServerRequestHandler>;
+    /// The locked server, for operations that change connection state. `None`
+    /// on a [`CallHandle`].
+    fn locked_server(&mut self) -> Option<&mut DownstreamServer> {
+        None
+    }
+    fn send(
+        &mut self,
+        method: &str,
+        params: Value,
+        cancel: Option<CancelContext>,
+        headers: &[(String, String)],
+    ) -> Result<Value, TransportError>;
+    fn send_plain(
+        &mut self,
+        method: &str,
+        params: Value,
+        cancel: Option<CancelContext>,
+    ) -> Result<Value, TransportError>;
+
+    fn fulfill_input_required(
+        &self,
+        result: &Value,
+    ) -> Result<Option<MrtrRequest>, TransportError> {
+        let requests = match result.get("inputRequests") {
+            None => None,
+            Some(Value::Object(requests)) => Some(requests),
+            Some(_) => {
+                return Err(TransportError::Fatal(
+                    "modern server returned non-object inputRequests".to_string(),
+                ))
+            }
+        };
+        let request_state = match result.get("requestState") {
+            None => None,
+            Some(Value::String(state)) => Some(Value::String(state.clone())),
+            Some(_) => {
+                return Err(TransportError::Fatal(
+                    "modern server returned non-string requestState".to_string(),
+                ))
+            }
+        };
+        if requests.is_none_or(serde_json::Map::is_empty) && request_state.is_none() {
+            return Err(TransportError::Fatal(
+                "modern server returned input_required without inputRequests or requestState"
+                    .to_string(),
+            ));
+        }
+
+        let mut input_responses = serde_json::Map::new();
+        if let Some(requests) = requests {
+            let handler = self.server_handler().ok_or_else(|| {
+                TransportError::Fatal(
+                    "upstream client cannot fulfill the server's input_required result".to_string(),
+                )
+            })?;
+            for (key, input) in requests {
+                let mut input = input.clone();
+                screen_url_elicitation_request(&mut input).map_err(|message| {
+                    TransportError::Fatal(format!(
+                        "Toolport refused unsafe URL elicitation: {message}"
+                    ))
+                })?;
+                let method = input.get("method").and_then(Value::as_str).ok_or_else(|| {
+                    TransportError::Fatal(format!("input request '{key}' is missing a method"))
+                })?;
+                if !matches!(
+                    method,
+                    "roots/list" | "sampling/createMessage" | "elicitation/create"
+                ) {
+                    return Err(TransportError::Fatal(format!(
+                        "input request '{key}' uses unsupported method '{method}'"
+                    )));
+                }
+                let id = json!(format!(
+                    "toolport-mrtr-{}",
+                    MRTR_LEGACY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+                ));
+                let request = json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": method,
+                    "params": input.get("params").cloned().unwrap_or_else(|| json!({}))
+                });
+                let response = match handler(&request) {
+                    Some(ServerRequestAction::Respond(response)) => response,
+                    Some(ServerRequestAction::InputRequired) => return Ok(None),
+                    None => {
+                        return Err(TransportError::Fatal(format!(
+                            "upstream client did not handle input request '{key}' ({method})"
+                        )))
+                    }
+                };
+                if let Some(error) = response.get("error") {
+                    return Err(TransportError::Rpc(error.clone()));
+                }
+                let response = response.get("result").cloned().ok_or_else(|| {
+                    TransportError::Fatal(format!(
+                        "upstream client returned no result for input request '{key}'"
+                    ))
+                })?;
+                input_responses.insert(key.clone(), response);
+            }
+        }
+
+        if input_responses.is_empty() {
+            std::thread::sleep(MRTR_STATE_ONLY_DELAY);
+        }
+        Ok(Some(MrtrRequest {
+            input_responses: (!input_responses.is_empty())
+                .then_some(Value::Object(input_responses)),
+            request_state,
+        }))
+    }
+
+    fn request_with_mrtr(
+        &mut self,
+        method: &str,
+        params: Value,
+        cancel: Option<CancelContext>,
+        meta: Option<&Value>,
+        mrtr: Option<&MrtrRequest>,
+        headers: &[(String, String)],
+    ) -> Result<Value, TransportError> {
+        let modern_upstream = upstream_is_modern(meta);
+        let modern_downstream = self.era().is_modern();
+        let mut retry = mrtr.cloned().unwrap_or_default();
+        for round in 0..=MRTR_LEGACY_MAX_ROUNDS {
+            let mut params = with_meta_and_mrtr(params.clone(), meta, Some(&retry));
+            if modern_downstream {
+                attach_serviceable_client_capabilities(&mut params, meta);
+            }
+            let mut result = self.send(method, params, cancel.clone(), headers)?;
+            strip_private_envelope(&mut result);
+            if result.get("resultType").and_then(Value::as_str) == Some("input_required") {
+                screen_input_required(&mut result, self.server_id())?;
+            }
+            if result.get("resultType").and_then(Value::as_str) != Some("input_required") {
+                return Ok(result);
+            }
+            if modern_upstream && modern_client_supports_input_required(meta, &result) {
+                return Ok(result);
+            }
+            if round == MRTR_LEGACY_MAX_ROUNDS {
+                return Err(TransportError::Fatal(format!(
+                    "modern server exceeded the {MRTR_LEGACY_MAX_ROUNDS}-round input_required limit"
+                )));
+            }
+            match self.fulfill_input_required(&result) {
+                Ok(Some(next)) => retry = next,
+                Ok(None) if modern_upstream => return Ok(result),
+                Ok(None) => {
+                    return Err(TransportError::Fatal(
+                        "cannot nest an input_required bridge while fulfilling one".to_string(),
+                    ))
+                }
+                Err(TransportError::Rpc(error))
+                    if modern_upstream
+                        && error.get("code").and_then(Value::as_i64)
+                            == Some(MISSING_REQUIRED_CLIENT_CAPABILITY) =>
+                {
+                    return Ok(json!({
+                        "_toolportProtocolError": {
+                            "code": MISSING_REQUIRED_CLIENT_CAPABILITY,
+                            "message": error.get("message").cloned().unwrap_or_else(|| json!("URL elicitation requires client support or a running Toolport desktop broker")),
+                            "requiredCapability": "elicitation"
+                        }
+                    }));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("bounded MRTR loop always returns")
+    }
+
+    fn call_with_cancel_and_mrtr(
+        &mut self,
+        tool: &str,
+        arguments: Value,
+        cancel: Option<CancelContext>,
+        meta: Option<&Value>,
+        mrtr: Option<&MrtrRequest>,
+    ) -> Result<Value, TransportError> {
+        let headers = if self.modern_http() {
+            let specs = self
+                .tools()
+                .header_specs(tool)
+                .map_err(TransportError::Fatal)?;
+            headers_from_specs(specs, &arguments)?
+        } else {
+            Vec::new()
+        };
+        self.request_with_mrtr(
+            "tools/call",
+            json!({ "name": tool, "arguments": arguments }),
+            cancel,
+            meta,
+            mrtr,
+            &headers,
+        )
+    }
+
+    fn read_resource_with_cancel_and_mrtr(
+        &mut self,
+        uri: &str,
+        cancel: Option<CancelContext>,
+        meta: Option<&Value>,
+        mrtr: Option<&MrtrRequest>,
+    ) -> Result<Value, TransportError> {
+        self.request_with_mrtr(
+            "resources/read",
+            json!({ "uri": uri }),
+            cancel,
+            meta,
+            mrtr,
+            &[],
+        )
+    }
+
+    fn get_prompt_with_cancel_and_mrtr(
+        &mut self,
+        name: &str,
+        arguments: Value,
+        cancel: Option<CancelContext>,
+        meta: Option<&Value>,
+        mrtr: Option<&MrtrRequest>,
+    ) -> Result<Value, TransportError> {
+        self.request_with_mrtr(
+            "prompts/get",
+            json!({ "name": name, "arguments": arguments }),
+            cancel,
+            meta,
+            mrtr,
+            &[],
+        )
+    }
+
+    /// Forward a Tasks extension request on the same modern hop as the call
+    /// that created it. The router has already translated the client-facing
+    /// task id back to the server's native id.
+    fn task_request(
+        &mut self,
+        method: &str,
+        params: Value,
+        cancel: Option<CancelContext>,
+        meta: Option<&Value>,
+    ) -> Result<Value, TransportError> {
+        if !self
+            .extensions()
+            .contains_key("io.modelcontextprotocol/tasks")
+        {
+            return Err(TransportError::Fatal(format!(
+                "server '{}' did not advertise io.modelcontextprotocol/tasks",
+                self.server_id()
+            )));
+        }
+        self.request_with_mrtr(method, params, cancel, meta, None, &[])
+    }
+
+    fn complete_with_cancel(
+        &mut self,
+        mut params: Value,
+        cancel: Option<CancelContext>,
+    ) -> Result<Value, TransportError> {
+        let original_meta = params.get("_meta").cloned();
+        sanitize_forwarded_meta(&mut params);
+        if self.era().is_modern() {
+            attach_serviceable_client_capabilities(&mut params, original_meta.as_ref());
+        }
+        self.send_plain("completion/complete", params, cancel)
+    }
+}
+
+impl ServerDispatch for DownstreamServer {
+    fn server_id(&self) -> &str {
+        &self.id
+    }
+
+    fn era(&self) -> &Era {
+        &self.era
+    }
+
+    fn modern_http(&self) -> bool {
+        self.modern_http
+    }
+
+    fn tools(&self) -> &SerializedTools {
+        &self.tools
+    }
+
+    fn extensions(&self) -> &serde_json::Map<String, Value> {
+        &self.caps_extensions
+    }
+
+    fn server_handler(&self) -> Option<&ServerRequestHandler> {
+        self.server_handler.as_ref()
+    }
+
+    fn locked_server(&mut self) -> Option<&mut DownstreamServer> {
+        Some(self)
+    }
+
+    fn send(
+        &mut self,
+        method: &str,
+        params: Value,
+        cancel: Option<CancelContext>,
+        headers: &[(String, String)],
+    ) -> Result<Value, TransportError> {
+        self.transport
+            .request_with_cancel_and_headers(method, params, cancel, headers)
+    }
+
+    fn send_plain(
+        &mut self,
+        method: &str,
+        params: Value,
+        cancel: Option<CancelContext>,
+    ) -> Result<Value, TransportError> {
+        self.transport.request_with_cancel(method, params, cancel)
+    }
+}
+
+/// Everything a dispatch needs from one connected server, owned so the call can
+/// run without holding the server's lock. Taken from [`DownstreamServer::call_handle`]
+/// when the transport can carry concurrent requests.
+pub struct CallHandle {
+    transport: Arc<dyn ConcurrentTransport>,
+    id: String,
+    era: Era,
+    modern_http: bool,
+    /// Only filled for modern HTTP, the one case that reads tool definitions.
+    tools: SerializedTools,
+    caps_extensions: serde_json::Map<String, Value>,
+    call_timeout: Duration,
+    server_handler: Option<ServerRequestHandler>,
+}
+
+impl CallHandle {
+    /// The server's live-call read deadline when this handle was taken.
+    pub fn call_timeout(&self) -> Duration {
+        self.call_timeout
+    }
+}
+
+impl ServerDispatch for CallHandle {
+    fn server_id(&self) -> &str {
+        &self.id
+    }
+
+    fn era(&self) -> &Era {
+        &self.era
+    }
+
+    fn modern_http(&self) -> bool {
+        self.modern_http
+    }
+
+    fn tools(&self) -> &SerializedTools {
+        &self.tools
+    }
+
+    fn extensions(&self) -> &serde_json::Map<String, Value> {
+        &self.caps_extensions
+    }
+
+    fn server_handler(&self) -> Option<&ServerRequestHandler> {
+        self.server_handler.as_ref()
+    }
+
+    fn send(
+        &mut self,
+        method: &str,
+        params: Value,
+        cancel: Option<CancelContext>,
+        headers: &[(String, String)],
+    ) -> Result<Value, TransportError> {
+        self.transport
+            .request_with_cancel_and_headers(method, params, cancel, headers)
+    }
+
+    fn send_plain(
+        &mut self,
+        method: &str,
+        params: Value,
+        cancel: Option<CancelContext>,
+    ) -> Result<Value, TransportError> {
+        self.transport.request_with_cancel(method, params, cancel)
+    }
 }
 
 /// Why a paginated traversal stopped before the server ran out of pages.
@@ -6532,6 +9614,15 @@ fn fetch_paginated_list(
     method: &str,
     key: &str,
 ) -> Result<PaginatedList, TransportError> {
+    fetch_paginated_list_with_deadline(transport, method, key, None)
+}
+
+fn fetch_paginated_list_with_deadline(
+    transport: &mut dyn Transport,
+    method: &str,
+    key: &str,
+    deadline: Option<Instant>,
+) -> Result<PaginatedList, TransportError> {
     let mut items = Vec::new();
     let mut cursor: Option<String> = None;
     let mut seen_cursors = HashSet::new();
@@ -6551,10 +9642,19 @@ fn fetch_paginated_list(
                 ),
             ));
         }
+        if let Some(deadline) = deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(TransportError::Unavailable(format!(
+                    "first {method} catalog deadline exceeded"
+                )));
+            }
+            transport.set_read_timeout(remaining);
+        }
         let params = cursor
             .as_ref()
             .map_or_else(|| json!({}), |value| json!({ "cursor": value }));
-        let result = match transport.request(method, params) {
+        let mut result = match transport.request(method, params) {
             Ok(result) => result,
             Err(error) if page_index > 0 => {
                 return Ok(PaginatedList::truncated(
@@ -6572,7 +9672,11 @@ fn fetch_paginated_list(
             None => page_hint,
         });
 
-        let page = extract_array(&result, key);
+        let page = result
+            .get_mut(key)
+            .and_then(Value::as_array_mut)
+            .map(std::mem::take)
+            .unwrap_or_default();
         // Per-page shape, behind the debug flag. Without this the only recorded
         // fact is the final total, which cannot distinguish "the server owns a
         // small catalog" from "we stopped reading a large one" - the ambiguity
@@ -6639,12 +9743,80 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
+    #[test]
+    fn resolver_policy_denials_are_fatal_without_transport_retry() {
+        for (url, block_private) in [
+            ("http://127.0.0.1:9/", true),
+            ("http://[::1]:9/", true),
+            ("http://169.254.169.254/", false),
+        ] {
+            let error =
+                super::guarded_agent_with_timeout(block_private, std::time::Duration::from_secs(1))
+                    .get(url)
+                    .call()
+                    .unwrap_err();
+            assert!(!super::is_retryable_transport(&error));
+            let error = super::http_transport_io_error(error);
+            assert!(matches!(error, TransportError::Fatal(_)), "{error}");
+            assert!(!error.is_health_failure());
+            assert!(error
+                .to_string()
+                .contains("blocked: private or local address"));
+        }
+        let error = crate::http_client::mark_connect_failure(ureq::Error::Io(
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        ));
+        assert!(!super::is_retryable_transport(&error));
+        assert!(super::is_retryable_transport(&ureq::Error::HostNotFound));
+    }
+
+    #[test]
+    fn classified_connect_preserves_auth_and_timeout_categories() {
+        use crate::call_failure::CallFailureKind as K;
+        struct Reject(K);
+        impl Transport for Reject {
+            fn request(&mut self, _: &str, _: Value) -> Result<Value, TransportError> {
+                Err(TransportError::Classified(
+                    self.0.clone(),
+                    "untrusted detail".into(),
+                ))
+            }
+            fn notify(&mut self, _: &str, _: Value) -> Result<(), TransportError> {
+                Ok(())
+            }
+        }
+        for kind in [
+            K::Auth {
+                target: crate::call_failure::AuthTarget::Endpoint,
+            },
+            K::Timeout { after_send: false },
+            K::Unavailable { after_send: false },
+        ] {
+            let failure = match DownstreamServer::connect_classified(
+                "fixture".into(),
+                Box::new(Reject(kind.clone())),
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("connection should fail"),
+            };
+            assert_eq!(failure.kind, kind);
+            assert_eq!(failure.detail, "untrusted detail");
+        }
+    }
+
+    #[test]
+    fn reviewed_debug_trace_redacts_endpoint_errors() {
+        assert_eq!(super::redact_trace_urls("subscriptions/listen HTTP open failed: http://user:pw@localhost/sk-secret?token=private%2Fvalue: connection refused (os error 111)"), "subscriptions/listen HTTP open failed: <redacted endpoint> connection refused (os error 111)");
+    }
+
     struct MrtrTransport {
         responses: VecDeque<Result<Value, TransportError>>,
         requests: Arc<Mutex<Vec<(String, Value)>>>,
     }
 
     impl MrtrTransport {
+        // Return the transport with its shared request capture for protocol assertions.
+        #[allow(clippy::type_complexity)]
         fn modern(
             call_responses: Vec<Result<Value, TransportError>>,
         ) -> (Self, Arc<Mutex<Vec<(String, Value)>>>) {
@@ -6794,7 +9966,7 @@ mod tests {
         let mut server = DownstreamServer::connect("ttl".to_string(), Box::new(expiring)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(15));
         server.refresh_tools_if_stale();
-        assert_eq!(server.tools[0]["name"], "fresh");
+        assert_eq!(server.tools.materialize(0)["name"], "fresh");
 
         // No third scripted response: this panics if zero/missing TTL turns the
         // one-second watcher into an unbounded polling loop.
@@ -6808,7 +9980,7 @@ mod tests {
         ]);
         let mut server = DownstreamServer::connect("zero".to_string(), Box::new(zero)).unwrap();
         server.refresh_tools_if_stale();
-        assert_eq!(server.tools[0]["name"], "stable");
+        assert_eq!(server.tools.materialize(0)["name"], "stable");
     }
 
     #[test]
@@ -6827,6 +9999,9 @@ mod tests {
 
     #[test]
     fn a_catalog_that_collapses_is_held_until_confirmed() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "a_catalog_that_collapses_is_held_until_confirmed",
+        );
         // The Atlassian case: a *successful* tools/list that returns 3 of a
         // server's 40 tools. Nothing about the response is malformed, so only the
         // size of the drop can catch it.
@@ -6919,7 +10094,89 @@ mod tests {
     }
 
     #[test]
+    fn first_catalog_has_its_own_bounded_budget_and_does_not_retry_a_hang() {
+        use std::time::Duration;
+        struct BudgetTransport {
+            timeout: Duration,
+            calls: Arc<std::sync::Mutex<Vec<(String, Duration)>>>,
+            catalog_delay: Duration,
+        }
+        impl Transport for BudgetTransport {
+            fn set_read_timeout(&mut self, timeout: Duration) {
+                self.timeout = timeout;
+            }
+            fn request(&mut self, method: &str, _: Value) -> Result<Value, TransportError> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((method.to_string(), self.timeout));
+                match method {
+                    "initialize" => Ok(json!({"capabilities":{}})),
+                    "tools/list" if self.catalog_delay < self.timeout => {
+                        Ok(json!({"tools":[{"name":"slow"}]}))
+                    }
+                    "tools/list" => Err(TransportError::Unavailable(
+                        "first catalog timed out".into(),
+                    )),
+                    _ => unreachable!(),
+                }
+            }
+            fn notify(&mut self, _: &str, _: Value) -> Result<(), TransportError> {
+                Ok(())
+            }
+        }
+        for delay in [Duration::from_secs(15), Duration::from_secs(31)] {
+            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let result = DownstreamServer::connect(
+                "slow".into(),
+                Box::new(BudgetTransport {
+                    timeout: Duration::ZERO,
+                    calls: Arc::clone(&calls),
+                    catalog_delay: delay,
+                }),
+            );
+            assert_eq!(result.is_ok(), delay < super::FIRST_CATALOG_TIMEOUT);
+            if let Err(error) = result {
+                assert!(error.contains("first catalog timed out"), "{error}");
+            }
+            let calls = calls.lock().unwrap();
+            assert_eq!(
+                calls.len(),
+                2,
+                "connect must not respawn or retry a hung catalog"
+            );
+            assert_eq!(
+                calls[0],
+                ("initialize".into(), super::STDIO_CONNECT_TIMEOUT)
+            );
+            assert!(calls[1].1 > Duration::from_secs(15));
+            assert!(calls[1].1 <= super::FIRST_CATALOG_TIMEOUT);
+        }
+    }
+
+    #[test]
+    fn first_catalog_deadline_bounds_all_pages() {
+        let mut transport = PaginationTransport::new(vec![Ok(json!({"tools":[]}))]);
+        let Err(error) = super::fetch_paginated_list_with_deadline(
+            &mut transport,
+            "tools/list",
+            "tools",
+            Some(std::time::Instant::now()),
+        ) else {
+            panic!("an expired first-catalog deadline must fail");
+        };
+        assert!(error.to_string().contains("catalog deadline exceeded"));
+        assert!(
+            transport.params.is_empty(),
+            "expired budgets must not dispatch another page"
+        );
+    }
+
+    #[test]
     fn connect_refuses_a_catalog_truncated_by_a_failed_page() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "connect_refuses_a_catalog_truncated_by_a_failed_page",
+        );
         // The regression this exists for: a server whose first page holds 1 of its
         // tools and whose second page fails must NOT connect advertising that one
         // tool as its catalog. That prefix would be published to clients and
@@ -6948,6 +10205,9 @@ mod tests {
 
     #[test]
     fn connect_keeps_a_catalog_truncated_by_a_safety_cap() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "connect_keeps_a_catalog_truncated_by_a_safety_cap",
+        );
         // Bounded truncation is deterministic - retrying returns the same prefix -
         // so refusing it would make an oversized or cursor-looping server
         // permanently unusable rather than partially usable.
@@ -6986,7 +10246,7 @@ mod tests {
         assert_eq!(server.resource_templates.len(), 2);
         assert_eq!(server.prompts.len(), 2);
         assert!(server.supports_completions());
-        assert_eq!(server.tools[1]["name"], "two");
+        assert_eq!(server.tools.materialize(1)["name"], "two");
         assert_eq!(server.resources[1]["uri"], "two:");
         assert_eq!(server.resource_templates[1]["uriTemplate"], "two://{id}");
         assert_eq!(server.prompts[1]["name"], "two");
@@ -6994,6 +10254,9 @@ mod tests {
 
     #[test]
     fn incomplete_refresh_keeps_the_previous_complete_catalog() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "incomplete_refresh_keeps_the_previous_complete_catalog",
+        );
         let transport = PaginationTransport::new(vec![
             Ok(json!({"tools":[{"name":"partial"}],"nextCursor":"two"})),
             Err(TransportError::Unavailable(
@@ -7003,7 +10266,7 @@ mod tests {
         let mut server = DownstreamServer {
             id: "fixture".to_string(),
             transport: Box::new(transport),
-            tools: vec![json!({"name":"stable"})],
+            tools: vec![json!({"name":"stable"})].into(),
             resources: Vec::new(),
             resource_templates: Vec::new(),
             prompts: Vec::new(),
@@ -7035,11 +10298,14 @@ mod tests {
     /// Mutation check: remove the empty-success guard and this fails.
     #[test]
     fn empty_successful_tool_refresh_keeps_previous_catalog() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "empty_successful_tool_refresh_keeps_previous_catalog",
+        );
         let transport = PaginationTransport::new(vec![Ok(json!({ "tools": [] }))]);
         let mut server = DownstreamServer {
             id: "fixture".to_string(),
             transport: Box::new(transport),
-            tools: vec![json!({"name":"stable"})],
+            tools: vec![json!({"name":"stable"})].into(),
             resources: Vec::new(),
             resource_templates: Vec::new(),
             prompts: Vec::new(),
@@ -7076,12 +10342,15 @@ mod tests {
     /// so legitimate full revocation is not stuck forever behind the guard.
     #[test]
     fn two_consecutive_empty_tool_refreshes_accept_wipe() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "two_consecutive_empty_tool_refreshes_accept_wipe",
+        );
         let transport =
             PaginationTransport::new(vec![Ok(json!({ "tools": [] })), Ok(json!({ "tools": [] }))]);
         let mut server = DownstreamServer {
             id: "fixture".to_string(),
             transport: Box::new(transport),
-            tools: vec![json!({"name":"stable"})],
+            tools: vec![json!({"name":"stable"})].into(),
             resources: Vec::new(),
             resource_templates: Vec::new(),
             prompts: Vec::new(),
@@ -7123,7 +10392,7 @@ mod tests {
         let mut server = DownstreamServer {
             id: "fixture".to_string(),
             transport: Box::new(transport),
-            tools: Vec::new(),
+            tools: crate::tool_definitions::SerializedTools::default(),
             resources: Vec::new(),
             resource_templates: Vec::new(),
             prompts: Vec::new(),
@@ -7154,6 +10423,9 @@ mod tests {
     /// SOU-338: resources and prompts share the empty-success guard.
     #[test]
     fn empty_successful_resource_and_prompt_refresh_keeps_previous() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "empty_successful_resource_and_prompt_refresh_keeps_previous",
+        );
         let transport = PaginationTransport::new(vec![
             Ok(json!({ "resources": [] })),
             Ok(json!({ "resourceTemplates": [] })),
@@ -7162,7 +10434,7 @@ mod tests {
         let mut server = DownstreamServer {
             id: "fixture".to_string(),
             transport: Box::new(transport),
-            tools: Vec::new(),
+            tools: crate::tool_definitions::SerializedTools::default(),
             resources: vec![json!({"uri":"stable-r:"})],
             resource_templates: vec![json!({"uriTemplate":"stable://{id}"})],
             prompts: vec![json!({"name":"stable-p"})],
@@ -7210,7 +10482,7 @@ mod tests {
         let mut server = DownstreamServer {
             id: "fixture".to_string(),
             transport: Box::new(transport),
-            tools: Vec::new(),
+            tools: crate::tool_definitions::SerializedTools::default(),
             resources: vec![json!({"uri":"stable-r:"})],
             resource_templates: vec![json!({"uriTemplate":"stable://{id}"})],
             prompts: Vec::new(),
@@ -7293,15 +10565,29 @@ mod tests {
             std::process::id()
         ));
         let script_file = pid_file.with_extension("ps1");
+        let diag_file = pid_file.with_extension("diag.txt");
         let escaped_pid_file = pid_file.to_string_lossy().replace('\'', "''");
+        let escaped_diag_file = diag_file.to_string_lossy().replace('\'', "''");
         // The parent launches its descendant immediately. The production spawn
         // path must assign the suspended parent before allowing this code to run.
+        // A diag file records what the launcher saw and any Start-Process error, so
+        // a failure names the cause instead of only the missing pid.
         let script = format!(
-            "$grandchild = Start-Process -FilePath 'powershell.exe' \
-               -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 60') \
-               -WindowStyle Hidden -PassThru; \
-             [System.IO.File]::WriteAllText('{escaped_pid_file}', [string]$grandchild.Id); \
-             Wait-Process -Id $grandchild.Id"
+            "$ErrorActionPreference = 'Continue'; \
+             $diag = 'PSVersion=' + $PSVersionTable.PSVersion.ToString() + \"`r`n\" + \
+               'PSModulePath=' + $env:PSModulePath + \"`r`n\" + \
+               'Path=' + $env:Path + \"`r`n\" + \
+               'StartProcess=' + [string][bool](Get-Command Start-Process -ErrorAction SilentlyContinue); \
+             [System.IO.File]::WriteAllText('{escaped_diag_file}', $diag); \
+             try {{ \
+               $grandchild = Start-Process -FilePath 'powershell.exe' \
+                 -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 60') \
+                 -WindowStyle Hidden -PassThru -ErrorAction Stop; \
+               [System.IO.File]::WriteAllText('{escaped_pid_file}', [string]$grandchild.Id); \
+               Wait-Process -Id $grandchild.Id \
+             }} catch {{ \
+               [System.IO.File]::AppendAllText('{escaped_diag_file}', \"`r`nERROR: \" + ($_ | Out-String)) \
+             }}"
         );
         std::fs::write(&script_file, script).expect("write launcher script");
         let args = vec![
@@ -7313,7 +10599,7 @@ mod tests {
             "-File".to_string(),
             script_file.to_string_lossy().into_owned(),
         ];
-        let transport = StdioTransport::spawn("powershell.exe", &args, &[], None)
+        let transport = StdioTransport::spawn("powershell.exe", &args, &[], None, false)
             .expect("spawn Job Object-owned launcher");
 
         // Poll for parsable CONTENT, not mere existence - the same fix the Unix sibling
@@ -7331,7 +10617,27 @@ mod tests {
             }
             assert!(
                 Instant::now() < created_deadline,
-                "launcher should record its grandchild pid"
+                "launcher should record its grandchild pid; diag: {}; launcher stderr: {}; \
+                 launcher exited: {:?}; child env: {}",
+                std::fs::read_to_string(&diag_file)
+                    .unwrap_or_else(|e| format!("<no diag file: {e}>")),
+                transport
+                    .core
+                    .stderr
+                    .lock()
+                    .map(|b| b.trim().to_string())
+                    .unwrap_or_default(),
+                transport
+                    .core
+                    .child
+                    .lock()
+                    .ok()
+                    .and_then(|mut child| child.try_wait().ok().flatten()),
+                super::child_environment(&super::process_env_map(), &[], false)
+                    .into_iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
             );
             std::thread::sleep(Duration::from_millis(25));
         };
@@ -7351,6 +10657,7 @@ mod tests {
         );
         let _ = std::fs::remove_file(pid_file);
         let _ = std::fs::remove_file(script_file);
+        let _ = std::fs::remove_file(diag_file);
     }
 
     /// The unix counterpart to `windows_job_terminates_launcher_grandchild`:
@@ -7397,7 +10704,7 @@ mod tests {
         .expect("write launcher script");
         let args = vec![script_file.to_string_lossy().into_owned()];
         let transport =
-            StdioTransport::spawn("sh", &args, &[], None).expect("spawn launcher shell");
+            StdioTransport::spawn("sh", &args, &[], None, false).expect("spawn launcher shell");
 
         // Poll for parsable CONTENT, not mere existence: the shell's redirection
         // creates the file before `echo` writes to it, so a read in between
@@ -7523,59 +10830,240 @@ mod tests {
         std::env::remove_var(&unset);
     }
 
+    fn parent_env(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
+    }
+
+    fn env_map(env: &[(String, String)]) -> std::collections::BTreeMap<String, String> {
+        env.iter().cloned().collect()
+    }
+
+    /// SEC-04: ambient credentials in the gateway's environment must not reach a
+    /// downstream child, while the locator/locale/proxy names a launcher needs do.
     #[test]
-    fn strips_gateway_control_env_from_children() {
-        use std::collections::HashSet;
-        use std::ffi::OsStr;
-        // pid-unique names so a parallel test's process-wide env set can't collide.
-        let secret = format!("CONDUIT_TEST_SECRET_{}", std::process::id());
-        let secret_new = format!("TOOLPORT_TEST_SECRET_{}", std::process::id());
-        let keep = format!("TP_KEEP_{}", std::process::id());
+    fn child_env_allowlist_blocks_ambient_credentials() {
+        let parent = parent_env(&[
+            ("PATH", "/usr/bin:/bin"),
+            ("HOME", "/home/u"),
+            ("LC_ALL", "en_US.UTF-8"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ("HTTPS_PROXY", "http://proxy:8080"),
+            ("DOCKER_HOST", "unix:///run/user/1000/podman/podman.sock"),
+            ("AWS_SECRET_ACCESS_KEY", "aws-secret"),
+            ("GITHUB_TOKEN", "ghp_secret"),
+            ("OPENAI_API_KEY", "sk-secret"),
+            ("TOOLPORT_SECRET_KEY", "vault-key"),
+        ]);
+        let env = env_map(&super::child_environment(&parent, &[], false));
+        assert_eq!(env.get("PATH").map(String::as_str), Some("/usr/bin:/bin"));
+        assert_eq!(env.get("HOME").map(String::as_str), Some("/home/u"));
+        assert_eq!(env.get("LC_ALL").map(String::as_str), Some("en_US.UTF-8"));
+        assert_eq!(
+            env.get("XDG_RUNTIME_DIR").map(String::as_str),
+            Some("/run/user/1000")
+        );
+        assert_eq!(
+            env.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://proxy:8080")
+        );
+        assert!(
+            env.contains_key("DOCKER_HOST"),
+            "a container server must reach the user's engine"
+        );
+        assert!(
+            !env.contains_key("AWS_SECRET_ACCESS_KEY"),
+            "an ambient cloud credential must not reach the child"
+        );
+        assert!(
+            !env.contains_key("GITHUB_TOKEN"),
+            "an ambient API token must not reach the child"
+        );
+        assert!(
+            !env.contains_key("OPENAI_API_KEY"),
+            "an ambient API key must not reach the child"
+        );
+        assert!(
+            !env.contains_key("TOOLPORT_SECRET_KEY"),
+            "the vault master key must never reach the child"
+        );
+    }
+
+    /// The server's own `env` and injected secrets are applied last, so they
+    /// override an allowlisted value of the same name.
+    #[test]
+    fn configured_env_overrides_an_allowlisted_value() {
+        let parent = parent_env(&[("PATH", "/usr/bin"), ("HOME", "/home/u")]);
+        let configured = vec![("PATH".to_string(), "/opt/bin".to_string())];
+        let env = env_map(&super::child_environment(&parent, &configured, false));
+        assert_eq!(env.get("PATH").map(String::as_str), Some("/opt/bin"));
+    }
+
+    /// The per-server compatibility opt-in hands the child the whole environment
+    /// (SEC-04 pre-change behavior), but still never Toolport's control names.
+    #[test]
+    fn inherit_env_keeps_ambient_values_but_strips_control_names() {
+        let parent = parent_env(&[
+            ("AWS_SECRET_ACCESS_KEY", "aws-secret"),
+            ("GITHUB_TOKEN", "ghp_secret"),
+            ("TOOLPORT_FOO", "control"),
+            ("CONDUIT_BAR", "control"),
+        ]);
+        let env = env_map(&super::child_environment(&parent, &[], true));
+        assert_eq!(
+            env.get("AWS_SECRET_ACCESS_KEY").map(String::as_str),
+            Some("aws-secret")
+        );
+        assert_eq!(
+            env.get("GITHUB_TOKEN").map(String::as_str),
+            Some("ghp_secret")
+        );
+        assert!(!env.contains_key("TOOLPORT_FOO"));
+        assert!(!env.contains_key("CONDUIT_BAR"));
+    }
+
+    /// A server may still set a control-prefixed variable for itself.
+    #[test]
+    fn a_server_can_set_its_own_control_prefixed_variable() {
+        let parent = parent_env(&[("TOOLPORT_FOO", "control")]);
+        let configured = vec![("TOOLPORT_FOO".to_string(), "from-server".to_string())];
+        let env = env_map(&super::child_environment(&parent, &configured, false));
+        assert_eq!(
+            env.get("TOOLPORT_FOO").map(String::as_str),
+            Some("from-server")
+        );
+    }
+
+    /// Windows matches environment names case-insensitively and has extra system
+    /// locators; Unix stays case-sensitive and does not get the Windows names.
+    #[test]
+    fn windows_env_names_match_case_insensitively() {
+        for name in ["SystemRoot", "SYSTEMROOT", "systemroot"] {
+            assert!(
+                super::is_allowed_child_env_name_with(name, true),
+                "{name} must match on Windows"
+            );
+        }
+        assert!(super::is_allowed_child_env_name_with("Path", true));
+        assert!(super::is_allowed_child_env_name_with("lc_all", true));
+        assert!(super::is_allowed_child_env_name_with(
+            "xdg_runtime_dir",
+            true
+        ));
+        assert!(
+            !super::is_allowed_child_env_name_with("AWS_SECRET_ACCESS_KEY", true),
+            "the Windows rule must not widen the allowlist to credentials"
+        );
+
+        assert!(super::is_allowed_child_env_name_with("PATH", false));
+        assert!(
+            !super::is_allowed_child_env_name_with("Path", false),
+            "Unix environment names are case-sensitive"
+        );
+        assert!(
+            !super::is_allowed_child_env_name_with("SystemRoot", false),
+            "the Windows-only locators are not allowlisted on Unix"
+        );
+    }
+
+    /// The Windows system and PowerShell locators a spawned shim needs must
+    /// survive SEC-04, and must not seed a Unix child. `PSModulePath` is the one
+    /// that broke the Job Object launcher test: without it a child PowerShell
+    /// cannot discover the modules defining its own cmdlets (`Start-Process`).
+    #[test]
+    fn windows_system_and_powershell_locators_are_allowlisted() {
+        for name in [
+            "PSModulePath",
+            "PSModuleAnalysisCachePath",
+            "ALLUSERSPROFILE",
+            "COMPUTERNAME",
+            "PROCESSOR_IDENTIFIER",
+            "PROCESSOR_LEVEL",
+            "PROCESSOR_REVISION",
+            "DriverData",
+            "CommonProgramFiles(x86)",
+            "CommonProgramW6432",
+        ] {
+            assert!(
+                super::is_allowed_child_env_name_with(name, true),
+                "{name} must reach a Windows child"
+            );
+            assert!(
+                super::is_allowed_child_env_name_with(&name.to_lowercase(), true),
+                "{name} must match case-insensitively on Windows"
+            );
+            assert!(
+                !super::is_allowed_child_env_name_with(name, false),
+                "{name} is a Windows locator and must not seed a Unix child"
+            );
+        }
+    }
+
+    /// End-to-end over a real spawned child: a secret-like variable set in the
+    /// gateway's environment does not appear in the child, while PATH does.
+    ///
+    /// The name is pid-unique so a parallel test cannot collide, and it is removed
+    /// as soon as the child has started. The child reports through a file rather
+    /// than stdout so it does not interfere with the transport's line drain.
+    #[cfg(unix)]
+    #[test]
+    fn a_real_stdio_child_does_not_see_an_ambient_secret() {
+        use std::time::{Duration, Instant};
+
+        let secret = format!("TP_CHILD_ENV_SECRET_{}", std::process::id());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let out = std::env::temp_dir().join(format!(
+            "toolport-child-env-{}-{nonce}.out",
+            std::process::id()
+        ));
+        let script = out.with_extension("sh");
+        std::fs::write(
+            &script,
+            format!(
+                "printenv PATH > '{out}'\nprintenv {secret} >> '{out}' 2>/dev/null\nexit 0\n",
+                out = out.to_string_lossy()
+            ),
+        )
+        .expect("write child env script");
+
         std::env::set_var(&secret, "leak-me");
-        std::env::set_var(&secret_new, "leak-me-too");
-        std::env::set_var(&keep, "ok");
-
-        // Nothing configured: inherited TOOLPORT_*/CONDUIT_* vars are marked for
-        // removal from the child (get_envs records a removal as value None), and an
-        // unrelated var is left untouched.
-        let empty: HashSet<&str> = HashSet::new();
-        let mut cmd = std::process::Command::new("true");
-        super::strip_gateway_control_env(&mut cmd, &empty);
-        let overrides: Vec<_> = cmd.get_envs().collect();
-        assert!(
-            overrides
-                .iter()
-                .any(|(k, v)| *k == OsStr::new(&secret) && v.is_none()),
-            "a CONDUIT_* var must be stripped from the child"
-        );
-        assert!(
-            overrides
-                .iter()
-                .any(|(k, v)| *k == OsStr::new(&secret_new) && v.is_none()),
-            "a TOOLPORT_* var must be stripped from the child"
-        );
-        assert!(
-            !overrides.iter().any(|(k, _)| *k == OsStr::new(&keep)),
-            "an unrelated var must not be touched by the strip"
-        );
-
-        // A server that sets a control-plane-prefixed var for itself keeps it.
-        let configured: HashSet<&str> =
-            [secret.as_str(), secret_new.as_str()].into_iter().collect();
-        let mut cmd2 = std::process::Command::new("true");
-        super::strip_gateway_control_env(&mut cmd2, &configured);
-        assert!(
-            !cmd2.get_envs().any(|(k, _)| k == OsStr::new(&secret)),
-            "a server-configured CONDUIT_ var must be exempt from the strip"
-        );
-        assert!(
-            !cmd2.get_envs().any(|(k, _)| k == OsStr::new(&secret_new)),
-            "a server-configured TOOLPORT_ var must be exempt from the strip"
-        );
-
+        let args = vec![script.to_string_lossy().into_owned()];
+        let child_env_result = super::StdioTransport::spawn("sh", &args, &[], None, false);
         std::env::remove_var(&secret);
-        std::env::remove_var(&secret_new);
-        std::env::remove_var(&keep);
+        let transport = child_env_result.expect("spawn env-reporting child");
+
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let body = loop {
+            if let Ok(text) = std::fs::read_to_string(&out) {
+                if !text.trim().is_empty() {
+                    break text;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "child should report its environment"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        assert!(
+            body.lines()
+                .next()
+                .is_some_and(|line| !line.trim().is_empty()),
+            "the child must still receive PATH: {body:?}"
+        );
+        assert!(
+            !body.contains(&secret) && !body.contains("leak-me"),
+            "the child must not see the ambient secret: {body:?}"
+        );
+
+        drop(transport);
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(&script);
     }
 
     /// The connect budget must be decided by the CONFIGURED command, never by the
@@ -7666,12 +11154,13 @@ mod tests {
         );
 
         std::env::set_var("npm_config_cache", &root);
-        let transport = super::StdioTransport::spawn_inner("npx", &args, &[], None, None, None);
+        let transport =
+            super::StdioTransport::spawn_inner("npx", &args, &[], None, false, None, None);
         std::env::remove_var("npm_config_cache");
         let mut transport = transport.expect("the stub server must spawn");
 
         assert!(
-            transport.launcher,
+            transport.core.launcher,
             "the connect budget must come from the configured `npx`, not the `node` \
              the rewrite produced"
         );
@@ -8447,6 +11936,51 @@ mod tests {
     }
 
     #[test]
+    fn http_mrtr_retry_keeps_the_original_suspension_deadline() {
+        let transport = HttpTransport::new("http://127.0.0.1:9/");
+        let common = super::PendingLegacyMrtr::new(
+            json!({"jsonrpc":"2.0","id":"roots","method":"roots/list","params":{}}),
+            json!(1),
+            "echo",
+            &json!({}),
+        )
+        .unwrap();
+        let token = common.token.clone();
+        let since = std::time::Instant::now() - std::time::Duration::from_secs(10);
+        transport.concurrency.pending.lock().unwrap().insert(
+            token.clone(),
+            (
+                since,
+                super::PendingHttpMrtr {
+                    common,
+                    reader: Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+                    bytes_read: 0,
+                    cancel_guard: None,
+                    cancel_signal: None,
+                },
+            ),
+        );
+        let handle = transport.concurrent().unwrap();
+        let result = handle
+            .request_with_cancel("echo", json!({"requestState":token}), None)
+            .unwrap();
+        assert_eq!(result["resultType"], "input_required");
+        assert_eq!(
+            transport
+                .concurrency
+                .pending
+                .lock()
+                .unwrap()
+                .get(&token)
+                .unwrap()
+                .0,
+            since
+        );
+        // This in-memory fixture has no open server request to retire over HTTP.
+        transport.concurrency.pending.lock().unwrap().clear();
+    }
+
+    #[test]
     fn http_sse_answers_inline_server_request_before_final_response() {
         use super::{
             HttpTransport, RefreshFn, ServerRequestAction, ServerRequestHandler, Transport,
@@ -8550,7 +12084,7 @@ mod tests {
         let url = format!("http://127.0.0.1:{port}/");
         let refresh_calls = Arc::new(AtomicUsize::new(0));
         let calls = Arc::clone(&refresh_calls);
-        let refresh: Option<RefreshFn> = Some(Box::new(move |force| {
+        let refresh: Option<RefreshFn> = Some(Box::new(move |force, _| {
             assert!(!force);
             if calls.fetch_add(1, Ordering::SeqCst) == 1 {
                 Ok(Some("fresh".to_string()))
@@ -8747,8 +12281,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let cancelled = state.cancelled.get("7").expect("cancelled state");
-        assert_eq!(cancelled.reason.as_deref(), Some("too slow"));
-        assert!(!cancelled.forwarded);
+        assert_eq!(cancelled.as_deref(), Some("too slow"));
     }
 
     /// A real child process that records everything written to its stdin, so a
@@ -8879,96 +12412,1461 @@ mod tests {
     }
 
     /// A `StdioTransport` whose stdin is `stdin` and whose only stdout line is
-    /// `response`, queued before the call so the read never depends on timing.
+    /// `response`, delivered once the request is waiting for it so the read
+    /// never depends on timing.
     fn stdio_transport_fixture(
         stdin: Arc<Mutex<std::process::ChildStdin>>,
         response: &Value,
     ) -> super::StdioTransport {
         use std::sync::atomic::AtomicBool;
         let (tx, rx) = std::sync::mpsc::channel();
-        tx.send(response.to_string()).expect("queue the response");
-        drop(tx);
+        let core = super::StdioCore::start(
+            placeholder_child(),
+            stdin,
+            Arc::new(Mutex::new(String::new())),
+            rx,
+            false,
+            "fixture".to_string(),
+        );
+        let waiting = Arc::downgrade(&core);
+        let response = response.to_string();
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                let Some(core) = waiting.upgrade() else {
+                    return;
+                };
+                if !core.lock_state().pending.is_empty() {
+                    break;
+                }
+                drop(core);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let _ = tx.send(response);
+        });
         super::StdioTransport {
-            child: placeholder_child(),
+            core,
             #[cfg(windows)]
             job: None,
-            stdin,
-            rx,
-            stderr: Arc::new(Mutex::new(String::new())),
-            next_id: 1,
             read_timeout: std::time::Duration::from_secs(30),
             connect_timeout: super::STDIO_CONNECT_TIMEOUT,
             armed: Arc::new(AtomicBool::new(false)),
-            launcher: false,
-            server_handler: None,
-            pending_mrtr: None,
             progress: Arc::new(Mutex::new(None)),
             protocol_meta: None,
             subscription_listener_id: None,
         }
     }
 
-    /// SBS-644. The cancel-before-registration race: the client cancels while the
-    /// request is still on its way to the child, so `cancel` finds nothing in
-    /// flight and can only record the mark. The `notifications/cancelled` write
-    /// has to happen afterwards, from the request path itself, once the
-    /// downstream id exists. Driven through the real `request_with_cancel` and
-    /// asserted on the bytes that reached stdin - the registry agreeing with
-    /// itself was never the claim, the frame on the wire is.
-    ///
-    /// The interleaving is forced, not raced: the cancel is issued before the
-    /// request begins, which is exactly the ordering that produces the bug.
-    #[test]
-    fn cancel_before_registration_is_forwarded_once_the_request_is_written() {
-        let registry = CancelRegistry::new();
-        assert!(registry.begin_client_request("c-1".to_string()));
-        // Nothing is in flight yet, so this can only leave the mark behind.
-        assert!(registry.cancel("c-1", Some("user pressed stop")));
+    thread_local! {
+        static TEST_REQUEST_CONTEXT: std::cell::RefCell<super::RequestContext> =
+            const { std::cell::RefCell::new(super::RequestContext::Client(String::new())) };
+    }
 
-        let recorder = StdinRecorder::new("deferred");
-        let mut transport = stdio_transport_fixture(
-            Arc::clone(&recorder.stdin),
-            &json!({ "jsonrpc": "2.0", "id": 1, "result": { "ok": true } }),
+    /// A [`super::StdioCore`] over a recording child: requests go to the
+    /// recorder's stdin, and the test plays the server by pushing stdout lines.
+    struct CoreFixture {
+        core: Arc<super::StdioCore>,
+        lines: Option<std::sync::mpsc::Sender<String>>,
+        recorder: StdinRecorder,
+    }
+
+    impl CoreFixture {
+        fn new(tag: &str, stderr: &str) -> Self {
+            // Every test thread reads its own context; unset threads share "".
+            super::set_request_context_provider(Arc::new(|| {
+                TEST_REQUEST_CONTEXT.with(|context| context.borrow().clone())
+            }));
+            let recorder = StdinRecorder::new(tag);
+            let (lines, rx) = std::sync::mpsc::channel();
+            let core = super::StdioCore::start(
+                placeholder_child(),
+                Arc::clone(&recorder.stdin),
+                Arc::new(Mutex::new(stderr.to_string())),
+                rx,
+                false,
+                "fixture".to_string(),
+            );
+            CoreFixture {
+                core,
+                lines: Some(lines),
+                recorder,
+            }
+        }
+
+        /// Send one request from a new thread serving upstream `context`.
+        fn request(
+            &self,
+            context: &str,
+            params: Value,
+            cancel: Option<super::CancelContext>,
+        ) -> std::thread::JoinHandle<Result<Value, TransportError>> {
+            self.request_as(
+                super::RequestContext::Client(context.to_string()),
+                params,
+                cancel,
+            )
+        }
+
+        /// Send one request no client is waiting on, like a background refresh.
+        /// `sole_client` as the stdio gateway sets it.
+        fn background_request(
+            &self,
+            sole_client: bool,
+            params: Value,
+        ) -> std::thread::JoinHandle<Result<Value, TransportError>> {
+            self.request_as(
+                super::RequestContext::Background { sole_client },
+                params,
+                None,
+            )
+        }
+
+        fn request_as(
+            &self,
+            context: super::RequestContext,
+            params: Value,
+            cancel: Option<super::CancelContext>,
+        ) -> std::thread::JoinHandle<Result<Value, TransportError>> {
+            let core = Arc::clone(&self.core);
+            std::thread::Builder::new()
+                .name(format!(
+                    "waiter-{}",
+                    context.client().unwrap_or("background")
+                ))
+                .spawn(move || {
+                    TEST_REQUEST_CONTEXT.with(|cell| *cell.borrow_mut() = context);
+                    core.request(
+                        "tools/call",
+                        params,
+                        cancel,
+                        None,
+                        std::time::Duration::from_secs(10),
+                    )
+                })
+                .unwrap()
+        }
+
+        fn wait_for(&self, what: &str, done: impl Fn(&super::StdioCore) -> bool) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !done(&self.core) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {what}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+
+        fn wait_for_pending(&self, count: usize) {
+            self.wait_for(&format!("{count} pending request(s)"), |core| {
+                core.lock_state().pending.len() == count
+            });
+        }
+
+        /// Wait until the child's stdin received a frame matching `seen`.
+        fn wait_for_frame(&self, what: &str, seen: impl Fn(&Value) -> bool) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let written = std::fs::read_to_string(&self.recorder.output).unwrap_or_default();
+                if written
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .any(|frame| seen(&frame))
+                {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {what}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+
+        fn server_says(&self, line: Value) {
+            self.lines
+                .as_ref()
+                .expect("stdout still open")
+                .send(line.to_string())
+                .unwrap();
+        }
+
+        fn close_stdout(&mut self) {
+            self.lines = None;
+        }
+
+        /// Everything written to the child's stdin, once every writer is done.
+        fn finish(self) -> Vec<Value> {
+            let CoreFixture {
+                core,
+                lines,
+                recorder,
+            } = self;
+            drop(lines);
+            let _ = core
+                .child
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .wait();
+            drop(core);
+            recorder.finish()
+        }
+    }
+
+    fn response(id: i64, result: Value) -> Value {
+        json!({ "jsonrpc": "2.0", "id": id, "result": result })
+    }
+
+    #[test]
+    fn stdio_responses_out_of_order_reach_their_own_waiters() {
+        let fixture = CoreFixture::new("out-of-order", "");
+        let slow = fixture.request("a", json!({ "name": "slow" }), None);
+        fixture.wait_for_pending(1);
+        let fast = fixture.request("b", json!({ "name": "fast" }), None);
+        fixture.wait_for_pending(2);
+
+        fixture.server_says(response(2, json!({ "who": "fast" })));
+        assert_eq!(fast.join().unwrap().unwrap()["who"], "fast");
+        fixture.server_says(response(1, json!({ "who": "slow" })));
+        assert_eq!(slow.join().unwrap().unwrap()["who"], "slow");
+
+        let frames = fixture.finish();
+        assert_eq!(frames.len(), 2, "{frames:?}");
+    }
+
+    #[test]
+    fn stdio_server_request_with_one_waiter_is_handled_on_its_thread() {
+        let fixture = CoreFixture::new("one-waiter", "");
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+        let seen_tx = Mutex::new(seen_tx);
+        let handler: ServerRequestHandler = Arc::new(move |request| {
+            let thread = std::thread::current().name().map(str::to_string);
+            seen_tx.lock().unwrap().send(thread).unwrap();
+            Some(ServerRequestAction::Respond(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "result": { "roots": [] }
+            })))
+        });
+        *fixture.core.server_handler.lock().unwrap() = Some(handler);
+        let call = fixture.request("a", json!({ "name": "rooted" }), None);
+        fixture.wait_for_pending(1);
+
+        fixture.server_says(json!({ "jsonrpc": "2.0", "id": "srv-1", "method": "roots/list" }));
+        let thread = seen_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(thread.as_deref(), Some("waiter-a"));
+        fixture.server_says(response(1, json!({ "ok": true })));
+        assert_eq!(call.join().unwrap().unwrap()["ok"], true);
+
+        let frames = fixture.finish();
+        assert_eq!(frames.len(), 2, "{frames:?}");
+        assert_eq!(frames[1]["id"], "srv-1");
+        assert_eq!(frames[1]["result"]["roots"], json!([]));
+    }
+
+    #[test]
+    fn stdio_server_request_across_clients_is_refused_and_serializes_the_server() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "stdio_server_request_across_clients_is_refused_and_serializes_the_server",
+        );
+        let fixture = CoreFixture::new("mixed", "");
+        let handled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&handled);
+        let handler: ServerRequestHandler = Arc::new(move |_| {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            None
+        });
+        *fixture.core.server_handler.lock().unwrap() = Some(handler);
+        let first = fixture.request("client-a", json!({ "name": "one" }), None);
+        fixture.wait_for_pending(1);
+        let second = fixture.request("client-b", json!({ "name": "two" }), None);
+        fixture.wait_for_pending(2);
+
+        fixture.server_says(json!({ "jsonrpc": "2.0", "id": "srv-x", "method": "roots/list" }));
+        fixture.wait_for("exclusive mode", |core| {
+            core.exclusive.load(std::sync::atomic::Ordering::SeqCst)
+        });
+        fixture.server_says(response(1, json!({})));
+        fixture.server_says(response(2, json!({})));
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+        assert!(
+            !handled.load(std::sync::atomic::Ordering::SeqCst),
+            "neither client may see the other's server request"
         );
 
-        transport
+        // From now on one request at a time: the second waits for the first.
+        let third = fixture.request("client-a", json!({ "name": "three" }), None);
+        fixture.wait_for_pending(1);
+        let fourth = fixture.request("client-b", json!({ "name": "four" }), None);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(fixture.core.lock_state().pending.len(), 1);
+        fixture.server_says(response(3, json!({})));
+        third.join().unwrap().unwrap();
+        fixture.wait_for_pending(1);
+        fixture.server_says(response(4, json!({})));
+        fourth.join().unwrap().unwrap();
+
+        let frames = fixture.finish();
+        let refusal = frames
+            .iter()
+            .find(|frame| frame["id"] == "srv-x")
+            .unwrap_or_else(|| panic!("no refusal in {frames:?}"));
+        assert!(refusal["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("could not attribute"));
+    }
+
+    #[test]
+    fn stdio_server_request_is_not_given_to_another_client_while_one_is_suspended() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "stdio_server_request_is_not_given_to_another_client_while_one_is_suspended",
+        );
+        let fixture = CoreFixture::new("suspended-owner", "");
+        let roots_asked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&roots_asked);
+        let handler: ServerRequestHandler = Arc::new(move |request| {
+            if request["method"] == "roots/list" {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                return None;
+            }
+            Some(ServerRequestAction::InputRequired)
+        });
+        *fixture.core.server_handler.lock().unwrap() = Some(handler);
+        let suspended =
+            fixture.request("client-a", json!({ "name": "one", "arguments": {} }), None);
+        fixture.wait_for_pending(1);
+        fixture.server_says(json!({
+            "jsonrpc": "2.0",
+            "id": "elicit-a",
+            "method": "elicitation/create",
+            "params": { "message": "Continue?" }
+        }));
+        assert_eq!(
+            suspended.join().unwrap().unwrap()["resultType"],
+            "input_required"
+        );
+        let other = fixture.request("client-b", json!({ "name": "two" }), None);
+        fixture.wait_for("the other client's call", |core| {
+            core.lock_state()
+                .pending
+                .values()
+                .any(|waiter| waiter.active)
+        });
+
+        // It may belong to client A's suspended call, so client B must not see it.
+        fixture.server_says(json!({ "jsonrpc": "2.0", "id": "srv-a", "method": "roots/list" }));
+        fixture.wait_for("exclusive mode", |core| {
+            core.exclusive.load(std::sync::atomic::Ordering::SeqCst)
+        });
+        fixture.server_says(response(2, json!({})));
+        other.join().unwrap().unwrap();
+        assert!(!roots_asked.load(std::sync::atomic::Ordering::SeqCst));
+
+        let frames = fixture.finish();
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame["id"] == "srv-a" && frame.get("error").is_some()),
+            "{frames:?}"
+        );
+    }
+
+    #[test]
+    fn p09_infinite_unterminated_frame_stops_at_the_memory_budget() {
+        struct Infinite {
+            chunk: [u8; 8192],
+            consumed: usize,
+        }
+        impl std::io::Read for Infinite {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                unreachable!()
+            }
+        }
+        impl std::io::BufRead for Infinite {
+            fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+                Ok(&self.chunk)
+            }
+            fn consume(&mut self, count: usize) {
+                self.consumed += count;
+            }
+        }
+        for budget in [1000, super::MAX_RESPONSE_BYTES as usize] {
+            let mut reader = Infinite {
+                chunk: [b'x'; 8192],
+                consumed: 0,
+            };
+            let mut bytes = Vec::new();
+            let error = super::read_downstream_frame(&mut reader, &mut bytes, budget, Some(b'\n'))
+                .unwrap_err();
+            assert!(error.to_string().contains(&format!("{budget}-byte limit")));
+            assert_eq!(reader.consumed, budget, "must not drain an infinite tail");
+            assert_eq!(bytes.len(), budget);
+            assert!(
+                bytes.capacity() <= budget,
+                "{} > {budget}",
+                bytes.capacity()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn p09_oversized_stdio_frame_fails_owned_calls_and_allows_explicit_reconnect() {
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = Scratch(
+            std::env::temp_dir().join(format!("toolport-p09-downstream-{}", std::process::id())),
+        );
+        std::fs::create_dir_all(&dir.0).unwrap();
+        let bad = dir.0.join("oversized.py");
+        std::fs::write(&bad, r#"import json, sys
+ready = json.loads(sys.stdin.readline())
+print(json.dumps({'jsonrpc':'2.0','id':ready['id'],'result':{'ready':True}}), flush=True)
+requests = [json.loads(sys.stdin.readline()) for _ in range(2)]
+sys.stdout.buffer.write(b'x' * (16 * 1024 * 1024 + 1))
+sys.stdout.buffer.write(b'\n' + json.dumps({'jsonrpc':'2.0','id':requests[1]['id'],'result':{'ok':True}}).encode() + b'\n')
+sys.stdout.buffer.flush()
+for line in sys.stdin:
+    request = json.loads(line)
+    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{'ok':True}}), flush=True)
+"#).unwrap();
+        let mut transport = super::StdioTransport::spawn(
+            "/usr/bin/python3",
+            &[bad.to_string_lossy().into_owned()],
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+        // Establish child readiness before measuring the bounded call phase.
+        transport.set_read_timeout(super::STDIO_CONNECT_TIMEOUT);
+        assert_eq!(transport.request("ping", json!({})).unwrap()["ready"], true);
+        transport.read_timeout = std::time::Duration::from_secs(3);
+        let handle = transport.concurrent().unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let mut releases = Vec::new();
+        let mut callers = Vec::new();
+        for name in ["oversized", "other"] {
+            let handle = handle.clone();
+            let done = done_tx.clone();
+            let ready = ready_tx.clone();
+            let (release, released) = std::sync::mpsc::channel();
+            releases.push(release);
+            callers.push(std::thread::spawn(move || {
+                ready.send(()).unwrap();
+                released
+                    .recv_timeout(std::time::Duration::from_secs(3))
+                    .unwrap();
+                done.send(handle.request_with_cancel("tools/call", json!({"name":name}), None))
+                    .unwrap();
+            }));
+        }
+        for _ in 0..2 {
+            ready_rx
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap();
+        }
+        for release in releases {
+            release.send(()).unwrap();
+        }
+        for _ in 0..2 {
+            let result = done_rx
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap();
+            let Err(TransportError::FrameRejected(message)) = result else {
+                panic!("in-flight result: {result:?}");
+            };
+            assert!(message.contains("16777216-byte limit"), "{message}");
+            assert!(message.contains("may have completed"), "{message}");
+        }
+        for caller in callers {
+            caller.join().unwrap();
+        }
+        assert_eq!(transport.connection_closed(), Some(true));
+        assert!(transport
+            .request("tools/call", json!({"name":"later"}))
+            .is_err());
+        drop(handle);
+        drop(transport);
+        let good = dir.0.join("bounded.py");
+        std::fs::write(
+            &good,
+            r#"import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{'ok':True}}), flush=True)
+"#,
+        )
+        .unwrap();
+        let mut fresh = super::StdioTransport::spawn(
+            "/usr/bin/python3",
+            &[good.to_string_lossy().into_owned()],
+            &[],
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            fresh
+                .request("tools/call", json!({"name":"later"}))
+                .unwrap()["ok"],
+            true
+        );
+    }
+
+    #[test]
+    fn p09_http_oversized_frames_do_not_poison_the_next_response() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", server.server_addr());
+        let worker = std::thread::spawn(move || {
+            for kind in ["text/event-stream", "application/json"] {
+                for oversized in [true, false] {
+                    let mut request = server
+                        .recv_timeout(std::time::Duration::from_secs(3))
+                        .unwrap()
+                        .unwrap();
+                    let mut body = String::new();
+                    request.as_reader().read_to_string(&mut body).unwrap();
+                    let message: Value = serde_json::from_str(&body).unwrap();
+                    let response = if oversized {
+                        "x".repeat(super::MAX_RESPONSE_BYTES as usize + 1)
+                    } else {
+                        json!({"jsonrpc":"2.0","id":message["id"],"result":{"ok":true}}).to_string()
+                    };
+                    let content_type = if oversized { kind } else { "application/json" };
+                    let response = tiny_http::Response::from_string(response).with_header(
+                        tiny_http::Header::from_bytes("Content-Type", content_type).unwrap(),
+                    );
+                    let _ = request.respond(response);
+                }
+            }
+        });
+        let mut transport = super::HttpTransport::new(&url);
+        for _ in 0..2 {
+            let error = transport
+                .request("tools/call", json!({"name":"oversized"}))
+                .unwrap_err();
+            assert!(
+                matches!(error, TransportError::FrameRejected(message) if message.contains("16777216-byte limit"))
+            );
+            assert_eq!(
+                transport
+                    .request("tools/call", json!({"name":"other"}))
+                    .unwrap()["ok"],
+                true
+            );
+        }
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn p09_reset_retires_suspended_calls_and_preserves_cancellation() {
+        let mut fixture = CoreFixture::new("rejected-mrtr", "");
+        *fixture.core.server_handler.lock().unwrap() =
+            Some(Arc::new(|_| Some(ServerRequestAction::InputRequired)));
+        let held = fixture.request("held", json!({"name":"interactive"}), None);
+        fixture.wait_for_pending(1);
+        fixture.server_says(server_request("input", "elicitation/create"));
+        let input = held.join().unwrap().unwrap();
+        assert_eq!(input["resultType"], "input_required");
+        let registry = CancelRegistry::new();
+        assert!(registry.begin_client_request("cancelled".into()));
+        let cancelled = fixture.request(
+            "cancelled",
+            json!({"name":"cancelled"}),
+            Some(registry.context("cancelled".into())),
+        );
+        let other = fixture.request("other", json!({"name":"other"}), None);
+        fixture.wait_for_pending(3);
+        // Pending registration precedes the write. This case asserts three
+        // dispatched calls, so neither cancellation nor reset may win first.
+        for name in ["cancelled", "other"] {
+            fixture.wait_for_frame(name, |frame| {
+                frame["method"] == "tools/call" && frame["params"]["name"] == name
+            });
+        }
+        registry.cancel("cancelled", None);
+        assert!(matches!(
+            cancelled.join().unwrap(),
+            Err(TransportError::Cancelled(_))
+        ));
+        *fixture.core.read_failure.lock().unwrap() =
+            Some("oversized stdout frame; connection reset".into());
+        fixture.close_stdout();
+        assert!(
+            matches!(other.join().unwrap(), Err(TransportError::FrameRejected(message)) if message.contains("oversized"))
+        );
+        assert!(fixture.core.lock_state().suspended.is_empty());
+        let retry = fixture.request(
+            "held",
+            json!({"name":"interactive","requestState":input["requestState"],"inputResponses":{}}),
+            None,
+        );
+        assert!(retry.join().unwrap().is_err());
+        let frames = fixture.finish();
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame["method"] == "tools/call")
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn p08_stdio_finished_round_remains_cancellable_until_suspended_call_ends() {
+        let fixture = CoreFixture::new("abandoned-suspended", "");
+        *fixture.core.server_handler.lock().unwrap() =
+            Some(Arc::new(|_| Some(ServerRequestAction::InputRequired)));
+        let registry = CancelRegistry::new();
+        assert!(registry.begin_client_request("suspended".into()));
+        let first = fixture.request(
+            "a",
+            json!({"name":"interactive", "arguments":{}}),
+            Some(registry.context("suspended".into())),
+        );
+        fixture.wait_for_pending(1);
+        fixture.server_says(server_request("input", "elicitation/create"));
+        let held = first.join().unwrap().unwrap();
+        assert_eq!(held["resultType"], "input_required");
+        registry.finish_client_request("suspended");
+        assert!(
+            registry.cancel("suspended", Some("caller left")),
+            "finished rounds must retain ownership"
+        );
+        registry.close();
+        assert!(fixture.core.lock_state().suspended.is_empty());
+        let next = fixture.request("b", json!({"name":"other"}), None);
+        fixture.wait_for_pending(1);
+        fixture.server_says(response(2, json!({"other":true})));
+        assert_eq!(next.join().unwrap().unwrap()["other"], true);
+        let retry = fixture.request("a", json!({"name":"interactive", "arguments":{}, "requestState":held["requestState"], "inputResponses":{"input":{"action":"accept"}}}), None);
+        assert!(
+            retry.join().unwrap().is_err(),
+            "late Allow must not resume the abandoned call"
+        );
+        let frames = fixture.finish();
+        let cancellations: Vec<_> = frames
+            .iter()
+            .filter(|frame| frame["method"] == "notifications/cancelled")
+            .collect();
+        assert_eq!(cancellations.len(), 1, "{frames:?}");
+        assert_eq!(cancellations[0]["params"]["requestId"], 1);
+        assert!(frames.iter().any(|frame| refused(frame, "input")));
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame["method"] == "tools/call")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn p08_http_suspended_call_is_cancelled_once_and_other_callers_continue() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::time::Duration;
+        fn read_request(stream: &mut TcpStream) -> Value {
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            serde_json::from_slice(&body).unwrap()
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut original, _) = listener.accept().unwrap();
+            let original_request = read_request(&mut original);
+            let data = "data: {\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"elicitation/create\",\"params\":{\"message\":\"Continue?\"}}\n\n";
+            write!(original, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{data}\r\n", data.len()).unwrap();
+            original.flush().unwrap();
+            let mut frames = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                frames.push(read_request(&mut stream));
+                stream
+                    .write_all(
+                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+            }
+            seen_tx.send((original_request, frames)).unwrap();
+            let (mut next, _) = listener.accept().unwrap();
+            let request = read_request(&mut next);
+            let response =
+                json!({"jsonrpc":"2.0","id":request["id"],"result":{"other":true}}).to_string();
+            write!(next, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+        });
+        let mut transport = HttpTransport::new(&url);
+        transport.server_handler = Some(Arc::new(|_| Some(ServerRequestAction::InputRequired)));
+        let handle = transport.concurrent().unwrap();
+        let registry = CancelRegistry::new();
+        assert!(registry.begin_client_request("held".into()));
+        let held = handle
             .request_with_cancel(
                 "tools/call",
-                json!({ "name": "echo" }),
-                Some(registry.context("c-1".to_string())),
+                json!({"name":"interactive","arguments":{}}),
+                Some(registry.context("held".into())),
             )
-            .expect("the queued response should complete the request");
+            .unwrap();
+        assert_eq!(held["resultType"], "input_required");
+        registry.finish_client_request("held");
+        registry.close();
+        registry.close();
+        let (original, frames) = seen_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let cancels: Vec<_> = frames
+            .iter()
+            .filter(|frame| frame["method"] == "notifications/cancelled")
+            .collect();
+        assert_eq!(cancels.len(), 1, "{frames:?}");
+        assert_eq!(cancels[0]["params"]["requestId"], original["id"]);
+        assert!(frames
+            .iter()
+            .any(|frame| frame["id"] == 99 && frame.get("error").is_some()));
+        assert_eq!(handle.suspended_calls(), 0);
+        let retry = handle.request_with_cancel("tools/call", json!({"name":"interactive","arguments":{},"requestState":held["requestState"],"inputResponses":{}}), None);
+        assert!(
+            retry.is_err(),
+            "late Allow cannot resume or repost the call"
+        );
+        assert_eq!(
+            handle
+                .request_with_cancel("tools/call", json!({"name":"other"}), None)
+                .unwrap()["other"],
+            true
+        );
+        server.join().unwrap();
+    }
 
+    #[test]
+    fn p08_closing_owner_cancels_each_blocked_stdio_call_once() {
+        let fixture = CoreFixture::new("cancel-owner", "");
+        let registry = CancelRegistry::new();
+        let mut workers = Vec::new();
+        for id in ["one", "two"] {
+            assert!(registry.begin_client_request(id.into()));
+            workers.push(fixture.request(
+                "a",
+                json!({"name":id}),
+                Some(registry.context(id.into())),
+            ));
+        }
+        fixture.wait_for_pending(2);
+        for name in ["one", "two"] {
+            fixture.wait_for_frame("tools/call written", |frame| {
+                frame["method"] == "tools/call" && frame["params"]["name"] == name
+            });
+        }
+        registry.close();
+        registry.close();
+        for worker in workers {
+            assert!(matches!(
+                worker.join().unwrap(),
+                Err(TransportError::Cancelled(_))
+            ));
+        }
+        let next = fixture.request("b", json!({"name":"other"}), None);
+        fixture.wait_for_pending(1);
+        fixture.server_says(response(3, json!({"other":true})));
+        assert_eq!(next.join().unwrap().unwrap()["other"], true);
+        let frames = fixture.finish();
+        for id in [1, 2] {
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame["method"] == "notifications/cancelled"
+                        && frame["params"]["requestId"] == id)
+                    .count(),
+                1,
+                "{frames:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stdio_cancellation_wakes_the_waiter_and_drops_the_late_response() {
+        let fixture = CoreFixture::new("cancel-wakes", "");
+        let registry = CancelRegistry::new();
+        assert!(registry.begin_client_request("c-9".to_string()));
+        let cancelled = fixture.request(
+            "a",
+            json!({ "name": "slow" }),
+            Some(registry.context("c-9".to_string())),
+        );
+        fixture.wait_for_pending(1);
+        // A call cancelled before it is written never reaches the server, so
+        // there is nothing to cancel downstream. Cancel after the write.
+        fixture.wait_for_frame("slow tools/call written", |frame| {
+            frame["method"] == "tools/call" && frame["params"]["name"] == "slow"
+        });
+        assert!(registry.cancel("c-9", Some("user pressed stop")));
+        assert!(matches!(
+            cancelled.join().unwrap(),
+            Err(TransportError::Cancelled(_))
+        ));
+        assert!(fixture.core.lock_state().pending.is_empty());
+        registry.finish_client_request("c-9");
+
+        // The late answer has no waiter; the next request still gets its own.
+        fixture.server_says(response(1, json!({ "late": true })));
+        let next = fixture.request("a", json!({ "name": "next" }), None);
+        fixture.wait_for_pending(1);
+        fixture.server_says(response(2, json!({ "late": false })));
+        assert_eq!(next.join().unwrap().unwrap()["late"], false);
+
+        let frames = fixture.finish();
+        let cancel = frames
+            .iter()
+            .find(|frame| frame["method"] == "notifications/cancelled")
+            .unwrap_or_else(|| panic!("no cancellation in {frames:?}"));
+        assert_eq!(cancel["params"]["requestId"], 1);
+    }
+
+    #[test]
+    fn stdio_child_exit_fails_every_waiter_with_the_stderr_tail() {
+        let mut fixture = CoreFixture::new("exit", "boom: missing API key");
+        let first = fixture.request("a", json!({ "name": "one" }), None);
+        fixture.wait_for_pending(1);
+        let second = fixture.request("b", json!({ "name": "two" }), None);
+        fixture.wait_for_pending(2);
+
+        fixture.close_stdout();
+        for waiter in [first, second] {
+            match waiter.join().unwrap() {
+                Err(TransportError::Unavailable(message)) => {
+                    assert!(message.contains("missing API key"), "{message}")
+                }
+                other => panic!("expected the exit to fail the call, got {other:?}"),
+            }
+        }
+        match fixture
+            .request("a", json!({ "name": "late" }), None)
+            .join()
+            .unwrap()
+        {
+            Err(TransportError::Unavailable(message)) => {
+                assert!(message.contains("missing API key"), "{message}")
+            }
+            other => panic!("a request after the exit must fail at once, got {other:?}"),
+        }
+        fixture.finish();
+    }
+
+    fn server_request(id: &str, method: &str) -> Value {
+        json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": {} })
+    }
+
+    /// A URL elicitation Toolport refuses before any handler sees it.
+    fn unsafe_url_elicitation(id: &str) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "elicitation/create",
+            "params": { "mode": "url", "url": "http://example.com/login", "message": "Sign in" }
+        })
+    }
+
+    /// Thread name and request id of each server request a handler took.
+    type SeenRequests = Arc<Mutex<Vec<(String, Value)>>>;
+
+    /// A handler that records which thread handled which server request, and
+    /// answers each with an empty result.
+    fn recording_handler() -> (ServerRequestHandler, SeenRequests) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        let handler: ServerRequestHandler = Arc::new(move |request| {
+            let thread = std::thread::current()
+                .name()
+                .unwrap_or_default()
+                .to_string();
+            record.lock().unwrap().push((thread, request["id"].clone()));
+            Some(ServerRequestAction::Respond(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "result": {}
+            })))
+        });
+        (handler, seen)
+    }
+
+    fn refused(frame: &Value, id: &str) -> bool {
+        frame["id"] == id && frame.get("error").is_some()
+    }
+
+    #[test]
+    fn stdio_background_request_neither_mixes_nor_takes_server_requests() {
+        let fixture = CoreFixture::new("background", "");
+        let (handler, seen) = recording_handler();
+        *fixture.core.server_handler.lock().unwrap() = Some(handler);
+        // Queued while nothing was in flight, then taken by a refresh.
+        fixture.server_says(server_request("srv-0", "roots/list"));
+        fixture.wait_for("the unclaimed server request", |core| {
+            core.lock_state().unclaimed.len() == 1
+        });
+        let refresh = fixture.background_request(false, json!({ "name": "refresh" }));
+        fixture.wait_for_pending(1);
+
+        // Only background work is in flight, and it may be what the server is
+        // holding until it hears back: no client can answer, so refuse at once
+        // instead of leaving the refresh to time out.
+        fixture.wait_for_frame("the queued request's refusal", |frame| {
+            refused(frame, "srv-0")
+        });
+        fixture.server_says(server_request("srv-1", "roots/list"));
+        fixture.wait_for_frame("the refusal", |frame| refused(frame, "srv-1"));
+        assert!(fixture.core.lock_state().unclaimed.is_empty());
+
+        let call = fixture.request("client-a", json!({ "name": "one" }), None);
+        fixture.wait_for_pending(2);
+        // A client's call next to a background one is not a mix of clients.
+        fixture.server_says(server_request("srv-2", "roots/list"));
+        fixture.server_says(response(1, json!({})));
+        fixture.server_says(response(2, json!({})));
+        refresh.join().unwrap().unwrap();
+        call.join().unwrap().unwrap();
+
+        assert!(!fixture
+            .core
+            .exclusive
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![("waiter-client-a".to_string(), json!("srv-2"))]
+        );
+        let frames = fixture.finish();
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame["id"] == "srv-2" && frame.get("result").is_some()),
+            "{frames:?}"
+        );
+    }
+
+    #[test]
+    fn stdio_background_request_of_the_sole_client_answers_server_requests() {
+        let fixture = CoreFixture::new("background-sole", "");
+        let (handler, seen) = recording_handler();
+        *fixture.core.server_handler.lock().unwrap() = Some(handler);
+        fixture.server_says(server_request("srv-0", "roots/list"));
+        fixture.wait_for("the unclaimed server request", |core| {
+            core.lock_state().unclaimed.len() == 1
+        });
+        // The stdio gateway's handler answers for its one client without a
+        // request context, as the connect thread did before multiplexing.
+        let discovery = fixture.background_request(true, json!({ "name": "discover" }));
+        fixture.wait_for_pending(1);
+        fixture.server_says(server_request("srv-1", "roots/list"));
+        fixture.wait_for_frame("the answer", |frame| {
+            frame["id"] == "srv-1" && frame.get("result").is_some()
+        });
+        fixture.server_says(response(1, json!({})));
+        discovery.join().unwrap().unwrap();
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                ("waiter-background".to_string(), json!("srv-0")),
+                ("waiter-background".to_string(), json!("srv-1")),
+            ]
+        );
+        let frames = fixture.finish();
+        assert!(
+            frames.iter().all(|frame| frame.get("error").is_none()),
+            "{frames:?}"
+        );
+    }
+
+    #[test]
+    fn stdio_cancelling_a_suspended_call_answers_its_queued_server_requests() {
+        let fixture = CoreFixture::new("suspended-cancel", "");
+        let handler: ServerRequestHandler = Arc::new(|request| {
+            (request["method"] == "elicitation/create")
+                .then_some(ServerRequestAction::InputRequired)
+        });
+        *fixture.core.server_handler.lock().unwrap() = Some(handler);
+        // A sessionless call: its retry is a new upstream request, so a key
+        // like this one never comes back once the call is gone.
+        let suspended = fixture.request(
+            "client-a#7",
+            json!({ "name": "one", "arguments": {} }),
+            None,
+        );
+        fixture.wait_for_pending(1);
+        fixture.server_says(json!({
+            "jsonrpc": "2.0",
+            "id": "elicit-1",
+            "method": "elicitation/create",
+            "params": { "message": "Continue?" }
+        }));
+        let suspended = suspended.join().unwrap().unwrap();
+        assert_eq!(suspended["resultType"], "input_required");
+        // Nothing is active: this one is kept for the suspended call's client.
+        fixture.server_says(server_request("srv-q", "roots/list"));
+        fixture.wait_for("the owned server request", |core| {
+            core.lock_state().unclaimed.len() == 1
+        });
+
+        let registry = CancelRegistry::new();
+        assert!(registry.begin_client_request("c-1".to_string()));
+        assert!(registry.cancel("c-1", Some("user pressed stop")));
+        let key = suspended["inputRequests"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        let retry = fixture.request(
+            "client-a#8",
+            json!({
+                "name": "one",
+                "arguments": {},
+                "requestState": suspended["requestState"].clone(),
+                "inputResponses": { key: { "action": "accept" } }
+            }),
+            Some(registry.context("c-1".to_string())),
+        );
+        assert!(matches!(
+            retry.join().unwrap(),
+            Err(TransportError::Cancelled(_))
+        ));
+        registry.finish_client_request("c-1");
+        {
+            let state = fixture.core.lock_state();
+            assert!(state.suspended.is_empty());
+            assert!(state.pending.is_empty());
+            assert!(state.unclaimed.is_empty(), "the owned request was stranded");
+        }
+
+        let frames = fixture.finish();
+        for id in ["srv-q", "elicit-1"] {
+            assert!(
+                frames.iter().any(|frame| refused(frame, id)),
+                "{id} was never answered: {frames:?}"
+            );
+        }
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame["method"] == "notifications/cancelled"
+                    && frame["params"]["requestId"] == 1),
+            "{frames:?}"
+        );
+    }
+
+    #[test]
+    fn stdio_a_suspended_call_that_ends_answers_its_queued_server_requests() {
+        let fixture = CoreFixture::new("suspended-ends", "");
+        let handler: ServerRequestHandler = Arc::new(|request| {
+            (request["method"] == "elicitation/create")
+                .then_some(ServerRequestAction::InputRequired)
+        });
+        *fixture.core.server_handler.lock().unwrap() = Some(handler);
+        let suspended = fixture.request(
+            "client-a#7",
+            json!({ "name": "one", "arguments": {} }),
+            None,
+        );
+        fixture.wait_for_pending(1);
+        fixture.server_says(json!({
+            "jsonrpc": "2.0",
+            "id": "elicit-1",
+            "method": "elicitation/create",
+            "params": { "message": "Continue?" }
+        }));
+        let suspended = suspended.join().unwrap().unwrap();
+        assert_eq!(suspended["resultType"], "input_required");
+        fixture.server_says(server_request("srv-q", "roots/list"));
+        fixture.wait_for("the owned server request", |core| {
+            core.lock_state().unclaimed.len() == 1
+        });
+
+        // The server ends the call without waiting for the input. No call of
+        // its client remains to answer the request queued for it.
+        fixture.server_says(response(1, json!({ "content": [] })));
+        fixture.wait_for("the queued request to be released", |core| {
+            let state = core.lock_state();
+            state.pending.is_empty() && state.unclaimed.is_empty()
+        });
+        fixture.wait_for_frame("the refusal", |frame| refused(frame, "srv-q"));
+
+        // The client's retry still collects the result.
+        let key = suspended["inputRequests"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        let retry = fixture.request(
+            "client-a#8",
+            json!({
+                "name": "one",
+                "arguments": {},
+                "requestState": suspended["requestState"].clone(),
+                "inputResponses": { key: { "action": "accept" } }
+            }),
+            None,
+        );
+        assert_eq!(retry.join().unwrap().unwrap(), json!({ "content": [] }));
+        fixture.finish();
+    }
+
+    #[test]
+    fn stdio_refused_url_elicitation_still_answers_queued_server_requests() {
+        let fixture = CoreFixture::new("refused-url", "");
+        let (handler, seen) = recording_handler();
+        *fixture.core.server_handler.lock().unwrap() = Some(handler);
+        fixture.server_says(unsafe_url_elicitation("bad"));
+        fixture.server_says(server_request("srv-2", "roots/list"));
+        fixture.wait_for("two unclaimed server requests", |core| {
+            core.lock_state().unclaimed.len() == 2
+        });
+
+        let call = fixture.request("client-a", json!({ "name": "one" }), None);
+        match call.join().unwrap() {
+            Err(TransportError::Fatal(message)) => assert!(message.contains("HTTPS"), "{message}"),
+            other => panic!("expected the unsafe URL to fail the call, got {other:?}"),
+        }
+        assert!(fixture.core.lock_state().pending.is_empty());
+        assert!(seen.lock().unwrap().is_empty());
+
+        let frames = fixture.finish();
+        for id in ["bad", "srv-2"] {
+            assert!(
+                frames
+                    .iter()
+                    .any(|frame| frame["id"] == id && frame.get("error").is_some()),
+                "{id} was never answered: {frames:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stdio_server_request_of_an_abandoned_call_never_reaches_another_client() {
+        let fixture = CoreFixture::new("abandon-owner", "");
+        let (recording, seen) = recording_handler();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (entered_tx, release_rx) = (Mutex::new(entered_tx), Mutex::new(release_rx));
+        // The first server request holds client A's call until the test lets go.
+        let handler: ServerRequestHandler = Arc::new(move |request| {
+            if request["id"] == "srv-0" {
+                entered_tx.lock().unwrap().send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+            }
+            recording(request)
+        });
+        *fixture.core.server_handler.lock().unwrap() = Some(handler);
+        let first = fixture.request("client-a", json!({ "name": "one" }), None);
+        fixture.wait_for_pending(1);
+        let sibling = fixture.request("client-a", json!({ "name": "zero" }), None);
+        fixture.wait_for_pending(2);
+
+        fixture.server_says(server_request("srv-0", "roots/list"));
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        // Both queue behind srv-0 on client A's first call.
+        fixture.server_says(unsafe_url_elicitation("bad"));
+        fixture.server_says(server_request("srv-2", "sampling/createMessage"));
+        // Once the sibling's answer is through, so are the two requests above.
+        fixture.server_says(response(2, json!({})));
+        sibling.join().unwrap().unwrap();
+        let other = fixture.request("client-b", json!({ "name": "two" }), None);
+        fixture.wait_for_pending(2);
+
+        // Client A's call ends on the unsafe URL with srv-2 still queued.
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            first.join().unwrap(),
+            Err(TransportError::Fatal(_))
+        ));
+        fixture.server_says(response(3, json!({})));
+        other.join().unwrap().unwrap();
+
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            seen.iter()
+                .all(|(thread, _)| thread.as_str() != "waiter-client-b"),
+            "client B answered client A's server request: {seen:?}"
+        );
+        let frames = fixture.finish();
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame["id"] == "srv-2" && frame.get("error").is_some()),
+            "{frames:?}"
+        );
+    }
+
+    #[test]
+    fn stdio_two_suspended_legacy_mrtr_calls_resume_independently() {
+        let fixture = CoreFixture::new("two-mrtr", "");
+        let handler: ServerRequestHandler = Arc::new(|request| {
+            (request["method"] == "elicitation/create")
+                .then_some(ServerRequestAction::InputRequired)
+        });
+        *fixture.core.server_handler.lock().unwrap() = Some(handler);
+        let elicit = |id: &str| {
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "elicitation/create",
+                "params": { "message": "Continue?" }
+            })
+        };
+
+        // Both calls come from one client: a server request while another
+        // client's call is suspended would be refused instead.
+        let first = fixture.request("a", json!({ "name": "one", "arguments": {} }), None);
+        fixture.wait_for_pending(1);
+        fixture.server_says(elicit("elicit-1"));
+        let first = first.join().unwrap().unwrap();
+        let second = fixture.request("a", json!({ "name": "two", "arguments": {} }), None);
+        fixture.wait_for("the second call", |core| {
+            core.lock_state()
+                .pending
+                .values()
+                .any(|waiter| waiter.active)
+        });
+        fixture.server_says(elicit("elicit-2"));
+        let second = second.join().unwrap().unwrap();
+        assert_eq!(fixture.core.lock_state().suspended.len(), 2);
+
+        let retry = |name: &str, suspended: &Value| {
+            let key = suspended["inputRequests"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .next()
+                .unwrap()
+                .clone();
+            json!({
+                "name": name,
+                "arguments": {},
+                "requestState": suspended["requestState"].clone(),
+                "inputResponses": { key: { "action": "accept" } }
+            })
+        };
+        // An unknown requestState on a legacy connection must not replay the call.
+        let unknown = fixture.request(
+            "a",
+            json!({ "name": "one", "arguments": {}, "requestState": "forged" }),
+            None,
+        );
+        assert!(matches!(
+            unknown.join().unwrap(),
+            Err(TransportError::Rpc(_))
+        ));
+
+        let second_retry = fixture.request("a", retry("two", &second), None);
+        fixture.wait_for("the second retry", |core| {
+            core.lock_state().suspended.len() == 1
+        });
+        fixture.server_says(response(2, json!({ "done": "two" })));
+        assert_eq!(second_retry.join().unwrap().unwrap()["done"], "two");
+        let first_retry = fixture.request("a", retry("one", &first), None);
+        fixture.wait_for("the first retry", |core| {
+            core.lock_state().suspended.is_empty()
+        });
+        fixture.server_says(response(1, json!({ "done": "one" })));
+        assert_eq!(first_retry.join().unwrap().unwrap()["done"], "one");
+
+        let frames = fixture.finish();
+        let calls = frames
+            .iter()
+            .filter(|frame| frame["method"] == "tools/call")
+            .count();
+        assert_eq!(calls, 2, "retries must not replay tools/call: {frames:?}");
+        let answered: Vec<&Value> = frames
+            .iter()
+            .filter(|frame| frame.get("result").is_some())
+            .map(|frame| &frame["id"])
+            .collect();
+        assert_eq!(answered, [&json!("elicit-2"), &json!("elicit-1")]);
+    }
+
+    /// A call cancelled before dispatch has no downstream request to cancel.
+    #[test]
+    fn pre_cancelled_stdio_call_does_not_reach_downstream() {
+        let registry = CancelRegistry::new();
+        assert!(registry.begin_client_request("c-1".into()));
+        assert!(registry.cancel("c-1", Some("user pressed stop")));
+        let recorder = StdinRecorder::new("pre-cancelled");
+        let mut transport = stdio_transport_fixture(
+            Arc::clone(&recorder.stdin),
+            &json!({"jsonrpc":"2.0","id":1,"result":{}}),
+        );
+        assert!(matches!(
+            transport.request_with_cancel(
+                "tools/call",
+                json!({"name":"echo"}),
+                Some(registry.context("c-1".into()))
+            ),
+            Err(TransportError::Cancelled(_))
+        ));
         registry.finish_client_request("c-1");
         drop(transport);
+        assert!(recorder.finish().is_empty());
+    }
 
+    #[test]
+    fn cancel_before_registration_is_forwarded_once_the_request_is_written() {
+        use std::io::Write;
+        let registry = CancelRegistry::new();
+        assert!(registry.begin_client_request("between".into()));
+        let recorder = StdinRecorder::new("between-write-registration");
+        {
+            let mut stdin = recorder.stdin.lock().unwrap();
+            writeln!(
+                stdin,
+                "{}",
+                json!({"jsonrpc":"2.0", "id":41, "method":"tools/call", "params":{}})
+            )
+            .unwrap();
+            stdin.flush().unwrap();
+        }
+        assert!(registry.cancel("between", Some("stop")));
+        let guard = registry.register(
+            "between".into(),
+            super::CancelEntry {
+                stdin: recorder.stdin.clone(),
+                forwarder: super::StdioForwarder::new(std::sync::Weak::new()),
+                downstream_id: json!(41),
+                waiter: None,
+                forwarded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            },
+        );
+        registry.cancel("between", None);
+        drop(guard);
         let frames = recorder.finish();
-        assert_eq!(
-            frames.len(),
-            2,
-            "expected the request then its deferred cancellation, got {frames:?}"
-        );
+        assert_eq!(frames.len(), 2, "{frames:?}");
         assert_eq!(frames[0]["method"], "tools/call");
-        let downstream_id = frames[0]["id"].clone();
-        assert!(
-            !downstream_id.is_null(),
-            "the request must carry a downstream id, got {:?}",
-            frames[0]
-        );
+        assert_eq!(frames[1]["method"], "notifications/cancelled");
+        assert_eq!(frames[1]["params"]["requestId"], 41);
+    }
 
-        let cancel = &frames[1];
-        assert_eq!(
-            cancel["method"], "notifications/cancelled",
-            "the deferred forward must actually be written, got {cancel:?}"
+    #[test]
+    fn p08_saturated_forwarders_queue_every_cancel_and_refusal() {
+        // Holding the stdin lock makes every existing forwarder block, without
+        // relying on a pipe size or whether a child happened to drain it.
+        let fixture = CoreFixture::new("saturated-forwarders", "");
+        let locked = fixture.recorder.stdin.lock().unwrap();
+        let registry = CancelRegistry::new();
+        let mut guards = Vec::new();
+        for id in 0..80 {
+            let key = id.to_string();
+            assert!(registry.begin_client_request(key.clone()));
+            guards.push(registry.register(
+                key,
+                super::CancelEntry {
+                    stdin: fixture.recorder.stdin.clone(),
+                    forwarder: fixture.core.forwarder.clone(),
+                    downstream_id: json!(id),
+                    waiter: None,
+                    forwarded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                },
+            ));
+        }
+        registry.close();
+        for id in 80..100 {
+            fixture.core.refuse(
+                &json!({"jsonrpc":"2.0", "id":id, "method":"elicitation/create"}),
+                "caller left",
+            );
+        }
+        let healthy = CoreFixture::new("independent-forwarder", "");
+        healthy
+            .core
+            .refuse(&json!({"id": "healthy"}), "caller left");
+        healthy.wait_for_frame("healthy server refusal", |frame| frame["id"] == "healthy");
+        drop(locked);
+        healthy.finish();
+        for id in 0..100 {
+            fixture.wait_for_frame("queued forward", |frame| {
+                if id < 80 {
+                    frame["method"] == "notifications/cancelled"
+                        && frame["params"]["requestId"] == id
+                } else {
+                    frame["id"] == id && frame.get("error").is_some()
+                }
+            });
+        }
+        drop(guards);
+        let frames = fixture.finish();
+        assert_eq!(frames.len(), 100, "{frames:?}");
+    }
+
+    #[test]
+    fn p08_chatty_stuck_connection_retires_at_its_forward_bound() {
+        let child = Arc::new(Mutex::new(placeholder_child()));
+        let forwarder = super::StdioForwarder::new(Arc::downgrade(&child));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        forwarder.enqueue(Box::new(move || {
+            started_tx.send(()).unwrap();
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        }));
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        for _ in 0..super::MAX_STDIO_FORWARDS {
+            forwarder.enqueue(Box::new(|| {}));
+        }
+        assert!(!forwarder.retired.load(std::sync::atomic::Ordering::Acquire));
+        forwarder.enqueue(Box::new(|| {}));
+        assert!(
+            forwarder.retired.load(std::sync::atomic::Ordering::Acquire),
+            "overflow must retire instead of accumulating work"
         );
-        assert_eq!(
-            cancel["params"]["requestId"], downstream_id,
-            "the forward must name the DOWNSTREAM id, got {cancel:?}"
-        );
-        assert_eq!(
-            cancel["params"]["reason"], "user pressed stop",
-            "the reason recorded before registration must survive the deferral, got {cancel:?}"
-        );
+        release_tx.send(()).unwrap();
+        child.lock().unwrap().wait().unwrap();
+    }
+
+    #[test]
+    fn p08_stdio_inflight_limit_matches_its_forward_budget() {
+        let fixture = CoreFixture::new("forward-budget", "");
+        let mut receivers = Vec::new();
+        for id in 0..super::MAX_STDIO_PENDING {
+            let (tx, rx) = std::sync::mpsc::channel();
+            fixture.core.register(&json!(id), tx).unwrap();
+            receivers.push(rx);
+        }
+        let (tx, _) = std::sync::mpsc::channel();
+        assert!(matches!(
+            fixture.core.register(&json!("overflow"), tx),
+            Err(TransportError::Busy(_))
+        ));
+        drop(receivers);
+        fixture.finish();
     }
 
     /// The `forwarded` latch: once a cancellation has reached the downstream
@@ -8986,7 +13884,10 @@ mod tests {
             "c-2".to_string(),
             CancelEntry {
                 stdin: Arc::clone(&recorder.stdin),
+                forwarder: super::StdioForwarder::new(std::sync::Weak::new()),
                 downstream_id: json!(41),
+                waiter: None,
+                forwarded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );
 
@@ -9026,7 +13927,10 @@ mod tests {
             "c-3".to_string(),
             CancelEntry {
                 stdin: Arc::clone(&first_recorder.stdin),
+                forwarder: super::StdioForwarder::new(std::sync::Weak::new()),
                 downstream_id: json!(41),
+                waiter: None,
+                forwarded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );
         assert!(registry.cancel("c-3", Some("user pressed stop")));
@@ -9039,12 +13943,14 @@ mod tests {
             "c-3".to_string(),
             CancelEntry {
                 stdin: Arc::clone(&second_recorder.stdin),
+                forwarder: super::StdioForwarder::new(std::sync::Weak::new()),
                 downstream_id: json!(42),
+                waiter: None,
+                forwarded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );
         // Same post-write step the stdio request path runs.
         assert!(registry.is_cancelled("c-3"));
-        registry.forward_cancel_if_ready("c-3");
         drop(second_guard);
         registry.finish_client_request("c-3");
 
@@ -10011,6 +14917,92 @@ mod tests {
     }
 
     #[test]
+    fn http_deadline_before_send_does_not_claim_uncertain_completion_or_send_late() {
+        use super::*;
+        let _lock = crate::registry::data_dir_test_lock();
+        let scratch = std::env::temp_dir().join(format!(
+            "toolport-f1-before-send-{}",
+            crate::approval::new_correlation_id()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _data = crate::registry::DataDirOverride::set(&scratch);
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let (started, start) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let released = Mutex::new(released);
+        let refresh: RefreshFn = Box::new(move |_, _| {
+            started.send(()).unwrap();
+            released
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            Ok(None)
+        });
+        let transport = HttpTransport::guarded_with_timeout(
+            &format!("http://{}/", server.server_addr()),
+            None,
+            Some(refresh),
+            false,
+            Duration::from_secs(1),
+        );
+        let handle = transport.concurrent().unwrap();
+        let caller = std::thread::spawn(move || {
+            handle.request_with_cancel("tools/call", json!({"name":"write"}), None)
+        });
+        start.recv_timeout(Duration::from_secs(3)).unwrap();
+        let failure = caller.join().unwrap().unwrap_err().call_failure();
+        assert_eq!(
+            failure.kind,
+            crate::call_failure::CallFailureKind::Timeout { after_send: false }
+        );
+        release.send(()).unwrap();
+        assert!(
+            server
+                .recv_timeout(Duration::from_millis(300))
+                .unwrap()
+                .is_none(),
+            "the expired worker must not dispatch a late mutation"
+        );
+        drop(_data);
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn http_read_errors_preserve_timeout_io_and_protocol_categories() {
+        use super::*;
+        use crate::call_failure::CallFailureKind as K;
+        for kind in [std::io::ErrorKind::TimedOut, std::io::ErrorKind::WouldBlock] {
+            let error = http_read_error(std::io::Error::new(kind, "opaque"));
+            assert_eq!(error.call_failure().kind, K::Timeout { after_send: true });
+            assert!(error.is_health_failure());
+        }
+        let error = http_read_error(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "opaque",
+        ));
+        assert_eq!(
+            error.call_failure().kind,
+            K::Unavailable { after_send: true }
+        );
+        assert!(error.is_health_failure());
+        assert!(!http_read_error(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "bad frame"
+        ))
+        .is_health_failure());
+        assert_eq!(
+            TransportError::RateLimited {
+                retry_after: None,
+                message: "opaque".into()
+            }
+            .call_failure()
+            .kind,
+            K::Quota
+        );
+    }
+
+    #[test]
     fn an_rpc_error_is_not_a_health_failure() {
         // Only unreachability trips the per-server circuit breaker. A server that
         // answers with a JSON-RPC error is alive and well-behaved, and counting it
@@ -10024,6 +15016,144 @@ mod tests {
             message: "429".into()
         }
         .is_health_failure());
+    }
+
+    #[test]
+    fn sse_close_without_response_is_uncertain_but_wrong_ids_never_succeed() {
+        for (frames, succeeds) in [
+            ("", false),
+            ("data: {\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{}}\n\n", false),
+            ("data: {\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{}}\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n", true),
+        ] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/mcp", server.server_addr());
+            let wire = std::thread::spawn(move || {
+                let request = server.recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap();
+                request.respond(tiny_http::Response::from_string(frames)
+                    .with_header(tiny_http::Header::from_bytes("Content-Type", "text/event-stream").unwrap())).unwrap();
+            });
+            let mut transport = HttpTransport::new(&url);
+            let result = transport.post(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call"}), true);
+            if succeeds {
+                assert_eq!(result.unwrap().unwrap()["id"], 1);
+            } else {
+                let error = result.unwrap_err();
+                if !frames.is_empty() {
+                    assert_eq!(error.call_failure().kind, crate::call_failure::CallFailureKind::ServerError { after_send: true });
+                    assert!(error.call_failure().kind.guidance(false).contains("may have completed"));
+                    assert!(!error.is_health_failure());
+                    wire.join().unwrap();
+                    continue;
+                }
+                assert_eq!(error.call_failure().kind, crate::call_failure::CallFailureKind::Unavailable { after_send: true });
+                assert!(error.call_failure().kind.guidance(false).contains("may have completed"));
+                assert!(error.is_health_failure());
+            }
+            wire.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn sessionless_http_errors_and_wrong_json_ids_are_per_call() {
+        use crate::call_failure::CallFailureKind;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        for modern in [false, true] {
+            for (status, expected) in [
+                (
+                    400,
+                    CallFailureKind::InvalidInput {
+                        missing: vec![],
+                        invalid: vec![],
+                    },
+                ),
+                (404, CallFailureKind::ServerError { after_send: true }),
+                (200, CallFailureKind::ServerError { after_send: true }),
+            ] {
+                let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+                let url = format!("http://{}/mcp", server.server_addr());
+                let hits = Arc::new(AtomicUsize::new(0));
+                let counted = Arc::clone(&hits);
+                let wire = std::thread::spawn(move || {
+                    for _ in 0..4 {
+                        let request = server
+                            .recv_timeout(Duration::from_secs(5))
+                            .unwrap()
+                            .unwrap();
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        request
+                            .respond(
+                                tiny_http::Response::from_string(
+                                    r#"{"jsonrpc":"2.0","id":99,"result":{}}"#,
+                                )
+                                .with_status_code(status)
+                                .with_header(
+                                    tiny_http::Header::from_bytes(
+                                        "Content-Type",
+                                        "application/json",
+                                    )
+                                    .unwrap(),
+                                ),
+                            )
+                            .unwrap();
+                    }
+                });
+                let mut transport = HttpTransport::new(&url);
+                if modern {
+                    transport.protocol_meta = Some(json!({}));
+                }
+                for _ in 0..4 {
+                    let error = transport
+                        .post(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}), true)
+                        .unwrap_err();
+                    assert_eq!(error.call_failure().kind, expected);
+                    assert!(!error.is_health_failure());
+                    assert!(transport.connection_reset_reason().is_none());
+                    assert!(!transport.concurrency.closed.load(Ordering::Acquire));
+                    if status == 200 {
+                        assert!(error
+                            .call_failure()
+                            .kind
+                            .guidance(false)
+                            .contains("may have completed"));
+                    }
+                }
+                wire.join().unwrap();
+                assert_eq!(
+                    hits.load(Ordering::SeqCst),
+                    4,
+                    "one POST per call, no replay"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scope_attempt_lock_poison_is_internal() {
+        let mut transport = HttpTransport::with_auth("http://127.0.0.1:1", Some("token".into()));
+        transport.set_scope_reauthorize(Some(Box::new(|_| Ok("new-token".into()))));
+        let attempts = Arc::clone(&transport.scope_upgrade_attempts);
+        let _ = std::thread::spawn(move || {
+            let _guard = attempts.lock().unwrap();
+            panic!("fixture poison");
+        })
+        .join();
+        let challenge = crate::oauth::bearer_challenge([
+            "Bearer error=\"insufficient_scope\", scope=\"write\"",
+        ])
+        .unwrap();
+        let error = transport
+            .reauthorize_after_scope_challenge(
+                403,
+                "tools/call:write",
+                challenge,
+                Some("token".into()),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.call_failure().kind,
+            crate::call_failure::CallFailureKind::Internal
+        );
     }
 
     #[test]
@@ -10059,6 +15189,12 @@ mod tests {
             result.is_err(),
             "the delayed response must exceed the configured timeout"
         );
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.call_failure().kind,
+            crate::call_failure::CallFailureKind::Timeout { after_send: true }
+        );
+        assert!(error.is_health_failure());
         assert!(
             started.elapsed() < Duration::from_millis(800),
             "the custom timeout was not applied: {:?}",
@@ -10197,6 +15333,50 @@ mod tests {
             sent["params"]["notifications"]["resourceSubscriptions"][0],
             "fixture://one"
         );
+    }
+
+    #[test]
+    fn reference_listener_auth_failure_invalidates_connection_without_replaying() {
+        use super::{HttpTransport, SubscriptionFilter, Transport};
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", server.server_addr());
+        let worker = std::thread::spawn(move || {
+            let request = server
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+                .expect("listen request");
+            assert!(request
+                .headers()
+                .iter()
+                .any(|h| h.field.equiv("X-Api-Key") && h.value.as_str() == "synthetic-ref-value"));
+            request
+                .respond(
+                    tiny_http::Response::from_string("synthetic-ref-value").with_status_code(401),
+                )
+                .unwrap();
+            assert!(
+                server
+                    .recv_timeout(std::time::Duration::from_millis(300))
+                    .unwrap()
+                    .is_none(),
+                "stale reference must not be replayed"
+            );
+        });
+        let mut transport = HttpTransport::new(&url);
+        transport.set_reference_credentials(true);
+        transport
+            .set_credential_headers(vec![("X-Api-Key".into(), "synthetic-ref-value".into())])
+            .unwrap();
+        transport
+            .set_subscription_listener(SubscriptionFilter::default())
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while transport.connection_reset_reason().is_none() && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(transport.connection_reset_reason().is_some());
+        worker.join().unwrap();
     }
 
     #[test]
@@ -10526,7 +15706,7 @@ mod tests {
         });
 
         let mut transport = HttpTransport::new(&format!("http://127.0.0.1:{port}/"));
-        transport.session_id = Some("legacy-session".to_string());
+        *transport.session_id.lock().unwrap() = Some("legacy-session".to_string());
         transport.set_protocol_meta(Some(super::protocol_meta_for(MODERN_PROTOCOL_VERSION)));
         transport
             .request_with_cancel_and_headers(
@@ -10553,7 +15733,7 @@ mod tests {
         );
         assert!(!headers.contains_key("mcp-session-id"));
         assert!(
-            transport.session_id.is_none(),
+            transport.session_id.lock().unwrap().is_none(),
             "modern responses cannot restore a legacy session"
         );
     }
@@ -10828,11 +16008,71 @@ mod tests {
         );
         let expected = format!("stamp:{MODERN_PROTOCOL_VERSION}");
         assert!(
-            events[discovers[0] + 1..discovers[1]]
-                .iter()
-                .any(|e| *e == expected),
+            events[discovers[0] + 1..discovers[1]].contains(&expected),
             "the retry must re-stamp between the two sends, got {events:?}"
         );
+    }
+
+    #[test]
+    fn failed_discover_preserves_actionable_failure_after_initialize_refusal() {
+        use crate::call_failure::{AuthTarget, CallFailureKind as K};
+        use std::collections::VecDeque;
+        struct Probe {
+            responses: VecDeque<Result<Value, TransportError>>,
+            methods: Vec<String>,
+        }
+        impl Transport for Probe {
+            fn request(&mut self, method: &str, _params: Value) -> Result<Value, TransportError> {
+                let expected = if self.methods.is_empty() {
+                    "initialize"
+                } else {
+                    "server/discover"
+                };
+                assert_eq!(method, expected);
+                self.methods.push(method.into());
+                self.responses.pop_front().expect("a response per request")
+            }
+            fn notify(&mut self, _method: &str, _params: Value) -> Result<(), TransportError> {
+                panic!("a failed handshake must not send notifications")
+            }
+        }
+        for (probe_error, expected) in [
+            (
+                TransportError::Classified(
+                    K::Timeout { after_send: true },
+                    "discover timed out".into(),
+                ),
+                K::Timeout { after_send: true },
+            ),
+            (
+                TransportError::Unavailable("discover unavailable".into()),
+                K::Unavailable { after_send: true },
+            ),
+            (
+                TransportError::Rpc(json!({"code": 403, "message": "access denied"})),
+                K::Auth {
+                    target: AuthTarget::Scope,
+                },
+            ),
+        ] {
+            let transport = Probe {
+                responses: VecDeque::from(vec![
+                    Err(TransportError::Rpc(
+                        json!({"code": -32601, "message": "no initialize"}),
+                    )),
+                    Err(probe_error),
+                ]),
+                methods: Vec::new(),
+            };
+            let failure =
+                match DownstreamServer::connect_classified("mock".into(), Box::new(transport)) {
+                    Err(failure) => failure,
+                    Ok(_) => panic!("failed discover cannot connect"),
+                };
+            assert_eq!(failure.kind, expected);
+            assert!(failure.detail.contains("no initialize"));
+            assert!(failure.detail.contains("server/discover probe also failed"));
+        }
     }
 
     #[test]
@@ -11142,7 +16382,7 @@ mod tests {
 
         let refresh_calls = Arc::new(AtomicUsize::new(0));
         let calls = Arc::clone(&refresh_calls);
-        let refresh: Option<RefreshFn> = Some(Box::new(move |force| {
+        let refresh: Option<RefreshFn> = Some(Box::new(move |force, _| {
             assert!(
                 !force,
                 "successful proactive refresh should avoid a forced retry"
@@ -11168,6 +16408,25 @@ mod tests {
     }
 
     #[test]
+    fn proactive_refresh_busy_callback_keeps_current_token() {
+        let mut transport = HttpTransport::with_auth_refresh(
+            "http://127.0.0.1:1/mcp",
+            Some("pending-token".into()),
+            Some(Box::new(|_, _| {
+                panic!("a held auth gate must skip the callback")
+            })),
+        );
+        let gate = Arc::clone(&transport.auth_gate);
+        let _holder = gate.busy.lock().unwrap();
+        // Waiting for this guard would deadlock; pre-send refresh must skip it.
+        transport.refresh_before_send().unwrap();
+        assert_eq!(
+            transport.auth.lock().unwrap().as_deref(),
+            Some("pending-token")
+        );
+    }
+
+    #[test]
     fn post_uses_current_token_when_proactive_refresh_fails() {
         use super::{HttpTransport, RefreshFn};
         use std::sync::{Arc, Mutex};
@@ -11190,7 +16449,7 @@ mod tests {
             let _ = req.respond(tiny_http::Response::from_string(body).with_header(ct));
         });
 
-        let refresh: Option<RefreshFn> = Some(Box::new(|force| {
+        let refresh: Option<RefreshFn> = Some(Box::new(|force, _| {
             assert!(!force);
             Err("temporary OAuth endpoint failure".to_string())
         }));
@@ -11206,6 +16465,434 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(*seen_auth.lock().unwrap(), "Bearer still-valid");
+    }
+
+    #[test]
+    fn connect_binds_the_http_credential_owner_before_initialize() {
+        struct Probe(HttpTransport);
+        impl Transport for Probe {
+            fn set_server_id(&mut self, id: &str) {
+                self.0.set_server_id(id);
+            }
+            fn request(&mut self, _: &str, _: Value) -> Result<Value, TransportError> {
+                assert_eq!(self.0.auth_owner.as_deref(), Some("credential-owner"));
+                Err(TransportError::Unavailable("probe finished".into()))
+            }
+            fn notify(&mut self, _: &str, _: Value) -> Result<(), TransportError> {
+                unreachable!()
+            }
+        }
+        let result = DownstreamServer::connect(
+            "credential-owner".into(),
+            Box::new(Probe(HttpTransport::new("http://127.0.0.1:1/"))),
+        );
+        assert_eq!(result.err().unwrap(), "probe finished");
+    }
+
+    #[test]
+    fn rejected_http_token_adopts_the_vault_winner_without_refreshing() {
+        use crate::secrets;
+        use std::time::Duration;
+        secrets::tests::with_isolated_vault(|| {
+            for concurrent in [false, true] {
+                let server_id = "http-vault-winner";
+                secrets::set_secret(server_id, secrets::HTTP_AUTH_KEY, "stale").unwrap();
+                let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+                let url = format!("http://{}/", server.server_addr());
+                let mut transport = HttpTransport::with_auth_refresh(
+                    &url,
+                    Some("stale".into()),
+                    Some(Box::new(move |force, rejected| {
+                        if force {
+                            crate::remote::refresh_token(server_id, rejected).map(Some)
+                        } else {
+                            Ok(None)
+                        }
+                    })),
+                );
+                transport.set_server_id(server_id);
+                // Another process has already rotated the shared vault. No local expiry
+                // or OAuth grant exists, so attempting an exchange here must fail.
+                secrets::set_secret(server_id, secrets::HTTP_AUTH_KEY, "winner").unwrap();
+                let wire = std::thread::spawn(move || {
+                    let mut auths = Vec::new();
+                    for _ in 0..2 {
+                        let Some(mut request) =
+                            server.recv_timeout(Duration::from_secs(3)).unwrap()
+                        else {
+                            break;
+                        };
+                        let auth = request
+                            .headers()
+                            .iter()
+                            .find(|h| h.field.equiv("Authorization"))
+                            .unwrap()
+                            .value
+                            .as_str()
+                            .to_string();
+                        let mut text = String::new();
+                        request.as_reader().read_to_string(&mut text).unwrap();
+                        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+                        let response = if auth == "Bearer winner" {
+                            tiny_http::Response::from_string(serde_json::json!({"jsonrpc":"2.0","id":body["id"],"result":{"ok":true}}).to_string())
+                        } else {
+                            tiny_http::Response::from_string("revoked").with_status_code(401)
+                        };
+                        auths.push(auth);
+                        request.respond(response).unwrap();
+                    }
+                    auths
+                });
+                let result = if concurrent {
+                    transport.concurrent().unwrap().request_with_cancel(
+                        "echo",
+                        serde_json::json!({}),
+                        None,
+                    )
+                } else {
+                    transport.request("echo", serde_json::json!({}))
+                };
+                let auths = wire.join().unwrap();
+                assert_eq!(result.unwrap(), serde_json::json!({"ok":true}));
+                assert_eq!(auths, ["Bearer stale", "Bearer winner"]);
+            }
+        });
+    }
+
+    #[test]
+    fn old_http_transport_cannot_adopt_the_new_destinations_credential() {
+        crate::secrets::tests::with_isolated_vault(|| {
+            let mut reg = crate::registry::Registry::default();
+            let server: crate::registry::ServerEntry = serde_json::from_value(serde_json::json!({"id":"scoped","name":"scoped","transport":"http","url":"https://old.example/mcp"})).unwrap();
+            reg.unknown_fields.insert("personalSyncCredentialDestinations".into(), serde_json::json!({"scoped":crate::local_auth::personal_credential_destination(&server)}));
+            reg.unknown_fields.insert(
+                "personalSyncCredentialOwners".into(),
+                serde_json::json!({"scoped":"scoped"}),
+            );
+            reg.servers.push(server);
+            crate::registry::save(&reg).unwrap();
+            crate::secrets::set_secret("scoped", crate::secrets::HTTP_AUTH_KEY, "old").unwrap();
+            let mut old = HttpTransport::with_auth("https://old.example/mcp", Some("old".into()));
+            {
+                let _scope =
+                    crate::local_auth::pin_http_destination("scoped", "https://old.example/mcp")
+                        .unwrap();
+                old.set_server_id("scoped");
+            }
+            reg.servers[0].url = Some("https://new.example/mcp".into());
+            crate::registry::save(&reg).unwrap();
+            crate::secrets::set_secret("scoped", crate::secrets::HTTP_AUTH_KEY, "new").unwrap();
+            assert!(!old.reuse_stored_auth(&Some("old".into())).unwrap());
+            assert_eq!(old.auth.lock().unwrap().as_deref(), Some("old"));
+            assert_eq!(
+                crate::remote::current_credential("scoped")
+                    .unwrap()
+                    .as_deref(),
+                Some("new")
+            );
+        });
+    }
+    #[test]
+    fn http_refresh_failure_rereads_the_vault_before_retrying_callbacks() {
+        use crate::secrets;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        secrets::tests::with_isolated_vault(|| {
+            for proactive in [false, true] {
+                const BUSY: &str =
+                    "OAuth refresh is busy or its cross-process lock is unavailable; try again.";
+                let failure = if proactive {
+                    "could not read the vaulted OAuth state: temporarily locked"
+                } else {
+                    BUSY
+                };
+                let owner = "refresh-vault-recovery";
+                secrets::set_secret(owner, secrets::HTTP_AUTH_KEY, "old").unwrap();
+                let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+                let url = format!("http://{}/", server.server_addr());
+                let wire = std::thread::spawn(move || {
+                    for _ in 0..if proactive { 1 } else { 3 } {
+                        let mut request = server
+                            .recv_timeout(Duration::from_secs(5))
+                            .unwrap()
+                            .unwrap();
+                        let fresh = request.headers().iter().any(|h| {
+                            h.field.equiv("Authorization") && h.value.as_str() == "Bearer winner"
+                        });
+                        let mut text = String::new();
+                        request.as_reader().read_to_string(&mut text).unwrap();
+                        let body: Value = serde_json::from_str(&text).unwrap();
+                        let response = if fresh {
+                            tiny_http::Response::from_string(
+                                json!({"jsonrpc":"2.0","id":body["id"],"result":{"ok":true}})
+                                    .to_string(),
+                            )
+                        } else {
+                            tiny_http::Response::from_string("revoked").with_status_code(401)
+                        };
+                        request.respond(response).unwrap();
+                    }
+                });
+                let callbacks = Arc::new(AtomicUsize::new(0));
+                let attempts = Arc::clone(&callbacks);
+                let mut transport = HttpTransport::with_auth_refresh(
+                    &url,
+                    Some("old".into()),
+                    Some(Box::new(move |force, rejected| {
+                        if force || proactive {
+                            attempts.fetch_add(1, Ordering::SeqCst);
+                            if force {
+                                assert_eq!(rejected, Some("old"));
+                                if let Some(token) = crate::remote::newer_credential(owner, "old")?
+                                {
+                                    return Ok(Some(token));
+                                }
+                            }
+                            Err(failure.into())
+                        } else {
+                            Ok(None)
+                        }
+                    })),
+                );
+                transport.set_server_id(owner);
+                let error = transport.request("echo", json!({})).unwrap_err();
+                assert_eq!(error.to_string(), failure);
+                assert!(!crate::remote::is_auth_error(&error.to_string()));
+                secrets::set_secret(owner, secrets::HTTP_AUTH_KEY, "winner").unwrap();
+                assert_eq!(
+                    transport.request("echo", json!({})).unwrap(),
+                    json!({"ok":true})
+                );
+                wire.join().unwrap();
+                assert_eq!(
+                    callbacks.load(Ordering::SeqCst),
+                    if proactive { 1 } else { 2 }
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn proactive_http_refresh_keeps_its_token_when_credential_lookup_fails() {
+        crate::secrets::tests::with_isolated_vault(|| {
+            let owner = "http-read-failure";
+            let mut transport = HttpTransport::with_auth_refresh(
+                "http://127.0.0.1:1/",
+                Some("valid-pending-token".into()),
+                Some(Box::new(|force, rejected| {
+                    assert!(!force);
+                    assert_eq!(rejected, None);
+                    Ok(None)
+                })),
+            );
+            transport.set_server_id(owner);
+            transport.record_refresh_failure(Some("old".into()), "temporary vault failure".into());
+            crate::secrets::tests::with_failed_read(crate::secrets::HTTP_AUTH_KEY, || {
+                assert!(crate::remote::current_credential(owner).is_err());
+                transport.refresh_before_send().unwrap();
+                assert_eq!(
+                    transport.auth.lock().unwrap().as_deref(),
+                    Some("valid-pending-token")
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn http_lock_contention_is_never_cached() {
+        let mut transport = HttpTransport::with_auth_refresh(
+            "http://127.0.0.1:1/",
+            Some("old".into()),
+            Some(Box::new(|_, _| {
+                Err(
+                    "OAuth refresh is busy or its cross-process lock is unavailable; try again."
+                        .into(),
+                )
+            })),
+        );
+        transport.refresh_before_send().unwrap();
+        assert!(transport.refresh_failure.lock().unwrap().is_none());
+        assert!(transport.force_refresh_after_auth_error(401).is_err());
+        assert!(transport.refresh_failure.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn http_later_rejection_retries_after_cached_refresh_failure() {
+        let mut transport = HttpTransport::with_auth_refresh(
+            "http://127.0.0.1:1/",
+            Some("old".into()),
+            Some(Box::new(|force, _| {
+                assert!(force);
+                Ok(Some("fresh".into()))
+            })),
+        );
+        transport.record_refresh_failure(Some("old".into()), "temporary provider failure".into());
+        transport.force_refresh_after_auth_error(401).unwrap();
+        assert_eq!(transport.auth.lock().unwrap().as_deref(), Some("fresh"));
+    }
+
+    #[test]
+    fn proactive_http_refresh_does_not_wait_for_a_busy_auth_gate() {
+        let mut transport = super::HttpTransport::with_auth_refresh(
+            "http://127.0.0.1:1/",
+            Some("valid".into()),
+            Some(Box::new(|_, _| {
+                panic!("busy gate must skip proactive callback")
+            })),
+        );
+        *transport.auth_gate.busy.lock().unwrap() = true;
+        transport.deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(50));
+        transport.refresh_before_send().unwrap();
+        assert!(
+            std::time::Instant::now() < transport.deadline.unwrap(),
+            "proactive refresh consumed the call deadline"
+        );
+    }
+
+    fn pending_http_probe() -> super::PendingHttpMrtr {
+        super::PendingHttpMrtr {
+            common: super::PendingLegacyMrtr::new(
+                json!({"jsonrpc":"2.0","id":"server-probe","method":"roots/list"}),
+                json!(1),
+                "echo",
+                &json!({}),
+            )
+            .unwrap(),
+            reader: Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+            bytes_read: 0,
+            cancel_guard: None,
+            cancel_signal: None,
+        }
+    }
+
+    #[test]
+    fn dropping_a_queued_http_outcome_refuses_its_suspended_request() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", server.server_addr());
+        let transport = super::HttpTransport::new(&url);
+        let mut owned = transport.request_shell();
+        owned.pending_mrtr = Some(pending_http_probe());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(super::HttpDelivery::Done(Box::new(
+                super::HttpCallOutcome {
+                    transport: owned,
+                    result: Ok(json!({})),
+                },
+            )))
+            .unwrap_or_else(|_| panic!("send failed"));
+        drop(receiver);
+        let mut reply = server
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap()
+            .expect("abandoned queued outcome must retire its request");
+        let mut text = String::new();
+        reply.as_reader().read_to_string(&mut text).unwrap();
+        let response: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(response["id"], "server-probe");
+        assert_eq!(response["error"]["message"], super::CALL_ENDED);
+        reply.respond(tiny_http::Response::empty(202)).unwrap();
+    }
+
+    #[test]
+    fn expired_http_retirement_does_not_block_the_next_call() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", server.server_addr());
+        let (release, wait) = std::sync::mpsc::channel();
+        let wire = std::thread::spawn(move || {
+            let mut retirement = None;
+            for _ in 0..2 {
+                let Some(mut request) = server
+                    .recv_timeout(std::time::Duration::from_secs(3))
+                    .unwrap()
+                else {
+                    break;
+                };
+                let mut text = String::new();
+                request.as_reader().read_to_string(&mut text).unwrap();
+                let body: Value = serde_json::from_str(&text).unwrap();
+                if body.get("error").is_some() {
+                    retirement = Some(request);
+                } else {
+                    request
+                        .respond(tiny_http::Response::from_string(
+                            json!({"jsonrpc":"2.0","id":body["id"],"result":{"ok":true}})
+                                .to_string(),
+                        ))
+                        .unwrap();
+                }
+            }
+            let _ = wait.recv_timeout(std::time::Duration::from_secs(3));
+            if let Some(request) = retirement {
+                let _ = request.respond(tiny_http::Response::empty(202));
+            }
+        });
+        let mut transport = super::HttpTransport::new(&url);
+        transport.set_read_timeout(std::time::Duration::from_millis(500));
+        let pending = pending_http_probe();
+        transport.concurrency.pending.lock().unwrap().insert(
+            pending.common.token.clone(),
+            (
+                std::time::Instant::now() - super::SUSPENDED_LEGACY_MRTR_TTL,
+                pending,
+            ),
+        );
+        let handle = transport.concurrent().unwrap();
+        let (send_result, receive_result) = std::sync::mpsc::channel();
+        let caller = std::thread::spawn(move || {
+            send_result
+                .send(handle.request_with_cancel("echo", json!({}), None))
+                .unwrap();
+        });
+        let result = receive_result.recv_timeout(std::time::Duration::from_millis(500));
+        release.send(()).unwrap();
+        wire.join().unwrap();
+        caller.join().unwrap();
+        assert_eq!(
+            result.expect("next call waited on retirement").unwrap(),
+            json!({"ok":true})
+        );
+    }
+
+    #[test]
+    fn http_watchers_read_state_without_creating_call_snapshots() {
+        struct NoSnapshot;
+        impl Transport for NoSnapshot {
+            fn request(&mut self, _: &str, _: Value) -> Result<Value, TransportError> {
+                unreachable!()
+            }
+            fn notify(&mut self, _: &str, _: Value) -> Result<(), TransportError> {
+                unreachable!()
+            }
+            fn connection_closed(&self) -> Option<bool> {
+                None
+            }
+            fn suspended_calls(&self) -> usize {
+                0
+            }
+            fn concurrent(&self) -> Option<Arc<dyn super::ConcurrentTransport>> {
+                panic!("watcher cloned the transport")
+            }
+        }
+        let mut server = DownstreamServer::stopped("watcher".into(), vec![]);
+        server.transport = Box::new(NoSnapshot);
+        assert_eq!(server.connection_closed(), None);
+        assert_eq!(server.suspended_calls(), 0);
+        let transport = HttpTransport::new("http://127.0.0.1:1/");
+        let shared = Arc::clone(&transport.concurrency);
+        server.transport = Box::new(transport);
+        assert_eq!(server.connection_closed(), Some(false));
+        let pending = pending_http_probe();
+        shared.pending.lock().unwrap().insert(
+            pending.common.token.clone(),
+            (std::time::Instant::now(), pending),
+        );
+        assert_eq!(server.suspended_calls(), 1);
+        shared.pending.lock().unwrap().clear();
+        shared
+            .closed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(server.connection_closed(), Some(true));
     }
 
     #[test]
@@ -11278,7 +16965,7 @@ mod tests {
 
         let forced_refreshes = Arc::new(AtomicUsize::new(0));
         let forced = Arc::clone(&forced_refreshes);
-        let refresh: Option<RefreshFn> = Some(Box::new(move |force| {
+        let refresh: Option<RefreshFn> = Some(Box::new(move |force, _| {
             if force {
                 forced.fetch_add(1, Ordering::SeqCst);
             }
@@ -11361,7 +17048,7 @@ mod tests {
         });
         let refresh_calls = Arc::new(AtomicUsize::new(0));
         let refresh_count = Arc::clone(&refresh_calls);
-        let refresh: Option<RefreshFn> = Some(Box::new(move |force| {
+        let refresh: Option<RefreshFn> = Some(Box::new(move |force, _| {
             if force {
                 refresh_count.fetch_add(1, Ordering::SeqCst);
             }
@@ -11427,7 +17114,7 @@ mod tests {
 
         let refresh_calls = Arc::new(AtomicUsize::new(0));
         let refresh_count = Arc::clone(&refresh_calls);
-        let refresh: Option<RefreshFn> = Some(Box::new(move |force| {
+        let refresh: Option<RefreshFn> = Some(Box::new(move |force, _| {
             if force {
                 refresh_count.fetch_add(1, Ordering::SeqCst);
             }
@@ -11452,6 +17139,12 @@ mod tests {
         handle.join().unwrap();
 
         assert!(error.to_string().contains("HTTP 401"));
+        assert_eq!(
+            error.call_failure().kind,
+            crate::call_failure::CallFailureKind::Auth {
+                target: crate::call_failure::AuthTarget::Scope,
+            }
+        );
         assert_eq!(refresh_calls.load(Ordering::SeqCst), 0);
     }
 
@@ -11486,7 +17179,7 @@ mod tests {
             }
         });
 
-        let refresh: Option<RefreshFn> = Some(Box::new(|force| {
+        let refresh: Option<RefreshFn> = Some(Box::new(|force, _| {
             if force {
                 Ok(Some("fresh".to_string()))
             } else {
@@ -11553,7 +17246,7 @@ mod tests {
         });
 
         let url = format!("http://127.0.0.1:{port}/");
-        let refresh: Option<RefreshFn> = Some(Box::new(|force| {
+        let refresh: Option<RefreshFn> = Some(Box::new(|force, _| {
             if force {
                 Ok(Some("fresh".to_string()))
             } else {
@@ -11621,7 +17314,7 @@ mod tests {
 
         let forced = Arc::new(AtomicUsize::new(0));
         let fc = Arc::clone(&forced);
-        let refresh: Option<RefreshFn> = Some(Box::new(move |force| {
+        let refresh: Option<RefreshFn> = Some(Box::new(move |force, _| {
             if force {
                 // Each forced call is a refresh-token exchange with the provider.
                 let n = fc.fetch_add(1, Ordering::SeqCst);
@@ -11715,7 +17408,7 @@ mod tests {
         let fc = Arc::clone(&forced);
         // No proactive deadline: the non-forced arm always declines, exactly like
         // a provider that reported no `expires_in`.
-        let refresh: Option<RefreshFn> = Some(Box::new(move |force| {
+        let refresh: Option<RefreshFn> = Some(Box::new(move |force, _| {
             if force {
                 let n = fc.fetch_add(1, Ordering::SeqCst);
                 Ok(Some(format!("minted-{n}")))
@@ -11792,7 +17485,7 @@ mod tests {
         let fc = Arc::clone(&forced);
         let proactive = Arc::new(AtomicUsize::new(0));
         let pc = Arc::clone(&proactive);
-        let refresh: Option<RefreshFn> = Some(Box::new(move |force| {
+        let refresh: Option<RefreshFn> = Some(Box::new(move |force, _| {
             if force {
                 let n = fc.fetch_add(1, Ordering::SeqCst);
                 Ok(Some(format!("forced-{n}")))
@@ -11861,7 +17554,7 @@ mod tests {
                         &b"application/json"[..],
                     )
                     .unwrap();
-                    let body = r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#;
+                    let body = r#"{"jsonrpc":"2.0","id":2,"result":{"ok":true}}"#;
                     let _ = req.respond(tiny_http::Response::from_string(body).with_header(ct));
                 }
             }
@@ -11876,10 +17569,10 @@ mod tests {
             true,
         );
         match &result {
-            Err(TransportError::Retry { retry_after, .. }) => {
+            Err(TransportError::RateLimited { retry_after, .. }) => {
                 assert_eq!(*retry_after, Some(Duration::from_secs(2)));
             }
-            other => panic!("expected TransportError::Retry, got {other:?}"),
+            other => panic!("expected TransportError::RateLimited, got {other:?}"),
         }
 
         // The 429 above recorded a shared 2s backoff window for this origin;
@@ -11946,7 +17639,6 @@ mod tests {
         let url = format!("http://127.0.0.1:{port}/");
         let worker = std::thread::spawn(move || {
             let mut transport = HttpTransport::new(&url);
-            let started = Instant::now();
             // Exercise the headerless trait path used by completion/complete too;
             // HttpTransport must override it rather than inheriting the default
             // cancellation-ignoring implementation.
@@ -11955,12 +17647,14 @@ mod tests {
                 json!({ "name": "slow" }),
                 Some(cancel_context),
             );
-            (transport, result, started.elapsed())
+            (transport, result)
         });
 
         let original_id = stalled_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let cancelled_at = Instant::now();
         assert!(cancellations.cancel("http-stall", Some("user pressed stop")));
-        let (mut transport, result, elapsed) = worker.join().unwrap();
+        let (mut transport, result) = worker.join().unwrap();
+        let elapsed = cancelled_at.elapsed();
         assert!(matches!(result, Err(TransportError::Cancelled(_))));
         assert!(
             elapsed < Duration::from_millis(500),
@@ -12092,6 +17786,8 @@ mod tests {
             common,
             reader: Box::new(Cursor::new(final_frame.to_vec())),
             bytes_read: 0,
+            cancel_guard: None,
+            cancel_signal: None,
         });
 
         let cancellations = CancelRegistry::new();
@@ -12191,6 +17887,8 @@ mod tests {
             common,
             reader: Box::new(Cursor::new(Vec::<u8>::new())),
             bytes_read: 0,
+            cancel_guard: None,
+            cancel_signal: None,
         });
         let cancellations = CancelRegistry::new();
         assert!(cancellations.begin_client_request("already-cancelled".to_string()));
@@ -12233,6 +17931,8 @@ mod tests {
             common,
             reader: Box::new(Cursor::new(Vec::<u8>::new())),
             bytes_read: 0,
+            cancel_guard: None,
+            cancel_signal: None,
         });
         let cancellations = CancelRegistry::new();
         assert!(cancellations.begin_client_request("unrelated-cancel".to_string()));
@@ -12317,7 +18017,7 @@ mod tests {
             true,
         );
         match &result {
-            Err(TransportError::Retry {
+            Err(TransportError::RateLimited {
                 retry_after,
                 message,
             }) => {
@@ -12357,7 +18057,7 @@ mod tests {
             "jsonrpc": "2.0", "id": 2, "result": {}
         }));
         match &result {
-            Err(TransportError::Retry { message, .. }) => {
+            Err(TransportError::RateLimited { message, .. }) => {
                 assert!(message.contains("shared backoff"), "{message}");
             }
             other => panic!("expected fast-fail Retry, got {other:?}"),
@@ -12383,7 +18083,7 @@ mod tests {
             "jsonrpc": "2.0", "id": 3, "result": {}
         }));
         match &result {
-            Err(TransportError::Retry { retry_after, .. }) => {
+            Err(TransportError::RateLimited { retry_after, .. }) => {
                 assert_eq!(*retry_after, Some(Duration::from_secs(1)));
             }
             other => panic!("expected Retry from live 429, got {other:?}"),
@@ -12552,5 +18252,107 @@ mod tests {
         let max_line = super::drain_stderr_bounded(reader, &buf, 1024, 8);
         assert!(max_line <= 5, "each line is 5 bytes including newline");
         assert_eq!(buf.lock().unwrap().as_str(), "bb\ncccc\n");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod login_environment_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct ShellFixture(std::path::PathBuf);
+    impl ShellFixture {
+        fn new(body: &str) -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "toolport-login-env-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let script = dir.join("shell");
+            std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            Self(dir)
+        }
+        fn parent(&self) -> BTreeMap<String, String> {
+            BTreeMap::from([
+                ("SHELL".into(), self.0.join("shell").display().to_string()),
+                ("PATH".into(), "/usr/bin:/bin".into()),
+                ("AMBIENT_SECRET".into(), "daemon-only".into()),
+            ])
+        }
+    }
+    impl Drop for ShellFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn login_shell_is_noninteractive_and_excludes_daemon_credentials() {
+        let fixture = ShellFixture::new("[ \"$1\" = -lc ] && [ \"$2\" = 'env -0' ] || exit 1\n[ -z \"$AMBIENT_SECRET\" ] || exit 2\nprintf 'LOGIN_KEY=login\\000MULTILINE=first\\nsecond\\000TOOLPORT_SECRET_KEY=control\\000'");
+        let sourced = source_login_environment(&fixture.parent(), Duration::from_secs(1)).unwrap();
+        let env: BTreeMap<_, _> = child_environment(&sourced, &[], true).into_iter().collect();
+        assert_eq!(env.get("LOGIN_KEY").map(String::as_str), Some("login"));
+        assert_eq!(
+            env.get("MULTILINE").map(String::as_str),
+            Some("first\nsecond")
+        );
+        assert!(!env.contains_key("AMBIENT_SECRET"));
+        assert!(!env.contains_key("TOOLPORT_SECRET_KEY"));
+    }
+
+    #[test]
+    fn inherited_environment_adds_client_only_names_under_login_values() {
+        let login = BTreeMap::from([
+            (
+                "PATH".to_string(),
+                "/home/u/.local/bin:/usr/bin".to_string(),
+            ),
+            ("LOGIN_KEY".to_string(), "login".to_string()),
+        ]);
+        let process = BTreeMap::from([
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("AWS_PROFILE".to_string(), "work".to_string()),
+        ]);
+        let env = with_client_environment(login, &process);
+        assert_eq!(env["PATH"], "/home/u/.local/bin:/usr/bin");
+        assert_eq!(env["LOGIN_KEY"], "login");
+        assert_eq!(env["AWS_PROFILE"], "work");
+        let child: BTreeMap<_, _> = child_environment(&env, &[], false).into_iter().collect();
+        assert!(
+            !child.contains_key("AWS_PROFILE"),
+            "opt-out servers keep the allowlist"
+        );
+    }
+
+    #[test]
+    fn login_shell_timeout_falls_back_promptly() {
+        let fixture = ShellFixture::new("sleep 30 &\necho $! > \"$(dirname \"$0\")/pid\"\nwait");
+        let parent = fixture.parent();
+        let started = Instant::now();
+        assert_eq!(
+            login_environment_or_process(&parent, Duration::from_millis(100)),
+            parent
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn login_shell_failure_or_invalid_output_falls_back() {
+        for body in ["exit 1", "printf noise", "printf 'not-an-env-entry\\000'"] {
+            let fixture = ShellFixture::new(body);
+            let parent = fixture.parent();
+            assert_eq!(
+                login_environment_or_process(&parent, Duration::from_secs(1)),
+                parent
+            );
+        }
+        assert_eq!(
+            login_environment_or_process(&BTreeMap::new(), Duration::from_secs(1)),
+            BTreeMap::new()
+        );
     }
 }

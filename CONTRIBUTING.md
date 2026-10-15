@@ -8,6 +8,12 @@ Want to ask a question, float an idea, or talk through a change before you build
 it? Join the [Discord](https://discord.gg/Xsn27MxdBA). New contributors welcome,
 and we merge community PRs regularly.
 
+## Which branch
+
+Open pull requests against `main`, which is Toolport 2.x. The 1.24 line gets
+security and breakage fixes only, on `release/1.x`. Target that branch only when
+the fix is for 1.24.
+
 ## Quick start
 
 Requires Node 20+ and the Rust toolchain.
@@ -133,7 +139,8 @@ The GitHub required check is still named **Build + test**. That name is a
 merge gate over frontend checks, the selected Linux and headless Rust suites
 (the Windows keyring tests live on `windows-latest`), both installer suites,
 and pinned install URLs (SBS-874). Failed or cancelled checks and unexpected
-skips block this gate. Clippy stays non-blocking until existing warnings are cleared.
+skips block this gate. ESLint warnings, all three Linux Clippy feature sets,
+and changed-line Rust formatting also block it.
 Adding the individual job names as separate required contexts is a GitHub
 settings click; it is not something a workflow file can do.
 
@@ -162,11 +169,16 @@ npm run format        # format all files in place
 npm run format:check  # check only (fails without writing — same as CI)
 ```
 
-**Do not run `cargo fmt`.** The Rust tree is deliberately not rustfmt-clean and
-there is no fmt gate in CI, so `cargo fmt` currently rewrites roughly 850
-places across every Rust file in the project. That buries your actual change in
-unrelated reflow, and it conflicts with every other open PR touching the same
-file. Match the style of the code around you, and leave the rest alone.
+**Do not run `cargo fmt` on the whole crate.** CI checks only changed Rust lines
+with Rust 1.99.0, without following child modules. Legacy formatting elsewhere
+stays untouched. PRs compare against their base, pushes against the previous
+commit, and manual runs against the checked commit's parent. Compare against
+your target branch, and format only affected hunks when needed:
+
+```bash
+RUSTUP_TOOLCHAIN=1.99.0 python3 scripts/check-rustfmt.py --base origin/main
+RUSTUP_TOOLCHAIN=1.99.0 python3 scripts/check-rustfmt.py --base origin/main --fix
+```
 
 If your editor formats Rust on save, turn it off for this repo:
 
@@ -188,21 +200,25 @@ npm run lint        # check
 npm run lint:fix    # auto-fix what it can
 ```
 
-Warnings are non-blocking. If you see a `react-hooks/set-state-in-effect`
-warning, it's usually the standard Tauri pattern of loading data from the Rust
-backend in a `useEffect` — review it for unnecessary re-renders, but it won't
-block the build.
+ESLint uses `--max-warnings 0`, so warnings block the frontend job. Fix the
+cause first. If changing an existing effect or event callback would change
+behavior, a local exception needs a specific reason beside that expression.
 
 ### Rust linting
 
-Clippy checks the Rust backend and gateway binary. CI runs it on every PR.
+CI requires Clippy with `-D warnings` for all targets, including tests, in
+three Linux feature sets: `search-static,test-support`,
+`search-static,test-support,desktop`, and `search-static,test-support,gtk-desktop`.
+Run each with the pinned toolchain:
 
 ```bash
-cargo clippy --manifest-path src-tauri/Cargo.toml --lib --bins
+cargo +1.99.0 clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features search-static,test-support --all-targets -- -D warnings
 ```
 
-Clippy warnings are currently non-blocking. The CI gate will be made blocking
-after the existing warnings have been cleared.
+Clippy and rustfmt jobs pin Rust 1.99.0 in `.github/workflows/ci.yml`; other
+build jobs keep stable Rust. To bump the lint toolchain, update both job pins,
+review new diagnostics, run all three feature sets and the changed-line check,
+and keep any formatting fixes scoped to affected hunks.
 
 ### Git hooks (pre-commit)
 
@@ -269,7 +285,6 @@ Keep comments at the density of the file you're editing.
 ## Good places to start
 
 - New curated catalog entries (real, verified MCP servers) in `catalog.rs`.
-- New curated stacks (role-based server bundles) in `stacks.rs`.
 - Additional client support in `clients.rs` (a new AI tool's config format).
 - Frontend polish: empty states and error messages.
 - Tests for any of the above.
@@ -331,58 +346,6 @@ checked automatically.
 
 **Reference PR:** [#19](https://github.com/btsouth/toolport/pull/19) (Firecrawl
 catalog entry — a single `cmd()` line + category).
-
-## Adding a curated stack
-
-Stacks are role-based bundles of catalog servers a user can set up in one flow
-(e.g. "Full-stack web dev", "Founder / indie SaaS"). They live in
-`src-tauri/src/stacks.rs` as an ordered list of catalog entry names, resolved
-against `catalog::curated()` at runtime.
-
-This is one of the easiest first contributions: you only need names that already
-exist in the catalog. Do **not** add new catalog entries here — that is a
-separate change (see [Adding a curated catalog entry](#adding-a-curated-catalog-entry)).
-
-### 1. Pick servers that already exist
-
-Each stack references servers by their exact `catalog::curated()` **name**
-(e.g. `"GitHub"`, `"Linear"`, `"Notion"`). A mistyped name is silently dropped
-when the stack is built, so the unit tests below are the tripwire.
-
-Browse `src-tauri/src/catalog.rs` (or the in-app catalog) for available names.
-Only use servers already in `curated()`.
-
-### 2. Add a `StackDef` in `stack_defs()`
-
-Append a definition inside `stack_defs()` in `src-tauri/src/stacks.rs`:
-
-```rust
-StackDef {
-    id: "project-ops",            // stable kebab-case id
-    name: "Project & knowledge",  // display name in the UI
-    description: "Track work and docs across issues, wiki, and chat.",
-    server_names: &["Linear", "Notion", "Slack", "Todoist"],
-},
-```
-
-- `id` — stable kebab-case identifier (used in tests and UI keys)
-- `name` / `description` — shown in the catalog stacks view
-- `server_names` — exact catalog names, in the order they should appear
-
-You do **not** need to update any hardcoded server-count total; the tests derive
-expected resolution from `stack_defs()` itself.
-
-### 3. Verify
-
-```bash
-cargo test --manifest-path src-tauri/Cargo.toml stacks
-npm run tauri dev   # stacks show up in the catalog view
-```
-
-`every_stack_resolves_all_its_servers` fails with the stack id and the missing
-server name if a reference does not resolve.
-`stack_servers_carry_credential_hints_where_expected` still covers credential
-hints on known token-based entries.
 
 ## Adding a new client
 

@@ -1,22 +1,29 @@
+import { type SettingsSubpage } from "@/lib/settingsPages";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ThemeProvider } from "@/lib/theme";
 import { toastError } from "@/lib/toast";
 import { SettingsView } from "./SettingsView";
 import {
-  approveRoutineSuggestion,
   clientsNeedingRestart,
-  dismissRoutineSuggestion,
-  listRoutineSuggestions,
+  disconnectAllClients,
+  dataRemovalPlan,
+  removeToolportData,
+  getRegistry,
+  getBaselineNotice,
   isAutostartEnabled,
   listServerTools,
-  setAllowRoutineWrites,
+  listQuarantined,
+  releaseQuarantine,
   setCodeMode,
+  setDefaultAccess,
+  setPiiRedaction,
+  setSafetyLevel,
   stopStaleGateways,
 } from "@/lib/api";
-import type { Registry, RoutineSuggestion } from "@/lib/types";
+import type { Registry } from "@/lib/types";
 
 vi.mock("@/lib/toast", () => ({
   toastError: vi.fn(),
@@ -27,36 +34,33 @@ vi.mock("@/lib/api", async (importOriginal) => {
 
   return {
     ...actual,
+    disconnectAllClients: vi.fn(),
+    dataRemovalPlan: vi.fn(),
+    removeToolportData: vi.fn(),
+    getRegistry: vi.fn(),
+    getBaselineNotice: vi.fn().mockResolvedValue(null),
     listServerTools: vi.fn(),
+    listQuarantined: vi.fn().mockResolvedValue([]),
+    releaseQuarantine: vi.fn(),
     isAutostartEnabled: vi.fn(),
     enableAutostart: vi.fn().mockResolvedValue(undefined),
     disableAutostart: vi.fn().mockResolvedValue(undefined),
-    setAllowRoutineWrites: vi.fn(),
     setCodeMode: vi.fn(),
-    listRoutineSuggestions: vi.fn().mockResolvedValue([]),
-    approveRoutineSuggestion: vi.fn(),
-    dismissRoutineSuggestion: vi.fn(),
+    setDefaultAccess: vi.fn(),
+    setPiiRedaction: vi.fn(),
+    setSafetyLevel: vi.fn(),
     clientsNeedingRestart: vi.fn().mockResolvedValue([]),
     stopStaleGateways: vi.fn(),
   };
 });
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn().mockResolvedValue(() => {}),
-}));
-
-import { listen } from "@tauri-apps/api/event";
 
 const mockedListServerTools = vi.mocked(listServerTools);
 const mockedIsAutostartEnabled = vi.mocked(isAutostartEnabled);
-const mockedSetAllowRoutineWrites = vi.mocked(setAllowRoutineWrites);
 const mockedSetCodeMode = vi.mocked(setCodeMode);
-const mockedListRoutineSuggestions = vi.mocked(listRoutineSuggestions);
-const mockedApproveRoutineSuggestion = vi.mocked(approveRoutineSuggestion);
-const mockedDismissRoutineSuggestion = vi.mocked(dismissRoutineSuggestion);
+const mockedSetPiiRedaction = vi.mocked(setPiiRedaction);
 const mockedClientsNeedingRestart = vi.mocked(clientsNeedingRestart);
 const mockedStopStaleGateways = vi.mocked(stopStaleGateways);
 const mockedToastError = vi.mocked(toastError);
-const mockedListen = vi.mocked(listen);
 
 const registry: Registry = {
   version: 1,
@@ -90,12 +94,13 @@ const registry: Registry = {
     },
   ],
   activeProfileId: "default",
+  codeMode: true,
 };
 
-function renderSettings() {
+function renderSettings(page: SettingsSubpage = "general") {
   render(
     <ThemeProvider>
-      <SettingsView registry={registry} onRegistryChange={vi.fn()} />
+      <SettingsView page={page} registry={registry} onRegistryChange={vi.fn()} />
     </ThemeProvider>,
   );
 }
@@ -117,6 +122,30 @@ function deferred<T>() {
 }
 
 describe("SettingsView tool loading", () => {
+  it("releases only the blocked record displayed in Settings", async () => {
+    vi.mocked(listQuarantined).mockResolvedValueOnce([
+      {
+        record_id: "settings-displayed-record",
+        profile: "work",
+        tool: "srv__read",
+        server: "srv",
+        reason: "Definition changed",
+        ts: 1,
+      },
+    ]);
+    vi.mocked(releaseQuarantine).mockResolvedValue(undefined);
+    renderSettings("safety");
+    await userEvent.click(await screen.findByRole("button", { name: /^re-approve$/i }));
+    await waitFor(() =>
+      expect(releaseQuarantine).toHaveBeenCalledWith(
+        "work",
+        "srv__read",
+        undefined,
+        "settings-displayed-record",
+      ),
+    );
+  });
+
   it("keeps loading state scoped to each server", async () => {
     const user = userEvent.setup();
 
@@ -127,27 +156,22 @@ describe("SettingsView tool loading", () => {
       .mockReturnValueOnce(githubRequest.promise)
       .mockReturnValueOnce(slackRequest.promise);
 
-    renderSettings();
-
-    // Open the profile.
-    await user.click(
-      screen.getByRole("button", {
-        name: /default active 2 servers/i,
-      }),
-    );
+    renderSettings("access");
 
     // Expand GitHub (request A starts).
     const githubToggle = screen.getByRole("button", {
       name: /github/i,
     });
     expect(githubToggle).toHaveAttribute("type", "button");
-    expect(githubToggle).toHaveAttribute("aria-expanded", "false");
+    expect(githubToggle).toHaveAttribute("aria-haspopup", "dialog");
     await user.click(githubToggle);
-    expect(githubToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("dialog")).toHaveAccessibleName("Choose tools for GitHub");
 
     expect(screen.getByText("Loading tools…")).toBeInTheDocument();
 
-    // Expand Slack while GitHub is still pending (request B starts).
+    // Open Slack while GitHub is still pending (request B starts).
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(githubToggle).toHaveFocus());
     await user.click(
       screen.getByRole("button", {
         name: /slack/i,
@@ -173,365 +197,6 @@ describe("SettingsView tool loading", () => {
     await waitFor(() => {
       expect(screen.queryByText("Loading tools…")).not.toBeInTheDocument();
     });
-  });
-});
-
-describe("SettingsView routine writes", () => {
-  it("keeps concurrent successful setting responses from reverting each other", async () => {
-    const user = userEvent.setup();
-    const onRegistryChange = vi.fn();
-    const routineRequest = deferred<Registry>();
-    const codeModeRequest = deferred<Registry>();
-    mockedSetAllowRoutineWrites.mockReturnValueOnce(routineRequest.promise);
-    mockedSetCodeMode.mockReturnValueOnce(codeModeRequest.promise);
-
-    render(
-      <ThemeProvider>
-        <SettingsView registry={registry} onRegistryChange={onRegistryChange} />
-      </ThemeProvider>,
-    );
-
-    const routineControl = screen.getByRole("switch", {
-      name: /allow routine writes/i,
-    });
-    const codeModeControl = screen.getByRole("switch", { name: /code mode/i });
-    const destructiveControl = screen.getByRole("switch", {
-      name: /block destructive tools/i,
-    });
-
-    await user.click(routineControl);
-    expect(routineControl).toBeDisabled();
-    expect(codeModeControl).toBeEnabled();
-    expect(destructiveControl).toBeEnabled();
-
-    await user.click(codeModeControl);
-    expect(mockedSetCodeMode).toHaveBeenCalledWith(false);
-    expect(codeModeControl).toBeDisabled();
-    expect(routineControl).toBeDisabled();
-    expect(destructiveControl).toBeEnabled();
-
-    // Resolve the later request first, then return a stale Routine snapshot that still
-    // has Code Mode enabled. Each response must update only the setting it owns.
-    const codeModeOff = { ...registry, codeMode: false };
-    codeModeRequest.resolve(codeModeOff);
-    await waitFor(() => expect(codeModeControl).toBeEnabled());
-    expect(onRegistryChange).toHaveBeenCalledWith(codeModeOff);
-
-    const routineWritesOn = { ...registry, allowRoutineWrites: true };
-    routineRequest.resolve(routineWritesOn);
-    await waitFor(() => expect(routineControl).toBeEnabled());
-    expect(onRegistryChange).toHaveBeenLastCalledWith({
-      ...registry,
-      codeMode: false,
-      allowRoutineWrites: true,
-    });
-    expect(destructiveControl).toBeEnabled();
-  });
-
-  it("defaults off and persists the explicit opt-in", async () => {
-    const user = userEvent.setup();
-    const onRegistryChange = vi.fn();
-    const updated = { ...registry, allowRoutineWrites: true };
-    mockedSetAllowRoutineWrites.mockResolvedValueOnce(updated);
-
-    render(
-      <ThemeProvider>
-        <SettingsView registry={registry} onRegistryChange={onRegistryChange} />
-      </ThemeProvider>,
-    );
-
-    const control = screen.getByRole("switch", { name: /allow routine writes/i });
-    expect(control).not.toBeChecked();
-    await user.click(control);
-
-    expect(mockedSetAllowRoutineWrites).toHaveBeenCalledWith(true);
-    await waitFor(() => expect(onRegistryChange).toHaveBeenCalledWith(updated));
-  });
-
-  it("stays off when persisting the opt-in fails", async () => {
-    const user = userEvent.setup();
-    const onRegistryChange = vi.fn();
-    mockedSetAllowRoutineWrites.mockRejectedValueOnce(new Error("locked"));
-
-    render(
-      <ThemeProvider>
-        <SettingsView registry={registry} onRegistryChange={onRegistryChange} />
-      </ThemeProvider>,
-    );
-
-    const control = screen.getByRole("switch", { name: /allow routine writes/i });
-    await user.click(control);
-    await waitFor(() => expect(mockedSetAllowRoutineWrites).toHaveBeenCalledWith(true));
-    await waitFor(() => expect(control).toBeEnabled());
-    expect(control).not.toBeChecked();
-    expect(onRegistryChange).not.toHaveBeenCalled();
-  });
-
-  it("hides the write opt-in while Code Mode is disabled", () => {
-    render(
-      <ThemeProvider>
-        <SettingsView
-          registry={{ ...registry, codeMode: false, allowRoutineWrites: true }}
-          onRegistryChange={vi.fn()}
-        />
-      </ThemeProvider>,
-    );
-
-    expect(
-      screen.queryByRole("switch", { name: /allow routine writes/i }),
-    ).not.toBeInTheDocument();
-  });
-});
-
-describe("SettingsView routine suggestions", () => {
-  beforeEach(() => {
-    mockedListen.mockReset();
-    mockedListen.mockResolvedValue(() => {});
-    mockedListRoutineSuggestions.mockReset();
-    mockedListRoutineSuggestions.mockResolvedValue([]);
-    mockedClientsNeedingRestart.mockReset();
-    mockedClientsNeedingRestart.mockResolvedValue([]);
-    mockedToastError.mockReset();
-  });
-
-  const suggestion: RoutineSuggestion = {
-    suggestedName: "batch-deepwiki-ask-question",
-    source:
-      "// Synthesized by Toolport from observed deepwiki__ask_question calls.\nreturn input.items;",
-    inputSchema: { type: "object" },
-    limits: {},
-    definitionFingerprint: "sha256:fp1",
-    evidence: {
-      sourceRunId: `run_${"a".repeat(32)}`,
-      executedAtMs: 1,
-      calls: 3,
-      observedDependencies: [{ name: "deepwiki__ask_question" }],
-      validationVersion: 1,
-      riskClass: "medium",
-      provenance: "synthesized_from_observed_calls",
-    },
-    intermediateBytes: 24_576,
-  };
-
-  it("saves a queued pattern with the edited name and no second prompt", async () => {
-    const user = userEvent.setup();
-    mockedListRoutineSuggestions
-      .mockResolvedValueOnce([suggestion])
-      .mockResolvedValueOnce([]);
-    mockedApproveRoutineSuggestion.mockResolvedValueOnce({});
-
-    renderSettings();
-
-    expect(await screen.findByText("Suggested routines")).toBeInTheDocument();
-    expect(
-      screen.getByText(/Synthesized by Toolport from observed direct calls/),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Calls: 3")).toBeInTheDocument();
-
-    const name = screen.getByRole("textbox", { name: /routine name/i });
-    await user.clear(name);
-    await user.type(name, "ask-many-repos");
-    await user.click(screen.getByRole("button", { name: /save routine/i }));
-
-    expect(mockedApproveRoutineSuggestion).toHaveBeenCalledWith(
-      "sha256:fp1",
-      "ask-many-repos",
-    );
-    await waitFor(() =>
-      expect(screen.queryByText("Suggested routines")).not.toBeInTheDocument(),
-    );
-  });
-
-  it("dismisses a suggestion for the rest of the app run", async () => {
-    const user = userEvent.setup();
-    mockedListRoutineSuggestions
-      .mockResolvedValueOnce([suggestion])
-      .mockResolvedValueOnce([]);
-    mockedDismissRoutineSuggestion.mockResolvedValueOnce(undefined);
-
-    renderSettings();
-
-    await screen.findByText("Suggested routines");
-    await user.click(screen.getByRole("button", { name: /dismiss/i }));
-
-    expect(mockedDismissRoutineSuggestion).toHaveBeenCalledWith("sha256:fp1");
-    await waitFor(() =>
-      expect(screen.queryByText("Suggested routines")).not.toBeInTheDocument(),
-    );
-  });
-
-  it("shows retry instead of hiding when the first load fails (SBS-879)", async () => {
-    const user = userEvent.setup();
-    mockedListRoutineSuggestions.mockRejectedValueOnce(new Error("backend down"));
-
-    renderSettings();
-
-    const error = await screen.findByText(/couldn't load suggested routines/i);
-    const row = error.closest("div");
-    expect(row).not.toBeNull();
-    expect(within(row!).getByRole("button", { name: /retry/i })).toBeInTheDocument();
-    expect(screen.queryByText("Suggested routines")).not.toBeInTheDocument();
-
-    mockedListRoutineSuggestions.mockResolvedValueOnce([suggestion]);
-    await user.click(within(row!).getByRole("button", { name: /retry/i }));
-
-    expect(await screen.findByText("Suggested routines")).toBeInTheDocument();
-    expect(screen.getByText("Calls: 3")).toBeInTheDocument();
-    expect(
-      screen.queryByText(/couldn't load suggested routines/i),
-    ).not.toBeInTheDocument();
-  });
-
-  it("keeps on-screen cards when a later refresh fails (SBS-879)", async () => {
-    const handlers: Array<() => void> = [];
-    mockedListen.mockImplementation(async (event, handler) => {
-      if (event === "routine-suggestion") {
-        handlers.push(() => {
-          (handler as (event: unknown) => void)({});
-        });
-      }
-      return () => {};
-    });
-    mockedListRoutineSuggestions
-      .mockResolvedValueOnce([suggestion])
-      .mockRejectedValueOnce(new Error("backend down"));
-
-    renderSettings();
-
-    expect(await screen.findByText("Suggested routines")).toBeInTheDocument();
-    expect(screen.getByText("Calls: 3")).toBeInTheDocument();
-    await waitFor(() => expect(handlers.length).toBeGreaterThan(0));
-
-    handlers[0]();
-
-    expect(
-      await screen.findByText(/couldn't refresh suggested routines/i),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Suggested routines")).toBeInTheDocument();
-    expect(screen.getByText("Calls: 3")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /save routine/i })).toBeInTheDocument();
-  });
-
-  it("ignores a stale failure that settles after a newer success (SBS-879)", async () => {
-    const handlers: Array<() => void> = [];
-    mockedListen.mockImplementation(async (event, handler) => {
-      if (event === "routine-suggestion") {
-        handlers.push(() => {
-          (handler as (event: unknown) => void)({});
-        });
-      }
-      return () => {};
-    });
-    // The mount list hangs; an event starts a later list that succeeds first.
-    const mountRequest = deferred<RoutineSuggestion[]>();
-    mockedListRoutineSuggestions
-      .mockReturnValueOnce(mountRequest.promise)
-      .mockResolvedValueOnce([suggestion]);
-
-    renderSettings();
-    await waitFor(() => expect(handlers.length).toBeGreaterThan(0));
-
-    handlers[0]();
-    expect(await screen.findByText("Suggested routines")).toBeInTheDocument();
-
-    mountRequest.reject(new Error("backend down"));
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    expect(screen.getByText("Suggested routines")).toBeInTheDocument();
-    expect(screen.getByText("Calls: 3")).toBeInTheDocument();
-    expect(
-      screen.queryByText(/couldn't load suggested routines/i),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/couldn't refresh suggested routines/i),
-    ).not.toBeInTheDocument();
-  });
-
-  it("drops a saved card even when the follow-up refresh fails (SBS-879)", async () => {
-    const user = userEvent.setup();
-    mockedListRoutineSuggestions
-      .mockResolvedValueOnce([suggestion])
-      .mockRejectedValueOnce(new Error("backend down"));
-    mockedApproveRoutineSuggestion.mockResolvedValueOnce({});
-
-    renderSettings();
-
-    expect(await screen.findByText("Suggested routines")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /save routine/i }));
-
-    expect(mockedApproveRoutineSuggestion).toHaveBeenCalledWith(
-      "sha256:fp1",
-      "batch-deepwiki-ask-question",
-    );
-    // The broker already consumed the fingerprint, so the card must not survive the
-    // failed refresh with Save still armed.
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("button", { name: /save routine/i }),
-      ).not.toBeInTheDocument(),
-    );
-    expect(screen.queryByText("Suggested routines")).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/couldn't load suggested routines/i),
-    ).not.toBeInTheDocument();
-  });
-
-  it("drops a dismissed card even when the follow-up refresh fails (SBS-879)", async () => {
-    const user = userEvent.setup();
-    mockedListRoutineSuggestions
-      .mockResolvedValueOnce([suggestion])
-      .mockRejectedValueOnce(new Error("backend down"));
-    mockedDismissRoutineSuggestion.mockResolvedValueOnce(undefined);
-
-    renderSettings();
-
-    await screen.findByText("Suggested routines");
-    await user.click(screen.getByRole("button", { name: /dismiss/i }));
-
-    expect(mockedDismissRoutineSuggestion).toHaveBeenCalledWith("sha256:fp1");
-    await waitFor(() =>
-      expect(screen.queryByText("Suggested routines")).not.toBeInTheDocument(),
-    );
-    expect(
-      screen.queryByText(/couldn't load suggested routines/i),
-    ).not.toBeInTheDocument();
-  });
-
-  it("disables Retry while a load is in flight (SBS-879)", async () => {
-    const user = userEvent.setup();
-    const retryRequest = deferred<RoutineSuggestion[]>();
-    mockedListRoutineSuggestions
-      .mockRejectedValueOnce(new Error("backend down"))
-      .mockReturnValueOnce(retryRequest.promise);
-
-    renderSettings();
-
-    const error = await screen.findByText(/couldn't load suggested routines/i);
-    const row = error.closest("div")!;
-    await user.click(within(row).getByRole("button", { name: /retry/i }));
-    expect(mockedListRoutineSuggestions).toHaveBeenCalledTimes(2);
-
-    const retry = within(row).getByRole("button", { name: /retry/i });
-    expect(retry).toBeDisabled();
-    await user.click(retry);
-    expect(mockedListRoutineSuggestions).toHaveBeenCalledTimes(2);
-
-    retryRequest.resolve([suggestion]);
-    expect(await screen.findByText("Suggested routines")).toBeInTheDocument();
-  });
-
-  it("still hides the section after a successful empty read", async () => {
-    mockedListRoutineSuggestions.mockResolvedValueOnce([]);
-
-    renderSettings();
-
-    await waitFor(() => expect(mockedListRoutineSuggestions).toHaveBeenCalled());
-    expect(screen.queryByText("Suggested routines")).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/couldn't load suggested routines/i),
-    ).not.toBeInTheDocument();
   });
 });
 
@@ -593,7 +258,7 @@ describe("SettingsView launch at login", () => {
 describe("SettingsView restart check", () => {
   it("shows an error toast when the old-gateway check fails", async () => {
     mockedClientsNeedingRestart.mockRejectedValue(new Error("backend down"));
-    renderSettings();
+    renderSettings("connections");
 
     await waitFor(() => {
       expect(mockedToastError).toHaveBeenCalledWith(
@@ -607,7 +272,7 @@ describe("SettingsView restart check", () => {
       .mockRejectedValueOnce(new Error("backend down"))
       .mockResolvedValueOnce([{ client: "Codex", gateway: "old", clientPid: 1234 }]);
     const user = userEvent.setup();
-    renderSettings();
+    renderSettings("connections");
 
     const retry = await screen.findByRole("button", {
       name: "Retry checking for old gateway",
@@ -635,7 +300,7 @@ describe("SettingsView restart check", () => {
       needsRestart: [{ client: "Codex", gateway: "old", clientPid: 1234 }],
     });
     const user = userEvent.setup();
-    renderSettings();
+    renderSettings("connections");
 
     await screen.findByRole("button", { name: "Retry checking for old gateway" });
     await user.click(screen.getByRole("button", { name: "Run" }));
@@ -650,3 +315,519 @@ describe("SettingsView restart check", () => {
     ).toBeInTheDocument();
   });
 });
+
+it("shows protections kept from 1.x and drops them on request", async () => {
+  const user = userEvent.setup();
+  const onRegistryChange = vi.fn();
+  vi.mocked(setSafetyLevel).mockResolvedValueOnce({ ...registry, safetyLevel: "off" });
+  render(
+    <ThemeProvider>
+      <SettingsView
+        page="safety"
+        registry={{
+          ...registry,
+          safetyLevel: "off",
+          keptV1Safety: { blockOnInjection: true },
+        }}
+        onRegistryChange={onRegistryChange}
+      />
+    </ThemeProvider>,
+  );
+  expect(
+    screen.getByText(
+      /Kept from 1.x: Toolport also blocks results that look like prompt injection./,
+    ),
+  ).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Use standard Off" }));
+  expect(setSafetyLevel).toHaveBeenCalledWith("off");
+  await waitFor(() =>
+    expect(onRegistryChange).toHaveBeenCalledWith(
+      expect.objectContaining({ safetyLevel: "off", keptV1Safety: undefined }),
+    ),
+  );
+});
+
+it("selects and persists one safety level", async () => {
+  const user = userEvent.setup();
+  const onRegistryChange = vi.fn();
+  vi.mocked(setSafetyLevel).mockResolvedValueOnce({ ...registry, safetyLevel: "strict" });
+  render(
+    <ThemeProvider>
+      <SettingsView
+        page="safety"
+        registry={{ ...registry, safetyLevel: "ask" }}
+        onRegistryChange={onRegistryChange}
+      />
+    </ThemeProvider>,
+  );
+  expect(screen.getByRole("radio", { name: levelName("ask") })).toBeChecked();
+  await user.click(screen.getByRole("radio", { name: "Strict" }));
+  expect(setSafetyLevel).toHaveBeenCalledWith("strict");
+  await waitFor(() =>
+    expect(onRegistryChange).toHaveBeenCalledWith({ ...registry, safetyLevel: "strict" }),
+  );
+  expect(
+    screen.queryByRole("switch", { name: /block destructive tools/i }),
+  ).not.toBeInTheDocument();
+});
+
+it.each([
+  ["ask", "off"],
+  ["strict", "off"],
+  ["strict", "ask"],
+] as const)("shows the %s team floor and rejects selecting %s", async (floor, below) => {
+  const user = userEvent.setup();
+  vi.mocked(setSafetyLevel).mockReset();
+  render(
+    <ThemeProvider>
+      <SettingsView
+        page="safety"
+        registry={{ ...registry, safetyLevel: "off", teamMinSafetyLevel: floor }}
+        onRegistryChange={vi.fn()}
+      />
+    </ThemeProvider>,
+  );
+  const control = screen.getByRole("radio", { name: levelName(floor) });
+  expect(control).toBeChecked();
+  expect(
+    screen.getByRole("radio", { name: below === "off" ? "Off" : "Ask" }),
+  ).toBeDisabled();
+  await user.click(screen.getByRole("radio", { name: levelName(below) }));
+  expect(control).toBeChecked();
+  expect(setSafetyLevel).not.toHaveBeenCalled();
+  expect(
+    screen.getByText(
+      `Team minimum safety level: ${floor === "ask" ? "Ask" : "Strict"}. Choices below this floor are unavailable.`,
+    ),
+  ).toBeInTheDocument();
+});
+
+it("uses legacy approval as an Ask floor without hiding the Strict choice", () => {
+  render(
+    <ThemeProvider>
+      <SettingsView
+        page="safety"
+        registry={{
+          ...registry,
+          safetyLevel: "off",
+          teamMinSafetyLevel: "off",
+          teamForcedHumanApproval: true,
+        }}
+        onRegistryChange={vi.fn()}
+      />
+    </ThemeProvider>,
+  );
+  expect(screen.getByRole("radio", { name: levelName("ask") })).toBeChecked();
+  expect(screen.getByRole("radio", { name: "Off" })).toBeDisabled();
+  expect(screen.getByRole("radio", { name: "Strict" })).not.toBeDisabled();
+});
+
+it("independent team flags leave Off selected and all levels available", () => {
+  render(
+    <ThemeProvider>
+      <SettingsView
+        page="safety"
+        registry={{
+          ...registry,
+          safetyLevel: "off",
+          teamForcedDenyDestructive: true,
+          teamForcedQuarantineOnDrift: true,
+          teamForcedBlockOnInjection: true,
+        }}
+        onRegistryChange={vi.fn()}
+      />
+    </ThemeProvider>,
+  );
+  expect(screen.getByRole("radio", { name: levelName("off") })).toBeChecked();
+  expect(screen.getByRole("radio", { name: "Off" })).not.toBeDisabled();
+  expect(
+    screen.getByText(/Team also enforces: quarantine on drift, block on injection/),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/Team minimum safety level/)).not.toBeInTheDocument();
+});
+
+it("keeps a stronger member choice when the team lowers its floor", () => {
+  const change = vi.fn();
+  const { rerender } = render(
+    <ThemeProvider>
+      <SettingsView
+        page="safety"
+        registry={{ ...registry, safetyLevel: "strict", teamMinSafetyLevel: "ask" }}
+        onRegistryChange={change}
+      />
+    </ThemeProvider>,
+  );
+  expect(screen.getByRole("radio", { name: levelName("strict") })).toBeChecked();
+  rerender(
+    <ThemeProvider>
+      <SettingsView
+        page="safety"
+        registry={{ ...registry, safetyLevel: "strict", teamMinSafetyLevel: "off" }}
+        onRegistryChange={change}
+      />
+    </ThemeProvider>,
+  );
+  expect(screen.getByRole("radio", { name: levelName("strict") })).toBeChecked();
+  expect(screen.getByRole("radio", { name: "Off" })).not.toBeDisabled();
+});
+
+it("keeps Code Mode off by default under Advanced and persists opt-in", async () => {
+  const user = userEvent.setup();
+  const onRegistryChange = vi.fn();
+  const absent = { ...registry, codeMode: undefined };
+  vi.mocked(setCodeMode).mockReset();
+  vi.mocked(setCodeMode).mockResolvedValueOnce({ ...absent, codeMode: true });
+  render(
+    <ThemeProvider>
+      <SettingsView page="tools" registry={absent} onRegistryChange={onRegistryChange} />
+    </ThemeProvider>,
+  );
+  expect(screen.queryByText("Advanced")).not.toBeInTheDocument();
+  const control = screen.getByRole("switch", { name: /code mode/i });
+  expect(control).not.toBeChecked();
+  await user.click(control);
+  expect(setCodeMode).toHaveBeenCalledWith(true);
+  await waitFor(() =>
+    expect(onRegistryChange).toHaveBeenCalledWith({ ...absent, codeMode: true }),
+  );
+});
+
+describe("SettingsView setting merges", () => {
+  it("keeps concurrent successful setting responses from reverting each other", async () => {
+    const user = userEvent.setup();
+    const onRegistryChange = vi.fn();
+    const piiRequest = deferred<Registry>();
+    const codeModeRequest = deferred<Registry>();
+    mockedSetPiiRedaction.mockReset();
+    mockedSetCodeMode.mockReset();
+    mockedSetPiiRedaction.mockReturnValueOnce(piiRequest.promise);
+    mockedSetCodeMode.mockReturnValueOnce(codeModeRequest.promise);
+
+    const { rerender } = render(
+      <ThemeProvider>
+        <SettingsView
+          page="safety"
+          registry={registry}
+          onRegistryChange={onRegistryChange}
+        />
+      </ThemeProvider>,
+    );
+
+    const piiControl = screen.getByRole("switch", {
+      name: /hide personal data from the model/i,
+    });
+    const safetyControl = screen.getByRole("radio", { name: "Off" });
+
+    await user.click(piiControl);
+    expect(mockedSetPiiRedaction).toHaveBeenCalledWith(true);
+    expect(piiControl).toBeDisabled();
+
+    expect(safetyControl).toBeEnabled();
+
+    rerender(
+      <ThemeProvider>
+        <SettingsView
+          page="tools"
+          registry={registry}
+          onRegistryChange={onRegistryChange}
+        />
+      </ThemeProvider>,
+    );
+    const codeModeControl = screen.getByRole("switch", { name: /code mode/i });
+    await user.click(codeModeControl);
+    expect(mockedSetCodeMode).toHaveBeenCalledWith(false);
+    expect(codeModeControl).toBeDisabled();
+
+    // Resolve the later request first, then return a stale Hide-personal-data snapshot
+    // that still has Code Mode enabled. Each response must update only the setting it
+    // owns, so the stale snapshot must not turn Code Mode back on.
+    const codeModeOff = { ...registry, codeMode: false };
+    codeModeRequest.resolve(codeModeOff);
+    await waitFor(() => expect(codeModeControl).toBeEnabled());
+    expect(onRegistryChange).toHaveBeenCalledWith(codeModeOff);
+
+    const piiOn = { ...registry, codeMode: true, piiRedaction: true };
+    rerender(
+      <ThemeProvider>
+        <SettingsView
+          page="safety"
+          registry={registry}
+          onRegistryChange={onRegistryChange}
+        />
+      </ThemeProvider>,
+    );
+    piiRequest.resolve(piiOn);
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: /hide personal data/i })).toBeEnabled(),
+    );
+    expect(onRegistryChange).toHaveBeenLastCalledWith({
+      ...registry,
+      codeMode: false,
+      piiRedaction: true,
+    });
+    expect(screen.getByRole("radio", { name: "Off" })).toBeEnabled();
+  });
+});
+
+it("keeps access sets and folder routing under Access and changes the default explicitly", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  const pinned = { ...registry, version: 3, defaultAccessProfileId: "default" };
+  vi.mocked(setDefaultAccess).mockResolvedValue({
+    ...pinned,
+    defaultAccessProfileId: null,
+  });
+  render(
+    <ThemeProvider>
+      <SettingsView page="access" registry={pinned} onRegistryChange={onChange} />
+    </ThemeProvider>,
+  );
+  const access = screen.getByRole("region", { name: "access" });
+  expect(within(access).getByText("Access sets")).toBeInTheDocument();
+  expect(within(access).getByText(/folder routing/i)).toBeInTheDocument();
+
+  await user.click(screen.getByRole("combobox", { name: "Default access" }));
+  await user.click(await screen.findByRole("option", { name: "All enabled servers" }));
+  await waitFor(() => expect(setDefaultAccess).toHaveBeenCalledWith(null));
+  expect(onChange).toHaveBeenCalledWith(
+    expect.objectContaining({ defaultAccessProfileId: null }),
+  );
+});
+
+it("shows server permissions immediately for an empty access set", () => {
+  const empty = {
+    ...registry,
+    version: 3,
+    profiles: [{ id: "empty", name: "Empty set", enabledServerIds: [] }],
+  };
+  render(
+    <ThemeProvider>
+      <SettingsView page="access" registry={empty} onRegistryChange={vi.fn()} />
+    </ThemeProvider>,
+  );
+  expect(screen.getByText("Empty set", { selector: "span" })).toBeVisible();
+  expect(screen.getByRole("checkbox", { name: /GitHub/ })).not.toBeChecked();
+});
+
+describe("Remove Toolport from all clients", () => {
+  beforeEach(() => {
+    vi.mocked(disconnectAllClients).mockReset();
+    vi.mocked(getRegistry).mockReset();
+    vi.mocked(toastError).mockClear();
+  });
+
+  it("keeps removal results when refreshing the registry fails", async () => {
+    const user = userEvent.setup();
+    vi.mocked(disconnectAllClients).mockResolvedValue([
+      { clientId: "codex", path: "/fixture/config.toml", dryRun: false, error: null },
+    ]);
+    vi.mocked(getRegistry).mockRejectedValue(new Error("refresh failed"));
+    renderSettings("help");
+    await user.click(
+      screen.getByRole("button", { name: "Remove Toolport from all clients" }),
+    );
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Remove from all clients",
+      }),
+    );
+    await screen.findByText("codex: Client configuration restored");
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        "Client removal finished, but could not refresh settings: Error: refresh failed",
+      ),
+    );
+  });
+
+  it("requires confirmation and reports a partial failure per client", async () => {
+    const user = userEvent.setup();
+    vi.mocked(disconnectAllClients).mockResolvedValue([
+      { clientId: "codex", path: "/fixture/config.toml", dryRun: false, error: null },
+      {
+        clientId: "cursor",
+        path: "/fixture/mcp.json",
+        dryRun: false,
+        error: "Client config conflict",
+      },
+    ]);
+    vi.mocked(getRegistry).mockResolvedValue(registry);
+    renderSettings("help");
+    await user.click(
+      screen.getByRole("button", { name: "Remove Toolport from all clients" }),
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(disconnectAllClients).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(disconnectAllClients).not.toHaveBeenCalled();
+    await user.click(
+      screen.getByRole("button", { name: "Remove Toolport from all clients" }),
+    );
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Remove from all clients",
+      }),
+    );
+    await screen.findByText("codex: Client configuration restored");
+    expect(screen.getByText("cursor: Client config conflict")).toBeInTheDocument();
+    expect(disconnectAllClients).toHaveBeenCalledTimes(1);
+  });
+});
+
+it.each([
+  [3, undefined, "ask"],
+  [3, "off", "off"],
+  [1, undefined, "off"],
+] as const)(
+  "matches backend defaults for registry v%s and safety %s",
+  (version, safetyLevel, expected) => {
+    render(
+      <ThemeProvider>
+        <SettingsView
+          page="safety"
+          registry={{ ...registry, version, safetyLevel }}
+          onRegistryChange={vi.fn()}
+        />
+      </ThemeProvider>,
+    );
+    expect(screen.getByRole("radio", { name: levelName(expected) })).toBeChecked();
+    expect(
+      screen.getByText(
+        new RegExp(`Safety is set to ${expected === "ask" ? "Ask" : "Off"}`),
+      ),
+    ).toBeInTheDocument();
+  },
+);
+
+it("shows a team's Ask minimum even when the member chose Off", () => {
+  render(
+    <ThemeProvider>
+      <SettingsView
+        page="safety"
+        registry={{
+          ...registry,
+          version: 3,
+          safetyLevel: "off",
+          teamMinSafetyLevel: "ask",
+        }}
+        onRegistryChange={vi.fn()}
+      />
+    </ThemeProvider>,
+  );
+  expect(screen.getByRole("radio", { name: levelName("ask") })).toBeChecked();
+  expect(
+    screen.getByText(/Destructive calls need your approval before they run/),
+  ).toBeInTheDocument();
+});
+
+function levelName(level: string) {
+  return level === "off" ? "Off" : level === "ask" ? "Ask" : "Strict";
+}
+it.each([
+  "general",
+  "tools",
+  "safety",
+  "access",
+  "connections",
+  "help",
+] as SettingsSubpage[])("shows only the %s settings page", (page) => {
+  renderSettings(page);
+  expect(screen.getAllByRole("region")).toHaveLength(1);
+  expect(screen.getByRole("region", { name: page })).toBeInTheDocument();
+  expect(document.querySelector("details")).toBeNull();
+});
+
+describe("SettingsView explicit data removal", () => {
+  beforeEach(() => {
+    vi.mocked(dataRemovalPlan).mockReset();
+    vi.mocked(removeToolportData).mockReset();
+    vi.mocked(disconnectAllClients).mockClear();
+  });
+
+  it("shows an ownership error before confirmation or removal", async () => {
+    const error =
+      "Credential ownership inventory for /fixture/Toolport-dev/registry.json: unreadable";
+    vi.mocked(dataRemovalPlan).mockRejectedValue(error);
+    const user = userEvent.setup();
+    renderSettings("help");
+    await user.click(screen.getByRole("button", { name: "Remove Toolport data" }));
+    await waitFor(() =>
+      expect(mockedToastError).toHaveBeenCalledWith(
+        `Could not prepare data removal: ${error}`,
+      ),
+    );
+    expect(
+      screen.queryByRole("dialog", { name: "Remove Toolport data?" }),
+    ).not.toBeInTheDocument();
+    expect(removeToolportData).not.toHaveBeenCalled();
+    expect(disconnectAllClients).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Remove Toolport data" })).toBeVisible();
+  });
+
+  it("lists resources and the report path, and requires confirmation", async () => {
+    vi.mocked(dataRemovalPlan).mockResolvedValue({
+      dataDir: "/fixture/Toolport",
+      resources: [
+        "All contents of /fixture/Toolport",
+        "keychain:conduit-mcp",
+        "/fixture/autostart/Toolport.desktop",
+      ],
+      reportPath: "/fixture/Toolport-removal-report.json",
+    });
+    vi.mocked(removeToolportData).mockResolvedValue();
+    const user = userEvent.setup();
+    renderSettings("help");
+    await user.click(screen.getByRole("button", { name: "Remove Toolport data" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove Toolport data?" });
+    expect(within(dialog).getByText("All contents of /fixture/Toolport")).toBeVisible();
+    expect(within(dialog).getByText("keychain:conduit-mcp")).toBeVisible();
+    expect(within(dialog).getByText("/fixture/autostart/Toolport.desktop")).toBeVisible();
+    expect(removeToolportData).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(removeToolportData).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Remove Toolport data" }));
+    await user.click(screen.getByRole("button", { name: "Close and remove data" }));
+    expect(removeToolportData).toHaveBeenCalledWith(
+      "/fixture/Toolport-removal-report.json",
+    );
+  });
+});
+
+it("shows the current unresolved baseline warning with its time", async () => {
+  const detail =
+    "Toolport could not read the integrity baseline. Safety is Off. Definition reviews recorded only in the unreadable baseline cannot be recovered.";
+  const ts = 1791790000000;
+  vi.mocked(getBaselineNotice).mockResolvedValueOnce({ ts, detail });
+  renderSettings("safety");
+  expect(
+    await screen.findByText(
+      `Last baseline warning: ${new Date(ts).toLocaleString()}: ${detail}`,
+    ),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("Quarantined tools")).not.toBeInTheDocument();
+});
+
+it("does not show a resolved or other-profile baseline warning", async () => {
+  vi.mocked(getBaselineNotice).mockResolvedValue(null);
+  renderSettings("safety");
+  await waitFor(() => expect(getBaselineNotice).toHaveBeenCalled());
+  expect(screen.queryByText(/Last baseline warning/)).not.toBeInTheDocument();
+});
+
+it.each([{ activeProfileId: "other" }, { safetyLevel: "ask" as const }])(
+  "hides a prior baseline notice when the profile or safety level changes: %o",
+  async (change) => {
+    vi.mocked(getBaselineNotice)
+      .mockReset()
+      .mockRejectedValue(new Error("Notice read failed"))
+      .mockResolvedValueOnce({ ts: 123, detail: "Prior profile and policy warning" });
+    const view = (settings: Registry) => (
+      <ThemeProvider>
+        <SettingsView page="safety" registry={settings} onRegistryChange={vi.fn()} />
+      </ThemeProvider>
+    );
+    const rendered = render(view(registry));
+    expect(await screen.findByText(/Last baseline warning/)).toBeInTheDocument();
+    rendered.rerender(view({ ...registry, ...change }));
+    expect(screen.queryByText(/Last baseline warning/)).not.toBeInTheDocument();
+  },
+);

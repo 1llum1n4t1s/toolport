@@ -22,9 +22,9 @@ pub use memory::WorkerAllocator;
 pub use process::{run_script, worker_main};
 
 pub const WORKER_ARG: &str = "--code-mode-worker";
-pub const MAX_SCRIPT_BYTES: usize = crate::routines::MAX_SOURCE_BYTES;
+pub const MAX_SCRIPT_BYTES: usize = crate::codemode::MAX_SOURCE_BYTES;
 pub const MAX_VALUE_BYTES: usize = 4 * 1024 * 1024;
-pub const MAX_SCHEMA_BYTES: usize = crate::routines::MAX_SCHEMA_BYTES;
+pub const MAX_SCHEMA_BYTES: usize = crate::codemode::MAX_SCHEMA_BYTES;
 pub const MEMORY_LIMIT_BYTES: usize = 512 * 1024 * 1024;
 
 /// Maximum encoded JSON payload in one worker frame.
@@ -164,6 +164,7 @@ pub fn terminated_outcome(
         final_result_bytes: 0,
         checkpoint: None,
         error: Some(reason),
+        failure_kind: Some(crate::codemode::FailureKind::WorkerFailure),
     }
 }
 

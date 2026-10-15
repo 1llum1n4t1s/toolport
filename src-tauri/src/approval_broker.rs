@@ -30,8 +30,6 @@ use serde::Serialize;
 use subtle::ConstantTimeEq;
 #[cfg(feature = "desktop")]
 use tauri::{AppHandle, Emitter, Manager};
-#[cfg(feature = "desktop")]
-use tauri_plugin_notification::NotificationExt;
 
 use crate::approval::{
     ApprovalDecision, ApprovalReason, ApprovalRequest, BrokerStream, EndpointDescriptor,
@@ -44,6 +42,9 @@ use crate::approval::{
 pub struct PendingView {
     pub id: String,
     pub client: Option<String>,
+    pub client_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_label: Option<String>,
     pub server: String,
     pub tool: String,
     pub tool_fingerprint: Option<String>,
@@ -55,9 +56,6 @@ pub struct PendingView {
     /// approver to look at. Never persisted and never sent anywhere but this local UI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pii_release: Option<PiiReleaseRequest>,
-    /// The permission rule behind an [`ApprovalReason::AgentPermission`] ask.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_rule: Option<String>,
     /// Wall-clock epoch-millis when this call auto-denies (park time + the fail-closed
     /// timeout). The UI counts down to this exactly, instead of approximating from when
     /// it first saw the request. App and broker share one clock, so it's accurate.
@@ -80,13 +78,6 @@ struct Inner {
     /// persistent list lives in the registry). "Approve for this session" adds here; "Always
     /// allow" adds here AND to the registry.
     session_allow: Mutex<HashSet<String>>,
-    /// Passive routine-save suggestions published by gateways (strong, promotion-available
-    /// candidates). Deduped by definition fingerprint, bounded, in-memory only: this is a
-    /// display queue the user acts on at leisure, never a popup and never a durable store.
-    suggestions: Mutex<Vec<crate::routines::RoutineSuggestion>>,
-    /// Fingerprints the user dismissed this app run; a re-publish of the same definition
-    /// stays out of the list instead of nagging.
-    dismissed_suggestions: Mutex<HashSet<String>>,
     /// Held for the broker lifetime so two desktop shells cannot replace each
     /// other's endpoint or Unix socket during a simultaneous startup.
     _owner_lock: Option<std::fs::File>,
@@ -95,9 +86,6 @@ struct Inner {
 /// Cap on simultaneously-pending approvals, so a misbehaving client can't grow the
 /// queue without bound. Beyond this, new requests are denied immediately.
 const MAX_PENDING: usize = 64;
-/// Cap on parked routine-save suggestions; oldest are evicted first. Suggestions are
-/// re-published on later strong bursts, so an evicted one can come back on real use.
-const MAX_SUGGESTIONS: usize = 16;
 /// Bound unauthenticated request memory before a gateway proves it has the token.
 const MAX_APPROVAL_REQUEST_BYTES: usize = 1024 * 1024;
 /// Pending approvals occupy workers while awaiting a decision. Keep bounded
@@ -194,7 +182,6 @@ struct BrokerHost {
     persistent_allowed: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     pending: Arc<dyn Fn(&PendingView) + Send + Sync>,
     resolved: Arc<dyn Fn(&str) + Send + Sync>,
-    suggestion: Arc<dyn Fn() + Send + Sync>,
 }
 
 #[cfg_attr(
@@ -297,80 +284,6 @@ impl ApprovalBroker {
             .unwrap_or_else(PoisonError::into_inner)
             .contains(key)
     }
-
-    /// Park a gateway-published routine suggestion for the passive UI area.
-    /// Dedupes by definition fingerprint (a re-publish refreshes the entry),
-    /// respects the user's dismissals for this app run, and evicts oldest beyond
-    /// [`MAX_SUGGESTIONS`]. Returns whether the list changed (worth an event).
-    pub fn push_suggestion(&self, suggestion: crate::routines::RoutineSuggestion) -> bool {
-        if suggestion.validate().is_err() {
-            return false;
-        }
-        if self
-            .inner
-            .dismissed_suggestions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains(&suggestion.definition_fingerprint)
-        {
-            return false;
-        }
-        let mut suggestions = self
-            .inner
-            .suggestions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        suggestions.retain(|existing| {
-            existing.definition_fingerprint != suggestion.definition_fingerprint
-        });
-        suggestions.push(suggestion);
-        while suggestions.len() > MAX_SUGGESTIONS {
-            suggestions.remove(0);
-        }
-        true
-    }
-
-    /// Snapshot the suggestion queue for the UI, newest first.
-    pub fn list_suggestions(&self) -> Vec<crate::routines::RoutineSuggestion> {
-        let suggestions = self
-            .inner
-            .suggestions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        suggestions.iter().rev().cloned().collect()
-    }
-
-    /// The suggestion behind a fingerprint, for the approve path. The entry stays in
-    /// the queue until [`Self::remove_suggestion`], so a failed persist keeps it
-    /// visible instead of silently losing the user's material.
-    pub fn suggestion(&self, fingerprint: &str) -> Option<crate::routines::RoutineSuggestion> {
-        self.inner
-            .suggestions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .find(|suggestion| suggestion.definition_fingerprint == fingerprint)
-            .cloned()
-    }
-
-    /// Drop a suggestion after a successful persist (or equivalent-exists outcome).
-    pub fn remove_suggestion(&self, fingerprint: &str) {
-        self.inner
-            .suggestions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|suggestion| suggestion.definition_fingerprint != fingerprint);
-    }
-
-    /// User said no: drop it and keep the same definition out for this app run.
-    pub fn dismiss_suggestion(&self, fingerprint: &str) {
-        self.remove_suggestion(fingerprint);
-        self.inner
-            .dismissed_suggestions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(fingerprint.to_string());
-    }
 }
 
 /// Start the broker: generate a token, bind a loopback port, publish the endpoint
@@ -383,33 +296,38 @@ pub fn start(app: AppHandle) -> ApprovalBroker {
     let allowed_app = app.clone();
     let pending_app = app.clone();
     let resolved_app = app.clone();
-    let suggestion_app = app;
-    start_with_host(BrokerHost {
-        persistent_allowed: Arc::new(move |key| registry_allows(&allowed_app, key)),
-        pending: Arc::new(move |view| {
-            let _ = pending_app.emit("approval-pending", view);
-            notify_pending(&pending_app, view);
-        }),
-        resolved: Arc::new(move |id| {
-            let _ = resolved_app.emit("approval-resolved", id);
-        }),
-        suggestion: Arc::new(move || {
-            let _ = suggestion_app.emit("routine-suggestion", serde_json::json!({}));
-        }),
-    })
+    start_with_host(notification_host(
+        BrokerHost {
+            persistent_allowed: Arc::new(move |key| registry_allows(&allowed_app, key)),
+            pending: Arc::new(move |view| {
+                let _ = pending_app.emit("approval-pending", view);
+            }),
+            resolved: Arc::new(move |id| {
+                let _ = resolved_app.emit("approval-resolved", id);
+            }),
+        },
+        Arc::new(move |view, resolved| notify_pending(&app, view, resolved)),
+    ))
 }
 
-#[cfg(all(target_os = "linux", feature = "gtk-desktop"))]
+#[cfg(all(target_os = "linux", feature = "gtk-desktop", test))]
 pub fn start_native() -> ApprovalBroker {
+    start_native_with_events(|| {})
+}
+
+/// Native queue events wake GTK without polling. The desktop host stays unchanged.
+#[cfg(all(target_os = "linux", feature = "gtk-desktop"))]
+pub fn start_native_with_events(changed: impl Fn() + Send + Sync + 'static) -> ApprovalBroker {
+    let changed = Arc::new(changed);
+    let pending = changed.clone();
     start_with_host(BrokerHost {
         persistent_allowed: Arc::new(|key| {
             crate::registry::load()
                 .map(|registry| registry.is_tool_allowed(key))
                 .unwrap_or(false)
         }),
-        pending: Arc::new(|_| {}),
-        resolved: Arc::new(|_| {}),
-        suggestion: Arc::new(|| {}),
+        pending: Arc::new(move |_| pending()),
+        resolved: Arc::new(move |_| changed()),
     })
 }
 
@@ -432,8 +350,6 @@ fn start_with_host(host: BrokerHost) -> ApprovalBroker {
             token: token.clone(),
             pending: Mutex::new(HashMap::new()),
             session_allow: Mutex::new(HashSet::new()),
-            suggestions: Mutex::new(Vec::new()),
-            dismissed_suggestions: Mutex::new(HashSet::new()),
             _owner_lock: Some(owner_lock),
         }),
     };
@@ -507,8 +423,6 @@ fn inert_broker(token: String) -> ApprovalBroker {
             token,
             pending: Mutex::new(HashMap::new()),
             session_allow: Mutex::new(HashSet::new()),
-            suggestions: Mutex::new(Vec::new()),
-            dismissed_suggestions: Mutex::new(HashSet::new()),
             _owner_lock: None,
         }),
     }
@@ -520,7 +434,7 @@ fn acquire_owner_lock() -> Option<std::fs::File> {
 }
 
 fn acquire_owner_lock_at(dir: &std::path::Path) -> Option<std::fs::File> {
-    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::create_dir_all(dir).ok()?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -528,6 +442,8 @@ fn acquire_owner_lock_at(dir: &std::path::Path) -> Option<std::fs::File> {
     }
     let file = std::fs::OpenOptions::new()
         .create(true)
+        // Reuse the same lock inode without truncating another owner's file.
+        .truncate(false)
         .read(true)
         .write(true)
         .open(dir.join("owner.lock"))
@@ -727,12 +643,7 @@ fn preflight(
     // binds a TOOL definition, and "this tool may run unprompted" is not consent to hand a
     // particular customer's address to a server that never had it. Auto-approving here would
     // let one earlier "always allow" quietly release every future value to that server.
-    // An agent permission ask is excluded too: its "tool" is a class of calls (every
-    // shell command that matches a rule), not one definition an allow key could bind.
-    if req.url_elicitation.is_none()
-        && req.pii_release.is_none()
-        && req.reason != ApprovalReason::AgentPermission
-    {
+    if req.url_elicitation.is_none() && req.pii_release.is_none() {
         if let Some(fp) = req.tool_fingerprint.as_deref() {
             let key = crate::approval::fingerprint_allow_key(&req.server, &req.tool, fp);
             if is_allowed(&key) {
@@ -742,6 +653,38 @@ fn preflight(
     }
 
     Preflight::AskHuman
+}
+
+fn disconnect_decision(reader: &mut impl Read) -> ApprovalDecision {
+    let mut byte = [0];
+    loop {
+        match reader.read(&mut byte) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                return ApprovalDecision::Timeout;
+            }
+            _ => return ApprovalDecision::Denied,
+        }
+    }
+}
+
+#[cfg(any(feature = "desktop", test))]
+fn show_pending_os_toast(
+    retractable: bool,
+    resolved: std::sync::mpsc::Receiver<()>,
+    show_retractable: impl FnOnce(std::sync::mpsc::Receiver<()>),
+    show_persistent: impl FnOnce(),
+) {
+    if retractable {
+        show_retractable(resolved);
+    } else if resolved.try_recv().is_err() {
+        show_persistent();
+    }
 }
 
 /// Serve one gateway connection: read the request, authenticate it, park it for a human
@@ -777,29 +720,6 @@ fn handle_conn(stream: BrokerStream, broker: ApprovalBroker, host: BrokerHost) {
             Err(_) => return,
         };
     }
-
-    // A routine-save suggestion rides the same authenticated endpoint but is
-    // fire-and-forget: store, notify the UI, acknowledge, done. Nothing parks and
-    // no human decision is awaited - the user acts on the passive list at leisure.
-    #[derive(serde::Deserialize)]
-    struct SuggestionEnvelope {
-        token: String,
-        suggestion: crate::routines::RoutineSuggestion,
-    }
-    if let Ok(envelope) = serde_json::from_slice::<SuggestionEnvelope>(&line) {
-        let mut out = stream;
-        let _ = out.set_write_timeout(Some(Duration::from_secs(10)));
-        if envelope.token.is_empty() || !token_eq(&envelope.token, &broker.inner.token) {
-            let _ = writeln!(out, "\"denied\"");
-            return;
-        }
-        if broker.push_suggestion(envelope.suggestion) {
-            (host.suggestion)();
-        }
-        let _ = writeln!(out, "\"ok\"");
-        return;
-    }
-
     let req: ApprovalRequest = match serde_json::from_slice(&line) {
         Ok(r) => r,
         Err(_) => return,
@@ -837,6 +757,11 @@ fn handle_conn(stream: BrokerStream, broker: ApprovalBroker, host: BrokerHost) {
     let view = PendingView {
         id: req.id.clone(),
         client: req.client.clone(),
+        client_name: crate::clients::trusted_client_name(
+            req.client.as_deref(),
+            req.client_name.as_deref(),
+        ),
+        client_label: req.client_label.clone(),
         server: req.server.clone(),
         tool: req.tool.clone(),
         tool_fingerprint: req.tool_fingerprint.clone(),
@@ -844,7 +769,6 @@ fn handle_conn(stream: BrokerStream, broker: ApprovalBroker, host: BrokerHost) {
         arguments: req.arguments.clone(),
         url_elicitation: req.url_elicitation.clone(),
         pii_release: req.pii_release.clone(),
-        agent_rule: req.agent_rule.clone(),
         // Stamp the deadline now, right before we park on `recv_timeout` below.
         deadline_ms: deadline_ms_from_now(),
     };
@@ -879,6 +803,26 @@ fn handle_conn(stream: BrokerStream, broker: ApprovalBroker, host: BrokerHost) {
     // Surface it to the active shell. The poll-based list remains the source of truth.
     (host.pending)(&view);
 
+    // A broker socket owns exactly one prompt. Watch its read side while the
+    // decision waits, so an abandoned caller withdraws without the 120s timeout.
+    let _ = reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(DEFAULT_TIMEOUT_SECS)));
+    let watching = broker.clone();
+    let id = req.id.clone();
+    let disconnected = std::thread::spawn(move || {
+        let decision = disconnect_decision(&mut reader);
+        if let Some(waiter) = watching
+            .inner
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id)
+        {
+            let _ = waiter.decide.send(decision);
+        }
+    });
+
     // Block for the human decision or the fail-closed timeout.
     let decision = rx
         .recv_timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
@@ -898,6 +842,16 @@ fn handle_conn(stream: BrokerStream, broker: ApprovalBroker, host: BrokerHost) {
         "{}",
         serde_json::to_string(&decision).unwrap_or_else(|_| "\"timeout\"".into())
     );
+    match &out {
+        BrokerStream::Tcp(stream) => {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        #[cfg(unix)]
+        BrokerStream::Unix(stream) => {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+    let _ = disconnected.join();
 }
 
 /// Whether the tool `key` is on the registry's persistent always-allow list. Reads the
@@ -913,51 +867,384 @@ fn registry_allows(app: &AppHandle, key: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Notify the human that a call is held: an OS notification plus a taskbar-attention
-/// flash on the main window. Best-effort and non-blocking - if either fails (permission
-/// off, no window) the in-app overlay is still the source of truth. We flash rather than
-/// force-focus so we don't yank the user out of what they're doing.
-#[cfg(feature = "desktop")]
-fn notify_pending(app: &AppHandle, view: &PendingView) {
-    let who = view
-        .client
+/// A resolution can arrive while the OS is still showing the notification.
+/// Its queued signal closes that late notification as soon as Notify returns.
+#[cfg(any(feature = "desktop", test))]
+type ShowPendingNotification =
+    Arc<dyn Fn(&PendingView, std::sync::mpsc::Receiver<()>) + Send + Sync>;
+#[cfg(any(feature = "desktop", test))]
+fn notification_host(host: BrokerHost, show: ShowPendingNotification) -> BrokerHost {
+    let notifications = Arc::new(Mutex::new(
+        HashMap::<String, std::sync::mpsc::Sender<()>>::new(),
+    ));
+    let pending = notifications.clone();
+    BrokerHost {
+        persistent_allowed: host.persistent_allowed,
+        pending: Arc::new(move |view| {
+            let (tx, rx) = channel();
+            pending
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(view.id.clone(), tx);
+            (host.pending)(view);
+            show(view, rx);
+        }),
+        resolved: Arc::new(move |id| {
+            if let Some(tx) = notifications
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(id)
+            {
+                let _ = tx.send(());
+            }
+            (host.resolved)(id);
+        }),
+    }
+}
+
+pub fn approval_requester(view: &PendingView) -> String {
+    let client =
+        crate::clients::trusted_client_name(view.client.as_deref(), Some(&view.client_name));
+    match view
+        .client_label
         .as_deref()
-        .map(|c| format!("{c} wants to run "))
-        .unwrap_or_default();
-    let (title, body) = if let Some(elicitation) = &view.url_elicitation {
+        .filter(|label| *label != client)
+    {
+        Some(label) => format!(
+            "{client} (reports: {})",
+            crate::approval::shorten_client_label(label, 40)
+        ),
+        None => client,
+    }
+}
+
+pub fn approval_notification(view: &PendingView) -> (&'static str, String) {
+    let who = approval_requester(view);
+    if let Some(elicitation) = &view.url_elicitation {
         (
             "Toolport: browser action required",
             format!(
-                "{} requested an external browser interaction. Review it in Toolport.",
+                "{} needs a browser action. Requested by {who}. Review it in Toolport.",
                 elicitation.origin
-            ),
-        )
-    } else if let Some(rule) = &view.agent_rule {
-        (
-            "Toolport: approval required",
-            format!(
-                "{} asks before {}: your rule {rule}. Approve or deny it in Toolport.",
-                view.server, view.tool
             ),
         )
     } else {
         (
             "Toolport: approval required",
             format!(
-                "{who}{}/{} - approve or deny it in Toolport.",
+                "{} / {} needs approval. Requested by {who}.",
                 view.server, view.tool
             ),
         )
-    };
-    let _ = app.notification().builder().title(title).body(body).show();
+    }
+}
+
+/// Notify the human that a call is held: an OS notification plus
+/// taskbar attention on the main window. Best-effort and non-blocking - if either fails (permission
+/// off, no window) the in-app overlay is still the source of truth. We flash rather than
+/// force-focus so we don't yank the user out of what they're doing.
+#[cfg(feature = "desktop")]
+fn notify_pending(app: &AppHandle, view: &PendingView, resolved: std::sync::mpsc::Receiver<()>) {
+    let (title, body) = approval_notification(view);
+    show_pending_os_toast(
+        cfg!(target_os = "linux"),
+        resolved,
+        |resolved| {
+            #[cfg(target_os = "linux")]
+            std::thread::spawn({
+                let body = body.clone();
+                move || notify_until_resolved(title, &body, resolved)
+            });
+            #[cfg(not(target_os = "linux"))]
+            let _ = resolved;
+        },
+        || {
+            // The plugin discards the native handle and exposes no per-toast
+            // identifier/tag or removal API on Windows/macOS. Keep showing the
+            // toast there: a stale notice is preferable to a missed approval.
+            #[cfg(not(target_os = "linux"))]
+            {
+                use tauri_plugin_notification::NotificationExt;
+                let _ = app.notification().builder().title(title).body(&body).show();
+            }
+        },
+    );
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.request_user_attention(Some(tauri::UserAttentionType::Critical));
     }
 }
 
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+fn notify_until_resolved(title: &str, body: &str, resolved: std::sync::mpsc::Receiver<()>) {
+    notify_until_resolved_at_destination(title, body, resolved, "org.freedesktop.Notifications");
+}
+
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+fn notify_until_resolved_at_destination(
+    title: &str,
+    body: &str,
+    resolved: std::sync::mpsc::Receiver<()>,
+    destination: &str,
+) {
+    use gio::glib::{self, variant::ToVariant};
+    use std::cell::Cell;
+    use std::rc::Rc;
+    const BUS: &str = "org.freedesktop.Notifications";
+    const PATH: &str = "/org/freedesktop/Notifications";
+    let context = glib::MainContext::new();
+    let _ = context.with_thread_default(|| {
+        if resolved.try_recv().is_ok() {
+            return;
+        }
+        let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
+            return;
+        };
+        let shown = Rc::new(Cell::new(0u32));
+        let tracked = shown.clone();
+        let signal = bus.signal_subscribe(
+            Some(destination),
+            Some(BUS),
+            Some("NotificationClosed"),
+            Some(PATH),
+            None,
+            gio::DBusSignalFlags::NONE,
+            move |_, _, _, _, _, parameters| {
+                if let Some((id, _)) = parameters.get::<(u32, u32)>() {
+                    if tracked.get() == id {
+                        tracked.set(0);
+                    }
+                }
+            },
+        );
+        let notify = |id: u32, title: &str, body: &str, urgency: u8, expiry: i32| {
+            let hints = HashMap::from([("urgency".to_string(), urgency.to_variant())]);
+            bus.call_sync(
+                Some(destination),
+                PATH,
+                BUS,
+                "Notify",
+                Some(
+                    &(
+                        "Toolport",
+                        id,
+                        "toolport",
+                        title,
+                        gio::glib::markup_escape_text(body).as_str(),
+                        Vec::<String>::new(),
+                        hints,
+                        expiry,
+                    )
+                        .to_variant(),
+                ),
+                None,
+                gio::DBusCallFlags::NONE,
+                5000,
+                gio::Cancellable::NONE,
+            )
+            .ok()
+            .and_then(|reply| reply.child_value(0).get::<u32>())
+        };
+        if let Some(id) = notify(0, title, body, 2, -1) {
+            shown.set(id);
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(DEFAULT_TIMEOUT_SECS);
+        loop {
+            while context.pending() {
+                context.iteration(false);
+            }
+            if std::time::Instant::now() >= deadline
+                || !matches!(
+                    resolved.recv_timeout(Duration::from_millis(10)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                )
+            {
+                break;
+            }
+        }
+        while context.pending() {
+            context.iteration(false);
+        }
+        if shown.get() != 0 {
+            // Urgent cards can survive CloseNotification. Replace the tracked id
+            // with a short, non-actionable expiry before closing, as GTK does.
+            let id = notify(shown.get(), "Approval handled", "", 0, 1000).unwrap_or(shown.get());
+            let _ = bus.call_sync(
+                Some(destination),
+                PATH,
+                BUS,
+                "CloseNotification",
+                Some(&(id,).to_variant()),
+                None,
+                gio::DBusCallFlags::NONE,
+                5000,
+                gio::Cancellable::NONE,
+            );
+        }
+        bus.signal_unsubscribe(signal);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn p08b_r1_notification_puts_action_before_bounded_report() {
+        let view = PendingView {
+            id: "1".into(),
+            client: Some("adapter:claude-code".into()),
+            client_name: "Claude Code".into(),
+            client_label: Some("Claude Code 2.1.0".into()),
+            server: "github".into(),
+            tool: "delete_issue".into(),
+            tool_fingerprint: None,
+            reason: ApprovalReason::Destructive,
+            arguments: serde_json::json!({}),
+            url_elicitation: None,
+            pii_release: None,
+            deadline_ms: 0,
+        };
+        assert_eq!(approval_notification(&view).1, "github / delete_issue needs approval. Requested by Claude Code (reports: Claude Code 2.1.0).");
+        let mut view = view;
+        view.client_label = Some("Claude Code".into());
+        assert_eq!(approval_requester(&view), "Claude Code");
+        view.client_label = Some("界".repeat(80));
+        assert_eq!(
+            approval_requester(&view),
+            format!("Claude Code (reports: {}…)", "界".repeat(39))
+        );
+    }
+
+    #[test]
+    fn p08_broker_read_timeout_is_timeout_and_eof_is_denied() {
+        struct Timeout;
+        impl Read for Timeout {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::from(io::ErrorKind::TimedOut))
+            }
+        }
+        assert_eq!(disconnect_decision(&mut Timeout), ApprovalDecision::Timeout);
+        assert_eq!(
+            disconnect_decision(&mut io::empty()),
+            ApprovalDecision::Denied
+        );
+    }
+
+    #[test]
+    fn p08_non_retractable_platforms_still_show_pending_os_toasts() {
+        for platform in ["Windows", "macOS"] {
+            let (_tx, rx) = channel();
+            let shown = std::cell::Cell::new(false);
+            show_pending_os_toast(
+                false,
+                rx,
+                |_| panic!("unexpected Linux path"),
+                || shown.set(true),
+            );
+            assert!(shown.get(), "{platform} must surface a pending approval");
+        }
+    }
+
+    #[test]
+    fn p08_tauri_notification_resolution_withdraws_only_its_toast_even_after_late_show() {
+        let (shown_tx, shown_rx) = channel();
+        let host = notification_host(
+            BrokerHost {
+                persistent_allowed: Arc::new(|_| false),
+                pending: Arc::new(|_| {}),
+                resolved: Arc::new(|_| {}),
+            },
+            Arc::new(move |view, resolved| {
+                shown_tx.send((view.id.clone(), resolved)).unwrap();
+            }),
+        );
+        let first = request("tok", Some("v2:abc"));
+        let mut other = first.clone();
+        other.id = "other".into();
+        let view = |req: ApprovalRequest| PendingView {
+            id: req.id,
+            client_name: crate::clients::trusted_client_name(
+                req.client.as_deref(),
+                req.client_name.as_deref(),
+            ),
+            client: req.client,
+            client_label: req.client_label,
+            server: req.server,
+            tool: req.tool,
+            reason: req.reason,
+            tool_fingerprint: req.tool_fingerprint,
+            arguments: req.arguments,
+            url_elicitation: None,
+            pii_release: None,
+            deadline_ms: deadline_ms_from_now(),
+        };
+        (host.pending)(&view(first));
+        let (_, first) = shown_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        (host.pending)(&view(other));
+        let (_, other) = shown_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        // The same resolved callback used by handle_conn must queue withdrawal
+        // while the OS's Notify is still returning its id.
+        (host.resolved)("req-1");
+        (host.resolved)("req-1");
+        first.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            other.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        (host.resolved)("other");
+        other.recv_timeout(Duration::from_secs(1)).unwrap();
+    }
+
+    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    #[test]
+    fn p08_tauri_os_toast_is_replaced_and_closed_on_withdrawal() {
+        use gio::glib::{self, variant::ToVariant};
+        let (ready_tx, ready_rx) = channel();
+        let (calls_tx, calls_rx) = channel();
+        let (stop_tx, stop_rx) = channel::<()>();
+        let server = std::thread::spawn(move || {
+            let context = glib::MainContext::new();
+            context.with_thread_default(|| {
+                let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).expect("run this notification test in omabox");
+                let node = gio::DBusNodeInfo::for_xml("<node><interface name='org.freedesktop.Notifications'><method name='Notify'><arg type='s' direction='in'/><arg type='u' direction='in'/><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='s' direction='in'/><arg type='as' direction='in'/><arg type='a{sv}' direction='in'/><arg type='i' direction='in'/><arg type='u' direction='out'/></method><method name='CloseNotification'><arg type='u' direction='in'/></method></interface></node>").unwrap();
+                let registration = bus.register_object("/org/freedesktop/Notifications", &node.lookup_interface("org.freedesktop.Notifications").unwrap(),
+                    move |_, _, _, _, method, parameters, invocation| {
+                        calls_tx.send((method.to_string(), parameters)).unwrap();
+                        invocation.return_value(Some(&if method == "Notify" { (42u32,).to_variant() } else { ().to_variant() }));
+                    }, |_, _, _, _, _| ().to_variant(), |_, _, _, _, _, _| false).unwrap();
+                ready_tx.send(bus.unique_name().unwrap().to_string()).unwrap();
+                loop {
+                    while context.pending() { context.iteration(false); }
+                    if !matches!(stop_rx.recv_timeout(Duration::from_millis(2)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)) { break; }
+                }
+                bus.unregister_object(registration).unwrap();
+            }).unwrap();
+        });
+        let destination = ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (resolved_tx, resolved_rx) = channel();
+        let worker = std::thread::spawn(move || {
+            notify_until_resolved_at_destination(
+                "Approval required",
+                "s/t",
+                resolved_rx,
+                &destination,
+            )
+        });
+        let (method, pending) = calls_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(method, "Notify");
+        assert_eq!(pending.child_value(1).get::<u32>(), Some(0));
+        resolved_tx.send(()).unwrap();
+        let (method, handled) = calls_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(method, "Notify");
+        assert_eq!(handled.child_value(1).get::<u32>(), Some(42));
+        assert_eq!(handled.child_value(7).get::<i32>(), Some(1000));
+        let (method, closed) = calls_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(method, "CloseNotification");
+        assert_eq!(closed.child_value(0).get::<u32>(), Some(42));
+        worker.join().unwrap();
+        stop_tx.send(()).unwrap();
+        server.join().unwrap();
+    }
 
     fn broker() -> ApprovalBroker {
         ApprovalBroker {
@@ -965,83 +1252,9 @@ mod tests {
                 token: "tok".into(),
                 pending: Mutex::new(HashMap::new()),
                 session_allow: Mutex::new(HashSet::new()),
-                suggestions: Mutex::new(Vec::new()),
-                dismissed_suggestions: Mutex::new(HashSet::new()),
                 _owner_lock: None,
             }),
         }
-    }
-
-    fn suggestion(marker: &str) -> crate::routines::RoutineSuggestion {
-        let source = format!("// {marker}\nreturn input.items;");
-        let input_schema = serde_json::json!({
-            "type": "object",
-            "properties": { "items": { "type": "array", "minItems": 1 } },
-            "required": ["items"],
-            "additionalProperties": false
-        });
-        let limits = crate::routines::RoutineLimits::default();
-        let definition_fingerprint =
-            crate::routines::definition_fingerprint(&source, &input_schema, &limits).unwrap();
-        let dependency =
-            crate::routines::ObservedDependency::new("s__work".into(), Some("v2:x".into()))
-                .unwrap();
-        let evidence = crate::routines::PromotionEvidence::new(
-            format!("run_{}", "b".repeat(32)),
-            1,
-            3,
-            vec![dependency],
-            crate::routines::RoutineRiskClass::Low,
-        )
-        .unwrap();
-        crate::routines::RoutineSuggestion {
-            suggested_name: format!("batch-{marker}"),
-            source,
-            input_schema,
-            limits,
-            definition_fingerprint,
-            evidence,
-            intermediate_bytes: 4096,
-        }
-    }
-
-    #[test]
-    fn suggestions_dedupe_by_fingerprint_respect_dismissal_and_stay_bounded() {
-        let b = broker();
-        assert!(b.push_suggestion(suggestion("one")));
-        // Same definition again: replaces rather than duplicates, still one entry.
-        assert!(b.push_suggestion(suggestion("one")));
-        assert_eq!(b.list_suggestions().len(), 1);
-
-        // A tampered payload (fingerprint not matching the definition) never parks.
-        let mut forged = suggestion("two");
-        forged.definition_fingerprint = "sha256:forged".into();
-        assert!(!b.push_suggestion(forged));
-        assert_eq!(b.list_suggestions().len(), 1);
-
-        // Dismissal removes and keeps the same definition out for this app run.
-        let fingerprint = b.list_suggestions()[0].definition_fingerprint.clone();
-        b.dismiss_suggestion(&fingerprint);
-        assert!(b.list_suggestions().is_empty());
-        assert!(!b.push_suggestion(suggestion("one")), "dismissed stays out");
-
-        // Capacity: oldest evicted first, newest survive.
-        for index in 0..MAX_SUGGESTIONS + 4 {
-            b.push_suggestion(suggestion(&format!("cap{index}")));
-        }
-        let listed = b.list_suggestions();
-        assert_eq!(listed.len(), MAX_SUGGESTIONS);
-        assert_eq!(
-            listed[0].suggested_name,
-            format!("batch-cap{}", MAX_SUGGESTIONS + 3)
-        );
-
-        // The approve path reads without consuming; removal is explicit.
-        let fingerprint = listed[0].definition_fingerprint.clone();
-        assert!(b.suggestion(&fingerprint).is_some());
-        assert!(b.suggestion(&fingerprint).is_some());
-        b.remove_suggestion(&fingerprint);
-        assert!(b.suggestion(&fingerprint).is_none());
     }
 
     fn park(b: &ApprovalBroker, id: &str) -> std::sync::mpsc::Receiver<ApprovalDecision> {
@@ -1049,6 +1262,8 @@ mod tests {
         let view = PendingView {
             id: id.into(),
             client: None,
+            client_label: None,
+            client_name: "An AI client".into(),
             server: "s".into(),
             tool: "drop".into(),
             tool_fingerprint: Some("v2:abc".into()),
@@ -1056,7 +1271,6 @@ mod tests {
             arguments: serde_json::json!({}),
             url_elicitation: None,
             pii_release: None,
-            agent_rule: None,
             deadline_ms: deadline_ms_from_now(),
         };
         b.inner
@@ -1155,7 +1369,6 @@ mod tests {
             resolved: Arc::new(move |id| {
                 let _ = resolved_tx.send(id.to_string());
             }),
-            suggestion: Arc::new(|| {}),
         };
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
@@ -1188,6 +1401,54 @@ mod tests {
             ApprovalDecision::Approved
         );
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn p08_caller_disconnect_withdraws_only_its_pending_approval() {
+        let broker = broker();
+        let (pending_tx, pending_rx) = channel();
+        let (resolved_tx, resolved_rx) = channel();
+        let host = BrokerHost {
+            persistent_allowed: Arc::new(|_| false),
+            pending: Arc::new(move |view| {
+                pending_tx.send(view.id.clone()).unwrap();
+            }),
+            resolved: Arc::new(move |id| {
+                resolved_tx.send(id.to_string()).unwrap();
+            }),
+        };
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut workers = Vec::new();
+        let mut clients = Vec::new();
+        for id in ["abandoned", "other"] {
+            let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (server, _) = listener.accept().unwrap();
+            let serving = broker.clone();
+            let host = host.clone();
+            workers.push(std::thread::spawn(move || {
+                handle_conn(BrokerStream::Tcp(server), serving, host)
+            }));
+            let mut req = request("tok", Some("v2:abc"));
+            req.id = id.to_string();
+            writeln!(client, "{}", serde_json::to_string(&req).unwrap()).unwrap();
+            assert_eq!(pending_rx.recv_timeout(Duration::from_secs(1)).unwrap(), id);
+            clients.push(client);
+        }
+        clients[0].shutdown(std::net::Shutdown::Both).unwrap();
+        assert_eq!(
+            resolved_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "abandoned"
+        );
+        assert!(broker.decide("abandoned", true).is_err());
+        assert_eq!(broker.list().len(), 1);
+        broker.decide("other", true).unwrap();
+        assert_eq!(
+            resolved_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "other"
+        );
+        for worker in workers {
+            worker.join().unwrap();
+        }
     }
 
     #[test]
@@ -1238,6 +1499,8 @@ mod tests {
             token: token.into(),
             id: "req-1".into(),
             client: None,
+            client_name: crate::session_observability::current().client_name,
+            client_label: None,
             server: "db".into(),
             tool: "drop_table".into(),
             reason: ApprovalReason::Destructive,
@@ -1245,7 +1508,6 @@ mod tests {
             tool_fingerprint: fingerprint.map(str::to_string),
             url_elicitation: None,
             pii_release: None,
-            agent_rule: None,
         }
     }
 

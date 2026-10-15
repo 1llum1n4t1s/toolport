@@ -26,10 +26,11 @@ pub fn render() -> Result<String, String> {
     let savings = crate::savings::try_summary()
         .map_err(|e| format!("couldn't read the savings logs: {e}"))?;
     let tokens_saved = savings
-        .get("tokensSaved")
+        .get("legacyEstimatedTokensAvoided")
         .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let quarantined = crate::integrity::all_quarantined()?.len() as u64;
+        .unwrap_or(0)
+        .saturating_add(savings["estimatedTokensAvoided"].as_u64().unwrap_or(0));
+    let quarantined = crate::integrity::all_quarantined_count()? as u64;
     Ok(render_with_savings(
         &entries,
         tokens_saved,
@@ -109,7 +110,7 @@ fn render_with_savings(
     }
 
     out.push_str(
-        "# HELP toolport_held_calls_total Destructive calls held for confirmation (retained log)\n",
+        "# HELP toolport_held_calls_total Destructive calls held for approval (retained log)\n",
     );
     out.push_str("# TYPE toolport_held_calls_total counter\n");
     for ((server, tool, client), n) in &held {
@@ -148,15 +149,34 @@ fn render_with_savings(
     }
 
     out.push_str(
-        "# HELP toolport_tokens_saved_total Deprecated compatibility estimate of catalog exposure avoided (legacy plus UTF-8 bytes / 4); not provider tokens\n",
+        "# HELP toolport_tokens_saved_total Historical catalog exposure estimates (pre-2.0 plus bytes/4); excluded from net tokens saved; not provider tokens\n",
     );
     out.push_str("# TYPE toolport_tokens_saved_total counter\n");
     out.push_str(&format!("toolport_tokens_saved_total {}\n", tokens_saved));
 
+    // Savings can decrease or become negative, so the net series is a gauge.
+    out.push_str("# HELP toolport_tokens_saved Net catalog tokens saved; one baseline per identifiable session minus all catalog and search responses; unverifiable history excluded\n");
+    out.push_str("# TYPE toolport_tokens_saved gauge\n");
+    out.push_str(&format!(
+        "toolport_tokens_saved{{tokenizer=\"cl100k_base\",method=\"net_of_discovery\"}} {}\n",
+        savings["tokensSaved"].as_i64().unwrap_or(0)
+    ));
+    for (metric, key) in [
+        ("toolport_catalog_full_tokens_total", "fullTokens"),
+        ("toolport_catalog_exposed_tokens_total", "exposedTokens"),
+        (
+            "toolport_discovery_response_tokens_total",
+            "discoveryTokens",
+        ),
+    ] {
+        out.push_str(&format!("# HELP {metric} Offline tokenizer count at the MCP boundary\n# TYPE {metric} counter\n{metric}{{tokenizer=\"cl100k_base\"}} {}\n",
+            savings[key].as_u64().unwrap_or(0)));
+    }
+
     for (metric, help, key) in [
         (
             "toolport_tool_definition_bytes_avoided_total",
-            "Exact serialized MCP tool-definition array bytes avoided by v2 catalog loads",
+            "Exact serialized MCP array bytes avoided by counted catalog exposures, including historical v2 loads",
             "avoidedSurfaceBytes",
         ),
         (
@@ -166,22 +186,22 @@ fn render_with_savings(
         ),
         (
             "toolport_tool_definition_tokens_estimated_avoided_total",
-            "Estimated token equivalent of v2 avoided bytes (UTF-8 bytes / 4)",
+            "Historical v2 bytes/4 catalog estimate; excluded from net tokens saved",
             "estimatedTokensAvoided",
         ),
         (
             "toolport_tool_list_loads_total",
-            "Non-full tool-list loads, including legacy rows",
+            "Counted catalog exposures plus historical non-full tool-list loads",
             "listLoads",
         ),
         (
             "toolport_discovery_response_bytes_total",
-            "Exact UTF-8 text bytes returned by v2 search responses",
+            "Exact UTF-8 text bytes returned by recorded discovery responses",
             "discoveryResponseBytes",
         ),
         (
             "toolport_discovery_searches_total",
-            "Measured v2 discovery search responses",
+            "Recorded discovery search responses",
             "discoveryCount",
         ),
     ] {
@@ -221,6 +241,21 @@ fn esc_label(s: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn net_savings_is_a_signed_gauge_with_tokenizer_labels() {
+        let summary =
+            json!({"tokensSaved":-30,"fullTokens":100,"exposedTokens":80,"discoveryTokens":50});
+        let text = render_with_savings(&[], 400, 0, &summary);
+        assert!(text.contains("# TYPE toolport_tokens_saved gauge"));
+        assert!(text.contains(
+            "toolport_tokens_saved{tokenizer=\"cl100k_base\",method=\"net_of_discovery\"} -30"
+        ));
+        assert!(
+            text.contains("toolport_discovery_response_tokens_total{tokenizer=\"cl100k_base\"} 50")
+        );
+        assert!(text.contains("toolport_tokens_saved_total 400"));
+    }
 
     #[test]
     fn metrics_enabled_parses_truthy() {
@@ -280,7 +315,7 @@ mod tests {
             json!({"server":"s1","tool":"wipe","ok":true,"kind":"approval","decision":"denied","held":true,"client":"web"}),
             json!({"server":"s1","tool":"wipe","ok":true,"kind":"approval","decision":"approved","held":false,"client":"web"}),
             json!({"server":"s1","tool":"wipe","ok":true,"durationMs":15,"client":"web"}),
-            json!({"server":"toolport","tool":"routine.advisor.hint_shown","kind":"routine","action":"hint_shown"}),
+            json!({"server":"toolport","tool":"advisor.hint_shown","kind":"advisor","action":"hint_shown"}),
         ];
         let text = render_from_parts(&entries, 0, 0);
         assert!(text.contains(
@@ -289,9 +324,9 @@ mod tests {
         assert!(text.contains(
             r#"toolport_tool_calls_total{server="s1",tool="wipe",client="web",ok="true"} 1"#
         ));
-        assert!(!text.contains(r#"tool="routine.advisor.hint_shown""#));
+        assert!(!text.contains(r#"tool="advisor.hint_shown""#));
         assert!(!text.contains(r#"ok="true"} 2"#));
-        // HITL deny is not a confirm-destructive hold.
+        // HITL deny is not a held call.
         assert!(!text.contains("toolport_held_calls_total{"));
         assert!(text.contains(
             r#"toolport_tool_call_duration_milliseconds_count{server="s1",tool="echo"} 1"#
@@ -357,7 +392,12 @@ mod tests {
     #[test]
     fn unreadable_savings_store_fails_the_scrape_for_both_eras() {
         let _lock = crate::registry::data_dir_test_lock();
-        for name in ["savings.jsonl", "savings-v2.jsonl"] {
+        for name in [
+            "savings.jsonl",
+            "savings-v2.jsonl",
+            "savings-v3.jsonl",
+            "savings-v4.jsonl",
+        ] {
             let dir = scratch_data_dir(name);
             let _override = crate::registry::DataDirOverride::set(&dir);
             std::fs::create_dir_all(dir.join(name)).unwrap();

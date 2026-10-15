@@ -1,68 +1,74 @@
-pub mod agent_guard;
-pub mod agent_permissions;
+#[cfg(feature = "desktop")]
+mod activity_revision_ipc;
 pub mod approval;
 #[cfg(any(feature = "desktop", feature = "gtk-desktop"))]
 pub(crate) mod approval_broker;
 pub mod audit;
 pub mod autostart;
 pub mod brand;
+pub mod call_failure;
 pub mod catalog;
+pub mod child_ledger;
+pub mod client_process;
 pub mod clients;
 pub mod codemode;
 pub mod codemode_worker;
 pub mod daemon;
+pub mod daemon_log;
 #[cfg(feature = "desktop")]
 mod desktop;
 pub mod diagnostics_controller;
 pub mod downstream;
 pub mod downstream_backoff;
+#[cfg(any(test, feature = "test-support"))]
+mod fixture_paths;
 pub mod gateway_publish;
 pub mod gatewaylog;
+pub mod guard_cleanup;
 pub mod hooks;
 pub mod hostenv;
 pub mod http_bridge;
+pub mod http_client;
+mod import_credentials;
 pub mod inspect;
 pub mod instructions;
 pub mod integrity;
 pub mod launch_inputs;
 pub mod launcher;
-pub(crate) mod local_auth;
 #[cfg(all(target_os = "linux", feature = "gtk-desktop"))]
 pub mod linux_native;
+pub(crate) mod local_auth;
 pub mod metrics;
 pub mod oauth;
 mod oauth_controller;
 pub mod observability_controller;
+pub mod personal_sync;
 pub mod pii;
 pub mod playground;
+pub mod purge;
 pub mod rate_limits;
 pub mod registry;
 pub mod registry_controller;
 pub mod remote;
 pub mod router;
-pub mod routine_advisor;
-pub mod routine_candidates;
-pub mod routine_catalog;
-// Same gate as `approval_broker`, which it imports: without a desktop shell
-// there is no broker to hold routine suggestions, and an ungated declaration
-// broke `--no-default-features` for anyone building only the gateway.
-#[cfg(any(feature = "desktop", feature = "gtk-desktop"))]
-pub mod routine_controller;
-pub mod routines;
-pub mod rules;
 pub mod savings;
+pub(crate) mod schema_compat;
 pub mod searchtrace;
+pub mod secret_refs;
 pub mod secrets;
 pub mod semantic;
 pub mod server_runtime;
+pub mod session_observability;
 pub mod session_store;
 pub mod shaping;
 pub mod sharing_controller;
-pub mod stacks;
 pub mod stdio_adapter;
 pub mod team_activity;
+pub mod team_sync_status;
 pub mod teams;
 pub mod teams_plan;
+pub mod telemetry;
+pub mod tool_definitions;
 pub mod topology;
 pub mod usage_report;
 pub mod vendors;

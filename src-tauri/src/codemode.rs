@@ -43,7 +43,7 @@
 //!   * recursion limit — depth, which trips almost immediately.
 //!
 //! These count iterations and depth, not allocation or elapsed time. Production
-//! execution, dry runs, and saved routines all require the worker boundary to contain
+//! execution and dry runs both require the worker boundary to contain
 //! allocation failures and terminate expensive built-ins.
 //!
 //! `pure_js_runaways_are_bounded_by_count_not_wall_clock` pins this so a boa upgrade that
@@ -88,12 +88,99 @@ pub struct FetchArgs {
 pub type FetchBinding = Arc<dyn Fn(FetchArgs) -> Value + Send + Sync>;
 
 /// The JSON payload exposed to a script. Ordinary Code Mode keeps its historical mutable
-/// `data` global. Persisted routines get a distinct, deeply frozen `input` global so a saved
-/// definition cannot mutate the arguments it was invoked with or observe a writable alias.
+/// `data` global; an immutable `input` global lets a caller pass validated, deeply frozen
+/// arguments that the script cannot mutate or alias.
 #[derive(Debug, Clone)]
 pub enum ScriptInput {
     Data(Value),
     ImmutableInput(Value),
+}
+
+/// Max bytes of a `run_script` source script accepted by the worker.
+pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
+/// Max bytes of a `run_script` `inputSchema`.
+pub const MAX_SCHEMA_BYTES: usize = 64 * 1024;
+const MAX_VALIDATION_ERRORS: usize = 8;
+
+/// Validate an immutable `run_script` `input` against its caller-supplied JSON Schema before
+/// any downstream call runs. Only local `#` references are allowed and the schema must be a
+/// Draft 2020-12 object schema.
+pub fn validate_arguments(schema: &Value, arguments: &Value) -> Result<(), String> {
+    let validator = validate_input_schema(schema)?;
+    let errors: Vec<String> = validator
+        .iter_errors(arguments)
+        .take(MAX_VALIDATION_ERRORS)
+        .map(|error| {
+            format!(
+                "instance {} violates schema {}",
+                error.instance_path(),
+                error.schema_path()
+            )
+        })
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "run_script input is invalid: {}",
+            errors.join("; ")
+        ))
+    }
+}
+
+fn reject_external_refs(value: &Value, path: &str) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                let child_path = format!("{path}/{key}");
+                if key == "$ref" {
+                    let reference = child
+                        .as_str()
+                        .ok_or_else(|| format!("inputSchema {child_path} must be a string"))?;
+                    if !reference.starts_with('#') {
+                        return Err(format!(
+                            "inputSchema {child_path} uses an external reference; only local # fragments are allowed"
+                        ));
+                    }
+                }
+                reject_external_refs(child, &child_path)?;
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                reject_external_refs(child, &format!("{path}/{index}"))?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_input_schema(schema: &Value) -> Result<jsonschema::Validator, String> {
+    let object = schema
+        .as_object()
+        .ok_or_else(|| "inputSchema must be a JSON object".to_string())?;
+    if object.get("type").and_then(Value::as_str) != Some("object") {
+        return Err("inputSchema root must declare `type: object`".to_string());
+    }
+    if let Some(declared) = object.get("$schema").and_then(Value::as_str) {
+        if !matches!(
+            declared,
+            "https://json-schema.org/draft/2020-12/schema"
+                | "https://json-schema.org/draft/2020-12/schema#"
+        ) {
+            return Err("inputSchema must use JSON Schema Draft 2020-12".to_string());
+        }
+    }
+    let size = serde_json::to_vec(schema).map_err(|e| e.to_string())?.len();
+    if size > MAX_SCHEMA_BYTES {
+        return Err(format!("inputSchema exceeds {MAX_SCHEMA_BYTES} bytes"));
+    }
+    reject_external_refs(schema, "")?;
+    jsonschema::draft202012::meta::validate(schema)
+        .map_err(|e| format!("inputSchema is not valid Draft 2020-12: {e}"))?;
+    jsonschema::draft202012::new(schema)
+        .map_err(|e| format!("inputSchema could not be compiled: {e}"))
 }
 
 /// Resource limits for one script run. All are fail-closed: exceeding any of them aborts
@@ -267,6 +354,20 @@ pub struct CallRecord {
     pub result_bytes: usize,
 }
 
+/// Stable diagnosis fields. Messages are returned to the caller, never used as
+/// telemetry categories: scripts can throw text that impersonates a limit error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    SyntaxValidation,
+    ScriptException,
+    DownstreamFailure,
+    Cancelled,
+    MemoryLimit,
+    Deadline,
+    WorkerFailure,
+}
+
 /// The outcome of running a script.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScriptOutcome {
@@ -308,6 +409,8 @@ pub struct ScriptOutcome {
     /// `Some(message)` if the script threw, hit a limit, or failed to compile. Fail-closed:
     /// the caller surfaces this to the agent as an error result.
     pub error: Option<String>,
+    #[serde(default)]
+    pub failure_kind: Option<FailureKind>,
 }
 
 /// True unless the downstream result carried `isError: true`.
@@ -758,12 +861,21 @@ pub(crate) fn run_script_indexed(
                 progress: Vec::new(),
                 final_result_bytes: 0,
                 checkpoint: None,
+                failure_kind: Some(FailureKind::WorkerFailure),
                 error: Some(format!(
                     "toolport code mode: failed to create JS context: {e}"
                 )),
             };
         }
     };
+
+    // Capture the intrinsic before the prelude or user code can replace it.
+    let original_stringify = context
+        .intrinsics()
+        .objects()
+        .json()
+        .get(js_string!("stringify"), &mut context)
+        .expect("built-in JSON.stringify");
 
     // Pure-JS runaway guards (a script that loops/recurses forever without calling a tool).
     context
@@ -975,7 +1087,7 @@ pub(crate) fn run_script_indexed(
         Err(e) => return fail(calls_made.get(), executed.take(), checkpoint.take(), e),
     };
 
-    match drive_to_completion(&mut context, &state, top) {
+    match drive_to_completion(&mut context, &state, top, &original_stringify) {
         Ok(value) => ScriptOutcome {
             final_result_bytes: serialized_len(&value),
             value,
@@ -983,8 +1095,15 @@ pub(crate) fn run_script_indexed(
             progress: executed.take(),
             checkpoint: checkpoint.take(),
             error: None,
+            failure_kind: None,
         },
-        Err(e) => fail(calls_made.get(), executed.take(), checkpoint.take(), e),
+        Err(e) => {
+            let mut outcome = fail(calls_made.get(), executed.take(), checkpoint.take(), e);
+            if Instant::now() >= deadline {
+                outcome.failure_kind = Some(FailureKind::Deadline);
+            }
+            outcome
+        }
     }
 }
 
@@ -1027,6 +1146,7 @@ fn drive_to_completion(
     context: &mut Context,
     state: &HostState,
     top: JsValue,
+    original_stringify: &JsValue,
 ) -> Result<Value, JsError> {
     // Bound the drive loop so a pure-JS pending Promise can't spin forever.
     const MAX_DRIVE_ITERS: usize = 1_000_000;
@@ -1034,9 +1154,7 @@ fn drive_to_completion(
     for _ in 0..MAX_DRIVE_ITERS {
         flush_pending_host_calls(context, state)?;
 
-        if let Err(e) = context.run_jobs() {
-            return Err(e);
-        }
+        context.run_jobs()?;
 
         // Host work may have been enqueued from a microtask after run_jobs.
         if !state.pending.borrow().is_empty() {
@@ -1044,12 +1162,12 @@ fn drive_to_completion(
         }
 
         let Some(obj) = top.as_object() else {
-            return json_from_js(context, &top);
+            return json_from_js(context, &top, original_stringify);
         };
         let promise = match JsPromise::from_object(obj.clone()) {
             Ok(p) => p,
             Err(_) => {
-                return json_from_js(context, &top);
+                return json_from_js(context, &top, original_stringify);
             }
         };
 
@@ -1062,7 +1180,7 @@ fn drive_to_completion(
                 )));
             }
             PromiseState::Fulfilled(value) => {
-                return json_from_js(context, &value);
+                return json_from_js(context, &value, original_stringify);
             }
             PromiseState::Rejected(reason) => {
                 let msg = reason
@@ -1094,21 +1212,43 @@ fn drive_to_completion(
 /// genuinely cannot be represented (`BigInt`, cyclic structures) into a thrown `TypeError`
 /// we surface as a script error. `undefined` — a script that returned nothing — stays
 /// `null`, matching [`ScriptOutcome::value`]'s contract.
-fn json_from_js(context: &mut Context, value: &JsValue) -> Result<Value, JsError> {
+fn json_from_js(
+    context: &mut Context,
+    value: &JsValue,
+    original_stringify: &JsValue,
+) -> Result<Value, JsError> {
     let json = context.global_object().get(js_string!("JSON"), context)?;
     let stringify = json
         .as_object()
         .ok_or_else(|| type_error("JSON is not an object"))?
-        .get(js_string!("stringify"), context)?
+        .get(js_string!("stringify"), context)?;
+    // Only the unchanged intrinsic guarantees this primitive will be encoded
+    // verbatim. A replacement serializer must run even for a large input.
+    if stringify.strict_equals(original_stringify)
+        && value.as_string().is_some_and(|text| {
+            text.len().saturating_add(2) > crate::codemode_worker::MAX_FRAME_BYTES
+        })
+    {
+        return Err(JsNativeError::range()
+            .with_message("script return value exceeds the IPC limit")
+            .into());
+    }
+    let stringify = stringify
         .as_callable()
         .ok_or_else(|| type_error("JSON.stringify is not callable"))?;
 
-    let encoded = stringify.call(&JsValue::undefined(), &[value.clone()], context)?;
+    let encoded = stringify.call(&JsValue::undefined(), std::slice::from_ref(value), context)?;
     let Some(text) = encoded.as_string() else {
         // `JSON.stringify(undefined)` is `undefined`: the script returned nothing.
         return Ok(Value::Null);
     };
 
+    // Bound the serialized output, after the script-visible serializer runs.
+    if text.len() > crate::codemode_worker::MAX_FRAME_BYTES {
+        return Err(JsNativeError::range()
+            .with_message("script return value exceeds the IPC limit")
+            .into());
+    }
     serde_json::from_str(&text.to_std_string_escaped()).map_err(|e| {
         JsError::from_native(JsNativeError::typ().with_message(format!(
             "script return value could not be encoded as JSON: {e}"
@@ -1162,7 +1302,7 @@ fn flush_pending_host_calls(context: &mut Context, state: &HostState) -> Result<
             }
         }
 
-        for (pending_call, result) in batch.into_iter().zip(results.into_iter()) {
+        for (pending_call, result) in batch.into_iter().zip(results) {
             let result_str = serde_json::to_string(&result).unwrap_or_else(|_| "null".to_string());
             let js_result = JsValue::from(js_string!(result_str));
             pending_call
@@ -1199,7 +1339,6 @@ fn run_calls_parallel(
     std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(n);
         for (i, (name, args)) in items.into_iter().enumerate() {
-            let call = call;
             handles.push(scope.spawn(move || (i, call(start_index + i, &name, args))));
         }
         for handle in handles {
@@ -1248,6 +1387,11 @@ fn fail(
         progress,
         final_result_bytes: 0,
         checkpoint,
+        failure_kind: Some(if err.as_native().is_some_and(|e| e.is_syntax()) {
+            FailureKind::SyntaxValidation
+        } else {
+            FailureKind::ScriptException
+        }),
         error: Some(err.to_string()),
     }
 }
@@ -1271,6 +1415,17 @@ mod tests {
             log.lock().unwrap().push((name.to_string(), args.clone()));
             json!({ "echo": name, "args": args })
         })
+    }
+
+    #[test]
+    fn typed_failure_does_not_trust_thrown_limit_text() {
+        let exception = returns(
+            "throw new Error('code mode script exceeded its memory budget; wall-clock deadline');",
+        );
+        assert_eq!(exception.failure_kind, Some(FailureKind::ScriptException));
+        let syntax = returns("return )(");
+        assert_eq!(syntax.failure_kind, Some(FailureKind::SyntaxValidation));
+        assert_eq!(returns("return 42").failure_kind, None);
     }
 
     fn run(script: &str, data: Value, call: CallBinding, limits: Limits) -> ScriptOutcome {
@@ -1321,7 +1476,7 @@ mod tests {
     }
 
     #[test]
-    fn routine_input_is_deeply_immutable_and_has_no_data_alias() {
+    fn immutable_input_is_deeply_immutable_and_has_no_data_alias() {
         let out = returns_with_immutable_input(
             r#"
                 try { input.owner = "changed"; } catch (_) {}
@@ -2329,5 +2484,56 @@ mod tests {
         assert_eq!(out.error, None, "unexpected error: {:?}", out.error);
         assert_eq!(out.calls, 0, "checkpoint must not count against max_calls");
         assert_eq!(out.checkpoint, Some(json!({ "a": 2 })));
+    }
+
+    #[test]
+    fn schema_validation_is_draft_2020_12_and_local_only() {
+        assert!(validate_input_schema(&json!({
+            "type": "object",
+            "$defs": { "value": { "type": "string" } },
+            "properties": { "value": { "$ref": "#/$defs/value" } }
+        }))
+        .is_ok());
+        assert!(validate_input_schema(&json!({
+            "type": "object",
+            "properties": { "value": { "$ref": "https://example.com/schema" } }
+        }))
+        .unwrap_err()
+        .contains("external reference"));
+        assert!(validate_input_schema(&json!({ "type": "string" })).is_err());
+        assert!(validate_input_schema(&json!({ "type": "not-a-type" })).is_err());
+    }
+
+    #[test]
+    fn argument_errors_report_paths_without_values() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "secret": { "type": "integer" } },
+            "required": ["secret"],
+            "additionalProperties": false
+        });
+        let error = validate_arguments(&schema, &json!({ "secret": "do-not-echo" })).unwrap_err();
+        assert!(error.contains("/secret"));
+        assert!(!error.contains("do-not-echo"));
+    }
+
+    #[test]
+    fn argument_errors_are_bounded_and_enforce_object_rules() {
+        let properties = (0..20)
+            .map(|index| (format!("field{index}"), json!({ "type": "integer" })))
+            .collect::<serde_json::Map<_, _>>();
+        let schema = json!({
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": false
+        });
+        let arguments = (0..20)
+            .map(|index| (format!("field{index}"), json!("private-value")))
+            .chain(std::iter::once(("unexpected".to_string(), json!(true))))
+            .collect::<serde_json::Map<_, _>>();
+
+        let error = validate_arguments(&schema, &Value::Object(arguments)).unwrap_err();
+        assert_eq!(error.matches("instance ").count(), MAX_VALIDATION_ERRORS);
+        assert!(!error.contains("private-value"));
     }
 }

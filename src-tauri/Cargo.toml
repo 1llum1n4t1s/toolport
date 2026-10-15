@@ -1,10 +1,11 @@
 [package]
 name = "conduit"
-version = "1.24.1"
+version = "2.0.0"
 description = "Local MCP gateway: manage all your MCP servers in one place, set up once and shared by every AI client, with ~90% fewer tokens per request"
 authors = ["South Forge AI"]
 edition = "2021"
 default-run = "conduit"
+autobins = false
 
 [[bin]]
 name = "conduit"
@@ -13,15 +14,29 @@ required-features = ["desktop"]
 
 [[bin]]
 name = "toolport-gtk"
-path = "src/bin/toolport-gtk.rs"
+path = "src/linux_native/main.rs"
 required-features = ["gtk-desktop"]
+
+# Keep src/bin limited to shipping entry points: Tauri also scans that directory.
+[[bin]]
+name = "toolport-gateway"
+path = "src/bin/toolport-gateway.rs"
+required-features = ["search-static"]
+
+[[bin]]
+name = "mock-mcp-server"
+path = "src/test_support/mock-mcp-server.rs"
+required-features = ["test-support"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["desktop"]
+default = ["desktop", "search-static"]
+# Required by every gateway build, including headless and bundled sidecars.
+search-static = ["dep:tokenizers", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:rayon"]
 desktop = [
     "dep:tauri",
+    "dep:gio",
     "dep:tauri-build",
     "dep:tauri-plugin-updater",
     "dep:tauri-plugin-process",
@@ -36,11 +51,11 @@ desktop = [
 # enable in a shipped binary. `cargo test --release --bin toolport-gateway`
 # needs it because the library is compiled without `cfg(test)` when linked
 # into the binary; docker-publish rebuilds without this feature before upload.
-test-support = []
+test-support = ["tauri?/test"]
 # Additive Linux-native shell. This is deliberately not a default feature: the
 # current Tauri app remains the shipping desktop while the GTK shell reaches
 # behavioral parity.
-gtk-desktop = ["dep:gtk", "dep:adw", "dep:image", "dep:ksni"]
+gtk-desktop = ["dep:gtk", "dep:adw", "dep:image", "dep:ksni", "dep:futures-channel"]
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
@@ -48,6 +63,10 @@ gtk-desktop = ["dep:gtk", "dep:adw", "dep:image", "dep:ksni"]
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "conduit_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dev-dependencies.tokio]
+version = "1"
+features = ["rt", "sync"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }
@@ -61,7 +80,7 @@ tauri-plugin-notification = { version = "2", optional = true }
 tauri-plugin-autostart = { version = "2", optional = true }
 tauri-plugin-window-state = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 jsonschema = { version = "0.49", default-features = false }
 json5 = "0.4"
 # CST rewriter so install/write can keep comments + trailing commas in JSONC
@@ -73,8 +92,11 @@ toml = "0.8"
 # launch-time repoint, and uninstall (SBS-884). Matches the JSONC CST contract.
 toml_edit = "0.22"
 dirs = "5"
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "gzip", "json"] }
+ureq-proto = { version = "=0.6.4", default-features = false }
 sha2 = "0.10"
+# Offline tokenizer with bundled vocabulary; initialized on the telemetry writer.
+tiktoken-rs = "0.12"
 # HMAC-SHA256 for the approval broker's challenge-response (SBS-867); already in
 # the tree transitively, promoted to a direct dep.
 hmac = "0.12"
@@ -87,6 +109,13 @@ boa_engine = "0.21"
 boa_gc = "0.21"
 base64 = "0.22"
 regex = "1"
+unicode-normalization = "0.1"
+# Offline CPU BERT runtime and tokenizer; no model download or execution provider.
+candle-core = { version = "=0.11.0", optional = true }
+candle-nn = { version = "=0.11.0", optional = true }
+candle-transformers = { version = "=0.11.0", optional = true }
+rayon = { version = "1", optional = true }
+tokenizers = { version = "0.22", optional = true, default-features = false, features = ["fancy-regex"] }
 getrandom = "0.2"
 # OS advisory file locking (flock / LockFileEx) for the cross-process registry write
 # lock, so the app, the gateway binary, and the team-sync worker can't revert each
@@ -112,10 +141,16 @@ keyring = { version = "3", features = ["windows-native"] }
 winreg = "0.55"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Storage_FileSystem",
     "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Credentials",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_RemoteDesktop",
     "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [target.'cfg(unix)'.dependencies]
@@ -128,11 +163,14 @@ security-framework-sys = "2"
 core-foundation = "0.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+gio = { version = "0.18", optional = true }
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+dbus-secret-service = { version = "4.1", features = ["crypto-rust"] }
 gtk = { package = "gtk4", version = "0.11.4", features = ["v4_10"], optional = true }
 adw = { package = "libadwaita", version = "0.9.2", features = ["v1_4", "gtk_v4_10"], optional = true }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 ksni = { version = "0.3.6", features = ["blocking"], optional = true }
+futures-channel = { version = "0.3", optional = true }
 
 # Debug builds carried full debug info, which is most of what makes `target/`
 # enormous: it reached 21G on a maintainer machine, and a contributor reported
@@ -151,3 +189,30 @@ debug = "line-tables-only"
 [[example]]
 name = "audit-performance"
 required-features = ["test-support"]
+
+[[example]]
+name = "quarantine-performance"
+required-features = ["test-support"]
+
+[[example]]
+name = "client-locations-scan"
+required-features = ["test-support"]
+
+[[example]]
+name = "savings-report"
+required-features = ["test-support"]
+
+# Transformer kernels must remain usable in debug gateways and parity tests.
+# Keep application code debuggable; these profiles do not change assertions.
+[profile.dev.package.candle-core]
+opt-level = 3
+[profile.dev.package.candle-nn]
+opt-level = 3
+[profile.dev.package.candle-transformers]
+opt-level = 3
+[profile.dev.package.gemm]
+opt-level = 3
+[profile.dev.package.gemm-common]
+opt-level = 3
+[profile.dev.package.gemm-f32]
+opt-level = 3

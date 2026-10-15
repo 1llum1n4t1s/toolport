@@ -29,7 +29,51 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # INST-06: fail before any build when the tag does not match the version baked
+  # into every artifact. Without this, one forgotten bump ships a release whose
+  # filename and updater version say vX.Y.Z while the binaries still carry the
+  # previous version, producing a false or repeated update.
+  version-check:
+    # Backstop only - GitHub defaults to 360 minutes. Reads a handful of files.
+    timeout-minutes: 5
+    name: check tag against embedded versions
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Check the tag matches every version source
+        run: node scripts/check-release-version.mjs "$GITHUB_REF_NAME"
+
+  linux-packages:
+    uses: ./.github/workflows/linux-packages.yml
+
+  linux-package-upload:
+    name: Attach GTK packages to draft
+    needs: [build, linux-packages]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: gtk-linux-packages
+          path: gtk-packages
+      - name: Attach the tested deb and rpm
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
+        with:
+          draft: true
+          # A suffixed tag (v2.0.0-rc.1, v2.0.0-preview.9) is a pre-release at creation, so
+          # publishing the draft cannot move releases/latest and the v1 updater manifest.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          name: Toolport ${{ github.ref_name }}
+          files: |
+            gtk-packages/*.deb
+            gtk-packages/*.rpm
+          fail_on_unmatched_files: true
+
   build:
+    needs: version-check
     # Backstop only - GitHub defaults to 360 minutes. Deliberately generous: bundles Tauri on four targets and waits on Apple notarisation.
     # A tight limit here would kill a legitimate release, which costs more than a hang.
     timeout-minutes: 90
@@ -46,7 +90,7 @@ jobs:
             bundles: app
             target: x86_64-apple-darwin
           - os: ubuntu-22.04
-            bundles: deb,appimage
+            bundles: appimage
     runs-on: ${{ matrix.os }}
     env:
       # Presence flag only; job-level env is available when steps.if is evaluated.
@@ -179,7 +223,7 @@ jobs:
           Write-Host "Windows signing enabled:`n$conf"
 
       - name: Build installer
-        run: npx tauri build --config src-tauri/tauri.bundle.conf.json ${{ steps.winsign.outputs.config_arg }} --bundles ${{ matrix.bundles }} ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+        run: npx tauri build --config src-tauri/tauri.bundle.conf.json ${{ steps.winsign.outputs.config_arg }} --bundles ${{ matrix.bundles }} ${{ matrix.target && format('--target {0}', matrix.target) || '' }} -- --bin conduit
         env:
           # When set, prepare-sidecar builds the gateway for this target; empty on
           # Windows/Linux, which build for the host.
@@ -280,6 +324,17 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
+      - name: Assert shipped archive contents (also used by Homebrew)
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = windows-latest ]; then
+            node .github/scripts/package-contents.mjs src-tauri/target/release/bundle/nsis/*-setup.exe
+          elif [ "${{ matrix.os }}" = ubuntu-22.04 ]; then
+            node .github/scripts/package-contents.mjs src-tauri/target/release/bundle/appimage/*.AppImage
+          else
+            node .github/scripts/package-contents.mjs src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+          fi
+
       # Use the changelog entry we actually wrote. `generate_release_notes` produces a
       # flat list of every PR title with no grouping and no explanation, which for a
       # release like 1.12.0 buried a privacy feature and a migration note under 48
@@ -316,6 +371,9 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
           draft: true
+          # A suffixed tag (v2.0.0-rc.1, v2.0.0-preview.9) is a pre-release at creation, so
+          # publishing the draft cannot move releases/latest and the v1 updater manifest.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           # Without this the release is titled with the bare tag. Every release since
           # 1.10.0 has been "Toolport vX.Y.Z", set by hand each time.
           name: Toolport ${{ github.ref_name }}
@@ -328,7 +386,6 @@ jobs:
             src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
             src-tauri/target/*/release/bundle/macos/Toolport_*-apple-darwin.app.tar.gz
             src-tauri/target/*/release/bundle/macos/Toolport_*-apple-darwin.app.tar.gz.sig
-            src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/appimage/*.AppImage.sig
 
@@ -376,6 +433,9 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
           draft: true
+          # A suffixed tag (v2.0.0-rc.1, v2.0.0-preview.9) is a pre-release at creation, so
+          # publishing the draft cannot move releases/latest and the v1 updater manifest.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           name: Toolport ${{ github.ref_name }}
           body_path: ${{ steps.notes.outputs.have_notes == 'true' && 'release-notes.md' || '' }}
           generate_release_notes: ${{ steps.notes.outputs.have_notes != 'true' }}

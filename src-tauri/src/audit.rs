@@ -9,13 +9,13 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 /// Trim the log once it passes this size, so it can't grow without bound.
-const MAX_AUDIT_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const MAX_AUDIT_BYTES: u64 = 4 * 1024 * 1024;
 /// Cap on a stored error message. Enough to show why a call failed, bounded so a
 /// pathological error string can't bloat the log line.
 const MAX_AUDIT_ERR_CHARS: usize = 600;
 /// How many of the most recent lines to keep when trimming. Comfortably more than
 /// any dashboard window, so the trim is invisible to the stats/log views.
-const KEEP_LINES: usize = 5000;
+pub(crate) const KEEP_LINES: usize = 5000;
 
 pub fn audit_path() -> Option<PathBuf> {
     // Same anchor as the registry, so the app and a client-spawned gateway (which
@@ -28,6 +28,13 @@ pub fn audit_path() -> Option<PathBuf> {
 /// success, so the caller can honestly confirm the log is gone rather than report a
 /// false "cleared". Local and irreversible; the next call re-creates the file.
 pub fn try_clear() -> std::io::Result<()> {
+    // Write anything queued before deleting, so a line already accepted by a
+    // `record_*` call cannot reappear after the clear.
+    if !crate::telemetry::flush() {
+        return Err(std::io::Error::other(
+            "Telemetry is still pending; retry clearing Activity",
+        ));
+    }
     let Some(path) = audit_path() else {
         return Ok(());
     };
@@ -145,6 +152,7 @@ pub fn record_routed_call(
     error: Option<&str>,
     client: Option<&str>,
     client_name: Option<&str>,
+    client_label: Option<&str>,
     args_hash: Option<&str>,
     pii: Option<PiiPass>,
 ) {
@@ -159,6 +167,9 @@ pub fn record_routed_call(
         args_hash,
         pii,
     );
+    if let Some(label) = client_label.and_then(crate::approval::sanitize_client_label) {
+        entry["clientLabel"] = json!(label);
+    }
     if let Err(error) = crate::team_activity::record(reg, server_id, ok) {
         eprintln!("Toolport: Teams activity could not be persisted: {error}");
     }
@@ -251,24 +262,6 @@ fn timed_entry(
     entry
 }
 
-/// Record a destructive call that was held for confirmation. This is the
-/// confirm-destructive feature working, not a failure, so `ok: true` keeps it out of
-/// the error rate; the `held` flag lets the UI mark it as held rather than as a
-/// (misleading) successful destructive call.
-pub fn record_held(server: &str, tool: &str, client: Option<&str>) {
-    let mut entry = json!({
-        "ts": epoch_millis() as u64,
-        "server": server,
-        "tool": tool,
-        "ok": true,
-        "held": true,
-    });
-    if let Some(c) = client.filter(|c| !c.is_empty()) {
-        entry["client"] = json!(c);
-    }
-    write_line(&entry);
-}
-
 /// Build the audit entry for a gated HITL decision. Pure (no I/O) so it's unit-testable.
 /// `ok:true` keeps governance outcomes out of the error rate; `held` is true for every
 /// blocked outcome and false for `approved` (which ran), so the held-row UI stays honest;
@@ -277,7 +270,7 @@ pub fn record_held(server: &str, tool: &str, client: Option<&str>) {
 /// way it resolved (approved vs denied vs no-response vs unreachable vs stale-state) apart -
 /// which the old flat `record_held` collapsed into one indistinguishable record. `reason`
 /// is the snake_case [`crate::approval::ApprovalReason`]; `decision` is `approved` |
-/// `denied` | `no_response` | `unreachable` | `stale_state` (the last: a human approved but
+/// `denied` | `no_response` | `withdrawn` | `unreachable` | `stale_state` (the last: a human approved but
 /// the arguments were mutated before execute, so the stale approval was rejected). The RAW
 /// arguments are never stored - only `argsHash` - so the log proves which exact call was
 /// decided without persisting secrets/PII from arguments.
@@ -295,7 +288,8 @@ fn decision_entry(
     // `ok:true` throughout keeps governance outcomes (a deny, a timeout) out of the error rate.
     let mut entry = json!({
         "ts": epoch_millis() as u64,
-        "server": server,
+        "server": crate::router::sanitize_segment(server),
+        "serverId": server,
         "tool": tool,
         "ok": true,
         "held": decision != "approved",
@@ -315,19 +309,53 @@ fn decision_entry(
     entry
 }
 
+/// Snapshot why approval was requested before the registry can change during a hold.
+pub fn record_approval_raised(
+    reg: &crate::registry::Registry,
+    server: &str,
+    tool: &str,
+    client: Option<&str>,
+    reason: &str,
+    args: &Value,
+) {
+    let mut entry = decision_entry(
+        server,
+        tool,
+        client,
+        reason,
+        "requested",
+        &args_hash(args),
+        None,
+    );
+    // The final decision records held status. This snapshot must not count it twice.
+    entry["held"] = json!(false);
+    entry["safetyLevel"] = json!(reg.safety_level_effective());
+    entry["safetySource"] = json!(
+        if reg.safety_level_team_floor() > reg.safety_level_selected() {
+            "team_floor"
+        } else {
+            "personal"
+        }
+    );
+    entry["gatewayVersion"] = json!(env!("CARGO_PKG_VERSION"));
+    write_line(&entry);
+}
+
 /// Record a gated HITL decision (the human approved/denied it, it timed out, or the
 /// broker was unreachable). Replaces the flat `record_held` on the approval path so the
 /// audit can distinguish the outcomes. Hashes the arguments; never stores them raw.
+#[allow(clippy::too_many_arguments)]
 pub fn record_decision(
     server: &str,
     tool: &str,
     client: Option<&str>,
+    client_label: Option<&str>,
     reason: &str,
     decision: &str,
     args: &Value,
     held_ms: Option<u64>,
 ) {
-    write_line(&decision_entry(
+    let mut entry = decision_entry(
         server,
         tool,
         client,
@@ -335,154 +363,50 @@ pub fn record_decision(
         decision,
         &args_hash(args),
         held_ms,
-    ));
-}
-
-/// Record a Routine management outcome without persisting source, schemas, or invocation
-/// arguments. `routine_id` and `content_hash` are stable identifiers safe for governance.
-pub fn record_routine(
-    action: &str,
-    routine_id: &str,
-    content_hash: &str,
-    ok: bool,
-    duration_ms: Option<u64>,
-    error: Option<&str>,
-    client: Option<&str>,
-) {
-    write_line(&routine_entry(
-        action,
-        routine_id,
-        content_hash,
-        ok,
-        duration_ms,
-        error,
-        client,
-    ));
-}
-
-/// Record objective Code Run promotion evidence without retaining source, input, arguments,
-/// intermediate results, final results, or approval tokens.
-/// One advisor hint actually rendered into a tool result. Carries tool names, counts,
-/// and the candidate runId - never argument values or draft source - so hint-shown →
-/// save conversion is measurable from the audit log alone.
-pub fn record_advisor_hint(
-    tier: &str,
-    tool: &str,
-    calls: usize,
-    run_id: Option<&str>,
-    client: Option<&str>,
-) {
-    let mut entry = json!({
-        "ts": epoch_millis() as u64,
-        "server": "toolport",
-        "tool": "routine.advisor.hint_shown",
-        "kind": "routine",
-        "action": "hint_shown",
-        "tier": tier,
-        "patternTool": tool,
-        "calls": calls,
-    });
-    if let Some(run_id) = run_id {
-        entry["runId"] = json!(run_id);
+    );
+    if let Some(label) = client_label.and_then(crate::approval::sanitize_client_label) {
+        entry["clientLabel"] = json!(label);
     }
-    if let Some(client) = client.filter(|client| !client.is_empty()) {
-        entry["client"] = json!(client);
-    }
+    entry["serverId"] = json!(server);
     write_line(&entry);
 }
 
-/// A strong candidate was handed to the desktop app's passive suggestion area. The
-/// decision is recorded at publish time (delivery is fire-and-forget), carrying only
-/// identity and counts - never source, schema, or argument values.
-pub fn record_suggestion_published(
-    definition_fingerprint: &str,
-    calls: usize,
-    provenance: crate::routines::EvidenceProvenance,
-    client: Option<&str>,
-) {
-    let mut entry = json!({
-        "ts": epoch_millis() as u64,
-        "server": "toolport",
-        "tool": "routine.suggestion.published",
-        "kind": "routine",
-        "action": "suggestion_published",
-        "definitionFingerprint": definition_fingerprint,
-        "calls": calls,
-        "provenance": provenance,
-    });
-    if let Some(client) = client.filter(|client| !client.is_empty()) {
-        entry["client"] = json!(client);
-    }
-    write_line(&entry);
+/// An unanswered suspended approval can disappear without another tools/call.
+/// Capture its destination and metadata now, without retaining raw arguments.
+pub struct PendingApprovalAudit {
+    path: Option<PathBuf>,
+    entry: Value,
 }
 
-pub fn record_candidate(
-    assessment: &crate::routine_candidates::CandidateAssessment,
-    calls: usize,
-    duration_ms: u64,
-    client: Option<&str>,
-) {
-    let mut entry = json!({
-        "ts": epoch_millis() as u64,
-        "server": "toolport",
-        "tool": "code.run.candidate_assessed",
-        "kind": "routine",
-        "action": "candidate_assessed",
-        "runId": assessment.run_id,
-        "sourceHash": assessment.source_hash,
-        "eligible": assessment.eligible,
-        "promotionAvailable": assessment.promotion_available,
-        "recommendation": assessment.recommendation,
-        "reasonCodes": assessment.reason_codes,
-        "observedTools": assessment.observed_tools,
-        "riskClass": assessment.risk_class,
-        "provenance": assessment.provenance,
-        "calls": calls,
-        "durationMs": duration_ms,
-    });
-    if let Some(reason) = assessment.promotion_unavailable_reason {
-        entry["promotionUnavailableReason"] = json!(reason);
-    }
-    if let Some(client) = client.filter(|client| !client.is_empty()) {
-        entry["client"] = json!(client);
-    }
-    write_line(&entry);
-}
-
-fn routine_entry(
-    action: &str,
-    routine_id: &str,
-    content_hash: &str,
-    ok: bool,
-    duration_ms: Option<u64>,
-    error: Option<&str>,
-    client: Option<&str>,
-) -> Value {
-    let mut entry = json!({
-        "ts": epoch_millis() as u64,
-        "server": "toolport",
-        "tool": format!("routine.{action}"),
-        "kind": "routine",
-        "action": action,
-        "routineId": routine_id,
-        "contentHash": content_hash,
-        "ok": ok,
-    });
-    if let Some(ms) = duration_ms {
-        entry["durationMs"] = json!(ms);
-    }
-    if let Some(c) = client.filter(|c| !c.is_empty()) {
-        entry["client"] = json!(c);
-    }
-    if !ok {
-        if let Some(error) = error {
-            let trimmed: String = error.trim().chars().take(MAX_AUDIT_ERR_CHARS).collect();
-            if !trimmed.is_empty() {
-                entry["error"] = json!(trimmed);
-            }
+impl PendingApprovalAudit {
+    pub fn new(
+        server: &str,
+        tool: &str,
+        client: Option<&str>,
+        client_label: Option<&str>,
+        reason: &str,
+        args_hash: &str,
+    ) -> Self {
+        let mut entry = decision_entry(server, tool, client, reason, "withdrawn", args_hash, None);
+        entry["serverId"] = json!(server);
+        if let Some(label) = client_label.and_then(crate::approval::sanitize_client_label) {
+            entry["clientLabel"] = json!(label);
+        }
+        crate::session_observability::enrich(&mut entry);
+        Self {
+            path: audit_path(),
+            entry,
         }
     }
-    entry
+
+    pub fn finish(mut self, decision: &str, held_ms: u64) {
+        self.entry["ts"] = json!(epoch_millis() as u64);
+        self.entry["decision"] = json!(decision);
+        self.entry["heldMs"] = json!(held_ms);
+        if let Some(path) = self.path {
+            write_line_at(&path, &self.entry);
+        }
+    }
 }
 
 /// A stable SHA-256 (hex) of a call's arguments over a canonical JSON serialization
@@ -564,64 +488,6 @@ fn canonical_json(value: &Value) -> String {
     String::from_utf8(bytes).unwrap_or_default()
 }
 
-/// Build the audit entry for an agent-control server toggle. Pure (no I/O) so the
-/// scope-proof invariant is unit-testable: on a denied out-of-scope attempt the lookup
-/// never resolves the target, so `resolvedServerId` is null and the record can't reveal
-/// whether an out-of-scope server exists. `decision` is one of `enabled`, `disabled`,
-/// `noop_already`, `unresolved`, `agent_control_off`.
-fn agent_toggle_entry(
-    client: Option<&str>,
-    profile: &str,
-    action: &str,
-    requested_target: &str,
-    resolved_server_id: Option<&str>,
-    decision: &str,
-    scoped: bool,
-) -> Value {
-    let ok = matches!(decision, "enabled" | "disabled" | "noop_already");
-    let mut entry = json!({
-        "ts": epoch_millis() as u64,
-        // A synthetic server/tool pair so the audit table renders this like any row.
-        "server": "agent-control",
-        "tool": action,
-        "ok": ok,
-        "event": "agent_control.server_toggle",
-        "requestedTarget": requested_target,
-        // Null on a scoped miss: the whole point is that a denial doesn't name (or even
-        // confirm the existence of) an out-of-scope server.
-        "resolvedServerId": resolved_server_id,
-        "decision": decision,
-        "knownListScope": if scoped { "client_allowed_only" } else { "all" },
-        "profile": profile,
-    });
-    if let Some(c) = client.filter(|c| !c.is_empty()) {
-        entry["client"] = json!(c);
-    }
-    entry
-}
-
-/// Record an agent-control server toggle (toolport_enable_server / _disable_server) to
-/// the audit log, so the log carries proof of the scope decision, not just the behavior.
-pub fn record_agent_toggle(
-    client: Option<&str>,
-    profile: &str,
-    action: &str,
-    requested_target: &str,
-    resolved_server_id: Option<&str>,
-    decision: &str,
-    scoped: bool,
-) {
-    write_line(&agent_toggle_entry(
-        client,
-        profile,
-        action,
-        requested_target,
-        resolved_server_id,
-        decision,
-        scoped,
-    ));
-}
-
 /// Append one entry as a single JSON line. Every client-spawned gateway takes the
 /// same sibling-file lock through append, the size decision, and any rotation, so
 /// a rotator cannot replace a record another process just reported as written.
@@ -629,7 +495,119 @@ fn write_line(entry: &Value) {
     let Some(path) = audit_path() else {
         return;
     };
-    write_line_at(&path, entry);
+    let mut entry = entry.clone();
+    crate::session_observability::enrich(&mut entry);
+    write_line_at(&path, &entry);
+}
+
+/// Lifecycle rows are independent of the active request and never contain payloads.
+pub(crate) fn record_session_at(path: &Path, mut entry: Value) {
+    entry["ts"] = json!(epoch_millis() as u64);
+    write_line_at(path, &entry);
+}
+
+pub fn record_internal(tool: &str, duration_ms: u64, cold: bool, client: Option<&str>, ok: bool) {
+    let mut entry = json!({"ts": epoch_millis() as u64, "kind":"internal", "ok":ok, "server":"toolport", "tool":tool, "durationMs":duration_ms, "cold":cold});
+    if let Some(client) = client.and_then(crate::session_observability::telemetry_principal) {
+        entry["client"] = json!(client);
+    }
+    write_line(&entry);
+}
+
+pub fn record_code_mode(
+    ok: bool,
+    duration_ms: u64,
+    failure: Option<crate::codemode::FailureKind>,
+    client: Option<&str>,
+) {
+    let mut entry = timed_entry(
+        "toolport",
+        "run_script",
+        ok,
+        Some(duration_ms),
+        None,
+        client.and_then(crate::session_observability::telemetry_principal),
+        None,
+        None,
+        None,
+    );
+    if let Some(failure) = failure {
+        entry["failureKind"] = json!(failure);
+    }
+    write_line(&entry);
+}
+
+/// One display summary per client, with calls counted from the full retained audit.
+pub fn recent_client_activity(limit: usize, since_ms: Option<u64>) -> std::io::Result<Vec<Value>> {
+    Ok(client_activity_from_entries(read_all()?, limit, since_ms))
+}
+
+fn client_activity_from_entries(
+    mut entries: Vec<Value>,
+    limit: usize,
+    since_ms: Option<u64>,
+) -> Vec<Value> {
+    fill_session_clients(&mut entries);
+    let names = crate::clients::CallerNames::for_entries(&entries);
+    let mut groups =
+        std::collections::BTreeMap::<String, (Value, std::collections::HashSet<String>)>::new();
+    for entry in entries {
+        let call = tool_call_ok(&entry).is_some();
+        if !call
+            && !matches!(
+                entry["kind"].as_str(),
+                Some("session" | "internal" | "approval")
+            )
+        {
+            continue;
+        }
+        let entry = activity_client_name(entry, &names);
+        let name = crate::clients::display_caller_name(
+            entry["clientName"].as_str(),
+            entry["clientLabel"].as_str(),
+        );
+        let ts = entry["ts"].as_u64().unwrap_or(0);
+        let (summary, sessions) = groups.entry(name).or_insert_with(|| (json!({
+            "client":entry["client"], "clientName":entry["clientName"], "clientLabel":entry["clientLabel"],
+            "lastActiveMs":0, "callsToday": if since_ms.is_some() { json!(0) } else { Value::Null }
+        }), Default::default()));
+        summary["lastActiveMs"] = json!(summary["lastActiveMs"].as_u64().unwrap_or(0).max(ts));
+        if call && since_ms.is_some_and(|since| ts >= since) {
+            summary["callsToday"] = json!(summary["callsToday"].as_u64().unwrap_or(0) + 1);
+        }
+        if let Some(id) = entry["sessionId"].as_str() {
+            sessions.insert(id.to_string());
+        }
+        if summary.get("firstCatalogSize").is_none() && entry["firstCatalogSize"].is_u64() {
+            summary["firstCatalogSize"] = entry["firstCatalogSize"].clone();
+        }
+    }
+    let mut rows: Vec<Value> = groups
+        .into_values()
+        .map(|(mut row, sessions)| {
+            row["sessionCount"] = json!(sessions.len());
+            row
+        })
+        .collect();
+    rows.sort_by_key(|row| std::cmp::Reverse(row["lastActiveMs"].as_u64().unwrap_or(0)));
+    rows.truncate(limit.min(64));
+    rows
+}
+
+/// Last lifecycle summary per session, for protocol observability.
+pub fn recent_sessions(limit: usize) -> std::io::Result<Vec<Value>> {
+    let mut seen = std::collections::HashSet::new();
+    Ok(
+        read_recent_matching(KEEP_LINES, |row| row["kind"] == "session")?
+            .into_iter()
+            .filter(|row| {
+                row["sessionId"]
+                    .as_str()
+                    .is_some_and(|id| seen.insert(id.to_string()))
+            })
+            .take(limit.min(64))
+            .collect(),
+    )
 }
 
 fn write_line_at(path: &Path, entry: &Value) {
@@ -639,27 +617,41 @@ fn write_line_at(path: &Path, entry: &Value) {
 /// Append one audit line, trimming to [`KEEP_LINES`] once the log passes
 /// [`MAX_AUDIT_BYTES`].
 ///
-/// The locked append and the rotation live in [`crate::registry::append_line_locked`],
-/// shared with the agent-hook sensor log so both files keep the same cross-process
+/// The locked append and the rotation live in [`crate::registry::append_lines_locked`],
+/// shared with the other append-only logs so they keep the same cross-process
 /// guarantees by construction rather than by two copies staying in step (#708,
-/// SBS-868, SBS-869).
+/// SBS-868, SBS-869). Normal writes queue on the background telemetry writer so the
+/// lock and any rotation stay off the call path ([`crate::telemetry`]).
 fn write_line_at_with_rotation_hook(
     path: &Path,
     entry: &Value,
     after_snapshot: Option<&mut dyn FnMut()>,
 ) {
-    if let Err(error) = crate::registry::append_line_locked(
+    // The rotation hook is a cross-process test seam and must run on the calling
+    // thread, so a hook forces the synchronous path.
+    if after_snapshot.is_some() {
+        if let Err(error) = crate::registry::append_line_locked(
+            path,
+            &entry.to_string(),
+            MAX_AUDIT_BYTES,
+            KEEP_LINES,
+            after_snapshot,
+        ) {
+            eprintln!(
+                "toolport: audit record dropped for '{}': {error}",
+                path.display()
+            );
+        }
+        return;
+    }
+    crate::telemetry::record(
         path,
         &entry.to_string(),
-        MAX_AUDIT_BYTES,
-        KEEP_LINES,
-        after_snapshot,
-    ) {
-        eprintln!(
-            "toolport: audit record dropped for '{}': {error}",
-            path.display()
-        );
-    }
+        crate::telemetry::Rotation::TrimTail {
+            max_bytes: MAX_AUDIT_BYTES,
+            keep_lines: KEEP_LINES,
+        },
+    );
 }
 
 /// The most recent `limit` entries, newest first.
@@ -669,6 +661,25 @@ fn write_line_at_with_rotation_hook(
 /// "no tool calls" / Protection active (SBS-873). Unparseable lines are skipped
 /// — a mid-write or corrupt line is not an IO failure.
 pub fn read_recent(limit: usize) -> std::io::Result<Vec<Value>> {
+    read_recent_matching(limit, |row| row["kind"] != "telemetry_gap")
+}
+
+/// Visible Activity rows, filtering before the limit so other governance logs
+/// cannot hide an older call or approval outcome.
+pub fn read_activity(limit: usize) -> std::io::Result<Vec<Value>> {
+    read_recent_matching(limit, |row| {
+        tool_call_ok(row).is_some() || row["kind"] == "approval" || row["kind"] == "internal"
+    })
+}
+
+fn read_recent_matching(
+    limit: usize,
+    visible: impl Fn(&Value) -> bool,
+) -> std::io::Result<Vec<Value>> {
+    // This process may have accepted audit lines that are still queued for the
+    // background writer; land them before reading so a caller never misses its own
+    // writes.
+    crate::telemetry::flush();
     let Some(path) = audit_path() else {
         return Ok(Vec::new());
     };
@@ -681,12 +692,73 @@ pub fn read_recent(limit: usize) -> std::io::Result<Vec<Value>> {
     // first let an unparseable line consume a slot, so one corrupt row among the
     // newest entries returned a short page and dropped older valid history that
     // should have filled it.
-    Ok(content
+    let mut entries: Vec<_> = content
         .lines()
         .rev()
-        .filter_map(|line| serde_json::from_str(line).ok())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(visible)
         .take(limit)
+        .collect();
+    fill_session_clients(&mut entries);
+    let names = crate::clients::CallerNames::for_entries(&entries);
+    Ok(entries
+        .into_iter()
+        .map(|entry| activity_client_name(entry, &names))
         .collect())
+}
+
+/// Older gateways recorded the caller's client ID on calls but not on session
+/// rows. Give each session row the ID its own calls carry.
+fn fill_session_clients(entries: &mut [Value]) {
+    let mut by_session = std::collections::HashMap::new();
+    for entry in entries.iter() {
+        if let (Some(session), Some(client)) =
+            (entry["sessionId"].as_str(), entry["client"].as_str())
+        {
+            by_session
+                .entry(session.to_string())
+                .or_insert_with(|| client.to_string());
+        }
+    }
+    for entry in entries.iter_mut() {
+        if entry.get("client").is_some_and(|client| !client.is_null()) {
+            continue;
+        }
+        if let Some(client) = entry["sessionId"]
+            .as_str()
+            .and_then(|session| by_session.get(session))
+        {
+            entry["client"] = json!(client);
+        }
+    }
+}
+
+pub fn activity_client_name(mut entry: Value, names: &crate::clients::CallerNames) -> Value {
+    if !entry.is_object() {
+        return entry;
+    }
+    if entry.get("client").is_some() || entry.get("clientName").is_some() {
+        entry["clientName"] = json!(names.trusted_name(
+            entry.get("client").and_then(Value::as_str),
+            entry.get("clientName").and_then(Value::as_str),
+        ));
+    }
+    // Historical rows can predate the write-time privacy filter. Keep their
+    // stored history intact while filtering every caller field used by the UI.
+    if entry["client"]
+        .as_str()
+        .is_some_and(|client| crate::session_observability::telemetry_principal(client).is_none())
+    {
+        entry.as_object_mut().unwrap().remove("client");
+    }
+    if let Some(label) = entry["clientLabel"].as_str() {
+        if let Some(safe) = crate::session_observability::display_label(label) {
+            entry["clientLabel"] = json!(safe);
+        } else {
+            entry.as_object_mut().unwrap().remove("clientLabel");
+        }
+    }
+    entry
 }
 
 /// Average and 95th-percentile of a duration sample, in ms. `None` when the
@@ -710,6 +782,8 @@ fn latency(durs: &mut [u64]) -> (Option<u64>, Option<u64>) {
 ///
 /// Same empty-vs-unreadable contract as [`read_recent`] (SBS-873).
 pub fn read_all() -> std::io::Result<Vec<Value>> {
+    // Land this process's queued audit lines before reading (see `read_recent`).
+    crate::telemetry::flush();
     let Some(path) = audit_path() else {
         return Ok(Vec::new());
     };
@@ -721,7 +795,8 @@ pub fn read_all() -> std::io::Result<Vec<Value>> {
     Ok(content
         .lines()
         .rev()
-        .filter_map(|line| serde_json::from_str(line).ok())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|row| row["kind"] != "telemetry_gap")
         .collect())
 }
 
@@ -729,15 +804,22 @@ pub fn read_all() -> std::io::Result<Vec<Value>> {
 ///
 /// `None` means this line is not a tool call and must not increment call or
 /// success counters (SBS-932):
-/// - a missing `ok` is unknown, not success (advisor / suggestion / candidate
-///   writers omit the field)
+/// - a missing `ok` is unknown, not success
 /// - `kind` in {approval, routine, advisor, suggestion, candidate} is a
-///   governance or routine row, even when `ok` is present (`ok:true` on
-///   approval is intentional so a deny stays out of the error-rate numerator)
+///   governance row, including rows written by earlier versions, even when `ok`
+///   is present (`ok:true` on approval is intentional so a deny stays out of the
+///   error-rate numerator)
 pub fn tool_call_ok(entry: &Value) -> Option<bool> {
     let ok = entry.get("ok").and_then(Value::as_bool)?;
+    // Preview builds logged a refused sync change as a failed call.
+    if entry.get("tool").and_then(Value::as_str) == Some("sync_environment_refused") {
+        return None;
+    }
     match entry.get("kind").and_then(Value::as_str) {
-        Some("approval" | "routine" | "advisor" | "suggestion" | "candidate") => None,
+        Some(
+            "approval" | "routine" | "advisor" | "suggestion" | "candidate" | "telemetry_gap"
+            | "internal" | "session",
+        ) => None,
         _ => Some(ok),
     }
 }
@@ -747,6 +829,8 @@ pub fn tool_call_ok(entry: &Value) -> Option<bool> {
 /// retained (the byte cap bounds it), not a fixed window, so the error rate stays consistent
 /// with the call count instead of being taken over an arbitrary slice.
 pub fn stats() -> std::io::Result<Value> {
+    // Land this process's queued audit lines before aggregating (see `read_recent`).
+    crate::telemetry::flush();
     // Read on every request: metadata alone can miss equal-length replacements,
     // coarse timestamps, and changes from another gateway process.
     let content = match audit_path().map(std::fs::read_to_string) {
@@ -759,10 +843,14 @@ pub fn stats() -> std::io::Result<Value> {
         content: None,
         stats: Value::Null,
     });
-    Ok(CACHE
+    let mut stats = CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(content))
+        .get(content);
+    stats["telemetry"] = crate::telemetry::activity_health();
+    stats["telemetry"]["retainedDropped"] = stats["retainedDropped"].clone();
+    stats["gatewayNotes"] = serde_json::json!(crate::daemon::status_notes());
+    Ok(stats)
 }
 
 /// Cache one exact snapshot, bounded by the normal log cap. Idle Activity polls
@@ -836,9 +924,14 @@ fn aggregate_rows<T: std::borrow::Borrow<Value>>(entries: impl IntoIterator<Item
     let mut by_server: HashMap<String, Agg> = HashMap::new();
     let mut total = 0u64;
     let mut errors = 0u64;
+    let mut dropped = 0u64;
 
     for row in entries {
         let e = row.borrow();
+        if e["kind"] == "telemetry_gap" {
+            dropped = dropped.saturating_add(e["dropped"].as_u64().unwrap_or(0));
+            continue;
+        }
         let Some(ok) = tool_call_ok(e) else {
             continue;
         };
@@ -919,6 +1012,7 @@ fn aggregate_rows<T: std::borrow::Borrow<Value>>(entries: impl IntoIterator<Item
 
     json!({
         "total": total,
+        "retainedDropped": dropped,
         "errors": errors,
         "errorRate": if total > 0 { errors as f64 / total as f64 } else { 0.0 },
         "servers": servers,
@@ -947,6 +1041,7 @@ const CSV_COLUMNS: &[&str] = &[
     "piiReplaced",
     "piiIncomplete",
     "clientName",
+    "clientLabel",
 ];
 
 /// Render audit `entries` as CSV (RFC-4180-ish: CRLF rows, quoted cells, doubled
@@ -988,7 +1083,208 @@ fn csv_cell(value: Option<&Value>) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn client_activity_groups_sessions_and_counts_only_todays_tool_calls() {
+        let rows = client_activity_from_entries(
+            vec![
+                json!({"kind":"session","sessionId":"c2","clientName":"Codex","ts":300,"firstCatalogSize":1711}),
+                json!({"kind":"approval","clientName":"Codex","ts":290,"ok":true}),
+                json!({"kind":"internal","clientName":"Codex","ts":280,"ok":true}),
+                json!({"clientName":"Codex","ts":250,"ok":false}),
+                json!({"clientName":"Codex","ts":240,"ok":true}),
+                json!({"clientName":"Codex","server":"toolport","tool":"run_script","ts":230,"ok":true}),
+                json!({"kind":"session","sessionId":"c1","clientName":"Codex","ts":220}),
+                json!({"clientName":"Codex","ts":50,"ok":true}),
+                json!({"clientName":"Unknown client","clientLabel":"inbox","ts":30,"ok":true}),
+            ],
+            64,
+            Some(100),
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["clientName"], "Codex");
+        assert_eq!(rows[0]["sessionCount"], 2);
+        assert_eq!(rows[0]["callsToday"], 3);
+        assert_eq!(rows[0]["lastActiveMs"], 300);
+        assert_eq!(rows[0]["firstCatalogSize"], 1711);
+        assert_eq!(rows[1]["callsToday"], 0);
+        assert_eq!(
+            crate::clients::display_caller_name(
+                rows[1]["clientName"].as_str(),
+                rows[1]["clientLabel"].as_str()
+            ),
+            "inbox (reported)"
+        );
+        assert!(
+            client_activity_from_entries(vec![json!({"ok":true,"ts":1})], 1, None)[0]["callsToday"]
+                .is_null()
+        );
+    }
+
+    #[test]
+    fn f6_historical_caller_fields_are_private_on_display_only() {
+        let stored = json!({"client":"adapter:/home/private/customer.env", "clientLabel":"private/customer.env", "ok":true});
+        let displayed = activity_client_name(
+            stored.clone(),
+            &crate::clients::CallerNames::for_entries(&[]),
+        );
+        assert_eq!(displayed["clientName"], "[private]");
+        assert_eq!(displayed["clientLabel"], "[private]");
+        assert!(displayed.get("client").is_none());
+        assert_eq!(stored["client"], "adapter:/home/private/customer.env");
+        let reported = activity_client_name(
+            json!({"clientLabel":"private/customer.env", "ok":true}),
+            &crate::clients::CallerNames::for_entries(&[]),
+        );
+        assert!(reported.get("clientName").is_none());
+        assert_eq!(reported["clientLabel"], "[private]");
+    }
+
+    #[test]
+    fn f6_every_new_call_path_records_caller_identity() {
+        let _data = crate::registry::DataDirTestEnv::new("f6-audit-callers");
+        record_timed("fixture", "direct", true, Some(1), None, None);
+        record_internal("search", 1, false, Some("adapter:inbox"), true);
+        record_code_mode(true, 1, None, Some("adapter:inbox"));
+        {
+            let _context = crate::session_observability::ContextGuard::enter(
+                crate::session_observability::Context {
+                    client: Some("adapter:inbox".into()),
+                    client_name: Some("inbox".into()),
+                    ..Default::default()
+                },
+            );
+            record_timed("fixture", "nested", true, Some(1), None, None);
+            record_routed_call(
+                &crate::registry::Registry::default(),
+                "fixture",
+                "routed",
+                true,
+                Some(1),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
+        }
+        let rows = read_all().unwrap();
+        assert_eq!(rows.len(), 5);
+        for row in rows {
+            assert_eq!(
+                row["clientName"],
+                if row["tool"] == "direct" {
+                    "Unknown client"
+                } else {
+                    "inbox"
+                }
+            );
+            if row["tool"] != "direct" {
+                assert_eq!(row["client"], "adapter:inbox");
+            }
+        }
+        let legacy = activity_client_name(
+            json!({"ok":true,"tool":"legacy"}),
+            &crate::clients::CallerNames::for_entries(&[]),
+        );
+        assert!(legacy.get("clientName").is_none());
+    }
+
+    #[test]
+    fn p08b_r1_hyphenated_call_and_approval_share_activity_server() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let dir = std::env::temp_dir().join(format!("toolport-p08b-r1-{}", std::process::id()));
+        let _data = crate::registry::DataDirOverride::set(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        record_routed_call(
+            &crate::registry::Registry::default(),
+            "team-slack",
+            "read",
+            true,
+            Some(850),
+            None,
+            Some("adapter:claude-code"),
+            None,
+            None,
+            None,
+            None,
+        );
+        record_decision(
+            "team-slack",
+            "delete",
+            Some("adapter:claude-code"),
+            None,
+            "destructive",
+            "denied",
+            &json!({}),
+            Some(1500),
+        );
+        let rows = read_recent(10).unwrap();
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert_eq!(row["server"], "team_slack");
+            assert_eq!(row["serverId"], "team-slack");
+            assert_eq!(row["clientName"], "Claude Code");
+        }
+        assert_eq!(
+            rows.iter()
+                .map(|row| row["server"].as_str().unwrap())
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            1
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retained_telemetry_gaps_warn_after_daemon_exit_without_fake_calls() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let dir = std::env::temp_dir().join(format!("toolport-gap-history-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _data = crate::registry::DataDirOverride::set(&dir);
+        std::fs::write(
+            audit_path().unwrap(),
+            concat!(
+                "{\"server\":\"fixture\",\"tool\":\"read\",\"ok\":true}\n",
+                "{\"kind\":\"telemetry_gap\",\"dropped\":3,\"since\":42,\"ts\":45}\n"
+            ),
+        )
+        .unwrap();
+        let stats = stats().unwrap();
+        assert_eq!(stats["total"], 1);
+        assert_eq!(stats["telemetry"]["retainedDropped"], 3);
+        assert!(crate::telemetry::activity_notices(&stats["telemetry"])
+            .iter()
+            .any(|note| note.contains("3 dropped telemetry records")));
+        assert_eq!(read_recent(1).unwrap().len(), 1);
+        assert_eq!(read_recent(1).unwrap()[0]["tool"], "read");
+        assert_eq!(read_all().unwrap().len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     use super::*;
+
+    #[test]
+    fn session_rows_take_the_client_id_their_calls_carry() {
+        let mut entries = vec![
+            json!({"kind":"session","sessionId":"s1","clientName":"Unknown app (via python3.14)","clientLabel":"inbox 1"}),
+            json!({"sessionId":"s1","client":"adapter:inbox","clientName":"Unknown app (via python3.14)","tool":"t","ok":true}),
+            json!({"kind":"session","sessionId":"s2","clientName":"Unknown app (via node)"}),
+        ];
+        fill_session_clients(&mut entries);
+        assert_eq!(entries[0]["client"], "adapter:inbox");
+        assert!(entries[2].get("client").is_none());
+        let names = crate::clients::CallerNames::for_entries(&entries);
+        assert_eq!(
+            activity_client_name(entries[0].clone(), &names)["clientName"],
+            "inbox"
+        );
+        assert_eq!(
+            activity_client_name(entries[2].clone(), &names)["clientName"],
+            "Unknown app (via node)"
+        );
+    }
 
     fn oversized_audit_content() -> String {
         let padding = "x".repeat(420);
@@ -1081,7 +1377,7 @@ mod tests {
         })];
         let csv = to_csv(&entries);
         assert!(csv.starts_with(
-            "ts,server,tool,client,ok,held,kind,reason,decision,argsHash,durationMs,heldMs,action,error,piiReplaced,piiIncomplete,clientName\r\n"
+            "ts,server,tool,client,ok,held,kind,reason,decision,argsHash,durationMs,heldMs,action,error,piiReplaced,piiIncomplete,clientName,clientLabel\r\n"
         ));
         assert!(csv.contains("\"gh\""));
         assert!(csv.contains("\"search\""));
@@ -1110,86 +1406,6 @@ mod tests {
     fn to_csv_escapes_embedded_quotes() {
         let csv = to_csv(&[json!({ "error": "he said \"hi\"" })]);
         assert!(csv.contains("\"he said \"\"hi\"\"\""), "got {csv}");
-    }
-
-    #[test]
-    fn routine_entry_records_duration_without_sensitive_payloads() {
-        let success = routine_entry(
-            "run",
-            "routine-1",
-            "deadbeef",
-            true,
-            Some(37),
-            None,
-            Some("cursor-work"),
-        );
-        assert_eq!(success["server"], "toolport");
-        assert_eq!(success["tool"], "routine.run");
-        assert_eq!(success["kind"], "routine");
-        assert_eq!(success["action"], "run");
-        assert_eq!(success["routineId"], "routine-1");
-        assert_eq!(success["contentHash"], "deadbeef");
-        assert_eq!(success["durationMs"], 37);
-        assert_eq!(success["client"], "cursor-work");
-        assert_eq!(success["ok"], true);
-        assert!(success.get("source").is_none());
-        assert!(success.get("inputSchema").is_none());
-        assert!(success.get("arguments").is_none());
-
-        let failed = routine_entry(
-            "save",
-            "routine-2",
-            "cafebabe",
-            false,
-            None,
-            Some("  validation failed  "),
-            None,
-        );
-        assert!(failed.get("durationMs").is_none());
-        assert!(failed.get("client").is_none());
-        assert_eq!(failed["error"], "validation failed");
-    }
-
-    #[test]
-    fn agent_toggle_denial_record_proves_scope_without_leaking() {
-        // A scoped client's out-of-scope toggle: the lookup never resolves the target,
-        // so the record must carry resolvedServerId=null, decision=unresolved, and a
-        // client-scoped known-list flag, and must NOT name any out-of-scope server.
-        let e = agent_toggle_entry(
-            Some("cursor-work"),
-            "coding",
-            "enable",
-            "Beta",
-            None,
-            "unresolved",
-            true,
-        );
-        assert_eq!(e["event"], "agent_control.server_toggle");
-        assert!(
-            e["resolvedServerId"].is_null(),
-            "a scoped miss must not resolve a server"
-        );
-        assert_eq!(e["decision"], "unresolved");
-        assert_eq!(e["knownListScope"], "client_allowed_only");
-        assert_eq!(e["ok"], false);
-        assert_eq!(e["requestedTarget"], "Beta");
-        assert_eq!(e["client"], "cursor-work");
-
-        // A successful in-scope toggle resolves the real server id and reads as ok.
-        let ok = agent_toggle_entry(
-            None,
-            "coding",
-            "disable",
-            "gh",
-            Some("gh"),
-            "disabled",
-            true,
-        );
-        assert_eq!(ok["resolvedServerId"], "gh");
-        assert_eq!(ok["decision"], "disabled");
-        assert_eq!(ok["ok"], true);
-        // Unattributed (local/stdio) call omits the client field entirely.
-        assert!(ok.get("client").is_none());
     }
 
     #[test]
@@ -1252,7 +1468,7 @@ mod tests {
         assert_eq!(s["servers"].as_array().unwrap().len(), 0);
     }
 
-    /// HITL / routine rows must not inflate Activity "calls logged" or the
+    /// HITL / governance rows must not inflate Activity "calls logged" or the
     /// error-rate denominator. Missing `ok` is unknown, not success (SBS-932).
     #[test]
     fn aggregate_skips_hitl_and_omitted_ok_rows() {
@@ -1261,7 +1477,7 @@ mod tests {
             json!({"server":"github","tool":"wipe","ok":true,"kind":"approval","decision":"denied","held":true,"ts":20}),
             json!({"server":"github","tool":"wipe","ok":true,"kind":"approval","decision":"approved","held":false,"ts":30}),
             json!({"server":"github","tool":"wipe","ok":true,"ts":31,"durationMs":12}),
-            json!({"server":"toolport","tool":"routine.advisor.hint_shown","kind":"routine","action":"hint_shown","ts":40}),
+            json!({"server":"toolport","tool":"advisor.hint_shown","kind":"advisor","action":"hint_shown","ts":40}),
             json!({"server":"github","tool":"get","ok":false,"ts":50,"durationMs":4}),
         ];
         let s = aggregate(&entries);
@@ -1279,6 +1495,50 @@ mod tests {
     }
 
     #[test]
+    fn p10c_all_approval_outcomes_leave_call_stats_unchanged() {
+        let calls = vec![
+            json!({"server":"s","tool":"work","ok":true,"durationMs":10}),
+            json!({"server":"s","tool":"work","ok":false,"durationMs":30}),
+        ];
+        let expected = aggregate(&calls);
+        let mut entries = calls;
+        for decision in [
+            "approved",
+            "denied",
+            "no_response",
+            "withdrawn",
+            "stale_state",
+            "unreachable",
+        ] {
+            entries.push(decision_entry(
+                "s",
+                "work",
+                Some("client:real"),
+                "destructive",
+                decision,
+                "hash",
+                Some(90000),
+            ));
+        }
+        assert_eq!(aggregate(&entries), expected);
+        assert_eq!(expected["total"], 2);
+        assert_eq!(expected["errors"], 1);
+        assert_eq!(expected["servers"][0]["avgMs"], 20);
+    }
+
+    #[test]
+    fn p10c_activity_filters_other_governance_before_the_window_limit() {
+        let _env = crate::registry::DataDirTestEnv::new("p10c-activity-window");
+        write_line(&json!({"kind":"approval", "decision":"denied", "ok":true}));
+        write_line(&json!({"ok":false, "tool":"work"}));
+        write_line(&json!({"kind":"advisor", "ok":true}));
+        let entries = read_activity(2).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["tool"], "work");
+        assert_eq!(entries[1]["decision"], "denied");
+    }
+
+    #[test]
     fn tool_call_ok_treats_missing_ok_and_hitl_kinds_as_not_a_call() {
         assert_eq!(tool_call_ok(&json!({"ok":true})), Some(true));
         assert_eq!(tool_call_ok(&json!({"ok":false})), Some(false));
@@ -1288,7 +1548,7 @@ mod tests {
             None
         );
         assert_eq!(
-            tool_call_ok(&json!({"ok":true,"kind":"routine","action":"save"})),
+            tool_call_ok(&json!({"ok":true,"kind":"advisor","action":"hint_shown"})),
             None
         );
         for kind in ["advisor", "suggestion", "candidate"] {
@@ -1309,12 +1569,17 @@ mod tests {
         ));
         let path = root.join("nested").join("audit.jsonl");
         write_line_at(&path, &json!({"server":"fixture","ok":true}));
+        crate::telemetry::flush_for_test(std::time::Duration::from_secs(5));
         let content = std::fs::read_to_string(&path).expect("audit line");
         assert!(content.ends_with('\n'));
         assert_eq!(content.lines().count(), 1);
         let entry: Value = serde_json::from_str(content.trim()).expect("valid JSON");
         assert_eq!(entry["server"], "fixture");
-        std::fs::remove_dir_all(root).ok();
+        assert!(crate::telemetry::retire_dir_for_test(
+            &root,
+            std::time::Duration::from_secs(5)
+        ));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1343,6 +1608,11 @@ mod tests {
             Path::new(&path),
             &json!({"server":"sentinel","marker":"between-snapshot-and-replace"}),
         );
+        // This storage-content test must confirm its FIFO barrier before claiming
+        // completion. It does not exercise the interactive reader's 500ms budget.
+        assert!(crate::telemetry::flush_for_test(
+            std::time::Duration::from_secs(5)
+        ));
         std::fs::write(done, "done").expect("signal sentinel append complete");
     }
 
@@ -1441,6 +1711,11 @@ mod tests {
                     &json!({"server":"stress","newId":format!("{child_id}-{seq}")}),
                 );
             }
+            // The parent reads only after this process exits, so land every queued
+            // line here instead of relying on the writer's next interval.
+            assert!(crate::telemetry::flush_for_test(
+                std::time::Duration::from_secs(5)
+            ));
             return;
         }
 
@@ -1534,7 +1809,7 @@ mod tests {
         // The record is a hash + metadata only: raw arguments must never be present.
         assert!(e.get("arguments").is_none());
 
-        // A distinct decision is distinguishable in the log - the whole point vs record_held.
+        // A distinct decision is distinguishable in the log.
         let denied = decision_entry("s", "t", None, "untrusted_source", "denied", "h", None);
         assert_eq!(denied["decision"], "denied");
         assert_eq!(denied["reason"], "untrusted_source");

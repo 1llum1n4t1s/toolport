@@ -56,9 +56,6 @@ pub enum ApprovalReason {
     UntrustedSource,
     /// Both of the above.
     DestructiveAndUntrusted,
-    /// Persisting an immutable Code Mode routine. This is always one-shot and binds to
-    /// the exact source, schema, limits, and content hash shown in the request.
-    PersistentCodeWrite,
     /// The call carries a pseudonym minted by a DIFFERENT server, so dispatching it would
     /// hand one server's data to another (SBS-696). Never produced by [`gate_reason`]: this
     /// gate is not about the tool at all, it is about a specific value's destination, and it
@@ -66,14 +63,6 @@ pub enum ApprovalReason {
     /// "the call fails", so the prompt can only turn a certain failure into a possible
     /// success.
     PiiCrossServer,
-    /// A native agent call (a shell command, a file read, an MCP tool in Cursor or
-    /// Claude Code) matched one of the user's "ask first" permission rules, and the
-    /// agent's guard hook routed the question here instead of to the agent's own
-    /// prompt (SBS-1059). `server` is the agent, `tool` the call kind, and
-    /// [`ApprovalRequest::agent_rule`] names the rule. Never produced by
-    /// [`gate_reason`]; never eligible for an allowlist entry, since the "tool" here is
-    /// a whole class of calls rather than one definition.
-    AgentPermission,
 }
 
 /// A request to release specific pseudonymized values to a server that did not produce them.
@@ -106,6 +95,94 @@ pub struct PiiReleaseValue {
     pub origins: Vec<String>,
 }
 
+const CLIENT_LABEL_MAX_BYTES: usize = 200;
+const CLIENT_LABEL_MAX_CHARS: usize = 120;
+
+pub(crate) fn client_label_within_bounds(text: &str) -> bool {
+    text.len() <= CLIENT_LABEL_MAX_BYTES
+        && text.chars().take(CLIENT_LABEL_MAX_CHARS + 1).count() <= CLIENT_LABEL_MAX_CHARS
+}
+
+/// Client-reported text is display-only. Bound both its stored bytes and visible
+/// characters, and remove formatting that can disguise the trusted requester.
+pub fn sanitize_client_label(text: &str) -> Option<String> {
+    static FORMAT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let format =
+        FORMAT.get_or_init(|| regex::Regex::new(r"\p{Cf}").expect("Unicode format category"));
+    let mut label = String::new();
+    let mut chars = 0;
+    let mut marks = 0;
+    for mut c in text.chars() {
+        if c.is_whitespace() {
+            c = ' ';
+        } else if c.is_control() || format.is_match(c.encode_utf8(&mut [0; 4])) {
+            continue;
+        }
+        if c == ' ' && (label.is_empty() || label.ends_with(' ')) {
+            continue;
+        }
+        if unicode_normalization::char::is_combining_mark(c) {
+            marks += 1;
+            if marks > 2 {
+                continue;
+            }
+        } else {
+            marks = 0;
+        }
+        if chars == CLIENT_LABEL_MAX_CHARS || label.len() + c.len_utf8() > CLIENT_LABEL_MAX_BYTES {
+            break;
+        }
+        label.push(c);
+        chars += 1;
+    }
+    let label = label.trim_end();
+    (!label.is_empty()).then(|| label.to_string())
+}
+
+/// Truncate display text without splitting a Unicode character.
+pub fn shorten_client_label(label: &str, limit: usize) -> String {
+    if label.chars().count() <= limit {
+        label.to_string()
+    } else {
+        format!(
+            "{}…",
+            label
+                .chars()
+                .take(limit.saturating_sub(1))
+                .collect::<String>()
+        )
+    }
+}
+
+pub fn client_info_label(params: Option<&serde_json::Value>) -> Option<String> {
+    let info = params?.get("clientInfo")?;
+    let name = info.get("name")?.as_str()?;
+    let version = info.get("version").and_then(serde_json::Value::as_str);
+    // Cropping first can hide a path separator while retaining a private prefix.
+    if !client_label_within_bounds(name)
+        || version.is_some_and(|version| !client_label_within_bounds(version))
+    {
+        return Some("[private]".into());
+    }
+    let name = sanitize_client_label(name)?;
+    let version = version.and_then(sanitize_client_label);
+    let label = match version {
+        Some(version) => format!("{name} {version}"),
+        None => name,
+    };
+    if !client_label_within_bounds(&label) {
+        return Some("[private]".into());
+    }
+    sanitize_client_label(&label)
+}
+
+fn deserialize_client_label<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let label = Option::<String>::deserialize(deserializer)?;
+    Ok(label.as_deref().and_then(sanitize_client_label))
+}
+
 /// A request from a gateway to the broker: "a human should approve this call." The arguments
 /// are included so the person can review them; they stay in memory on both ends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +195,20 @@ pub struct ApprovalRequest {
     /// Which client/agent triggered it (for display + attribution), when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<String>,
+    /// Gateway-observed display name, never an authorization principal.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_client_label"
+    )]
+    pub client_name: Option<String>,
+    /// Untrusted initialize clientInfo label. Never an access principal.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_client_label"
+    )]
+    pub client_label: Option<String>,
     /// The downstream server the tool belongs to.
     pub server: String,
     /// The tool name.
@@ -138,10 +229,6 @@ pub struct ApprovalRequest {
     /// Present only for [`ApprovalReason::PiiCrossServer`]; absent for ordinary approvals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pii_release: Option<PiiReleaseRequest>,
-    /// The permission rule that asked, for [`ApprovalReason::AgentPermission`] only
-    /// (`Bash(git push*)`), so the person sees which of their rules is prompting.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_rule: Option<String>,
 }
 
 /// The already-screened browser interaction carried over the local broker. The gateway
@@ -180,6 +267,8 @@ pub enum ApprovalDecision {
     /// the seam a decoupled approval (session re-use, or a code-mode script that approves
     /// then replays) must clear before its effect runs.
     StaleState,
+    /// The caller withdrew before a human decision was received. Gateway-only.
+    Withdrawn,
 }
 
 impl ApprovalDecision {
@@ -513,18 +602,92 @@ pub fn try_decide_once(
     desc: Option<EndpointDescriptor>,
     req: &mut ApprovalRequest,
 ) -> BrokerAttempt {
-    use std::io::{BufRead, BufReader, Write};
+    try_decide_once_with_cancel(desc, req, None)
+}
+
+/// Preserve broker outcome and retry semantics while withdrawing a cancelled call.
+pub fn try_decide_once_with_cancel(
+    desc: Option<EndpointDescriptor>,
+    req: &mut ApprovalRequest,
+    cancel: Option<&crate::downstream::CancelContext>,
+) -> BrokerAttempt {
+    if cancel.is_some_and(crate::downstream::CancelContext::is_cancelled) {
+        return BrokerAttempt::Decided(ApprovalDecision::Withdrawn);
+    }
     let Some(desc) = desc else {
         return BrokerAttempt::Unreachable;
     };
     req.token = desc.token.clone();
     // Connect refused, no answer to the challenge, or a wrong proof: in every case the
     // request was never written, so no human was asked and a re-dial is safe.
-    let Ok(mut stream) = dial_broker(&desc) else {
+    let Ok(stream) = dial_broker(&desc) else {
         return BrokerAttempt::Unreachable;
     };
+    let withdrawal = match stream.try_clone() {
+        Ok(stream) => stream,
+        Err(_) => return BrokerAttempt::Unreachable,
+    };
+    let _withdraw = cancel.map(|cancel| {
+        cancel.on_cancel(std::sync::Arc::new(move |_| match &withdrawal {
+            BrokerStream::Tcp(stream) => {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+            #[cfg(unix)]
+            BrokerStream::Unix(stream) => {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        }))
+    });
+    if cancel.is_some_and(crate::downstream::CancelContext::is_cancelled) {
+        return BrokerAttempt::Decided(ApprovalDecision::Withdrawn);
+    }
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(DEFAULT_TIMEOUT_SECS)));
+    // Windows shutdown can expose EOF to the broker without waking our blocked
+    // reader. Poll cancellation within the unchanged overall approval deadline.
+    let read_timeout = if cancel.is_some() {
+        Duration::from_millis(50)
+    } else {
+        Duration::from_secs(DEFAULT_TIMEOUT_SECS)
+    };
+    let _ = stream.set_read_timeout(Some(read_timeout));
+    let decision = if cancel.is_some() {
+        exchange_approval_request_with_cancel(req, stream, cancel)
+    } else {
+        exchange_approval_request(req, stream)
+    };
+    broker_attempt_after_cancel(
+        decision,
+        cancel.is_some_and(crate::downstream::CancelContext::is_cancelled),
+    )
+}
+
+fn broker_attempt_after_cancel(decision: BrokerAttempt, cancelled: bool) -> BrokerAttempt {
+    // A parsed human answer wins even if the client disconnected immediately
+    // after it arrived. Only a transport failure without an answer is withdrawal.
+    if matches!(
+        decision,
+        BrokerAttempt::Decided(ApprovalDecision::Approved | ApprovalDecision::Denied)
+    ) || !cancelled
+    {
+        decision
+    } else {
+        BrokerAttempt::Decided(ApprovalDecision::Withdrawn)
+    }
+}
+
+fn exchange_approval_request(
+    req: &ApprovalRequest,
+    stream: impl io::Read + io::Write,
+) -> BrokerAttempt {
+    exchange_approval_request_with_cancel(req, stream, None)
+}
+
+fn exchange_approval_request_with_cancel(
+    req: &ApprovalRequest,
+    mut stream: impl io::Read + io::Write,
+    cancel: Option<&crate::downstream::CancelContext>,
+) -> BrokerAttempt {
+    use std::io::{BufRead, BufReader, Read};
     let Ok(line) = serde_json::to_string(req) else {
         // We connected but can't serialize our own request: not a reachability problem, so
         // don't spin on retry. Fail closed.
@@ -536,27 +699,43 @@ pub fn try_decide_once(
     }
     let _ = stream.flush();
     let mut resp = String::new();
-    match BufReader::new(stream).read_line(&mut resp) {
-        // Connected and the peer closed with no answer: not a healthy broker. No human was
-        // shown a prompt (the broker's pre-prompt reject paths close silently), so re-dial.
-        Ok(0) => BrokerAttempt::Unreachable,
-        Ok(_) => {
-            let t = resp.trim();
-            if t.is_empty() {
-                BrokerAttempt::Unreachable
-            } else {
-                // A parseable decision is authoritative; an unparseable line is fail-closed
-                // as a Timeout (a real broker answered, so this is not a retry case).
-                BrokerAttempt::Decided(
-                    serde_json::from_str::<ApprovalDecision>(t)
-                        .unwrap_or(ApprovalDecision::Timeout),
-                )
-            }
+    let mut reader = BufReader::new(stream).take(4096);
+    let deadline = std::time::Instant::now() + Duration::from_secs(DEFAULT_TIMEOUT_SECS);
+    loop {
+        if cancel.is_some_and(crate::downstream::CancelContext::is_cancelled) {
+            return BrokerAttempt::Decided(ApprovalDecision::Withdrawn);
         }
-        // A read error AFTER we sent the request is the "human didn't answer in time" path
-        // (read timeout) or a mid-wait drop. Either way the broker had our request, so this
-        // is a genuine no-decision Timeout - never retry (that would re-prompt).
-        Err(_) => BrokerAttempt::Decided(ApprovalDecision::Timeout),
+        if std::time::Instant::now() >= deadline {
+            return BrokerAttempt::Decided(ApprovalDecision::Timeout);
+        }
+        match reader.read_line(&mut resp) {
+            // Connected and the peer closed with no answer: not a healthy broker. No human was
+            // shown a prompt (the broker's pre-prompt reject paths close silently), so re-dial.
+            Ok(0) => return BrokerAttempt::Unreachable,
+            Ok(_) => {
+                let t = resp.trim();
+                if t.is_empty() {
+                    return BrokerAttempt::Unreachable;
+                } else {
+                    // A parseable decision is authoritative; an unparseable line is fail-closed
+                    // as a Timeout (a real broker answered, so this is not a retry case).
+                    return BrokerAttempt::Decided(
+                        serde_json::from_str::<ApprovalDecision>(t)
+                            .unwrap_or(ApprovalDecision::Timeout),
+                    );
+                }
+            }
+            // A read error AFTER we sent the request is the "human didn't answer in time" path
+            // (read timeout) or a mid-wait drop. Either way the broker had our request, so this
+            // is a genuine no-decision Timeout - never retry (that would re-prompt).
+            Err(error)
+                if cancel.is_some()
+                    && matches!(
+                        error.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) => {}
+            Err(_) => return BrokerAttempt::Decided(ApprovalDecision::Timeout),
+        }
     }
 }
 
@@ -598,6 +777,52 @@ pub fn request_human_decision(mut req: ApprovalRequest) -> ApprovalDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn p08_cancel_aware_broker_keeps_write_failure_unreachable_and_read_timeout_no_response() {
+        struct FailingStream {
+            write_fails: bool,
+        }
+        impl io::Write for FailingStream {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if self.write_fails {
+                    Err(io::ErrorKind::BrokenPipe.into())
+                } else {
+                    Ok(bytes.len())
+                }
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl io::Read for FailingStream {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::TimedOut.into())
+            }
+        }
+        let req = ApprovalRequest {
+            token: "tok".into(),
+            id: "p08-outcomes".into(),
+            client: None,
+            client_name: crate::session_observability::current().client_name,
+            client_label: None,
+            server: "s".into(),
+            tool: "t".into(),
+            reason: ApprovalReason::Destructive,
+            arguments: serde_json::json!({}),
+            tool_fingerprint: None,
+            url_elicitation: None,
+            pii_release: None,
+        };
+        assert!(matches!(
+            exchange_approval_request(&req, FailingStream { write_fails: true }),
+            BrokerAttempt::Unreachable
+        ));
+        assert!(matches!(
+            exchange_approval_request(&req, FailingStream { write_fails: false }),
+            BrokerAttempt::Decided(ApprovalDecision::Timeout)
+        ));
+    }
 
     #[test]
     fn gate_is_off_when_disabled() {
@@ -663,6 +888,8 @@ mod tests {
             token: "tok".into(),
             id: "abc".into(),
             client: Some("cursor".into()),
+            client_name: crate::session_observability::current().client_name,
+            client_label: None,
             server: "db".into(),
             tool: "drop_table".into(),
             reason: ApprovalReason::Destructive,
@@ -670,7 +897,6 @@ mod tests {
             tool_fingerprint: Some("v2:abc".into()),
             url_elicitation: None,
             pii_release: None,
-            agent_rule: None,
         };
         let round: ApprovalRequest =
             serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
@@ -773,6 +999,8 @@ mod tests {
             token: "tok".into(),
             id: "abc".into(),
             client: None,
+            client_name: crate::session_observability::current().client_name,
+            client_label: None,
             server: "db".into(),
             tool: "drop_table".into(),
             reason: ApprovalReason::Destructive,
@@ -780,7 +1008,6 @@ mod tests {
             tool_fingerprint: None,
             url_elicitation: None,
             pii_release: None,
-            agent_rule: None,
         })
         .unwrap();
         assert!(answer_challenge(&req, "tok").is_none());
@@ -950,5 +1177,225 @@ mod tests {
         ));
         let stream = dial_broker(&d).expect("falls back to the loopback listener");
         assert!(matches!(stream, BrokerStream::Tcp(_)));
+    }
+}
+
+#[cfg(test)]
+mod client_label_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn p08b_labels_are_bounded_and_strip_controls_and_bidi() {
+        assert_eq!(
+            client_info_label(Some(
+                &json!({"clientInfo":{"name":"  Claude\n\r\t\u{202e} Code\u{2066}","version":"1\0"}})
+            )),
+            Some("Claude Code 1".into())
+        );
+        let long = "界".repeat(1000);
+        let label =
+            client_info_label(Some(&json!({"clientInfo":{"name":long,"version":"evil"}}))).unwrap();
+        assert!(label.chars().count() <= 120);
+        assert!(label.len() <= 200);
+        assert_eq!(
+            client_info_label(Some(
+                &json!({"clientInfo":{"name":"\u{202e}\0","version":"1"}})
+            )),
+            None
+        );
+        assert_eq!(
+            client_info_label(Some(&json!({"clientInfo":{"name":false}}))),
+            None
+        );
+    }
+
+    #[test]
+    fn p08b_request_label_is_sanitized_and_json_escaped() {
+        let req: ApprovalRequest = serde_json::from_value(json!({"token":"t","id":"1","client":"client:real","clientLabel":"<b>Fake</b>\n\u{202e} \"1\"","server":"s","tool":"t","reason":"destructive","arguments":{}})).unwrap();
+        assert_eq!(req.client.as_deref(), Some("client:real"));
+        assert_eq!(req.client_label.as_deref(), Some("<b>Fake</b> \"1\""));
+        let wire = serde_json::to_string(&req).unwrap();
+        assert!(wire.contains("\\\"1\\\""));
+        assert!(!wire.contains('\u{202e}'));
+    }
+}
+
+#[cfg(test)]
+mod p08b_revision_tests {
+    use super::*;
+
+    #[test]
+    fn p08b_r1_all_whitespace_collapses_and_format_characters_disappear() {
+        for c in [
+            '\t', '\n', '\r', '\u{85}', '\u{a0}', '\u{2028}', '\u{2029}', '\u{3000}',
+        ] {
+            assert_eq!(
+                sanitize_client_label(&format!("Claude{c}{c}Code")),
+                Some("Claude Code".into())
+            );
+        }
+        for c in [
+            '\u{ad}',
+            '\u{180e}',
+            '\u{fff9}',
+            '\u{fffa}',
+            '\u{fffb}',
+            '\u{e0001}',
+            '\u{e0020}',
+            '\u{e007f}',
+            '\u{202e}',
+            '\u{200b}',
+        ] {
+            assert_eq!(
+                sanitize_client_label(&format!("Claude{c} Code")),
+                Some("Claude Code".into())
+            );
+        }
+    }
+
+    #[test]
+    fn p08b_r1_combining_marks_and_utf8_bytes_are_bounded() {
+        assert_eq!(
+            sanitize_client_label("a\u{301}\u{302}\u{303}b\u{301}\u{302}\u{303}"),
+            Some("a\u{301}\u{302}b\u{301}\u{302}".into())
+        );
+        for c in ['a', '界', '🦀'] {
+            let label = sanitize_client_label(&c.to_string().repeat(300)).unwrap();
+            assert!(label.len() <= 200);
+            assert!(label.chars().count() <= 120);
+            assert_eq!(label.chars().count(), (200 / c.len_utf8()).min(120));
+        }
+    }
+
+    #[test]
+    fn p08b_r1_registered_clients_use_registry_labels() {
+        let _env = crate::registry::DataDirTestEnv::new("p08b-r1-registry-label");
+        let mut registry = crate::registry::Registry::default();
+        registry.http_clients.push(crate::registry::HttpClient {
+            id: "real".into(),
+            label: "My assistant".into(),
+            token_sha256: "unused".into(),
+            profile: String::new(),
+            unknown_fields: Default::default(),
+        });
+        crate::registry::save(&registry).unwrap();
+        assert_eq!(
+            crate::clients::trusted_client_name(Some("client:real"), None),
+            "My assistant"
+        );
+        assert_eq!(
+            crate::clients::trusted_client_name(Some("client:unknown"), None),
+            "Unknown client"
+        );
+    }
+
+    #[test]
+    fn p08b_r1_adapter_names_come_from_client_definitions() {
+        assert_eq!(
+            crate::clients::trusted_client_name(Some("adapter:claude-code"), None),
+            "Claude Code"
+        );
+        assert_eq!(
+            crate::clients::trusted_client_name(Some("adapter:unknown"), None),
+            "unknown"
+        );
+        assert_eq!(
+            crate::clients::trusted_client_name(Some("adapter:claude-code"), Some("Recorded name")),
+            "Recorded name"
+        );
+    }
+}
+
+#[cfg(test)]
+mod p10c_decision_tests {
+    use super::*;
+
+    #[test]
+    fn p10c_r1_cancelled_read_poll_retires_without_a_reply_and_keeps_received_answers() {
+        struct PollStream {
+            registry: crate::downstream::CancelRegistry,
+            reply: Option<ApprovalDecision>,
+            reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl io::Write for PollStream {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl io::Read for PollStream {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                let read = self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if read == 0 {
+                    if self.reply.is_none() {
+                        self.registry.cancel("poll", None);
+                    }
+                    // Model a blocked Windows read waking on its short timeout,
+                    // with no reply from the broker to unblock cancellation.
+                    return Err(io::ErrorKind::TimedOut.into());
+                }
+                let reply = self.reply.expect("a cancelled poll must not read again");
+                let line = format!("{}\n", serde_json::to_string(&reply).unwrap());
+                bytes[..line.len()].copy_from_slice(line.as_bytes());
+                // The received answer must survive an immediate disconnect.
+                self.registry.cancel("poll", None);
+                Ok(line.len())
+            }
+        }
+        let req = ApprovalRequest {
+            token: "tok".into(),
+            id: "poll".into(),
+            client: None,
+            client_name: crate::session_observability::current().client_name,
+            client_label: None,
+            server: "s".into(),
+            tool: "t".into(),
+            reason: ApprovalReason::Destructive,
+            arguments: serde_json::json!({}),
+            tool_fingerprint: None,
+            url_elicitation: None,
+            pii_release: None,
+        };
+        for reply in [
+            None,
+            Some(ApprovalDecision::Approved),
+            Some(ApprovalDecision::Denied),
+        ] {
+            let registry = crate::downstream::CancelRegistry::new();
+            assert!(registry.begin_client_request("poll".into()));
+            let cancel = registry.context("poll".into());
+            let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let result = exchange_approval_request_with_cancel(
+                &req,
+                PollStream {
+                    registry,
+                    reply,
+                    reads: reads.clone(),
+                },
+                Some(&cancel),
+            );
+            let expected = reply.unwrap_or(ApprovalDecision::Withdrawn);
+            assert!(matches!(result, BrokerAttempt::Decided(actual) if actual == expected));
+            assert_eq!(
+                reads.load(std::sync::atomic::Ordering::SeqCst),
+                if reply.is_some() { 2 } else { 1 }
+            );
+        }
+    }
+
+    #[test]
+    fn p10c_r1_human_answer_wins_over_immediate_disconnect() {
+        for decision in [ApprovalDecision::Approved, ApprovalDecision::Denied] {
+            assert!(
+                matches!(broker_attempt_after_cancel(BrokerAttempt::Decided(decision), true), BrokerAttempt::Decided(actual) if actual == decision)
+            );
+        }
+        assert!(matches!(
+            broker_attempt_after_cancel(BrokerAttempt::Unreachable, true),
+            BrokerAttempt::Decided(ApprovalDecision::Withdrawn)
+        ));
     }
 }

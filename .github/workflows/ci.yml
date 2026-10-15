@@ -3,7 +3,8 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, next/2.0]
+  workflow_dispatch:
 
 # A new push to a PR cancels the in-flight run for that ref.
 concurrency:
@@ -15,12 +16,96 @@ permissions:
   contents: read
 
 jobs:
+  windows-installer:
+    name: Windows NSIS bundle validation
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+          cache-bin: "false"
+          save-if: false
+      - run: npm ci
+      # Use release bundle settings; installers stay in CI and are not published.
+      - name: Set the numeric MSI version for CI previews
+        run: node .github/scripts/ci-msi-config.mjs
+      - name: Build the real NSIS and MSI installers
+        run: npx tauri build --config src-tauri/tauri.bundle.conf.json --config src-tauri/tauri.ci-msi.conf.json --bundles nsis,msi -- --bin conduit
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - name: Check shipped contents
+        shell: bash
+        run: node .github/scripts/package-contents.mjs src-tauri/target/release/bundle/nsis/*-setup.exe src-tauri/target/release/bundle/msi/*.msi
+      - name: Exercise the real installer and uninstaller
+        shell: pwsh
+        run: python scripts/test-windows-installer.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: windows-nsis-validation
+          path: |
+            src-tauri/target/release/bundle/nsis/*-setup.exe*
+            src-tauri/target/release/bundle/msi/*.msi*
+            .verify/windows-installer/**
+          if-no-files-found: error
+          retention-days: 7
+
+  macos-payload:
+    name: macOS app payload validation
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+          key: macos-payload
+          cache-bin: "false"
+          save-if: false
+      - run: npm ci
+      - name: Build the app without release signing or publishing
+        run: npx tauri build --config src-tauri/tauri.bundle.conf.json --config '{"bundle":{"createUpdaterArtifacts":false}}' --bundles app -- --bin conduit
+      - name: Check every app bundle file
+        run: node .github/scripts/package-contents.mjs src-tauri/target/release/bundle/macos/*.app
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-payload
+          path: src-tauri/target/release/bundle/macos/*.app
+          if-no-files-found: error
+          retention-days: 7
+
+  linux-packages:
+    name: GTK deb and rpm install tests
+    needs: changes
+    if: needs.changes.outputs.linux_packages == 'true'
+    uses: ./.github/workflows/linux-packages.yml
+
   changes:
     name: Select checks
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.select.outputs.rust }}
+      linux_packages: ${{ steps.select.outputs.linux_packages }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -30,13 +115,13 @@ jobs:
         with:
           node-version: 20
       - name: Test check selection and required gate
-        run: node --test .github/scripts/ci-policy.test.mjs
+        run: node --test .github/scripts/ci-policy.test.mjs .github/scripts/gateway-build-features.test.mjs
       - name: Select changed native checks
         id: select
         env:
           CI_EVENT: ${{ github.event_name }}
-          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node .github/scripts/ci-policy.mjs select
 
   frontend:
@@ -54,6 +139,9 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      - name: Release publication and payload fixtures
+        run: node --test .github/scripts/release-hygiene.test.mjs
 
       - name: Production dependency audit
         run: npm run audit:prod
@@ -109,7 +197,7 @@ jobs:
       # The native shell deliberately skips WebKit/Tauri. Ubuntu 24.04 provides
       # GTK >= 4.10 and libadwaita >= 1.4, the floor for adaptive navigation.
       - name: Install GTK build dependencies
-        run: scripts/ci-apt-install.sh build-essential libssl-dev pkg-config libdbus-1-dev libgtk-4-dev libadwaita-1-dev
+        run: scripts/ci-apt-install.sh build-essential libssl-dev pkg-config libdbus-1-dev libgtk-4-dev libadwaita-1-dev xvfb xauth dbus-daemon
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -126,17 +214,76 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --no-default-features
           --features gtk-desktop --lib linux_native::
 
+      - name: Test Teams dialogs in isolated processes
+        env:
+          GSK_RENDERER: cairo
+          GTK_A11Y: none
+        run: |
+          for case in \
+            member_review_native_shows_diff_labels_and_both_decisions \
+            member_review_native_keeps_remaining_decisions_open \
+            share_preview_explains_each_selection_and_its_route \
+            share_preview_widgets_show_allowlisted_definitions
+          do
+            xvfb-run -a dbus-run-session -- cargo test \
+              --manifest-path src-tauri/Cargo.toml --no-default-features \
+              --features gtk-desktop --lib "linux_native::teams::tests::$case" \
+              -- --exact --ignored
+          done
+
+  rustfmt:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    name: Rust changed-line formatting
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.99.0
+          components: rustfmt
+      # A changed-line check avoids rewriting legacy files or following modules.
+      # Bump with Clippy after reviewing the resulting formatting and lint changes.
+      - name: Check changed Rust lines
+        env:
+          FORMAT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python3 scripts/test-check-rustfmt.py
+          base="$FORMAT_BASE"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            # Manual runs and first pushes have no event base; check this commit.
+            base="$(git rev-parse HEAD^)"
+          fi
+          python3 scripts/check-rustfmt.py --base "$base"
+
   clippy:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    name: Rust Clippy
+    name: Rust Clippy (${{ matrix.shell }})
     # Without this the job inherits GitHub's 6-hour default. A flaky Ubuntu mirror
     # hung `apt-get update` here for 34 minutes with no compiler ever reached, and
     # because the job never ended the whole run stayed in progress - which also
-    # blocks `gh run rerun --failed` on the jobs that DID fail. 30 matches
-    # cross-platform-rust, the other job that compiles this crate from cold.
+    # blocks `gh run rerun --failed` on the jobs that DID fail. 30 bounds this
+    # cold compilation job; cross-platform-rust also needs time to run tests.
     timeout-minutes: 30
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shell: headless
+            features: search-static,test-support
+            packages: ""
+          - shell: desktop
+            features: search-static,test-support,desktop
+            packages: libwebkit2gtk-4.1-dev libsoup-3.0-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev
+          - shell: gtk
+            features: search-static,test-support,gtk-desktop
+            packages: libgtk-4-dev libadwaita-1-dev
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -144,25 +291,25 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          toolchain: 1.99.0
           components: clippy
 
-      # Same headless dependency set as build-test: no GTK/WebKit, because the
-      # lint below skips the Tauri desktop feature for the same reason.
+      # Each shell is linted with its test fixtures and all targets.
       - name: Install Linux build dependencies
-        run: scripts/ci-apt-install.sh build-essential libssl-dev pkg-config libdbus-1-dev
+        run: scripts/ci-apt-install.sh build-essential libssl-dev pkg-config libdbus-1-dev ${{ matrix.packages }}
 
-      # --no-default-features matches every other Rust job here. With the desktop
-      # feature on, this needs the GTK and WebKit headers and dies building gdk-sys.
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
-          key: ci-clippy
+          key: ci-clippy-${{ matrix.shell }}
           cache-bin: "false"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Bump this job's toolchain only after reviewing new lints and running
+      # all three Clippy feature sets with -D warnings on devbox; other build jobs stay on stable.
       - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --lib --bins
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features ${{ matrix.features }} --all-targets -- -D warnings
 
   build-test:
     needs: changes
@@ -190,7 +337,7 @@ jobs:
       - name: Install Linux build dependencies
         # Same set as the release workflow: WebKitGTK + the Secret Service
         # (libdbus) deps the Tauri lib needs to compile on Linux.
-        run: scripts/ci-apt-install.sh libwebkit2gtk-4.1-dev libsoup-3.0-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf pkg-config libdbus-1-dev
+        run: scripts/ci-apt-install.sh libwebkit2gtk-4.1-dev libsoup-3.0-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf pkg-config libdbus-1-dev dbus-daemon
 
       - name: Give the runner headroom (a cold build links WebKitGTK)
         run: |
@@ -212,7 +359,8 @@ jobs:
       # Keeping all three flags prevents any test class from silently dropping
       # out of CI when the command is updated.
       - name: Rust tests (lib + binaries + integration)
-        run: npm run test:rust
+        # Notification fixtures register a mock endpoint on this private bus.
+        run: dbus-run-session -- npm run test:rust
 
       - name: Build headless gateway for smoke tests
         run: npm run build:gateway
@@ -220,11 +368,49 @@ jobs:
       - name: Headless gateway security smoke
         run: npm run smoke:headless
 
+  chaos:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    name: Chaos suite (Linux)
+    timeout-minutes: 30
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Install Linux build dependencies
+        run: scripts/ci-apt-install.sh build-essential libssl-dev pkg-config libdbus-1-dev
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+          key: ci-chaos
+          cache-bin: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # The chaos cases are separate integration binaries; `cargo test` has no
+      # glob for `--test`, so run each one explicitly.
+      - name: Chaos suite
+        run: |
+          for test in chaos_concurrency chaos_env_allowlist chaos_faulty_servers chaos_process_kill chaos_registry; do
+            cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-support,search-static --test "$test"
+          done
+
   cross-platform-rust:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     name: Headless Rust tests (${{ matrix.os }})
-    timeout-minutes: 30
+    # 30 minutes covered macOS runs of 27:11 (626c17d6) and 27:25 (644a8199),
+    # but a35863c7 hit the cap at 30:10 as test compilation rose to 4:58.
+    # The test-only idle timer saves about five minutes, leaving about 25 minutes
+    # on that slower runner. Keep cold compilation margin on all three OSes.
+    timeout-minutes: 35
+    env:
+      TOOLPORT_TEST_FAILURE_LOG_DIR: ${{ github.workspace }}/.verify/one-gateway-failures
     strategy:
       fail-fast: false
       matrix:
@@ -242,6 +428,8 @@ jobs:
         with:
           node-version: 20
 
+      # BGE uses Candle CPU on all release targets. No ONNX Runtime shared
+      # library or execution-provider package is needed for search-static.
       # The headless build skips Tauri/WebKit, but the Linux keyring backend still
       # needs libdbus headers and pkg-config at compile time.
       - name: Install Linux build dependencies
@@ -254,10 +442,12 @@ jobs:
           workspaces: src-tauri
           key: ci-headless
           cache-bin: "false"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # macOS PRs otherwise repeatedly restore the base cache without Candle
+          # and GEMM. PR caches are scoped to the PR ref, preserving base caches.
+          save-if: ${{ matrix.os == 'macos-latest' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next/2.0')) }}
       - name: Compile Rust tests and record build timings
         if: matrix.os != 'windows-latest'
-        run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib --bins --tests --no-run --timings
+        run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-support,search-static --lib --bins --tests --no-run --timings
 
       - name: Compile Windows Rust tests and record build timings
         if: matrix.os == 'windows-latest'
@@ -265,7 +455,7 @@ jobs:
 
       - name: Rust tests (lib + binaries + integration, no desktop)
         if: matrix.os != 'windows-latest'
-        run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib --bins --tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-support,search-static --lib --bins --tests
 
       # Reuse the local Windows helper so a stale debug gateway cannot lock the
       # executable while Cargo rebuilds it.
@@ -275,7 +465,7 @@ jobs:
 
       - name: Build headless gateway for cross-platform smoke
         if: matrix.os != 'ubuntu-22.04'
-        run: cargo build --manifest-path src-tauri/Cargo.toml --bin toolport-gateway --bin mock-mcp-server --no-default-features
+        run: cargo build --manifest-path src-tauri/Cargo.toml --bin toolport-gateway --bin mock-mcp-server --no-default-features --features test-support,search-static
 
       - name: Headless gateway security smoke (macOS)
         if: matrix.os == 'macos-latest'
@@ -285,10 +475,34 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: powershell -ExecutionPolicy Bypass -File scripts/smoke-headless.ps1
 
+      # Approval OS toasts use desktop-only APIs. Headless checks cannot compile
+      # the Windows/macOS notification branches.
+      - name: Install frontend dependencies for desktop approval checks
+        if: matrix.os != 'ubuntu-22.04'
+        run: npm ci
+
+      - name: Build frontend assets for desktop approval checks
+        if: matrix.os != 'ubuntu-22.04'
+        run: npm run build
+
+      - name: Compile desktop approval notifications (Windows and macOS)
+        if: matrix.os != 'ubuntu-22.04'
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --lib
+
       # scripts/install.ps1 is piped into `iex` from a pinned commit, so a
       # regression in asset selection, checksum enforcement, or the silent-install
       # flag reaches users with no build step in between. Nothing else in CI runs
       # it. Its own job because it needs neither Rust nor Node (SBS-713).
+      - name: Save failed gateway conformance logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: one-gateway-failures-${{ matrix.os }}
+          path: .verify/one-gateway-failures/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Save Rust compilation timings
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -344,6 +558,9 @@ jobs:
       - name: Bash tests for scripts/install.sh
         run: bash scripts/install.Tests.bash
 
+      - name: Bash tests for scripts/toolport-preview-rollback.sh
+        run: bash scripts/toolport-preview-rollback.Tests.bash
+
   # SBS-894: toolport.app/install.sh and /install.ps1 redirect to a PINNED
   # COMMIT of those scripts, because they are piped into a shell and a movable
   # URL there means anything that lands on main runs on users' machines. Both
@@ -386,8 +603,7 @@ jobs:
   # install.ps1 Pester job could not block merge. This job keeps the required
   # name and requires all selected checks. Only unchanged native jobs on a
   # frontend-only PR may skip; failures, cancellations and unexpected skips
-  # block the gate. Clippy stays out of this gate (non-blocking
-  # until existing warnings are cleared). Adding the individual job names as
+  # block the gate. Clippy and changed-line Rust formatting are also required. Adding job names as
   # separate required contexts still needs a GitHub settings click; this file
   # cannot do that.
   merge-gate:
@@ -396,9 +612,13 @@ jobs:
     needs:
       - changes
       - frontend
+      - clippy
+      - rustfmt
       - build-test
       - cross-platform-rust
       - linux-native
+      - linux-packages
+      - chaos
       - installer-script
       - installer-script-bash
       - pinned-install-urls

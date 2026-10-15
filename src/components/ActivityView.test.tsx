@@ -1,26 +1,36 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act, fireEvent } from "@testing-library/react";
+import { render, screen, act, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ActivityView } from "./ActivityView";
 import type { AuditEntry, SearchTrace } from "@/lib/types";
+import type { SecurityEvent } from "@/lib/api";
 
 let windowVisible = true;
 vi.mock("@/lib/windowVisible", () => ({ useWindowVisible: () => windowVisible }));
 
+const getActivityRevision = vi.fn();
+const getActivityHealth = vi.fn();
+const releaseActivityRevision = vi.fn();
 const getAuditLog = vi.fn();
 const getSearchTraces = vi.fn();
 const getSecurityEvents = vi.fn();
 const getToolIdentities = vi.fn();
 const getInspectLog = vi.fn();
 const getSavingsSummary = vi.fn();
+const getAuditStats = vi.fn();
 
 const clearActivityLogs = vi.fn();
+const releaseQuarantine = vi.fn();
 
 vi.mock("@/lib/api", () => ({
+  releaseQuarantine: (...a: unknown[]) => releaseQuarantine(...a),
   clearActivityLogs: (...a: unknown[]) => clearActivityLogs(...a),
   exportAuditToPath: vi.fn(),
+  getActivityRevision: (...a: unknown[]) => getActivityRevision(...a),
+  releaseActivityRevision: (...a: unknown[]) => releaseActivityRevision(...a),
+  getActivityHealth: (...a: unknown[]) => getActivityHealth(...a),
   getAuditLog: (...a: unknown[]) => getAuditLog(...a),
-  getAuditStats: vi.fn(() => Promise.resolve(null)),
+  getAuditStats: (...a: unknown[]) => getAuditStats(...a),
   getInspectLog: (...a: unknown[]) => getInspectLog(...a),
   getSavingsSummary: (...a: unknown[]) => getSavingsSummary(...a),
   getSearchTraces: (...a: unknown[]) => getSearchTraces(...a),
@@ -58,6 +68,19 @@ const initialLog = [failed, entry()];
 const refreshedLog = [entry({ ts: 1700000002000, tool: "list_issues" }), ...initialLog];
 
 beforeEach(() => {
+  releaseActivityRevision.mockResolvedValue(undefined);
+  let revision = 0;
+  getActivityRevision.mockImplementation(async () => String(revision++));
+  getActivityHealth.mockResolvedValue({
+    telemetry: {
+      queueDropped: 0,
+      writeFailedRecords: 0,
+      writeFailures: 0,
+      incompleteFlushes: 0,
+    },
+    gatewayNotes: [],
+  });
+  getAuditStats.mockResolvedValue(null);
   windowVisible = true;
   vi.useFakeTimers({ shouldAdvanceTime: true });
   getAuditLog.mockResolvedValue(initialLog);
@@ -73,6 +96,53 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+it("p10c shows approval outcomes without treating them as call errors", async () => {
+  const outcomes = [
+    ["denied", "Denied"],
+    ["no_response", "No answer"],
+    ["withdrawn", "Withdrawn"],
+    ["stale_state", "Changed after approval"],
+    ["approved", "Approved"],
+    ["unreachable", "No approver available"],
+  ];
+  getAuditLog.mockResolvedValue([
+    ...outcomes.map(([decision], index) => ({
+      ...entry({ ts: 1700000010000 + index, tool: `approval_${index}`, ok: false }),
+      kind: "approval",
+      decision,
+      heldMs: 90000,
+      durationMs: undefined,
+    })),
+    ...initialLog,
+  ]);
+  getAuditStats.mockResolvedValue({ total: 2, errors: 1, errorRate: 0.5, servers: [] });
+  render(<ActivityView refreshKey={0} registry={null} />);
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  await user.click(await screen.findByRole("button", { name: /recent calls/i }));
+  expect(screen.getByText("calls recorded").parentElement).toHaveTextContent(
+    /2\s*calls recorded/,
+  );
+  expect(screen.getByText("errors (50%)").parentElement).toHaveTextContent(/1\s*errors/);
+  for (const [, label] of outcomes) expect(screen.getByText(label)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: /errors only/i }));
+  expect(screen.getByText("merge_pr")).toBeInTheDocument();
+  for (const [, label] of outcomes)
+    expect(screen.queryByText(label)).not.toBeInTheDocument();
+});
+
+it("p10c shows an approval-only history even when no tools ran", async () => {
+  getAuditLog.mockResolvedValue([
+    { ...entry(), kind: "approval", decision: "withdrawn" },
+  ]);
+  getAuditStats.mockResolvedValue({ total: 0, errors: 0, errorRate: 0, servers: [] });
+  render(<ActivityView refreshKey={0} registry={null} />);
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  await user.click(await screen.findByRole("button", { name: /recent calls/i }));
+  expect(screen.getByText("Withdrawn")).toBeInTheDocument();
+  expect(screen.queryByText("No activity yet")).not.toBeInTheDocument();
+  expect(screen.queryByText("calls recorded")).not.toBeInTheDocument();
+});
+
 it("pauses Activity polling while hidden and resumes when visible", async () => {
   const view = render(<ActivityView refreshKey={0} registry={null} />);
   await act(async () => {});
@@ -81,12 +151,127 @@ it("pauses Activity polling while hidden and resumes when visible", async () => 
   expect(getAuditLog).toHaveBeenCalledTimes(loaded + 1);
   windowVisible = false;
   view.rerender(<ActivityView refreshKey={0} registry={null} />);
+  expect(releaseActivityRevision).toHaveBeenCalled();
   await act(() => vi.advanceTimersByTimeAsync(60_000));
   expect(getAuditLog).toHaveBeenCalledTimes(loaded + 1);
   windowVisible = true;
   view.rerender(<ActivityView refreshKey={0} registry={null} />);
   await act(() => vi.advanceTimersByTimeAsync(3000));
-  expect(getAuditLog).toHaveBeenCalledTimes(loaded + 2);
+  expect(getAuditLog).toHaveBeenCalledTimes(loaded + 3);
+});
+
+it("keeps an idle Activity page unchanged and reads new rows when the revision changes", async () => {
+  getActivityRevision.mockResolvedValue("same");
+  const view = render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  const calls = getAuditLog.mock.calls.length;
+  const stats = getAuditStats.mock.calls.length;
+  const security = getSecurityEvents.mock.calls.length;
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(getAuditLog).toHaveBeenCalledTimes(calls);
+  expect(getAuditStats).toHaveBeenCalledTimes(stats);
+  expect(getSecurityEvents).toHaveBeenCalledTimes(security);
+  expect(getSearchTraces).toHaveBeenCalledTimes(2);
+  getActivityRevision.mockResolvedValue("changed");
+  getAuditLog.mockResolvedValue(refreshedLog);
+  await act(() => vi.advanceTimersByTimeAsync(3000));
+  expect(getAuditLog).toHaveBeenCalledTimes(calls + 1);
+  view.unmount();
+  const revisions = getActivityRevision.mock.calls.length;
+  await act(() => vi.advanceTimersByTimeAsync(6000));
+  expect(getActivityRevision).toHaveBeenCalledTimes(revisions);
+});
+
+it("refreshes live health without rereading unchanged stores and preserves retained drops", async () => {
+  getActivityRevision.mockResolvedValue("same");
+  getAuditStats.mockResolvedValue({
+    total: 0,
+    errors: 0,
+    errorRate: 0,
+    servers: [],
+    telemetry: {
+      queueDropped: 0,
+      writeFailedRecords: 0,
+      writeFailures: 0,
+      incompleteFlushes: 0,
+      retainedDropped: 7,
+    },
+  });
+  const view = render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  const calls = getAuditLog.mock.calls.length;
+  const stats = getAuditStats.mock.calls.length;
+  getActivityHealth.mockResolvedValue({
+    telemetry: {
+      queueDropped: 3,
+      writeFailedRecords: 2,
+      writeFailures: 1,
+      incompleteFlushes: 0,
+    },
+    gatewayNotes: [],
+  });
+  await act(() => vi.advanceTimersByTimeAsync(15_000));
+  expect(screen.getByText(/3 records dropped/)).toBeInTheDocument();
+  expect(
+    screen.getByText(/7 dropped telemetry records are recorded/),
+  ).toBeInTheDocument();
+  getActivityHealth.mockRejectedValue(new Error("unreachable"));
+  await act(() => vi.advanceTimersByTimeAsync(15_000));
+  expect(screen.getByText(/Gateway telemetry health is unavailable/)).toBeInTheDocument();
+  expect(screen.getByText(/3 records dropped/)).toBeInTheDocument();
+  getActivityHealth.mockResolvedValue({
+    telemetry: {
+      queueDropped: 0,
+      writeFailedRecords: 0,
+      writeFailures: 0,
+      incompleteFlushes: 0,
+    },
+    gatewayNotes: [],
+  });
+  await act(() => vi.advanceTimersByTimeAsync(15_000));
+  expect(
+    screen.queryByText(/Gateway telemetry health is unavailable/),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByText(/3 records dropped/)).not.toBeInTheDocument();
+  expect(getAuditLog).toHaveBeenCalledTimes(calls);
+  expect(getAuditStats).toHaveBeenCalledTimes(stats);
+  view.unmount();
+  const probes = getActivityHealth.mock.calls.length;
+  await act(() => vi.advanceTimersByTimeAsync(30_000));
+  expect(getActivityHealth).toHaveBeenCalledTimes(probes);
+});
+
+it("keeps health probes single-flight and rejects a completion after hiding", async () => {
+  getActivityRevision.mockResolvedValue("same");
+  let finish!: (value: unknown) => void;
+  getActivityHealth.mockReturnValue(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  const view = render(<ActivityView refreshKey={0} registry={null} />);
+  await act(() => vi.advanceTimersByTimeAsync(45_000));
+  expect(getActivityHealth).toHaveBeenCalledTimes(1);
+  windowVisible = false;
+  view.rerender(<ActivityView refreshKey={0} registry={null} />);
+  await act(() => vi.advanceTimersByTimeAsync(30_000));
+  expect(getActivityHealth).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    finish({ telemetry: { unavailable: true }, gatewayNotes: [] });
+  });
+  expect(
+    screen.queryByText(/Gateway telemetry health is unavailable/),
+  ).not.toBeInTheDocument();
+  getActivityHealth.mockResolvedValue({
+    telemetry: { unavailable: true },
+    gatewayNotes: [],
+  });
+  windowVisible = true;
+  view.rerender(<ActivityView refreshKey={0} registry={null} />);
+  await act(() => vi.advanceTimersByTimeAsync(15_000));
+  expect(getActivityHealth).toHaveBeenCalledTimes(2);
+  expect(screen.getByText(/Gateway telemetry health is unavailable/)).toBeInTheDocument();
+  view.unmount();
 });
 
 describe("ActivityView trust-state loading", () => {
@@ -108,7 +293,7 @@ describe("ActivityView trust-state loading", () => {
     render(<ActivityView refreshKey={0} registry={null} />);
     await act(async () => {});
 
-    expect(screen.getByText("No tool calls yet")).toBeInTheDocument();
+    expect(screen.getByText("No activity yet")).toBeInTheDocument();
     expect(screen.getByText("Protection active.")).toBeInTheDocument();
   });
 
@@ -118,6 +303,7 @@ describe("ActivityView trust-state loading", () => {
     });
     getAuditLog.mockResolvedValue([]);
     getSecurityEvents
+      .mockRejectedValueOnce(new Error("unreadable"))
       .mockRejectedValueOnce(new Error("unreadable"))
       .mockResolvedValueOnce([]);
 
@@ -148,6 +334,7 @@ describe("ActivityView trust-state loading", () => {
     };
     getSecurityEvents
       .mockResolvedValueOnce([finding])
+      .mockResolvedValueOnce([finding])
       .mockRejectedValueOnce(new Error("locked"));
 
     render(<ActivityView refreshKey={0} registry={null} />);
@@ -171,18 +358,19 @@ describe("ActivityView trust-state loading", () => {
     clearActivityLogs.mockResolvedValue(undefined);
     getAuditLog
       .mockResolvedValueOnce(initialLog)
+      .mockResolvedValueOnce(initialLog)
       .mockRejectedValueOnce(new Error("locked"));
 
     render(<ActivityView refreshKey={0} registry={null} />);
     await act(async () => {});
-    expect(screen.getByText(/last 2/)).toBeInTheDocument();
+    expect(screen.getByText(/latest 2/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     fireEvent.click(screen.getByRole("button", { name: "Clear activity" }));
     await act(async () => {});
 
     expect(toast.success).toHaveBeenCalledWith("Cleared retained activity");
-    expect(screen.queryByText(/last 2/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/latest 2/)).not.toBeInTheDocument();
     expect(
       screen.getByText(/can't verify that the log is still empty/i),
     ).toBeInTheDocument();
@@ -194,6 +382,7 @@ describe("ActivityView trust-state loading", () => {
     let resolveStale!: (rows: AuditEntry[]) => void;
     getAuditLog
       .mockResolvedValueOnce(initialLog)
+      .mockResolvedValueOnce(initialLog)
       .mockReturnValueOnce(
         new Promise<AuditEntry[]>((res) => {
           resolveStale = res;
@@ -203,7 +392,7 @@ describe("ActivityView trust-state loading", () => {
 
     render(<ActivityView refreshKey={0} registry={null} />);
     await act(async () => {});
-    expect(screen.getByText(/last 2/)).toBeInTheDocument();
+    expect(screen.getByText(/latest 2/)).toBeInTheDocument();
 
     // A live tick starts a refetch that is still in flight when the user clears.
     await act(async () => {
@@ -218,18 +407,21 @@ describe("ActivityView trust-state loading", () => {
     await act(async () => {});
 
     expect(toast.success).toHaveBeenCalledWith("Cleared retained activity");
-    expect(screen.queryByText(/last 2/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/latest 2/)).not.toBeInTheDocument();
     expect(
       screen.getByText(/can't verify that the log is still empty/i),
     ).toBeInTheDocument();
   });
 
   it("does not turn a last-known empty audit log into a current all-clear", async () => {
-    getAuditLog.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error("locked"));
+    getAuditLog
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error("locked"));
 
     render(<ActivityView refreshKey={0} registry={null} />);
     await act(async () => {});
-    expect(screen.getByText("No tool calls yet")).toBeInTheDocument();
+    expect(screen.getByText("No activity yet")).toBeInTheDocument();
 
     await act(async () => {
       vi.advanceTimersByTime(3000);
@@ -237,7 +429,7 @@ describe("ActivityView trust-state loading", () => {
 
     expect(screen.getByText("Activity may be out of date.")).toBeInTheDocument();
     expect(screen.getByText("No current activity status")).toBeInTheDocument();
-    expect(screen.queryByText("No tool calls yet")).not.toBeInTheDocument();
+    expect(screen.queryByText("No activity yet")).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Retry activity log" }),
     ).toBeInTheDocument();
@@ -248,6 +440,7 @@ describe("ActivityView trust-state loading", () => {
       advanceTimers: (ms) => vi.advanceTimersByTime(ms),
     });
     getAuditLog
+      .mockResolvedValueOnce(initialLog)
       .mockResolvedValueOnce(initialLog)
       .mockRejectedValueOnce(new Error("locked"));
 
@@ -271,21 +464,86 @@ describe("ActivityView trust-state loading", () => {
     const user = userEvent.setup({
       advanceTimers: (ms) => vi.advanceTimersByTime(ms),
     });
-    getAuditLog.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
+    getAuditLog
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce([]);
 
     render(<ActivityView refreshKey={0} registry={null} />);
     await act(async () => {});
 
     expect(screen.getByText("Couldn't load activity")).toBeInTheDocument();
-    expect(screen.queryByText("No tool calls yet")).not.toBeInTheDocument();
+    expect(screen.queryByText("No activity yet")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Retry activity log" }));
     await act(async () => {});
-    expect(screen.getByText("No tool calls yet")).toBeInTheDocument();
+    expect(screen.getByText("No activity yet")).toBeInTheDocument();
   });
 });
 
 describe("ActivityView recent calls", () => {
+  it("keeps catalog timing in tooltips and distinguishes internal lookups", async () => {
+    getAuditStats.mockResolvedValue({
+      total: 5225,
+      errors: 0,
+      errorRate: 0,
+      servers: [],
+    });
+    getAuditLog.mockResolvedValue([
+      entry({
+        kind: "internal",
+        server: "toolport",
+        tool: "search",
+        cold: false,
+        dispatchMs: 3,
+        piiReplaced: 1,
+      }),
+    ]);
+    render(<ActivityView refreshKey={0} registry={null} />);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(await screen.findByRole("button", { name: /recent calls/i }));
+    expect(screen.getByText("Searched tools")).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing searched yet/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/warm catalog|dispatch 3/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Unrecorded client ·/)).toHaveAttribute(
+      "title",
+      expect.stringContaining("dispatch 3 ms"),
+    );
+    expect(screen.getByText("1 value masked")).toHaveAttribute(
+      "title",
+      expect.stringContaining("before reaching the model"),
+    );
+    expect(screen.getByText(/5,225 calls recorded/)).toHaveTextContent(
+      "Showing the latest 1.",
+    );
+    expect(screen.getByRole("button", { name: "Export" })).toHaveAttribute("title");
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(screen.getByText("Clear retained activity?")).toBeInTheDocument();
+    expect(clearActivityLogs).not.toHaveBeenCalled();
+  });
+  it("expands a typed Code Mode failure without retaining error text", async () => {
+    const user = userEvent.setup({
+      advanceTimers: (ms) => vi.advanceTimersByTime(ms),
+    });
+    const runId = "0123456789abcdef0123456789abcdef";
+    getAuditLog.mockResolvedValue([
+      entry({
+        server: "toolport",
+        tool: "run_script",
+        ok: false,
+        failureKind: "script_exception",
+        runId,
+      }),
+    ]);
+    render(<ActivityView refreshKey={0} registry={null} />);
+    await act(async () => {});
+    await user.click(screen.getByRole("button", { name: /recent calls/i }));
+    expect(screen.queryByText(`Run: ${runId}`)).not.toBeInTheDocument();
+    await user.click(screen.getByText("run_script"));
+    expect(screen.getByText("script exception", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText(`Run: ${runId}`)).toBeInTheDocument();
+  });
+
   it("keeps an expanded error row open across a live-poll refetch", async () => {
     const user = userEvent.setup({
       advanceTimers: (ms) => vi.advanceTimersByTime(ms),
@@ -329,11 +587,11 @@ describe("ActivityView recent calls", () => {
     await act(async () => {});
     await user.click(screen.getByRole("button", { name: /recent calls/i }));
 
-    expect(screen.getByText("3 pseudonymized")).toBeInTheDocument();
+    expect(screen.getByText("3 values masked")).toBeInTheDocument();
 
     // The fail-open case has to read as a warning, not as a tidy count: values reached
     // the model in the clear even though redaction was on.
-    const incomplete = screen.getByText("2 pseudonymized, incomplete");
+    const incomplete = screen.getByText("2 values masked, incomplete");
     expect(incomplete).toBeInTheDocument();
     expect(incomplete).toHaveAttribute(
       "title",
@@ -342,8 +600,8 @@ describe("ActivityView recent calls", () => {
 
     // A pass that matched nothing, and a call made with redaction off, both stay silent —
     // a badge on every row would bury the two cases above.
-    expect(screen.queryByText(/0 pseudonymized/)).not.toBeInTheDocument();
-    expect(screen.getAllByText(/pseudonymized/)).toHaveLength(2);
+    expect(screen.queryByText(/0 values masked/)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/values masked/)).toHaveLength(2);
 
     // The values are the point of the feature and must never reach this view.
     expect(document.body.textContent).not.toMatch(/@example\.com/);
@@ -355,7 +613,10 @@ describe("ActivityView discovery", () => {
     const user = userEvent.setup({
       advanceTimers: (ms) => vi.advanceTimersByTime(ms),
     });
-    getSearchTraces.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
+    getSearchTraces
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce([]);
 
     render(<ActivityView refreshKey={0} registry={null} />);
     await act(async () => {});
@@ -431,12 +692,17 @@ describe("ActivityView discovery", () => {
 
 it("distinguishes measured bytes from legacy estimates in catalog savings", async () => {
   getSavingsSummary.mockResolvedValue({
-    tokensSaved: 3_692_944_923,
+    tokensSaved: 923,
+    fullTokens: 1_000,
+    exposedTokens: 75,
+    discoveryTokens: 2,
     listLoads: 2751,
     peakCatalog: 1725,
     sinceTs: 1700000000000,
     legacyEstimatedTokensAvoided: 3_692_944_000,
     measuredLoads: 1,
+    tokenizedLoads: 1,
+    estimatedTokensAvoided: 2000,
     latestCatalogTs: 1700000000001,
     latestFullToolCount: 1725,
     latestExposedToolCount: 7,
@@ -450,13 +716,113 @@ it("distinguishes measured bytes from legacy estimates in catalog savings", asyn
   });
   render(<ActivityView refreshKey={0} registry={null} />);
   await act(async () => {});
-  expect(screen.getAllByText(/3\.7B/).length).toBeGreaterThan(0);
-  expect(screen.getByText(/8\.0 KB full/)).toBeInTheDocument();
+  expect(screen.getByText(/923/, { selector: "span[title]" })).toHaveTextContent(
+    "tokens saved",
+  );
+  expect(screen.getByText(/923/, { selector: "span[title]" })).toHaveAttribute(
+    "title",
+    expect.stringContaining("cl100k_base"),
+  );
+  expect(screen.getByText("How this is measured").parentElement).not.toHaveAttribute(
+    "open",
+  );
+  expect(screen.getByText(/8\.0 KB baseline catalog text/)).toBeInTheDocument();
+  expect(screen.queryByText(/Latest load/)).not.toBeInTheDocument();
+  expect(screen.getByText(/Older estimated records/)).toBeInTheDocument();
+  expect(screen.getByText(/2\.5 KB search text sent/)).toBeInTheDocument();
+});
+
+it("does not promote historical estimates into a catalog token headline", async () => {
+  getSavingsSummary.mockResolvedValue({
+    tokensSaved: 0,
+    listLoads: 2751,
+    peakCatalog: 1725,
+    sinceTs: 1700000000000,
+    legacyEstimatedTokensAvoided: 52_800_000,
+    tokenizedLoads: 0,
+  });
+  render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  expect(screen.queryByText("Net tool description savings")).not.toBeInTheDocument();
+  expect(screen.queryByText(/52.8M/)).not.toBeInTheDocument();
+});
+
+it("keeps contradictory pre-session history outside all measured totals", async () => {
+  getSavingsSummary.mockResolvedValue({
+    tokensSaved: -10,
+    fullTokens: 100,
+    exposedTokens: 50,
+    discoveryTokens: 60,
+    tokenizedLoads: 1,
+    measuredLoads: 1,
+    listLoads: 2,
+    discoveryCount: 1,
+    peakCatalog: 4,
+    sinceTs: 1,
+    fullSurfaceBytes: 1200,
+    exposedSurfaceBytes: 2400,
+    historicalListLoads: 3019,
+    historicalMeasuredLoads: 3019,
+    previousReportedTokensSaved: 188_100_000,
+  });
+  render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  expect(screen.getByText(/100 baseline tokens/)).toHaveTextContent(
+    "100 baseline tokens − 50 catalog response tokens − 60 search response tokens = -10 net tokens saved.",
+  );
+  expect(screen.getByText(/1 client sessions/)).toHaveTextContent("2 catalog responses");
+  expect(screen.getByText(/1.2 KB baseline catalog text/)).toHaveTextContent(
+    "2.4 KB catalog text sent",
+  );
+  expect(screen.getByText(/Excluded history:/)).toHaveTextContent(
+    "3,019 catalog records",
+  );
+  expect(screen.getByText(/Old estimate:/)).toHaveTextContent(
+    "Old estimate: 188,100,000 tokens",
+  );
+  expect(screen.queryByText(/18.4 GB/)).not.toBeInTheDocument();
+});
+
+it("shows preserved history without a shareable savings headline", async () => {
+  getSavingsSummary.mockResolvedValue({
+    tokensSaved: 0,
+    listLoads: 0,
+    peakCatalog: 0,
+    sinceTs: 0,
+    historicalListLoads: 3019,
+    historicalMeasuredLoads: 3019,
+    previousReportedTokensSaved: 195_640_064,
+    legacyEstimatedTokensAvoided: 3_861_119_161,
+    estimatedTokensAvoided: 4_387_380_774,
+  });
+  render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  expect(screen.getByText("Not measured yet")).toBeInTheDocument();
+  expect(screen.getByText(/Old estimate:/)).toBeVisible();
+  expect(screen.getByText(/Old estimate:/)).toHaveTextContent("195,640,064 tokens");
+  expect(screen.queryByRole("button", { name: "Share" })).not.toBeInTheDocument();
+});
+
+it("preserves a negative old estimate separately from new measured savings", async () => {
+  getSavingsSummary.mockResolvedValue({
+    tokensSaved: 42,
+    tokenizedLoads: 1,
+    listLoads: 1,
+    peakCatalog: 1,
+    sinceTs: 1,
+    previousReportedTokensSaved: -291,
+  });
+  render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  expect(screen.getByText(/Old estimate:/)).toBeVisible();
+  expect(screen.getByText(/Old estimate:/)).toHaveTextContent("-291 tokens");
+  expect(screen.getByText(/42/, { selector: "span.text-3xl" })).toHaveTextContent(
+    "net tokens saved",
+  );
   expect(
-    screen.getByText(/Latest load: 8\.0 KB \/ 1,725 tools full/),
-  ).toBeInTheDocument();
-  expect(screen.getByText(/older estimated records/)).toBeInTheDocument();
-  expect(screen.getByText(/searches returned 2\.5 KB/)).toBeInTheDocument();
+    screen.getByText("From previous versions; excluded from new savings."),
+  ).toBeVisible();
+  expect(screen.getByRole("button", { name: "Share" })).toBeInTheDocument();
 });
 
 it("shares a token savings statement without a billing claim", async () => {
@@ -467,7 +833,9 @@ it("shares a token savings statement without a billing claim", async () => {
     value: { writeText },
   });
   getSavingsSummary.mockResolvedValue({
-    tokensSaved: 3_692_944_923,
+    tokensSaved: -123,
+    previousReportedTokensSaved: 195_640_064,
+    tokenizedLoads: 1,
     listLoads: 2751,
     peakCatalog: 1725,
     sinceTs: 1700000000000,
@@ -476,11 +844,13 @@ it("shares a token savings statement without a billing claim", async () => {
   await act(async () => {});
   await user.click(screen.getByRole("button", { name: "Share" }));
   expect(writeText).toHaveBeenCalledWith(
-    expect.stringContaining("tokens of MCP tool definitions out of my agent's context"),
+    expect.stringContaining("-123 net tokens saved"),
   );
-  expect(writeText.mock.calls[0][0]).toContain("not model billing");
-  expect(writeText.mock.calls[0][0]).toContain("2,751 loads");
-  expect(writeText.mock.calls[0][0]).not.toMatch(/billed tokens|money saved/i);
+  expect(writeText.mock.calls[0][0]).toContain("not a billing figure");
+  expect(writeText.mock.calls[0][0]).toContain("cl100k_base");
+  expect(writeText.mock.calls[0][0]).not.toMatch(
+    /billed tokens|money saved|195|Old estimate/i,
+  );
 });
 
 it("shows discovery bytes without a catalog load or a zero-token savings claim", async () => {
@@ -496,7 +866,7 @@ it("shows discovery bytes without a catalog load or a zero-token savings claim",
   render(<ActivityView refreshKey={0} registry={null} />);
   await act(async () => {});
   expect(screen.getByText("Discovery payload returned")).toBeInTheDocument();
-  expect(screen.getByText(/3 searches returned 12\.3 KB/)).toBeInTheDocument();
+  expect(screen.getByText(/3 search responses/)).toBeInTheDocument();
   expect(screen.queryByText(/0 tool-list loads/)).not.toBeInTheDocument();
   expect(screen.queryByText(/tokens saved/)).not.toBeInTheDocument();
 });
@@ -506,9 +876,7 @@ it("reports unavailable catalog telemetry without showing an empty measurement",
   render(<ActivityView refreshKey={0} registry={null} />);
   await act(async () => {});
   expect(screen.getByRole("alert")).toHaveTextContent("Catalog telemetry unavailable");
-  expect(
-    screen.queryByText("Tool definitions kept out of your agent's context"),
-  ).not.toBeInTheDocument();
+  expect(screen.queryByText("Net tool description savings")).not.toBeInTheDocument();
 });
 
 it("keeps last-loaded catalog telemetry visibly stale after a failed refresh", async () => {
@@ -516,6 +884,14 @@ it("keeps last-loaded catalog telemetry visibly stale after a failed refresh", a
     .mockResolvedValueOnce({
       tokensSaved: 100,
       listLoads: 1,
+      tokenizedLoads: 1,
+      peakCatalog: 3,
+      sinceTs: 1700000000000,
+    })
+    .mockResolvedValueOnce({
+      tokensSaved: 100,
+      listLoads: 1,
+      tokenizedLoads: 1,
       peakCatalog: 3,
       sinceTs: 1700000000000,
     })
@@ -524,9 +900,7 @@ it("keeps last-loaded catalog telemetry visibly stale after a failed refresh", a
   await act(async () => {});
   view.rerender(<ActivityView refreshKey={1} registry={null} />);
   await act(async () => {});
-  expect(
-    screen.getByText("Tool definitions kept out of your agent's context"),
-  ).toBeInTheDocument();
+  expect(screen.getByText("Net tool description savings")).toBeInTheDocument();
   expect(screen.getByRole("alert")).toHaveTextContent("last loaded measurements");
 });
 
@@ -536,6 +910,7 @@ describe("ActivityView tool identities", () => {
       advanceTimers: (ms) => vi.advanceTimersByTime(ms),
     });
     getToolIdentities
+      .mockRejectedValueOnce(new Error("offline"))
       .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValueOnce([]);
 
@@ -552,12 +927,245 @@ describe("ActivityView tool identities", () => {
   });
 });
 
+describe("ActivityView security drift dismissals", () => {
+  function warnEvent(ts: number): SecurityEvent {
+    return {
+      ts,
+      type: "tool_drift",
+      server: "srv",
+      tool: "srv__read",
+      change: "changed",
+      severity: "info",
+      blocked: false,
+    };
+  }
+
+  it.each(["toolport.security.dismissed", "conduit.security.dismissed"])(
+    "preserves v1 reviews from %s without hiding current or blocked definitions",
+    async (storageKey) => {
+      localStorage.clear();
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify(["tool_drift:srv:srv__read:changed:info"]),
+      );
+      getSecurityEvents.mockResolvedValue([warnEvent(1)]);
+      render(<ActivityView refreshKey={0} registry={null} />);
+      await act(async () => {});
+      expect(screen.queryByText("Tool changes")).not.toBeInTheDocument();
+      for (const change of [{ blocked: null }, { blocked: true }, { new_fp: "v3:new" }]) {
+        getSecurityEvents.mockResolvedValue([{ ...warnEvent(2), ...change }]);
+        await act(() => vi.advanceTimersByTimeAsync(3000));
+        expect(
+          screen.getByRole("button", { name: /srv: 1 tool changed/ }),
+        ).toBeInTheDocument();
+      }
+      expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual([
+        "tool_drift:srv:srv__read:changed:info",
+      ]);
+    },
+  );
+
+  it("shows server changes and re-surfaces a later rewrite after acceptance", async () => {
+    localStorage.clear();
+    const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+    getSecurityEvents.mockResolvedValue([warnEvent(1_700_000_000_000)]);
+
+    render(<ActivityView refreshKey={0} registry={null} />);
+    await act(async () => {});
+
+    // A description rewrite stays visible as a server update.
+    expect(screen.getByText("Tool changes")).toBeInTheDocument();
+
+    // Accept just this tool.
+    await user.click(screen.getByRole("button", { name: /srv: 1 tool changed/ }));
+    await user.click(screen.getByText("Read"));
+    await user.click(screen.getByRole("button", { name: "Accept this tool" }));
+    await act(async () => {});
+    expect(screen.queryByText("Read")).not.toBeInTheDocument();
+
+    // A later, different rewrite of the SAME tool must reappear: an accepted change is
+    // per instance, not per tool identity.
+    getSecurityEvents.mockResolvedValue([warnEvent(1_700_000_000_000 + 20 * 60 * 1000)]);
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(
+      screen.getByRole("button", { name: /srv: 1 tool changed/ }),
+    ).toBeInTheDocument();
+  });
+  it("accepts one profile while the same finding stays visible and blocked in another", async () => {
+    localStorage.clear();
+    const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+    const blocked = new Set(["personal", "work"]);
+    const events = ["personal", "work"].map((profile) => ({
+      ...warnEvent(1_700_000_000_000),
+      profile,
+      new_fp: "v2:same-definition",
+      blocked: true,
+      blocked_profiles: [profile],
+    }));
+    getSecurityEvents.mockImplementation(async () =>
+      events.map((event) => ({
+        ...event,
+        blocked: blocked.has(event.profile),
+        blocked_profiles: blocked.has(event.profile) ? [event.profile] : [],
+      })),
+    );
+    releaseQuarantine.mockImplementation(async (profile: string) =>
+      blocked.delete(profile),
+    );
+    render(<ActivityView refreshKey={0} registry={null} />);
+    await act(async () => {});
+    expect(screen.getAllByRole("button", { name: /srv: 1 tool changed/ })).toHaveLength(
+      2,
+    );
+    await user.click(
+      screen.getAllByRole("button", { name: "Accept all for this server" })[0],
+    );
+    await act(async () => {});
+    expect(releaseQuarantine).toHaveBeenCalledExactlyOnceWith(
+      "personal",
+      "srv__read",
+      "v2:same-definition",
+    );
+    expect(blocked).toEqual(new Set(["work"]));
+    expect(screen.getAllByRole("button", { name: /srv: 1 tool changed/ })).toHaveLength(
+      1,
+    );
+    expect(screen.getByText(/1 tool is blocked/)).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(3000));
+    expect(
+      screen.getByRole("button", { name: /srv: 1 tool changed/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/1 tool is blocked/)).toBeInTheDocument();
+  });
+
+  it("keeps older fingerprint-less records in one expandable history summary", async () => {
+    localStorage.clear();
+    getSecurityEvents.mockResolvedValue([
+      {
+        ...warnEvent(1_700_000_000_000),
+        tool: "cloudflare__update",
+        server: "cloudflare",
+      },
+      ...Array.from({ length: 1500 }, (_, i) => ({
+        ...warnEvent(1_600_000_000_000),
+        tool: `old__read${i}`,
+        server: "old",
+        historical: true,
+      })),
+    ]);
+    render(<ActivityView refreshKey={0} registry={null} />);
+    await act(async () => {});
+    expect(screen.getByText(/1500 older tool-change records/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /cloudflare: 1 tool changed/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/1500 older tool-change records/).closest("details"),
+    ).not.toHaveAttribute("open");
+  });
+
+  it.each([undefined, "work"])(
+    "keeps an older unknown quarantine in the main view with profile %s",
+    async (profile) => {
+      localStorage.clear();
+      getSecurityEvents.mockResolvedValue([
+        ...Array.from({ length: 55 }, (_, i) => ({
+          ...warnEvent(1_700_000_000_000),
+          tool: `old__read${i}`,
+          server: "old",
+          historical: i >= 50,
+        })),
+        {
+          ...warnEvent(1_600_000_000_000),
+          tool: "legacy__update",
+          server: "legacy",
+          profile,
+          blocked: null,
+        },
+      ]);
+      render(<ActivityView refreshKey={0} registry={null} />);
+      await act(async () => {});
+      const row = screen.getByRole("button", { name: /legacy: 1 tool changed/ });
+      expect(row.closest("details")).toBeNull();
+      expect(screen.getByText(/5 older tool-change records/)).toBeInTheDocument();
+      expect(screen.getByText(/Settings > Quarantined tools/)).toBeInTheDocument();
+      const card = within(row.parentElement!);
+      expect(
+        card.getByRole("button", { name: "Accept all for this server" }),
+      ).toBeDisabled();
+      fireEvent.click(row);
+      const accept = card.getByRole("button", { name: "Accept this tool" });
+      expect(accept).toBeDisabled();
+      fireEvent.click(accept);
+      expect(releaseQuarantine).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts a server update larger than the old dismissal limit", async () => {
+    localStorage.clear();
+    const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+    const events = Array.from({ length: 600 }, (_, i) => ({
+      ...warnEvent(1_700_000_000_000),
+      tool: `srv__read${i}`,
+    }));
+    getSecurityEvents.mockResolvedValue(events);
+    render(<ActivityView refreshKey={0} registry={null} />);
+    await act(async () => {});
+    await user.click(screen.getByRole("button", { name: "Accept all for this server" }));
+    await act(async () => {});
+    expect(screen.queryByText("Tool changes")).not.toBeInTheDocument();
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(screen.queryByText("Tool changes")).not.toBeInTheDocument();
+  });
+
+  it("retains a v1 review marker after accepting a 357-tool shared profile update", async () => {
+    localStorage.clear();
+    const legacyMarker = "tool_drift:older:older__read:changed:warn";
+    localStorage.setItem("toolport.security.dismissed", JSON.stringify([legacyMarker]));
+    const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+    getSecurityEvents.mockResolvedValue(
+      Array.from({ length: 357 }, (_, i) => ({
+        ...warnEvent(1_700_000_000_000),
+        tool: `srv__read${i}`,
+        profiles: ["", "a", "b", "c", "d", "e"],
+        blocked: false,
+      })),
+    );
+    render(<ActivityView refreshKey={0} registry={null} />);
+    await act(async () => {});
+    await user.click(screen.getByRole("button", { name: "Accept all for this server" }));
+    await act(async () => {});
+    const markers = JSON.parse(localStorage.getItem("toolport.security.dismissed")!);
+    expect(markers).toContain(legacyMarker);
+    expect(markers).toHaveLength(358);
+  });
+
+  it("keeps separate definitions within the old duplicate window", async () => {
+    getSecurityEvents.mockResolvedValue([
+      { ...warnEvent(1_700_000_000_000), new_fp: "v2:old" },
+      { ...warnEvent(1_700_000_120_000), new_fp: "v2:new" },
+    ]);
+    render(<ActivityView refreshKey={0} registry={null} />);
+    await act(async () => {});
+    expect(screen.getAllByRole("button", { name: /srv: 1 tool changed/ })).toHaveLength(
+      2,
+    );
+  });
+});
+
 describe("ActivityView live inspector", () => {
   it("shows an error with retry instead of a false empty state when the inspect log fails to load (#728)", async () => {
     const user = userEvent.setup({
       advanceTimers: (ms) => vi.advanceTimersByTime(ms),
     });
-    getInspectLog.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce([]);
+    getInspectLog
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce([]);
 
     // LiveInspector only mounts while live inspection is on (ActivityView.tsx:1772).
     render(<ActivityView refreshKey={0} registry={{ liveInspect: true } as never} />);
@@ -574,4 +1182,271 @@ describe("ActivityView live inspector", () => {
     await act(async () => {});
     expect(screen.getByText(/No calls captured yet\. Run a tool/)).toBeInTheDocument();
   });
+});
+
+describe("telemetry health", () => {
+  it("keeps persisted drop evidence visible after the gateway exits", async () => {
+    getAuditLog.mockResolvedValue([]);
+    getAuditStats.mockResolvedValue({
+      total: 0,
+      errors: 0,
+      errorRate: 0,
+      servers: [],
+      telemetry: {
+        queueDropped: 0,
+        writeFailedRecords: 0,
+        writeFailures: 0,
+        incompleteFlushes: 0,
+        retainedDropped: 7,
+      },
+    });
+    render(<ActivityView refreshKey={0} registry={null} />);
+    expect(
+      await screen.findByText(
+        /7 dropped telemetry records are recorded in retained history/,
+      ),
+    ).toBeInTheDocument();
+  });
+  it("shows dropped records and partial persistence even with no calls", async () => {
+    getAuditLog.mockResolvedValue([]);
+    getAuditStats.mockResolvedValue({
+      total: 0,
+      errors: 0,
+      errorRate: 0,
+      servers: [],
+      telemetry: {
+        queueDropped: 3,
+        writeFailedRecords: 2,
+        writeFailures: 1,
+        incompleteFlushes: 1,
+      },
+      gatewayNotes: ["Client configs updated, but ownership state was not saved."],
+    });
+    render(<ActivityView refreshKey={0} registry={null} />);
+    expect(await screen.findByText(/3 records dropped/)).toBeInTheDocument();
+    expect(screen.getByText(/ownership state was not saved/)).toBeInTheDocument();
+  });
+
+  it("shows unavailable shared gateway health instead of healthy zero counters", async () => {
+    getAuditStats.mockResolvedValue({
+      total: 0,
+      errors: 0,
+      errorRate: 0,
+      servers: [],
+      telemetry: {
+        queueDropped: 0,
+        writeFailedRecords: 0,
+        writeFailures: 0,
+        incompleteFlushes: 0,
+        unavailable: true,
+      },
+    });
+    render(<ActivityView refreshKey={0} registry={null} />);
+    expect(
+      await screen.findByText(/Gateway telemetry health is unavailable/),
+    ).toBeInTheDocument();
+  });
+});
+
+it("uses one server filter and one identity, time and wait meta line", async () => {
+  const ts = Date.now() - 120000;
+  getAuditLog.mockResolvedValue([
+    entry({
+      ts,
+      server: "team_slack",
+      serverId: "team-slack",
+      kind: "approval",
+      decision: "denied",
+      client: "adapter:claude-code",
+      clientName: "Claude Code",
+      clientLabel: "Claude Code 2.1",
+      heldMs: 1500,
+    }),
+    entry({
+      ts,
+      server: "team_slack",
+      serverId: "team-slack",
+      clientName: "Claude Code",
+      durationMs: 850,
+    }),
+  ]);
+  render(<ActivityView refreshKey={0} registry={null} />);
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  await user.click(await screen.findByRole("button", { name: /recent calls/i }));
+  expect(screen.getByText("Claude Code · 2m ago · waited 1.5 s")).toHaveAttribute(
+    "title",
+    expect.stringContaining("adapter:claude-code"),
+  );
+  expect(screen.queryByText("adapter:claude-code")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("combobox"));
+  expect(screen.getAllByRole("option", { name: /^team_slack$/ })).toHaveLength(1);
+  expect(screen.queryByRole("option", { name: /^team-slack$/ })).not.toBeInTheDocument();
+});
+
+it("uses one server option for hyphenated call and approval identities", async () => {
+  getAuditLog.mockResolvedValue([
+    {
+      ...entry({
+        server: "team_slack",
+        serverId: "team-slack",
+        clientName: "Claude Code",
+      }),
+      kind: "approval",
+      decision: "denied",
+    },
+    entry({ server: "team_slack", serverId: "team-slack", clientName: "Claude Code" }),
+  ]);
+  render(<ActivityView refreshKey={0} registry={null} />);
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  await user.click(await screen.findByRole("button", { name: /recent calls/i }));
+  await user.click(screen.getByRole("combobox"));
+  expect(screen.getAllByRole("option", { name: /^team_slack$/ })).toHaveLength(1);
+  expect(screen.queryByRole("option", { name: /^team-slack$/ })).not.toBeInTheDocument();
+});
+
+it("keeps revision failures visible after successful panel reads and clears them on recovery", async () => {
+  getActivityRevision.mockRejectedValue("unreadable");
+  render(<ActivityView refreshKey={0} registry={null} />);
+  expect(
+    await screen.findByText(/Activity change checks are unavailable/),
+  ).toBeInTheDocument();
+  expect(getAuditLog).toHaveBeenCalled();
+  getActivityRevision.mockResolvedValue("recovered");
+  await act(() => vi.advanceTimersByTimeAsync(3000));
+  expect(
+    screen.queryByText(/Activity change checks are unavailable/),
+  ).not.toBeInTheDocument();
+});
+
+it("discards a late revision without evicting a newer visibility session", async () => {
+  let complete!: (revision: string) => void;
+  getActivityRevision.mockImplementation(
+    () =>
+      new Promise<string>((resolve) => {
+        complete = resolve;
+      }),
+  );
+  const view = render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  const releases = releaseActivityRevision.mock.calls.length;
+  view.unmount();
+  expect(releaseActivityRevision).toHaveBeenCalledTimes(releases + 1);
+  await act(async () => complete("late"));
+  expect(releaseActivityRevision).toHaveBeenCalledTimes(releases + 1);
+});
+
+it.each(["success", "cancellation"] as const)(
+  "preserves a fresh mounted session when an old revision returns %s",
+  async (completion) => {
+    let finish!: (revision: string) => void;
+    let cancel!: (error: string) => void;
+    getActivityRevision.mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve, reject) => {
+          finish = resolve;
+          cancel = reject;
+        }),
+    );
+    getActivityRevision.mockResolvedValue("fresh");
+    const old = render(<ActivityView refreshKey={0} registry={null} />);
+    await act(async () => {});
+    old.unmount();
+    const releases = releaseActivityRevision.mock.calls.length;
+    getAuditLog.mockResolvedValue(refreshedLog);
+    const fresh = render(<ActivityView refreshKey={0} registry={null} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: /recent calls/i }));
+    expect(screen.getByText("list_issues")).toBeInTheDocument();
+    const reads = getAuditLog.mock.calls.length;
+    await act(async () => {
+      if (completion === "success") finish("obsolete");
+      else cancel("Activity change check cancelled");
+    });
+    expect(releaseActivityRevision).toHaveBeenCalledTimes(releases);
+    expect(screen.getByText("list_issues")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Activity change checks are unavailable/),
+    ).not.toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(getAuditLog).toHaveBeenCalledTimes(reads);
+    fresh.unmount();
+    expect(releaseActivityRevision).toHaveBeenCalledTimes(releases + 1);
+  },
+);
+
+it("reconciles a write between initial panel snapshot and first revision baseline", async () => {
+  let finish!: (revision: string) => void;
+  getActivityRevision.mockImplementationOnce(
+    () =>
+      new Promise<string>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  getActivityRevision.mockResolvedValue("new-content");
+  const view = render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  const calls = getAuditLog.mock.calls.length;
+  expect(calls).toBe(1);
+  fireEvent.click(screen.getByRole("button", { name: /recent calls/i }));
+  // A real new append is now available to panel readers. The queued initial
+  // digest observes it, after the first panel reader has returned older bytes.
+  getAuditLog.mockResolvedValue(refreshedLog);
+  await act(async () => {
+    finish("new-content");
+  });
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(getAuditLog).toHaveBeenCalledTimes(calls + 1);
+  expect(screen.queryByText("list_issues")).toBeInTheDocument();
+  view.unmount();
+});
+
+it("reconciles after an initial revision error and rejects obsolete panel completions", async () => {
+  let finishOld!: (rows: AuditEntry[]) => void;
+  getActivityRevision.mockRejectedValueOnce("unreadable");
+  getActivityRevision.mockResolvedValue("same");
+  getAuditLog.mockImplementationOnce(
+    () =>
+      new Promise<AuditEntry[]>((resolve) => {
+        finishOld = resolve;
+      }),
+  );
+  getAuditLog.mockResolvedValue(refreshedLog);
+  render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  expect(screen.getByText(/Activity change checks are unavailable/)).toBeInTheDocument();
+  await act(() => vi.advanceTimersByTimeAsync(3000));
+  fireEvent.click(screen.getByRole("button", { name: /recent calls/i }));
+  expect(screen.getByText("list_issues")).toBeInTheDocument();
+  await act(async () => finishOld(initialLog));
+  expect(screen.getByText("list_issues")).toBeInTheDocument();
+  const calls = getAuditLog.mock.calls.length;
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(getAuditLog).toHaveBeenCalledTimes(calls);
+});
+
+it("reconciles hide/show with a delayed first revision and no overlapping checks", async () => {
+  let finish!: (revision: string) => void;
+  getActivityRevision.mockImplementationOnce(
+    () =>
+      new Promise<string>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  getActivityRevision.mockResolvedValue("same");
+  const view = render(<ActivityView refreshKey={0} registry={null} />);
+  await act(async () => {});
+  windowVisible = false;
+  view.rerender(<ActivityView refreshKey={0} registry={null} />);
+  getAuditLog.mockResolvedValue(refreshedLog);
+  windowVisible = true;
+  view.rerender(<ActivityView refreshKey={0} registry={null} />);
+  await act(() => vi.advanceTimersByTimeAsync(6000));
+  expect(getActivityRevision).toHaveBeenCalledTimes(1);
+  await act(async () => finish("obsolete"));
+  await act(() => vi.advanceTimersByTimeAsync(3000));
+  fireEvent.click(screen.getByRole("button", { name: /recent calls/i }));
+  expect(screen.getByText("list_issues")).toBeInTheDocument();
+  const calls = getAuditLog.mock.calls.length;
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(getAuditLog).toHaveBeenCalledTimes(calls);
 });

@@ -17,6 +17,58 @@ pub struct ProbeResult {
     pub tool_count: usize,
     pub error: Option<String>,
     pub auth_required: bool,
+    pub failure: Option<crate::call_failure::CallFailureKind>,
+    pub auth_target: Option<crate::call_failure::AuthTarget>,
+}
+
+impl ProbeResult {
+    pub fn failure_label(&self) -> &str {
+        use crate::call_failure::{AuthTarget, CallFailureKind as K};
+        if self.auth_required {
+            return match self.auth_target {
+                Some(AuthTarget::Scope) => "Permission required",
+                Some(AuthTarget::ServiceCredential) => "Service key required",
+                _ => "Needs sign-in",
+            };
+        }
+        if self
+            .error
+            .as_deref()
+            .is_some_and(|raw| raw.contains("downstream server exited"))
+        {
+            return "Server stopped";
+        }
+        if self
+            .error
+            .as_deref()
+            .is_some_and(|raw| raw.contains("Broken pipe"))
+        {
+            return "Connection closed";
+        }
+        match self.failure.as_ref() {
+            Some(K::Auth {
+                target: AuthTarget::Scope,
+            }) => "Permission required",
+            Some(K::Auth { .. }) => "Needs sign-in",
+            Some(K::Timeout { .. }) => "Timed out",
+            Some(K::Unavailable { .. }) => "Unreachable",
+            Some(K::ServerError { .. }) => "Server failed",
+            Some(K::Quota) => "Rate limited",
+            Some(K::Cancelled) => "Check cancelled",
+            _ => {
+                // Older/local launch errors have no transport code. This is only
+                // display text; it never changes policy or authorizes a retry.
+                let raw = self.error.as_deref().unwrap_or("");
+                if raw.contains("exited") || raw.contains("EOF") || raw.contains("closed stdout") {
+                    "Server stopped"
+                } else if raw.contains("No such file") || raw.contains("not found") {
+                    "Command or file not found"
+                } else {
+                    "Connection failed"
+                }
+            }
+        }
+    }
 }
 
 fn env_key_required(server: &ServerEntry, key: &str) -> bool {
@@ -31,6 +83,7 @@ fn missing_secret(server: &ServerEntry) -> bool {
         entry.secret
             && env_key_required(server, &entry.key)
             && entry.value.is_none()
+            && !entry.unknown_fields.contains_key("source")
             && matches!(secrets::get_secret_result(&server.id, &entry.key), Ok(None))
     })
 }
@@ -72,43 +125,88 @@ fn environment_for_probe_with(
 }
 
 pub fn connect_server(server: &ServerEntry) -> Result<DownstreamServer, String> {
+    connect_server_classified(server).map_err(|error| error.to_string())
+}
+
+fn connect_server_classified(
+    server: &ServerEntry,
+) -> Result<DownstreamServer, crate::call_failure::CallFailure> {
     if let Some(command) = &server.command {
+        let resolved_server =
+            crate::secret_refs::resolve_server(server).map_err(|e| e.to_string())?;
+        let server = &resolved_server;
         let env = environment_for_probe_with(server, secrets::get_secret_result)?;
         let cwd = server
             .cwd
             .as_deref()
             .and_then(|cwd| resolve_root_token(cwd, None));
         let resolved = crate::launch_inputs::resolve_args(server)?;
-        let mut transport = StdioTransport::spawn(command, &resolved.args, &env, cwd.as_deref())
-            .map_err(|error| resolved.redact(error))?;
+        let mut transport = StdioTransport::spawn(
+            command,
+            &resolved.args,
+            &env,
+            cwd.as_deref(),
+            server.inherit_env,
+        )
+        .map_err(|error| resolved.redact(error))?;
         if let Some(timeout) = server.initialize_timeout()? {
             transport.set_connect_timeout(timeout);
         }
-        DownstreamServer::connect(server.id.clone(), Box::new(transport))
-            .map_err(|error| resolved.redact(error))
+        DownstreamServer::connect_classified(
+            server.id.clone(),
+            remote::protect_transport(server, Box::new(transport)),
+        )
+        .map_err(|error| {
+            crate::call_failure::CallFailure::new(error.kind, resolved.redact(error.detail))
+        })
     } else if server.url.is_some() {
-        remote::connect_remote(server)
+        remote::connect_remote_classified(server, None, None, None, None)
     } else {
-        Err("no command or url".to_string())
+        Err("no command or url".to_string().into())
     }
 }
 
 pub fn probe_one(server: &ServerEntry) -> ProbeResult {
-    match connect_server(server) {
+    match connect_server_classified(server) {
         Ok(connection) => ProbeResult {
             server_id: server.id.clone(),
             ok: true,
             tool_count: connection.tools.len(),
             error: None,
             auth_required: false,
+            failure: None,
+            auth_target: None,
         },
-        Err(error) => ProbeResult {
-            server_id: server.id.clone(),
-            ok: false,
-            tool_count: 0,
-            auth_required: remote::is_auth_error(&error) || missing_secret(server),
-            error: Some(error),
+        Err(error) => failed_probe(server, error),
+    }
+}
+
+fn failed_probe(server: &ServerEntry, error: crate::call_failure::CallFailure) -> ProbeResult {
+    let missing_credential = missing_secret(server);
+    let typed_auth = match error.kind {
+        crate::call_failure::CallFailureKind::Auth { target } => Some(target),
+        _ => None,
+    };
+    // Prose is a compatibility fallback for unclassified launch errors only.
+    let auth_rejected = typed_auth.is_some()
+        || (error.kind == crate::call_failure::CallFailureKind::Internal
+            && remote::is_auth_error(&error.detail));
+    ProbeResult {
+        server_id: server.id.clone(),
+        ok: false,
+        tool_count: 0,
+        auth_required: auth_rejected || missing_credential,
+        auth_target: if missing_credential {
+            Some(crate::call_failure::AuthTarget::ServiceCredential)
+        } else if let Some(target) = typed_auth {
+            Some(target)
+        } else if auth_rejected && server.url.is_some() {
+            Some(crate::call_failure::AuthTarget::Endpoint)
+        } else {
+            None
         },
+        failure: Some(error.kind),
+        error: Some(error.detail),
     }
 }
 
@@ -145,6 +243,8 @@ pub fn probe_one_bounded(server: &ServerEntry) -> ProbeResult {
             tool_count: 0,
             error: Some(format!("timed out after {}s", timeout.as_secs())),
             auth_required: false,
+            failure: Some(crate::call_failure::CallFailureKind::Timeout { after_send: false }),
+            auth_target: None,
         })
 }
 
@@ -152,7 +252,7 @@ pub fn probe_registered(server_id: &str) -> Result<ProbeResult, String> {
     let path = crate::registry::resolved_path().ok_or("could not resolve the registry path")?;
     let contents = std::fs::read_to_string(path)
         .map_err(|error| format!("could not read the registry: {error}"))?;
-    let registry = serde_json::from_str::<crate::registry::Registry>(&contents)
+    let registry = crate::registry::parse_registry_contents(&contents)
         .map_err(|error| format!("could not parse the registry: {error}"))?;
     let server = registry
         .servers
@@ -188,6 +288,8 @@ mod tests {
 
     fn server() -> ServerEntry {
         ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "probe".into(),
             name: "Probe".into(),
             transport: "stdio".into(),
@@ -214,6 +316,45 @@ mod tests {
         assert!(!result.auth_required);
         assert_eq!(result.tool_count, 0);
         assert_eq!(result.error.as_deref(), Some("no command or url"));
+    }
+
+    #[test]
+    fn typed_probe_failures_win_over_auth_words_in_details() {
+        use crate::call_failure::{AuthTarget, CallFailure, CallFailureKind as K};
+        let mut endpoint = server();
+        endpoint.url = Some("https://example.invalid/401/".into());
+        for (kind, detail, label) in [
+            (
+                K::Unavailable { after_send: false },
+                "could not reach https://example.invalid/401/",
+                "Unreachable",
+            ),
+            (
+                K::ServerError { after_send: true },
+                "HTTP 500: upstream unauthorized",
+                "Server failed",
+            ),
+        ] {
+            let result = failed_probe(&endpoint, CallFailure::new(kind.clone(), detail));
+            assert!(!result.auth_required);
+            assert_eq!(result.auth_target, None);
+            assert_eq!(result.failure, Some(kind));
+            assert_eq!(result.failure_label(), label);
+        }
+        let fallback = failed_probe(&endpoint, CallFailure::new(K::Internal, "unauthorized"));
+        assert!(fallback.auth_required);
+        assert_eq!(fallback.auth_target, Some(AuthTarget::Endpoint));
+        let scope = failed_probe(
+            &endpoint,
+            CallFailure::new(
+                K::Auth {
+                    target: AuthTarget::Scope,
+                },
+                "401 unauthorized",
+            ),
+        );
+        assert_eq!(scope.failure_label(), "Permission required");
+        assert_eq!(scope.auth_target, Some(AuthTarget::Scope));
     }
 
     #[test]
@@ -275,6 +416,9 @@ mod tests {
 
     #[test]
     fn probe_passes_composed_launch_argument_to_real_stdio_child() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "probe_passes_composed_launch_argument_to_real_stdio_child",
+        );
         let mut server = server();
         server.command = Some("node".into());
         server.args = vec![
@@ -289,6 +433,7 @@ mod tests {
                     secret: false,
                     required: true,
                     value: Some("account".into()),
+                    unknown_fields: Default::default(),
                 },
                 LaunchInput {
                     key: "KEY".into(),
@@ -296,6 +441,7 @@ mod tests {
                     secret: false,
                     required: true,
                     value: Some("key".into()),
+                    unknown_fields: Default::default(),
                 },
                 LaunchInput {
                     key: "SECRET".into(),
@@ -303,6 +449,7 @@ mod tests {
                     secret: true,
                     required: true,
                     value: Some("secret".into()),
+                    unknown_fields: Default::default(),
                 },
             ],
             bindings: vec![ArgBinding {
@@ -310,14 +457,26 @@ mod tests {
                 parts: vec![
                     ArgPart::Input {
                         key: "ACCOUNT".into(),
+                        unknown_fields: Default::default(),
                     },
-                    ArgPart::Literal { value: "/".into() },
-                    ArgPart::Input { key: "KEY".into() },
-                    ArgPart::Literal { value: ":".into() },
+                    ArgPart::Literal {
+                        value: "/".into(),
+                        unknown_fields: Default::default(),
+                    },
+                    ArgPart::Input {
+                        key: "KEY".into(),
+                        unknown_fields: Default::default(),
+                    },
+                    ArgPart::Literal {
+                        value: ":".into(),
+                        unknown_fields: Default::default(),
+                    },
                     ArgPart::Input {
                         key: "SECRET".into(),
+                        unknown_fields: Default::default(),
                     },
                 ],
+                unknown_fields: Default::default(),
             }],
             ..Default::default()
         });
@@ -343,6 +502,7 @@ mod tests {
             key: "API_KEY".into(),
             value: None,
             secret: true,
+            unknown_fields: Default::default(),
         });
         server.launch = Some(LaunchConfig::default());
         assert!(!env_key_required(&server, "API_KEY"));

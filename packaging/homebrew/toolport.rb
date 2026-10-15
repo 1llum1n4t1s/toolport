@@ -1,5 +1,5 @@
 cask "toolport" do
-  version "1.24.1"
+  version "2.0.0"
 
   on_arm do
     sha256 "67b5db8b2c7d76f03f64de74b2fa9c93217f04cb9ff345d0c6e2f58122ee7160"
@@ -26,16 +26,24 @@ cask "toolport" do
 
   app "Toolport.app"
 
-  # The gateway is a nested helper the app manages; no separate binaries to link.
-  # Application Support: current leaf is Toolport (brand.rs data_dir_leaf_name);
-  # Conduit remains for installs that have not migrated. Cache/pref paths keep
-  # com.tsout.conduit because the bundle id is intentionally unchanged.
+  # Homebrew also runs uninstall_preflight on upgrades without exposing the
+  # upgrade flag to that block. Disconnecting there would break live clients.
+  caveats <<~EOS
+    Before brew uninstall or zap, open Toolport Settings and choose
+    "Remove Toolport from all clients". Keep Toolport's data if cleanup fails.
+    Or run "#{appdir}/Toolport.app/Contents/MacOS/toolport-gateway" --disconnect-all
+    as your normal user while the app is still installed.
+    Uninstall keeps data and credentials. Zap removes app caches and preferences,
+    but keeps the registry, recovery data and credentials. To remove them, choose
+    "Remove Toolport data" in Settings before uninstalling.
+  EOS
+
+  # Explicit zap removes only app-owned storage, never client recovery data.
   zap trash: [
-    "~/Library/Application Support/Conduit",
-    "~/Library/Application Support/Toolport",
     "~/Library/Caches/com.tsout.conduit",
     "~/Library/HTTPStorages/com.tsout.conduit",
     "~/Library/Preferences/com.tsout.conduit.plist",
     "~/Library/Saved Application State/com.tsout.conduit.savedState",
+    "~/Library/WebKit/com.tsout.conduit",
   ]
 end

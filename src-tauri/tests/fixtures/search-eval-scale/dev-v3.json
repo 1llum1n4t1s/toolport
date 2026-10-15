@@ -1,0 +1,2904 @@
+[
+  {
+    "id": "dev3-001",
+    "query": "Stripe: add a buyer record for alex@example.test",
+    "kind": "single",
+    "expected": ["stripe__create_customer"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a new customer object."
+  },
+  {
+    "id": "dev3-002",
+    "query": "Stripe add our consulting package to the product catlog",
+    "kind": "single",
+    "expected": ["stripe__create_product"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a new product object."
+  },
+  {
+    "id": "dev3-003",
+    "query": "Stripe recurring monthly price for an existing product",
+    "kind": "single",
+    "expected": ["stripe__create_price", "stripe__create_plan"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Both Price and legacy Plan creation schemas accept an existing product and a monthly recurring amount. Either supports this single recurring pricing job."
+  },
+  {
+    "id": "dev3-004",
+    "query": "Make a 20 percent discount coupon in Stripe.",
+    "kind": "single",
+    "expected": ["stripe__create_coupon"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "You can create coupons easily via the coupon management page of the Stripe dashboard."
+  },
+  {
+    "id": "dev3-005",
+    "query": "Stripe customer-facing promo code for our existing coupon",
+    "kind": "single",
+    "expected": ["stripe__create_promotion_code"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "A promotion code points to an underlying promotion."
+  },
+  {
+    "id": "dev3-006",
+    "query": "I need a hosted Stripe checkout session for this cart.",
+    "kind": "single",
+    "expected": ["stripe__create_checkout_session"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a Checkout Session object."
+  },
+  {
+    "id": "dev3-007",
+    "query": "Stripe shareable payment URL for a one-off sale",
+    "kind": "single",
+    "expected": ["stripe__create_payment_link"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a payment link."
+  },
+  {
+    "id": "dev3-008",
+    "query": "Let cus_7 manage their own billing through a Stripe portal link.",
+    "kind": "single",
+    "expected": ["stripe__create_billing_portal_session"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a session of the customer portal."
+  },
+  {
+    "id": "dev3-009",
+    "query": "Configure which billing actions customers see in Stripe's self-service portal.",
+    "kind": "single",
+    "expected": ["stripe__create_billing_portal_configuration"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a configuration that describes the functionality and behavior of a PortalSession."
+  },
+  {
+    "id": "dev3-010",
+    "query": "Start a Stripe payment with the Payment Intents API; don't use legacy charges.",
+    "kind": "single",
+    "expected": ["stripe__create_payment_intent"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a PaymentIntent object."
+  },
+  {
+    "id": "dev3-011",
+    "query": "Stripe confirm pi_test_42 with the selected payment method",
+    "kind": "single",
+    "expected": ["stripe__confirm_payment_intent"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Confirm that your customer intends to pay with current or provided payment method."
+  },
+  {
+    "id": "dev3-012",
+    "query": "Collect the authorized funds on Stripe PaymentIntent pi_hold_9.",
+    "kind": "single",
+    "expected": ["stripe__capture_payment_intent"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Capture the funds of an existing uncaptured PaymentIntent when its status is requires_capture ."
+  },
+  {
+    "id": "dev3-013",
+    "query": "Abandon Stripe PaymentIntent pi_9 before it finishes.",
+    "kind": "single",
+    "expected": ["stripe__cancel_payment_intent"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "You can cancel a PaymentIntent object when it’s in one of these statuses: requires_payment_method , requires_capture , requires_confirmation , requires_action or, in rare cases , processing ."
+  },
+  {
+    "id": "dev3-014",
+    "query": "Stripe increase the amount held on an eligible PaymentIntent",
+    "kind": "single",
+    "expected": ["stripe__create_payment_intent_increment_authorization"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Increment an authorization."
+  },
+  {
+    "id": "dev3-015",
+    "query": "Stripe save payment details for later with a SetupIntent, no payment now",
+    "kind": "single",
+    "expected": ["stripe__create_setup_intent"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a SetupIntent object."
+  },
+  {
+    "id": "dev3-016",
+    "query": "Stripe confirm seti_8 so the customer can pay later",
+    "kind": "single",
+    "expected": ["stripe__confirm_setup_intent"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Confirm that your customer intends to set up the current or provided payment method."
+  },
+  {
+    "id": "dev3-017",
+    "query": "Cancel the unfinished Stripe SetupIntent seti_abandoned.",
+    "kind": "single",
+    "expected": ["stripe__cancel_setup_intent"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "You can cancel a SetupIntent object when it’s in one of these statuses: requires_payment_method , requires_confirmation , or requires_action ."
+  },
+  {
+    "id": "dev3-018",
+    "query": "Link pm_123 to cus_456 in Stripe.",
+    "kind": "single",
+    "expected": ["stripe__attach_payment_method"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Attaches a PaymentMethod object to a Customer."
+  },
+  {
+    "id": "dev3-019",
+    "query": "Unlink a Stripe PaymentMethod from its customer.",
+    "kind": "single",
+    "expected": ["stripe__detach_payment_method"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Detaches a PaymentMethod object from a Customer."
+  },
+  {
+    "id": "dev3-020",
+    "query": "Stripe draft invoice for cus_acme, don't send it yet",
+    "kind": "single",
+    "expected": ["stripe__create_invoice"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "This endpoint creates a draft invoice for a given customer."
+  },
+  {
+    "id": "dev3-021",
+    "query": "Add a pending billable item to the customer's next Stripe invoice.",
+    "kind": "single",
+    "expected": ["stripe__create_invoice_item"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Invoice item creation can leave a pending item for the next invoice. Adding lines directly to an existing invoice requires a draft invoice ID, which is not this job."
+  },
+  {
+    "id": "dev3-022",
+    "query": "Stripe add several lines to an existing draft invoice in one request",
+    "kind": "single",
+    "expected": ["stripe__create_invoice_add_line"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Bulk add invoice line items."
+  },
+  {
+    "id": "dev3-023",
+    "query": "Remove several lines from a draft Stripe invoice at once.",
+    "kind": "single",
+    "expected": ["stripe__create_invoice_remove_line"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Bulk remove invoice line items."
+  },
+  {
+    "id": "dev3-024",
+    "query": "Stripe bulk edit the line items on a draft invoice",
+    "kind": "single",
+    "expected": ["stripe__create_invoice_update_line"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Bulk update invoice line items."
+  },
+  {
+    "id": "dev3-025",
+    "query": "We won't recover this debt; mark Stripe invoice in_bad as uncollectible.",
+    "kind": "single",
+    "expected": ["stripe__create_invoice_mark_uncollectible"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Mark an invoice as uncollectible."
+  },
+  {
+    "id": "dev3-026",
+    "query": "Issue a Stripe credit note against a finalized invoice.",
+    "kind": "single",
+    "expected": ["stripe__create_credit_note"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Issue a credit note to adjust the amount of a finalized invoice."
+  },
+  {
+    "id": "dev3-027",
+    "query": "Stripe adjust a customer's credit balance with a balance transaction",
+    "kind": "single",
+    "expected": ["stripe__create_customer_balance_transaction"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates an immutable transaction that updates the customer’s credit balance ."
+  },
+  {
+    "id": "dev3-028",
+    "query": "Give me bank transfer funding instructions for this Stripe customer cash balance.",
+    "kind": "single",
+    "expected": ["stripe__create_customer_funding_instruction"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Create or retrieve funding instructions for a customer cash balance."
+  },
+  {
+    "id": "dev3-029",
+    "query": "Add a VAT tax ID to customer cus_europe in Stripe.",
+    "kind": "single",
+    "expected": ["stripe__create_customer_tax_id", "stripe__create_tax_id"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a new tax_id object for a customer. Creates a new account or customer tax_id object."
+  },
+  {
+    "id": "dev3-030",
+    "query": "Start a Stripe subscription for an existing customer.",
+    "kind": "single",
+    "expected": ["stripe__create_subscription", "stripe__create_customer_subscription"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a new subscription on an existing customer."
+  },
+  {
+    "id": "dev3-031",
+    "query": "Stripe cancel sub_9 now; the customer called after being charged and does not want it to renew.",
+    "kind": "single",
+    "expected": ["stripe__cancel_subscription", "stripe__delete_customer_subscription"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Both subscription cancellation routes cancel an existing subscription immediately; the customer-scoped route is an alternate locator. Scheduling a later cancellation would not satisfy cancel now."
+  },
+  {
+    "id": "dev3-032",
+    "query": "Add another price as an item on an existing Stripe subscription.",
+    "kind": "single",
+    "expected": [
+      "stripe__create_subscription_item",
+      "stripe__update_subscription",
+      "stripe__update_customer_subscription"
+    ],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "The dedicated subscription-item creator adds a price without replacing items. Both subscription update routes also accept new entries in items, so they can add a price while retaining existing items."
+  },
+  {
+    "id": "dev3-033",
+    "query": "Set up future phases for a customer's Stripe subscription.",
+    "kind": "single",
+    "expected": [
+      "stripe__create_subscription_schedule",
+      "stripe__update_subscription_schedule"
+    ],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creating a schedule supplies future phases for a new scheduled subscription. An existing schedule can receive future phases through schedule update; adopting an existing subscription first may require separate creation and update calls."
+  },
+  {
+    "id": "dev3-034",
+    "query": "Stripe cancel the subscription schedule and its underlying subscription",
+    "kind": "single",
+    "expected": ["stripe__cancel_subscription_schedule"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Cancels a subscription schedule and its associated subscription immediately (if the subscription schedule has an active subscription)."
+  },
+  {
+    "id": "dev3-035",
+    "query": "Upgrade the billing mode on this existing Stripe subscription.",
+    "kind": "single",
+    "expected": ["stripe__create_subscription_migrate"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Migrate a subscription."
+  },
+  {
+    "id": "dev3-036",
+    "query": "Prepare a Stripe quote for a prospective customer.",
+    "kind": "single",
+    "expected": ["stripe__create_quote"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "A quote models prices and services for a customer."
+  },
+  {
+    "id": "dev3-037",
+    "query": "Stripe customer agreed; accept quote qt_12",
+    "kind": "single",
+    "expected": ["stripe__create_quote_accept"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Accept a quote."
+  },
+  {
+    "id": "dev3-038",
+    "query": "Withdraw Stripe quote qt_old.",
+    "kind": "single",
+    "expected": ["stripe__cancel_quote"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Cancels the quote."
+  },
+  {
+    "id": "dev3-039",
+    "query": "Stripe define a meter for usage-based billing",
+    "kind": "single",
+    "expected": ["stripe__create_billing_meter"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a billing meter."
+  },
+  {
+    "id": "dev3-040",
+    "query": "Record 37 API calls as usage for our Stripe billing meter.",
+    "kind": "single",
+    "expected": ["stripe__create_billing_meter_event"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a billing meter event."
+  },
+  {
+    "id": "dev3-041",
+    "query": "Stripe correct a previously reported meter event",
+    "kind": "single",
+    "expected": ["stripe__create_billing_meter_event_adjustment"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a billing meter event adjustment."
+  },
+  {
+    "id": "dev3-042",
+    "query": "Give this customer a Stripe billing credit grant.",
+    "kind": "single",
+    "expected": ["stripe__create_billing_credit_grant"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a credit grant."
+  },
+  {
+    "id": "dev3-043",
+    "query": "Stripe create a usage billing alert",
+    "kind": "single",
+    "expected": ["stripe__create_billing_alert"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a billing alert."
+  },
+  {
+    "id": "dev3-044",
+    "query": "Hide an obsolete Stripe billing alert by archiving it.",
+    "kind": "single",
+    "expected": ["stripe__create_billing_alert_archive"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Archive a billing alert."
+  },
+  {
+    "id": "dev3-045",
+    "query": "Calculate tax for this basket using Stripe Tax.",
+    "kind": "single",
+    "expected": ["stripe__create_tax_calculation"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Calculates tax based on the input and returns a Tax Calculation object."
+  },
+  {
+    "id": "dev3-046",
+    "query": "Define a reusable VAT rate in Stripe.",
+    "kind": "single",
+    "expected": ["stripe__create_tax_rate"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a new tax rate."
+  },
+  {
+    "id": "dev3-047",
+    "query": "Stripe register where we collect sales tax",
+    "kind": "single",
+    "expected": ["stripe__create_tax_registration"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a new Tax Registration object."
+  },
+  {
+    "id": "dev3-048",
+    "query": "Stripe turn a completed tax calculation into a tax transaction",
+    "kind": "single",
+    "expected": ["stripe__create_tax_transactions_create_from_calculation"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a Tax Transaction from a calculation, if that calculation hasn’t expired."
+  },
+  {
+    "id": "dev3-049",
+    "query": "Reverse a previously recorded Stripe tax transaction.",
+    "kind": "single",
+    "expected": ["stripe__create_tax_transactions_create_reversal"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Partially or fully reverses a previously created Transaction ."
+  },
+  {
+    "id": "dev3-050",
+    "query": "Stripe add a fixed shipping rate for checkout",
+    "kind": "single",
+    "expected": ["stripe__create_shipping_rate"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a new shipping rate object."
+  },
+  {
+    "id": "dev3-051",
+    "query": "Stripe Connect onboarding link for a connected account",
+    "kind": "single",
+    "expected": ["stripe__create_account_link"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates an AccountLink object that includes a single-use Stripe URL that the platform can redirect their user to in order to take them through the Connect Onboarding flow."
+  },
+  {
+    "id": "dev3-052",
+    "query": "Give a Stripe Express connected account a dashboard login link.",
+    "kind": "single",
+    "expected": ["stripe__create_account_login_link"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a login link for a connected account to access the Express Dashboard."
+  },
+  {
+    "id": "dev3-053",
+    "query": "Stripe create a session for embedded Connect components",
+    "kind": "single",
+    "expected": ["stripe__create_account_session"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a AccountSession object that includes a single-use token that the platform can use on their front-end to grant client-side API access."
+  },
+  {
+    "id": "dev3-054",
+    "query": "Create a new connected Stripe account for one of our sellers.",
+    "kind": "single",
+    "expected": ["stripe__create_connected_account"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "With Connect , you can create Stripe accounts for your users."
+  },
+  {
+    "id": "dev3-055",
+    "query": "Add a representative person to a Stripe connected account.",
+    "kind": "single",
+    "expected": ["stripe__create_account_person", "stripe__create_account_person_2"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a new person."
+  },
+  {
+    "id": "dev3-056",
+    "query": "Issue a company expense card through Stripe Issuing.",
+    "kind": "single",
+    "expected": ["stripe__create_issuing_card"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates an Issuing Card object."
+  },
+  {
+    "id": "dev3-057",
+    "query": "Stripe Issuing add a person who can hold corporate cards",
+    "kind": "single",
+    "expected": ["stripe__create_issuing_cardholder"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a new Issuing Cardholder object that can be issued cards."
+  },
+  {
+    "id": "dev3-058",
+    "query": "Start a dispute for a Stripe Issuing card transaction.",
+    "kind": "single",
+    "expected": ["stripe__create_issuing_dispute"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates an Issuing Dispute object."
+  },
+  {
+    "id": "dev3-059",
+    "query": "Send our Stripe Issuing dispute evidence to the card network.",
+    "kind": "single",
+    "expected": ["stripe__create_issuing_dispute_submit"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Submit a dispute."
+  },
+  {
+    "id": "dev3-060",
+    "query": "Stripe register a physical shop location for Terminal readers",
+    "kind": "single",
+    "expected": ["stripe__create_terminal_location"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a new Location object."
+  },
+  {
+    "id": "dev3-061",
+    "query": "Register a new Stripe Terminal reader.",
+    "kind": "single",
+    "expected": ["stripe__create_terminal_reader"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a new Reader object."
+  },
+  {
+    "id": "dev3-062",
+    "query": "Stripe temporary connection token for a point-of-sale terminal",
+    "kind": "single",
+    "expected": ["stripe__create_terminal_connection_token"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "To connect to a reader the Stripe Terminal SDK needs to retrieve a short-lived connection token from Stripe, proxied through your server."
+  },
+  {
+    "id": "dev3-063",
+    "query": "Start a Stripe Identity check for a new customer.",
+    "kind": "single",
+    "expected": ["stripe__create_identity_verification_session"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a VerificationSession object."
+  },
+  {
+    "id": "dev3-064",
+    "query": "Erase collected personal information from Stripe Identity session vs_9.",
+    "kind": "single",
+    "expected": ["stripe__create_identity_verification_session_redact"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Redact a VerificationSession."
+  },
+  {
+    "id": "dev3-065",
+    "query": "Stop an unfinished Stripe Identity verification session.",
+    "kind": "single",
+    "expected": ["stripe__cancel_identity_verification_session"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "A VerificationSession object can be canceled when it is in requires_input status ."
+  },
+  {
+    "id": "dev3-066",
+    "query": "Buy carbon removal with Stripe Climate.",
+    "kind": "single",
+    "expected": ["stripe__create_climate_order"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a Climate order object for a given Climate product."
+  },
+  {
+    "id": "dev3-067",
+    "query": "Cancel the Stripe Climate order we placed an hour ago.",
+    "kind": "single",
+    "expected": ["stripe__cancel_climate_order"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Cancels a Climate order."
+  },
+  {
+    "id": "dev3-068",
+    "query": "Run a Stripe financial report for last month's date range.",
+    "kind": "single",
+    "expected": ["stripe__create_reporting_report_run"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a new object and begin running the report."
+  },
+  {
+    "id": "dev3-069",
+    "query": "Make a custom Stripe Radar list to reference in fraud rules.",
+    "kind": "single",
+    "expected": ["stripe__create_radar_value_list"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a new ValueList object, which can then be referenced in rules."
+  },
+  {
+    "id": "dev3-070",
+    "query": "Add another entry to an existing Stripe Radar value list.",
+    "kind": "single",
+    "expected": ["stripe__create_radar_value_list_item"],
+    "category": "agent_task",
+    "server": "stripe",
+    "notes": "Creates a new ValueListItem object, which is added to the specified parent value list."
+  },
+  {
+    "id": "dev3-071",
+    "query": "Cloudflare add example.test; we moved off the old host yesterday and need the zone set up.",
+    "kind": "single",
+    "expected": ["cloudflare__create_zone"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Zone creation accepts a domain name and account. It creates the requested zone rather than listing existing zones."
+  },
+  {
+    "id": "dev3-072",
+    "query": "Which Cloudflare zones can this account access?",
+    "kind": "single",
+    "expected": ["cloudflare__list_zones"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Lists, searches, sorts, and filters your zones."
+  },
+  {
+    "id": "dev3-073",
+    "query": "Cloudflare zone details for zone_42",
+    "kind": "single",
+    "expected": ["cloudflare__get_zone"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Zone retrieval takes zone_id and returns details for that zone. A zone inventory does not target one ID directly."
+  },
+  {
+    "id": "dev3-074",
+    "query": "Create a TXT DNS record in Cloudflare for domain verification.",
+    "kind": "single",
+    "expected": ["cloudflare__create_dns_record", "cloudflare__batch_dns_records"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Both single record creation and the batch DNS API support a TXT record creation. The batch posts array may contain one record."
+  },
+  {
+    "id": "dev3-075",
+    "query": "Cloudflare show DNS entries for example.test",
+    "kind": "single",
+    "expected": ["cloudflare__list_dns_records"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "List dns_records."
+  },
+  {
+    "id": "dev3-076",
+    "query": "Read Cloudflare DNS record rec_7 by ID.",
+    "kind": "single",
+    "expected": ["cloudflare__get_dns_record"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "DNS Record Details."
+  },
+  {
+    "id": "dev3-077",
+    "query": "Change the TTL on an existing Cloudflare DNS record.",
+    "kind": "single",
+    "expected": [
+      "cloudflare__patch_dns_record",
+      "cloudflare__update_dns_record",
+      "cloudflare__batch_dns_records"
+    ],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Partial update, full replacement, and the batch patches or puts operations support changing an existing DNS record TTL."
+  },
+  {
+    "id": "dev3-078",
+    "query": "Cloudflare remove stale DNS record rec_old",
+    "kind": "single",
+    "expected": ["cloudflare__delete_dns_record", "cloudflare__batch_dns_records"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Both the single deletion route and a batch deletes entry permanently remove the named DNS record."
+  },
+  {
+    "id": "dev3-079",
+    "query": "Export our Cloudflare DNS zone as a BIND file.",
+    "kind": "single",
+    "expected": ["cloudflare__export_dns_records"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Export DNS Records."
+  },
+  {
+    "id": "dev3-080",
+    "query": "Import a BIND zone file into Cloudflare DNS.",
+    "kind": "single",
+    "expected": ["cloudflare__import_dns_records"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Import DNS Records."
+  },
+  {
+    "id": "dev3-081",
+    "query": "Cloudflare clear cached copies of these URLs after the release",
+    "kind": "single",
+    "expected": ["cloudflare__purge_cache"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Purge Cached Content."
+  },
+  {
+    "id": "dev3-082",
+    "query": "Spin up a Cloudflare D1 database called staging-orders.",
+    "kind": "single",
+    "expected": ["cloudflare__create_d1_database"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Create D1 Database."
+  },
+  {
+    "id": "dev3-083",
+    "query": "Show the D1 databases in our Cloudflare account.",
+    "kind": "single",
+    "expected": ["cloudflare__list_d1_databases"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "List D1 Databases."
+  },
+  {
+    "id": "dev3-084",
+    "query": "Cloudflare D1 metadata for database db_88",
+    "kind": "single",
+    "expected": ["cloudflare__get_d1_database"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Get D1 Database."
+  },
+  {
+    "id": "dev3-085",
+    "query": "Download a SQL export of our Cloudflare D1 database.",
+    "kind": "single",
+    "expected": ["cloudflare__export_d1_database"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Export D1 Database as SQL."
+  },
+  {
+    "id": "dev3-086",
+    "query": "Cloudflare D1 restore data by importing a SQL dump",
+    "kind": "single",
+    "expected": ["cloudflare__import_d1_database"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Import SQL into your D1 Database."
+  },
+  {
+    "id": "dev3-087",
+    "query": "Roll a Cloudflare D1 database back using Time Travel.",
+    "kind": "single",
+    "expected": ["cloudflare__restore_d1_database_time_travel"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Restore a d1_database_time_travel."
+  },
+  {
+    "id": "dev3-088",
+    "query": "Cloudflare D1 recovery bookmark for yesterday at noon",
+    "kind": "single",
+    "expected": ["cloudflare__get_d1_database_time_travel_bookmark"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Get D1 database bookmark."
+  },
+  {
+    "id": "dev3-089",
+    "query": "Create an R2 bucket for build artifacts in Cloudflare.",
+    "kind": "single",
+    "expected": ["cloudflare__create_r2_bucket"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Creates a new R2 bucket."
+  },
+  {
+    "id": "dev3-090",
+    "query": "Cloudflare object storage buckets inventory",
+    "kind": "single",
+    "expected": ["cloudflare__list_r2_buckets"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "List r2_buckets."
+  },
+  {
+    "id": "dev3-091",
+    "query": "Cloudflare metadata for R2 bucket build-assets",
+    "kind": "single",
+    "expected": ["cloudflare__get_r2_bucket"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Gets properties of an existing R2 bucket."
+  },
+  {
+    "id": "dev3-092",
+    "query": "List objects under the releases/ prefix in a Cloudflare R2 bucket.",
+    "kind": "single",
+    "expected": ["cloudflare__list_r2_buckets_objects"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "List r2_buckets_objects."
+  },
+  {
+    "id": "dev3-093",
+    "query": "Download one object from Cloudflare R2.",
+    "kind": "single",
+    "expected": ["cloudflare__get_r2_buckets_object"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Retrieves an object from an R2 bucket."
+  },
+  {
+    "id": "dev3-094",
+    "query": "Upload a file as an object to Cloudflare R2.",
+    "kind": "single",
+    "expected": ["cloudflare__update_r2_buckets_object"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Uploads an object to an R2 bucket."
+  },
+  {
+    "id": "dev3-095",
+    "query": "Delete one named object from our Cloudflare R2 bucket.",
+    "kind": "single",
+    "expected": [
+      "cloudflare__delete_r2_buckets_object",
+      "cloudflare__delete_r2_buckets_objects"
+    ],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Deletes an object from an R2 bucket. Delete Objects."
+  },
+  {
+    "id": "dev3-096",
+    "query": "Set allowed web origins on a Cloudflare R2 bucket.",
+    "kind": "single",
+    "expected": ["cloudflare__update_r2_buckets_cors"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Put Bucket CORS Policy."
+  },
+  {
+    "id": "dev3-097",
+    "query": "Expire old build artifacts using a Cloudflare R2 lifecycle rule.",
+    "kind": "single",
+    "expected": ["cloudflare__update_r2_buckets_lifecycle"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Put Object Lifecycle Rules."
+  },
+  {
+    "id": "dev3-098",
+    "query": "Protect a web application with Cloudflare Access.",
+    "kind": "single",
+    "expected": ["cloudflare__create_access_app"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Add an Access application."
+  },
+  {
+    "id": "dev3-099",
+    "query": "Cloudflare Access new group for engineering staff",
+    "kind": "single",
+    "expected": ["cloudflare__create_access_group"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Creates a new Access group."
+  },
+  {
+    "id": "dev3-100",
+    "query": "Generate a Cloudflare Access service token for CI.",
+    "kind": "single",
+    "expected": ["cloudflare__create_access_service_token"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Generates a new service token."
+  },
+  {
+    "id": "dev3-101",
+    "query": "Revoke every Cloudflare Access token issued for this application.",
+    "kind": "single",
+    "expected": ["cloudflare__create_access_apps_revoke_token"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Revoke application tokens."
+  },
+  {
+    "id": "dev3-102",
+    "query": "Cloudflare revoke one person's access across all applications",
+    "kind": "single",
+    "expected": ["cloudflare__create_access_organizations_revoke_user"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Revoke all Access tokens for a user."
+  },
+  {
+    "id": "dev3-103",
+    "query": "Cloudflare Access failed logins, trying to figure out why the build bot cannot sign in",
+    "kind": "single",
+    "expected": ["cloudflare__list_access_users_failed_logins"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "List access_users_failed_logins."
+  },
+  {
+    "id": "dev3-104",
+    "query": "Cloudflare Access audit trail of requests",
+    "kind": "single",
+    "expected": ["cloudflare__list_access_logs_access_requests"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "List access_logs_access_requests."
+  },
+  {
+    "id": "dev3-105",
+    "query": "Register a destination email address for Cloudflare mail forwarding.",
+    "kind": "single",
+    "expected": ["cloudflare__create_email_routing_address"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Destination addresses need to be verified before they can be used."
+  },
+  {
+    "id": "dev3-106",
+    "query": "Forward mail with a new Cloudflare Email Routing rule.",
+    "kind": "single",
+    "expected": ["cloudflare__create_email_routing_rule"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Create routing rule."
+  },
+  {
+    "id": "dev3-107",
+    "query": "Cloudflare change where unmatched email addresses get forwarded",
+    "kind": "single",
+    "expected": ["cloudflare__update_email_routing_rules_catch_all"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Update catch-all rule."
+  },
+  {
+    "id": "dev3-108",
+    "query": "Cloudflare list our mail forwarding rules",
+    "kind": "single",
+    "expected": ["cloudflare__list_email_routing_rules"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "List email_routing_rules."
+  },
+  {
+    "id": "dev3-109",
+    "query": "Add a customer's hostname to Cloudflare for SaaS.",
+    "kind": "single",
+    "expected": ["cloudflare__create_custom_hostname"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Create Custom Hostname."
+  },
+  {
+    "id": "dev3-110",
+    "query": "Cloudflare create a new ruleset",
+    "kind": "single",
+    "expected": ["cloudflare__create_ruleset"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Creates a ruleset at the zone level."
+  },
+  {
+    "id": "dev3-111",
+    "query": "Which rulesets are configured for this Cloudflare zone?",
+    "kind": "single",
+    "expected": ["cloudflare__list_rulesets"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "List zone rulesets."
+  },
+  {
+    "id": "dev3-112",
+    "query": "Cloudflare block a specific user agent with a UA rule",
+    "kind": "single",
+    "expected": ["cloudflare__create_firewall_ua_rule"],
+    "category": "agent_task",
+    "server": "cloudflare",
+    "notes": "Creates a new User Agent Blocking rule in a zone."
+  },
+  {
+    "id": "dev3-113",
+    "query": "Create a Vercel project for the admin dashboard.",
+    "kind": "single",
+    "expected": ["vercel__create_project"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Allows to create a new project with the provided configuration."
+  },
+  {
+    "id": "dev3-114",
+    "query": "List the projects in our Vercel team.",
+    "kind": "single",
+    "expected": ["vercel__list_projects"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Allows to retrieve the list of projects of the authenticated user or team."
+  },
+  {
+    "id": "dev3-115",
+    "query": "Vercel project details by name, admin-ui",
+    "kind": "single",
+    "expected": ["vercel__get_project"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Find a project by id or name."
+  },
+  {
+    "id": "dev3-116",
+    "query": "Rename an existing Vercel project.",
+    "kind": "single",
+    "expected": ["vercel__update_project"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Update the fields of a project using either its `name` or `id`."
+  },
+  {
+    "id": "dev3-117",
+    "query": "Vercel delete the abandoned prototype project",
+    "kind": "single",
+    "expected": ["vercel__delete_project"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Delete a project."
+  },
+  {
+    "id": "dev3-118",
+    "query": "Temporarily stop serving the Vercel project while we investigate.",
+    "kind": "single",
+    "expected": ["vercel__pause_project"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Pause a project."
+  },
+  {
+    "id": "dev3-119",
+    "query": "Bring a paused Vercel project back online.",
+    "kind": "single",
+    "expected": ["vercel__unpause_project"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Unpause a project."
+  },
+  {
+    "id": "dev3-120",
+    "query": "Create a Vercel deployment from uploaded files.",
+    "kind": "single",
+    "expected": ["vercel__create_deployment"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Creates a new deployment for the authenticated team or user."
+  },
+  {
+    "id": "dev3-121",
+    "query": "Vercel deployment status for dpl_42",
+    "kind": "single",
+    "expected": ["vercel__get_deployment"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Retrieves information for a deployment either by supplying its ID (`id` property) or Hostname (`url` property)."
+  },
+  {
+    "id": "dev3-122",
+    "query": "Show recent Vercel deployments for this project.",
+    "kind": "single",
+    "expected": ["vercel__list_deployments"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "List deployments."
+  },
+  {
+    "id": "dev3-123",
+    "query": "Stop the Vercel build that is still in progress.",
+    "kind": "single",
+    "expected": ["vercel__cancel_deployment"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Cancels a deployment that is currently in progress, stopping the build before it completes."
+  },
+  {
+    "id": "dev3-124",
+    "query": "Point Vercel production at dpl_ready without rebuilding.",
+    "kind": "single",
+    "expected": ["vercel__request_promote"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Request a promote."
+  },
+  {
+    "id": "dev3-125",
+    "query": "Vercel rollback production to dpl_previous; the new release broke the checkout page.",
+    "kind": "single",
+    "expected": ["vercel__request_rollback"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Request a rollback."
+  },
+  {
+    "id": "dev3-126",
+    "query": "Vercel application runtime logs for deployment dpl_buggy",
+    "kind": "single",
+    "expected": ["vercel__list_runtime_logs"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "List runtime_logs."
+  },
+  {
+    "id": "dev3-127",
+    "query": "Get the Vercel build logs for a deployment, not runtime output.",
+    "kind": "single",
+    "expected": ["vercel__list_deployment_events"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "List deployment_events."
+  },
+  {
+    "id": "dev3-128",
+    "query": "Vercel source file tree for dpl_42",
+    "kind": "single",
+    "expected": ["vercel__list_deployment_files"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "List deployment_files."
+  },
+  {
+    "id": "dev3-129",
+    "query": "Add DATABASE_URL as a Vercel project env var.",
+    "kind": "single",
+    "expected": ["vercel__create_project_env"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Create one or more environment variables."
+  },
+  {
+    "id": "dev3-130",
+    "query": "Read the decrypted value of a Vercel project's env var by ID.",
+    "kind": "single",
+    "expected": ["vercel__get_project_env"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Retrieve the decrypted value of an environment variable of a project by id."
+  },
+  {
+    "id": "dev3-131",
+    "query": "Change an existing Vercel project's env var value.",
+    "kind": "single",
+    "expected": ["vercel__edit_project_env", "vercel__create_project_env"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "The edit route changes an existing variable; creation with upsert enabled also overrides an existing variable value."
+  },
+  {
+    "id": "dev3-132",
+    "query": "Remove a stale environment variable from a Vercel project.",
+    "kind": "single",
+    "expected": ["vercel__delete_project_env", "vercel__batch_remove_project_env"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "The single environment-variable delete and the batch-removal schema both support removing one variable from an existing project."
+  },
+  {
+    "id": "dev3-133",
+    "query": "Vercel create a team-wide shared env var",
+    "kind": "single",
+    "expected": ["vercel__create_shared_env_variable"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Create one or more shared environment variables."
+  },
+  {
+    "id": "dev3-134",
+    "query": "Vercel list shared env vars, I forgot which ones we set at team level",
+    "kind": "single",
+    "expected": ["vercel__list_shared_env_variables"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "List shared_env_variables."
+  },
+  {
+    "id": "dev3-135",
+    "query": "Vercel decrypt shared environment variable env_team_9",
+    "kind": "single",
+    "expected": ["vercel__get_shared_env_var"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Retrieve the decrypted value of a Shared Environment Variable by id."
+  },
+  {
+    "id": "dev3-136",
+    "query": "Connect app.example.test to a Vercel project.",
+    "kind": "single",
+    "expected": ["vercel__add_project_domain"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Add a project_domain."
+  },
+  {
+    "id": "dev3-137",
+    "query": "Verify the custom domain attached to our Vercel project.",
+    "kind": "single",
+    "expected": ["vercel__verify_project_domain"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Verify a project_domain."
+  },
+  {
+    "id": "dev3-138",
+    "query": "Check if this domain is available to buy through Vercel.",
+    "kind": "single",
+    "expected": ["vercel__get_domain_availability"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Get availability for a domain."
+  },
+  {
+    "id": "dev3-139",
+    "query": "Vercel registration price for a domain",
+    "kind": "single",
+    "expected": ["vercel__get_domain_price"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Get price data for a domain."
+  },
+  {
+    "id": "dev3-140",
+    "query": "Renew a domain registration through Vercel.",
+    "kind": "single",
+    "expected": ["vercel__renew_domain"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Renew a domain."
+  },
+  {
+    "id": "dev3-141",
+    "query": "Turn off automatic renewal for this Vercel domain.",
+    "kind": "single",
+    "expected": ["vercel__update_domain_auto_renew"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Update auto-renew for a domain."
+  },
+  {
+    "id": "dev3-142",
+    "query": "Add a DNS TXT record for a domain managed by Vercel.",
+    "kind": "single",
+    "expected": ["vercel__create_record"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Creates a DNS record for a domain."
+  },
+  {
+    "id": "dev3-143",
+    "query": "Show DNS records for a Vercel-managed domain.",
+    "kind": "single",
+    "expected": ["vercel__list_records"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "List existing DNS records."
+  },
+  {
+    "id": "dev3-144",
+    "query": "Vercel make an Edge Config store",
+    "kind": "single",
+    "expected": ["vercel__create_edge_config"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Creates an Edge Config."
+  },
+  {
+    "id": "dev3-145",
+    "query": "Read one named value from a Vercel Edge Config.",
+    "kind": "single",
+    "expected": ["vercel__get_edge_config_item"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Returns a specific Edge Config Item."
+  },
+  {
+    "id": "dev3-146",
+    "query": "Vercel batch update keys in our Edge Config",
+    "kind": "single",
+    "expected": ["vercel__update_edge_config_item"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Update Edge Config items in batch."
+  },
+  {
+    "id": "dev3-147",
+    "query": "Restore a Vercel Edge Config from a backup.",
+    "kind": "single",
+    "expected": ["vercel__restore_edge_config_backup"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Restore a edge_config_backup."
+  },
+  {
+    "id": "dev3-148",
+    "query": "Create a Vercel sandbox for running a build script.",
+    "kind": "single",
+    "expected": ["vercel__create_sandbox"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Creates a named sandbox environment."
+  },
+  {
+    "id": "dev3-149",
+    "query": "Execute npm install inside a running Vercel sandbox session.",
+    "kind": "single",
+    "expected": ["vercel__run_session_command"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Run a session_command."
+  },
+  {
+    "id": "dev3-150",
+    "query": "Check the exit status of a Vercel sandbox command.",
+    "kind": "single",
+    "expected": ["vercel__get_session_command", "vercel__list_session_commands"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "The command detail route returns current status. The session command list includes exit codes and status for every command, so it also answers the requested command status."
+  },
+  {
+    "id": "dev3-151",
+    "query": "Stop a hung process in a Vercel sandbox session.",
+    "kind": "single",
+    "expected": ["vercel__kill_session_command"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "Kill a session_command."
+  },
+  {
+    "id": "dev3-152",
+    "query": "Vercel stream stdout and stderr for a sandbox command",
+    "kind": "single",
+    "expected": ["vercel__list_session_command_logs"],
+    "category": "agent_task",
+    "server": "vercel",
+    "notes": "List session_command_logs."
+  },
+  {
+    "id": "dev3-153",
+    "query": "Read the text in Google Doc doc_22.",
+    "kind": "single",
+    "expected": [
+      "google_workspace__getGoogleDocContent",
+      "google_workspace__readGoogleDoc"
+    ],
+    "category": "agent_task",
+    "server": "google_workspace",
+    "notes": "Get content of a Google Doc with text indices for formatting. Read content of a Google Doc with format options."
+  },
+  {
+    "id": "dev3-154",
+    "query": "Insert one sentence at index 48 in a Google Doc; leave the rest alone.",
+    "kind": "single",
+    "expected": ["google_workspace__insertText"],
+    "category": "agent_task",
+    "server": "google_workspace",
+    "notes": "Insert text at a specific index in a Google Doc (surgical edit, doesn't replace entire doc)."
+  },
+  {
+    "id": "dev3-155",
+    "query": "Put an image from a public URL into a Google Doc.",
+    "kind": "single",
+    "expected": ["google_workspace__insertImageFromUrl"],
+    "category": "agent_task",
+    "server": "google_workspace",
+    "notes": "Insert an inline image into a Google Document from a publicly accessible URL."
+  },
+  {
+    "id": "dev3-156",
+    "query": "Google Doc insert a three-column table at a specific text index",
+    "kind": "single",
+    "expected": ["google_workspace__insertTable"],
+    "category": "agent_task",
+    "server": "google_workspace",
+    "notes": "Insert a new table with the specified dimensions at a given index."
+  },
+  {
+    "id": "dev3-157",
+    "query": "Show every tab in this Google Doc and its tab ID.",
+    "kind": "single",
+    "expected": ["google_workspace__listDocumentTabs"],
+    "category": "agent_task",
+    "server": "google_workspace",
+    "notes": "List all tabs in a Google Doc with their IDs and hierarchy."
+  },
+  {
+    "id": "dev3-158",
+    "query": "Read the presenter notes from slide 5 of our Google deck.",
+    "kind": "single",
+    "expected": ["google_workspace__getGoogleSlidesSpeakerNotes"],
+    "category": "agent_task",
+    "server": "google_workspace",
+    "notes": "Get speaker notes from a specific slide in Google Slides."
+  },
+  {
+    "id": "dev3-159",
+    "query": "Move and resize a shape on a Google slide.",
+    "kind": "single",
+    "expected": ["google_workspace__moveSlideElement"],
+    "category": "agent_task",
+    "server": "google_workspace",
+    "notes": "Move and/or resize an element (image, text box, shape) on a Google Slides slide."
+  },
+  {
+    "id": "dev3-160",
+    "query": "Google Slides set the slide background color",
+    "kind": "single",
+    "expected": ["google_workspace__setGoogleSlidesBackground"],
+    "category": "agent_task",
+    "server": "google_workspace",
+    "notes": "Set background color for slides."
+  },
+  {
+    "id": "dev3-161",
+    "query": "Lock spreadsheet cells B2:D20 against edits in Google Sheets.",
+    "kind": "single",
+    "expected": ["google_workspace__protectRange"],
+    "category": "agent_task",
+    "server": "google_workspace",
+    "notes": "Protect a range in a spreadsheet."
+  },
+  {
+    "id": "dev3-162",
+    "query": "Merge cells A1:C1 in a Google spreadsheet.",
+    "kind": "single",
+    "expected": ["google_workspace__mergeGoogleSheetCells"],
+    "category": "agent_task",
+    "server": "google_workspace",
+    "notes": "Merge cells in a Google Sheet."
+  },
+  {
+    "id": "dev3-163",
+    "query": "Clerk block user user_42 from signing in and revoke their sessions",
+    "kind": "single",
+    "expected": ["clerk__ban_user", "clerk__call_users_ban"],
+    "category": "agent_task",
+    "server": "clerk",
+    "notes": "The single-user ban revokes sessions and blocks sign-in. The bulk ban schema accepts an array containing one user, so it also fulfills the job."
+  },
+  {
+    "id": "dev3-164",
+    "query": "Clerk replace all user metadata instead of merging fields",
+    "kind": "single",
+    "expected": ["clerk__call_replace_user_metadata"],
+    "category": "agent_task",
+    "server": "clerk",
+    "notes": "Replace a user's metadata."
+  },
+  {
+    "id": "dev3-165",
+    "query": "Rotate a Clerk machine secret after it leaked.",
+    "kind": "single",
+    "expected": ["clerk__call_rotate_machine_secret_key"],
+    "category": "agent_task",
+    "server": "clerk",
+    "notes": "Rotate a machine's secret key."
+  },
+  {
+    "id": "dev3-166",
+    "query": "Clerk check the emailed verification code against its verification ID",
+    "kind": "single",
+    "expected": ["clerk__attempt_email_address_verification"],
+    "category": "agent_task",
+    "server": "clerk",
+    "notes": "Verify a code sent to an email address."
+  },
+  {
+    "id": "dev3-167",
+    "query": "Clerk extend the trial on this billing subscription item",
+    "kind": "single",
+    "expected": ["clerk__call_extend_billing_subscription_item_free_trial"],
+    "category": "agent_task",
+    "server": "clerk",
+    "notes": "Extend free trial for a subscription item."
+  },
+  {
+    "id": "dev3-168",
+    "query": "Open a GitLab MR from fix/cache into main.",
+    "kind": "single",
+    "expected": ["gitlab__create_merge_request"],
+    "category": "agent_task",
+    "server": "gitlab",
+    "notes": "Create a new merge request in a GitLab project (requires user authentication with write permissions)."
+  },
+  {
+    "id": "dev3-169",
+    "query": "Retry GitLab pipeline 984 after the runner outage.",
+    "kind": "single",
+    "expected": ["gitlab__manage_pipeline"],
+    "category": "agent_task",
+    "server": "gitlab",
+    "notes": "Retry or cancel a CI/CD pipeline (requires user authentication with write permissions)."
+  },
+  {
+    "id": "dev3-170",
+    "query": "GitLab group review queues and oldest waiting MRs",
+    "kind": "single",
+    "expected": ["gitlab__analytics_review_bottlenecks"],
+    "category": "agent_task",
+    "server": "gitlab",
+    "notes": "Aggregate open (non-draft) merge requests across a group or project to surface review bottlenecks."
+  },
+  {
+    "id": "dev3-171",
+    "query": "Read the time estimate and spent timelogs for GitLab issue 18.",
+    "kind": "single",
+    "expected": ["gitlab__get_time_tracking"],
+    "category": "agent_task",
+    "server": "gitlab",
+    "notes": "Get time tracking data (estimate, spent, timelogs) for an issue or merge request."
+  },
+  {
+    "id": "dev3-172",
+    "query": "GitLab issue 42 body, all notes, linked issues and related MRs in one call",
+    "kind": "single",
+    "expected": ["gitlab__get_issue_context"],
+    "category": "agent_task",
+    "server": "gitlab",
+    "notes": "Bundle issue body, all notes (paginated up to maxNotes), related merge requests (mentioning), closing merge requests, linked issues (relates_to/blocks/is_blocked_by) into a single call."
+  },
+  {
+    "id": "dev3-173",
+    "query": "Open a PR in GitHub for the bugfix branch.",
+    "kind": "single",
+    "expected": ["github__create_pull_request"],
+    "category": "agent_task",
+    "server": "github",
+    "notes": "Create a new pull request in a GitHub repository."
+  },
+  {
+    "id": "dev3-174",
+    "query": "GitHub PR 81: which files changed?",
+    "kind": "single",
+    "expected": ["github__get_pull_request_files"],
+    "category": "agent_task",
+    "server": "github",
+    "notes": "Get the list of files changed in a pull request."
+  },
+  {
+    "id": "dev3-175",
+    "query": "GitHub PR 81 combined CI status, is it green yet?",
+    "kind": "single",
+    "expected": ["github__get_pull_request_status"],
+    "category": "agent_task",
+    "server": "github",
+    "notes": "Get the combined status of all status checks for a pull request."
+  },
+  {
+    "id": "dev3-176",
+    "query": "Add a milestone to our Linear project.",
+    "kind": "single",
+    "expected": ["linear__linear_create_project_milestone"],
+    "category": "agent_task",
+    "server": "linear",
+    "notes": "Create a new project milestone."
+  },
+  {
+    "id": "dev3-177",
+    "query": "Mark the Linear comment thread as resolved.",
+    "kind": "single",
+    "expected": ["linear__linear_resolve_comment"],
+    "category": "agent_task",
+    "server": "linear",
+    "notes": "Resolves a comment."
+  },
+  {
+    "id": "dev3-178",
+    "query": "Find Linear tickets ENG-78 and ENG-79 by identifier.",
+    "kind": "single",
+    "expected": ["linear__linear_search_issues_by_identifier"],
+    "category": "agent_task",
+    "server": "linear",
+    "notes": "Search for issues by their identifiers (e.g., [\"ENG-78\", \"ENG-79\"])."
+  },
+  {
+    "id": "dev3-179",
+    "query": "Supabase generate TS types from our database schema",
+    "kind": "single",
+    "expected": ["supabase__generate_typescript_types"],
+    "category": "agent_task",
+    "server": "supabase",
+    "notes": "Generates TypeScript types for a project."
+  },
+  {
+    "id": "dev3-180",
+    "query": "Make a Supabase database development branch for this feature.",
+    "kind": "single",
+    "expected": ["supabase__create_branch"],
+    "category": "agent_task",
+    "server": "supabase",
+    "notes": "Creates a development branch on a Supabase project."
+  },
+  {
+    "id": "dev3-181",
+    "query": "Find the Supabase public client API keys, including the legacy anon key.",
+    "kind": "single",
+    "expected": ["supabase__get_publishable_keys"],
+    "category": "agent_task",
+    "server": "supabase",
+    "notes": "Gets all publishable API keys for a project, including legacy anon keys (JWT-based) and modern publishable keys (format: sb_publishable_...)."
+  },
+  {
+    "id": "dev3-182",
+    "query": "Supabase security and performance advisory notices for project abc",
+    "kind": "single",
+    "expected": ["supabase__get_advisors"],
+    "category": "agent_task",
+    "server": "supabase",
+    "notes": "Gets a list of advisory notices for the Supabase project."
+  },
+  {
+    "id": "dev3-183",
+    "query": "Export PostgreSQL table orders to CSV.",
+    "kind": "single",
+    "expected": ["postgres__pg_export_table_data"],
+    "category": "agent_task",
+    "server": "postgres",
+    "notes": "Export table data to JSON or CSV format."
+  },
+  {
+    "id": "dev3-184",
+    "query": "Copy data between two PostgreSQL databases.",
+    "kind": "single",
+    "expected": ["postgres__pg_copy_between_databases"],
+    "category": "agent_task",
+    "server": "postgres",
+    "notes": "Copy data between two databases."
+  },
+  {
+    "id": "dev3-185",
+    "query": "Move this Notion page under a different parent.",
+    "kind": "single",
+    "expected": ["notion__API-move-page"],
+    "category": "agent_task",
+    "server": "notion",
+    "notes": "The page move schema takes page_id and a new parent, which changes the existing page location."
+  },
+  {
+    "id": "dev3-186",
+    "query": "Which Notion bot does our integration token belong to?",
+    "kind": "single",
+    "expected": ["notion__API-get-self"],
+    "category": "agent_task",
+    "server": "notion",
+    "notes": "The self operation retrieves the bot associated with the current integration token, without needing another user ID."
+  },
+  {
+    "id": "dev3-187",
+    "query": "Read the accessibility tree of the open page, no screenshot.",
+    "kind": "single",
+    "expected": ["playwright__browser_snapshot"],
+    "category": "agent_task",
+    "server": "playwright",
+    "notes": "Capture accessibility snapshot of the current page, this is better than screenshot."
+  },
+  {
+    "id": "dev3-188",
+    "query": "Dismiss the JavaScript confirm dialog in the browser.",
+    "kind": "single",
+    "expected": ["playwright__browser_handle_dialog"],
+    "category": "agent_task",
+    "server": "playwright",
+    "notes": "Handle a dialog."
+  },
+  {
+    "id": "dev3-189",
+    "query": "Find local paths matching **/*.toml recursively.",
+    "kind": "single",
+    "expected": ["filesystem__search_files"],
+    "category": "agent_task",
+    "server": "filesystem",
+    "notes": "Recursively search for files and directories matching a pattern."
+  },
+  {
+    "id": "dev3-190",
+    "query": "Rename a local file without overwriting an existing destination.",
+    "kind": "single",
+    "expected": ["filesystem__move_file"],
+    "category": "agent_task",
+    "server": "filesystem",
+    "notes": "Move or rename files and directories."
+  },
+  {
+    "id": "dev3-191",
+    "query": "Log 90 minutes against Jira issue APP-204.",
+    "kind": "single",
+    "expected": ["jira__jira_add_worklog"],
+    "category": "agent_task",
+    "server": "jira",
+    "notes": "Add a worklog entry to a Jira issue."
+  },
+  {
+    "id": "dev3-192",
+    "query": "What status values are available in our Jira project?",
+    "kind": "single",
+    "expected": ["jira__jira_ls_statuses"],
+    "category": "agent_task",
+    "server": "jira",
+    "notes": "Lists available Jira statuses, either globally or for a specific project (`projectKeyOrId`)."
+  },
+  {
+    "id": "dev3-193",
+    "query": "Add a thumbs-up reaction to Slack message 1730000000.001.",
+    "kind": "single",
+    "expected": ["slack__slack_add_reaction"],
+    "category": "agent_task",
+    "server": "slack",
+    "notes": "Add a reaction emoji to a message."
+  },
+  {
+    "id": "dev3-194",
+    "query": "Slack read the thread replys for this message",
+    "kind": "single",
+    "expected": ["slack__slack_get_thread_replies"],
+    "category": "agent_task",
+    "server": "slack",
+    "notes": "Get all replies in a message thread."
+  },
+  {
+    "id": "dev3-195",
+    "query": "Sentry Seer root-cause analysis for this production error",
+    "kind": "single",
+    "expected": ["sentry__analyze_issue_with_seer"],
+    "category": "agent_task",
+    "server": "sentry",
+    "notes": "Use Seer to analyze production errors and get detailed root cause analysis with specific code fixes."
+  },
+  {
+    "id": "dev3-196",
+    "query": "Count Sentry errors by browser over the past 24 hours.",
+    "kind": "single",
+    "expected": ["sentry__search_events"],
+    "category": "agent_task",
+    "server": "sentry",
+    "notes": "Search Sentry events and replays."
+  },
+  {
+    "id": "dev3-197",
+    "query": "Read Confluence page 123 and its body.",
+    "kind": "single",
+    "expected": ["confluence__conf_get"],
+    "category": "agent_task",
+    "server": "confluence",
+    "notes": "Read any Confluence data."
+  },
+  {
+    "id": "dev3-198",
+    "query": "Schedule a Lambda once at 9am Tokyo time using EventBridge Scheduler.",
+    "kind": "single",
+    "expected": ["aws_lambda__create_advanced_schedule"],
+    "category": "agent_task",
+    "server": "aws_lambda",
+    "notes": "Create an advanced schedule using EventBridge Scheduler (supports time zones, flexible windows)."
+  },
+  {
+    "id": "dev3-199",
+    "query": "Change the cron expression on an existing Lambda EventBridge rule.",
+    "kind": "single",
+    "expected": ["aws_lambda__update_rule_schedule"],
+    "category": "agent_task",
+    "server": "aws_lambda",
+    "notes": "Update the schedule expression of an existing rule."
+  },
+  {
+    "id": "dev3-200",
+    "query": "AWS Lambda switch to the configured staging account",
+    "kind": "single",
+    "expected": ["aws_lambda__switch_account"],
+    "category": "agent_task",
+    "server": "aws_lambda",
+    "notes": "Switch to a different AWS account."
+  },
+  {
+    "id": "dev3-201",
+    "query": "Stripe capture an authorized customer payment",
+    "kind": "ambiguous",
+    "expected": ["stripe__capture_charge", "stripe__capture_payment_intent"],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "Both capture held customer funds; the request does not distinguish a legacy charge from a PaymentIntent. Test Issuing captures concern corporate-card simulations, not customer payments."
+  },
+  {
+    "id": "dev3-202",
+    "query": "Stripe cancel that unfinished intent",
+    "kind": "ambiguous",
+    "expected": ["stripe__cancel_payment_intent", "stripe__cancel_setup_intent"],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "Both payment and setup intents can be canceled; the type of intent is unstated."
+  },
+  {
+    "id": "dev3-203",
+    "query": "Stripe confirm the customer's intent",
+    "kind": "ambiguous",
+    "expected": ["stripe__confirm_payment_intent", "stripe__confirm_setup_intent"],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "The catalog has confirmation operations for both payment and setup intents."
+  },
+  {
+    "id": "dev3-204",
+    "query": "Stripe list our subscription pricing options",
+    "kind": "ambiguous",
+    "expected": ["stripe__list_prices", "stripe__list_plans"],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "Prices and legacy plans both represent subscription pricing; no model or API generation is specified."
+  },
+  {
+    "id": "dev3-205",
+    "query": "Stripe add a new monthly subscription pricing option",
+    "kind": "ambiguous",
+    "expected": ["stripe__create_price", "stripe__create_plan"],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "Both a recurring Price and a legacy Plan can define monthly subscription pricing."
+  },
+  {
+    "id": "dev3-206",
+    "query": "Stripe add a discount code",
+    "kind": "ambiguous",
+    "expected": ["stripe__create_coupon", "stripe__create_promotion_code"],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "A coupon defines the discount and a promotion code exposes a redeemable code; the request leaves that distinction open."
+  },
+  {
+    "id": "dev3-207",
+    "query": "Stripe read the discount code by its ID",
+    "kind": "ambiguous",
+    "expected": ["stripe__get_coupon", "stripe__get_promotion_code"],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "Both coupons and promotion codes can be retrieved by ID; the ID itself and object type are missing."
+  },
+  {
+    "id": "dev3-208",
+    "query": "Stripe remove the applied discount",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__delete_customer_discount",
+      "stripe__delete_subscription_discount",
+      "stripe__delete_customer_subscription_discoun"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "The applied discount may be on a customer or subscription, and the catalog exposes two subscription deletion routes."
+  },
+  {
+    "id": "dev3-209",
+    "query": "Stripe create a customer payment card record",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__create_customer_card",
+      "stripe__create_customer_source",
+      "stripe__create_customer_bank_account",
+      "stripe__create_payment_method"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "The legacy card and source routes, including the bank-account-named route whose description says card, and the PaymentMethod creation schema can represent a payment card. Issuing cards are company-issued cards, not customer payment methods."
+  },
+  {
+    "id": "dev3-210",
+    "query": "Stripe dispute details",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__get_charge_dispute",
+      "stripe__get_dispute",
+      "stripe__get_issuing_dispute"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "The dispute could concern a customer charge or a corporate Issuing card purchase. Customer disputes can be located by charge or dispute ID."
+  },
+  {
+    "id": "dev3-211",
+    "query": "Stripe Treasury cancel a transfer",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__cancel_treasury_inbound_transfers_inbound_transfer",
+      "stripe__cancel_treasury_outbound_transfers_outbound_transfer",
+      "stripe__cancel_treasury_outbound_payment"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "The direction and object type are missing. Treasury supports cancellation of incoming transfers, outgoing transfers and outgoing payments."
+  },
+  {
+    "id": "dev3-212",
+    "query": "Stripe refund details by ID",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__get_charge_refund",
+      "stripe__get_refund",
+      "stripe__get_application_fee_refund"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "The refunded object is unstated: a customer payment or a platform application fee. Both customer refund locators and the fee refund reader fit."
+  },
+  {
+    "id": "dev3-213",
+    "query": "Stripe update refund metadata",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__update_charge_refund",
+      "stripe__update_refund",
+      "stripe__update_application_fee_refund"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "Refund metadata can belong to a customer payment refund or an application fee refund; the catalog exposes update routes for both."
+  },
+  {
+    "id": "dev3-214",
+    "query": "Stripe customer-facing billing session",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__create_checkout_session",
+      "stripe__create_billing_portal_session",
+      "stripe__create_customer_session"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "Checkout sessions collect payment, portal sessions offer self-service billing and customer sessions enable embedded payment components. The intended customer surface is omitted."
+  },
+  {
+    "id": "dev3-215",
+    "query": "Stripe stop the subscription schedule",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__cancel_subscription_schedule",
+      "stripe__release_subscription_schedule"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "Cancellation stops the schedule and its associated subscription; release stops schedule management while preserving the subscription. The request does not say whether billing should continue."
+  },
+  {
+    "id": "dev3-216",
+    "query": "Stripe list saved customer payment details",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__list_customer_cards",
+      "stripe__list_customer_bank_accounts",
+      "stripe__list_customer_sources",
+      "stripe__list_customer_payment_methods",
+      "stripe__list_payment_methods"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "Saved payment details may be legacy cards, bank accounts, other sources or modern PaymentMethods. Each list schema can select a customer."
+  },
+  {
+    "id": "dev3-217",
+    "query": "Stripe connected bank-account details",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__get_account_bank_account",
+      "stripe__get_account_external_account",
+      "stripe__get_financial_connections_account",
+      "stripe__get_linked_account"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "Connected may mean an external bank account belonging to a Connect seller or a Financial Connections bank account. The resource family is not specified."
+  },
+  {
+    "id": "dev3-218",
+    "query": "Stripe list bank accounts",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__list_account_external_accounts",
+      "stripe__list_customer_bank_accounts",
+      "stripe__list_customer_sources",
+      "stripe__list_customer_payment_methods",
+      "stripe__list_payment_methods",
+      "stripe__list_financial_connections_accounts",
+      "stripe__list_linked_accounts"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "No scope is given. Connect payout accounts, saved customer bank payment sources or PaymentMethods, and Financial Connections accounts are all reasonable bank-account inventories."
+  },
+  {
+    "id": "dev3-219",
+    "query": "Stripe merchant account information",
+    "kind": "ambiguous",
+    "expected": ["stripe__get_account", "stripe__get_connected_account"],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "The merchant account may be the current platform account or a connected seller account. Linked consumer bank accounts and Treasury accounts are different resources."
+  },
+  {
+    "id": "dev3-220",
+    "query": "Stripe add an external account",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__create_account_bank_account",
+      "stripe__create_account_external_account"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "The external account could be a bank account or a payout debit card. Both creation schemas accept bank_account or external_account representations."
+  },
+  {
+    "id": "dev3-221",
+    "query": "Stripe retrieve account details",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__get_account",
+      "stripe__get_connected_account",
+      "stripe__get_financial_connections_account",
+      "stripe__get_linked_account",
+      "stripe__get_treasury_financial_accounts_financial_account"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "Current platform accounts, Connect seller accounts, linked bank accounts and Treasury financial accounts are different reasonable account objects. The account type is omitted."
+  },
+  {
+    "id": "dev3-222",
+    "query": "Stripe change a bank account's holder details",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__update_account_bank_account",
+      "stripe__update_account_external_account",
+      "stripe__update_external_account",
+      "stripe__update_customer_bank_account",
+      "stripe__update_customer_source"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "The bank account may be a connected seller payout account or a customer payment source. Both families support changes to holder details."
+  },
+  {
+    "id": "dev3-223",
+    "query": "Stripe remove an account",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__delete_connected_account",
+      "stripe__delete_account_bank_account",
+      "stripe__delete_account_external_account",
+      "stripe__delete_customer_bank_account",
+      "stripe__delete_customer_source",
+      "stripe__create_financial_connections_account_disconnect",
+      "stripe__create_linked_account_disconnect",
+      "stripe__close_treasury_financial_accounts_financial_account"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "The kind of account is unstated: Connect seller, attached bank account, Financial Connections account or Treasury financial account. Removal, disconnection or closure fits the respective object."
+  },
+  {
+    "id": "dev3-224",
+    "query": "Stripe read one saved customer payment item by its ID.",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__get_customer_bank_account",
+      "stripe__get_customer_card",
+      "stripe__get_customer_source",
+      "stripe__get_customer_payment_method",
+      "stripe__get_payment_method"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "One item is requested by ID, so object getters fit. The stored object may be a legacy card, a bank source or a modern PaymentMethod; the object type and customer-scoped versus global locator are unstated. An inventory does not target one supplied item ID."
+  },
+  {
+    "id": "dev3-225",
+    "query": "Stripe verify bank deposits",
+    "kind": "ambiguous",
+    "expected": [
+      "stripe__verify_customer_bank_account",
+      "stripe__verify_customer_source",
+      "stripe__verify_source",
+      "stripe__create_payment_intent_verify_microdeposit",
+      "stripe__create_setup_intent_verify_microdeposit"
+    ],
+    "category": "underspecified",
+    "server": "stripe",
+    "notes": "Verification values can be submitted for a customer bank source, generic Source, PaymentIntent or SetupIntent. The owning object is not stated."
+  },
+  {
+    "id": "dev3-226",
+    "query": "Run SELECT * FROM orders.",
+    "kind": "ambiguous",
+    "expected": [
+      "cloudflare__create_d1_database_query",
+      "cloudflare__create_d1_database_raw",
+      "postgres__pg_execute_query",
+      "postgres__pg_execute_sql",
+      "supabase__execute_sql"
+    ],
+    "category": "underspecified",
+    "server": "multiple",
+    "notes": "The database service is omitted. D1, PostgreSQL and Supabase expose SQL execution, and both D1 result shapes fit."
+  },
+  {
+    "id": "dev3-227",
+    "query": "Cloudflare D1 time travel",
+    "kind": "ambiguous",
+    "expected": [
+      "cloudflare__get_d1_database_time_travel_bookmark",
+      "cloudflare__restore_d1_database_time_travel"
+    ],
+    "category": "underspecified",
+    "server": "cloudflare",
+    "notes": "The user might want to find a historical recovery bookmark or restore to a recovery point; no operation is stated."
+  },
+  {
+    "id": "dev3-228",
+    "query": "Cloudflare scan for existing DNS entries.",
+    "kind": "ambiguous",
+    "expected": ["cloudflare__scan_dns_records", "cloudflare__trigger_dns_records_scan"],
+    "category": "underspecified",
+    "server": "cloudflare",
+    "notes": "One scan automatically adds discovered DNS records; the asynchronous scan only discovers them pending review. The request does not say whether findings should be added immediately."
+  },
+  {
+    "id": "dev3-229",
+    "query": "Cloudflare review the DNS scan findings.",
+    "kind": "ambiguous",
+    "expected": [
+      "cloudflare__apply_dns_scan_results",
+      "cloudflare__review_dns_records_scan"
+    ],
+    "category": "underspecified",
+    "server": "cloudflare",
+    "notes": "Reviewing may mean listing discovered records or accepting and rejecting the scan results. The catalog exposes distinct read and review operations."
+  },
+  {
+    "id": "dev3-230",
+    "query": "Cloudflare email routing",
+    "kind": "ambiguous",
+    "expected": [
+      "cloudflare__create_email_routing_address",
+      "cloudflare__create_email_routing_dns",
+      "cloudflare__create_email_routing_rule",
+      "cloudflare__delete_email_routing_address",
+      "cloudflare__delete_email_routing_dns",
+      "cloudflare__delete_email_routing_rule",
+      "cloudflare__disable_email_routing",
+      "cloudflare__enable_email_routing",
+      "cloudflare__get_email_routing",
+      "cloudflare__get_email_routing_address",
+      "cloudflare__get_email_routing_dns",
+      "cloudflare__get_email_routing_rule",
+      "cloudflare__get_email_routing_rules_catch_all",
+      "cloudflare__list_email_routing_addresses",
+      "cloudflare__list_email_routing_rules",
+      "cloudflare__patch_email_routing",
+      "cloudflare__patch_email_routing_address",
+      "cloudflare__patch_email_routing_dns",
+      "cloudflare__unlock_email_routing",
+      "cloudflare__update_email_routing",
+      "cloudflare__update_email_routing_rule",
+      "cloudflare__update_email_routing_rules_catch_all"
+    ],
+    "category": "underspecified",
+    "server": "cloudflare",
+    "notes": "The operation and object are missing. Destination addresses, routing rules, catch-all rules, DNS setup and routing state are all reasonable within this product feature."
+  },
+  {
+    "id": "dev3-231",
+    "query": "Cloudflare add a firewall rule",
+    "kind": "ambiguous",
+    "expected": [
+      "cloudflare__create_firewall_rule",
+      "cloudflare__create_firewall_access_rules_rule",
+      "cloudflare__create_firewall_ua_rule",
+      "cloudflare__create_firewall_lockdown",
+      "cloudflare__create_rulesets_rule",
+      "cloudflare__create_ruleset",
+      "cloudflare__update_ruleset",
+      "cloudflare__update_rulesets_phases_entrypoint"
+    ],
+    "category": "underspecified",
+    "server": "cloudflare",
+    "notes": "The mechanism is omitted: classic expression rule, IP access, user-agent, lockdown or modern ruleset rule. A new ruleset may carry rules, and updating a ruleset or phase entry point can add a rule to its rules list."
+  },
+  {
+    "id": "dev3-232",
+    "query": "Cloudflare remove a blocking rule",
+    "kind": "ambiguous",
+    "expected": [
+      "cloudflare__delete_firewall_rule",
+      "cloudflare__delete_firewall_rules",
+      "cloudflare__delete_firewall_access_rules_rule",
+      "cloudflare__delete_firewall_ua_rule",
+      "cloudflare__delete_firewall_lockdown",
+      "cloudflare__delete_rulesets_rule"
+    ],
+    "category": "underspecified",
+    "server": "cloudflare",
+    "notes": "No rule family is specified. Classic expression rules, IP access, user-agent, lockdown and modern ruleset rules each have deletion routes."
+  },
+  {
+    "id": "dev3-233",
+    "query": "Cloudflare change an existing URL redirect",
+    "kind": "ambiguous",
+    "expected": [
+      "cloudflare__patch_pagerule",
+      "cloudflare__update_pagerule",
+      "cloudflare__patch_rulesets_rule",
+      "cloudflare__update_ruleset",
+      "cloudflare__update_rulesets_phases_entrypoint"
+    ],
+    "category": "underspecified",
+    "server": "cloudflare",
+    "notes": "Redirects may be legacy Page Rules or modern redirect rules in a ruleset or phase entry point. All these update schemas can change the respective redirect rule."
+  },
+  {
+    "id": "dev3-234",
+    "query": "Cloudflare inspect an SSL certificate.",
+    "kind": "ambiguous",
+    "expected": [
+      "cloudflare__get_custom_certificate",
+      "cloudflare__get_ssl_certificate_pack"
+    ],
+    "category": "underspecified",
+    "server": "cloudflare",
+    "notes": "The certificate may be an uploaded custom certificate or a managed certificate pack; neither type nor ID is supplied."
+  },
+  {
+    "id": "dev3-235",
+    "query": "Edit the DNS record.",
+    "kind": "ambiguous",
+    "expected": [
+      "cloudflare__patch_dns_record",
+      "cloudflare__update_dns_record",
+      "cloudflare__batch_dns_records",
+      "vercel__update_record"
+    ],
+    "category": "underspecified",
+    "server": "multiple",
+    "notes": "Both Cloudflare and Vercel host DNS record editing. The provider is omitted, and all partial, replacement and batch Cloudflare alternatives fit."
+  },
+  {
+    "id": "dev3-236",
+    "query": "Cloudflare edit an email forwarding rule",
+    "kind": "ambiguous",
+    "expected": [
+      "cloudflare__update_email_routing_rule",
+      "cloudflare__update_email_routing_rules_catch_all"
+    ],
+    "category": "underspecified",
+    "server": "cloudflare",
+    "notes": "The rule may be a specific-address route or the catch-all route; the target is omitted."
+  },
+  {
+    "id": "dev3-237",
+    "query": "Cloudflare Access add an allow policy.",
+    "kind": "ambiguous",
+    "expected": [
+      "cloudflare__create_access_apps_policy",
+      "cloudflare__create_access_policy"
+    ],
+    "category": "underspecified",
+    "server": "cloudflare",
+    "notes": "The policy may be application-specific or reusable across applications; the scope is omitted."
+  },
+  {
+    "id": "dev3-238",
+    "query": "Vercel list feature flags",
+    "kind": "ambiguous",
+    "expected": [
+      "vercel__list_flags",
+      "vercel__list_flags_v2s",
+      "vercel__list_team_flags",
+      "vercel__list_team_flags_v2s"
+    ],
+    "category": "underspecified",
+    "server": "vercel",
+    "notes": "The inventory may be for one project or all projects on a team. Both pagination variants for each scope fit."
+  },
+  {
+    "id": "dev3-239",
+    "query": "Vercel feature flag settings",
+    "kind": "ambiguous",
+    "expected": ["vercel__list_flag_settings", "vercel__list_team_flag_settings"],
+    "category": "underspecified",
+    "server": "vercel",
+    "notes": "The request omits project versus team scope. Both settings inventories are reasonable."
+  },
+  {
+    "id": "dev3-240",
+    "query": "Vercel read a check's details.",
+    "kind": "ambiguous",
+    "expected": ["vercel__get_check", "vercel__get_project_check"],
+    "category": "underspecified",
+    "server": "vercel",
+    "notes": "The request omits whether the check is deployment-scoped or project-scoped."
+  },
+  {
+    "id": "dev3-241",
+    "query": "Vercel edit an existing check.",
+    "kind": "ambiguous",
+    "expected": ["vercel__update_check", "vercel__update_project_check"],
+    "category": "underspecified",
+    "server": "vercel",
+    "notes": "Either deployment or project check update is reasonable without scope."
+  },
+  {
+    "id": "dev3-242",
+    "query": "Vercel add a check.",
+    "kind": "ambiguous",
+    "expected": ["vercel__create_check", "vercel__create_project_check"],
+    "category": "underspecified",
+    "server": "vercel",
+    "notes": "The catalog has creation routes for deployment checks and project checks."
+  },
+  {
+    "id": "dev3-243",
+    "query": "Vercel set up a log drain.",
+    "kind": "ambiguous",
+    "expected": [
+      "vercel__create_log_drain",
+      "vercel__create_configurable_log_drain",
+      "vercel__create_drain"
+    ],
+    "category": "underspecified",
+    "server": "vercel",
+    "notes": "The catalog includes legacy, configurable, and current drain creation routes; the API generation and drain configuration are unstated."
+  },
+  {
+    "id": "dev3-244",
+    "query": "Vercel list our log drains.",
+    "kind": "ambiguous",
+    "expected": [
+      "vercel__list_all_log_drains",
+      "vercel__list_integration_log_drains",
+      "vercel__list_drains"
+    ],
+    "category": "underspecified",
+    "server": "vercel",
+    "notes": "Current team drains and legacy log drain inventories are reasonable because scope and API generation are missing."
+  },
+  {
+    "id": "dev3-245",
+    "query": "Vercel routing version history",
+    "kind": "ambiguous",
+    "expected": [
+      "vercel__list_route_versions",
+      "vercel__list_redirects",
+      "vercel__list_versions"
+    ],
+    "category": "underspecified",
+    "server": "vercel",
+    "notes": "Routing may refer to the routing-rule version history or bulk redirect version history; the feature is not specified."
+  },
+  {
+    "id": "dev3-246",
+    "query": "Vercel details for this domain.",
+    "kind": "ambiguous",
+    "expected": ["vercel__get_domain", "vercel__get_project_domain"],
+    "category": "underspecified",
+    "server": "vercel",
+    "notes": "The domain may refer to a registered team domain or its attachment to a project."
+  },
+  {
+    "id": "dev3-247",
+    "query": "Vercel list domains.",
+    "kind": "ambiguous",
+    "expected": ["vercel__list_domains", "vercel__list_project_domains"],
+    "category": "underspecified",
+    "server": "vercel",
+    "notes": "Either the team's registered domains or domains associated with a project fit the missing scope."
+  },
+  {
+    "id": "dev3-248",
+    "query": "Vercel read a decrypted env var by ID.",
+    "kind": "ambiguous",
+    "expected": ["vercel__get_project_env", "vercel__get_shared_env_var"],
+    "category": "underspecified",
+    "server": "vercel",
+    "notes": "The variable may be project-local or shared at team level."
+  },
+  {
+    "id": "dev3-249",
+    "query": "Vercel add an env var.",
+    "kind": "ambiguous",
+    "expected": ["vercel__create_project_env", "vercel__create_shared_env_variable"],
+    "category": "underspecified",
+    "server": "vercel",
+    "notes": "The request does not distinguish a project variable from a team-shared variable."
+  },
+  {
+    "id": "dev3-250",
+    "query": "Open a bug ticket titled cache timeout.",
+    "kind": "ambiguous",
+    "expected": [
+      "github__create_issue",
+      "gitlab__create_issue",
+      "linear__linear_create_issue",
+      "linear__linear_create_issues"
+    ],
+    "category": "underspecified",
+    "server": "multiple",
+    "notes": "GitHub, GitLab and Linear expose issue creation. Linear bulk creation accepts a single issue as well. Jira has issue reads but no create operation. The tracker product is omitted."
+  },
+  {
+    "id": "dev3-251",
+    "query": "Open a code review request from feature/login into main.",
+    "kind": "ambiguous",
+    "expected": ["github__create_pull_request", "gitlab__create_merge_request"],
+    "category": "underspecified",
+    "server": "multiple",
+    "notes": "Both a GitHub PR and a GitLab MR fit; the hosting service is not stated."
+  },
+  {
+    "id": "dev3-252",
+    "query": "List files in the repo dir; I only have the project name so far.",
+    "kind": "ambiguous",
+    "expected": ["github__get_file_contents", "gitlab__browse_repository"],
+    "category": "underspecified",
+    "server": "multiple",
+    "notes": "Both GitHub directory contents and GitLab repository browsing fit; the host is not specified."
+  },
+  {
+    "id": "dev3-253",
+    "query": "Set up a cron schedule for Lambda.",
+    "kind": "ambiguous",
+    "expected": ["aws_lambda__create_cron_rule", "aws_lambda__create_advanced_schedule"],
+    "category": "underspecified",
+    "server": "multiple",
+    "notes": "Both EventBridge rule creation and Scheduler creation support cron expressions; no timezone or Scheduler requirement narrows the choice."
+  },
+  {
+    "id": "dev3-254",
+    "query": "Read a local file.",
+    "kind": "ambiguous",
+    "expected": [
+      "filesystem__read_file",
+      "filesystem__read_text_file",
+      "filesystem__read_multiple_files",
+      "filesystem__read_media_file"
+    ],
+    "category": "underspecified",
+    "server": "filesystem",
+    "notes": "The content type is omitted: the text readers and image/audio reader are reasonable. The multi-file reader also accepts a single path."
+  },
+  {
+    "id": "dev3-255",
+    "query": "Slack send a message saying the login test passed.",
+    "kind": "ambiguous",
+    "expected": ["slack__slack_post_message", "slack__slack_reply_to_thread"],
+    "category": "underspecified",
+    "server": "slack",
+    "notes": "Posting in a channel and replying within a thread are different reasonable destinations because no channel or parent message is given."
+  },
+  {
+    "id": "dev3-256",
+    "query": "Schedule a Stripe Sigma query to run every Monday.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "stripe",
+    "notes": "The catalog lists scheduled Sigma query runs and updates saved queries, but has no operation to create a scheduled Sigma query."
+  },
+  {
+    "id": "dev3-257",
+    "query": "Change a Stripe coupon's percentage discount after it was created.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "stripe",
+    "notes": "Coupon update only changes metadata, not the original percentage discount; creating a new coupon does not change the existing one."
+  },
+  {
+    "id": "dev3-258",
+    "query": "Stripe delete a price permenantly, not just make it inactive",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "stripe",
+    "notes": "Prices can be created, retrieved, searched, listed, and updated. There is no Price deletion operation."
+  },
+  {
+    "id": "dev3-259",
+    "query": "Retrieve the secret key for our Stripe account from the dashboard.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "stripe",
+    "notes": "The catalog has ephemeral keys, app secrets and account information, but no dashboard API secret-key retrieval operation."
+  },
+  {
+    "id": "dev3-260",
+    "query": "Create a Stripe payment with Apple Pay on my iPhone by tapping the wallet button.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "stripe",
+    "notes": "The catalog offers backend payments and domain registration, not device interaction with an iPhone wallet."
+  },
+  {
+    "id": "dev3-261",
+    "query": "Deploy a Cloudflare Worker from this JavaScript bundle.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "cloudflare",
+    "notes": "The Cloudflare catalog has DNS, D1, R2, Access and zone operations but no Workers deployment route."
+  },
+  {
+    "id": "dev3-262",
+    "query": "Create a Cloudflare Tunnel to my laptop.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "cloudflare",
+    "notes": "No Tunnel creation operation or tunnel configuration schema exists in the catalog."
+  },
+  {
+    "id": "dev3-263",
+    "query": "List Cloudflare Pages build runs.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "cloudflare",
+    "notes": "No Cloudflare Pages build or deployment operations are present."
+  },
+  {
+    "id": "dev3-264",
+    "query": "Resize an image with Cloudflare Images.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "cloudflare",
+    "notes": "R2 object upload/download and zone configuration do not transform image dimensions; no Images transformation tool exists."
+  },
+  {
+    "id": "dev3-265",
+    "query": "Download our Vercel invoice as a PDF.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "vercel",
+    "notes": "The catalog supports partner invoice submission and billing charge data but no invoice PDF download operation."
+  },
+  {
+    "id": "dev3-266",
+    "query": "Create a Vercel Cron Job with its own dedicated cron creation API.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "vercel",
+    "notes": "No dedicated Cron Job creation operation is in the catalog; project deployment configuration is not the requested API."
+  },
+  {
+    "id": "dev3-267",
+    "query": "List every existing Clerk user with pagination.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "clerk",
+    "notes": "This catalog has user creation-adjacent actions, memberships and bans, but no operation to enumerate all users."
+  },
+  {
+    "id": "dev3-268",
+    "query": "Reset a Clerk user's password by sending a reset-password email.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "clerk",
+    "notes": "Unsetting the compromised-password flag and template controls do not send a password reset; no reset-password operation is present."
+  },
+  {
+    "id": "dev3-269",
+    "query": "Merge GitLab MR 117 after approvals pass.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "gitlab",
+    "notes": "The catalog can create and update MRs and inspect approval state but does not expose an MR merge operation."
+  },
+  {
+    "id": "dev3-270",
+    "query": "Create a GitLab repository branch called feature/cleanup.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "gitlab",
+    "notes": "GitLab project browsing and MR creation do not create a repository branch; no branch creation tool is present."
+  },
+  {
+    "id": "dev3-271",
+    "query": "Download the raw GitHub Actions job log for run 913.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "github",
+    "notes": "The GitHub catalog includes combined PR status checks but no Actions job-log retrieval operation."
+  },
+  {
+    "id": "dev3-272",
+    "query": "Create a new Jira issue titled broken login.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "jira",
+    "notes": "Jira tools cover issue reads, comments and worklogs, not issue creation."
+  },
+  {
+    "id": "dev3-273",
+    "query": "Edit the text of an existing Slack message.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "slack",
+    "notes": "The Slack catalog can post and reply, but does not include a message update operation."
+  },
+  {
+    "id": "dev3-274",
+    "query": "Send a private Slack DM by opening a conversation with this user ID.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "slack",
+    "notes": "No conversation-open or direct-message operation exists; channel posting alone does not open a DM conversation."
+  },
+  {
+    "id": "dev3-275",
+    "query": "Invoke Lambda function orders-prod immediately with this JSON payload.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "aws_lambda",
+    "notes": "These Lambda tools manage accounts and schedules and list functions; no immediate invocation operation exists."
+  },
+  {
+    "id": "dev3-276",
+    "query": "Delete a local directory and all its contents.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "filesystem",
+    "notes": "The file tools create, edit, move, read and enumerate paths; there is no delete operation."
+  },
+  {
+    "id": "dev3-277",
+    "query": "Create a payment subscription in Paddle for this buyer.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "multiple",
+    "notes": "The payment catalog is Stripe, not Paddle. No Paddle account or billing API is exposed."
+  },
+  {
+    "id": "dev3-278",
+    "query": "Open a Bitbucket pull request from bugfix to main.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "close_miss",
+    "server": "multiple",
+    "notes": "PR and MR creation belong to GitHub and GitLab, not Bitbucket; no Bitbucket schema is present."
+  },
+  {
+    "id": "dev3-279",
+    "query": "Order groceries for delivery tomorrow morning.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No grocery retailer checkout or delivery booking tool is present."
+  },
+  {
+    "id": "dev3-280",
+    "query": "Unlock the front door at my house.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No smart-lock control tool exists."
+  },
+  {
+    "id": "dev3-281",
+    "query": "Increase the thermostat to 72 degrees.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No HVAC or home automation device control is exposed."
+  },
+  {
+    "id": "dev3-282",
+    "query": "Start a wash cycle on the kitchen dishwasher.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No appliance control tool is present."
+  },
+  {
+    "id": "dev3-283",
+    "query": "Move the robot arm ten centimeters to the left.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No robotics motion command exists."
+  },
+  {
+    "id": "dev3-284",
+    "query": "Measure my blood oxygen from a connected pulse oximeter.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "The catalog has no medical sensor interface."
+  },
+  {
+    "id": "dev3-285",
+    "query": "Turn on the car's seat heaters remotely.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No connected vehicle control operation is present."
+  },
+  {
+    "id": "dev3-286",
+    "query": "Book a haircut appointment at the neighborhood salon.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "Calendar events do not book a salon's appointment inventory; no salon booking integration exists."
+  },
+  {
+    "id": "dev3-287",
+    "query": "Reserve two train seats on the 08:10 departure.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No rail booking or ticketing API is present."
+  },
+  {
+    "id": "dev3-288",
+    "query": "Renew my passport through the government portal.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No passport service or government application submission tool is exposed."
+  },
+  {
+    "id": "dev3-289",
+    "query": "Track parcel 1Z999 through UPS and show its delivery scan.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No parcel tracking integration is in the catalog."
+  },
+  {
+    "id": "dev3-290",
+    "query": "Request an Uber to the airport right now.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No rideshare dispatch operation is exposed."
+  },
+  {
+    "id": "dev3-291",
+    "query": "Play the next song on my Sonos speaker.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No speaker playback control exists."
+  },
+  {
+    "id": "dev3-292",
+    "query": "Tune my living-room television to channel 12.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No television control tool is present."
+  },
+  {
+    "id": "dev3-293",
+    "query": "Change the color of the desk lamp to green.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No smart-light control integration exists."
+  },
+  {
+    "id": "dev3-294",
+    "query": "Send a fax to the number on this form.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No fax transmission operation exists."
+  },
+  {
+    "id": "dev3-295",
+    "query": "Transcribe this voice recording into text.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "Media reading and file uploads do not perform speech recognition; no transcription tool exists."
+  },
+  {
+    "id": "dev3-296",
+    "query": "Translate this paragraph from Spanish to Korean.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No machine translation operation is exposed."
+  },
+  {
+    "id": "dev3-297",
+    "query": "Generate a new photograph of a mountain cabin.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "Image insertion, file reading, and screenshots do not synthesize a new image; no image generator exists."
+  },
+  {
+    "id": "dev3-298",
+    "query": "Detect the breed of a dog in this picture.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No image classification or vision-analysis operation is present."
+  },
+  {
+    "id": "dev3-299",
+    "query": "Run a molecular docking simulation for this protein.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No chemistry simulation tool or scientific compute operation is exposed."
+  },
+  {
+    "id": "dev3-300",
+    "query": "Calculate an optimal chess move from this board position.",
+    "kind": "no_match",
+    "expected": [],
+    "category": "unrelated",
+    "server": "none",
+    "notes": "No chess engine or board evaluation operation is present."
+  }
+]

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -9,39 +9,33 @@ import {
   PlugZap,
   Puzzle,
   RefreshCw,
-  Shuffle,
   TriangleAlert,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { toastError } from "@/lib/toast";
 import {
-  addServer,
+  importServers,
+  previewImportServers,
   installGateway,
-  migrateClient,
   setClientDiscovery,
   uninstallGateway,
+  removeClientLocation,
 } from "@/lib/api";
 import {
   importableServers,
+  hasLegacyBearerArgv,
   isGatewayServer,
   isGatewayDetected,
   type DetectedClient,
   type ImportItem,
   type McpServer,
   type Registry,
-  type ServerEntry,
 } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+
 import {
   Select,
   SelectContent,
@@ -49,14 +43,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { TransportPill } from "@/components/TransportPill";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ConnectReviewDialog } from "@/components/ConnectReviewDialog";
 import { ImportReviewDialog } from "@/components/ImportReviewDialog";
-import {
-  clientRestartHint,
-  clientRestartHintAfterRemoval,
-  connectSuccessDescription,
-} from "@/lib/clientConnect";
+import { clientRestartHint, clientRestartHintAfterRemoval } from "@/lib/clientConnect";
 
 interface Props {
   client: DetectedClient;
@@ -65,66 +55,42 @@ interface Props {
   onRegistryChange: (registry: Registry) => void;
 }
 
-/** One-line explainer per discovery mode, shown under the per-client picker. */
+/** Client-side rules can only target downstream names in Full mode. */
 const DISCOVERY_HINT: Record<string, string> = {
-  lazy: "Advertises a few meta-tools; the client searches, then calls. Fewest tokens.",
-  grouped: "One help tool per server; the client expands a server before calling it.",
-  full: "Advertises every tool up front. Most tokens, no discovery step.",
+  lazy: "Search, then call tools. Client per-tool permission rules need Full mode.",
+  grouped:
+    "Browse a server, then call tools. Client per-tool permission rules need Full mode.",
+  full: "Full tool list. Client per-tool permission rules need Full mode.",
 };
-
-// Local-model desktop apps: users often run small / quantized models here that stumble on
-// lazy's multi-step search-then-call chain, yet get flooded by the full catalog. Grouped
-// (one hop per server) is the middle ground. Every other client is a hosted-model or
-// agentic client that handles lazy's savings fine. This drives a RECOMMENDATION only; it
-// never auto-applies, so an explicit user choice is never silently overridden.
-const LOCAL_MODEL_CLIENTS = new Set(["lm-studio", "jan", "anythingllm"]);
-
-/** The mode we suggest for a client, with a one-line why. Advisory, not enforced. */
-function recommendedMode(clientId: string): { mode: string; why: string } {
-  return LOCAL_MODEL_CLIENTS.has(clientId)
-    ? { mode: "grouped", why: "local models do better browsing one server at a time" }
-    : {
-        mode: "lazy",
-        why: "this client handles the search-then-call step and saves the most tokens",
-      };
-}
 
 export function ClientDetail({ client, registry, onChanged, onRegistryChange }: Props) {
   const [busy, setBusy] = useState(false);
   // Snapshotted at dialog-open time so a registry-changed event mid-review can't
   // reshuffle `toImport` out from under the indices the user already confirmed.
-  const [bulkImportServers, setBulkImportServers] = useState<McpServer[] | null>(null);
-  // "" = follow the active profile; else scope to one.
+  const [bulkImportServers, setBulkImportServers] = useState<ImportItem[] | null>(null);
+  // Empty uses the default access; named access sets narrow enabled servers.
   const [profile, setProfile] = useState("");
-  // stdio (spawn per client) or sharedHttp (one bridge, SOU-407).
-  const [transport, setTransport] = useState<"stdio" | "sharedHttp">("stdio");
   const [migrateOpen, setMigrateOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const installed = client.gatewayInstalled;
   const customized = client.entryState === "customized";
-  const managedTransport =
-    registry?.clientManagedEntries?.[client.id]?.transport === "sharedHttp"
-      ? "sharedHttp"
-      : "stdio";
+  const legacyBearer = client.servers.some(hasLegacyBearerArgv);
   // Whether the client app is actually on this machine. We allow Disconnect even
   // when absent (to clean up a stale entry), but block a fresh Connect, writing a
   // config into a client that isn't installed just creates a file nothing reads.
   const present = client.appPresent;
-  const profiles = registry?.profiles ?? [];
-  // The scope Toolport last connected this client with ("" = follow the active
-  // profile). Keep the picker in sync with it as the selected client changes.
+  const profiles = useMemo(() => registry?.profiles ?? [], [registry?.profiles]);
+  // The access Toolport last connected this client with (empty uses the default). Keep the picker in sync with it as the selected client changes.
   const currentScope = registry?.clientScopes?.[client.id] ?? "";
   useEffect(() => {
     if (!currentScope) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset the editable access picker when the selected client or saved scope changes.
       setProfile("");
       return;
     }
     const match = profiles.find((p) => p.id === currentScope || p.name === currentScope);
     setProfile(match?.id ?? currentScope);
-  }, [currentScope, client.id, registry?.profiles]);
-  useEffect(() => {
-    setTransport(managedTransport);
-  }, [managedTransport, client.id]);
+  }, [currentScope, client.id, profiles]);
 
   // SOU-317 follow-up (SBS-336): the restart advice is load-bearing — an MCP client
   // typically does not pick up a rewritten config until relaunch — but it only ever
@@ -155,14 +121,17 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
     });
   }
 
-  // Discovery: the global mode this client falls back to, and its own override (if any).
-  // The gateway resolves env > per-client > global, so an override here applies live.
-  const globalMode =
-    registry?.discoveryMode?.toLowerCase() ||
-    ((registry?.lazyDiscovery ?? true) ? "lazy" : "full");
-  const clientMode = registry?.clientDiscovery?.[client.id] ?? "";
-  const effectiveMode = clientMode || globalMode;
-  const recommended = recommendedMode(client.id);
+  // Absence is Auto: the user's global choice if they made one (mirrors
+  // Registry::chosen_global_discovery_mode), else the backend client default.
+  const globalMode = registry?.discoveryMode?.trim().toLowerCase();
+  const chosenGlobal =
+    (globalMode && DISCOVERY_HINT[globalMode] ? globalMode : "") ||
+    (registry?.lazyDiscovery === false ? "full" : "") ||
+    (registry?.legacyLazyDiscovery ? "lazy" : "");
+  const autoMode = chosenGlobal || client.discovery?.autoMode || "lazy";
+  const storedMode = registry?.clientDiscovery?.[client.id]?.trim().toLowerCase();
+  const clientMode = storedMode && DISCOVERY_HINT[storedMode] ? storedMode : "";
+  const effectiveMode = clientMode || autoMode;
 
   /** Set or clear this client's discovery-mode override; applies live, no reconnect. */
   async function applyDiscovery(mode: string) {
@@ -173,7 +142,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
       toast.success(
         mode
           ? `${client.name} discovery set to "${mode}".`
-          : `${client.name} now inherits the global discovery mode.`,
+          : `${client.name} now uses Auto discovery.`,
       );
     } catch (e) {
       toastError(`${e}`);
@@ -182,37 +151,39 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
     }
   }
 
-  /** How many servers a given scope ("" = active profile, else a named profile)
-   * resolves to, for the "scoped to X · N servers" summary. */
-  function scopeServerCount(scopeRef: string): number {
-    const target = scopeRef
-      ? profiles.find(
-          (p) => p.id === scopeRef || p.name.toLowerCase() === scopeRef.toLowerCase(),
-        )
-      : (profiles.find((p) => p.id === registry?.activeProfileId) ?? profiles[0]);
-    if (!target) return 0;
-    // Exclude Toolport's own gateway entry so the count matches the Servers list (which
-    // filters it out) instead of over-counting by one.
-    const ids = new Set(
-      (registry?.servers ?? []).filter((s) => !isGatewayServer(s)).map((s) => s.id),
+  function scopeServers(scopeRef: string): { id: string; name: string }[] {
+    const ref = scopeRef || registry?.defaultAccessProfileId || "@all-enabled";
+    const target = profiles.find(
+      (p) => p.id === ref || p.name.toLowerCase() === ref.toLowerCase(),
     );
-    return target.enabledServerIds.filter((id) => ids.has(id)).length;
+    return (registry?.servers ?? [])
+      .filter(
+        (s) =>
+          s.enabled &&
+          !isGatewayServer(s) &&
+          (ref === "@all-enabled" || target?.enabledServerIds.includes(s.id)),
+      )
+      .map((s) => ({ id: s.id, name: s.name }));
   }
 
-  /** The actual servers a scope resolves to, so a connected client shows WHAT it can
-   * reach, not just a count. */
-  function scopeServers(scopeRef: string): { id: string; name: string }[] {
-    const target = scopeRef
-      ? profiles.find(
-          (p) => p.id === scopeRef || p.name.toLowerCase() === scopeRef.toLowerCase(),
-        )
-      : (profiles.find((p) => p.id === registry?.activeProfileId) ?? profiles[0]);
-    if (!target) return [];
-    const enabled = new Set(target.enabledServerIds);
-    // Never surface the gateway's own entry as a reachable server.
-    return (registry?.servers ?? [])
-      .filter((s) => enabled.has(s.id) && !isGatewayServer(s))
-      .map((s) => ({ id: s.id, name: s.name }));
+  function scopeServerCount(scopeRef: string): number {
+    return scopeServers(scopeRef).length;
+  }
+  function accessLabel(scopeRef: string): string {
+    if (!scopeRef) {
+      const defaultId =
+        registry?.defaultAccessProfileId ||
+        (registry?.defaultAccessLegacyPolicy ? registry.defaultAccessContextId : null);
+      const name = profiles.find((p) => p.id === defaultId)?.name;
+      // A set that is itself named "Default" would read "Default access (Default)".
+      return name && name.trim().toLowerCase() !== "default"
+        ? `Default access (${name})`
+        : "Default access";
+    }
+    return scopeRef === "@all-enabled"
+      ? "All enabled servers"
+      : (profiles.find((p) => p.id === scopeRef || p.name === scopeRef)?.name ??
+          scopeRef);
   }
 
   /** Re-apply a scope to an already-connected client (overwrites its gateway
@@ -225,16 +196,18 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
     }
     setBusy(true);
     try {
-      // Pass live transport so Apply scope does not rewrite Shared HTTP → stdio (WS3-2).
-      await installGateway(client.id, profile || undefined, false, transport);
+      const outcome = await installGateway(client.id, profile || undefined, false);
       // Rescope rewrites the client's MCP config the same way Connect does; without a
       // restart hint the change is invisible until the next cold start (SOU-317).
-      const scopeName = profiles.find((p) => p.id === profile)?.name ?? profile;
       toast.success(
         profile
-          ? `${client.name} scoped to "${scopeName}".`
-          : `${client.name} now follows the active profile.`,
-        { description: clientRestartHint(client.name) },
+          ? `${client.name} access set to "${accessLabel(profile)}".`
+          : `${client.name} now uses the default access.`,
+        {
+          description: [clientRestartHint(client.name), ...(outcome.warnings ?? [])].join(
+            " ",
+          ),
+        },
       );
       noteRestartNeeded("applied");
       onChanged();
@@ -249,10 +222,17 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
   async function resetToDefault() {
     setBusy(true);
     try {
-      await installGateway(client.id, profile || undefined, true, transport);
-      toast.success(`Reset ${client.name} to the default Toolport gateway`, {
-        description: clientRestartHint(client.name),
-      });
+      const outcome = await installGateway(client.id, profile || undefined, true);
+      toast.success(
+        legacyBearer
+          ? `Migrated ${client.name} to stdio`
+          : `Reset ${client.name} to the default Toolport gateway`,
+        {
+          description: [clientRestartHint(client.name), ...(outcome.warnings ?? [])].join(
+            " ",
+          ),
+        },
+      );
       noteRestartNeeded("applied");
       setResetOpen(false);
       onChanged();
@@ -266,38 +246,8 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
   }
   // Servers configured directly in the client (not the gateway) that migrate
   // would move into Toolport and strip from the client's config.
+
   const movable = client.servers.filter((s) => !isGatewayDetected(s));
-
-  async function migrate() {
-    setBusy(true);
-    try {
-      // Migrate rewrites the whole gateway slot; force only after the user confirmed
-      // the migrate dialog when the entry is customized (SOU-406).
-      const result = await migrateClient(
-        client.id,
-        profile || undefined,
-        customized || undefined,
-        transport,
-      );
-      onRegistryChange(result.registry);
-      toast.success(
-        `Moved ${result.moved.length} server${result.moved.length === 1 ? "" : "s"} into Toolport`,
-        {
-          // Migrate rewrites the whole gateway slot, so it needs the restart line for
-          // the same reason Connect does.
-          description: `${client.name} now uses only the Toolport gateway. Config backed up. ${clientRestartHint(client.name)}`,
-        },
-      );
-      noteRestartNeeded("applied");
-      setMigrateOpen(false);
-      onChanged();
-    } catch (e) {
-      toastError(`${e}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   const importedNames = new Set(
     (registry?.servers ?? []).map((s) => s.name.toLowerCase()),
   );
@@ -312,69 +262,51 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
   }
   const allServers = [...byName.values()];
   const toImport = importableServers(client, registry);
-  const bulkImportPreview: ImportItem[] | null =
-    bulkImportServers?.map((server, index) => ({
-      key: String(index),
-      name: server.name,
-      transport: server.transport,
-      command: server.command,
-      args: server.args,
-      url: server.url,
-      isNew: true,
-    })) ?? null;
+  const bulkImportPreview = bulkImportServers;
 
-  async function importOne(server: McpServer) {
-    const isPlugin = pluginNames.has(server.name.toLowerCase());
-    const entry: ServerEntry = {
-      id: "",
-      name: server.name,
-      transport: server.transport,
-      command: server.command,
-      args: server.args,
-      env: server.envKeys.map((key) => ({ key, value: null, secret: true })),
-      url: server.url,
-      source: `imported:${client.id}${isPlugin ? "-plugin" : ""}`,
-    };
-    const next = await addServer(entry);
-    onRegistryChange(next);
-    return next;
+  async function reviewServers(servers: McpServer[]) {
+    try {
+      const preview = await previewImportServers();
+      const items = servers.map((server) =>
+        preview.find(
+          (item) =>
+            item.name === server.name &&
+            item.command === server.command &&
+            item.url === server.url &&
+            JSON.stringify(item.args) === JSON.stringify(server.args),
+        ),
+      );
+      if (items.some((item) => !item?.key))
+        throw new Error("Server changed. Refresh the client and review again.");
+      setBulkImportServers(items as ImportItem[]);
+    } catch (error) {
+      toastError(String(error));
+    }
   }
 
   async function handleImportAll() {
-    setBulkImportServers(toImport);
+    await reviewServers(toImport);
   }
 
-  async function confirmImportAll(selected: string[]) {
-    const servers = bulkImportServers ?? [];
+  async function confirmImportAll(
+    selected: string[],
+    choices?: Record<string, Record<string, boolean>>,
+    inputs?: Record<string, Record<string, string>>,
+  ) {
     setBusy(true);
-    let ok = 0;
-    const failed: string[] = [];
-    const succeeded = new Set<string>();
-    for (const key of selected) {
-      const s = servers[Number(key)];
-      if (!s) continue;
-      try {
-        await importOne(s);
-        ok += 1;
-        succeeded.add(key);
-      } catch {
-        failed.push(s.name);
-      }
-    }
-    setBusy(false);
-    if (failed.length === 0) {
-      toast.success(`Imported ${ok} server${ok === 1 ? "" : "s"} into Toolport`);
+    try {
+      const next = inputs
+        ? await importServers(selected, choices, inputs)
+        : choices
+          ? await importServers(selected, choices)
+          : await importServers(selected);
+      onRegistryChange(next);
+      toast.success("Imported selected servers. Check their status under Servers.");
       setBulkImportServers(null);
-    } else {
-      // Some imports failed. Drop ONLY the rows that succeeded so a re-confirm can't
-      // re-import them; the failures (and any rows the user didn't select this time)
-      // stay in the dialog to retry or import next.
-      if (ok > 0) {
-        toast.warning(`Imported ${ok}, couldn't import ${failed.join(", ")}`);
-      } else {
-        toastError(`Couldn't import ${failed.join(", ")}`);
-      }
-      setBulkImportServers(servers.filter((_, i) => !succeeded.has(String(i))));
+    } catch (error) {
+      toastError(String(error));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -388,30 +320,14 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
           restored > 0
             ? `Disconnected Toolport from ${client.name} and put back ${restored} server${restored === 1 ? "" : "s"}`
             : `Disconnected Toolport from ${client.name}`,
-          { description: clientRestartHintAfterRemoval(client.name) },
+          {
+            description: [
+              clientRestartHintAfterRemoval(client.name),
+              ...(outcome.warnings ?? []),
+            ].join(" "),
+          },
         );
         noteRestartNeeded("removed");
-      } else {
-        const outcome = await installGateway(
-          client.id,
-          profile || undefined,
-          false,
-          transport,
-        );
-        // Restart is the load-bearing line (SOU-317): MCP clients typically do not
-        // pick up a new gateway entry until relaunch. Scope/backup are secondary.
-        toast.success(`Connected Toolport to ${client.name}`, {
-          description: connectSuccessDescription(client.name, [
-            transport === "sharedHttp"
-              ? "Uses the shared HTTP bridge (one gateway process)."
-              : null,
-            profile
-              ? `Scoped to the "${profiles.find((p) => p.id === profile)?.name ?? profile}" profile.`
-              : null,
-            !profile && outcome.backup ? "Previous config backed up." : null,
-          ]),
-        });
-        noteRestartNeeded("applied");
       }
       onChanged();
     } catch (e) {
@@ -453,6 +369,13 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
                 ? "installed - no MCP config yet"
                 : "not installed on this machine"}
           </p>
+          {legacyBearer && (
+            <p className="mt-1 text-xs text-warning">
+              This older HTTP connection exposes its bearer credential in process
+              arguments. Review migration to stdio below. Your existing connection is
+              preserved until you confirm.
+            </p>
+          )}
           {customized && (
             <p className="mt-1 text-xs text-muted-foreground">
               Toolport is leaving your hand-edited gateway entry as-is. Reset it only if
@@ -463,11 +386,10 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
             <p className="mt-1 text-xs text-muted-foreground">
               Sees{" "}
               <span className="font-medium text-foreground">
-                {currentScope ? `the "${currentScope}" profile` : "the active profile"}
+                {accessLabel(currentScope)}
               </span>{" "}
               · {scopeServerCount(currentScope)} server
               {scopeServerCount(currentScope) === 1 ? "" : "s"}
-              {managedTransport === "sharedHttp" ? " · shared HTTP" : ""}
             </p>
           )}
           {!present && !installed && (
@@ -477,35 +399,43 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {!installed && present && (
+          {client.locationRemovable && (
+            <ConfirmDialog
+              trigger={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy || installed || !!client.error}
+                >
+                  Remove location
+                </Button>
+              }
+              title={`Remove ${client.name}?`}
+              description="This forgets the added location. Your client config and backups are kept. Auto-detected Claude folders still appear in Clients."
+              confirmLabel="Remove location"
+              onConfirm={async () => {
+                await removeClientLocation(client.id);
+                onChanged();
+              }}
+            />
+          )}
+          {!customized && <span className="text-xs text-muted-foreground">Access</span>}
+          {!customized && (
             <Select
-              value={transport}
-              onValueChange={(v) =>
-                setTransport(v === "sharedHttp" ? "sharedHttp" : "stdio")
+              value={profile || "@default-access"}
+              onValueChange={(value) =>
+                setProfile(value === "@default-access" ? "" : value)
               }
             >
-              <SelectTrigger size="sm" className="w-44">
+              <SelectTrigger aria-label="Access" size="sm" className="w-52">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="stdio">Spawn (stdio)</SelectItem>
-                <SelectItem value="sharedHttp">Shared HTTP</SelectItem>
-              </SelectContent>
-            </Select>
-          )}
-          {profiles.length > 1 && !customized && (
-            <Select
-              value={profile || "__all__"}
-              onValueChange={(v) => setProfile(v === "__all__" ? "" : v)}
-            >
-              <SelectTrigger size="sm" className="w-52">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__all__">Follow active profile</SelectItem>
+                <SelectItem value="@default-access">{accessLabel("")}</SelectItem>
+                <SelectItem value="@all-enabled">All enabled servers</SelectItem>
                 {profiles.map((p) => (
                   <SelectItem key={p.id} value={p.id}>
-                    Only: {p.name}
+                    {p.name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -514,22 +444,30 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
           {installed && !customized && profile !== currentScope && (
             <Button size="sm" onClick={applyScope} disabled={busy}>
               <Check className="size-4" />
-              Apply scope
+              Apply access
             </Button>
           )}
-          {customized && (
+          {(customized || legacyBearer) && (
             <ConfirmDialog
               open={resetOpen}
               onOpenChange={setResetOpen}
               trigger={
                 <Button size="sm" variant="default" disabled={busy}>
                   <Check className="size-4" />
-                  Reset to default
+                  {legacyBearer ? "Review migration" : "Reset to default"}
                 </Button>
               }
-              title={`Reset ${client.name} to the default Toolport gateway?`}
-              description="This overwrites the hand-edited toolport entry with the standard stdio gateway command. Your other MCP servers are left alone."
-              confirmLabel="Reset to default"
+              title={
+                legacyBearer
+                  ? `Migrate ${client.name} to stdio?`
+                  : `Reset ${client.name} to the default Toolport gateway?`
+              }
+              description={
+                legacyBearer
+                  ? "Toolport backs up the config before replacing the older HTTP connection with its standard stdio command. Other MCP servers stay in place. Any customized Toolport command, arguments and headers will be replaced; review those changes before confirming. Restart the client afterward."
+                  : "This overwrites the hand-edited toolport entry with the standard stdio gateway command. Your other MCP servers are left alone."
+              }
+              confirmLabel={legacyBearer ? "Migrate to stdio" : "Reset to default"}
               onConfirm={resetToDefault}
             />
           )}
@@ -555,7 +493,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
             <Button
               size="sm"
               variant="default"
-              onClick={toggleInstall}
+              onClick={() => setMigrateOpen(true)}
               disabled={busy || !present}
             >
               <PlugZap className="size-4" />
@@ -568,11 +506,11 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
       {client.error && (
         <div
           role="alert"
-          className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning"
+          className="flex items-start gap-2 toolport-alert border-warning bg-warning/8 px-3 py-2 text-sm text-warning"
         >
           <TriangleAlert className="mt-0.5 size-4 shrink-0" />
           <div className="min-w-0">
-            <p className="font-medium">Couldn't read this client's configuration</p>
+            <p className="font-semibold">Couldn't read this client's configuration</p>
             <p className="mt-0.5 break-words text-xs">{client.error}</p>
           </div>
         </div>
@@ -581,11 +519,11 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
       {showRestartNotice && (
         <div
           role="status"
-          className="flex items-start gap-2 rounded-lg border border-info/30 bg-info/10 px-3 py-2 text-sm text-info"
+          className="flex items-start gap-2 toolport-alert border-info bg-info/8 px-3 py-2 text-sm text-info"
         >
           <RefreshCw className="mt-0.5 size-4 shrink-0" />
           <div className="min-w-0 flex-1">
-            <p className="font-medium">{showRestartNotice.title}</p>
+            <p className="font-semibold">{showRestartNotice.title}</p>
             <p className="mt-0.5 break-words text-xs">{showRestartNotice.text}</p>
           </div>
           <button
@@ -599,42 +537,36 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
         </div>
       )}
 
-      {installed && !customized && (
+      {!customized && (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
           <div className="min-w-0">
             <div className="text-xs font-medium text-foreground">
               Discovery mode
               {!clientMode && (
                 <span className="ml-1.5 font-normal text-muted-foreground">
-                  inheriting {globalMode}
+                  Auto: {autoMode}
                 </span>
               )}
             </div>
             <p className="mt-0.5 text-2xs text-muted-foreground">
               {DISCOVERY_HINT[effectiveMode] ?? DISCOVERY_HINT.lazy}
             </p>
-            {effectiveMode === recommended.mode ? (
-              <p className="mt-0.5 text-2xs text-success">
-                Recommended ({recommended.mode}), {recommended.why}.
-              </p>
-            ) : (
-              <p className="mt-0.5 text-2xs text-muted-foreground/80">
-                Recommended:{" "}
-                <span className="font-medium text-foreground">{recommended.mode}</span>,{" "}
-                {recommended.why}.
-              </p>
-            )}
           </div>
           <Select
-            value={clientMode || "__inherit__"}
-            onValueChange={(v) => applyDiscovery(v === "__inherit__" ? "" : v)}
+            value={clientMode || "__auto__"}
+            onValueChange={(v) => applyDiscovery(v === "__auto__" ? "" : v)}
           >
-            <SelectTrigger size="sm" className="w-44 shrink-0" disabled={busy}>
+            <SelectTrigger
+              size="sm"
+              aria-label="Discovery mode"
+              className="w-44 shrink-0"
+              disabled={busy}
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="__inherit__">Inherit ({globalMode})</SelectItem>
-              <SelectItem value="lazy">Lazy · fewest tokens</SelectItem>
+              <SelectItem value="__auto__">Auto ({autoMode})</SelectItem>
+              <SelectItem value="lazy">Lazy · search</SelectItem>
               <SelectItem value="grouped">Grouped · per-server</SelectItem>
               <SelectItem value="full">Full · every tool</SelectItem>
             </SelectContent>
@@ -649,7 +581,8 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
           </div>
           {scopeServers(currentScope).length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              No enabled servers in this scope yet. Enable some under All servers.
+              No enabled servers in this access set yet. Turn servers on in Servers and
+              include them under Settings &gt; Advanced.
             </p>
           ) : (
             <div className="flex flex-wrap gap-1.5">
@@ -728,18 +661,6 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
                   Import all ({toImport.length})
                 </Button>
               )}
-              {movable.length > 0 && (
-                <Button
-                  size="sm"
-                  variant="default"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => setMigrateOpen(true)}
-                  disabled={busy}
-                >
-                  <Shuffle className="size-3" />
-                  Move into gateway ({movable.length})
-                </Button>
-              )}
             </div>
           </div>
           <details className="mb-2">
@@ -753,7 +674,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
               </li>
               {movable.length > 0 && (
                 <li>
-                  <span className="font-medium text-foreground">Move into gateway</span>{" "}
+                  <span className="font-medium text-foreground">Review and connect</span>{" "}
                   copies it, then removes it from {client.name}'s config so the gateway is
                   the only source (plugin servers stay). The cutover that actually saves
                   context.
@@ -767,8 +688,8 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
               <span>
                 {client.name} is already connected to Toolport. Import on its own leaves a
                 copy here too, so these tools load twice, once directly and once through
-                the gateway. Use <span className="font-medium">Move into gateway</span> to
-                avoid that.
+                the gateway. Use <span className="font-medium">Review and connect</span>{" "}
+                to avoid that.
               </span>
             </p>
           )}
@@ -783,7 +704,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
                 busy={busy}
                 // Same review dialog as "Import all": a per-row import must show the
                 // same shell/private-host warnings before anything is added.
-                onImport={() => setBulkImportServers([server])}
+                onImport={() => void reviewServers([server])}
               />
             ))}
           </div>
@@ -800,86 +721,20 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
         </div>
       )}
 
-      <Dialog open={migrateOpen} onOpenChange={setMigrateOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Move {client.name} onto Toolport</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-3 py-1 text-sm">
-            <p className="text-muted-foreground">
-              This imports{" "}
-              <span className="font-medium text-foreground">
-                {movable.length} server{movable.length === 1 ? "" : "s"}
-              </span>{" "}
-              from {client.name} into Toolport and turns them on, then rewrites{" "}
-              {client.name}'s config so it uses{" "}
-              <span className="font-medium text-foreground">
-                only the Toolport gateway
-              </span>
-              . The original config is backed up first, and Disconnect puts these servers
-              back.
-            </p>
-            <p className="rounded-md bg-warning/10 p-2 text-xs text-warning">
-              Secret values (API keys, tokens) aren't carried over, they stay only in the
-              backed-up config. After migrating, re-enter them under each server's secrets
-              so the gateway can connect.
-            </p>
-            {customized && (
-              <p className="rounded-md bg-warning/10 p-2 text-xs text-warning">
-                This client has a custom Toolport entry. Migrating replaces it with the
-                default gateway command.
-              </p>
-            )}
-            <div className="rounded-md bg-muted/40 p-2 font-mono text-xs text-muted-foreground">
-              {movable.map((s) => s.name).join(", ")}
-            </div>
-            {client.pluginServers.length > 0 && (
-              <p className="text-xs text-muted-foreground">
-                Note: {client.pluginServers.length} server
-                {client.pluginServers.length === 1 ? "" : "s"} managed by {client.name}'s
-                plugins or extensions can't be moved, only {client.name} controls those.
-                They stay where they are (you can still import a copy above).
-              </p>
-            )}
-            {profiles.length > 1 && (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs text-muted-foreground">
-                  Scope this client to
-                </span>
-                <Select
-                  value={profile || "__all__"}
-                  onValueChange={(v) => setProfile(v === "__all__" ? "" : v)}
-                >
-                  <SelectTrigger size="sm" className="w-52">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__all__">Follow active profile</SelectItem>
-                    {profiles.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        Only: {p.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setMigrateOpen(false)}
-              disabled={busy}
-            >
-              Cancel
-            </Button>
-            <Button onClick={migrate} disabled={busy}>
-              <Shuffle className="size-4" />
-              Move {movable.length} into Toolport
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {migrateOpen && (
+        <ConnectReviewDialog
+          clientId={client.id}
+          clientName={client.name}
+          profile={profile || undefined}
+          force={customized}
+          onClose={() => setMigrateOpen(false)}
+          onConnected={(next) => {
+            onRegistryChange(next);
+            noteRestartNeeded("applied");
+            onChanged();
+          }}
+        />
+      )}
       <ImportReviewDialog
         open={bulkImportPreview !== null}
         items={bulkImportPreview ?? []}
@@ -973,7 +828,6 @@ function ServerMiniCard({
               </span>
             )}
           </div>
-          <TransportPill transport={server.transport} />
         </div>
         <code className="truncate font-mono text-xs text-muted-foreground">
           {server.command

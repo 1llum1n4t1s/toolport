@@ -328,6 +328,7 @@ fn attempts() -> &'static Mutex<std::collections::HashMap<String, Arc<Attempt>>>
     ATTEMPTS.get_or_init(Mutex::default)
 }
 
+#[cfg(any(feature = "desktop", feature = "gtk-desktop", test))]
 pub(crate) fn start_attempt() -> String {
     let id = oauth_attempt_id();
     attempts()
@@ -339,6 +340,7 @@ pub(crate) fn start_attempt() -> String {
 
 /// Mark cancellation on the shell/IPC thread before scheduling cleanup. This is
 /// nonblocking even if a keychain commit already owns the cancellation gate.
+#[cfg(any(feature = "desktop", feature = "gtk-desktop"))]
 pub(crate) fn request_cancel_attempt(attempt_id: &str) {
     if let Some(attempt) = attempts()
         .lock()
@@ -368,6 +370,7 @@ pub(crate) fn cancel_attempt(attempt_id: &str) -> bool {
     false
 }
 
+#[cfg(any(feature = "desktop", feature = "gtk-desktop"))]
 pub(crate) fn cancel_all_attempts() {
     let ids: Vec<_> = attempts()
         .lock()
@@ -414,6 +417,7 @@ pub(crate) fn authenticate_with(
         &oauth_lock_path(server_id, url)?,
         || crate::oauth::authenticate_cancellable(url, None, &attempt.cancellation),
         |result| {
+            let _destination = crate::local_auth::pin_http_destination(server_id, url)?;
             let _mutation = crate::registry_controller::acquire_auth_lock(server_id)?;
             crate::remote::store_oauth_state(
                 server_id,

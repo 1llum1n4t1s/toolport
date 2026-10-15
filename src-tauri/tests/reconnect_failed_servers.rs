@@ -1,8 +1,7 @@
 //! End-to-end guard for REL-03: a downstream server that fails its first connect
 //! is retried in the background and joins the catalog without a gateway restart.
 //!
-//! Drives the real gateway over stdio, in the legacy per-client topology and in the
-//! default daemon topology (stdio adapter in front of a host daemon), against
+//! Drives the real gateway through the stdio adapter and shared host daemon against
 //! `mock-mcp-server` started in its fail-the-first-N-starts mode. The start counter
 //! file it keeps is how these tests see each retry.
 //!
@@ -15,7 +14,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -55,17 +54,14 @@ fn mock_entry(id: &str, env: &[(&str, &str)]) -> Value {
     })
 }
 
-fn write_registry(dir: &Path, servers: &[Value], enabled: &[&str], legacy: bool) {
-    let mut registry = json!({
-        "version": 1,
+fn write_registry(dir: &Path, servers: &[Value], enabled: &[&str]) {
+    let registry = json!({
+        "version": 2,
         "servers": servers,
         "profiles": [{ "id": "default", "name": "Default", "enabledServerIds": enabled }],
         "activeProfileId": "default",
         "lazyDiscovery": false
     });
-    if legacy {
-        registry["gatewayTopology"] = json!("legacy");
-    }
     // Write then rename, so the watcher never reads a half-written file.
     let tmp = dir.join("registry.json.tmp");
     std::fs::write(&tmp, serde_json::to_vec_pretty(&registry).unwrap()).expect("write registry");
@@ -287,7 +283,7 @@ fn kill_daemon(dir: &Path) {
 }
 
 /// `good` connects at once; `flaky` fails its first four starts, then works.
-fn failing_server_joins_without_a_restart(legacy: bool) {
+fn failing_server_joins_without_a_restart() {
     let dir = scratch_dir();
     let counter = dir.join("flaky-starts");
     let counter_path = counter.to_string_lossy().to_string();
@@ -304,17 +300,15 @@ fn failing_server_joins_without_a_restart(legacy: bool) {
             ),
         ],
         &["good", "flaky"],
-        legacy,
     );
     let mut gateway = Gateway::start(&dir);
 
     wait_for("the first build", Duration::from_secs(60), || {
         gateway.tool_names().contains(&"good__echo".to_string())
     });
-    assert_eq!(
+    assert!(
         daemon_running(&dir),
-        !legacy,
-        "wrong topology\n{}",
+        "expected shared daemon\n{}",
         gateway.diagnostics()
     );
     // The failed server is reported as retrying with its real error, not guessed at.
@@ -375,13 +369,8 @@ fn failing_server_joins_without_a_restart(legacy: bool) {
 }
 
 #[test]
-fn legacy_gateway_picks_up_a_server_that_failed_at_startup() {
-    failing_server_joins_without_a_restart(true);
-}
-
-#[test]
 fn daemon_picks_up_a_server_that_failed_at_startup() {
-    failing_server_joins_without_a_restart(false);
+    failing_server_joins_without_a_restart();
 }
 
 /// A late client of the daemon sees a server an earlier client watched fail.
@@ -403,7 +392,6 @@ fn daemon_shares_the_recovered_server_with_a_later_client() {
             ),
         ],
         &["good", "flaky"],
-        false,
     );
     let mut first = Gateway::start(&dir);
     wait_for("the first build", Duration::from_secs(60), || {
@@ -425,18 +413,53 @@ fn daemon_shares_the_recovered_server_with_a_later_client() {
 }
 
 /// Every request answered 401, like an OAuth server nobody signed into yet.
-fn unauthorized_server() -> (String, Arc<AtomicUsize>) {
+fn unauthorized_server() -> (String, Arc<Mutex<Vec<Instant>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let url = format!("http://{}/mcp", listener.local_addr().unwrap());
-    let hits = Arc::new(AtomicUsize::new(0));
+    let hits = Arc::new(Mutex::new(Vec::new()));
     let counted = Arc::clone(&hits);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            counted.fetch_add(1, Ordering::SeqCst);
             let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
             let mut buf = [0u8; 8192];
-            let _ = std::io::Read::read(&mut stream, &mut buf);
+            let mut bytes = Vec::new();
+            let (header_end, length) = loop {
+                let Ok(n) = std::io::Read::read(&mut stream, &mut buf) else {
+                    break (0, 0);
+                };
+                if n == 0 {
+                    break (0, 0);
+                }
+                bytes.extend_from_slice(&buf[..n]);
+                if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..end]);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    break (end + 4, length);
+                }
+            };
+            while bytes.len() < header_end + length {
+                let Ok(n) = std::io::Read::read(&mut stream, &mut buf) else {
+                    break;
+                };
+                if n == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&buf[..n]);
+            }
+            if let Ok(request) = serde_json::from_slice::<Value>(&bytes[header_end..]) {
+                if request["method"] == "initialize" {
+                    counted.lock().unwrap().push(Instant::now());
+                }
+            }
             let body = r#"{"error":"unauthorized"}"#;
             let _ = write!(
                 stream,
@@ -451,7 +474,7 @@ fn unauthorized_server() -> (String, Arc<AtomicUsize>) {
 }
 
 #[test]
-fn a_server_that_needs_sign_in_is_not_retried_in_a_loop() {
+fn endpoint_sign_in_retries_respect_backoff_and_preserve_healthy_peers() {
     let dir = scratch_dir();
     let (url, hits) = unauthorized_server();
     let locked = json!({
@@ -468,9 +491,8 @@ fn a_server_that_needs_sign_in_is_not_retried_in_a_loop() {
         &dir,
         &[mock_entry("good", &[]), locked],
         &["good", "locked"],
-        true,
     );
-    let mut gateway = Gateway::start(&dir);
+    let mut gateway = Gateway::start_with_backoff(&dir, "2000");
     wait_for("the first build", Duration::from_secs(60), || {
         gateway.tool_names().contains(&"good__echo".to_string())
     });
@@ -481,21 +503,35 @@ fn a_server_that_needs_sign_in_is_not_retried_in_a_loop() {
         gateway.diagnostics()
     );
     assert!(!status.contains("Conduit"), "{status}");
-    let after_connect = hits.load(Ordering::SeqCst);
+    let after_connect = hits.lock().unwrap().len();
     assert!(after_connect > 0, "the first connect reached the server");
 
-    // Several backoff steps pass, and calls ask for the server, but nothing retries.
+    // Demand may retry after backoff, but cannot create a retry storm or block peers.
     for _ in 0..4 {
         let (is_error, text) = gateway.call("locked__anything");
         assert!(is_error);
-        assert!(text.contains("needs sign-in"), "{text}");
+        assert!(
+            text.contains("needs sign-in") || text.contains("connecting"),
+            "{text}"
+        );
+        assert_eq!(gateway.call("good__echo"), (false, "hi".to_string()));
         std::thread::sleep(Duration::from_secs(1));
     }
-    assert_eq!(
-        hits.load(Ordering::SeqCst),
-        after_connect,
-        "an auth-required server must wait for new credentials"
+    let attempts = hits.lock().unwrap();
+    assert!(
+        attempts.len() > after_connect,
+        "endpoint never retried after backoff"
     );
+    assert!(
+        attempts.len() <= after_connect + 3,
+        "endpoint auth retry storm"
+    );
+    for pair in attempts.windows(2) {
+        assert!(
+            pair[1].duration_since(pair[0]) >= Duration::from_millis(1600),
+            "endpoint auth retry ignored the minimum jittered backoff"
+        );
+    }
 }
 
 #[test]
@@ -513,13 +549,15 @@ fn disabling_a_failing_server_stops_its_retries() {
             ],
         ),
     ];
-    write_registry(&dir, &servers, &["good", "broken"], true);
+    write_registry(&dir, &servers, &["good", "broken"]);
     let mut gateway = Gateway::start(&dir);
+    // Uncached discovery is first use; daemon boot alone is lazy.
+    gateway.tool_names();
     wait_for("retries", Duration::from_secs(60), || {
         read_count(&counter) >= 3
     });
 
-    write_registry(&dir, &servers, &["good"], true);
+    write_registry(&dir, &servers, &["good"]);
     wait_for("the disable to apply", Duration::from_secs(30), || {
         !gateway.status().contains("broken")
     });
@@ -542,47 +580,45 @@ fn disabling_a_failing_server_stops_its_retries() {
 /// the failure class, never the server's own output.
 #[test]
 fn calls_do_not_respawn_servers_that_are_waiting_to_retry() {
-    for legacy in [true, false] {
-        let dir = scratch_dir();
-        let counter = dir.join("down-starts");
-        let counter_path = counter.to_string_lossy().to_string();
-        write_registry(
-            &dir,
-            &[mock_entry(
-                "down",
-                &[
-                    ("MOCK_MCP_FAIL_STARTS", "1000"),
-                    ("MOCK_MCP_START_COUNTER", &counter_path),
-                ],
-            )],
-            &["down"],
-            legacy,
+    let dir = scratch_dir();
+    let counter = dir.join("down-starts");
+    let counter_path = counter.to_string_lossy().to_string();
+    write_registry(
+        &dir,
+        &[mock_entry(
+            "down",
+            &[
+                ("MOCK_MCP_FAIL_STARTS", "1000"),
+                ("MOCK_MCP_START_COUNTER", &counter_path),
+            ],
+        )],
+        &["down"],
+    );
+    let mut gateway = Gateway::start_with_backoff(&dir, "60000");
+    gateway.tool_names();
+    wait_for("the failed first connect", Duration::from_secs(60), || {
+        gateway.status().contains("Not connected yet")
+    });
+    let after_first = read_count(&counter);
+    assert!(after_first >= 1, "first discovery started the server");
+    for _ in 0..5 {
+        let status = gateway.status();
+        assert!(status.contains("down"), "{status}");
+        assert!(
+            !status.contains("failing starts"),
+            "the server's own stderr must not reach the client: {status}"
         );
-        let mut gateway = Gateway::start_with_backoff(&dir, "60000");
-        wait_for("the failed first connect", Duration::from_secs(60), || {
-            gateway.status().contains("Not connected yet")
-        });
-        let after_first = read_count(&counter);
-        assert!(after_first >= 1, "the first build started the server");
-        for _ in 0..5 {
-            let status = gateway.status();
-            assert!(status.contains("down"), "{status}");
-            assert!(
-                !status.contains("failing starts"),
-                "the server's own stderr must not reach the client: {status}"
-            );
-            let (is_error, text) = gateway.call("down__echo");
-            assert!(is_error, "{text}");
-            // The failure class depends on when the child's exit is noticed (an exit
-            // status, or a closed pipe), so only the shape is checked here.
-            assert!(text.contains("has not connected yet"), "{text}");
-            assert!(!text.contains("failing starts"), "{text}");
-        }
-        assert_eq!(
-            read_count(&counter),
-            after_first,
-            "requests must not respawn a pending server (legacy: {legacy})\n{}",
-            gateway.diagnostics()
-        );
+        let (is_error, text) = gateway.call("down__echo");
+        assert!(is_error, "{text}");
+        // The failure class depends on when the child's exit is noticed (an exit
+        // status, or a closed pipe), so only the shape is checked here.
+        assert!(text.contains("has not connected yet"), "{text}");
+        assert!(!text.contains("failing starts"), "{text}");
     }
+    assert_eq!(
+        read_count(&counter),
+        after_first,
+        "requests must not respawn a pending server\n{}",
+        gateway.diagnostics()
+    );
 }

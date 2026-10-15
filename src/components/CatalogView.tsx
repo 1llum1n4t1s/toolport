@@ -3,12 +3,16 @@ import { Check, ExternalLink, Loader2, Plus, Search, ShieldCheck } from "lucide-
 import { toast } from "sonner";
 import { toastError } from "@/lib/toast";
 import { openExternal } from "@/lib/openUrl";
-import { addServer, listStacks, popularCatalog, searchCatalog } from "@/lib/api";
-import type { CatalogEntry, Registry, ServerEntry, Stack } from "@/lib/types";
+import { addCatalogServer, popularCatalog, searchCatalog } from "@/lib/api";
+import {
+  catalogIdentity,
+  catalogInstalledIdentities,
+  installed,
+} from "@/lib/catalogIdentity";
+import type { CatalogEntry, CatalogSearch, Registry } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { TransportPill } from "@/components/TransportPill";
 import { ServerDialog } from "@/components/ServerDialog";
 import { ServerLogo } from "@/components/ServerLogo";
 
@@ -38,27 +42,12 @@ export function CatalogView({ registry, onAdded }: Props) {
   // A failed live search is distinct from a genuinely empty result: without this a
   // network/registry failure would render as an innocent "no results for …".
   const [searchError, setSearchError] = useState(false);
+  const [registryStatus, setRegistryStatus] =
+    useState<CatalogSearch["registryStatus"]>("notQueried");
   const [searchNonce, setSearchNonce] = useState(0);
-  const [stacks, setStacks] = useState<Stack[]>([]);
-  const [stacksLoading, setStacksLoading] = useState(true);
-  const [stacksError, setStacksError] = useState(false);
-  const [stackBusy, setStackBusy] = useState<string | null>(null);
   const [configEntry, setConfigEntry] = useState<CatalogEntry | null>(null);
 
-  const have = new Set((registry?.servers ?? []).map((s) => s.name.toLowerCase()));
-
-  const reloadStacks = useCallback(() => {
-    setStacksLoading(true);
-    setStacksError(false);
-    listStacks()
-      .then(setStacks)
-      .catch(() => setStacksError(true))
-      .finally(() => setStacksLoading(false));
-  }, []);
-
-  useEffect(() => {
-    reloadStacks();
-  }, [reloadStacks]);
+  const have = new Set((registry?.servers ?? []).flatMap(catalogInstalledIdentities));
 
   const reloadPopular = useCallback(() => {
     setPopularLoading(true);
@@ -70,6 +59,7 @@ export function CatalogView({ registry, onAdded }: Props) {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Start the catalog request on mount with its existing loading state.
     reloadPopular();
   }, [reloadPopular]);
 
@@ -78,18 +68,24 @@ export function CatalogView({ registry, onAdded }: Props) {
   useEffect(() => {
     const q = query.trim();
     if (!q) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset stale search state immediately when the query changes.
       setResults(null);
       setSearchError(false);
+      setRegistryStatus("notQueried");
       setLoading(false);
       return;
     }
     setLoading(true);
     setSearchError(false);
+    setRegistryStatus("notQueried");
     let cancelled = false;
     const t = setTimeout(() => {
       searchCatalog(q)
         .then((r) => {
-          if (!cancelled) setResults(r);
+          if (!cancelled) {
+            setResults(r.entries);
+            setRegistryStatus(r.registryStatus);
+          }
         })
         .catch(() => {
           // Distinguish a failed search from an empty one so we can offer a retry
@@ -131,20 +127,9 @@ export function CatalogView({ registry, onAdded }: Props) {
     }
     setBusy(entry.name);
     try {
-      const server: ServerEntry = {
-        id: "",
-        name: entry.name,
-        transport: entry.transport,
-        command: entry.command,
-        args: entry.args,
-        launch: entry.launch,
-        env: entry.envKeys.map((key) => ({ key, value: null, secret: true })),
-        url: entry.url,
-        source: `catalog:${entry.source}`,
-      };
-      onAdded(await addServer(server));
+      onAdded(await addCatalogServer(entry));
       toast.success(`Added ${entry.name}`, {
-        description: "Enable it, then authenticate if it needs credentials.",
+        description: "Added and turned on. Check its status under Servers.",
       });
     } catch (e) {
       toastError(`Couldn't add ${entry.name}: ${e}`);
@@ -153,58 +138,8 @@ export function CatalogView({ registry, onAdded }: Props) {
     }
   }
 
-  /** Add every server in a stack that isn't already in Toolport, then point the
-   * user at the credential steps for the ones that need them. */
-  async function setupStack(stack: Stack) {
-    setStackBusy(stack.id);
-    const existing = new Set((registry?.servers ?? []).map((s) => s.name.toLowerCase()));
-    let added = 0;
-    let needCreds = 0;
-    try {
-      for (const entry of stack.servers) {
-        if (existing.has(entry.name.toLowerCase())) continue;
-        const server: ServerEntry = {
-          id: "",
-          name: entry.name,
-          transport: entry.transport,
-          command: entry.command,
-          args: entry.args,
-          launch: entry.launch,
-          env: entry.envKeys.map((key) => ({ key, value: null, secret: true })),
-          url: entry.url,
-          source: `catalog:${entry.source}`,
-        };
-        onAdded(await addServer(server));
-        added++;
-        if (
-          entry.credentialsUrl ||
-          entry.envKeys.length > 0 ||
-          entry.launch?.inputs.length
-        )
-          needCreds++;
-      }
-      if (added === 0) {
-        toast.success(`${stack.name}: every server is already in Toolport`);
-      } else {
-        toast.success(
-          `Added ${added} server${added === 1 ? "" : "s"} from ${stack.name}`,
-          {
-            description:
-              needCreds > 0
-                ? `${needCreds} need setup values. Open "Setup steps", then finish setup under Servers.`
-                : "Enable them under Servers.",
-          },
-        );
-      }
-    } catch (e) {
-      toastError(`Couldn't finish setting up ${stack.name}: ${e}`);
-    } finally {
-      setStackBusy(null);
-    }
-  }
-
   const shown = results ?? popular;
-  const browsing = results === null;
+  const browsing = !query.trim();
 
   // Browse view: group the popular picks into category sections. Search results
   // stay flat (they're query-driven, including the long-tail registry).
@@ -225,16 +160,16 @@ export function CatalogView({ registry, onAdded }: Props) {
 
   const card = (entry: CatalogEntry) => (
     <CatalogCard
-      key={`${entry.source}:${entry.name}`}
+      key={`${entry.source}:${entry.name}:${catalogIdentity(entry)}`}
       entry={entry}
-      added={have.has(entry.name.toLowerCase())}
+      added={installed(have, entry)}
       busy={busy === entry.name}
       onAdd={() => add(entry)}
     />
   );
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-4">
+    <div className="flex min-w-0 w-full flex-col gap-4">
       <div className="relative">
         <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
         {loading && (
@@ -251,8 +186,12 @@ export function CatalogView({ registry, onAdded }: Props) {
 
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>
-          {results !== null
-            ? `${shown.length} result${shown.length === 1 ? "" : "s"} (popular picks first, then the MCP Registry)`
+          {!browsing
+            ? loading
+              ? "Searching the MCP Registry…"
+              : registryStatus === "unavailable" || registryStatus === "timedOut"
+                ? `${shown.length} curated match${shown.length === 1 ? "" : "es"}`
+                : `${shown.length} result${shown.length === 1 ? "" : "s"} (popular picks first, then the MCP Registry)`
             : "Popular servers"}
         </span>
         {results !== null && shown.length > 0 && (
@@ -262,41 +201,28 @@ export function CatalogView({ registry, onAdded }: Props) {
         )}
       </div>
 
-      {browsing &&
-        (stacksLoading ? (
-          <div
-            role="status"
-            aria-label="Loading stacks"
-            className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
-          >
-            {Array.from({ length: 3 }).map((_, i) => (
-              <Skeleton key={i} className="h-32 rounded-lg" />
-            ))}
-          </div>
-        ) : stacksError ? (
+      {!loading &&
+        (registryStatus === "unavailable" || registryStatus === "timedOut") && (
           <div
             role="status"
             aria-live="polite"
-            className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5"
+            className="flex items-center justify-between gap-3 border-b border-border px-1 py-3"
           >
-            <div>
-              <p className="text-sm font-medium">Stacks couldn't load</p>
-              <p className="text-xs text-muted-foreground">
-                Toolport couldn't load the one-click bundles. Try again in a moment.
-              </p>
-            </div>
-            <Button variant="outline" size="sm" onClick={reloadStacks}>
+            <p className="text-sm">
+              {registryStatus === "timedOut"
+                ? "The live MCP Registry took too long to respond."
+                : "The live MCP Registry is unavailable."}{" "}
+              Showing curated matches only.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setSearchNonce((n) => n + 1)}
+            >
               Try again
             </Button>
           </div>
-        ) : stacks.length > 0 ? (
-          <StacksSection
-            stacks={stacks}
-            haveNames={have}
-            busyId={stackBusy}
-            onSetup={setupStack}
-          />
-        ) : null)}
+        )}
 
       {shown.length === 0 ? (
         browsing && popularLoading ? (
@@ -351,7 +277,9 @@ export function CatalogView({ registry, onAdded }: Props) {
             >
               <p className="font-medium">
                 {results !== null
-                  ? `No catalog results for "${query}"`
+                  ? registryStatus === "unavailable" || registryStatus === "timedOut"
+                    ? `No curated matches for "${query}"`
+                    : `No catalog results for "${query}"`
                   : "No popular servers available"}
               </p>
               <p className="max-w-md text-sm text-muted-foreground">
@@ -418,139 +346,6 @@ export function CatalogView({ registry, onAdded }: Props) {
   );
 }
 
-/** "Quick start" stacks: role-based bundles you can add in one click, with the
- * credential steps spelled out per server. */
-function StacksSection({
-  stacks,
-  haveNames,
-  busyId,
-  onSetup,
-}: {
-  stacks: Stack[];
-  haveNames: Set<string>;
-  busyId: string | null;
-  onSetup: (s: Stack) => void;
-}) {
-  return (
-    <section>
-      <h2 className="mb-2 flex items-center gap-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-        Stacks
-        <span className="font-normal text-muted-foreground/60 normal-case">
-          one-click bundles for a use case
-        </span>
-      </h2>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {stacks.map((s) => (
-          <StackCard
-            key={s.id}
-            stack={s}
-            haveNames={haveNames}
-            busy={busyId === s.id}
-            onSetup={() => onSetup(s)}
-          />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function StackCard({
-  stack,
-  haveNames,
-  busy,
-  onSetup,
-}: {
-  stack: Stack;
-  haveNames: Set<string>;
-  busy: boolean;
-  onSetup: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const missing = stack.servers.filter((e) => !haveNames.has(e.name.toLowerCase()));
-  const allAdded = missing.length === 0;
-  return (
-    <div className="flex flex-col gap-2 rounded-lg border border-ring/20 bg-muted/20 p-3">
-      <div className="flex items-start justify-between gap-2">
-        <span className="text-sm font-medium">{stack.name}</span>
-        <span className="shrink-0 text-[11px] text-muted-foreground">
-          {stack.servers.length} servers
-        </span>
-      </div>
-      <p className="min-h-8 text-xs text-muted-foreground">{stack.description}</p>
-      <div className="flex flex-wrap gap-1">
-        {stack.servers.map((e) => (
-          <span
-            key={e.name}
-            className={`rounded px-1.5 py-0.5 text-[11px] ${
-              haveNames.has(e.name.toLowerCase())
-                ? "bg-success/10 text-success"
-                : "bg-muted text-muted-foreground"
-            }`}
-          >
-            {e.name}
-          </span>
-        ))}
-      </div>
-      <div className="mt-auto flex items-center justify-between gap-2 pt-1">
-        <button
-          onClick={() => setOpen((o) => !o)}
-          className="text-[11px] text-muted-foreground hover:text-foreground"
-        >
-          {open ? "Hide setup steps" : "Setup steps"}
-        </button>
-        {allAdded ? (
-          <span className="inline-flex items-center gap-1 text-xs text-success">
-            <Check className="size-3" />
-            all added
-          </span>
-        ) : (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 px-2 text-xs"
-            disabled={busy}
-            onClick={onSetup}
-          >
-            {busy ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <Plus className="size-3" />
-            )}
-            Add {missing.length}
-          </Button>
-        )}
-      </div>
-      {open && (
-        <div className="mt-1 flex flex-col gap-1.5 border-t pt-2">
-          {stack.servers.map((e) => (
-            <div key={e.name} className="text-[11px] leading-snug">
-              <span className="font-medium text-foreground">{e.name}</span>
-              {e.setupHint && (
-                <span className="text-muted-foreground">: {e.setupHint}</span>
-              )}
-              {!!e.launch?.inputs.length && (
-                <span className="text-muted-foreground">
-                  {e.setupHint ? " · " : ": "}Launch setup:{" "}
-                  {e.launch.inputs.map((input) => input.label).join(", ")}
-                </span>
-              )}
-              {e.credentialsUrl && (
-                <button
-                  onClick={() => openExternal(e.credentialsUrl)}
-                  className="ml-1 inline-flex items-center gap-0.5 text-info hover:underline"
-                >
-                  get credential
-                  <ExternalLink className="size-2.5" />
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 /** Source-tier + publisher signal. Honest provenance: where the entry came
  * from and who published it, not a cryptographic attestation. */
 function Provenance({ entry }: { entry: CatalogEntry }) {
@@ -586,7 +381,7 @@ function CatalogCard({
     ? [entry.command, ...entry.args].join(" ")
     : (entry.url ?? "");
   return (
-    <div className="flex flex-col gap-2 rounded-lg border p-3 transition-colors hover:border-ring/40">
+    <div className="flex flex-col gap-2 border-b border-border px-1 py-3 transition-colors hover:bg-accent/30">
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
           <ServerLogo name={entry.name} transport={entry.transport} size={28} />
@@ -600,9 +395,6 @@ function CatalogCard({
               <ExternalLink className="size-3" />
             </button>
           )}
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <TransportPill transport={entry.transport} />
         </div>
       </div>
       <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">

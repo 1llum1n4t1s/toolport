@@ -11,26 +11,37 @@ pub(super) const NATIVE_AUTOSTART_NAME: &str = "Toolport";
 /// What the preview wrote. Only referenced by the migration.
 pub(super) const LEGACY_AUTOSTART_NAME: &str = "ToolportNativePreview";
 
+pub(super) const SETTINGS_PAGES: &[(&str, &str)] = &[
+    ("General", "emblem-system-symbolic"),
+    ("Tools", "applications-engineering-symbolic"),
+    ("Safety", "security-high-symbolic"),
+    ("Access", "changes-prevent-symbolic"),
+    ("Connections", "network-server-symbolic"),
+    ("Help and data", "help-browser-symbolic"),
+];
+
 #[derive(Clone)]
 pub(super) struct SettingsPage {
     pub(super) root: gtk::Box,
+    pages: Vec<gtk::Box>,
+    safety_cards: Vec<gtk::CheckButton>,
+    pub(super) stop_stale: gtk::Button,
     bridge: super::http_bridge::BridgeController,
     broker: crate::approval_broker::ApprovalBroker,
     feedback: gtk::Label,
     posture: gtk::Label,
+    safety_level: gtk::DropDown,
+    safety_floor: Rc<Cell<crate::registry::SafetyLevel>>,
+    safety_policy: gtk::Label,
+    safety_kept: gtk::Box,
+    safety_kept_note: gtk::Label,
+    safety_kept_reset: gtk::Button,
+    safety_current: Rc<Cell<crate::registry::SafetyLevel>>,
     lazy_discovery: gtk::Switch,
     pinned_section: gtk::Box,
     pinned_list: gtk::Box,
     code_mode: gtk::Switch,
-    allow_routine_writes: gtk::Switch,
-    allow_agent_control: gtk::Switch,
     live_inspect: gtk::Switch,
-    deny_destructive: gtk::Switch,
-    confirm_destructive: gtk::Switch,
-    human_approval: gtk::Switch,
-    content_defense: gtk::Switch,
-    quarantine_on_drift: gtk::Switch,
-    block_on_injection: gtk::Switch,
     pii_redaction: gtk::Switch,
     launch_at_login: gtk::Switch,
     endpoint_status: gtk::Label,
@@ -42,11 +53,11 @@ pub(super) struct SettingsPage {
     restart_list: gtk::Box,
     http_client_list: gtk::Box,
     add_http_client: gtk::Button,
+    access_list: gtk::Box,
     folder_list: gtk::Box,
     folder_button: gtk::Button,
-    routine_list: gtk::Box,
-    rendered_routines: Rc<RefCell<Option<Vec<crate::routines::RoutineSuggestion>>>>,
     quarantine_list: gtk::Box,
+    baseline_notice: gtk::Label,
     allowed_list: gtk::Box,
     refresh_button: gtk::Button,
     /// True only while switches are being set programmatically, so their
@@ -60,6 +71,7 @@ pub(super) struct SettingsPage {
     /// since changed: a background tick landing after a toggle used to put the
     /// old value straight back into the switch.
     mutation_generation: Rc<Cell<u64>>,
+    quarantine_release_generation: Rc<Cell<u64>>,
 }
 
 impl SettingsPage {
@@ -95,23 +107,6 @@ impl SettingsPage {
         page.set_margin_bottom(20);
         page.set_margin_start(20);
         page.set_margin_end(20);
-        page.append(
-            &gtk::Label::builder()
-                .label("Safety and desktop behavior")
-                .halign(gtk::Align::Start)
-                .css_classes(["title-2"])
-                .build(),
-        );
-        page.append(
-            &gtk::Label::builder()
-                .label("These settings are shared with the gateway and the current Toolport app. Team-enforced protections stay locked on.")
-                .halign(gtk::Align::Fill)
-                .xalign(0.0)
-                .wrap(true)
-            .hexpand(true)
-                .css_classes(["toolport-muted"])
-                .build(),
-        );
         let feedback = gtk::Label::builder()
             .halign(gtk::Align::Fill)
             .xalign(0.0)
@@ -171,42 +166,32 @@ impl SettingsPage {
             .visible(false)
             .css_classes(["toolport-feedback"])
             .build();
-        page.append(&posture);
 
-        page.append(&settings_heading(
-            "Gateway capabilities",
-            "Control how every connected AI client discovers and uses Toolport.",
-        ));
         let capabilities = gtk::Box::new(gtk::Orientation::Vertical, 0);
         capabilities.add_css_class("toolport-settings-group");
+        capabilities.add_css_class("toolport-switch-group");
         let (lazy_row, lazy_discovery) = setting_switch_row(
-            "Lazy discovery",
-            "Expose a small discovery toolkit instead of loading the full tool catalog up front.",
+            "Find tools as needed",
+            "Agents search for tools as needed instead of loading the full list. This is the default for connections without saved client settings. Choose a different behavior in Clients.",
         );
         capabilities.append(&lazy_row);
         let (code_row, code_mode) = setting_switch_row(
             "Code mode",
-            "Let agents combine multiple scoped tool calls in one sandboxed server-side script.",
+            "Let agents combine several tool calls in one script to reduce back-and-forth. Each call follows your access and approval settings. Scripts run in a restricted environment, but this does not replace those settings.",
         );
-        capabilities.append(&code_row);
-        let (routine_row, allow_routine_writes) = setting_switch_row(
-            "Allow routine writes",
-            "Let agents suggest persistent routines. Saving one still requires your approval.",
-        );
-        capabilities.append(&routine_row);
-        page.append(&capabilities);
+        code_row.set_tooltip_text(Some("A gateway started with TOOLPORT_CODE_MODE=1 can keep scripts available even when this setting is off."));
 
         let pinned_section = gtk::Box::new(gtk::Orientation::Vertical, 8);
         pinned_section.append(
             &gtk::Label::builder()
-                .label("Pinned prerequisites")
+                .label("Tools always included")
                 .halign(gtk::Align::Start)
                 .css_classes(["heading"])
                 .build(),
         );
         pinned_section.append(
             &gtk::Label::builder()
-                .label("Tools pinned in Playground always surface in lazy discovery with their full schema.")
+                .label("Tools pinned in Servers > Tools are included in every tool search, even when they do not match the search.")
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
@@ -224,80 +209,130 @@ impl SettingsPage {
                 .build(),
         );
         pinned_section.append(&pinned_list);
-        page.append(&pinned_section);
 
-        page.append(&settings_heading(
-            "Tool-call safety",
-            "Choose how Toolport handles risky tools before they reach an AI client.",
-        ));
         let safety = gtk::Box::new(gtk::Orientation::Vertical, 0);
         safety.add_css_class("toolport-settings-group");
-        let (deny_row, deny_destructive) = setting_switch_row(
-            "Block destructive tools",
-            "Hide and reject tools marked destructive across every server. Replaces agent confirmation.",
-        );
-        safety.append(&deny_row);
-        let (confirm_row, confirm_destructive) = setting_switch_row(
-            "Agent confirmation",
-            "Require the AI client to replay a one-time confirmation token. Replaces blocking.",
-        );
-        safety.append(&confirm_row);
-        let (approval_row, human_approval) = setting_switch_row(
-            "Human approval",
-            "Hold gated calls until you approve or deny them in Toolport.",
-        );
-        safety.append(&approval_row);
-        page.append(&safety);
-
-        page.append(&settings_heading(
-            "Content protection",
-            "Local defenses for server definitions, tool results, and sensitive values.",
-        ));
+        let safety_level = gtk::DropDown::from_strings(&["Off", "Ask", "Strict"]);
+        safety_level.set_tooltip_text(Some("Ask holds destructive calls. Strict also blocks destructive tools, risky drift and high-confidence injection, and asks before untrusted calls. Labeling and integrity recording stay on."));
+        safety_level.set_visible(false);
+        safety.append(&safety_level);
+        let cards = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let mut safety_cards: Vec<gtk::CheckButton> = Vec::new();
+        for (index, (name, description)) in [
+            ("Off", "No extra checks before destructive calls."),
+            ("Ask", "Pause destructive calls for your approval."),
+            (
+                "Strict",
+                "Hide destructive tools and ask before untrusted calls.",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let card = gtk::CheckButton::new();
+            if let Some(first) = safety_cards.first() {
+                card.set_group(Some(first));
+            }
+            card.set_hexpand(true);
+            card.add_css_class("toolport-safety-card");
+            let copy = gtk::Box::new(gtk::Orientation::Vertical, 8);
+            copy.append(
+                &gtk::Label::builder()
+                    .label(name)
+                    .xalign(0.0)
+                    .css_classes(["heading"])
+                    .build(),
+            );
+            copy.append(
+                &gtk::Label::builder()
+                    .label(description)
+                    .xalign(0.0)
+                    .wrap(true)
+                    .max_width_chars(24)
+                    .css_classes(["toolport-muted"])
+                    .build(),
+            );
+            card.set_child(Some(&copy));
+            let control = safety_level.clone();
+            card.connect_toggled(move |card| {
+                if card.is_active() && card.is_sensitive() && control.is_sensitive() {
+                    // The model contains only levels at or above the team floor.
+                    let count = control.model().map(|model| model.n_items()).unwrap_or(3);
+                    control.set_selected((index as u32).saturating_sub(3 - count));
+                }
+            });
+            cards.append(&card);
+            safety_cards.push(card);
+        }
+        safety.append(&cards);
+        let safety_policy = gtk::Label::new(None);
+        safety_policy.set_xalign(0.0);
+        safety_policy.set_wrap(true);
+        safety_policy.add_css_class("dim-label");
+        safety.append(&safety_policy);
+        let safety_kept = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        safety_kept.set_margin_top(8);
+        let safety_kept_note = gtk::Label::new(None);
+        safety_kept_note.set_xalign(0.0);
+        safety_kept_note.set_wrap(true);
+        safety_kept.append(&safety_kept_note);
+        let safety_kept_reset = gtk::Button::builder().halign(gtk::Align::Start).build();
+        safety_kept.append(&safety_kept_reset);
+        safety_kept.set_visible(false);
+        safety.append(&safety_kept);
         let protection = gtk::Box::new(gtk::Orientation::Vertical, 0);
         protection.add_css_class("toolport-settings-group");
-        let (content_row, content_defense) = setting_switch_row(
-            "Content defense",
-            "Detect and label prompt injection in untrusted tool results.",
-        );
-        protection.append(&content_row);
-        let (block_row, block_on_injection) = setting_switch_row(
-            "Block high-confidence injection",
-            "Fail closed instead of returning a result with a high-confidence hit.",
-        );
-        protection.append(&block_row);
-        let (drift_row, quarantine_on_drift) = setting_switch_row(
-            "Quarantine risky tool drift",
-            "Hide high-risk tools whose definitions changed until reviewed.",
-        );
-        protection.append(&drift_row);
+        protection.add_css_class("toolport-switch-group");
+        capabilities.append(&code_row);
         let (pii_row, pii_redaction) = setting_switch_row(
             "Pseudonymize PII",
             "Replace detected personal values before results reach the model.",
         );
         protection.append(&pii_row);
-        let (agent_row, allow_agent_control) = setting_switch_row(
-            "Allow agent control",
-            "Let agents turn servers on or off. Destructive-tool blocking stays user-controlled.",
-        );
-        protection.append(&agent_row);
         let (inspect_row, live_inspect) = setting_switch_row(
             "Live request/response inspection",
             "Capture the last 50 tool calls locally for Activity. Turning this off clears the buffer.",
         );
         protection.append(&inspect_row);
-        page.append(&protection);
+        let approvals_heading = settings_heading(
+            "Remembered approvals",
+            "Tool calls you chose to always allow. They stop applying if the tool's definition changes.",
+        );
+        let allowed_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        allowed_list.add_css_class("toolport-settings-group");
+        allowed_list.append(
+            &gtk::Label::builder()
+                .label("Checking remembered approvals…")
+                .halign(gtk::Align::Start)
+                .css_classes(["toolport-muted"])
+                .build(),
+        );
 
-        page.append(&settings_heading(
-            "Desktop",
-            "Linux-native lifecycle preferences.",
-        ));
+        let access_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let folder_button = gtk::Button::with_label("Add folder mapping");
+        folder_button.add_css_class("toolport-secondary-action");
+        folder_button.set_valign(gtk::Align::Center);
+        let folder_heading = settings_heading_with_action(
+            "Project folder routing",
+            "Automatically use the matching access set when an MCP client reports a project root. The longest matching folder wins.",
+            &folder_button,
+        );
+        let folder_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        folder_list.add_css_class("toolport-settings-group");
+        folder_list.append(
+            &gtk::Label::builder()
+                .label("Checking folder mappings…")
+                .halign(gtk::Align::Start)
+                .css_classes(["toolport-muted"])
+                .build(),
+        );
+
         let desktop = gtk::Box::new(gtk::Orientation::Vertical, 0);
         desktop.add_css_class("toolport-settings-group");
         let (launch_row, launch_at_login) = setting_switch_row(
             "Launch at login",
             "Start Toolport hidden so approvals and notifications remain available.",
         );
-        desktop.append(&launch_row);
         let stale_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         stale_row.add_css_class("toolport-setting-row");
         let stale_copy = gtk::Box::new(gtk::Orientation::Vertical, 3);
@@ -336,48 +371,36 @@ impl SettingsPage {
         updates_copy.set_hexpand(true);
         updates_copy.append(
             &gtk::Label::builder()
-                .label("System-managed updates")
+                .label("Updates")
                 .halign(gtk::Align::Start)
                 .css_classes(["heading"])
                 .build(),
         );
-        updates_copy.append(
-            &gtk::Label::builder()
-                .label("The native Linux app never downloads or replaces itself. Update Toolport through Omarchy or your normal pacman upgrade flow.")
-                .halign(gtk::Align::Fill)
-                .xalign(0.0)
-                .wrap(true)
+        let update_advice = gtk::Label::builder()
+            .label(super::package_updates::generic_advice())
+            .halign(gtk::Align::Fill)
+            .xalign(0.0)
+            .wrap(true)
             .hexpand(true)
-                .css_classes(["toolport-muted"])
+            .css_classes(["toolport-muted"])
+            .build();
+        updates_copy.append(&update_advice);
+        gtk::glib::spawn_future_local(async move {
+            if let Ok(advice) =
+                gtk::gio::spawn_blocking(super::package_updates::update_advice).await
+            {
+                update_advice.set_label(advice);
+            }
+        });
+        updates_copy.append(
+            &gtk::LinkButton::builder()
+                .label("Open release page")
+                .uri(super::package_updates::RELEASE_PAGE)
+                .halign(gtk::Align::Start)
                 .build(),
         );
         updates.append(&updates_copy);
-        desktop.append(&updates);
-        page.append(&desktop);
 
-        let folder_button = gtk::Button::with_label("Add folder mapping");
-        folder_button.add_css_class("toolport-secondary-action");
-        folder_button.set_valign(gtk::Align::Center);
-        page.append(&settings_heading_with_action(
-            "Project folder routing",
-            "Automatically use the matching server profile when an MCP client reports a project root. The longest matching folder wins.",
-            &folder_button,
-        ));
-        let folder_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        folder_list.add_css_class("toolport-settings-group");
-        folder_list.append(
-            &gtk::Label::builder()
-                .label("Checking folder mappings…")
-                .halign(gtk::Align::Start)
-                .css_classes(["toolport-muted"])
-                .build(),
-        );
-        page.append(&folder_list);
-
-        page.append(&settings_heading(
-            "Diagnostics",
-            "Copy a secret-safe support report or inspect Toolport's local files.",
-        ));
         let diagnostics = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         diagnostics.add_css_class("toolport-setting-row");
         let diagnostics_copy = gtk::Box::new(gtk::Orientation::Vertical, 3);
@@ -408,12 +431,11 @@ impl SettingsPage {
         open_data.add_css_class("toolport-secondary-action");
         diagnostics_actions.insert(&open_data, -1);
         diagnostics.append(&diagnostics_actions);
-        page.append(&diagnostics);
 
-        page.append(&settings_heading(
+        let endpoint_heading = settings_heading(
             "Shared HTTP endpoint",
             "A supervised, authenticated local endpoint for clients that cannot launch an MCP process.",
-        ));
+        );
         let endpoint = gtk::Box::new(gtk::Orientation::Vertical, 8);
         endpoint.add_css_class("toolport-setting-row");
         let endpoint_copy = gtk::Box::new(gtk::Orientation::Vertical, 3);
@@ -467,18 +489,17 @@ impl SettingsPage {
             .css_classes(["toolport-muted", "caption", "monospace"])
             .build();
         endpoint.append(&endpoint_token_value);
-        page.append(&endpoint);
         // The scoped-client list had no heading of its own, so its empty state
         // floated under the gateway row with nothing naming it.
         let add_http_client = gtk::Button::with_label("Add scoped HTTP client");
         add_http_client.add_css_class("toolport-secondary-action");
         add_http_client.set_valign(gtk::Align::Center);
         add_http_client.set_sensitive(false);
-        page.append(&settings_heading_with_action(
+        let http_client_heading = settings_heading_with_action(
             "Scoped HTTP clients",
             "Each gets its own bearer token and server scope, so one endpoint can serve several clients.",
             &add_http_client,
-        ));
+        );
         let http_client_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
         http_client_list.add_css_class("toolport-settings-group");
         http_client_list.append(
@@ -491,32 +512,16 @@ impl SettingsPage {
                 .css_classes(["toolport-muted"])
                 .build(),
         );
-        page.append(&http_client_list);
 
-        page.append(&settings_heading(
-            "Suggested routines",
-            "Review value-free workflow suggestions before saving them as executable routines.",
-        ));
-        let routine_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        routine_list.add_css_class("toolport-settings-group");
-        routine_list.append(
-            &gtk::Label::builder()
-                .label("Checking for routine suggestions…")
-                .halign(gtk::Align::Start)
-                .css_classes(["toolport-muted"])
-                .build(),
-        );
-        page.append(&routine_list);
-
-        page.append(&settings_heading(
+        let quarantine_heading = settings_heading(
             "Quarantined tools",
-            "High-risk definition changes stay blocked until you explicitly re-approve them.",
-        ));
+            "Strict blocks retained high-risk definition changes until you explicitly re-approve them.",
+        );
         let quarantine_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
         quarantine_list.add_css_class("toolport-settings-group");
         quarantine_list.append(
             &gtk::Label::builder()
-                .label("Checking for blocked tools…")
+                .label("Checking retained quarantines…")
                 .halign(gtk::Align::Fill)
                 .xalign(0.0)
                 .wrap(true)
@@ -524,44 +529,139 @@ impl SettingsPage {
                 .css_classes(["toolport-muted"])
                 .build(),
         );
-        page.append(&quarantine_list);
 
-        page.append(&settings_heading(
-            "Remembered approvals",
-            "Fingerprint-bound exceptions that can skip the human approval prompt.",
-        ));
-        let allowed_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        allowed_list.add_css_class("toolport-settings-group");
-        allowed_list.append(
-            &gtk::Label::builder()
-                .label("Checking remembered approvals…")
-                .halign(gtk::Align::Start)
-                .css_classes(["toolport-muted"])
-                .build(),
+        let remove_clients = gtk::Button::with_label("Remove Toolport from all clients");
+        remove_clients.set_halign(gtk::Align::Start);
+        remove_clients.add_css_class("destructive-action");
+        let purge_data = gtk::Button::with_label("Remove Toolport data");
+        purge_data.add_css_class("destructive-action");
+        purge_data.set_halign(gtk::Align::Start);
+        let purge_root = root.clone();
+        purge_data.connect_clicked(move |_| {
+            let parent = purge_root.root().and_downcast::<gtk::Window>();
+            let plan = match crate::purge::plan() {
+                Ok(plan) => plan,
+                Err(error) => {
+                    let dialog = adw::MessageDialog::new(parent.as_ref(), Some("Could not prepare data removal"), Some(&error));
+                    dialog.add_response("close", "Close");
+                    dialog.present();
+                    return;
+                }
+            };
+            let details = format!("{}\n\nResults and exact leftovers: {}", plan.resources.join("\n\n"), plan.report_path);
+            let dialog = adw::MessageDialog::new(parent.as_ref(), Some("Remove Toolport data?"), Some("Normal uninstall keeps your data. Toolport will close, restore and disconnect clients, then permanently remove the resources below. Client files and native servers stay. Failed restoration or active sessions keep data for recovery. This cannot be undone."));
+            let inventory = gtk::Label::builder().label(&details).wrap(true).xalign(0.0).selectable(true).build();
+            let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never)
+                .max_content_height(360).propagate_natural_height(true).child(&inventory).build();
+            dialog.set_extra_child(Some(&scroller));
+            dialog.add_response("cancel", "Cancel");
+            dialog.add_response("remove", "Close and remove data");
+            dialog.set_close_response("cancel");
+            dialog.set_default_response(Some("cancel"));
+            dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+            dialog.connect_response(None, move |dialog, response| {
+                if response == "remove" {
+                    match crate::purge::launch_after_exit(std::path::Path::new(&plan.report_path)) {
+                        Ok(()) => if let Some(app) = gtk::gio::Application::default() { app.quit(); },
+                        Err(error) => {
+                            let error_dialog = adw::MessageDialog::new(dialog.transient_for().as_ref(), Some("Could not start data removal"), Some(&error));
+                            error_dialog.add_response("close", "Close");
+                            error_dialog.present();
+                        }
+                    }
+                }
+            });
+            dialog.present();
+        });
+        let removal_results = gtk::Label::new(None);
+        removal_results.set_xalign(0.0);
+        removal_results.set_wrap(true);
+
+        let general = settings_section(&page, "General", "Startup and updates.");
+        let startup = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        startup.add_css_class("toolport-settings-group");
+        startup.add_css_class("toolport-switch-group");
+        startup.append(&launch_row);
+        startup.append(&updates);
+        general.append(&startup);
+        let tools = settings_section(&page, "Tools", "How agents find and use your tools.");
+        tools.append(&capabilities);
+        tools.append(&pinned_section);
+        let safety_section =
+            settings_section(&page, "Safety", "How Toolport handles risky tool calls.");
+        safety_section.append(&posture);
+        safety_section.append(&safety);
+        safety_section.append(&protection);
+        let pending = gtk::Label::builder()
+            .label("Pending approvals appear in the approval queue.")
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["toolport-muted"])
+            .build();
+        safety_section.append(&pending);
+        let baseline_notice = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .visible(false)
+            .css_classes(["toolport-muted"])
+            .build();
+        safety_section.append(&baseline_notice);
+        safety_section.append(&listed_section(&approvals_heading, &allowed_list));
+        safety_section.append(&listed_section(&quarantine_heading, &quarantine_list));
+        let access = settings_section(
+            &page,
+            "Access",
+            "Limit which servers and tools each client can use, by client or project folder.",
         );
-        page.append(&allowed_list);
-
+        access.append(&access_list);
+        access.append(&folder_heading);
+        access.append(&folder_list);
+        access.append(&http_client_heading);
+        access.append(&http_client_list);
+        let connections = settings_section(
+            &page,
+            "Connections",
+            "Your local HTTP endpoint and gateway processes.",
+        );
+        connections.append(&endpoint_heading);
+        connections.append(&endpoint);
+        connections.append(&desktop);
+        let help = settings_section(
+            &page,
+            "Help and data",
+            "Support reports, local files and removing Toolport.",
+        );
+        help.append(&diagnostics);
+        help.append(&remove_clients);
+        help.append(&purge_data);
+        help.append(&removal_results);
+        let pages = vec![general, tools, safety_section, access, connections, help];
+        for (index, section) in pages.iter().enumerate() {
+            section.set_visible(index == 0);
+        }
         scroller.set_child(Some(&page));
         root.append(&scroller);
         let settings_page = Self {
+            stop_stale: stop_stale.clone(),
             root,
+            pages,
+            safety_cards,
             bridge,
             broker,
             feedback,
             posture,
+            safety_level,
+            safety_floor: Rc::new(Cell::new(crate::registry::SafetyLevel::Off)),
+            safety_policy,
+            safety_kept,
+            safety_kept_note,
+            safety_kept_reset,
+            safety_current: Rc::new(Cell::new(crate::registry::SafetyLevel::Off)),
             lazy_discovery,
             pinned_section,
             pinned_list,
             code_mode,
-            allow_routine_writes,
-            allow_agent_control,
             live_inspect,
-            deny_destructive,
-            confirm_destructive,
-            human_approval,
-            content_defense,
-            quarantine_on_drift,
-            block_on_injection,
             pii_redaction,
             launch_at_login,
             endpoint_status,
@@ -573,18 +673,55 @@ impl SettingsPage {
             restart_list: restart_list.clone(),
             http_client_list,
             add_http_client,
+            access_list,
             folder_list,
             folder_button,
-            routine_list,
-            rendered_routines: Rc::new(RefCell::new(None)),
             quarantine_list,
+            baseline_notice,
             allowed_list,
             refresh_button,
             updating: Rc::new(Cell::new(false)),
             refreshing: Rc::new(Cell::new(false)),
             mutation_generation: Rc::new(Cell::new(0)),
+            quarantine_release_generation: Rc::new(Cell::new(0)),
         };
         settings_page.connect_switches();
+        let remove_page = settings_page.clone();
+        remove_clients.connect_clicked(move |button| {
+            let parent = remove_page.root.root().and_downcast::<gtk::Window>();
+            let dialog = adw::MessageDialog::new(parent.as_ref(), Some("Remove Toolport from all clients?"), Some("Unchanged configs return to their original bytes. Your edits are preserved and moved entries are restored. Each client result is reported here."));
+            dialog.add_response("cancel", "Cancel");
+            dialog.add_response("remove", "Remove from all clients");
+            dialog.set_close_response("cancel");
+            dialog.set_default_response(Some("cancel"));
+            dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+            let page = remove_page.clone();
+            let results_label = removal_results.clone();
+            let button = button.clone();
+            dialog.connect_response(None, move |dialog, response| {
+                if response == "remove" {
+                    button.set_sensitive(false);
+                    let page = page.clone();
+                    let results_label = results_label.clone();
+                    let button = button.clone();
+                    gtk::glib::spawn_future_local(async move {
+                        match gtk::gio::spawn_blocking(|| crate::clients::disconnect_all(false)).await {
+                            Ok(Ok(results)) => {
+                                let message = if results.is_empty() { "No client connections to remove.".into() } else { results.iter().map(|result| format!("{}: {}", result.client_id, result.error.clone().unwrap_or_else(|| std::iter::once("Client configuration restored".to_string()).chain(result.warnings.iter().cloned()).collect::<Vec<_>>().join("; ")))).collect::<Vec<_>>().join("\n") };
+                                results_label.set_label(&message);
+                                page.begin_mutation();
+                                page.refresh_quietly();
+                            }
+                            Ok(Err(error)) => page.show_error(&error),
+                            Err(_) => page.show_error("Client removal stopped unexpectedly"),
+                        }
+                        button.set_sensitive(true);
+                    });
+                }
+                dialog.close();
+            });
+            dialog.present();
+        });
         let page_for_endpoint = settings_page.clone();
         settings_page
             .endpoint_button
@@ -775,6 +912,152 @@ impl SettingsPage {
         });
     }
 
+    fn render_access_sets(&self, registry: crate::registry::Registry) {
+        while let Some(child) = self.access_list.first_child() {
+            self.access_list.remove(&child);
+        }
+        self.access_list.append(&settings_heading("Access sets", "Narrow enabled servers and tools per client. Servers that are off are hidden everywhere."));
+        self.access_list.append(
+            &gtk::Label::builder()
+                .label("Default access")
+                .halign(gtk::Align::Start)
+                .css_classes(["heading"])
+                .build(),
+        );
+        let mut labels = vec!["All enabled servers".to_string()];
+        labels.extend(registry.profiles.iter().map(|p| p.name.clone()));
+        let default =
+            gtk::DropDown::from_strings(&labels.iter().map(String::as_str).collect::<Vec<_>>());
+        default.set_tooltip_text(Some(
+            "Default access for clients without an explicit access set",
+        ));
+        default.set_selected(
+            registry
+                .profiles
+                .iter()
+                .position(|p| Some(&p.id) == registry.default_access_profile_id.as_ref())
+                .map(|i| i as u32 + 1)
+                .unwrap_or(0),
+        );
+        let profiles = registry.profiles.clone();
+        let page = self.clone();
+        default.connect_selected_notify(move |dropdown| {
+            let profile = dropdown
+                .selected()
+                .checked_sub(1)
+                .and_then(|i| profiles.get(i as usize))
+                .map(|p| p.id.clone());
+            page.mutate_access(move || {
+                crate::registry_controller::set_default_access(profile.as_deref())
+            });
+        });
+        self.access_list.append(&default);
+        if registry.default_access_legacy_policy && registry.default_access_profile_id.is_none() {
+            let clear = gtk::Button::with_label(
+                "Use All enabled servers without the retained tool restrictions",
+            );
+            let page = self.clone();
+            clear.connect_clicked(move |_| {
+                page.mutate_access(|| crate::registry_controller::set_default_access(None))
+            });
+            self.access_list.append(&clear);
+        }
+
+        let creator = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let name = gtk::Entry::builder()
+            .placeholder_text("Access set name")
+            .hexpand(true)
+            .build();
+        let add = gtk::Button::with_label("Create access set");
+        let page = self.clone();
+        let entry = name.clone();
+        add.connect_clicked(move |_| {
+            let name = entry.text().to_string();
+            page.mutate_access(move || crate::registry_controller::create_profile(&name));
+        });
+        creator.append(&name);
+        creator.append(&add);
+        self.access_list.append(&creator);
+        for profile in &registry.profiles {
+            let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+            content.append(
+                &gtk::Label::builder()
+                    .label(&profile.name)
+                    .xalign(0.0)
+                    .css_classes(["heading"])
+                    .build(),
+            );
+            for server in registry
+                .servers
+                .iter()
+                .filter(|s| !crate::clients::is_gateway_server(s))
+            {
+                let included = gtk::CheckButton::with_label(&format!(
+                    "{}{}",
+                    server.name,
+                    if server.enabled { "" } else { " (off)" }
+                ));
+                included.set_active(profile.enabled_server_ids.contains(&server.id));
+                let (pid, sid, page) = (profile.id.clone(), server.id.clone(), self.clone());
+                included.connect_toggled(move |button| {
+                    let (pid, sid, included) = (pid.clone(), sid.clone(), button.is_active());
+                    page.mutate_access(move || {
+                        crate::registry_controller::set_access_server(&pid, &sid, included)
+                    });
+                });
+                content.append(&included);
+                if profile.enabled_server_ids.contains(&server.id) {
+                    let tools =
+                        gtk::Button::with_label(&format!("Choose tools for {}", server.name));
+                    let (server, pid, scope, page) = (
+                        server.clone(),
+                        profile.id.clone(),
+                        profile.tool_scope.get(&server.id).cloned(),
+                        self.clone(),
+                    );
+                    tools.connect_clicked(move |_| {
+                        open_access_tool_scope(
+                            server.clone(),
+                            pid.clone(),
+                            scope.clone(),
+                            page.clone(),
+                        )
+                    });
+                    content.append(&tools);
+                }
+            }
+            let delete = gtk::Button::with_label("Delete access set");
+            delete.set_sensitive(
+                registry.profiles.len() > 1
+                    && Some(&profile.id) != registry.default_access_profile_id.as_ref()
+                    && Some(&profile.id) != registry.default_access_context_id.as_ref(),
+            );
+            let (pid, page) = (profile.id.clone(), self.clone());
+            delete.connect_clicked(move |_| {
+                let pid = pid.clone();
+                page.mutate_access(move || crate::registry_controller::delete_profile(&pid));
+            });
+            content.append(&delete);
+            self.access_list.append(&content);
+        }
+    }
+
+    fn mutate_access(
+        &self,
+        operation: impl FnOnce() -> Result<crate::registry::Registry, String> + Send + 'static,
+    ) {
+        self.mutation_generation
+            .set(self.mutation_generation.get().wrapping_add(1));
+        let page = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            match gtk::gio::spawn_blocking(operation).await {
+                Ok(Ok(registry)) => page.render_access_sets(registry),
+                Ok(Err(error)) => page.show_error(&error),
+                Err(_) => page.show_error("The access update stopped unexpectedly"),
+            }
+        });
+    }
+
     fn render_folder_routing(&self, settings: crate::registry_controller::FolderRoutingSettings) {
         while let Some(child) = self.folder_list.first_child() {
             self.folder_list.remove(&child);
@@ -783,7 +1066,7 @@ impl SettingsPage {
             .set_sensitive(!settings.profiles.is_empty());
         if settings.profiles.is_empty() {
             self.folder_list.append(&empty_state(
-                "Create a server profile before adding project folder routing.",
+                "Create an access set before adding project folder routing.",
             ));
             return;
         }
@@ -858,7 +1141,7 @@ impl SettingsPage {
             self.pinned_list.remove(&child);
         }
         if pins.is_empty() {
-            self.pinned_list.append(&empty_state("No prerequisites are pinned. Pin a load-bearing tool from Playground when lazy discovery must always surface it."));
+            self.pinned_list.append(&empty_state("None yet. In Servers, open a server's Tools tab and pin tools your agent needs every time, such as sign-in or a required lookup."));
             return;
         }
         for pin in pins {
@@ -955,14 +1238,14 @@ impl SettingsPage {
             return;
         };
         if settings.profiles.is_empty() {
-            self.show_error("create a server profile before adding folder routing");
+            self.show_error("create an access set before adding folder routing");
             return;
         }
         #[allow(deprecated)]
         let dialog = adw::MessageDialog::new(
             Some(&parent),
-            Some("Choose a server profile"),
-            Some("This profile will be selected when a client reports this folder or one of its descendants."),
+            Some("Choose an access set"),
+            Some("This access set will be selected when a client reports this folder or one of its descendants."),
         );
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("save", "Save mapping");
@@ -984,7 +1267,7 @@ impl SettingsPage {
         dialog.connect_response(None, move |dialog, response| {
             if response == "save" {
                 let Some((profile, _)) = profiles.get(dropdown.selected() as usize) else {
-                    page.show_error("choose a server profile");
+                    page.show_error("choose an access set");
                     dialog.close();
                     return;
                 };
@@ -1088,6 +1371,8 @@ impl SettingsPage {
                     .build(),
             );
             let profile = if client.profile.is_empty() {
+                "Full connected set".to_string()
+            } else if client.profile == crate::registry::ALL_ENABLED_ACCESS {
                 "All enabled servers".to_string()
             } else {
                 settings
@@ -1171,7 +1456,7 @@ impl SettingsPage {
             let dialog = adw::MessageDialog::new(
                 Some(&parent),
                 Some("Add a scoped HTTP client"),
-                Some("Toolport generates a bearer token that is shown once. Choose which server profile this client can access."),
+                Some("Toolport generates a bearer token that is shown once. Choose which access set this client can access."),
             );
             dialog.add_response("cancel", "Cancel");
             dialog.add_response("add", "Add client");
@@ -1184,7 +1469,7 @@ impl SettingsPage {
                 .css_classes(["toolport-input"])
                 .build();
             form.append(&label);
-            let mut profile_names = vec!["All enabled servers"];
+            let mut profile_names = vec!["Full connected set", "All enabled servers"];
             profile_names.extend(settings.profiles.iter().map(|(_, name)| name.as_str()));
             let profile = gtk::DropDown::new(
                 Some(gtk::StringList::new(&profile_names)),
@@ -1197,13 +1482,13 @@ impl SettingsPage {
             dialog.connect_response(None, move |dialog, response| {
                 if response == "add" {
                     let name = label.text().to_string();
-                    let selected = profile.selected();
-                    let profile_id = if selected == 0 {
-                        None
-                    } else {
-                        profiles
-                            .get(selected.saturating_sub(1) as usize)
-                            .map(|(id, _)| id.clone())
+                    let profile_id = match http_access_choice(&profiles, profile.selected()) {
+                        Ok(profile) => profile,
+                        Err(error) => {
+                            page_for_response.show_error(&error);
+                            dialog.close();
+                            return;
+                        }
                     };
                     let page = page_for_response.clone();
                     gtk::glib::spawn_future_local(async move {
@@ -1266,6 +1551,60 @@ impl SettingsPage {
     }
 
     fn connect_switches(&self) {
+        let page = self.clone();
+        self.safety_kept_reset.connect_clicked(move |button| {
+            let level = page.safety_current.get();
+            page.begin_mutation();
+            button.set_sensitive(false);
+            let page = page.clone();
+            gtk::glib::spawn_future_local(async move {
+                let result = super::run_user_action(move || {
+                    crate::registry_controller::set_safety_level(level)
+                })
+                .await;
+                page.begin_mutation();
+                match result {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => page.show_error(&error),
+                    Err(_) => page.show_error("the safety update stopped unexpectedly"),
+                }
+                page.refresh();
+            });
+        });
+        let page = self.clone();
+        self.safety_level.connect_selected_notify(move |control| {
+            if page.updating.get() {
+                return;
+            }
+            let level = match control.selected() + page.safety_floor.get() as u32 {
+                0 => crate::registry::SafetyLevel::Off,
+                1 => crate::registry::SafetyLevel::Ask,
+                _ => crate::registry::SafetyLevel::Strict,
+            };
+            page.begin_mutation();
+            control.set_sensitive(false);
+            for card in &page.safety_cards {
+                card.set_sensitive(false);
+            }
+            let page = page.clone();
+            gtk::glib::spawn_future_local(async move {
+                let result = super::run_user_action(move || {
+                    crate::registry_controller::set_safety_level(level)
+                })
+                .await;
+                page.begin_mutation();
+                match result {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => page.show_error(&error),
+                    Err(_) => page.show_error("the safety update stopped unexpectedly"),
+                }
+                page.safety_level.set_sensitive(true);
+                for (index, card) in page.safety_cards.iter().enumerate() {
+                    card.set_sensitive(index >= page.safety_floor.get() as usize);
+                }
+                page.refresh();
+            });
+        });
         for (switch, setting, label) in [
             (
                 self.lazy_discovery.clone(),
@@ -1278,49 +1617,9 @@ impl SettingsPage {
                 "code mode",
             ),
             (
-                self.allow_routine_writes.clone(),
-                crate::registry_controller::EssentialSetting::AllowRoutineWrites,
-                "routine writes",
-            ),
-            (
-                self.allow_agent_control.clone(),
-                crate::registry_controller::EssentialSetting::AllowAgentControl,
-                "agent control",
-            ),
-            (
                 self.live_inspect.clone(),
                 crate::registry_controller::EssentialSetting::LiveInspect,
                 "live inspection",
-            ),
-            (
-                self.deny_destructive.clone(),
-                crate::registry_controller::EssentialSetting::DenyDestructive,
-                "destructive-tool blocking",
-            ),
-            (
-                self.confirm_destructive.clone(),
-                crate::registry_controller::EssentialSetting::ConfirmDestructive,
-                "agent confirmation",
-            ),
-            (
-                self.human_approval.clone(),
-                crate::registry_controller::EssentialSetting::HumanApproval,
-                "human approval",
-            ),
-            (
-                self.content_defense.clone(),
-                crate::registry_controller::EssentialSetting::ContentDefense,
-                "content defense",
-            ),
-            (
-                self.quarantine_on_drift.clone(),
-                crate::registry_controller::EssentialSetting::QuarantineOnDrift,
-                "drift quarantine",
-            ),
-            (
-                self.block_on_injection.clone(),
-                crate::registry_controller::EssentialSetting::BlockOnInjection,
-                "injection blocking",
             ),
             (
                 self.pii_redaction.clone(),
@@ -1339,50 +1638,35 @@ impl SettingsPage {
                 // one is in flight makes this completion skip its render rather
                 // than putting the other switch back from a stale snapshot.
                 let generation = page.mutation_generation.get();
-                let confirm_was_on = page.confirm_destructive.is_active();
-                let deny_was_on = page.deny_destructive.is_active();
                 let switch = switch.clone();
                 let page = page.clone();
                 gtk::glib::spawn_future_local(async move {
-                    let result = gtk::gio::spawn_blocking(move || {
+                    let result = super::run_user_action(move || {
                         crate::registry_controller::set_essential_setting(setting, enabled)
                     })
                     .await;
+                    // Checked before the completion bump below, which would
+                    // otherwise make every save look stale and leave the switch
+                    // unconfirmed until the next 15-second refresh.
+                    let latest = page.mutation_generation.get() == generation;
                     // Again on completion, so a read that started mid-write is
                     // discarded too.
                     page.begin_mutation();
                     match result {
                         Ok(Ok(settings)) => {
-                            // Blocking and confirmation are mutually exclusive in
-                            // the registry: blocking hides the tool, so there is
-                            // nothing left for the agent to confirm. Silently
-                            // flipping the other switch read as a bug, so say it.
-                            let displaced = match setting {
-                                crate::registry_controller::EssentialSetting::DenyDestructive
-                                    if enabled && !settings.confirm_destructive && confirm_was_on =>
-                                {
-                                    Some("Agent confirmation")
-                                }
-                                crate::registry_controller::EssentialSetting::ConfirmDestructive
-                                    if enabled && !settings.deny_destructive && deny_was_on =>
-                                {
-                                    Some("Destructive-tool blocking")
-                                }
-                                _ => None,
-                            };
-                            if page.mutation_generation.get() == generation {
+                            if latest {
                                 page.render_settings(settings);
                             } else {
+                                // Another toggle is in flight; confirm only this
+                                // switch rather than rendering a stale snapshot.
+                                page.updating.set(true);
+                                set_switch(&switch, enabled);
+                                page.updating.set(false);
                                 switch.set_sensitive(true);
                             }
                             let outcome =
                                 format!("{} {label}", if enabled { "Enabled" } else { "Disabled" });
-                            page.feedback.set_label(&match displaced {
-                                Some(other) => format!(
-                                    "{outcome}. {other} turned off, the two cannot both be on."
-                                ),
-                                None => outcome,
-                            });
+                            page.feedback.set_label(&outcome);
                             page.feedback.remove_css_class("error");
                             page.feedback.add_css_class("success");
                         }
@@ -1416,7 +1700,7 @@ impl SettingsPage {
                 page.begin_mutation();
                 let page = page.clone();
                 gtk::glib::spawn_future_local(async move {
-                    let result = gtk::gio::spawn_blocking(move || {
+                    let result = super::run_user_action(move || {
                         if enabled {
                             crate::autostart::enable_linux(NATIVE_AUTOSTART_NAME)
                         } else {
@@ -1451,6 +1735,20 @@ impl SettingsPage {
                 });
                 gtk::glib::Propagation::Stop
             });
+    }
+
+    pub(super) fn select_page(&self, index: usize) {
+        for (current, page) in self.pages.iter().enumerate() {
+            page.set_visible(current == index);
+        }
+    }
+
+    pub(super) fn connect_page_selected(&self, index: usize, callback: impl Fn(bool) + 'static) {
+        self.pages[index].connect_visible_notify(move |page| callback(page.is_visible()));
+    }
+
+    pub(super) fn approval_broker(&self) -> crate::approval_broker::ApprovalBroker {
+        self.broker.clone()
     }
 
     pub(super) fn refresh(&self) {
@@ -1489,12 +1787,13 @@ impl SettingsPage {
                     crate::registry_controller::essential_settings()?,
                     crate::autostart::is_enabled_linux(NATIVE_AUTOSTART_NAME)?,
                     read_quarantined_tools(),
+                    read_baseline_notice(),
                     read_allowed_tools(&broker)?,
-                    broker.list_suggestions(),
                     crate::registry_controller::folder_routing_settings()?,
                     crate::registry_controller::http_client_settings()?,
                     crate::registry_controller::pinned_prerequisites()?,
                     bridge.restart_advice(),
+                    crate::registry::load()?,
                 ))
             })
             .await;
@@ -1504,12 +1803,13 @@ impl SettingsPage {
                     settings,
                     launch_at_login,
                     quarantined,
+                    baseline_notice,
                     allowed,
-                    suggestions,
                     folder_routing,
                     http_clients,
                     pinned,
                     restart_advice,
+                    access_registry,
                 ))) => {
                     // A toggle landed while this read was in flight, so the
                     // snapshot is already out of date. Rendering it would put
@@ -1519,6 +1819,7 @@ impl SettingsPage {
                         page.refresh_button.set_sensitive(true);
                         return;
                     }
+                    page.render_access_sets(access_registry);
                     page.render_settings(settings);
                     page.render_restart_advice(restart_advice);
                     page.updating.set(true);
@@ -1527,8 +1828,12 @@ impl SettingsPage {
                     page.updating.set(false);
                     page.render_endpoint(page.bridge.status());
                     page.render_quarantine(quarantined);
+                    if let Ok(notice) = baseline_notice {
+                        page.baseline_notice
+                            .set_label(notice.as_deref().unwrap_or(""));
+                        page.baseline_notice.set_visible(notice.is_some());
+                    }
                     page.render_allowed(allowed);
-                    page.render_routines(suggestions);
                     page.render_folder_routing(folder_routing);
                     page.render_http_clients(http_clients);
                     page.render_pinned_prerequisites(pinned);
@@ -1552,13 +1857,62 @@ impl SettingsPage {
         });
     }
 
+    fn finish_quarantine_release(&self, needed: Vec<(String, String)>, preserve_error: bool) {
+        self.begin_mutation();
+        // Only a newer release supersedes this wait. Unrelated settings changes
+        // must still let it render the current quarantine list and final feedback.
+        let generation = self.quarantine_release_generation.get().wrapping_add(1);
+        self.quarantine_release_generation.set(generation);
+        let page = self.clone();
+        if !preserve_error {
+            page.feedback.set_label(if needed.is_empty() {
+                "Approval saved. The gateway will publish it on its next refresh."
+            } else {
+                "Waiting for the current definition. One more review is needed."
+            });
+            page.feedback.remove_css_class("success");
+            page.feedback.remove_css_class("error");
+        }
+        gtk::glib::spawn_future_local(async move {
+            let expected = needed.clone();
+            let result = gtk::gio::spawn_blocking(move || {
+                wait_for_captured_quarantines(
+                    &expected,
+                    read_quarantined_tools,
+                    std::time::Duration::from_secs(10),
+                )
+            })
+            .await;
+            if page.quarantine_release_generation.get() != generation {
+                return;
+            }
+            match result {
+                Ok(Ok(entries)) => {
+                    let captured = needed.iter().all(|(profile, tool)| {
+                        entries.iter().any(|entry| {
+                            &entry.profile == profile && &entry.tool == tool && entry.has_definition
+                        })
+                    });
+                    page.begin_mutation();
+                    page.render_quarantine(Ok(entries));
+                    if !preserve_error && !needed.is_empty() {
+                        page.feedback.set_label(capture_feedback(captured));
+                    }
+                }
+                Ok(Err(error)) => page.show_error(&error),
+                Err(_) => page.show_error("the captured review could not be loaded"),
+            }
+        });
+    }
+
     fn render_settings(&self, settings: crate::registry_controller::EssentialSettings) {
         let (line, guarded) = posture_summary(&settings);
         self.posture.set_label(&line);
         self.posture.remove_css_class("success");
         self.posture.remove_css_class("error");
-        self.posture
-            .add_css_class(if guarded { "success" } else { "error" });
+        if guarded {
+            self.posture.add_css_class("success");
+        }
         self.posture.set_visible(true);
         self.updating.set(true);
         set_switch(&self.lazy_discovery, settings.lazy_discovery);
@@ -1566,30 +1920,54 @@ impl SettingsPage {
         self.pinned_section.set_visible(settings.lazy_discovery);
         set_switch(&self.code_mode, settings.code_mode);
         self.code_mode.set_sensitive(true);
-        set_switch(&self.allow_routine_writes, settings.allow_routine_writes);
-        self.allow_routine_writes.set_sensitive(settings.code_mode);
-        self.allow_routine_writes.set_tooltip_text(
-            (!settings.code_mode).then_some("Enable code mode to allow routine writes"),
-        );
-        set_switch(&self.allow_agent_control, settings.allow_agent_control);
-        self.allow_agent_control.set_sensitive(true);
         set_switch(&self.live_inspect, settings.live_inspect);
         self.live_inspect.set_sensitive(true);
-        set_switch(&self.deny_destructive, settings.deny_destructive);
-        set_team_managed(&self.deny_destructive, settings.deny_destructive_forced);
-        set_switch(&self.confirm_destructive, settings.confirm_destructive);
-        set_team_managed(&self.confirm_destructive, false);
-        set_switch(&self.human_approval, settings.human_approval);
-        set_team_managed(&self.human_approval, settings.human_approval_forced);
-        set_switch(&self.content_defense, settings.content_defense);
-        set_team_managed(&self.content_defense, settings.content_defense_forced);
-        set_switch(&self.quarantine_on_drift, settings.quarantine_on_drift);
-        set_team_managed(
-            &self.quarantine_on_drift,
-            settings.quarantine_on_drift_forced,
+        self.safety_floor.set(settings.team_min_safety_level);
+        let choices = match settings.team_min_safety_level {
+            crate::registry::SafetyLevel::Off => vec!["Off", "Ask", "Strict"],
+            crate::registry::SafetyLevel::Ask => vec!["Ask", "Strict"],
+            crate::registry::SafetyLevel::Strict => vec!["Strict"],
+        };
+        self.safety_level
+            .set_model(Some(&gtk::StringList::new(&choices)));
+        self.safety_level
+            .set_selected(settings.safety_level as u32 - settings.team_min_safety_level as u32);
+        let floor = match settings.team_min_safety_level {
+            crate::registry::SafetyLevel::Off => "Off",
+            crate::registry::SafetyLevel::Ask => "Ask",
+            crate::registry::SafetyLevel::Strict => "Strict",
+        };
+        let mut policy = format!("Team minimum safety level: {floor}.");
+        if settings.quarantine_on_drift_forced {
+            policy.push_str(" Team also enforces quarantine on drift.");
+        }
+        if settings.block_on_injection_forced {
+            policy.push_str(" Team also enforces block on injection.");
+        }
+        self.safety_policy.set_label(&policy);
+        self.safety_policy.set_visible(
+            settings.team_min_safety_level != crate::registry::SafetyLevel::Off
+                || settings.quarantine_on_drift_forced
+                || settings.block_on_injection_forced,
         );
-        set_switch(&self.block_on_injection, settings.block_on_injection);
-        set_team_managed(&self.block_on_injection, settings.block_on_injection_forced);
+        self.safety_level.set_sensitive(true);
+        for (index, card) in self.safety_cards.iter().enumerate() {
+            card.set_sensitive(index >= settings.team_min_safety_level as usize);
+            card.set_active(index == settings.safety_level as usize);
+        }
+        self.safety_current.set(settings.safety_level);
+        let kept = settings.kept_v1_safety.summary();
+        self.safety_kept.set_visible(kept.is_some());
+        if let Some(kept) = kept {
+            self.safety_kept_note.set_label(&format!(
+                "{kept} Choosing a level replaces these with that level's protections."
+            ));
+            self.safety_kept_reset.set_label(&format!(
+                "Use standard {}",
+                level_name(settings.safety_level)
+            ));
+            self.safety_kept_reset.set_sensitive(true);
+        }
         set_switch(&self.pii_redaction, settings.pii_redaction);
         set_team_managed(&self.pii_redaction, settings.pii_redaction_forced);
         self.updating.set(false);
@@ -1628,9 +2006,15 @@ impl SettingsPage {
                         .build(),
                 );
                 self.quarantine_list.append(&row);
+                if let Some(section) = self.quarantine_list.parent() {
+                    section.set_visible(true);
+                }
                 return;
             }
         };
+        if let Some(section) = self.quarantine_list.parent() {
+            section.set_visible(!entries.is_empty());
+        }
         if entries.is_empty() {
             self.quarantine_list
                 .append(&empty_state("No tools are quarantined."));
@@ -1650,6 +2034,9 @@ impl SettingsPage {
         while let Some(child) = self.allowed_list.first_child() {
             self.allowed_list.remove(&child);
         }
+        if let Some(section) = self.allowed_list.parent() {
+            section.set_visible(!entries.is_empty());
+        }
         if entries.is_empty() {
             self.allowed_list
                 .append(&empty_state("No remembered approvals."));
@@ -1659,172 +2046,84 @@ impl SettingsPage {
             self.allowed_list.append(&allowed_row(entry, self.clone()));
         }
     }
-
-    fn render_routines(&self, suggestions: Vec<crate::routines::RoutineSuggestion>) {
-        if self.rendered_routines.borrow().as_ref() == Some(&suggestions) {
-            return;
-        }
-        *self.rendered_routines.borrow_mut() = Some(suggestions.clone());
-        while let Some(child) = self.routine_list.first_child() {
-            self.routine_list.remove(&child);
-        }
-        if suggestions.is_empty() {
-            self.routine_list.append(&empty_state(
-                "No routine suggestions are waiting for review.",
-            ));
-            return;
-        }
-        for suggestion in suggestions {
-            self.routine_list
-                .append(&routine_row(suggestion, self.clone()));
-        }
-    }
-}
-
-fn routine_row(suggestion: crate::routines::RoutineSuggestion, page: SettingsPage) -> gtk::Box {
-    let card = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    card.add_css_class("toolport-setting-row");
-
-    let name = gtk::Entry::builder()
-        .text(&suggestion.suggested_name)
-        .placeholder_text("Routine name")
-        .build();
-    card.append(&name);
-    let description = gtk::Entry::builder()
-        .placeholder_text("Description (optional)")
-        .build();
-    card.append(&description);
-
-    let dependencies = suggestion
-        .evidence
-        .observed_dependencies()
-        .iter()
-        .map(|dependency| dependency.name())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let provenance = match suggestion.evidence.provenance() {
-        crate::routines::EvidenceProvenance::ImmutableRun => "executed end to end",
-        crate::routines::EvidenceProvenance::SynthesizedFromObservedCalls => {
-            "synthesized from observed calls"
-        }
-    };
-    let risk = match suggestion.evidence.risk_class() {
-        crate::routines::RoutineRiskClass::Low => "low",
-        crate::routines::RoutineRiskClass::Medium => "medium",
-        crate::routines::RoutineRiskClass::High => "high",
-        crate::routines::RoutineRiskClass::Unknown => "unknown",
-    };
-    card.append(
-        &gtk::Label::builder()
-            .label(format!(
-                "{} calls · {risk} risk · {provenance}\nDependencies: {dependencies}",
-                suggestion.evidence.calls()
-            ))
-            .halign(gtk::Align::Start)
-            .xalign(0.0)
-            .wrap(true)
-            .css_classes(["toolport-muted"])
-            .build(),
-    );
-
-    let source_view = gtk::TextView::builder()
-        .editable(false)
-        .cursor_visible(false)
-        .monospace(true)
-        .wrap_mode(gtk::WrapMode::None)
-        .top_margin(10)
-        .bottom_margin(10)
-        .left_margin(10)
-        .right_margin(10)
-        .build();
-    source_view.buffer().set_text(&suggestion.source);
-    let source_scroll = gtk::ScrolledWindow::builder()
-        .child(&source_view)
-        .min_content_height(140)
-        .max_content_height(240)
-        .hscrollbar_policy(gtk::PolicyType::Automatic)
-        .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .build();
-    let source = gtk::Expander::builder()
-        .label("Review source")
-        .child(&source_scroll)
-        .build();
-    card.append(&source);
-
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    actions.set_halign(gtk::Align::End);
-    let dismiss = gtk::Button::with_label("Dismiss");
-    dismiss.add_css_class("toolport-secondary-action");
-    actions.append(&dismiss);
-    let save = gtk::Button::with_label("Save routine");
-    save.add_css_class("suggested-action");
-    actions.append(&save);
-    card.append(&actions);
-
-    let fingerprint = suggestion.definition_fingerprint.clone();
-    let page_for_dismiss = page.clone();
-    dismiss.connect_clicked(move |_| {
-        crate::routine_controller::dismiss_suggestion(&page_for_dismiss.broker, &fingerprint);
-        page_for_dismiss
-            .feedback
-            .set_label("Routine suggestion dismissed.");
-        page_for_dismiss.feedback.remove_css_class("error");
-        page_for_dismiss.feedback.add_css_class("success");
-        page_for_dismiss.refresh();
-    });
-
-    let fingerprint = suggestion.definition_fingerprint;
-    save.connect_clicked(move |button| {
-        let routine_name = name.text().to_string();
-        let routine_description = description.text().to_string();
-        let fingerprint = fingerprint.clone();
-        button.set_sensitive(false);
-        dismiss.set_sensitive(false);
-        let broker = page.broker.clone();
-        let page = page.clone();
-        gtk::glib::spawn_future_local(async move {
-            let result = gtk::gio::spawn_blocking(move || {
-                crate::routine_controller::approve_suggestion(
-                    &broker,
-                    &fingerprint,
-                    routine_name,
-                    Some(routine_description),
-                )
-            })
-            .await;
-            match result {
-                Ok(Ok(saved)) => {
-                    page.feedback
-                        .set_label(&format!("Saved routine ‘{}’.", saved.name()));
-                    page.feedback.remove_css_class("error");
-                    page.feedback.add_css_class("success");
-                    page.refresh();
-                }
-                Ok(Err(error)) => {
-                    page.show_error(&error);
-                    page.refresh();
-                }
-                Err(_) => {
-                    page.show_error("the routine save stopped unexpectedly");
-                    page.refresh();
-                }
-            }
-        });
-    });
-    card
 }
 
 #[derive(Clone)]
 struct QuarantinedTool {
+    record_id: String,
     profile: String,
     tool: String,
     detail: String,
+    has_definition: bool,
+}
+
+fn capture_feedback(captured: bool) -> &'static str {
+    if captured {
+        "Current definition captured. One more review is needed; the tool stays blocked until then."
+    } else {
+        "The gateway has not captured the definition yet. Refresh to review it when the gateway is running."
+    }
+}
+
+fn bulk_capture_targets(
+    needed: Vec<(String, String)>,
+    remaining: &[QuarantinedTool],
+) -> Vec<(String, String)> {
+    needed
+        .into_iter()
+        .filter(|(profile, tool)| {
+            !remaining.iter().any(|entry| {
+                &entry.profile == profile && &entry.tool == tool && !entry.has_definition
+            })
+        })
+        .collect()
+}
+
+// Read off the GTK main thread after a release; a gateway capture can arrive later.
+fn wait_for_captured_quarantines(
+    needed: &[(String, String)],
+    mut read: impl FnMut() -> Result<Vec<QuarantinedTool>, String>,
+    timeout: std::time::Duration,
+) -> Result<Vec<QuarantinedTool>, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let entries = read()?;
+        let captured = needed.iter().all(|(profile, tool)| {
+            entries.iter().any(|entry| {
+                &entry.profile == profile && &entry.tool == tool && entry.has_definition
+            })
+        });
+        if captured || std::time::Instant::now() >= deadline {
+            return Ok(entries);
+        }
+        std::thread::sleep(
+            std::time::Duration::from_millis(100)
+                .min(deadline.saturating_duration_since(std::time::Instant::now())),
+        );
+    }
+}
+
+fn read_baseline_notice() -> Result<Option<String>, String> {
+    let registry = crate::registry::load_resolved()?;
+    Ok(crate::integrity::baseline_notice(&registry)?.map(|event| {
+        let timestamp = event["ts"].as_i64().unwrap_or(0);
+        let time = gtk::glib::DateTime::from_unix_local(timestamp / 1000)
+            .and_then(|time| time.format("%c"))
+            .map(|time| time.to_string())
+            .unwrap_or_else(|_| timestamp.to_string());
+        format!(
+            "Last baseline warning: {time}: {}",
+            event["detail"].as_str().unwrap_or_default()
+        )
+    }))
 }
 
 fn read_quarantined_tools() -> Result<Vec<QuarantinedTool>, String> {
-    Ok(crate::integrity::all_quarantined()?
+    Ok(crate::integrity::all_quarantined_summaries()?
         .into_iter()
         .map(|value| QuarantinedTool {
+            has_definition: value["has_definition"].as_bool().unwrap_or(false),
+            record_id: value["record_id"].as_str().unwrap_or_default().to_string(),
             profile: value
                 .get("profile")
                 .and_then(serde_json::Value::as_str)
@@ -1845,37 +2144,174 @@ fn read_quarantined_tools() -> Result<Vec<QuarantinedTool>, String> {
         .collect())
 }
 
-/// The one-line security stance, mirroring the shipping card: a hard gate
-/// (human approval, destructive deny, or injection block) reads as guarded;
-/// softer measures alone read as partial; nothing reads as open.
+/// Describe the effective policy, including the team's enforced level.
 fn posture_summary(settings: &crate::registry_controller::EssentialSettings) -> (String, bool) {
-    let active: Vec<&str> = [
-        (settings.human_approval, "human approval on"),
-        (settings.deny_destructive, "destructive tools denied"),
-        (settings.confirm_destructive, "destructive calls ask first"),
-        (settings.quarantine_on_drift, "changed tools paused"),
-        (settings.block_on_injection, "injection-like output blocked"),
-    ]
-    .into_iter()
-    .filter_map(|(on, label)| on.then_some(label))
-    .collect();
-    let gated = settings.human_approval || settings.deny_destructive || settings.block_on_injection;
-    if active.is_empty() {
-        return (
-            "Approval gates are off. Tool calls run without a Toolport approval or blocking gate."
-                .to_string(),
-            false,
+    use crate::registry::SafetyLevel;
+    let (mut line, guarded) = match settings.safety_level {
+        SafetyLevel::Off => ("Safety is set to Off. Toolport does not ask before destructive calls. Server sign-in and client permissions may still ask for approval.".to_string(), false),
+        SafetyLevel::Ask => ("Safety is set to Ask. Destructive calls need your approval before they run.".to_string(), true),
+        SafetyLevel::Strict => ("Safety is set to Strict. Destructive tools are hidden and untrusted calls need your approval.".to_string(), true),
+    };
+    if settings.quarantine_on_drift_forced || settings.block_on_injection_forced {
+        line.push_str(
+            " Your team also requires protection against risky tool changes or injection.",
         );
     }
-    let label = if gated {
-        "Guardrails active"
-    } else {
-        "Some guardrails active"
-    };
-    (format!("{label}. Active: {}.", active.join(", ")), gated)
+    (line, guarded)
 }
 
 /// Which profile scopes a re-approve-all pass must clear, in first-seen order.
+fn open_access_tool_scope(
+    server: crate::registry::ServerEntry,
+    profile_id: String,
+    current_scope: Option<Vec<String>>,
+    page: SettingsPage,
+) {
+    let Some(parent) = page
+        .root
+        .root()
+        .and_then(|root| root.downcast::<gtk::Window>().ok())
+    else {
+        return;
+    };
+    let window = adw::Window::builder()
+        .transient_for(&parent)
+        .modal(true)
+        .title(format!("Tool scope for {}", server.name))
+        .default_width(520)
+        .default_height(560)
+        .build();
+    window.set_application(parent.application().as_ref());
+    window.add_css_class("toolport-editor");
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let header = adw::HeaderBar::new();
+    let cancel = gtk::Button::with_label("Cancel");
+    cancel.add_css_class("toolport-secondary-action");
+    header.pack_start(&cancel);
+    let save = gtk::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    save.set_sensitive(false);
+    header.pack_end(&save);
+    root.append(&header);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    content.add_css_class("toolport-editor-body");
+    content.append(&super::editor_intro(
+        "view-list-symbolic",
+        "Tools available in this access set",
+        "Uncheck tools this access set should hide. Selecting every tool restores the server's default full scope.",
+    ));
+    let feedback = gtk::Label::builder()
+        .label("Loading server tools…")
+        .halign(gtk::Align::Fill)
+        .xalign(0.0)
+        .wrap(true)
+        .css_classes(["toolport-feedback"])
+        .build();
+    content.append(&feedback);
+    let tool_list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    tool_list.add_css_class("toolport-settings-group");
+    content.append(&tool_list);
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&content)
+        .build();
+    root.append(&scroller);
+    window.set_content(Some(&root));
+    let window_for_cancel = window.clone();
+    cancel.connect_clicked(move |_| window_for_cancel.close());
+
+    let selections = std::rc::Rc::new(std::cell::RefCell::new(
+        Vec::<(gtk::CheckButton, String)>::new(),
+    ));
+    let selections_for_save = selections.clone();
+    let page_for_save = page.clone();
+    let window_for_save = window.clone();
+    let server_id = server.id;
+    let server_id_for_save = server_id.clone();
+    save.connect_clicked(move |button| {
+        button.set_sensitive(false);
+        let selections = selections_for_save.borrow();
+        let selected = selections
+            .iter()
+            .filter(|(check, _)| check.is_active())
+            .map(|(_, tool)| tool.clone())
+            .collect::<Vec<_>>();
+        let tools = (selected.len() != selections.len()).then_some(selected);
+        drop(selections);
+        let profile_id = profile_id.clone();
+        let server_id = server_id_for_save.clone();
+        let page = page_for_save.clone();
+        let window = window_for_save.clone();
+        gtk::glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(move || {
+                crate::registry_controller::set_profile_server_tools(&profile_id, &server_id, tools)
+            })
+            .await;
+            match result {
+                Ok(Ok(registry)) => {
+                    page.render_access_sets(registry);
+                    window.close();
+                }
+                Ok(Err(error)) => page.show_error(&format!("Could not update tool scope: {error}")),
+                Err(_) => page.show_error("The tool-scope update stopped unexpectedly."),
+            }
+        });
+    });
+
+    let current_scope =
+        current_scope.map(|tools| tools.into_iter().collect::<std::collections::HashSet<_>>());
+    let selections_for_load = selections;
+    gtk::glib::spawn_future_local(async move {
+        let result =
+            gtk::gio::spawn_blocking(move || crate::playground::list_tools(&server_id)).await;
+        match result {
+            Ok(Ok(tools)) => {
+                if tools.is_empty() {
+                    feedback.set_label("This server does not advertise any tools.");
+                    return;
+                }
+                for tool in tools {
+                    let Some(name) = tool
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                    else {
+                        continue;
+                    };
+                    let check = gtk::CheckButton::builder()
+                        .label(&name)
+                        .active(
+                            current_scope
+                                .as_ref()
+                                .is_none_or(|scope| scope.contains(&name)),
+                        )
+                        .build();
+                    check.set_margin_top(8);
+                    check.set_margin_bottom(8);
+                    check.set_margin_start(12);
+                    check.set_margin_end(12);
+                    tool_list.append(&check);
+                    selections_for_load.borrow_mut().push((check, name));
+                }
+                feedback.set_label("Changes apply only to this access set.");
+                feedback.remove_css_class("error");
+                feedback.add_css_class("success");
+                save.set_sensitive(!selections_for_load.borrow().is_empty());
+            }
+            Ok(Err(error)) => {
+                feedback.set_label(&format!("Could not load tools: {error}"));
+                feedback.add_css_class("error");
+            }
+            Err(_) => {
+                feedback.set_label("The server tool read stopped unexpectedly.");
+                feedback.add_css_class("error");
+            }
+        }
+    });
+    window.present();
+}
+
 fn distinct_profiles(entries: &[QuarantinedTool]) -> Vec<String> {
     let mut profiles: Vec<String> = Vec::new();
     for entry in entries {
@@ -1892,14 +2328,26 @@ fn distinct_profiles(entries: &[QuarantinedTool]) -> Vec<String> {
 /// error; saying "done" would send the user away believing the catalog is whole.
 fn release_all_feedback(summary: &crate::registry_controller::ReleaseAllSummary) -> (String, bool) {
     let released = summary.released;
+    let saved = if released == 1 {
+        "Saved 1 approval.".to_string()
+    } else {
+        format!("Saved {released} approvals.")
+    };
     if !summary.failed.is_empty() {
         let failures = summary.failed.len();
         return (
             format!(
-                "Re-approved {released}. {failures} profile {} could not be re-approved: {}",
+                "{saved} {failures} access-set {} could not be re-approved: {}",
                 if failures == 1 { "scope" } else { "scopes" },
                 summary.failed[0]
             ),
+            true,
+        );
+    }
+    if !summary.changed.is_empty() {
+        let changed = summary.changed.len();
+        return (
+            format!("{saved} {changed} new or changed findings remain blocked. Refresh and review them."),
             true,
         );
     }
@@ -1907,17 +2355,14 @@ fn release_all_feedback(summary: &crate::registry_controller::ReleaseAllSummary)
         let skipped = summary.skipped.len();
         return (
             format!(
-                "Re-approved {released}. {skipped} could not be repaired and {} still blocked.",
+                "{saved} {skipped} could not be repaired and {} still blocked.",
                 if skipped == 1 { "is" } else { "are" }
             ),
             true,
         );
     }
     (
-        format!(
-            "Re-approved {released} tool{}.",
-            if released == 1 { "" } else { "s" }
-        ),
+        format!("{saved} The gateway will publish approved definitions on its next refresh."),
         false,
     )
 }
@@ -1939,6 +2384,11 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     row.add_css_class("toolport-setting-row");
     let count = entries.len();
+    let needed: Vec<_> = entries
+        .iter()
+        .filter(|entry| !entry.has_definition)
+        .map(|entry| (entry.profile.clone(), entry.tool.clone()))
+        .collect();
     let copy = gtk::Label::builder()
         .label(format!("{count} tools are blocked."))
         .halign(gtk::Align::Fill)
@@ -1954,6 +2404,14 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
         "Repair every baseline in one pass. A tool whose captured definition cannot be read stays blocked.",
     ));
     let profiles = distinct_profiles(entries);
+    let mut expected =
+        std::collections::BTreeMap::<String, std::collections::BTreeMap<String, String>>::new();
+    for entry in entries {
+        expected
+            .entry(entry.profile.clone())
+            .or_default()
+            .insert(entry.tool.clone(), entry.record_id.clone());
+    }
     let release_for_click = release_all.clone();
     release_all.connect_clicked(move |_| {
         let Some(parent) = page.root.root().and_downcast::<gtk::Window>() else {
@@ -1964,7 +2422,8 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
             Some(&parent),
             Some(&format!("Re-approve all {count} blocked tools?")),
             Some(
-                "Toolport trusts each changed definition again and repairs its baseline in one pass. \
+                "Toolport approves the displayed findings and repairs their baselines in one pass. \
+                 Findings without a saved definition require one more review of the current definition. \
                  A tool whose captured definition cannot be read stays blocked and remains listed.",
             ),
         );
@@ -1975,19 +2434,30 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
         dialog.set_response_appearance("approve", adw::ResponseAppearance::Suggested);
         let page = page.clone();
         let profiles = profiles.clone();
+        let expected = expected.clone();
+        let needed = needed.clone();
         let button = release_for_click.clone();
         dialog.connect_response(None, move |dialog, response| {
             if response == "approve" {
                 button.set_sensitive(false);
                 let page = page.clone();
                 let profiles = profiles.clone();
+                let expected = expected.clone();
+                let needed = needed.clone();
                 gtk::glib::spawn_future_local(async move {
                     let result = gtk::gio::spawn_blocking(move || {
-                        crate::registry_controller::release_all_quarantine(&profiles)
+                        let summary = crate::registry_controller::release_all_quarantine_records(
+                            &profiles, &expected,
+                        );
+                        let needed = match read_quarantined_tools() {
+                            Ok(remaining) => bulk_capture_targets(needed, &remaining),
+                            Err(_) => Vec::new(),
+                        };
+                        (summary, needed)
                     })
                     .await;
                     match result {
-                        Ok(summary) => {
+                        Ok((summary, needed)) => {
                             let (message, is_error) = release_all_feedback(&summary);
                             page.feedback.set_label(&message);
                             if is_error {
@@ -1997,7 +2467,7 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
                                 page.feedback.remove_css_class("error");
                                 page.feedback.add_css_class("success");
                             }
-                            page.refresh();
+                            page.finish_quarantine_release(needed, is_error);
                         }
                         Err(_) => page.show_error("the bulk re-approval stopped unexpectedly"),
                     }
@@ -2009,6 +2479,61 @@ fn quarantine_bulk_row(entries: &[QuarantinedTool], page: SettingsPage) -> gtk::
     });
     row.append(&release_all);
     row
+}
+
+fn quarantine_definition_expander(entry: &QuarantinedTool) -> gtk::Expander {
+    let expander = gtk::Expander::builder()
+        .label("Captured definition")
+        .build();
+    expander.set_child(Some(&gtk::Label::new(Some("Expand to load definition."))));
+    let loading = Rc::new(Cell::new(false));
+    let loaded = Rc::new(Cell::new(false));
+    let entry = entry.clone();
+    expander.connect_expanded_notify(move |expander| {
+        if !expander.is_expanded() || loaded.get() || loading.replace(true) {
+            return;
+        }
+        let entry = entry.clone();
+        let expander = expander.clone();
+        let loading = loading.clone();
+        let loaded = loaded.clone();
+        gtk::glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(move || {
+                let definition = crate::integrity::quarantine_definition(
+                    (!entry.profile.is_empty()).then_some(entry.profile.as_str()),
+                    &entry.tool,
+                    &entry.record_id,
+                )?;
+                serde_json::to_string_pretty(&definition).map_err(|e| e.to_string())
+            })
+            .await;
+            let text = match result {
+                Ok(Ok(definition)) => {
+                    loaded.set(true);
+                    definition
+                }
+                Ok(Err(error)) => error,
+                Err(_) => "The captured definition could not be loaded.".into(),
+            };
+            let label = gtk::Label::builder()
+                .label(text)
+                .xalign(0.0)
+                .wrap(true)
+                .wrap_mode(gtk::pango::WrapMode::WordChar)
+                .selectable(true)
+                .css_classes(["monospace"])
+                .build();
+            let scroll = gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .max_content_height(260)
+                .propagate_natural_height(true)
+                .child(&label)
+                .build();
+            expander.set_child(Some(&scroll));
+            loading.set(false);
+        });
+    });
+    expander
 }
 
 fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
@@ -2027,9 +2552,9 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
             .build(),
     );
     let scope = if entry.profile.is_empty() {
-        "All profiles".to_string()
+        "All access sets".to_string()
     } else {
-        format!("Profile: {}", entry.profile)
+        format!("Access set: {}", entry.profile)
     };
     copy.append(
         &gtk::Label::builder()
@@ -2041,6 +2566,18 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
             .css_classes(["toolport-muted"])
             .build(),
     );
+    if entry.has_definition {
+        copy.append(&quarantine_definition_expander(&entry));
+    } else {
+        copy.append(
+            &gtk::Label::builder()
+                .label("No saved definition. Approving captures the current definition for one more review.")
+                .xalign(0.0)
+                .wrap(true)
+                .css_classes(["toolport-muted"])
+                .build(),
+        );
+    }
     row.append(&copy);
     let release = gtk::Button::with_label("Review and approve");
     release.add_css_class("toolport-secondary-action");
@@ -2054,10 +2591,13 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
             Some(&parent),
             Some(&format!("Re-approve {}?", entry.tool)),
             Some(&format!(
-                "Toolport will trust the changed definition and expose this tool again.\n\n{}",
+                "Toolport will approve this blocked finding. Findings without a saved definition require one more review of the current definition.\n\n{}",
                 entry.detail
             )),
         );
+        if entry.has_definition {
+            dialog.set_extra_child(Some(&quarantine_definition_expander(&entry)));
+        }
         dialog.add_response("cancel", "Keep blocked");
         dialog.add_response("approve", "Re-approve");
         dialog.set_close_response("cancel");
@@ -2072,19 +2612,22 @@ fn quarantine_row(entry: QuarantinedTool, page: SettingsPage) -> gtk::Box {
                 let page = page.clone();
                 let entry = entry.clone();
                 gtk::glib::spawn_future_local(async move {
+                    let needed = if !entry.has_definition {
+                        vec![(entry.profile.clone(), entry.tool.clone())]
+                    } else {
+                        Vec::new()
+                    };
                     let tool = entry.tool.clone();
                     let profile = entry.profile.clone();
                     let result = gtk::gio::spawn_blocking(move || {
                         let profile = (!profile.is_empty()).then_some(profile.as_str());
-                        crate::registry_controller::release_quarantine(profile, &tool)
+                        crate::integrity::release_record(profile, &tool, &entry.record_id)
+                            .map(|_| ())
                     })
                     .await;
                     match result {
                         Ok(Ok(())) => {
-                            page.feedback.set_label("Tool re-approved.");
-                            page.feedback.remove_css_class("error");
-                            page.feedback.add_css_class("success");
-                            page.refresh();
+                            page.finish_quarantine_release(needed, false);
                         }
                         Ok(Err(error)) => page.show_error(&error),
                         Err(_) => page.show_error("the re-approval stopped unexpectedly"),
@@ -2233,6 +2776,47 @@ fn settings_heading_with_action(
     row
 }
 
+/// A top-level group of the page: a larger title, one line saying what is in it,
+/// and the box its rows go into.
+fn settings_section(page: &gtk::Box, title: &str, summary: &str) -> gtk::Box {
+    let section = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    section.set_margin_top(12);
+    section.append(&section_title(title, summary));
+    page.append(&section);
+    section
+}
+
+fn section_title(title: &str, summary: &str) -> gtk::Box {
+    let heading = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    heading.append(
+        &gtk::Label::builder()
+            .label(title)
+            .halign(gtk::Align::Start)
+            .css_classes(["title-3"])
+            .build(),
+    );
+    heading.append(
+        &gtk::Label::builder()
+            .label(summary)
+            .halign(gtk::Align::Fill)
+            .xalign(0.0)
+            .wrap(true)
+            .hexpand(true)
+            .css_classes(["toolport-muted"])
+            .build(),
+    );
+    heading
+}
+
+/// A heading and its list, hidden together until the list has entries.
+fn listed_section(heading: &gtk::Box, list: &gtk::Box) -> gtk::Box {
+    let section = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    section.append(heading);
+    section.append(list);
+    section.set_visible(false);
+    section
+}
+
 fn settings_heading(title: &str, subtitle: &str) -> gtk::Box {
     let heading = gtk::Box::new(gtk::Orientation::Vertical, 3);
     // The page's own 14px spacing is the gap between rows within a section, so a
@@ -2243,7 +2827,7 @@ fn settings_heading(title: &str, subtitle: &str) -> gtk::Box {
         &gtk::Label::builder()
             .label(title)
             .halign(gtk::Align::Start)
-            .css_classes(["heading"])
+            .css_classes(["toolport-section-label"])
             .build(),
     );
     heading.append(
@@ -2319,39 +2903,233 @@ fn setting_switch_row(title: &str, description: &str) -> (gtk::Box, gtk::Switch)
     (row, toggle)
 }
 
+fn http_access_choice(
+    profiles: &[(String, String)],
+    selected: u32,
+) -> Result<Option<String>, String> {
+    match selected {
+        0 => Ok(None),
+        1 => Ok(Some(crate::registry::ALL_ENABLED_ACCESS.into())),
+        index => profiles
+            .get((index - 2) as usize)
+            .map(|(id, _)| Some(id.clone()))
+            .ok_or_else(|| "The access set is unavailable".into()),
+    }
+}
+
+fn level_name(level: crate::registry::SafetyLevel) -> &'static str {
+    match level {
+        crate::registry::SafetyLevel::Off => "Off",
+        crate::registry::SafetyLevel::Ask => "Ask",
+        crate::registry::SafetyLevel::Strict => "Strict",
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settings_pages_match_the_sidebar_order() {
+        assert_eq!(
+            super::SETTINGS_PAGES
+                .iter()
+                .map(|(label, _)| *label)
+                .collect::<Vec<_>>(),
+            [
+                "General",
+                "Tools",
+                "Safety",
+                "Access",
+                "Connections",
+                "Help and data"
+            ]
+        );
+    }
+
     use super::*;
+
+    #[test]
+    fn http_access_picker_maps_named_sets_and_never_widens_an_invalid_choice() {
+        let profiles = vec![
+            ("default".into(), "Default".into()),
+            ("work".into(), "Work".into()),
+        ];
+        assert_eq!(http_access_choice(&profiles, 0).unwrap(), None);
+        assert_eq!(
+            http_access_choice(&profiles, 1).unwrap().as_deref(),
+            Some(crate::registry::ALL_ENABLED_ACCESS)
+        );
+        assert_eq!(
+            http_access_choice(&profiles, 2).unwrap().as_deref(),
+            Some("default")
+        );
+        assert_eq!(
+            http_access_choice(&profiles, 3).unwrap().as_deref(),
+            Some("work")
+        );
+        assert!(http_access_choice(&profiles, 4).is_err());
+    }
+
     use crate::registry_controller::ReleaseAllSummary;
 
     fn blocked(profile: &str, tool: &str) -> QuarantinedTool {
         QuarantinedTool {
+            record_id: "displayed-record".to_string(),
             profile: profile.to_string(),
             tool: tool.to_string(),
             detail: "definition changed".to_string(),
+            has_definition: false,
         }
     }
 
     #[test]
-    fn posture_reads_guarded_partial_or_open_by_gate_strength() {
-        let mut settings = crate::registry_controller::EssentialSettings::default();
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn native_quarantine_capture_refresh_and_lazy_definition() {
+        let data = crate::registry::DataDirTestEnv::new("native-quarantine-capture");
+        adw::init().unwrap();
+        let broker = crate::approval_broker::start_native();
+        let page = SettingsPage::new(
+            super::super::http_bridge::BridgeController::default(),
+            broker,
+        );
+        let captured = serde_json::json!({"srv__wipe": {
+            "tool":"srv__wipe", "server":"srv", "change":"changed", "reason":"Current definition needs review", "ts":1,
+            "definition":{"name":"srv__wipe", "description":"Captured native fixture", "inputSchema":{"type":"object"}}
+        }});
+        std::fs::write(data.dir.join("quarantine.json"), "{}").unwrap();
+        page.finish_quarantine_release(vec![("".into(), "srv__wipe".into())], false);
+        assert!(page.feedback.label().contains("One more review is needed"));
+        assert!(!page.feedback.label().contains("re-approved"));
+        // An unrelated settings mutation must not strand the capture wait.
+        page.begin_mutation();
+        let path = data.dir.join("quarantine.json");
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            std::fs::write(path, captured.to_string()).unwrap();
+        });
+        let context = gtk::glib::MainContext::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !page
+            .feedback
+            .label()
+            .starts_with("Current definition captured")
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "captured record did not render"
+            );
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        writer.join().unwrap();
+        assert!(page.quarantine_list.first_child().is_some());
+        let records = read_quarantined_tools().unwrap();
+        let entry = records
+            .iter()
+            .find(|entry| entry.profile.is_empty())
+            .unwrap();
+        assert!(entry.has_definition);
+        let expander = quarantine_definition_expander(entry);
+        assert_eq!(
+            expander
+                .child()
+                .unwrap()
+                .downcast::<gtk::Label>()
+                .unwrap()
+                .label(),
+            "Expand to load definition."
+        );
+        expander.set_expanded(true);
+        while expander.child().unwrap().is::<gtk::Label>() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "definition was not fetched on expand"
+            );
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let scroll = expander
+            .child()
+            .unwrap()
+            .downcast::<gtk::ScrolledWindow>()
+            .unwrap();
+        let viewport = scroll.child().unwrap().downcast::<gtk::Viewport>().unwrap();
+        let label = viewport.child().unwrap().downcast::<gtk::Label>().unwrap();
+        assert!(label.label().contains("Captured native fixture"));
+        assert!(label.label().contains("inputSchema"));
+    }
+
+    #[test]
+    fn bulk_capture_targets_skip_retained_blocks_and_timeout_feedback_is_honest() {
+        let needed = vec![
+            ("work".into(), "srv__old".into()),
+            ("work".into(), "srv__released".into()),
+        ];
+        let remaining = vec![blocked("work", "srv__old")];
+        assert_eq!(
+            bulk_capture_targets(needed, &remaining),
+            vec![("work".into(), "srv__released".into())]
+        );
+        assert!(capture_feedback(false).contains("has not captured"));
+        assert!(!capture_feedback(false).contains("Waiting"));
+        assert!(capture_feedback(true).contains("One more review is needed"));
+    }
+
+    #[test]
+    fn release_refresh_waits_for_delayed_capture_and_stays_bounded() {
+        let mut reads = 0;
+        let records = wait_for_captured_quarantines(
+            &[("work".into(), "srv__wipe".into())],
+            || {
+                reads += 1;
+                if reads == 1 {
+                    Ok(Vec::new())
+                } else {
+                    let mut record = blocked("work", "srv__wipe");
+                    record.has_definition = true;
+                    Ok(vec![record])
+                }
+            },
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(
+            records.len(),
+            1,
+            "the delayed block must appear without manual Refresh"
+        );
+        let started = std::time::Instant::now();
+        assert!(wait_for_captured_quarantines(
+            &[("work".into(), "srv__wipe".into())],
+            || Ok(Vec::new()),
+            std::time::Duration::from_millis(20),
+        )
+        .unwrap()
+        .is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn posture_describes_the_effective_level_without_an_alarm_for_off() {
+        let mut settings = crate::registry_controller::EssentialSettings {
+            safety_level: crate::registry::SafetyLevel::Off,
+            ..Default::default()
+        };
         let (line, guarded) = posture_summary(&settings);
-        assert!(line.starts_with("Approval gates are off."));
+        assert!(line.starts_with("Safety is set to Off."));
+        assert!(line.contains("Server sign-in and client permissions"));
         assert!(!guarded);
+        // A leftover 1.x mirror is not an effective policy.
         settings.confirm_destructive = true;
-        let (line, guarded) = posture_summary(&settings);
-        assert_eq!(
-            line,
-            "Some guardrails active. Active: destructive calls ask first."
-        );
-        assert!(!guarded);
-        settings.human_approval = true;
-        let (line, guarded) = posture_summary(&settings);
-        assert_eq!(
-            line,
-            "Guardrails active. Active: human approval on, destructive calls ask first."
-        );
-        assert!(guarded);
+        assert_eq!(posture_summary(&settings).0, line);
+        settings.safety_level = crate::registry::SafetyLevel::Ask;
+        assert!(posture_summary(&settings)
+            .0
+            .contains("Destructive calls need your approval"));
+        assert!(posture_summary(&settings).1);
+        settings.quarantine_on_drift_forced = true;
+        assert!(posture_summary(&settings)
+            .0
+            .contains("Your team also requires"));
     }
 
     #[test]
@@ -2375,7 +3153,10 @@ mod tests {
             released: 3,
             ..ReleaseAllSummary::default()
         });
-        assert_eq!(message, "Re-approved 3 tools.");
+        assert_eq!(
+            message,
+            "Saved 3 approvals. The gateway will publish approved definitions on its next refresh."
+        );
         assert!(!is_error);
     }
 
@@ -2383,12 +3164,27 @@ mod tests {
     fn skipped_tools_keep_the_outcome_an_error_because_they_are_still_blocked() {
         let (message, is_error) = release_all_feedback(&ReleaseAllSummary {
             released: 2,
+            changed: vec![],
             skipped: vec!["tool".to_string()],
             failed: Vec::new(),
         });
         assert_eq!(
             message,
-            "Re-approved 2. 1 could not be repaired and is still blocked."
+            "Saved 2 approvals. 1 could not be repaired and is still blocked."
+        );
+        assert!(is_error);
+    }
+
+    #[test]
+    fn new_or_changed_records_are_reported_as_still_blocked() {
+        let (message, is_error) = release_all_feedback(&ReleaseAllSummary {
+            released: 1,
+            changed: vec!["new-tool".into(), "changed-tool".into()],
+            ..ReleaseAllSummary::default()
+        });
+        assert_eq!(
+            message,
+            "Saved 1 approval. 2 new or changed findings remain blocked. Refresh and review them."
         );
         assert!(is_error);
     }
@@ -2397,13 +3193,69 @@ mod tests {
     fn a_failed_scope_outranks_skips_and_reports_what_did_get_through() {
         let (message, is_error) = release_all_feedback(&ReleaseAllSummary {
             released: 1,
+            changed: vec![],
             skipped: vec!["tool".to_string()],
             failed: vec!["store locked".to_string()],
         });
         assert_eq!(
             message,
-            "Re-approved 1. 1 profile scope could not be re-approved: store locked"
+            "Saved 1 approval. 1 access-set scope could not be re-approved: store locked"
         );
         assert!(is_error);
+    }
+}
+
+#[cfg(test)]
+mod purge_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn purge_confirmation_visual_fixture() {
+        let _data = crate::registry::DataDirTestEnv::new("gtk-purge-confirmation");
+        crate::registry::save(&crate::registry::Registry::default()).unwrap();
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.PurgeFixture")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+        let page = SettingsPage::new(
+            super::super::http_bridge::BridgeController::default(),
+            crate::approval_broker::start_native(),
+        );
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .title("Toolport removal fixture")
+            .default_width(900)
+            .default_height(900)
+            .content(&page.root)
+            .build();
+        fn find_button(widget: &gtk::Widget) -> Option<gtk::Button> {
+            if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+                if button.label().as_deref() == Some("Remove Toolport data") {
+                    return Some(button.clone());
+                }
+            }
+            let mut child = widget.first_child();
+            while let Some(current) = child {
+                if let Some(button) = find_button(&current) {
+                    return Some(button);
+                }
+                child = current.next_sibling();
+            }
+            None
+        }
+        let button = find_button(page.root.upcast_ref()).unwrap();
+        window.present();
+        gtk::glib::idle_add_local_once(move || button.emit_clicked());
+        let main_loop = gtk::glib::MainLoop::new(None, false);
+        let stop = main_loop.clone();
+        window.connect_close_request(move |_| {
+            stop.quit();
+            gtk::glib::Propagation::Proceed
+        });
+        let stop = main_loop.clone();
+        gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(180), move || stop.quit());
+        main_loop.run();
     }
 }

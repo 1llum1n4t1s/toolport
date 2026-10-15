@@ -1,10 +1,12 @@
 //! Real vault/controller/transport/gateway checks with disposable data and strict
 //! fake providers. These establish Toolport's contract, not provider connectivity.
+use conduit_lib::http_client::{RequestHeaderExt as _, ResponseResultExt as _};
 use conduit_lib::{
     catalog, launch_inputs, registry, registry_controller as controller, secrets, server_runtime,
     sharing_controller,
 };
 use serde_json::{json, Value};
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -183,9 +185,14 @@ fn catalog_values_survive_vault_reload_probe_sharing_and_gateway_launch() {
         // Exercise the exact prewarm resolver and a real child handshake too.
         let args = launch_inputs::resolve_args_for_prewarm(server).unwrap();
         if name == "Twilio" {
-            let transport =
-                conduit_lib::downstream::StdioTransport::spawn("node", &args.args, &[], None)
-                    .unwrap();
+            let transport = conduit_lib::downstream::StdioTransport::spawn(
+                "node",
+                &args.args,
+                &[],
+                None,
+                false,
+            )
+            .unwrap();
             assert_eq!(
                 conduit_lib::downstream::DownstreamServer::connect(id.clone(), Box::new(transport))
                     .unwrap()
@@ -333,7 +340,7 @@ fn legacy_twilio_migration_keeps_vault_keys_and_requires_missing_account_setup()
     let path = fixture.dir.join("registry.json");
     let mut reg = registry::Registry::default();
     let old: registry::ServerEntry = serde_json::from_value(json!({
-        "id":"twilio-work", "name":"Twilio", "source":"catalog:curated",
+        "id":"twilio-work", "name":"Twilio", "source":"catalog:curated", "enabled":true,
         "transport":"stdio", "command":"npx", "args":["-y","@twilio-alpha/mcp"],
         "env":[{"key":"TWILIO_API_KEY","secret":true},{"key":"TWILIO_API_SECRET","secret":true}]
     }))
@@ -355,6 +362,8 @@ fn legacy_twilio_migration_keeps_vault_keys_and_requires_missing_account_setup()
     let migrated = registry::load().unwrap();
     assert_eq!(migrated.servers[1], edited);
     assert!(!migrated.is_enabled("default", "twilio-work"));
+    assert!(!migrated.server_enabled("twilio-work"));
+    assert!(!migrated.is_enabled(&migrated.default_access_id(), "twilio-work"));
     assert!(migrated.is_enabled("default", "twilio-custom"));
     assert!(launch_inputs::resolve_args(&migrated.servers[0])
         .unwrap_err()
@@ -450,6 +459,26 @@ fn changed_team_remote_url_cannot_send_a_stored_token_without_new_consent() {
 }
 
 fn gateway_lists_fixture_tools(fixture: &Fixture, ids: &[String]) {
+    let mut reg = registry::load().unwrap();
+    let gated = &ids[0];
+    let server = reg
+        .servers
+        .iter_mut()
+        .find(|server| &server.id == gated)
+        .unwrap();
+    let gate = if server.transport == "stdio" {
+        let gate = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        server.env.push(registry::EnvVar {
+            key: "TOOLPORT_FIXTURE_CATALOG_GATE".into(),
+            value: Some(format!("http://{}/", gate.server_addr())),
+            secret: false,
+            unknown_fields: Default::default(),
+        });
+        registry::save_to(&fixture.dir.join("registry.json"), &reg).unwrap();
+        Some(gate)
+    } else {
+        None
+    };
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -470,16 +499,21 @@ fn gateway_lists_fixture_tools(fixture: &Fixture, ids: &[String]) {
             .unwrap(),
     );
     let endpoint = format!("http://127.0.0.1:{port}/mcp");
+    // Keep HTTP status bodies intact so fixture assertions can inspect rejected requests.
+    #[allow(clippy::result_large_err)]
     let post = |body: Value, session: Option<&str>| {
-        let mut request = ureq::post(&endpoint)
-            .set("Authorization", "Bearer fixture-gateway-token")
-            .set("Content-Type", "application/json")
-            .set("Accept", "application/json")
-            .timeout(Duration::from_secs(10));
+        let mut request = conduit_lib::http_client::agent()
+            .post(&endpoint)
+            .set_header("Authorization", "Bearer fixture-gateway-token")
+            .set_header("Content-Type", "application/json")
+            .set_header("Accept", "application/json")
+            .config()
+            .timeout_global(Some(Duration::from_secs(10)))
+            .build();
         if let Some(session) = session {
-            request = request.set("Mcp-Session-Id", session);
+            request = request.set_header("Mcp-Session-Id", session);
         }
-        request.send_json(body)
+        request.send_json(body).retain_status_body()
     };
     let deadline = Instant::now() + Duration::from_secs(30);
     let response = loop {
@@ -494,25 +528,99 @@ fn gateway_lists_fixture_tools(fixture: &Fixture, ids: &[String]) {
         assert!(Instant::now() < deadline, "gateway startup deadline");
         std::thread::sleep(Duration::from_millis(50));
     };
-    let session = response.header("Mcp-Session-Id").map(str::to_string);
-    let initialized: Value = response.into_json().unwrap();
+    let session = response
+        .headers()
+        .get("Mcp-Session-Id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let initialized: Value = response
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json()
+        .unwrap();
     assert!(initialized.get("error").is_none(), "{initialized}");
-    let listed: Value = post(
+    let mut listed: Value = post(
         json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
         session.as_deref(),
     )
     .unwrap()
-    .into_json()
+    .into_body()
+    .with_config()
+    .limit(u64::MAX)
+    .read_json()
     .unwrap();
-    let names: Vec<_> = listed["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|t| t["name"].as_str())
-        .collect();
+    let tool_names = |listed: &Value| -> Vec<String> {
+        listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect()
+    };
+    if let Some(gate) = gate {
+        assert!(
+            !tool_names(&listed).contains(&format!("{}__ready", gated.replace('-', "_"))),
+            "the gated fixture must still be absent from the first list"
+        );
+        gate.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap()
+            .expect("the gated fixture must reach its initialize handshake")
+            .respond(tiny_http::Response::from_string("continue"))
+            .unwrap();
+    }
+    // Initialization and the first list can finish before downstream discovery.
+    // Follow completed catalog notifications, keeping the original startup
+    // deadline. Only a list_changed triggers another successful list query.
+    let complete = |listed: &Value| {
+        ids.iter()
+            .all(|id| tool_names(listed).contains(&format!("{}__ready", id.replace('-', "_"))))
+    };
+    if !complete(&listed) {
+        let listen = conduit_lib::http_client::agent()
+            .get(&endpoint)
+            .set_header("Authorization", "Bearer fixture-gateway-token")
+            .set_header("Accept", "text/event-stream")
+            .set_header("Mcp-Session-Id", session.as_deref().unwrap())
+            .config()
+            .timeout_global(Some(deadline.saturating_duration_since(Instant::now())))
+            .build()
+            .call()
+            .retain_status_body()
+            .unwrap();
+        let mut notifications = BufReader::new(listen.into_body().into_reader());
+        while !complete(&listed) {
+            assert!(
+                Instant::now() < deadline,
+                "gateway catalog deadline: {listed}"
+            );
+            let mut line = String::new();
+            assert!(
+                notifications.read_line(&mut line).unwrap() > 0,
+                "catalog notification stream ended: {listed}"
+            );
+            let Some(data) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            let note: Value = serde_json::from_str(data).unwrap();
+            if note["method"] == "notifications/tools/list_changed" {
+                listed = post(
+                    json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+                    session.as_deref(),
+                )
+                .unwrap()
+                .into_body()
+                .with_config()
+                .limit(u64::MAX)
+                .read_json()
+                .unwrap();
+            }
+        }
+    }
+    let names = tool_names(&listed);
     for id in ids {
         assert!(
-            names.contains(&format!("{}__ready", id.replace('-', "_")).as_str()),
+            names.contains(&format!("{}__ready", id.replace('-', "_"))),
             "missing {id}: {names:?}"
         );
     }
@@ -523,7 +631,10 @@ fn gateway_lists_fixture_tools(fixture: &Fixture, ids: &[String]) {
             session.as_deref(),
         )
         .unwrap()
-        .into_json()
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json()
         .unwrap();
         assert!(
             called.get("error").is_none() && called["result"]["isError"] != true,

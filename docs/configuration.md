@@ -1,16 +1,19 @@
 # Configuration
 
-Lazy discovery, the destructive-tool block, and agent control are global settings,
-stored in the registry and toggled in the app's Settings view, so they apply to every
-client (lazy discovery is on by default). Per-client behavior is set via env vars on the
-gateway entry, written for you when you connect a client:
+Discovery defaults to Auto per identified client, based on native search and
+late tool-list refresh support. Choose an override in Clients. See
+[client capabilities and permission limits](client-discovery.md). Safety is a
+separate global policy, enforced in every discovery mode. Client identity is
+written automatically when you connect:
 
 - `TOOLPORT_CLIENT_ID=<id>` - identifies this client for live profile resolution
   (written automatically when you Connect a client).
+- `TOOLPORT_ATTRIBUTION_ID=<id>` - display-only identity added by repairs and
+  plugin launches. It never selects access, profile, or discovery policy.
 - `TOOLPORT_PROFILE=<name>` - initial profile scope for a scoped install. Unset =
-  follow the active profile (resolved live via `TOOLPORT_CLIENT_ID`).
-- `TOOLPORT_DISCOVERY=lazy|full|grouped` - optional per-client override of the global
-  discovery setting. Rarely needed; the gateway reads the registry default otherwise.
+  follow Default access (resolved live via `TOOLPORT_CLIENT_ID`).
+- `TOOLPORT_DISCOVERY=lazy|full|grouped` - optional process default for a standalone
+  gateway. Shared daemon sessions use their per-client choice or Auto.
 - `TOOLPORT_REGISTRY=<path>` - override the registry file location. Defaults to a
   stable per-user path so packaged and unpackaged clients agree.
 - `TOOLPORT_DATA_DIR=<path>` - override the full Toolport data directory. A desktop
@@ -26,10 +29,10 @@ gateway entry, written for you when you connect a client:
   loopback listener; it never permits an open non-loopback bind.
 - `TOOLPORT_METRICS=1` - opt-in Prometheus `GET /metrics` on the HTTP surface.
 - `TOOLPORT_DEBUG=1` - per-request gateway trace logging.
-- `TOOLPORT_GATEWAY_TOPOLOGY=daemon|legacy` - override the local stdio topology
-  for one client launch. `legacy` is the immediate rollback setting.
+- `TOOLPORT_GATEWAY_TOPOLOGY` - retired in 2.0. A `legacy` value is ignored and
+  recorded once at gateway startup.
 - `TOOLPORT_CODE_MODE=1` - force-enable code mode (`toolport_run_script`) even if Settings
-  has it off. Code mode is **on by default** (Settings kill switch turns it off). Each
+  has it off. Code mode is **off by default**; opt in under Advanced in Settings. Each
   in-script tool call still respects profile scope and human approval; code mode is not a
   security boundary.
 
@@ -38,22 +41,19 @@ Every `TOOLPORT_*` name still accepts the pre-rename `CONDUIT_*` alias (for exam
 
 **One gateway per host.** Client-spawned stdio gateways use a small adapter by
 default; one host daemon owns the router and shares ordinary downstream
-connections. Existing registry files without `gatewayTopology` select this
-topology. Set `"gatewayTopology": "legacy"` in `registry.json` and restart
-connected AI clients to keep separate in-process gateways. For one client,
-`TOOLPORT_GATEWAY_TOPOLOGY=legacy` overrides the registry without editing it.
-The explicit legacy choices remain available for a release cycle. The adapter
-uses an in-process gateway only when the operating system proves daemon launch
-failed. An ambiguous startup failure or a failure after the session opens
-returns an error rather than starting or replaying against a second gateway.
+connections. The 2.0 upgrade drops a stored `gatewayTopology: "legacy"`, and the
+legacy environment override is ignored, with a notice in the gateway log. Existing Shared HTTP client entries
+and their authentication remain unchanged at startup. Connecting, resetting or
+migrating a client explicitly writes the stdio adapter entry. Settings > Integrations
+still provides the HTTP/OpenAPI bridge.
+The adapter retains its in-process fallback when daemon spawning fails and its
+private gateway fallback when the shared daemon is unhealthy. Ambiguous startup
+failures still refuse to start a competing gateway.
 
-**Discovery mode per HTTP client.** The stdio gateway resolves one discovery mode for
-the client that spawned it. The headless HTTP/OpenAPI bridge serves several clients at
-once, so it also honors `clientDiscovery[<http-client-id>]` for the client its bearer
-token resolves to. Set `"full"` for a client that already has native tool search (Claude
-Code, Codex) and `"lazy"` for one that does not, in the same bridge process. Only `full`
-and `lazy` are per-client: `grouped` stays process-global, and a client without an entry
-inherits the process mode.
+**Discovery mode per HTTP client.** The stdio gateway resolves its client's
+per-client override or Auto. The HTTP/OpenAPI bridge honors all three explicit
+`clientDiscovery[<http-client-id>]` values for the bearer identity, including
+Grouped. An absent entry uses Auto. Anonymous connections use the global mode.
 
 **Server instructions per profile.** The gateway sends a block of instructions to every
 client when it connects. Some clients, including Claude Code, add each server's
@@ -81,13 +81,12 @@ its own. Leave both out to keep the built-in text everywhere.
 
 The profile is the one the connection is scoped to: a registered HTTP client's
 `profile`, or the stdio client's profile. A connection without one uses the gateway's
-own profile, which is the active profile unless `TOOLPORT_PROFILE` sets another.
+own access set, which is Default access unless `TOOLPORT_PROFILE` sets another.
 Changes apply the next time a client connects and don't restart any servers.
 
-**Code mode limits.** Execution, validation, and saved routines run Boa in a separate
+**Code mode limits.** Execution and validation run Boa in a separate
 worker process. The parent enforces the 60-second wall-clock budget even during pure
-JavaScript and permits at most four simultaneous runs. Saved routines can set lower
-execution limits. Each worker has a 512 MiB allocation budget: Linux uses `RLIMIT_AS`
+JavaScript and permits at most four simultaneous runs. Each worker has a 512 MiB allocation budget: Linux uses `RLIMIT_AS`
 before exec, Windows assigns the suspended child to a memory-limited Job Object, and
 macOS uses a worker-only Rust allocator cap because Darwin's `RLIMIT_AS` is advisory.
 The macOS cap covers Boa's Rust heap, not the process's total resident memory. Allocation
@@ -116,3 +115,42 @@ servers ("GitHub (work)", "GitHub (personal)"), authenticate each with its own
 account, and enable one in each profile. A client scoped to the work profile
 (`TOOLPORT_PROFILE`) then only ever sees the work account. Tool names are
 namespaced per server, so the two never collide even in the same profile.
+
+**Upgrading from 1.x.** The first 2.0 start upgrades `registry.json` through schema v2 to v3.
+Before changing it, Toolport saves the 1.x file next to it as
+`registry.json.v1-<time>.bak`. User data from features 2.0 removed is copied to
+`exports/` in the data directory, never overwriting a file there: personal agent
+rules as `rules-<date>.md`, saved routines as `routines-<date>.json` (the original
+`routines.json` stays), and agent permission rules as `agent-permissions-<date>.json`.
+The schema migration does not edit client files. Safety, Code Mode and server
+environment choices carry over. Discovery stays as it was: clients on the old
+Lazy default keep Lazy. See [Upgrading from 1.x](migration.md).
+Released 1.x builds do not check the schema version. 2.0 keeps legacy safety
+toggles as a compatibility mirror, but a rollback still needs the original
+v1 backup. Follow the guide before starting 1.24 again.
+
+### Downstream lifecycle
+
+Toolport starts downstream servers when a client first uses them. A saved tool
+catalog answers tool discovery without starting the server. If no catalog exists,
+the first discovery request starts the visible servers to learn their tools.
+The first prompt or resource list waits for the server's complete catalog.
+Every dispatch to a stopped server waits up to 30 seconds for startup, including
+resource reads, prompts, completions and tools approved after a long hold.
+Uncertain failed operations are never replayed automatically.
+
+A server stays warm for five minutes after its last completed use. Active calls,
+suspended requests and resource subscriptions keep it running. After that idle
+period, Toolport stops the connection and keeps its catalog; the next use starts
+it again. The idle period is a constant, not a setting. An idle connection loses
+process-local sessions.
+
+A connection failure retries in the background with exponential backoff from
+two seconds to five minutes, with jitter. A demand call can retry once 15 seconds
+have passed since the last attempt. Reaching Ready resets the failure count.
+Sign-in failures wait for credentials to change. Registry edits reuse servers
+whose effective connection spec is unchanged, preserving their processes and
+calls in flight. Changed servers get a new supervisor and start on their next
+use, or immediately when they have active resource subscriptions. The new
+connection restores those subscriptions. Policy-only edits do not restart
+connections. Fresh catalogs pass the integrity gate before calls can use them.

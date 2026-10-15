@@ -1,17 +1,7 @@
 export type Transport = "stdio" | "http" | "sse" | "unknown";
 
 /** The main content views, selected from the sidebar. */
-export type View =
-  | "servers"
-  | "clients"
-  | "activity"
-  | "catalog"
-  | "playground"
-  | "rules"
-  | "hooks"
-  | "permissions"
-  | "teams"
-  | "settings";
+export type View = "servers" | "clients" | "activity" | "catalog" | "teams" | "settings";
 
 export interface McpServer {
   name: string;
@@ -30,16 +20,25 @@ export interface ParsedSnippetServer {
   command: string | null;
   args: string[];
   url: string | null;
-  env: { key: string; value: string | null }[];
+  env: { key: string; value: string | null; secret?: boolean }[];
 }
 
 /** Ownership of the gateway entry under our name in a client config (SOU-406). */
 export type GatewayEntryState = "managed" | "customized" | "absent";
 
 export interface DetectedClient {
+  locationRemovable?: boolean;
   id: string;
   name: string;
   usesConnectors: boolean;
+  /** Backend capability evidence and measured Auto default. */
+  discovery?: {
+    autoMode?: "full" | "lazy";
+    nativeToolSearch: boolean | null;
+    toolsListChanged: boolean | null;
+    coldFullListWaitMs?: number;
+    evidence: string;
+  };
   configPath: string;
   configExists: boolean;
   /** Whether the client app appears installed (its data dir exists), even if it
@@ -55,25 +54,73 @@ export interface DetectedClient {
 }
 
 export interface WriteOutcome {
+  warnings?: string[];
   path: string;
   backup: string | null;
   /** Servers Disconnect put back after an earlier "Move into gateway". */
   restored?: string[];
 }
 
+export interface ClientSetupReview {
+  configPath: string;
+  backupDir: string;
+  revision: string;
+  items: ImportItem[];
+}
+
 export interface MigrateResult {
+  backupDate?: number | null;
   registry: Registry;
   imported: number;
+  servers: { name: string; toolCount: number; credentialState: string }[];
   moved: string[];
+  tools: { name: string; description?: string }[];
+  outcome: WriteOutcome;
+}
+
+/** Retained transport observations. Reported labels are never app identity. */
+export interface ClientSession {
+  sessionId: string;
+  client?: string;
+  clientName: string;
+  clientLabel?: string;
+  clientType: string;
+  phase: "start" | "checkpoint" | "close";
+  reason: string;
+  gatewayVersion: string;
+  transport: string;
+  toolsListCount: number;
+  listChangedCount: number;
+  firstCatalogSize?: number;
+  firstCatalogRevision?: number;
+  catalogRevision: number;
+  contentChanged: boolean;
+}
+
+export interface ClientActivity extends Partial<ClientSession> {
+  lastActiveMs?: number;
+  callsToday?: number | null;
+  sessionCount?: number;
 }
 
 export interface AuditEntry {
+  /** Approval outcomes are Activity events, never dispatched calls. */
+  kind?: string;
+  decision?: string;
+  reason?: string;
   ts: number;
   server: string;
+  /** Canonical routed ID, separate from the Activity display prefix. */
+  serverId?: string;
   tool: string;
   ok: boolean;
   /** How long the call took, ms. Absent for records logged before timing. */
   durationMs?: number;
+  cold?: boolean;
+  dispatchMs?: number;
+  failureKind?: string;
+  runId?: string;
+  sessionId?: string;
   /** How long a gated call waited for a human approval decision, ms. Present on
    * `kind:"approval"` records instead of durationMs (which is downstream exec time). */
   heldMs?: number;
@@ -86,6 +133,8 @@ export interface AuditEntry {
   client?: string;
   /** Human-readable name of the registered HTTP client, when known. */
   clientName?: string;
+  /** Untrusted client-reported name/version, for display only. */
+  clientLabel?: string;
   /** How many values this call's result had pseudonymized. Absent when PII redaction was
    * off for the call — which is deliberately distinct from `0` ("it ran, found nothing").
    * A count only; the values themselves never enter the audit log. */
@@ -179,10 +228,27 @@ export interface ProbeResult {
   error: string | null;
   /** Failure looks like missing credentials (remote 401/403, or unvaulted secret). */
   authRequired: boolean;
+  authTarget?: "endpoint" | "service_credential" | "scope" | "oauth_refresh" | null;
+  failure?: {
+    kind:
+      | "auth"
+      | "timeout"
+      | "unavailable"
+      | "server_error"
+      | "quota"
+      | "cancelled"
+      | "internal"
+      | "invalid_input"
+      | "not_found"
+      | "conflict";
+    target?: string;
+  } | null;
 }
 
 /** A tool as advertised by a downstream MCP server (raw `tools/list` entry). */
 export interface McpTool {
+  /** Retained quarantine state for the default access, supplied by Toolport. */
+  toolportQuarantine?: "quarantined" | "clear" | "unknown";
   name: string;
   description?: string;
   inputSchema?: {
@@ -217,7 +283,7 @@ export interface McpPrompt {
   arguments?: Array<{ name: string; description?: string; required?: boolean }>;
 }
 
-/** The subset of JSON Schema the playground form renders per argument. */
+/** The subset of JSON Schema the tool arguments form renders per argument. */
 export interface JsonSchemaProp {
   type?: string | string[];
   description?: string;
@@ -257,7 +323,18 @@ export interface ServerStat {
   tools: ToolStat[];
 }
 
+export interface TelemetryHealth {
+  queueDropped: number;
+  writeFailedRecords: number;
+  writeFailures: number;
+  incompleteFlushes: number;
+  unavailable?: boolean;
+  retainedDropped?: number;
+}
+
 export interface AuditStats {
+  telemetry?: TelemetryHealth;
+  gatewayNotes?: string[];
   total: number;
   errors: number;
   errorRate: number;
@@ -266,8 +343,18 @@ export interface AuditStats {
 
 /** Cumulative catalog exposure measurements plus the legacy estimate. */
 export interface SavingsSummary {
-  /** Compatibility total: v1 legacy estimates plus v2 UTF-8 bytes / 4. */
+  /** Signed cl100k_base session baseline minus all catalog and search responses; excludes unverifiable history. */
   tokensSaved: number;
+  fullTokens?: number;
+  exposedTokens?: number;
+  previousReportedTokensSaved?: number;
+  historicalListLoads?: number;
+  historicalMeasuredLoads?: number;
+  accountingMethod?: string;
+  tokenizedLoads?: number;
+  catalogTokenDelta?: number;
+  discoveryTokens?: number;
+  tokenizer?: "cl100k_base";
   listLoads: number;
   peakCatalog: number;
   sinceTs: number;
@@ -303,6 +390,10 @@ export interface AuthInfo {
 
 /** One server a shared setup would add, shown for review before importing. */
 export interface ImportItem {
+  referenceReview?: string[];
+  credentials?: { key: string; secret: boolean; present: boolean; required: boolean }[];
+  unsupported?: string | null;
+  envKeys?: string[];
   /** Opaque key used to confirm a detected-client import. Absent for shared setups. */
   key?: string;
   name: string;
@@ -312,6 +403,12 @@ export interface ImportItem {
   url: string | null;
   /** False if a server with this name is already present (import skips it). */
   isNew: boolean;
+  updates?: string[];
+}
+
+export interface CatalogSearch {
+  entries: CatalogEntry[];
+  registryStatus: "notQueried" | "available" | "unavailable" | "timedOut";
 }
 
 /** An addable server from the catalog (curated seed or the live MCP Registry). */
@@ -338,24 +435,27 @@ export interface CatalogEntry {
   urlHint?: string;
 }
 
-/** A curated "stack": a role-based bundle of catalog servers for guided setup. */
-export interface Stack {
-  id: string;
-  name: string;
-  description: string;
-  /** The stack's servers, resolved to full catalog entries (with cred hints). */
-  servers: CatalogEntry[];
-}
-
 // --- Toolport registry (source of truth) ---
 
+export interface SecretReference {
+  ref: string;
+}
+export interface HeaderKey {
+  key: string;
+  env?: string;
+  source?: SecretReference;
+}
 export interface EnvVar {
+  source?: SecretReference;
+  portable?: boolean;
   key: string;
   value: string | null;
   secret: boolean;
 }
 
 export interface LaunchInput {
+  source?: SecretReference;
+  portable?: boolean;
   key: string;
   label: string;
   secret: boolean;
@@ -377,7 +477,21 @@ export interface LaunchConfig {
   revision?: number | null;
 }
 
+export interface KeptV1Safety {
+  holdUntrusted?: boolean;
+  denyDestructive?: boolean;
+  quarantineOnDrift?: boolean;
+  blockOnInjection?: boolean;
+}
+
 export interface ServerEntry {
+  syncExecutionReview?: Record<string, string>;
+  syncLocalOnly?: boolean;
+  teamOriginalId?: string;
+  personalSyncEntry?: boolean;
+  teamEnableReview?: boolean;
+  personalSyncArgsReview?: boolean;
+  enabled?: boolean;
   id: string;
   name: string;
   transport: Transport;
@@ -385,13 +499,20 @@ export interface ServerEntry {
   args: string[];
   launch?: LaunchConfig | null;
   env: EnvVar[];
+  headerKeys?: HeaderKey[];
+  secretSources?: { allowedPrefixes?: string[] };
   url: string | null;
   source: string | null;
+  /** A remote removal or disable kept this saved personal original off. */
+  teamRouteRemoved?: boolean;
   /** Original tool names switched off; hidden from clients by the gateway. */
   disabledTools?: string[];
   /** Working directory for a stdio server. Unset = inherit the gateway's cwd.
    * `~` and `${VAR}` are expanded. Lets a server run in a project dir (#239). */
   cwd?: string | null;
+  /** Pass the user's whole shell environment to this stdio server instead of
+   * the default allowlist. Servers migrated from 1.x start with it on. */
+  inheritEnv?: boolean;
   /** Headless outbound OAuth (SBS-524). Present = this server uses the
    * client-credentials flow instead of the interactive browser one. */
   clientCredentials?: ClientCredentials | null;
@@ -439,17 +560,15 @@ export interface FolderProfile {
 /** A tool call held awaiting a human decision (the HITL approval queue). */
 export interface PendingApproval {
   id: string;
+  clientName?: string;
   client: string | null;
+  /** Untrusted initialize clientInfo label. */
+  clientLabel?: string | null;
   server: string;
   tool: string;
   toolFingerprint?: string | null;
   reason:
-    | "destructive"
-    | "untrusted_source"
-    | "destructive_and_untrusted"
-    | "persistent_code_write"
-    | "pii_cross_server"
-    | "agent_permission";
+    "destructive" | "untrusted_source" | "destructive_and_untrusted" | "pii_cross_server";
   arguments: unknown;
   /** A screened URL-mode elicitation brokered by the desktop because the MCP host
    * did not declare URL elicitation support. */
@@ -468,32 +587,8 @@ export interface PendingApproval {
     server: string;
     values: { token: string; value: string; origins: string[] }[];
   } | null;
-  /** The "ask first" permission rule behind an `agent_permission` ask, e.g.
-   * `Bash(git push*)`. `server` is the agent and `tool` the call kind. */
-  agentRule?: string | null;
   /** Wall-clock epoch-ms when this call auto-denies; the overlay counts down to it. */
   deadlineMs: number;
-}
-
-/** A strong, repeated orchestration pattern the gateway queued for the passive save
- * area in Settings. Self-contained: approving persists from this payload alone. */
-export interface RoutineSuggestion {
-  suggestedName: string;
-  source: string;
-  inputSchema: unknown;
-  limits: Record<string, unknown>;
-  definitionFingerprint: string;
-  evidence: {
-    sourceRunId: string;
-    executedAtMs: number;
-    calls: number;
-    observedDependencies: { name: string; toolFingerprint?: string | null }[];
-    validationVersion: number;
-    riskClass: string;
-    /** Absent = immutable_run (the source really executed). */
-    provenance?: "immutable_run" | "synthesized_from_observed_calls";
-  };
-  intermediateBytes: number;
 }
 
 /** A tool the user allowed to skip human approval (Settings "Allowed tools" list). */
@@ -518,13 +613,29 @@ export interface Registry {
   servers: ServerEntry[];
   profiles: Profile[];
   activeProfileId: string | null;
+  defaultAccessProfileId?: string | null;
+  defaultAccessContextId?: string | null;
+  defaultAccessLegacyPolicy?: boolean;
+  accessUpgradeNoticePending?: boolean;
+  accessUpgradeNoticeDismissed?: boolean;
   /** Folder -> profile auto-routing mappings. Absent/empty = no folder routing. */
   folderProfiles?: FolderProfile[];
   /** Per-tool exposure overrides (rename / re-describe), keyed by server id then original tool name. */
   toolOverrides?: Record<string, Record<string, ToolOverride>>;
   /** Tools pinned as lazy-discovery prerequisites, keyed by server id -> original tool names. */
   pinnedTools?: Record<string, string[]>;
-  /** Global switch: hide and block every destructive-hinted tool. */
+  /** Member safety choice. Absent values derive from retained legacy fields. */
+  safetyLevel?: "off" | "ask" | "strict";
+  teamMinSafetyLevel?: "off" | "ask" | "strict";
+  teamForcedHumanApproval?: boolean;
+  teamForcedDenyDestructive?: boolean;
+  teamForcedQuarantineOnDrift?: boolean;
+  teamForcedBlockOnInjection?: boolean;
+  /** Removed 1.x features this install used, recorded by the upgrade. */
+  removedFeaturesNotice?: { features?: string[]; dismissed?: boolean };
+  /** 1.x protections the upgrade kept on top of the level, until a level is picked. */
+  keptV1Safety?: KeptV1Safety;
+  /** Retained legacy switch for registries without a safety level. */
   denyDestructive?: boolean;
   /** Per-call confirmation: intercept destructive tools with a preview + token. */
   confirmDestructive?: boolean;
@@ -549,27 +660,24 @@ export interface Registry {
   /** Global discovery mode ("full" | "lazy" | "grouped"). Takes precedence over
    * `lazyDiscovery`; absent = fall back to the `lazyDiscovery` bool. */
   discoveryMode?: string | null;
+  /** Set when a 1.x upgrade kept 1.x's Lazy default for every client. */
+  legacyLazyDiscovery?: boolean;
   /** Replacement for the gateway's built-in server instructions, for profiles that set
    * none of their own. Absent = built-in text; empty = send none. */
   gatewayInstructions?: string;
   /** Code mode: advertise `toolport_run_script` so agents can orchestrate many tool
-   * calls in one server-side script. On by default (SOU-397); Settings is the kill switch. */
+   * calls in one server-side script. Off by default; opt in under Advanced. */
   codeMode?: boolean;
-  /** Opt-in: let agents request saving immutable Code Mode routines. Every save still
-   * requires a separate human approval. */
-  allowRoutineWrites?: boolean;
   /** Per-client discovery-mode override, keyed by client id (e.g. "cursor" ->
-   * "grouped"). Absent = that client inherits the global mode. */
+   * "grouped"). Absent = Auto from the client capability table. */
   clientDiscovery?: Record<string, string>;
-  /** Opt-in: let an agent enable/disable servers via the gateway's control tools. */
-  allowAgentControl?: boolean;
   /** Connection to a Toolport Teams server, if joined. Token lives in the keychain. */
   team?: TeamConnection | null;
   /** Per-server result-shaping budgets in bytes, keyed by server id. Absent =
    * global default; 0 = never shape (full fidelity); n = cap that server at n bytes. */
   resultBudgets?: Record<string, number>;
   /** Which profile each client was connected with, keyed by client id (e.g.
-   * "cursor" -> "Billing"). Absent = that client follows the active profile. */
+   * "cursor" -> "Billing"). Absent = that client uses the default access. */
   clientScopes?: Record<string, string>;
   /** What Toolport last wrote into each client config as its gateway entry
    * (SOU-406 ownership record). Absent key = pre-ownership install. */
@@ -608,6 +716,9 @@ export interface HttpClient {
 
 /** A joined Toolport Teams server (the shared config-sync layer). */
 export interface TeamConnection {
+  accountStatus?: import("./personalSync").AccountStatus | null;
+  accountStatusError?: string | null;
+  personalSyncState?: import("./personalSync").PersonalSyncState;
   managedServerIds?: Record<string, string>;
   serverUrl: string;
   teamId: string;
@@ -622,14 +733,7 @@ export interface TeamConnection {
 
 /** Per-client on-disk state of the org Team Instructions (spec W4/W5). */
 export type InstructionsApplyState =
-  | "applied"
-  | "stale"
-  | "blocked_override"
-  | "too_long"
-  | "unsupported"
-  | "error"
-  /** Toolport wrote this block for the current set revision and it was edited on disk since (personal rules only). */
-  | "drifted";
+  "applied" | "stale" | "blocked_override" | "too_long" | "unsupported" | "error";
 
 export interface InstructionsClientStatus {
   id: string;
@@ -644,97 +748,6 @@ export interface InstructionsStatusView {
   clients: InstructionsClientStatus[];
 }
 
-/**
- * One of the user's own named rule sets (SBS-821). `revision` moves only when `content` changes,
- * because it rides in the marker written into each client's file.
- */
-export interface RuleSet {
-  id: string;
-  name: string;
-  content: string;
-  revision: number;
-}
-
-/**
- * One client's row in the Rules tab. Reuses {@link InstructionsApplyState}: personal rules and
- * team instructions run through the same writer, so the states (and their badges) are identical.
- */
-export interface RulesClientStatus {
-  id: string;
-  name: string;
-  /** User opt-in. A client is off until turned on; nothing is written to it until then. */
-  enabled: boolean;
-  /** Absent when this client has no global-rules file Toolport can manage (Cursor, Warp). */
-  path?: string;
-  /**
-   * No global rules file, but the client reads one of the files the Projects section writes
-   * (Cursor, GitHub Copilot CLI), so the UI points at Projects instead of "unsupported".
-   */
-  projectCovered?: boolean;
-  state: InstructionsApplyState;
-  /** When `state` is `drifted`: the block's body as it is on disk, for the diff and Pull into set. */
-  onDisk?: string;
-}
-
-/** One file Toolport can write in a registered project folder, and its state there (SBS-1037). */
-export interface RulesProjectFileStatus {
-  key: string;
-  relPath: string;
-  path: string;
-  /** Display names of the detected clients that read this file in a project. */
-  clients: string[];
-  enabled: boolean;
-  state: InstructionsApplyState;
-  onDisk?: string;
-}
-
-/** One registered project folder for project-level rules (SBS-1037). */
-export interface RulesProjectStatus {
-  id: string;
-  path: string;
-  name: string;
-  setId?: string;
-  files: RulesProjectFileStatus[];
-}
-
-/** Everything the Rules tab renders, from one `rules_view` call. */
-export interface RulesView {
-  sets: RuleSet[];
-  activeSetId?: string;
-  clients: RulesClientStatus[];
-  projects: RulesProjectStatus[];
-}
-
-/** A dry run of one client's write, shown before the first apply. Nothing is written to get it. */
-export interface RulesPreview {
-  clientId: string;
-  path: string;
-  /** `ownedFile` = Toolport owns the file; `sentinelBlock` = it owns only the marked span. */
-  strategy: "ownedFile" | "sentinelBlock";
-  before: string;
-  after: string;
-  state: InstructionsApplyState;
-}
-
-/** A rules file already on this machine that a new set can start from (SBS-1035). */
-export interface RulesImportCandidate {
-  clientId: string;
-  clientName: string;
-  path: string;
-  bytes: number;
-}
-
-/**
- * What importing a file yields: the user's own text with anything Toolport wrote removed. Nothing
- * is saved by the import and the source file is not touched; the UI seeds a draft with it.
- */
-export interface RulesImportedFile {
-  path: string;
-  name: string;
-  content: string;
-  strippedOurs: boolean;
-}
-
 export function activeProfile(registry: Registry): Profile | undefined {
   return (
     registry.profiles.find((p) => p.id === registry.activeProfileId) ??
@@ -743,7 +756,9 @@ export function activeProfile(registry: Registry): Profile | undefined {
 }
 
 export function isEnabled(registry: Registry, serverId: string): boolean {
-  return activeProfile(registry)?.enabledServerIds.includes(serverId) ?? false;
+  if (registry.version < 3)
+    return activeProfile(registry)?.enabledServerIds.includes(serverId) ?? false;
+  return registry.servers.find((s) => s.id === serverId)?.enabled ?? false;
 }
 
 /** Whether a registry entry is Toolport's own gateway. It's infrastructure, not a
@@ -776,6 +791,17 @@ export function isGatewayDetected(server: McpServer): boolean {
   return isGatewayIdentity(server.name, server.name, server.command);
 }
 
+/** Existing HTTP shims are preserved until the owner confirms migration. */
+export function hasLegacyBearerArgv(server: McpServer): boolean {
+  return (
+    isGatewayDetected(server) &&
+    [server.command ?? "", ...server.args].some((part) => part.includes("mcp-remote")) &&
+    server.args.some(
+      (arg) => /authorization:\s*bearer\s+\S+/i.test(arg) && !arg.includes("${"),
+    )
+  );
+}
+
 /** Servers a client has (config + plugins) that Toolport doesn't manage yet.
  * These are the only client-side entries worth surfacing - they're import
  * candidates. Toolport's own gateway entry is never importable. */
@@ -789,129 +815,4 @@ export function importableServers(
       !isGatewayIdentity(server.name, server.name, server.command) &&
       !have.has(server.name.toLowerCase()),
   );
-}
-
-/**
- * One Claude Code profile's `settings.json` and whether the hook sensor is in it (SBS-822).
- *
- * A machine routinely has more than one: `CLAUDE_CONFIG_DIR` picks a profile per shell, so
- * `~/.claude` and `~/.claude-work` are both real and both need the sensor, or the one Toolport
- * missed reports nothing.
- */
-export interface HookProfileStatus {
-  path: string;
-  installed: boolean;
-  /** Why this profile could not be read or written. A profile that is simply not installed has
-   *  no error; an unreadable one says so instead of quietly looking "off". */
-  error?: string;
-}
-
-/** Everything the Hooks tab renders, from one `hooks_view` call. */
-export interface HooksView {
-  enabled: boolean;
-  /** The harness lifecycle events the sensor registers, so the UI can name them exactly. */
-  events: string[];
-  profiles: HookProfileStatus[];
-  /** Absent when no gateway binary has been published yet, which is the one thing that stops
-   *  the sensor being installable. */
-  binary?: string;
-}
-
-// ---- Native permission policy for Claude Code (SBS-1058) ----
-
-export type PermissionAction = "allow" | "ask" | "deny";
-
-/** One rule in Claude Code's own syntax (`Bash(rm -rf *)`, `Read(./.env)`, `mcp__server__tool`). */
-export interface PermissionRule {
-  pattern: string;
-  action: PermissionAction;
-}
-
-export interface PermissionProfileStatus {
-  path: string;
-  /** applied | stale | off | error */
-  state: string;
-  /** How many of the policy's rules Toolport itself added to this file. */
-  added: number;
-  error?: string;
-}
-
-export interface PermissionPreset {
-  label: string;
-  rules: PermissionRule[];
-}
-
-export interface PermissionsView {
-  enabled: boolean;
-  rules: PermissionRule[];
-  profiles: PermissionProfileStatus[];
-  presets: PermissionPreset[];
-}
-
-export interface PermissionsPreview {
-  path: string;
-  before: string;
-  after: string;
-  error?: string;
-}
-
-/** A dry run of one profile's write. Nothing is written to produce it. */
-export interface HooksPreview {
-  path: string;
-  /** The file as it is now; empty when the profile has no settings file yet. */
-  before: string;
-  after: string;
-  /**
-   * Why this profile has no dry run, when that is the case. Absent on a healthy one.
-   * Mirrors `ProfileStatus.error`: one profile the backend cannot parse must not hide
-   * the preview for the profiles it can.
-   */
-  error?: string;
-}
-
-/** One recorded sensor row. Deliberately loose: SBS-823 owns the shape, this tab only counts. */
-export interface HookEvent {
-  ts?: number;
-  event?: string;
-  agent?: string;
-  tool?: string;
-  sessionId?: string;
-  /** The folder the agent was working in. A path, never its contents. */
-  cwd?: string;
-  /** Canonical fingerprint of the tool input. Cannot be turned back into the input. */
-  argsHash?: string;
-  /** Absent means UNKNOWN, never success. */
-  ok?: boolean;
-  malformed?: boolean;
-  /** Guard rows (SBS-1059): the Cursor event, what the hook answered, and the rule that decided. */
-  hookEvent?: string;
-  decision?: string;
-  rule?: string | null;
-  mode?: string;
-  /** In observe mode: what the answer WOULD have been. */
-  wouldBe?: string | null;
-}
-
-// ---- Guard hook for Cursor (SBS-1059) ----
-
-export type GuardMode = "off" | "observe" | "enforce";
-
-export interface GuardProfile {
-  path: string;
-  installed: boolean;
-  error?: string;
-}
-
-export interface GuardView {
-  cursorMode: GuardMode;
-  cursor?: GuardProfile;
-  events: string[];
-  binary?: string;
-}
-
-export interface GuardPreview {
-  path: string;
-  before: string;
-  after: string;
-  error?: string;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { serverPostureCopy } from "./App";
+import { serverPostureCopy } from "./lib/serverPosture";
 
 describe("serverPostureCopy", () => {
   it("reports a confirmed healthy check", () => {
@@ -16,7 +16,7 @@ describe("serverPostureCopy", () => {
     ).toEqual({
       healthy: true,
       title: "3 enabled servers reachable",
-      detail: "1 disabled in this profile.",
+      detail: "1 turned off.",
     });
   });
 
@@ -68,7 +68,7 @@ describe("serverPostureCopy", () => {
     ).toEqual({
       healthy: false,
       title: "No servers enabled",
-      detail: "2 servers disabled in this profile.",
+      detail: "2 servers turned off.",
     });
   });
 

@@ -12,14 +12,13 @@ use tauri::{AppHandle, Emitter, Listener, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
 
-use crate::agent_guard;
-use crate::agent_permissions;
 use crate::approval;
 use crate::approval_broker;
 use crate::audit;
 use crate::catalog;
 use crate::clients;
 use crate::downstream::{resolve_root_token, DownstreamServer, StdioTransport};
+use crate::guard_cleanup;
 use crate::hooks;
 use crate::http_bridge::{HttpBridge, HttpBridgeState, HttpBridgeStatus};
 use crate::inspect;
@@ -31,14 +30,10 @@ use crate::oauth_controller::*;
 use crate::registry::Profile;
 use crate::registry::{self, FolderProfile, Registry, ServerEntry};
 use crate::remote;
-use crate::routine_controller;
-use crate::routines;
-use crate::rules;
 use crate::savings;
 use crate::searchtrace;
 use crate::secrets;
 use crate::server_runtime::{probe_one, probe_one_bounded, ProbeResult};
-use crate::stacks;
 use crate::teams;
 use crate::vendors;
 
@@ -134,11 +129,21 @@ async fn test_server(entry: ServerEntry) -> Result<ProbeResult, String> {
 #[tauri::command]
 async fn detect_clients(
     state: State<'_, RegistryState>,
+    inspect_configs: Option<bool>,
 ) -> Result<Vec<clients::DetectedClient>, String> {
     // Reads several config files and scans plugin dirs - off the UI thread.
-    let mut list = tauri::async_runtime::spawn_blocking(clients::detect_clients)
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut list = tauri::async_runtime::spawn_blocking(move || {
+        clients::detect_clients_with_inspection(inspect_configs.unwrap_or(true))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    // Adoption may have updated ownership on disk.
+    if inspect_configs.unwrap_or(true) {
+        let fresh = crate::registry::load()?;
+        *state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = fresh;
+    }
     // Ownership record lives on the registry (SOU-406).
     let managed = state
         .lock()
@@ -150,11 +155,36 @@ async fn detect_clients(
 }
 
 #[tauri::command]
+async fn client_location_types() -> Result<Vec<clients::ClientLocationType>, String> {
+    tauri::async_runtime::spawn_blocking(clients::client_location_types)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn remove_client_location(client_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || clients::remove_client_location(&client_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn add_client_location(client_type: String, folder: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        clients::add_client_location(&client_type, &folder)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 fn get_registry(state: State<RegistryState>) -> Registry {
-    state
+    let mut reg = state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+        .clone();
+    crate::personal_sync::attach_status(&mut reg);
+    reg
 }
 
 /// Servers to add to the registry from a set of detected clients: both a
@@ -167,6 +197,7 @@ fn get_registry(state: State<RegistryState>) -> Registry {
 /// The onboarding banner promises a count across both server sources (see
 /// `importableServers` in `src/lib/types.ts`), so this must actually cover
 /// both or it silently under-imports relative to what was promised.
+#[cfg(test)]
 fn servers_to_import(
     detected: &[clients::DetectedClient],
     existing: &Registry,
@@ -174,6 +205,7 @@ fn servers_to_import(
     crate::registry_controller::servers_to_import(detected, existing)
 }
 
+#[cfg(test)]
 fn selected_servers_to_import(
     detected: &[clients::DetectedClient],
     existing: &Registry,
@@ -189,19 +221,56 @@ fn selected_servers_to_import(
 async fn import_servers(
     state: State<'_, RegistryState>,
     selected: Option<Vec<String>>,
+    secret_choices: Option<
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, bool>>,
+    >,
+    credential_inputs: Option<
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    >,
 ) -> Result<Registry, String> {
-    let detected = tauri::async_runtime::spawn_blocking(clients::detect_clients)
-        .await
-        .map_err(|e| e.to_string())?;
-    let selected: Option<std::collections::HashSet<String>> =
-        selected.map(|keys| keys.into_iter().collect());
-    let (reg, _) = write_registry(state.inner(), |reg| {
-        for server in selected_servers_to_import(&detected, reg, selected.as_ref())? {
-            crate::registry_controller::apply_import_entry(reg, server);
-        }
-        Ok(())
-    })?;
-    Ok(reg)
+    let selected = match selected {
+        Some(selected) => selected,
+        None => crate::registry_controller::preview_client_imports()?
+            .into_iter()
+            .map(|item| item.key)
+            .collect(),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::registry_controller::import_client_servers_inputs(
+            selected,
+            &secret_choices.unwrap_or_default(),
+            &credential_inputs.unwrap_or_default(),
+        )
+    })
+    .await
+    .map_err(|_| "Import stopped".to_string())??;
+    reload_into_state(state.inner())
+}
+
+#[tauri::command]
+async fn add_snippet_servers(
+    state: State<'_, RegistryState>,
+    text: String,
+    selected: Vec<String>,
+    secret_choices: Option<
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, bool>>,
+    >,
+    credential_inputs: Option<
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    >,
+) -> Result<serde_json::Value, String> {
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        crate::registry_controller::add_snippet_servers_inputs(
+            &text,
+            &selected,
+            &secret_choices.unwrap_or_default(),
+            &credential_inputs.unwrap_or_default(),
+        )
+    })
+    .await
+    .map_err(|_| "Paste import stopped".to_string())??;
+    let registry = reload_into_state(state.inner())?;
+    Ok(serde_json::json!({"registry":registry,"servers":outcome.servers}))
 }
 
 /// Parse a pasted config snippet and return the detected server(s) with
@@ -217,15 +286,14 @@ fn parse_server_snippet(text: String) -> Result<Vec<clients::ParsedSnippetServer
         ));
     }
     clients::parse_snippet(&text)
+        .map_err(|_| "Could not read the pasted config. Check its syntax and retry.".into())
 }
 
 #[tauri::command]
-fn add_server(state: State<RegistryState>, entry: ServerEntry) -> Result<Registry, String> {
-    let (reg, id) = write_registry(state.inner(), |reg| {
-        Ok(crate::registry_controller::apply_add_entry(reg, entry))
-    })?;
-    // Warm the launcher for the entry we just added, found by its assigned id (a concurrent
-    // add under the lock could otherwise make `last` a different server).
+fn add_server(state: State<RegistryState>, mut entry: ServerEntry) -> Result<Registry, String> {
+    entry.enabled = false;
+    let (_, id) = crate::registry_controller::add_reviewed_entry(entry)?;
+    let reg = reload_into_state(state.inner())?;
     if let Some(saved) = reg.servers.iter().find(|s| s.id == id) {
         prewarm_launcher(saved);
     }
@@ -275,7 +343,13 @@ fn prewarm_launcher(server: &ServerEntry) {
             .cwd
             .as_deref()
             .and_then(|c| resolve_root_token(c, None));
-        if let Ok(t) = StdioTransport::spawn(&command, &resolved.args, &env, cwd.as_deref()) {
+        if let Ok(t) = StdioTransport::spawn(
+            &command,
+            &resolved.args,
+            &env,
+            cwd.as_deref(),
+            server.inherit_env,
+        ) {
             // Attempting the handshake keeps the child alive until the download
             // finishes (dropping the transport kills it), and warms it end-to-end
             // when the server actually comes up.
@@ -315,12 +389,18 @@ fn set_server_enabled(
     server_id: String,
     enabled: bool,
     reviewed: Option<bool>,
+    reviewed_definition: Option<ServerEntry>,
 ) -> Result<Registry, String> {
     let reviewed = reviewed.unwrap_or(false);
     let (reg, _) = write_registry(state.inner(), |reg| {
         // Checked inside the write closure so it sees the registry that will be
         // persisted: a team_sync_wait replace landing between a pre-lock check and
         // this write could swap the entry for one that needs review.
+        if enabled && reviewed {
+            if let Some(server) = reg.servers.iter().find(|s| s.id == server_id) {
+                crate::personal_sync::check_review(reg, server, reviewed_definition.as_ref())?;
+            }
+        }
         crate::registry_controller::apply_server_enabled(
             reg,
             &profile_id,
@@ -345,10 +425,30 @@ fn set_all_enabled(
 }
 
 #[tauri::command]
+fn set_default_access(
+    state: State<RegistryState>,
+    profile: Option<String>,
+) -> Result<Registry, String> {
+    write_registry(state.inner(), |r| r.set_default_access(profile.as_deref())).map(|(r, ())| r)
+}
+
+#[tauri::command]
+fn set_access_server(
+    state: State<RegistryState>,
+    profile_id: String,
+    server_id: String,
+    included: bool,
+) -> Result<Registry, String> {
+    write_registry(state.inner(), |r| {
+        r.set_access_server(&profile_id, &server_id, included)
+    })
+    .map(|(r, ())| r)
+}
+
+#[tauri::command]
 fn create_profile(state: State<RegistryState>, name: String) -> Result<Registry, String> {
     let (reg, _) = write_registry(state.inner(), |reg| {
-        crate::registry_controller::apply_create_profile(reg, &name);
-        Ok(())
+        crate::registry_controller::apply_create_profile(reg, &name)
     })?;
     Ok(reg)
 }
@@ -358,15 +458,17 @@ fn delete_profile(state: State<RegistryState>, id: String) -> Result<Registry, S
     let (reg, _) = write_registry(state.inner(), |reg| {
         crate::registry_controller::apply_delete_profile(reg, &id)
     })?;
+    crate::registry_controller::cleanup_deleted_profile_reviews(&id, &reg);
     Ok(reg)
 }
 
 #[tauri::command]
-fn set_active_profile(state: State<RegistryState>, id: String) -> Result<Registry, String> {
-    let (reg, _) = write_registry(state.inner(), |reg| {
-        crate::registry_controller::apply_set_active_profile(reg, &id)
-    })?;
-    Ok(reg)
+fn dismiss_access_upgrade_notice(state: State<RegistryState>) -> Result<Registry, String> {
+    write_registry(state.inner(), |reg| {
+        reg.dismiss_access_upgrade_notice();
+        Ok(())
+    })
+    .map(|(reg, ())| reg)
 }
 
 /// Replace the folder -> profile auto-routing mappings (SOU-188). A gateway serving a client
@@ -400,230 +502,42 @@ fn set_profile_server_tools(
     Ok(reg)
 }
 
-/// Write a server set into a client's config (backs up first). Not yet called by
-/// the UI; reserved for bulk operations.
-#[tauri::command]
-fn write_to_client(
-    client_id: String,
-    servers: Vec<ServerEntry>,
-) -> Result<clients::WriteOutcome, String> {
-    clients::write_servers(&client_id, &servers)
-}
-
-/// Refuse to overwrite a hand-edited gateway entry unless `force` is true (SOU-406).
-fn refuse_if_customized(state: &RegistryState, client_id: &str, force: bool) -> Result<(), String> {
-    if force {
-        return Ok(());
-    }
-    let mut list = clients::detect_clients();
-    let managed = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .client_managed_entries
-        .clone();
-    clients::apply_entry_states(&mut list, &managed);
-    if list
-        .iter()
-        .find(|c| c.id == client_id)
-        .is_some_and(|c| c.entry_state == clients::GatewayEntryState::Customized)
-    {
-        return Err(
-            "This client's Toolport entry has a custom configuration. Confirm to \
-             reset it to the default gateway, or leave it as-is."
-                .into(),
-        );
-    }
-    Ok(())
-}
-
-/// Install the Toolport gateway into a client (one click "connect to Toolport").
-/// `profile` scopes that client to one profile (None = all enabled servers).
-/// `transport` is `"stdio"` (default) or `"sharedHttp"` (SOU-407).
-/// When the live entry is user-customized, pass `force: true` after the UI confirms
-/// overwrite (SOU-406); otherwise the install is refused.
-///
-/// Runs on the blocking pool, not the GTK main loop (SBS-818): the shared-HTTP
-/// path reaches the vault through `ensure_client_http_token`, and a Secret
-/// Service call is a synchronous D-Bus round trip that stalls window controls
-/// and the tray menu on a slow or locked keyring (SBS-813, SBS-812). Reading the
-/// client's config in `refuse_if_customized` and writing it in `clients::*` are
-/// blocking file IO for the same reason.
+/// Connect a client through the stdio adapter, optionally scoped to a profile.
+/// Pass force only after confirming replacement of a customized entry.
 #[tauri::command]
 async fn install_gateway(
     app: AppHandle,
     client_id: String,
     profile: Option<String>,
     force: Option<bool>,
-    transport: Option<String>,
 ) -> Result<clients::WriteOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<RegistryState>();
-        let bridge = app.state::<HttpBridgeState>();
-        let transport = transport
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .unwrap_or("stdio");
-        let shared_http = transport.eq_ignore_ascii_case("sharedHttp")
-            || transport.eq_ignore_ascii_case("shared_http");
-        if !shared_http {
-            let managed = state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .client_managed_entries
-                .clone();
-            return crate::registry_controller::connect_client_stdio_with(
-                &client_id,
-                profile.as_deref(),
-                force.unwrap_or(false),
-                &managed,
-                |managed_entry| {
-                    let (registry, ()) = write_registry(state.inner(), |registry| {
-                        match profile
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|profile| !profile.is_empty())
-                        {
-                            Some(profile) => registry.set_client_scope(&client_id, Some(profile)),
-                            None => registry.set_client_unscoped(&client_id),
-                        }
-                        if let Some(managed_entry) = managed_entry {
-                            registry.set_client_managed_entry(&client_id, managed_entry);
-                        }
-                        Ok(())
-                    })?;
-                    Ok(registry)
-                },
-            )
-            .map(|result| result.outcome);
-        }
-
-        refuse_if_customized(state.inner(), &client_id, force.unwrap_or(false))?;
-        // Ensure the supervised bridge is up, mint/reuse a per-client bearer, write
-        // native remote or mcp-remote into the client config (SOU-407).
-        let status = start_persisted_http_bridge(bridge.inner(), state.inner(), None)?;
-        let port = status.port.unwrap_or(8765);
-        let url = format!("http://127.0.0.1:{port}/mcp");
-        let token = ensure_client_http_token(state.inner(), &client_id, profile.as_deref())?;
-        let spec = clients::SharedHttpSpec { url, token };
-        let outcome = clients::install_gateway_shared_http(&client_id, profile.as_deref(), &spec)?;
-        // Record the scope we just wrote into the client's config, so the UI can show
-        // and re-apply this client's effective scope without re-reading the config.
-        // A concrete profile is stored by name; "no profile" is recorded as an
-        // explicit-unscoped marker (not a removal) so a running gateway drops its old
-        // scope live instead of falling back to its boot-time CONDUIT_PROFILE. The client
-        // config was already written above (outside the lock); only the registry record
-        // goes through the locked load-modify-save.
-        let scope: Option<String> = profile
-            .as_deref()
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-            .map(str::to_string);
-        let managed = outcome.managed.clone();
-        write_registry(state.inner(), |reg| {
-            match scope.as_deref() {
-                Some(p) => reg.set_client_scope(&client_id, Some(p)),
-                None => reg.set_client_unscoped(&client_id),
-            }
-            if let Some(m) = managed {
-                reg.set_client_managed_entry(&client_id, m);
-            }
-            Ok(())
-        })?;
-        Ok(outcome)
+        let managed = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .client_managed_entries
+            .clone();
+        crate::registry_controller::connect_client_stdio_with(
+            &client_id,
+            profile.as_deref(),
+            force.unwrap_or(false),
+            &managed,
+            |managed_entry| {
+                write_registry(state.inner(), |registry| {
+                    Ok(crate::registry_controller::apply_client_stdio_update(
+                        registry,
+                        &client_id,
+                        profile.as_deref(),
+                        managed_entry,
+                    ))
+                })
+            },
+        )
+        .map(|result| result.outcome)
     })
     .await
     .map_err(|e| format!("install task join failed: {e}"))?
-}
-
-/// Mint or reuse a bearer token for a managed shared-HTTP client install.
-/// Plaintext lives in the OS keychain; only the hash is in `http_clients`.
-///
-/// When reusing a vaulted token, rewrite the row's `profile` if the caller asked
-/// for a different scope — Shared HTTP scope is derived solely from that row
-/// (WS3-5), not from `client_scopes` / TOOLPORT_PROFILE env.
-fn ensure_client_http_token(
-    state: &RegistryState,
-    client_id: &str,
-    profile: Option<&str>,
-) -> Result<String, String> {
-    ensure_client_http_token_with(state, client_id, profile, crate::secrets::get_secret_result)
-}
-
-/// [`ensure_client_http_token`] with the vault read injected.
-///
-/// The vault server id is fixed here, so the reserved-namespace trick the other
-/// fail-closed tests use cannot reach it. Injecting the read is how
-/// [`revoke_client_http_token_with`] solves the same problem in this file.
-fn ensure_client_http_token_with(
-    state: &RegistryState,
-    client_id: &str,
-    profile: Option<&str>,
-    read_vaulted_token: impl FnOnce(&str, &str) -> Result<Option<String>, String>,
-) -> Result<String, String> {
-    const VAULT_SERVER: &str = "__toolport_http_clients__";
-    let http_id = format!("client:{client_id}");
-    let desired_profile = profile.unwrap_or("").trim().to_string();
-    // Reuse vaulted token when we still have a matching http_clients row.
-    //
-    // A failed vault READ must not fall through to minting a replacement. `get_secret`
-    // collapses a read error into `None`, so a locked or flaky keychain looked exactly
-    // like "this client has no bearer yet": the mint path below then overwrites the
-    // vaulted copy AND `retain`s the client's `http_clients` row away for a new one.
-    // The bearer the client is already configured with now hashes to no row, so every
-    // request it makes 401s until the user reconnects that client by hand. Only a
-    // confirmed "nothing vaulted" may mint (SBS-840 class).
-    if let Some(existing) = read_vaulted_token(VAULT_SERVER, client_id)
-        // Complete sentence, capitalized: `install_gateway`'s caller renders this
-        // verbatim in a toast (`ClientDetail.tsx` `toastError(`${e}`)`), so a bare
-        // lowercase fragment would reach the user untethered.
-        .map_err(|e| format!("Could not read the saved token for {client_id}: {e}"))?
-    {
-        let hash = registry::sha256_hex(&existing);
-        let mut matched = false;
-        let mut profile_stale = false;
-        {
-            let reg = state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(row) = reg
-                .http_clients
-                .iter()
-                .find(|c| c.id == http_id && c.token_sha256 == hash)
-            {
-                matched = true;
-                profile_stale = row.profile != desired_profile;
-            }
-        }
-        if matched {
-            if profile_stale {
-                write_registry(state, |reg| {
-                    if let Some(row) = reg
-                        .http_clients
-                        .iter_mut()
-                        .find(|c| c.id == http_id && c.token_sha256 == hash)
-                    {
-                        row.profile = desired_profile;
-                    }
-                    Ok(())
-                })?;
-            }
-            return Ok(existing);
-        }
-    }
-    let token = random_hex()?;
-    crate::secrets::set_secret(VAULT_SERVER, client_id, &token)?;
-    write_registry(state, |reg| {
-        reg.http_clients.retain(|c| c.id != http_id);
-        reg.http_clients.push(registry::HttpClient {
-            id: http_id,
-            label: format!("Client: {client_id}"),
-            token_sha256: registry::sha256_hex(&token),
-            profile: desired_profile,
-        });
-        Ok(())
-    })?;
-    Ok(token)
 }
 
 /// Drop the managed shared-HTTP bearer for this client (registry row, then vault).
@@ -694,11 +608,37 @@ async fn uninstall_gateway(
             reg.clear_client_managed_entry(&client_id);
             Ok(())
         })?;
-        clients::finish_uninstall(&client_id, &outcome);
+        clients::finish_uninstall(&client_id, &outcome)?;
         Ok(outcome)
     })
     .await
     .map_err(|e| format!("uninstall task join failed: {e}"))?
+}
+
+#[tauri::command]
+fn data_removal_plan() -> Result<crate::purge::Plan, String> {
+    crate::purge::plan()
+}
+
+#[tauri::command]
+fn remove_toolport_data(
+    app: AppHandle,
+    report_path: String,
+    confirmed: bool,
+) -> Result<(), String> {
+    if !confirmed {
+        return Err("Data removal requires explicit confirmation".into());
+    }
+    crate::purge::launch_after_exit(std::path::Path::new(&report_path))?;
+    app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
+async fn disconnect_all_clients() -> Result<Vec<clients::DisconnectResult>, String> {
+    tauri::async_runtime::spawn_blocking(|| clients::disconnect_all(false))
+        .await
+        .map_err(|e| format!("disconnect task join failed: {e}"))?
 }
 
 /// 24 random bytes (192 bits) as hex, for a bearer token or a unique id.
@@ -734,6 +674,7 @@ fn add_http_client(
             label: label.trim().to_string(),
             token_sha256: registry::sha256_hex(&token),
             profile: profile.unwrap_or_default().trim().to_string(),
+            unknown_fields: Default::default(),
         });
         Ok(())
     })?;
@@ -761,6 +702,21 @@ struct MigrateResult {
     imported: usize,
     /// Names of the servers moved out of the client's config.
     moved: Vec<String>,
+    tools: Vec<serde_json::Value>,
+    outcome: clients::WriteOutcome,
+    servers: Vec<crate::registry_controller::SetupServerResult>,
+    backup_date: Option<u64>,
+}
+
+#[tauri::command]
+async fn preview_client_setup(
+    client_id: String,
+) -> Result<crate::registry_controller::ClientSetupReview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::registry_controller::preview_client_setup(&client_id)
+    })
+    .await
+    .map_err(|_| "Client review stopped".to_string())?
 }
 
 /// Migrate a client to Toolport: import its directly-configured servers into the
@@ -768,53 +724,99 @@ struct MigrateResult {
 /// gateway (optionally scoped to `profile`). The client is left managing nothing
 /// directly - everything routes through Toolport. Backs the config up first.
 ///
-/// The whole sequence lives in `registry_controller::migrate_client` so both
-/// desktop shells share it; this command only resolves the Shared HTTP URL
-/// (which needs the app-managed bridge) and refreshes the cached registry
-/// afterwards, since the controller writes through `registry::update`.
+/// Import directly configured servers and connect through the stdio adapter.
+// Preserve the full reviewed import and connection request at the IPC boundary.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn migrate_client(
     state: State<'_, RegistryState>,
-    bridge: State<'_, HttpBridgeState>,
     client_id: String,
     profile: Option<String>,
     force: Option<bool>,
-    transport: Option<String>,
+    selected: Vec<String>,
+    revision: String,
+    secret_choices: Option<
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, bool>>,
+    >,
+    credential_inputs: Option<
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    >,
 ) -> Result<MigrateResult, String> {
-    // Honor transport so migrate does not silently force stdio when the UI
-    // chose Shared HTTP (WS3-2).
-    let transport = transport
-        .as_deref()
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .unwrap_or("stdio");
-    let url = if transport.eq_ignore_ascii_case("sharedHttp")
-        || transport.eq_ignore_ascii_case("shared_http")
-    {
-        let status = start_persisted_http_bridge(bridge.inner(), state.inner(), None)?;
-        let port = status.port.unwrap_or(8765);
-        Some(format!("http://127.0.0.1:{port}/mcp"))
-    } else {
-        None
-    };
-
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        crate::registry_controller::migrate_client(
+        crate::registry_controller::migrate_client_reviewed_inputs(
             &client_id,
             profile.as_deref(),
             force.unwrap_or(false),
-            url.as_deref(),
+            &selected,
+            &revision,
+            &secret_choices.unwrap_or_default(),
+            &credential_inputs.unwrap_or_default(),
         )
     })
     .await
     .map_err(|e| e.to_string())??;
 
     let registry = reload_into_state(state.inner())?;
+    let backup_date = outcome
+        .result
+        .outcome
+        .backup
+        .as_ref()
+        .and_then(|path| {
+            std::fs::metadata(path)
+                .ok()?
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+        })
+        .map(|duration| duration.as_secs());
     Ok(MigrateResult {
         registry,
         imported: outcome.imported,
         moved: outcome.moved,
+        tools: outcome.tools,
+        servers: outcome.servers,
+        backup_date,
+        outcome: outcome.result.outcome,
     })
+}
+
+#[tauri::command]
+async fn set_secret_reference(
+    app: AppHandle,
+    server_id: String,
+    key: String,
+    reference: String,
+) -> Result<Registry, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<RegistryState>();
+        let (reg, ()) = write_registry(state.inner(), |reg| {
+            crate::registry_controller::apply_secret_reference(reg, &server_id, &key, &reference)
+        })?;
+        crate::registry_controller::approve_own_reference(&reg, &server_id)?;
+        Ok(reg)
+    })
+    .await
+    .map_err(|_| "Reference task stopped".to_string())?
+}
+#[tauri::command]
+async fn test_secret_reference(
+    server_id: String,
+    reference: String,
+) -> Result<(), crate::secret_refs::ResolveError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::registry_controller::test_secret_reference(&server_id, &reference)
+    })
+    .await
+    .map_err(|_| crate::secret_refs::ResolveError {
+        state: crate::secret_refs::ErrorState::Failed,
+        message: "Reference test stopped".into(),
+    })?
+}
+#[tauri::command]
+fn secret_reference_providers() -> Vec<crate::secret_refs::Provider> {
+    crate::secret_refs::PROVIDERS.to_vec()
 }
 
 /// Store a secret env value in the OS keychain and mark it on the server entry
@@ -1090,6 +1092,18 @@ async fn has_client_secret(server_id: String) -> Result<bool, String> {
     .map_err(|e| format!("keychain task join failed: {e}"))?
 }
 
+#[tauri::command]
+fn release_activity_revision() {
+    crate::observability_controller::release_activity_revision();
+}
+
+#[tauri::command]
+async fn activity_health() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(crate::observability_controller::activity_health)
+        .await
+        .map_err(|error| format!("Activity health task failed: {error}"))
+}
+
 /// The most recent tool-call audit entries (newest first).
 #[tauri::command]
 async fn get_audit_log(limit: usize) -> Result<Vec<serde_json::Value>, String> {
@@ -1099,10 +1113,21 @@ async fn get_audit_log(limit: usize) -> Result<Vec<serde_json::Value>, String> {
     // (SBS-813). An unreadable log or a join failure must reject so Activity
     // can show error/retry instead of "No tool calls yet" (SBS-873).
     tauri::async_runtime::spawn_blocking(move || {
-        audit::read_recent(limit).map_err(|e| format!("Couldn't read the activity log: {e}"))
+        audit::read_activity(limit).map_err(|e| format!("Couldn't read the activity log: {e}"))
     })
     .await
     .map_err(|e| format!("activity log task join failed: {e}"))?
+}
+
+/// Bounded lifecycle summaries for the Clients page, with no request content.
+#[tauri::command]
+async fn get_client_sessions(since_ms: Option<u64>) -> Result<Vec<serde_json::Value>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        audit::recent_client_activity(64, since_ms)
+            .map_err(|e| format!("Couldn't read client sessions: {e}"))
+    })
+    .await
+    .map_err(|e| format!("client session task join failed: {e}"))?
 }
 
 /// Aggregate the full retained audit log into per-server call/error/latency stats for
@@ -1125,10 +1150,18 @@ async fn audit_stats() -> Result<serde_json::Value, String> {
 #[tauri::command]
 async fn get_security_events(limit: usize) -> Result<Vec<serde_json::Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        integrity::read_recent(limit).map_err(|e| format!("Couldn't read security events: {e}"))
+        integrity::review_events(limit).map_err(|e| format!("Couldn't read security events: {e}"))
     })
     .await
     .map_err(|e| format!("security events task join failed: {e}"))?
+}
+
+/// Most recent unresolved baseline warning for the current profile and policy.
+#[tauri::command]
+async fn get_baseline_notice() -> Result<Option<serde_json::Value>, String> {
+    tauri::async_runtime::spawn_blocking(|| integrity::baseline_notice(&registry::load_resolved()?))
+        .await
+        .map_err(|error| format!("baseline notice task join failed: {error}"))?
 }
 
 /// Catalog exposure measurements plus legacy estimated token equivalents from
@@ -1216,7 +1249,7 @@ async fn probe_servers(
 
 /// List the tools one server exposes (raw MCP tool objects: name, description,
 /// inputSchema). Connects on demand and disconnects when the connection drops.
-/// Powers the tool playground's tool picker.
+/// Powers the server detail Tools tab.
 #[tauri::command]
 async fn list_server_tools(
     _state: State<'_, RegistryState>,
@@ -1246,7 +1279,7 @@ async fn call_tool(
 
 /// List the resources a server advertises (uri, name, mimeType). Connects on
 /// demand; empty if the server declares no resources capability. Powers the
-/// playground's Resources tab.
+/// server detail Resources panel.
 #[tauri::command]
 async fn list_server_resources(
     _state: State<'_, RegistryState>,
@@ -1259,7 +1292,7 @@ async fn list_server_resources(
 
 /// List the prompts a server advertises (name, description, arguments). Connects
 /// on demand; empty if the server declares no prompts capability. Powers the
-/// playground's Prompts tab.
+/// server detail Prompts panel.
 #[tauri::command]
 async fn list_server_prompts(
     _state: State<'_, RegistryState>,
@@ -1271,7 +1304,7 @@ async fn list_server_prompts(
 }
 
 /// Read one resource by its uri and return the raw MCP result (`{ contents }`).
-/// Connects on demand. Playground.
+/// Connects on demand from server detail.
 #[tauri::command]
 async fn read_resource(
     _state: State<'_, RegistryState>,
@@ -1284,7 +1317,7 @@ async fn read_resource(
 }
 
 /// Get one prompt by name with arguments, returning the raw MCP result
-/// (`{ messages }`). Connects on demand. Playground.
+/// (`{ messages }`). Connects on demand from server detail.
 #[tauri::command]
 async fn get_prompt(
     _state: State<'_, RegistryState>,
@@ -1332,37 +1365,15 @@ fn set_tool_pinned(
     Ok(reg)
 }
 
-/// Flip the global destructive-tool deny switch. When on, the gateway hides and
-/// blocks every tool annotated `destructiveHint: true` across all servers.
+/// Set the member's safety level while preserving team policy.
 #[tauri::command]
-fn set_deny_destructive(state: State<RegistryState>, deny: bool) -> Result<Registry, String> {
+fn set_safety_level(
+    state: State<RegistryState>,
+    level: registry::SafetyLevel,
+) -> Result<Registry, String> {
     let (reg, _) = write_registry(state.inner(), |reg| {
-        reg.set_deny_destructive(deny);
-        Ok(())
-    })?;
-    Ok(reg)
-}
-
-/// Toggle per-call confirmation for destructive tools. When enabled, the gateway
-/// intercepts each destructive tool call, returns a preview with a token, and
-/// requires `conduit_confirm { token }` to proceed. Mutually exclusive with
-/// `deny_destructive` (confirm turns deny off).
-#[tauri::command]
-fn set_confirm_destructive(state: State<RegistryState>, confirm: bool) -> Result<Registry, String> {
-    let (reg, _) = write_registry(state.inner(), |reg| {
-        reg.set_confirm_destructive(confirm);
-        Ok(())
-    })?;
-    Ok(reg)
-}
-
-/// Toggle human-in-the-loop approval. When on, a gated tool call (destructive, or from an
-/// untrusted-provenance server) is HELD until a person approves or denies it in the app,
-/// via the approval broker. Distinct from confirm-destructive (which the agent re-confirms).
-#[tauri::command]
-fn set_human_approval(state: State<RegistryState>, on: bool) -> Result<Registry, String> {
-    let (reg, _) = write_registry(state.inner(), |reg| {
-        reg.set_human_approval(on);
+        reg.validate_safety_level(level)?;
+        reg.set_safety_level(level);
         Ok(())
     })?;
     Ok(reg)
@@ -1408,36 +1419,6 @@ fn decide_approval(
         }
     }
     Ok(())
-}
-
-/// Strong routine candidates the gateway queued for the passive Settings area.
-/// Polled by the frontend; the `routine-suggestion` event prompts a refresh.
-#[tauri::command]
-fn list_routine_suggestions(
-    broker: State<approval_broker::ApprovalBroker>,
-) -> Vec<routines::RoutineSuggestion> {
-    broker.list_suggestions()
-}
-
-/// Persist a queued suggestion. The user's click IS the persistence authorization:
-/// the card showed the same disclosure the approval prompt would (name, dependencies,
-/// risk, provenance, collapsible source), so no second prompt fires. Everything still
-/// passes the store's own validation and the equivalence dedupe, and the routine
-/// watcher advertises the result to every client.
-#[tauri::command]
-fn approve_routine_suggestion(
-    broker: State<approval_broker::ApprovalBroker>,
-    fingerprint: String,
-    name: String,
-    description: Option<String>,
-) -> Result<routines::RoutineDefinition, String> {
-    routine_controller::approve_suggestion(&broker, &fingerprint, name, description)
-}
-
-/// Drop a queued suggestion and keep the same definition out for this app run.
-#[tauri::command]
-fn dismiss_routine_suggestion(broker: State<approval_broker::ApprovalBroker>, fingerprint: String) {
-    routine_controller::dismiss_suggestion(&broker, &fingerprint);
 }
 
 /// A tool allowed to skip human approval, for the Settings "Allowed tools" list.
@@ -1538,6 +1519,7 @@ fn set_tool_override(
             registry::ToolOverride {
                 name: norm(name),
                 description: norm(description),
+                unknown_fields: Default::default(),
             },
         );
         Ok(())
@@ -1605,12 +1587,6 @@ async fn get_search_traces(limit: usize) -> Result<Vec<serde_json::Value>, Strin
     .map_err(|e| format!("search traces task join failed: {e}"))?
 }
 
-/// Clear legacy and v2 search-trace logs.
-#[tauri::command]
-fn clear_search_traces() -> Result<(), String> {
-    searchtrace::try_clear().map_err(|e| format!("Couldn't clear the search traces: {e}"))
-}
-
 /// Clear all retained local activity in one confirmed action: the audit log, discovery
 /// search traces, live-inspection captures, and the savings tally (including its
 /// carry-forward total). Each is a local, irreversible delete; the logs re-create
@@ -1638,31 +1614,6 @@ fn list_tool_identities(state: State<RegistryState>) -> Result<Vec<ToolIdentity>
     integrity::tool_identities(&reg.servers, &reg.profiles)
 }
 
-/// Toggle quarantine-on-drift. When enabled, the gateway hides and blocks a high-risk
-/// tool (poisoned definition, or a destructive tool whose definition changed/appeared)
-/// that drifts from its pinned baseline, until the user re-approves it.
-#[tauri::command]
-fn set_quarantine_on_drift(state: State<RegistryState>, on: bool) -> Result<Registry, String> {
-    let (reg, _) = write_registry(state.inner(), |reg| {
-        reg.quarantine_on_drift = on;
-        Ok(())
-    })?;
-    Ok(reg)
-}
-
-/// Toggle opt-in block-on-injection (SOU-345). When enabled, a high-confidence injection
-/// hit fails the tool call instead of only labeling the content (scanning runs even if
-/// the separate content-defense label toggle is off). Org force (`forceBlockOnInjection`)
-/// can still enable this via the team overlay.
-#[tauri::command]
-fn set_block_on_injection(state: State<RegistryState>, on: bool) -> Result<Registry, String> {
-    let (reg, _) = write_registry(state.inner(), |reg| {
-        reg.block_on_injection = on;
-        Ok(())
-    })?;
-    Ok(reg)
-}
-
 /// Toggle PII pseudonymization of tool results (SBS-346).
 #[tauri::command]
 fn set_pii_redaction(state: State<RegistryState>, on: bool) -> Result<Registry, String> {
@@ -1683,12 +1634,29 @@ fn set_pii_redaction(state: State<RegistryState>, on: bool) -> Result<Registry, 
 #[tauri::command]
 async fn list_quarantined(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let list = integrity::all_quarantined()?;
+        let list = integrity::all_quarantined_summaries()?;
         notify_new_quarantines(&app, &list);
         Ok(list)
     })
     .await
     .map_err(|e| format!("quarantine read task join failed: {e}"))?
+}
+
+#[tauri::command]
+async fn get_quarantine_definition(
+    profile: String,
+    tool: String,
+    expected_record_id: String,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        integrity::quarantine_definition(
+            (!profile.is_empty()).then_some(profile.as_str()),
+            &tool,
+            &expected_record_id,
+        )
+    })
+    .await
+    .map_err(|e| format!("definition read task join failed: {e}"))?
 }
 
 /// Keys of quarantine entries we have already observed this process. `None` = not
@@ -1731,13 +1699,21 @@ fn release_quarantine(
     state: State<RegistryState>,
     profile: String,
     tool: String,
+    expected_fingerprint: Option<String>,
+    expected_record_id: Option<String>,
 ) -> Result<(), String> {
     let prof = if profile.is_empty() {
         None
     } else {
         Some(profile.as_str())
     };
-    crate::registry_controller::release_quarantine(prof, &tool)?;
+    if let Some(expected) = expected_record_id {
+        integrity::release_record(prof, &tool, &expected)?;
+    } else if let Some(expected) = expected_fingerprint {
+        integrity::release_definition(prof, &tool, &expected)?;
+    } else {
+        crate::registry_controller::release_quarantine(prof, &tool)?;
+    }
     // The quarantine release lives in the separate tool-pins file; the former blind re-save
     // here was only a gateway mtime-nudge (which the no-op guard usually swallowed anyway)
     // and it could revert a concurrent gateway/team write (SOU-23). Refresh the cache
@@ -1759,6 +1735,7 @@ fn release_quarantine(
 async fn release_all_quarantine(
     app: AppHandle,
     profile: String,
+    expected_records: Option<std::collections::BTreeMap<String, String>>,
 ) -> Result<integrity::ReleaseAllOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<RegistryState>();
@@ -1767,8 +1744,11 @@ async fn release_all_quarantine(
         } else {
             Some(profile.as_str())
         };
-        let outcome = integrity::release_all(prof)
-            .map_err(|e| format!("Could not re-approve the blocked tools: {e}"))?;
+        let outcome = match expected_records {
+            Some(expected) => integrity::release_all_records(prof, &expected),
+            None => integrity::release_all(prof),
+        }
+        .map_err(|e| format!("Could not re-approve the blocked tools: {e}"))?;
         // Same reasoning as `release_quarantine`: refresh the cache rather than
         // blind-writing a possibly stale snapshot over a concurrent gateway write.
         reload_into_state(state.inner())?;
@@ -1798,29 +1778,6 @@ fn set_lazy_discovery(state: State<RegistryState>, lazy: bool) -> Result<Registr
 fn set_code_mode(state: State<RegistryState>, enabled: bool) -> Result<Registry, String> {
     let (reg, _) = write_registry(state.inner(), |reg| {
         reg.code_mode = enabled;
-        Ok(())
-    })?;
-    Ok(reg)
-}
-
-/// Opt into agent-requested Routine persistence. The gateway refreshes this setting live,
-/// but every save remains separately gated by content-bound human approval.
-#[tauri::command]
-fn set_allow_routine_writes(state: State<RegistryState>, allow: bool) -> Result<Registry, String> {
-    let (reg, _) = write_registry(state.inner(), |reg| {
-        reg.allow_routine_writes = allow;
-        Ok(())
-    })?;
-    Ok(reg)
-}
-
-/// Opt into agent control: lets an agent enable or disable servers through the
-/// gateway's `conduit_enable_server` / `conduit_disable_server` tools. Off by
-/// default; the destructive-tool safety switch stays user-only regardless of this.
-#[tauri::command]
-fn set_allow_agent_control(state: State<RegistryState>, allow: bool) -> Result<Registry, String> {
-    let (reg, _) = write_registry(state.inner(), |reg| {
-        reg.allow_agent_control = allow;
         Ok(())
     })?;
     Ok(reg)
@@ -2143,24 +2100,42 @@ fn start_team_lifecycle(app: &tauri::AppHandle) {
         while !stop.load(std::sync::atomic::Ordering::Acquire) {
             let connected = registry::load().map(|r| r.team.is_some());
             let delay = match connected {
-                Ok(false) => { failures = 0; 3 }
-                Ok(true) => match teams::sync_wait(25) {
-                    Ok(result) => {
-                        failures = 0;
-                        if stop.load(std::sync::atomic::Ordering::Acquire) { break; }
-                        let state = handle.state::<RegistryState>();
-                        match finish_sync(&handle, state.inner(), result) {
-                            Ok(fresh) => { let _ = handle.emit("team-sync-registry", &fresh); }
-                            Err(error) => eprintln!("Toolport: Teams registry refresh failed: {error}"),
+                Ok(false) => {
+                    failures = 0;
+                    3
+                }
+                Ok(true) => {
+                    let result = teams::sync_wait(25);
+                    let _ = handle.emit("team-sync-status", crate::team_sync_status::current());
+                    match result {
+                        Ok(result) => {
+                            failures = 0;
+                            if stop.load(std::sync::atomic::Ordering::Acquire) {
+                                break;
+                            }
+                            let state = handle.state::<RegistryState>();
+                            match finish_sync(&handle, state.inner(), result) {
+                                Ok(fresh) => {
+                                    let _ = handle.emit("team-sync-registry", &fresh);
+                                }
+                                Err(error) => {
+                                    let _ = handle.emit("team-sync-error", &error);
+                                }
+                            }
+                            teams::retry_delay_seconds(0)
                         }
-                        teams::retry_delay_seconds(0)
+                        Err(error) => {
+                            failures = failures.saturating_add(1);
+                            let _ = handle.emit("team-sync-error", &error);
+                            if let Ok(fresh) = registry::load() {
+                                let _ = handle.emit("team-sync-registry", &fresh);
+                            }
+                            registry::load()
+                                .map(|r| teams::sync_retry_seconds(&r, failures))
+                                .unwrap_or_else(|_| teams::retry_delay_seconds(failures))
+                        }
                     }
-                    Err(error) => {
-                        failures = failures.saturating_add(1);
-                        eprintln!("Toolport: Teams sync pending: {error}");
-                        teams::retry_delay_seconds(failures)
-                    }
-                },
+                }
                 Err(error) => {
                     failures = failures.saturating_add(1);
                     eprintln!("Toolport: Teams registry unavailable: {error}");
@@ -2168,7 +2143,9 @@ fn start_team_lifecycle(app: &tauri::AppHandle) {
                 }
             };
             for _ in 0..delay {
-                if stop.load(std::sync::atomic::Ordering::Acquire) { break; }
+                if stop.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
         }
@@ -2226,284 +2203,78 @@ async fn team_instructions_status() -> Option<teams::InstructionsStatusView> {
         .flatten()
 }
 
-// ---- Personal agent rules (SBS-821) ----
+#[tauri::command]
+async fn team_sync_status() -> crate::team_sync_status::SyncStatus {
+    tauri::async_runtime::spawn_blocking(crate::team_sync_status::current)
+        .await
+        .unwrap_or_default()
+}
+
+// --- Agent hook sensor (SBS-822), retired -------------------------------------
 //
-// All async + `spawn_blocking`: every one of these scans each installed client's rules file, and
-// the mutating ones write to disk, neither of which may run on the UI thread. They are
-// independent of the gateway and of any configured MCP server, so the Rules tab works on a fresh
-// install with nothing connected.
-
-/// The Rules view: the user's rule sets, which one is active, and each installed client's on-disk
-/// state. Read-only.
-#[tauri::command]
-async fn rules_view() -> Result<rules::RulesView, String> {
-    tauri::async_runtime::spawn_blocking(rules::view)
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-/// Create (`id: None`) or update a rule set, then apply it to every opted-in client.
-#[tauri::command]
-async fn rules_save_set(
-    id: Option<String>,
-    name: String,
-    content: String,
-) -> Result<rules::RulesView, String> {
-    tauri::async_runtime::spawn_blocking(move || rules::save_set(id.as_deref(), &name, &content))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-/// Delete a rule set. Deleting the active one clears the selection, so this also removes every
-/// rules file Toolport wrote.
-#[tauri::command]
-async fn rules_delete_set(id: String) -> Result<rules::RulesView, String> {
-    tauri::async_runtime::spawn_blocking(move || rules::delete_set(&id))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-/// Switch the active rule set, or clear it (`id: None`) to remove our files everywhere.
-#[tauri::command]
-async fn rules_set_active(id: Option<String>) -> Result<rules::RulesView, String> {
-    tauri::async_runtime::spawn_blocking(move || rules::set_active(id.as_deref()))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-/// Opt one client in or out. Opting out removes that client's rules file on the same call.
-#[tauri::command]
-async fn rules_set_client_enabled(
-    client_id: String,
-    enabled: bool,
-) -> Result<rules::RulesView, String> {
-    tauri::async_runtime::spawn_blocking(move || rules::set_client_enabled(&client_id, enabled))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-/// Dry-run one client's write so the UI can show the exact before/after before the first apply.
-/// Never writes. `None` when the client has no rules file we manage, or no set is active.
-///
-/// `content` previews unsaved editor text. It exists so the UI never has to save-then-preview: a
-/// save applies to every opted-in client, which would make "dry run" a write.
-#[tauri::command]
-async fn rules_preview(
-    client_id: String,
-    content: Option<String>,
-) -> Result<Option<rules::RulesPreview>, String> {
-    tauri::async_runtime::spawn_blocking(move || rules::preview(&client_id, content.as_deref()))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-/// "Overwrite the file" on one client's drift card: that client's file is rewritten from the
-/// set; every other client is reconciled, so a drifted block elsewhere is left alone (SBS-1036).
-#[tauri::command]
-async fn rules_apply_client(client_id: String) -> Result<rules::RulesView, String> {
-    tauri::async_runtime::spawn_blocking(move || rules::apply_overwriting_client(&client_id))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-// ---- Project-level rules (SBS-1037). Registered folders only; written only by the explicit
-// Apply below, never at startup. ----
-
-#[tauri::command]
-async fn rules_project_add(path: String) -> Result<rules::RulesView, String> {
-    tauri::async_runtime::spawn_blocking(move || rules::project_add(&path))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn rules_project_remove(id: String) -> Result<rules::RulesView, String> {
-    tauri::async_runtime::spawn_blocking(move || rules::project_remove(&id))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn rules_project_set_set(
-    id: String,
-    set_id: Option<String>,
-) -> Result<rules::RulesView, String> {
-    tauri::async_runtime::spawn_blocking(move || rules::project_set_set(&id, set_id.as_deref()))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn rules_project_set_file_enabled(
-    id: String,
-    key: String,
-    enabled: bool,
-) -> Result<rules::RulesView, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        rules::project_set_file_enabled(&id, &key, enabled)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn rules_project_apply(id: String) -> Result<rules::RulesView, String> {
-    tauri::async_runtime::spawn_blocking(move || rules::project_apply(&id))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn rules_project_preview(
-    id: String,
-    key: String,
-) -> Result<Option<rules::RulesPreview>, String> {
-    tauri::async_runtime::spawn_blocking(move || rules::project_preview(&id, &key))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-/// Rules files the detected clients already have, for "Start from a file" (SBS-1035). Read-only.
-#[tauri::command]
-async fn rules_import_candidates() -> Result<Vec<rules::ImportCandidate>, String> {
-    tauri::async_runtime::spawn_blocking(rules::import_candidates)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Read one file as the seed for a new rule set (SBS-1035). Read-only: nothing is saved and
-/// the file is left as it was; the UI puts the text in the editor for the user to review.
-#[tauri::command]
-async fn rules_import_file(
-    path: String,
-    client_name: Option<String>,
-) -> Result<rules::ImportedRules, String> {
-    tauri::async_runtime::spawn_blocking(move || rules::import_file(&path, client_name.as_deref()))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-/// The explicit Re-apply / Overwrite button: make every opted-in client's file match the active
-/// set, including a block the user edited on disk (SBS-1036). Every automatic path reconciles
-/// instead and leaves such a block alone.
-#[tauri::command]
-async fn rules_apply() -> Result<rules::RulesView, String> {
-    tauri::async_runtime::spawn_blocking(rules::apply_overwriting_drift)
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-// --- Guard hook for Cursor (SBS-1059) ----------------------------------------------
-
-#[tauri::command]
-async fn agent_guard_view() -> Result<agent_guard::GuardView, String> {
-    tauri::async_runtime::spawn_blocking(agent_guard::view)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn agent_guard_set_cursor_mode(
-    mode: agent_guard::GuardMode,
-) -> Result<agent_guard::GuardView, String> {
-    tauri::async_runtime::spawn_blocking(move || agent_guard::set_cursor_mode(mode))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn agent_guard_preview(
-    mode: agent_guard::GuardMode,
-) -> Result<Option<agent_guard::GuardPreview>, String> {
-    tauri::async_runtime::spawn_blocking(move || agent_guard::preview(mode))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-// --- Native permission policy for Claude Code (SBS-1058) -------------------------
-//
-// Same shape as the hook sensor: every one of these reads or writes an agent settings
-// file, so none runs on the UI thread.
-
-#[tauri::command]
-async fn agent_permissions_view() -> Result<agent_permissions::PermissionsView, String> {
-    tauri::async_runtime::spawn_blocking(agent_permissions::view)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn agent_permissions_set_enabled(
-    enabled: bool,
-) -> Result<agent_permissions::PermissionsView, String> {
-    tauri::async_runtime::spawn_blocking(move || agent_permissions::set_enabled(enabled))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn agent_permissions_set_rules(
-    rules: Vec<agent_permissions::PermissionRule>,
-) -> Result<agent_permissions::PermissionsView, String> {
-    tauri::async_runtime::spawn_blocking(move || agent_permissions::set_rules(rules))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn agent_permissions_preview(
-    rules: Option<Vec<agent_permissions::PermissionRule>>,
-) -> Result<Vec<agent_permissions::PermissionsPreview>, String> {
-    tauri::async_runtime::spawn_blocking(move || agent_permissions::preview(rules))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-// --- Agent hook sensor (SBS-822) -------------------------------------------
-//
-// Same shape and the same reasons as the rules commands above: every one of these
-// reads or writes an agent settings file, so none of them may run on the UI thread,
-// and none of them needs the gateway or any configured MCP server.
-
-/// The hook sensor's state: the opt-in, the events it registers, and every Claude Code
-/// profile found with whether the sensor is currently in it. Read-only.
-#[tauri::command]
-async fn hooks_view() -> Result<hooks::HooksView, String> {
-    tauri::async_runtime::spawn_blocking(hooks::view)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Turn the sensor on or off. Turning it off removes it from every profile we wrote.
-#[tauri::command]
-async fn hooks_set_enabled(enabled: bool) -> Result<hooks::HooksView, String> {
-    tauri::async_runtime::spawn_blocking(move || hooks::set_enabled(enabled))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-/// Dry-run the write for every profile, so the UI can show the exact before/after
-/// before the sensor touches a settings file. Never writes.
-#[tauri::command]
-async fn hooks_preview() -> Result<Vec<hooks::HooksPreview>, String> {
-    tauri::async_runtime::spawn_blocking(hooks::preview)
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-/// The most recent sensor rows, newest first. The read half SBS-823 builds on.
-#[tauri::command]
-async fn hooks_recent(limit: usize) -> Result<Vec<serde_json::Value>, String> {
-    tauri::async_runtime::spawn_blocking(move || hooks::read_recent(limit))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
-}
+// 2.0 removed the sensor. `hooks::cleanup_on_startup` (called on the launch thread
+// below) does the one-time removal of entries an earlier release installed; no IPC
+// command remains.
 
 /// Leave the team: remove its merged servers, clear the connection and the token.
 #[tauri::command]
+fn personal_sync_local_only(
+    state: State<RegistryState>,
+    server_id: String,
+    local_only: bool,
+) -> Result<Registry, String> {
+    crate::personal_sync::set_local_only(&server_id, local_only)?;
+    reload_into_state(state.inner())
+}
+/// Pair this machine again with its own account after its sign-in went missing.
+#[tauri::command]
+fn reconnect_sync(app: AppHandle) -> Result<(), String> {
+    let reg = registry::load()?;
+    let team = reg.team.ok_or("This machine is not signed in to sync")?;
+    deliver_team_pair(&app, team.server_url, team.team_id);
+    Ok(())
+}
+#[tauri::command]
+fn personal_sync_portable(
+    state: State<RegistryState>,
+    server_id: String,
+    kind: String,
+    key: String,
+    enabled: bool,
+) -> Result<Registry, String> {
+    crate::personal_sync::set_portable(&server_id, &kind, &key, enabled)?;
+    reload_into_state(state.inner())
+}
+#[tauri::command]
+fn personal_sync_new_servers_local_only(
+    state: State<RegistryState>,
+    local_only: bool,
+) -> Result<Registry, String> {
+    crate::personal_sync::set_new_servers_local_only(local_only)?;
+    reload_into_state(state.inner())
+}
+#[tauri::command]
+fn personal_sync_finish_selection(state: State<RegistryState>) -> Result<Registry, String> {
+    crate::personal_sync::finish_local_selection()?;
+    reload_into_state(state.inner())
+}
+
+#[tauri::command]
+fn personal_sync_resolve_conflict(
+    state: State<RegistryState>,
+    id: String,
+    expected: String,
+    keep_mine: bool,
+) -> Result<Registry, String> {
+    crate::personal_sync::resolve_conflict(&id, &expected, keep_mine)?;
+    reload_into_state(state.inner())
+}
+
+#[tauri::command]
 async fn team_account_link() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(teams::account_link).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(teams::account_link)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2516,22 +2287,55 @@ fn team_disconnect(state: State<RegistryState>) -> Result<Registry, String> {
 }
 
 #[tauri::command]
-async fn team_use_managed(app: tauri::AppHandle, state: State<'_, RegistryState>, server_id: String) -> Result<Registry, String> {
-    tauri::async_runtime::spawn_blocking(move || teams::use_managed_server(&server_id)).await.map_err(|e| e.to_string())??;
+async fn team_use_managed(
+    app: tauri::AppHandle,
+    state: State<'_, RegistryState>,
+    server_id: String,
+) -> Result<Registry, String> {
+    tauri::async_runtime::spawn_blocking(move || teams::use_managed_server(&server_id))
+        .await
+        .map_err(|e| e.to_string())??;
     let fresh = reload_into_state(state.inner())?;
     let _ = app.emit("team-sync-registry", &fresh);
     Ok(fresh)
+}
+
+#[tauri::command]
+async fn team_review(
+    app: tauri::AppHandle,
+    state: State<'_, RegistryState>,
+    key: String,
+    hash: String,
+    accept: bool,
+) -> Result<Registry, String> {
+    tauri::async_runtime::spawn_blocking(move || teams::review_team_change(&key, &hash, accept))
+        .await
+        .map_err(|e| e.to_string())??;
+    let fresh = reload_into_state(state.inner())?;
+    let _ = app.emit("team-sync-registry", &fresh);
+    Ok(fresh)
+}
+
+#[tauri::command]
+fn team_open_confirmation(url: String) -> Result<(), String> {
+    teams::open_confirmation(&url)
 }
 
 /// Admin: replace only the team's shared server list with the current local set (own servers
 /// only, secret values never sent). Remote instructions and policy fields are preserved, and
 /// an optimistic-concurrency conflict is returned rather than overwriting another admin.
 #[tauri::command]
-async fn team_push_preview(state: State<'_, RegistryState>, selected_ids: Option<Vec<String>>) -> Result<teams::PushPreview, String> {
+async fn team_push_preview(
+    state: State<'_, RegistryState>,
+    selected_ids: Option<Vec<String>>,
+) -> Result<teams::PushPreview, String> {
     refresh_from_disk(state.inner())?;
-    tauri::async_runtime::spawn_blocking(move || match selected_ids { Some(ids) => teams::preview_push_selected(&ids), None => teams::preview_push_current() })
-        .await
-        .map_err(|e| format!("push preview task join failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || match selected_ids {
+        Some(ids) => teams::preview_push_selected(&ids),
+        None => teams::preview_push_current(),
+    })
+    .await
+    .map_err(|e| format!("push preview task join failed: {e}"))?
 }
 
 #[tauri::command]
@@ -2543,8 +2347,10 @@ async fn team_push(
 ) -> Result<teams::PublishResult, String> {
     refresh_from_disk(state.inner())?;
     // push_current does a blocking GET + PUT to the team server; keep it off the main thread.
-    tauri::async_runtime::spawn_blocking(move || {
-        match selected_ids { Some(ids) => teams::push_selected(&ids, base_version, &local_fingerprint), None => teams::push_current(base_version, &local_fingerprint).map(teams::PublishResult::whole_set) }
+    tauri::async_runtime::spawn_blocking(move || match selected_ids {
+        Some(ids) => teams::push_selected(&ids, base_version, &local_fingerprint),
+        None => teams::push_current(base_version, &local_fingerprint)
+            .map(teams::PublishResult::whole_set),
     })
     .await
     .map_err(|e| format!("push task join failed: {e}"))?
@@ -2677,20 +2483,13 @@ fn popular_catalog() -> Vec<catalog::CatalogEntry> {
     catalog::popular()
 }
 
-/// Curated stacks: role-based bundles of catalog servers (each resolved to full
-/// entries with credential hints) for the guided one-flow setup.
-#[tauri::command]
-fn list_stacks() -> Vec<stacks::Stack> {
-    stacks::stacks()
-}
-
 /// Search the official MCP Registry for servers to add. Network call, so it runs
 /// on a blocking worker. Empty query returns popular/recent servers.
 #[tauri::command]
-async fn search_catalog(query: String) -> Result<Vec<catalog::CatalogEntry>, String> {
+async fn search_catalog(query: String) -> Result<catalog::CatalogSearch, String> {
     tauri::async_runtime::spawn_blocking(move || catalog::search(&query))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 /// Which of a server's env keys currently have a value stored in the keychain.
@@ -2741,6 +2540,20 @@ async fn secret_status(
 #[tauri::command]
 fn open_data_dir() -> Result<(), String> {
     crate::diagnostics_controller::open_data_dir()
+}
+
+#[tauri::command]
+fn open_exports_dir() -> Result<(), String> {
+    crate::diagnostics_controller::open_exports_dir()
+}
+
+#[tauri::command]
+fn dismiss_removed_features_notice(state: State<RegistryState>) -> Result<Registry, String> {
+    let (reg, _) = write_registry(state.inner(), |reg| {
+        reg.dismiss_removed_features_notice();
+        Ok(())
+    })?;
+    Ok(reg)
 }
 
 /// Serialize the user's servers into a shareable setup (server definitions only,
@@ -2932,34 +2745,34 @@ struct ImportItem {
     url: Option<String>,
     /// False if a server with this name already exists (the import would skip it).
     is_new: bool,
+    reference_review: Vec<String>,
+    credentials: Vec<crate::registry_controller::CredentialReview>,
+    unsupported: Option<String>,
 }
 
 /// Show exactly what the bulk client import would add without changing the
 /// registry. The same import key is accepted by `import_servers` after review.
 #[tauri::command]
 async fn preview_import_servers(
-    state: State<'_, RegistryState>,
+    _state: State<'_, RegistryState>,
 ) -> Result<Vec<ImportItem>, String> {
-    let detected = tauri::async_runtime::spawn_blocking(clients::detect_clients)
-        .await
-        .map_err(|e| e.to_string())?;
-    let reg = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    Ok(servers_to_import(&detected, &reg)
+    let candidates =
+        tauri::async_runtime::spawn_blocking(crate::registry_controller::preview_client_imports)
+            .await
+            .map_err(|_| "Import preview stopped".to_string())??;
+    Ok(candidates
         .into_iter()
         .map(|server| ImportItem {
-            key: Some(clients::import_dedupe_key(
-                &server.name,
-                server.command.as_deref(),
-                &server.args,
-            )),
+            reference_review: Vec::new(),
+            key: Some(server.key),
             name: server.name,
             transport: server.transport,
             command: server.command,
             args: server.args,
             url: server.url,
             is_new: true,
+            credentials: server.credentials,
+            unsupported: server.unsupported,
         })
         .collect())
 }
@@ -2985,6 +2798,7 @@ fn preview_import(state: State<RegistryState>, json: String) -> Result<Vec<Impor
                 .iter()
                 .any(|e| e.name.eq_ignore_ascii_case(&s.name));
             ImportItem {
+                reference_review: crate::secret_refs::review_lines(&s),
                 key: None,
                 name: s.name,
                 transport: s.transport,
@@ -2992,6 +2806,8 @@ fn preview_import(state: State<RegistryState>, json: String) -> Result<Vec<Impor
                 args: s.args,
                 url: s.url,
                 is_new,
+                credentials: Vec::new(),
+                unsupported: None,
             }
         })
         .collect())
@@ -3140,7 +2956,7 @@ fn watch_retry_delay(consecutive_failures: u32) -> Duration {
 
 fn watch_failure_should_log(consecutive_failures: u32, error_changed: bool) -> bool {
     consecutive_failures > 0
-        && (consecutive_failures == 1 || error_changed || consecutive_failures % 20 == 0)
+        && (consecutive_failures == 1 || error_changed || consecutive_failures.is_multiple_of(20))
 }
 
 /// Watch the registry file and mirror external changes (e.g. an agent enabling a
@@ -3241,10 +3057,8 @@ fn stop_spawned_gateways(bridge: State<HttpBridgeState>) -> UpdateShutdownReport
         }
     };
 
-    // Never launch the kill-all pass when Toolport could not first persist the
-    // exact recovery identity for its owned endpoint. The global enumerator can
-    // see and kill that child too; proceeding would destroy connectivity without
-    // a trustworthy port/token from which to recover it.
+    // Do not proceed with gateway preflight unless the owned endpoint's exact
+    // recovery identity is persisted. Recovery needs its trustworthy port/token.
     if let OwnedBridgeStop::FailedBeforeIntent(error) = &owned_bridge {
         return UpdateShutdownReport {
             reaper: crate::gateway_publish::ReapReport {
@@ -3498,7 +3312,7 @@ fn reap_stale_and_restore_bridge(bridge: &HttpBridgeState, advice: &RestartAdvic
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut extra_keep = Vec::new();
-    if let Some(p) = clients::resolve_gateway_path() {
+    if let Some(p) = clients::resolve_gateway_path_readonly() {
         extra_keep.push(p);
     }
     // Port of a bridge that is alive *before* the reap; None means there is nothing
@@ -3967,13 +3781,22 @@ struct TeamPairEvent {
 
 impl TeamPairEvent {
     fn new(state: &'static str) -> Self {
-        Self { state, check: None, message: None }
+        Self {
+            state,
+            check: None,
+            message: None,
+        }
     }
 }
 
 fn deliver_team_pair(app: &AppHandle, origin: String, team: String) {
     show_main_window(app);
-    if registry::load().is_ok_and(|reg| teams::pair_target_is_current(&reg, &origin, &team)) {
+    // Already connected here, unless this machine lost its sign-in: then
+    // pairing again is exactly how it reconnects.
+    if registry::load().is_ok_and(|reg| {
+        teams::pair_target_is_current(&reg, &origin, &team)
+            && !crate::personal_sync::state(&reg).is_ok_and(|st| st.sign_in_required)
+    }) {
         let _ = app.emit("show-teams", ());
         return;
     }
@@ -3982,30 +3805,65 @@ fn deliver_team_pair(app: &AppHandle, origin: String, team: String) {
         if let Some(current) = pairing.as_ref() {
             // A repeated link brings the waiting prompt back instead of pairing twice.
             if let Some(check) = &current.check {
-                let _ = app.emit("team-pair", TeamPairEvent { check: Some(check.clone()), ..TeamPairEvent::new("pending") });
+                let _ = app.emit(
+                    "team-pair",
+                    TeamPairEvent {
+                        check: Some(check.clone()),
+                        ..TeamPairEvent::new("pending")
+                    },
+                );
             }
             return;
         }
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        *pairing = Some(TeamPairing { cancel: std::sync::Arc::clone(&cancel), check: None });
+        *pairing = Some(TeamPairing {
+            cancel: std::sync::Arc::clone(&cancel),
+            check: None,
+        });
         cancel
     };
     let pending = TeamPairGuard(std::sync::Arc::clone(&cancel));
-    let handle=app.clone();
-    app.dialog().message(format!("Control plane: {origin}\nOnly continue if you trust this origin. Your browser will show the named team and account before approval. Connecting replaces this installation's current team connection."))
-        .title("Connect Toolport to Teams?").buttons(MessageDialogButtons::OkCancel).show(move |approved| {
-            if !approved { drop(pending); return; }
+    let handle = app.clone();
+    app.dialog()
+        .message(teams::pairing_confirm_copy(
+            &origin,
+            crate::registry::load().is_ok_and(|r| r.team.is_some()),
+        ))
+        .title("Sign in to sync?")
+        .buttons(MessageDialogButtons::OkCancel)
+        .show(move |approved| {
+            if !approved {
+                drop(pending);
+                return;
+            }
             std::thread::spawn(move || {
-                let result=teams::pair_device(&origin,&team,&cancel,|url,check| {
-                    if let Some(current) = team_pairing().as_mut().filter(|current| pending.owns(current)) { current.check = Some(check.to_string()); }
-                    let _ = handle.emit("team-pair", TeamPairEvent { check: Some(check.to_string()), ..TeamPairEvent::new("pending") });
-                    let _=crate::oauth::open_web_url(url);
+                let result = teams::pair_device(&origin, &team, &cancel, |url, check| {
+                    if let Some(current) = team_pairing()
+                        .as_mut()
+                        .filter(|current| pending.owns(current))
+                    {
+                        current.check = Some(check.to_string());
+                    }
+                    let _ = handle.emit(
+                        "team-pair",
+                        TeamPairEvent {
+                            check: Some(check.to_string()),
+                            ..TeamPairEvent::new("pending")
+                        },
+                    );
+                    let _ = crate::oauth::open_web_url(url);
                 });
                 drop(pending);
                 let event = match result {
-                    Ok(reg) => { let _=handle.emit("team-sync-registry",&reg); TeamPairEvent::new("connected") }
+                    Ok(reg) => {
+                        let _ = handle.emit("team-sync-registry", &reg);
+                        TeamPairEvent::new("connected")
+                    }
                     Err(e) if e == teams::PAIRING_CANCELLED => TeamPairEvent::new("cancelled"),
-                    Err(e) => TeamPairEvent { message: Some(e), ..TeamPairEvent::new("failed") },
+                    Err(e) => TeamPairEvent {
+                        message: Some(e),
+                        ..TeamPairEvent::new("failed")
+                    },
                 };
                 let _ = handle.emit("team-pair", event);
             });
@@ -4017,7 +3875,10 @@ fn deliver_team_pair(app: &AppHandle, origin: String, team: String) {
 #[tauri::command]
 fn team_pair_state() -> Option<TeamPairEvent> {
     team_pairing().as_ref().and_then(|current| {
-        current.check.clone().map(|check| TeamPairEvent { check: Some(check), ..TeamPairEvent::new("pending") })
+        current.check.clone().map(|check| TeamPairEvent {
+            check: Some(check),
+            ..TeamPairEvent::new("pending")
+        })
     })
 }
 
@@ -4025,8 +3886,62 @@ fn team_pair_state() -> Option<TeamPairEvent> {
 #[tauri::command]
 fn team_pair_cancel() {
     if let Some(current) = team_pairing().as_ref() {
-        current.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        current
+            .cancel
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
+}
+
+fn close_to_tray(tray_created: bool, host_present: bool) -> bool {
+    tray_created && host_present
+}
+
+#[cfg(target_os = "linux")]
+fn tray_host_present() -> bool {
+    use gio::prelude::*;
+    let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
+        return false;
+    };
+    bus.call_sync(
+        Some("org.kde.StatusNotifierWatcher"),
+        "/StatusNotifierWatcher",
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        Some(
+            &(
+                "org.kde.StatusNotifierWatcher",
+                "IsStatusNotifierHostRegistered",
+            )
+                .to_variant(),
+        ),
+        None,
+        gio::DBusCallFlags::NONE,
+        1000,
+        gio::Cancellable::NONE,
+    )
+    .ok()
+    .and_then(|reply| reply.child_value(0).as_variant())
+    .and_then(|value| value.get::<bool>())
+    .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn tray_host_present() -> bool {
+    let class: Vec<u16> = "Shell_TrayWnd\0".encode_utf16().collect();
+    // Windows owns this class for Explorer's notification area.
+    unsafe {
+        !windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW(class.as_ptr(), std::ptr::null())
+            .is_null()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn tray_host_present() -> bool {
+    true
+}
+
+fn usable_tray(app: &AppHandle) -> bool {
+    close_to_tray(app.tray_by_id("main").is_some(), tray_host_present())
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -4190,7 +4105,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 fn enable_launch_at_login(app: AppHandle) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        return crate::autostart::enable_linux(&app.package_info().name);
+        crate::autostart::enable_linux(&app.package_info().name)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -4203,7 +4118,7 @@ fn enable_launch_at_login(app: AppHandle) -> Result<(), String> {
 fn disable_launch_at_login(app: AppHandle) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        return crate::autostart::disable_linux(&app.package_info().name);
+        crate::autostart::disable_linux(&app.package_info().name)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -4216,7 +4131,7 @@ fn disable_launch_at_login(app: AppHandle) -> Result<(), String> {
 fn is_launch_at_login_enabled(app: AppHandle) -> Result<bool, String> {
     #[cfg(target_os = "linux")]
     {
-        return crate::autostart::is_enabled_linux(&app.package_info().name);
+        crate::autostart::is_enabled_linux(&app.package_info().name)
     }
     #[cfg(target_os = "windows")]
     {
@@ -4352,27 +4267,41 @@ pub fn run() {
         .manage(PendingShare::default())
         .manage(PendingTrayApprovals::default())
         .manage(RestartAdvice::default())
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(crate::activity_revision_ipc::handler(tauri::generate_handler![
             detect_clients,
+            client_location_types,
+            add_client_location,
+            remove_client_location,
             get_registry,
             take_registry_recovery_notice,
             import_servers,
             preview_import_servers,
             parse_server_snippet,
+            add_snippet_servers,
             add_server,
             update_server,
             remove_server,
             set_server_enabled,
             create_profile,
+            set_default_access,
+            set_access_server,
             delete_profile,
-            set_active_profile,
+            dismiss_access_upgrade_notice,
+            dismiss_removed_features_notice,
+            open_exports_dir,
             set_folder_profiles,
             set_profile_server_tools,
-            write_to_client,
             install_gateway,
             uninstall_gateway,
+            disconnect_all_clients,
+            data_removal_plan,
+            remove_toolport_data,
             migrate_client,
+            preview_client_setup,
             set_secret,
+            set_secret_reference,
+            test_secret_reference,
+            secret_reference_providers,
             set_launch_secret,
             set_launch_input_value,
             delete_secret,
@@ -4380,9 +4309,13 @@ pub fn run() {
             clear_client_credentials,
             has_client_secret,
             secret_status,
+            release_activity_revision,
+            activity_health,
             get_audit_log,
+            get_client_sessions,
             audit_stats,
             get_security_events,
+            get_baseline_notice,
             savings_summary,
             gather_diagnostics,
             probe_servers,
@@ -4397,14 +4330,9 @@ pub fn run() {
             call_tool,
             set_tool_enabled,
             set_tool_pinned,
-            set_deny_destructive,
-            set_confirm_destructive,
-            set_human_approval,
+            set_safety_level,
             list_pending_approvals,
             decide_approval,
-            list_routine_suggestions,
-            approve_routine_suggestion,
-            dismiss_routine_suggestion,
             list_allowed_tools,
             revoke_allowed_tool,
             set_tool_override,
@@ -4413,53 +4341,29 @@ pub fn run() {
             get_inspect_log,
             clear_inspect_log,
             get_search_traces,
-            clear_search_traces,
             clear_activity_logs,
             list_tool_identities,
-            set_quarantine_on_drift,
-            set_block_on_injection,
             set_pii_redaction,
             list_quarantined,
+            get_quarantine_definition,
             release_quarantine,
             release_all_quarantine,
             set_lazy_discovery,
             set_code_mode,
-            set_allow_routine_writes,
-            set_allow_agent_control,
             set_client_discovery,
+            personal_sync_local_only,
+            personal_sync_portable,
+            reconnect_sync,
+            personal_sync_resolve_conflict,
+            personal_sync_finish_selection,
+            personal_sync_new_servers_local_only,
             team_connect,
             team_join_poll,
             team_sync,
             team_sync_wait,
             main_window_visible,
             team_instructions_status,
-            rules_view,
-            rules_save_set,
-            rules_delete_set,
-            rules_set_active,
-            rules_set_client_enabled,
-            rules_preview,
-            rules_apply,
-            rules_apply_client,
-            rules_project_add,
-            rules_project_remove,
-            rules_project_set_set,
-            rules_project_set_file_enabled,
-            rules_project_apply,
-            rules_project_preview,
-            rules_import_candidates,
-            rules_import_file,
-            agent_guard_view,
-            agent_guard_set_cursor_mode,
-            agent_guard_preview,
-            agent_permissions_view,
-            agent_permissions_set_enabled,
-            agent_permissions_set_rules,
-            agent_permissions_preview,
-            hooks_view,
-            hooks_set_enabled,
-            hooks_preview,
-            hooks_recent,
+            team_sync_status,
             team_disconnect,
             team_push_preview,
             team_pair_state,
@@ -4467,6 +4371,8 @@ pub fn run() {
             team_use_managed,
             team_account_link,
             team_push,
+            team_review,
+            team_open_confirmation,
             set_auth_token,
             clear_auth_token,
             has_auth_token,
@@ -4475,7 +4381,6 @@ pub fn run() {
             cancel_oauth_attempt,
             probe_auth,
             popular_catalog,
-            list_stacks,
             search_catalog,
             open_data_dir,
             set_all_enabled,
@@ -4500,13 +4405,16 @@ pub fn run() {
             disable_launch_at_login,
             is_launch_at_login_enabled,
             open_external,
-        ])
-        // Close-to-tray: the window's X hides it instead of quitting, so the gateway and
-        // approval broker keep running (HITL only works while the app is alive). Quit is
-        // explicit, from the tray menu. A one-time notification explains it the first time.
+        ]))
+        // Only a usable tray can keep a closed window reachable. Without one,
+        // close exits through the normal run-loop cleanup.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
+                    if !usable_tray(window.app_handle()) {
+                        window.app_handle().exit(0);
+                        return;
+                    }
                     api.prevent_close();
                     let _ = window.hide();
                     // Hidden to the tray => menu-bar only, so drop the Dock icon (macOS).
@@ -4529,9 +4437,11 @@ pub fn run() {
             // Build the tray icon, then show the window - unless launched with `--hidden`
             // (auto-start at login), in which case we start straight to the tray. The
             // window is created hidden (visible:false) so a normal launch never flashes.
-            build_tray(handle)?;
+            if let Err(error) = build_tray(handle) {
+                eprintln!("toolport: tray unavailable: {error}");
+            }
             let start_hidden = std::env::args().any(|a| a == "--hidden");
-            if start_hidden {
+            if start_hidden && usable_tray(handle) {
                 // Auto-start at login goes straight to the tray: menu-bar only, no
                 // Dock icon until the user opens the window.
                 set_dock_icon_visible(handle, false);
@@ -4580,11 +4490,15 @@ pub fn run() {
                         );
                     }
                 }
-                if let Some(published) = crate::gateway_publish::publish_bundled_gateway() {
-                    eprintln!(
-                        "toolport: published client gateway at {}",
-                        published.display()
-                    );
+                match crate::gateway_publish::publish_bundled_gateway() {
+                    Ok(Some(published)) => eprintln!("toolport: published client gateway at {}", published.display()),
+                    Ok(None) => {}
+                    Err(error) => {
+                        crate::daemon::add_status_note("Gateway publication incomplete. Retry after fixing data directory access.");
+                        eprintln!("toolport: gateway publication incomplete: {error}");
+                        let _ = migrate_handle.notification().builder().title("Gateway publication incomplete")
+                            .body("The gateway manifest could not be saved. Fix data directory access and reopen Toolport.").show();
+                    }
                 }
                 // An in-app update deliberately stops the supervised HTTP child
                 // before replacing files. The durable intent carries its exact
@@ -4629,12 +4543,12 @@ pub fn run() {
                             ids.join(", ")
                         );
                         // Refresh ownership records for everything we rewrote (SOU-406).
-                        let _ = registry::update(|reg| {
-                            for (id, entry) in &repoint.repointed {
-                                reg.set_client_managed_entry(id, entry.clone());
-                            }
-                            Ok(())
-                        });
+                        if let Err(error) = crate::gateway_publish::persist_repointed_ownership(&repoint.repointed) {
+                            crate::daemon::add_status_note("Client configs updated, but ownership state was not saved. Retry after fixing registry access.");
+                            eprintln!("toolport: client configs updated, but ownership state was not saved: {error}");
+                            let _ = migrate_handle.notification().builder().title("Client update incomplete")
+                                .body("Client configs changed, but their ownership state could not be saved. Fix registry access and reopen Toolport.").show();
+                        }
                     }
                     if !repoint.customized.is_empty() {
                         eprintln!(
@@ -4660,23 +4574,14 @@ pub fn run() {
                                 .join(", ")
                         );
                     }
-                    // Re-assert the user's personal agent rules (SBS-821), on this same launch
-                    // thread because it is the one already allowed to touch client files on disk.
-                    // Picks up a client installed, reinstalled, or updated since the last apply
-                    // without the user opening the Rules tab. Cheap and quiet: it returns before
-                    // scanning anything when no rule set is configured and nothing was ever
-                    // written, and `write_target` no-ops when a client's block already matches, so
-                    // a steady-state launch touches no files.
-                    rules::apply_on_startup();
-                    // Same launch thread, same reason, for the agent hook sensor (SBS-822).
-                    // This one additionally repairs the binary path after an update: the
-                    // published gateway is versioned and the reaper prunes superseded
-                    // builds, so hooks written before an update would name a binary that
-                    // no longer exists. Returns immediately when the sensor was never
-                    // turned on.
-                    hooks::apply_on_startup();
-                    agent_permissions::apply_on_startup();
-                    agent_guard::apply_on_startup();
+                    // Remove the retired agent activity sensor's hook entries once. 2.0
+                    // cut the feature; entries an earlier release installed stay harmless
+                    // (the subcommand is a no-op) but should go. Guarded by a data-dir
+                    // marker, so this scans once ever.
+                    hooks::cleanup_on_startup();
+                    // One-time removal of the retired agent guard hook entries, then the
+                    // marker file stops it running again.
+                    guard_cleanup::run_once();
                 }
 
                 // Stop obsolete gateway processes. Path-based identity on all OS
@@ -4821,6 +4726,8 @@ pub fn run() {
             // endpoint descriptor so a gateway dialing after we're gone reads no broker
             // (a clean Unreachable) rather than connecting to the dead port we left behind.
             if matches!(event, tauri::RunEvent::Exit) {
+                // Land any queued audit/savings/search-trace lines before the app exits.
+                crate::telemetry::shutdown();
                 if let Some(stop) = app_handle.try_state::<TeamLifecycleStop>() {
                     stop.0.store(true, std::sync::atomic::Ordering::Release);
                 }
@@ -4858,6 +4765,13 @@ fn registry_startup_failure_message(path: Option<&std::path::Path>, error: &str)
     let path = path
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "the Toolport data directory".to_string());
+    // Version skew has a different fix from corruption: restoring a backup or
+    // moving the file aside is the wrong advice when the file is simply newer.
+    if registry::is_newer_version_error(error) {
+        return format!(
+            "Toolport stopped before touching your registry because it was written by a newer version.\n\n{error}\n\nRegistry: {path}"
+        );
+    }
     format!(
         "Toolport could not safely load its registry, so it stopped before showing or saving an empty configuration. Your registry was not replaced.\n\nClose any other Toolport processes and try again. If the problem continues, restore a registry backup or move the unreadable registry aside, then reopen Toolport.\n\nRegistry: {path}\n\nError: {error}"
     )
@@ -4880,6 +4794,14 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn close_hides_only_with_a_created_tray_and_registered_host() {
+        assert!(close_to_tray(true, true));
+        assert!(!close_to_tray(true, false));
+        assert!(!close_to_tray(false, true));
+        assert!(!close_to_tray(false, false));
     }
 
     #[test]
@@ -4912,8 +4834,7 @@ mod tests {
                 "kill denied",
             ))
         })
-        .err()
-        .expect("failed kill must be reported");
+        .expect_err("failed kill must be reported");
 
         assert!(error.contains("kill denied"));
         assert_eq!(bridge.port, Some(9876));
@@ -5082,6 +5003,8 @@ mod tests {
 
     fn github_with_secret() -> ServerEntry {
         ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "gh".into(),
             name: "GitHub".into(),
             transport: "stdio".into(),
@@ -5091,6 +5014,7 @@ mod tests {
                 key: "TOKEN".into(),
                 value: Some("sk-live-xyz".into()),
                 secret: true,
+                unknown_fields: Default::default(),
             }],
             url: None,
             source: None,
@@ -5123,6 +5047,8 @@ mod tests {
 
     fn plain_server(id: &str, name: &str) -> ServerEntry {
         ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: id.into(),
             name: name.into(),
             transport: "stdio".into(),
@@ -5177,9 +5103,11 @@ mod tests {
         plugin_servers: Vec<&str>,
     ) -> clients::DetectedClient {
         clients::DetectedClient {
+            discovery: clients::discovery_capabilities("fixture"),
             id: id.into(),
             name: id.into(),
             uses_connectors: false,
+            location_removable: false,
             config_path: String::new(),
             config_exists: true,
             app_present: true,
@@ -5583,6 +5511,7 @@ mod tests {
             enabled_server_ids: vec!["gh".into()],
             tool_scope: Default::default(),
             instructions: None,
+            unknown_fields: Default::default(),
         }];
         let mut baselines = BTreeMap::new();
         let bl = |fp: &str, fs: u64, lc: u64| integrity::ToolBaseline {
@@ -5626,6 +5555,8 @@ mod tests {
         let mut reg = Registry::default();
         reg.add_server(github_with_secret());
         reg.add_server(ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: String::new(),
             name: "conduit".into(),
             transport: "stdio".into(),
@@ -5735,6 +5666,8 @@ mod tests {
         // A remote server whose URL carries inline creds must not leak them in a share.
         let mut reg = Registry::default();
         reg.add_server(ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "remote".into(),
             name: "Remote".into(),
             transport: "http".into(),
@@ -5801,6 +5734,8 @@ mod tests {
 
         let mut reg = Registry::default();
         reg.add_server(ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "pg".into(),
             name: "PostgreSQL".into(),
             transport: "stdio".into(),
@@ -5859,6 +5794,8 @@ mod tests {
 
         let mut reg = Registry::default();
         reg.add_server(ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "remote".into(),
             name: "Remote".into(),
             transport: "stdio".into(),
@@ -5899,6 +5836,8 @@ mod tests {
         // through the full share path (export -> serialize -> import elsewhere).
         let mut reg = Registry::default();
         reg.add_server(ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "pg".into(),
             name: "PostgreSQL".into(),
             transport: "stdio".into(),
@@ -6014,6 +5953,8 @@ mod tests {
     fn diagnostics_redacts_inline_arg_and_url_secrets() {
         let mut reg = Registry::default();
         reg.add_server(ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "pg".into(),
             name: "Postgres".into(),
             transport: "stdio".into(),
@@ -6036,6 +5977,8 @@ mod tests {
             unknown_fields: serde_json::Map::new(),
         });
         reg.add_server(ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "remote".into(),
             name: "Remote".into(),
             transport: "http".into(),
@@ -6365,6 +6308,7 @@ mod tests {
         let _serial = GEN_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let data = registry::DataDirTestEnv::new("bump-failure");
         let _env = registry::REGISTRY_ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -6374,8 +6318,7 @@ mod tests {
         // registry and fails on state it just saved. Take the same lock those
         // tests hold (as clear_auth_token_propagates_reload_failure... already
         // does) so the two can never overlap.
-        let _data = registry::data_dir_test_lock();
-        let dir = unique_update_test_dir("bump-failure");
+        let dir = data.dir.clone();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::create_dir_all(dir.join("registry.json")).unwrap();
 
@@ -6398,8 +6341,6 @@ mod tests {
             err.contains("could not reload the running gateway"),
             "unexpected error: {err}"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The happy path: the bump persists the incremented generation so a running gateway
@@ -6409,13 +6350,13 @@ mod tests {
         let _serial = GEN_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let data = registry::DataDirTestEnv::new("bump-success");
         let _env = registry::REGISTRY_ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Same reason as above: this sets the process-global TOOLPORT_REGISTRY,
         // which outranks any concurrent test's data-dir override.
-        let _data = registry::data_dir_test_lock();
-        let dir = unique_update_test_dir("bump-success");
+        let dir = data.dir.clone();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("registry.json");
 
@@ -6436,8 +6377,6 @@ mod tests {
         bump_secrets_generation(&state).expect("bump should succeed");
         let persisted = registry::load_from(&path).expect("registry should exist");
         assert_eq!(persisted.secrets_generation, 1);
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The three partial-failure messages are the exact copy users see (the frontend
@@ -6494,10 +6433,10 @@ mod tests {
         let _serial = GEN_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _data = registry::data_dir_test_lock();
         let _env = registry::REGISTRY_ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _data = registry::data_dir_test_lock();
         let dir = unique_update_test_dir("clear-auth-reload-fail");
         std::fs::create_dir_all(&dir).unwrap();
         let _override = registry::DataDirOverride::set(&dir);
@@ -7053,6 +6992,7 @@ mod tests {
                 label: format!("Client: {client_id}"),
                 token_sha256: registry::sha256_hex("leftover-bearer"),
                 profile: String::new(),
+                unknown_fields: Default::default(),
             });
             registry::save(&reg).unwrap();
             Self {
@@ -7070,77 +7010,6 @@ mod tests {
             let on_disk = registry::load().expect("scratch registry loads");
             on_disk.http_clients.iter().any(|c| c.id == self.http_id)
         }
-    }
-
-    /// SBS-840 class, the instance left behind by that sweep. A failed vault READ
-    /// must not fall through to minting a replacement bearer. `get_secret` collapsed
-    /// a read error into `None`, which looks exactly like "this client has no bearer
-    /// yet", so the mint path overwrote the vaulted copy and `retain`ed the client's
-    /// `http_clients` row away for a new one. The bearer the client was already
-    /// configured with then hashed to no row, so every request it made 401'd until
-    /// the user reconnected that client by hand.
-    #[test]
-    fn ensure_client_http_token_propagates_a_failed_vault_read_instead_of_minting() {
-        let fixture = RevokeFixture::new("sbs-840-ensure-read");
-
-        let err = ensure_client_http_token_with(
-            &fixture.state,
-            &fixture.client_id,
-            None,
-            |_server, _client| Err("the keychain is locked".into()),
-        )
-        .expect_err("a failed vault read must not mint a replacement bearer");
-
-        assert!(
-            err.starts_with("Could not read the saved token"),
-            "the vault read failure must reach the caller as a complete sentence \
-             (the frontend renders it verbatim), got: {err}"
-        );
-        assert!(
-            err.contains("the keychain is locked"),
-            "the underlying cause must survive, got: {err}"
-        );
-        // The `expect_err` above is what pins the reported bug; today's mint path
-        // returns `Ok`, so execution never reaches here under it.
-        //
-        // This guards the ORDERING invariant instead: nothing may error out after
-        // already replacing the row. Assert the HASH rather than the id, because the
-        // mint path `retain`s the old row away and pushes a new one under the SAME
-        // id, so an id-only check cannot tell a surviving bearer from a replaced one.
-        // `http_client_for_token` matches on `token_sha256`, so that is what decides
-        // whether the client's configured token still authenticates.
-        let on_disk = registry::load().expect("scratch registry loads");
-        let row = on_disk
-            .http_clients
-            .iter()
-            .find(|c| c.id == fixture.http_id)
-            .expect("a failed vault read must not drop the client's http_clients row");
-        assert_eq!(
-            row.token_sha256,
-            registry::sha256_hex("leftover-bearer"),
-            "the row must still carry the ORIGINAL bearer's hash; a new hash means a \
-             replacement was minted and the client's configured token is now dead"
-        );
-    }
-
-    /// The reuse path is unchanged by the fix: a confirmed vaulted token that still
-    /// matches a registered row is handed back as-is, with nothing minted. Guards
-    /// against over-correcting the above into "never reuse".
-    #[test]
-    fn ensure_client_http_token_reuses_a_vaulted_token_that_matches_its_row() {
-        let fixture = RevokeFixture::new("sbs-840-ensure-reuse");
-
-        let token = ensure_client_http_token_with(
-            &fixture.state,
-            &fixture.client_id,
-            None,
-            // The fixture's row is registered against this exact token.
-            |_server, _client| Ok(Some("leftover-bearer".to_string())),
-        )
-        .expect("a matching vaulted token must be reused");
-
-        assert_eq!(token, "leftover-bearer");
-        assert!(fixture.http_row_present());
     }
 
     #[test]

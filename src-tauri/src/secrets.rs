@@ -5,8 +5,15 @@
 
 const SERVICE: &str = "conduit-mcp";
 
+#[path = "purge_keyring.rs"]
+pub(crate) mod purge;
+
 const INTERNAL_SERVER_ID: &str = "__toolport_internal__";
+#[cfg(not(test))]
 const TASK_HANDLE_KEY: &str = "__task_handle_key__";
+
+/// Vault reference for a reviewed endpoint containing inline credentials.
+pub(crate) const IMPORTED_URL_KEY: &str = "__imported_endpoint_url__";
 
 /// Reserved secret key for an http server's bearer token (Tier A auth, and where
 /// the OAuth flow stores its access token).
@@ -19,6 +26,19 @@ pub const HTTP_AUTH_KEY: &str = "__http_auth__";
 /// written to `registry.json`, config backups, or exports; only the non-secret
 /// `clientId` / scopes / auth method live there.
 pub const CLIENT_SECRET_KEY: &str = "__oauth_client_secret__";
+
+#[cfg(any(target_os = "macos", test))]
+fn keychain_gateway_path(
+    result: Result<Option<std::path::PathBuf>, String>,
+) -> Option<std::path::PathBuf> {
+    match result {
+        Ok(path) => path,
+        Err(_) => {
+            crate::gatewaylog::append("gateway publication failed; keychain ACL is app-only");
+            None
+        }
+    }
+}
 
 fn account(server_id: &str, key: &str) -> String {
     format!("{server_id}::{key}")
@@ -223,7 +243,7 @@ mod platform {
         let app_path = std::env::current_exe().map_err(|e| e.to_string())?;
         let mut trusted_apps: Vec<CFType> = Vec::with_capacity(2);
         trusted_apps.push(trusted_app(&app_path)?);
-        match crate::clients::resolve_gateway_path() {
+        match super::keychain_gateway_path(crate::clients::resolve_gateway_path()) {
             Some(gw_path) => match trusted_app(&gw_path) {
                 Ok(t) => trusted_apps.push(t),
                 Err(e) => eprintln!("toolport: gateway not added to keychain ACL ({e}); app-only"),
@@ -879,6 +899,9 @@ mod platform {
         /// first attempt could not.
         #[test]
         fn a_secret_service_op_retries_once_when_the_daemon_dies_mid_call() {
+            let _data = crate::registry::DataDirTestEnv::new(
+                "a_secret_service_op_retries_once_when_the_daemon_dies_mid_call",
+            );
             let calls = AtomicUsize::new(0);
             let result = with_service_after(Duration::ZERO, || {
                 if calls.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -896,6 +919,9 @@ mod platform {
         /// D-Bus traffic that causes the crash in the first place.
         #[test]
         fn a_secret_service_op_does_not_retry_a_definitive_answer() {
+            let _data = crate::registry::DataDirTestEnv::new(
+                "a_secret_service_op_does_not_retry_a_definitive_answer",
+            );
             let calls = AtomicUsize::new(0);
             let result = with_service_after(Duration::ZERO, || {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -912,6 +938,9 @@ mod platform {
         /// a second unlock prompt — so it must be attempted once only.
         #[test]
         fn a_secret_service_op_does_not_retry_a_locked_keyring() {
+            let _data = crate::registry::DataDirTestEnv::new(
+                "a_secret_service_op_does_not_retry_a_locked_keyring",
+            );
             let calls = AtomicUsize::new(0);
             let result = with_service_after(Duration::ZERO, || {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -1006,6 +1035,9 @@ mod platform {
         /// (SBS-789), so the error has to reach them.
         #[test]
         fn a_secret_service_op_gives_up_after_a_single_retry() {
+            let _data = crate::registry::DataDirTestEnv::new(
+                "a_secret_service_op_gives_up_after_a_single_retry",
+            );
             let calls = AtomicUsize::new(0);
             let result = with_service_after(Duration::ZERO, || {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -1020,6 +1052,9 @@ mod platform {
         /// once, which is what races gnome-keyring's per-client bookkeeping.
         #[test]
         fn secret_service_ops_never_overlap_across_threads() {
+            let _data = crate::registry::DataDirTestEnv::new(
+                "secret_service_ops_never_overlap_across_threads",
+            );
             static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
             static MAX_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
@@ -1183,6 +1218,10 @@ fn set_secret_raw(server_id: &str, key: &str, value: &str) -> Result<(), String>
 }
 
 pub fn set_secret(server_id: &str, key: &str, value: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if tests::write_is_injected_failure(key) {
+        return Err("injected secret persistence failure".into());
+    }
     if server_id == INTERNAL_SERVER_ID {
         return Err("reserved Toolport secret namespace".to_string());
     }
@@ -1200,7 +1239,7 @@ pub fn get_secret(server_id: &str, key: &str) -> Option<String> {
 pub(crate) fn task_handle_key() -> Result<[u8; 32], String> {
     #[cfg(test)]
     {
-        return Ok([0x54; 32]);
+        Ok([0x54; 32])
     }
 
     #[cfg(not(test))]
@@ -1268,17 +1307,42 @@ fn get_secret_result_raw(server_id: &str, key: &str) -> Result<Option<String>, S
 /// Inspect only the managed identity's vault, never environment overrides or aliases.
 pub(crate) fn has_own_credentials(server: &crate::registry::ServerEntry) -> Result<bool, String> {
     let mut keys: Vec<&str> = server.env.iter().map(|e| e.key.as_str()).collect();
-    if let Some(launch) = &server.launch { keys.extend(launch.inputs.iter().filter(|i| i.secret).map(|i| i.key.as_str())); }
-    keys.extend([HTTP_AUTH_KEY, CLIENT_SECRET_KEY, "__oauth_state__", "__oauth_cc_state__"]);
+    if let Some(launch) = &server.launch {
+        keys.extend(
+            launch
+                .inputs
+                .iter()
+                .filter(|i| i.secret)
+                .map(|i| i.key.as_str()),
+        );
+    }
+    if crate::import_credentials::has_imported_url(server) {
+        keys.push(IMPORTED_URL_KEY);
+    }
+    keys.extend([
+        HTTP_AUTH_KEY,
+        CLIENT_SECRET_KEY,
+        "__oauth_state__",
+        "__oauth_cc_state__",
+    ]);
     for key in keys {
-        let value = if file::active() { file::get_secret_result(&server.id, key) }
-            else { platform::get_secret_result(&server.id, key) }?;
-        if value.is_some() { return Ok(true); }
+        let value = if file::active() {
+            file::get_secret_result(&server.id, key)
+        } else {
+            platform::get_secret_result(&server.id, key)
+        }?;
+        if value.is_some() {
+            return Ok(true);
+        }
     }
     Ok(false)
 }
 
 pub fn get_secret_result(server_id: &str, key: &str) -> Result<Option<String>, String> {
+    #[cfg(test)]
+    if tests::read_is_injected_failure(key) {
+        return Err("injected secret read failure".into());
+    }
     if server_id == INTERNAL_SERVER_ID {
         return Err("reserved Toolport secret namespace".to_string());
     }
@@ -1525,6 +1589,37 @@ fn create_dpk_migration_marker() -> bool {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn keychain_publication_failure_keeps_app_only_acl() {
+        let _lock = crate::registry::data_dir_test_lock();
+        let dir =
+            std::env::temp_dir().join(format!("toolport-acl-fallback-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _data = crate::registry::DataDirOverride::set(&dir);
+
+        assert_eq!(
+            super::keychain_gateway_path(Err("manifest failed".into())),
+            None
+        );
+        let path = std::path::PathBuf::from("gateway");
+        assert_eq!(
+            super::keychain_gateway_path(Ok(Some(path.clone()))),
+            Some(path)
+        );
+        assert!(crate::telemetry::flush_for_test(
+            std::time::Duration::from_secs(5)
+        ));
+        assert!(std::fs::read_to_string(dir.join("gateway.log"))
+            .unwrap()
+            .contains("publication failed"));
+        drop(_data);
+        assert!(crate::telemetry::retire_dir_for_test(
+            &dir,
+            std::time::Duration::from_secs(5)
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     use super::*;
     use std::sync::Mutex;
 
@@ -1534,16 +1629,61 @@ pub(crate) mod tests {
     /// failures under the default multi-threaded test runner.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    thread_local! {
+        static FAILED_READ: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+        static FAILED_WRITE: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(crate) fn read_is_injected_failure(key: &str) -> bool {
+        FAILED_READ.with(|failed| failed.get() == Some(key))
+    }
+
+    pub(crate) fn with_failed_read<T>(key: &'static str, test: impl FnOnce() -> T) -> T {
+        struct Restore(Option<&'static str>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                FAILED_READ.with(|failed| failed.set(self.0));
+            }
+        }
+        let _restore = Restore(FAILED_READ.with(|failed| failed.replace(Some(key))));
+        test()
+    }
+
+    pub(crate) fn write_is_injected_failure(key: &str) -> bool {
+        FAILED_WRITE.with(|failed| failed.get() == Some(key))
+    }
+
+    pub(crate) fn with_failed_write<T>(key: &'static str, test: impl FnOnce() -> T) -> T {
+        struct Restore(Option<&'static str>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                FAILED_WRITE.with(|failed| failed.set(self.0));
+            }
+        }
+        let _restore = Restore(FAILED_WRITE.with(|failed| failed.replace(Some(key))));
+        test()
+    }
+
     pub(crate) fn with_isolated_vault(test: impl FnOnce()) {
-        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _data = crate::registry::data_dir_test_lock();
-        let dir = std::env::temp_dir().join(format!("toolport-publisher-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "toolport-publisher-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let _override = crate::registry::DataDirOverride::set(&dir);
         struct Cleanup(std::path::PathBuf, Option<std::ffi::OsString>);
         impl Drop for Cleanup {
             fn drop(&mut self) {
-                match &self.1 { Some(value) => std::env::set_var("TOOLPORT_SECRET_KEY", value), None => std::env::remove_var("TOOLPORT_SECRET_KEY") }
+                match &self.1 {
+                    Some(value) => std::env::set_var("TOOLPORT_SECRET_KEY", value),
+                    None => std::env::remove_var("TOOLPORT_SECRET_KEY"),
+                }
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
@@ -1638,6 +1778,7 @@ pub(crate) mod tests {
         ignore = "data-protection keychain needs a signed build w/ provisioning profile (Phase 7)"
     )]
     fn set_get_delete_round_trip() {
+        let _data = crate::registry::DataDirTestEnv::new("set_get_delete_round_trip");
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let sid = "conduit-test-server";
         let key = "CONDUIT_TEST_KEY";
@@ -1651,6 +1792,9 @@ pub(crate) mod tests {
     #[test]
     #[cfg(target_os = "windows")]
     fn windows_oversized_secret_round_trips_updates_and_deletes() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "windows_oversized_secret_round_trips_updates_and_deletes",
+        );
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1701,6 +1845,9 @@ pub(crate) mod tests {
     #[test]
     #[cfg(target_os = "windows")]
     fn windows_chunk_reader_survives_concurrent_generation_swaps() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "windows_chunk_reader_survives_concurrent_generation_swaps",
+        );
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1768,6 +1915,9 @@ pub(crate) mod tests {
     #[test]
     #[cfg(target_os = "windows")]
     fn windows_absent_base_credential_is_retried_before_reporting_none() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "windows_absent_base_credential_is_retried_before_reporting_none",
+        );
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1810,6 +1960,9 @@ pub(crate) mod tests {
     #[test]
     #[cfg(target_os = "windows")]
     fn windows_chunk_error_survives_trailing_absent_base_reads() {
+        let _data = crate::registry::DataDirTestEnv::new(
+            "windows_chunk_error_survives_trailing_absent_base_reads",
+        );
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1841,6 +1994,8 @@ pub(crate) mod tests {
     #[test]
     #[cfg(target_os = "windows")]
     fn windows_secret_cleanup_guard_deletes_on_unwind() {
+        let _data =
+            crate::registry::DataDirTestEnv::new("windows_secret_cleanup_guard_deletes_on_unwind");
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2008,8 +2163,8 @@ pub(crate) mod tests {
     /// Without the load-modify-save lock, last atomic_write wins and loses peers.
     #[test]
     fn file_backend_concurrent_sets_preserve_all_keys() {
-        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _data_dir = crate::registry::data_dir_test_lock();
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // This asserts no key is LOST, not that every writer wins the lock inside the
         // production budget. On a loaded runner the 5s default expires, a writer
         // correctly gives up, and this fails for the machine's timing (SBS-895).

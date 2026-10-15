@@ -1,16 +1,12 @@
-import {
-  lazy,
-  Suspense,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { needsTeamEnableReview, sameReviewedDefinition } from "@/lib/importReview";
+import { serverPostureCopy } from "@/lib/serverPosture";
+import { type SettingsSubpage } from "@/lib/settingsPages";
+import { visibleExecutionText } from "@/lib/visibleExecutionText";
+import { isPersonalSync } from "@/lib/personalSync";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   ArrowLeft,
-  ChevronDown,
   CircleCheck,
   KeyRound,
   MoreHorizontal,
@@ -55,6 +51,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { AccessUpgradeNotice } from "@/components/AccessUpgradeNotice";
+import { RemovedFeaturesNotice } from "@/components/RemovedFeaturesNotice";
 import { AppSidebar } from "@/components/AppSidebar";
 import { ClientLogo } from "@/components/ClientLogo";
 import { PendingApprovals } from "@/components/PendingApprovals";
@@ -62,11 +60,7 @@ import { TeamPairingDialog } from "@/components/TeamPairingDialog";
 import { QuarantineAlert } from "@/components/QuarantineAlert";
 import { RegistryServerRow } from "@/components/RegistryServerRow";
 import { ServerDialog } from "@/components/ServerDialog";
-import {
-  ImportReviewDialog,
-  needsTeamEnableReview,
-  sameReviewedDefinition,
-} from "@/components/ImportReviewDialog";
+import { ImportReviewDialog } from "@/components/ImportReviewDialog";
 
 // Secondary destinations are code-split so the initial bundle only carries the
 // default Servers view and the app chrome. Each mounts behind a Suspense
@@ -86,20 +80,7 @@ const ActivityView = lazy(() =>
 const CatalogView = lazy(() =>
   import("@/components/CatalogView").then((m) => ({ default: m.CatalogView })),
 );
-const PlaygroundView = lazy(() =>
-  import("@/components/PlaygroundView").then((m) => ({ default: m.PlaygroundView })),
-);
-const RulesView = lazy(() =>
-  import("@/components/RulesView").then((m) => ({ default: m.RulesView })),
-);
-const AgentPermissionsView = lazy(() =>
-  import("@/components/AgentPermissionsView").then((m) => ({
-    default: m.AgentPermissionsView,
-  })),
-);
-const HooksView = lazy(() =>
-  import("@/components/HooksView").then((m) => ({ default: m.HooksView })),
-);
+const ExecutionReview = lazy(() => import("@/components/ExecutionReview"));
 const TeamsView = lazy(() =>
   import("@/components/TeamsView").then((m) => ({ default: m.TeamsView })),
 );
@@ -110,6 +91,7 @@ import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/Callout";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { GitHubStarPrompt, type StarSurface } from "@/components/GitHubStarPrompt";
+import { serverNameOrder } from "@/lib/serverOrder";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -141,8 +123,17 @@ function App() {
   // than a couple of servers, so one menu click can't silently kill a big set.
   const [confirmDisableAll, setConfirmDisableAll] = useState(false);
   const [confirmEnableTeam, setConfirmEnableTeam] = useState<ServerEntry | null>(null);
+  const [enableReviewError, setEnableReviewError] = useState<string | null>(null);
+  const [readyEnableReview, setReadyEnableReview] = useState<ServerEntry | null>(null);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const [toolsServerId, setToolsServerId] = useState<string | null>(null);
+  const [settingsPage, setSettingsPage] = useState<SettingsSubpage>("general");
+  const [pendingCount, setPendingCount] = useState(0);
   const [view, setView] = useState<View>("servers");
+  const viewRef = useRef(view);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
   const [activityKey, setActivityKey] = useState(0);
   const [health, setHealth] = useState<Record<string, ProbeResult>>({});
   const [probing, setProbing] = useState(false);
@@ -173,13 +164,8 @@ function App() {
   // Toolport into their tools.
   const [onboardingStep, setOnboardingStep] = useState(0);
   const [resumeAtConnect, setResumeAtConnect] = useState(false);
-  // Set when the wizard is completed in this session, which is the only trigger
-  // for the GitHub star card (see GitHubStarPrompt).
   const [justOnboarded, setJustOnboarded] = useState(false);
-  // The star prompt shares the bottom-right corner with the toast stack, so
-  // toasts are offset upward while it is on screen instead of covering it.
   const [starSurface, setStarSurface] = useState<StarSurface>(null);
-
   const lastProbeRef = useRef(0);
   const probeFlightRef = useRef(createSingleFlight<ProbeResult[]>());
   const loadedOnce = useRef(false);
@@ -232,11 +218,11 @@ function App() {
   const applyRegistryChange = useCallback(
     (next: Registry) => {
       const activeId = (value: Registry | null) =>
-        value?.activeProfileId ?? value?.profiles[0]?.id;
+        value?.defaultAccessProfileId ?? value?.defaultAccessContextId;
       const enabledIds = (value: Registry | null) =>
         new Set(
-          value?.profiles.find((profile) => profile.id === activeId(value))
-            ?.enabledServerIds ?? [],
+          value?.servers.filter((server) => server.enabled).map((server) => server.id) ??
+            [],
         );
       const previous = registryRef.current;
       const previousProfileId = activeId(previous);
@@ -297,11 +283,12 @@ function App() {
       setLoading(true);
       setError(null);
       try {
-        const [reg, dc, recovery] = await Promise.all([
-          getRegistry(),
-          detectClients(),
+        const [dc, recovery] = await Promise.all([
+          detectClients(viewRef.current === "clients"),
           takeRegistryRecoveryNotice(),
         ]);
+        // Inspecting locations can adopt an existing gateway and its access.
+        const reg = await getRegistry();
         registryRef.current = reg;
         setRegistry(reg);
         setClients(dc);
@@ -310,7 +297,9 @@ function App() {
           const detail =
             recovery.reason === "corrupt"
               ? `The registry file was damaged. Restored from backup (${when}).`
-              : `The registry file was missing. Restored from backup (${when}).`;
+              : recovery.reason === "missing"
+                ? `The registry file was missing. Restored from backup (${when}).`
+                : `${recovery.reason}. Loaded from backup (${when}).`;
           toast.warning("Registry recovered from backup", {
             description: recovery.quarantinePath
               ? `${detail} A copy of the bad file was saved for inspection.`
@@ -351,8 +340,28 @@ function App() {
   );
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Start the backend load on mount without deferring its loading state.
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (view !== "clients") return;
+    let active = true;
+    void detectClients(true)
+      .then(async (detected) => {
+        const registry = await getRegistry();
+        if (!active) return;
+        registryRef.current = registry;
+        setRegistry(registry);
+        setClients(detected);
+      })
+      .catch((error) => {
+        if (active) toastError(`Couldn't refresh clients: ${error}`);
+      });
+    return () => {
+      active = false;
+    };
+  }, [view]);
 
   // An agent toggling a server through the gateway writes the registry; the backend
   // watches that file and emits this event, so the UI reflects the change live
@@ -450,9 +459,18 @@ function App() {
   useEffect(() => {
     const unlisten = listen<Registry>("team-sync-registry", (event) => {
       applyRegistryChange(event.payload);
+      if (!event.payload.team?.personalSyncState?.error)
+        toast.dismiss("personal-sync-background");
+    });
+    const unlistenErrors = listen<string>("team-sync-error", (event) => {
+      toastError("Sync needs attention", {
+        id: "personal-sync-background",
+        description: event.payload.replace(/team server/g, "sync service"),
+      });
     });
     return () => {
       void unlisten.then((stop) => stop());
+      void unlistenErrors.then((stop) => stop());
     };
   }, [applyRegistryChange]);
 
@@ -463,6 +481,7 @@ function App() {
 
   // Top-level destinations leave any selected client detail behind.
   function selectView(v: View) {
+    if (v === "settings") setSettingsPage("general");
     setSelectedClientId(null);
     setView(v);
   }
@@ -530,7 +549,7 @@ function App() {
   }, [load]);
 
   const profileId = registry
-    ? (registry.activeProfileId ?? registry.profiles[0]?.id)
+    ? (registry.defaultAccessProfileId ?? registry.profiles[0]?.id)
     : undefined;
   // The gateway entry is Toolport itself, not a server it proxies - never list it.
   const servers = (registry?.servers ?? []).filter((s) => !isGatewayServer(s));
@@ -565,16 +584,7 @@ function App() {
     s.name.toLowerCase().includes(q) ||
     (s.url ?? "").toLowerCase().includes(q) ||
     (s.command ?? "").toLowerCase().includes(q);
-  const byName = (a: ServerEntry, b: ServerEntry) =>
-    a.name.toLowerCase().localeCompare(b.name.toLowerCase());
-
-  const visible = servers.filter(matches);
-  const grouped: Record<Group, ServerEntry[]> = {
-    attention: visible.filter((s) => groupOf(s) === "attention").sort(byName),
-    checking: visible.filter((s) => groupOf(s) === "checking").sort(byName),
-    active: visible.filter((s) => groupOf(s) === "active").sort(byName),
-    disabled: visible.filter((s) => groupOf(s) === "disabled").sort(byName),
-  };
+  const visible = servers.filter(matches).sort(serverNameOrder);
   // The posture and next action summarize the profile, not the current search.
   // Keep these counts independent of `visible` so a filter cannot produce a
   // misleading "0 servers" action while hiding an affected row.
@@ -601,6 +611,7 @@ function App() {
   useEffect(() => {
     if (onboarded || showOnboarding || resumeAtConnect || loading || !registry) return;
     const fresh = servers.length === 0 && !clients.some((c) => c.gatewayInstalled);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Latch the first-run wizard after the backend determines this is a fresh setup.
     if (fresh) setShowOnboarding(true);
   }, [
     onboarded,
@@ -617,6 +628,7 @@ function App() {
   // than abandoning onboarding, so they don't silently skip connecting a client.
   useEffect(() => {
     if (resumeAtConnect && view !== "catalog" && !onboarded) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Resume the wizard on navigation with the existing handoff timing.
       setOnboardingStep(2);
       setShowOnboarding(true);
       setResumeAtConnect(false);
@@ -634,13 +646,31 @@ function App() {
     setOnboardingStep(0);
   }
 
-  async function applyToggle(serverId: string, enabled: boolean, reviewed = false) {
+  async function applyToggle(
+    serverId: string,
+    enabled: boolean,
+    reviewed = false,
+    reviewedDefinition?: ServerEntry,
+  ) {
     if (!profileId) return;
     setBusyId(serverId);
     try {
-      const next = await setServerEnabled(profileId, serverId, enabled, reviewed);
+      const next = reviewedDefinition
+        ? await setServerEnabled(
+            profileId,
+            serverId,
+            enabled,
+            reviewed,
+            reviewedDefinition,
+          )
+        : await setServerEnabled(profileId, serverId, enabled, reviewed);
       applyRegistryChange(next);
+      if (reviewed) setEnableReviewError(null);
     } catch (e) {
+      if (reviewed) {
+        setEnableReviewError(e instanceof Error ? e.message : String(e));
+        throw e;
+      }
       toastError(`Couldn't toggle: ${e}`);
     } finally {
       setBusyId(null);
@@ -651,6 +681,7 @@ function App() {
     if (enabled) {
       const server = servers.find((s) => s.id === serverId);
       if (server && needsTeamEnableReview(server)) {
+        setEnableReviewError(null);
         setConfirmEnableTeam(server);
         return;
       }
@@ -744,6 +775,7 @@ function App() {
     <RegistryServerRow
       key={server.id}
       server={server}
+      openTools={toolsServerId === server.id}
       registry={registry}
       enabled={registry ? isEnabled(registry, server.id) : false}
       busy={busyId === server.id}
@@ -763,6 +795,10 @@ function App() {
           onRegistryChange={applyRegistryChange}
           view={view}
           onSelectView={selectView}
+          settingsPage={settingsPage}
+          onSettingsPageChange={setSettingsPage}
+          pendingCount={pendingCount}
+          onShortcuts={() => setShortcutsOpen(true)}
           onReplayOnboarding={() => {
             setOnboardingStep(0);
             setShowOnboarding(true);
@@ -770,7 +806,15 @@ function App() {
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
-          <header className="flex items-center justify-between gap-4 border-b px-6 py-4">
+          <RemovedFeaturesNotice
+            registry={registry}
+            onRegistryChange={applyRegistryChange}
+          />
+          <AccessUpgradeNotice
+            registry={registry}
+            onRegistryChange={applyRegistryChange}
+          />
+          <header className="app-header flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2 sm:px-6 sm:py-4">
             <div className="flex min-w-0 flex-1 items-center gap-3">
               {view === "clients" && selectedClient && (
                 <>
@@ -793,55 +837,43 @@ function App() {
                 </>
               )}
               <div className="min-w-0">
-                <h1 className="truncate text-lg font-semibold tracking-tight">
+                <h1 className="truncate text-[22px] font-[650] tracking-tight">
                   {view === "activity"
                     ? "Activity"
                     : view === "catalog"
                       ? "Browse catalog"
-                      : view === "playground"
-                        ? "Playground"
-                        : view === "rules"
-                          ? "Agent rules"
-                          : view === "hooks"
-                            ? "Agent activity"
-                            : view === "permissions"
-                              ? "Agent permissions"
-                              : view === "teams"
-                                ? "Teams"
-                                : view === "settings"
-                                  ? "Settings"
-                                  : view === "clients"
-                                    ? (selectedClient?.name ?? "Clients")
-                                    : "Servers"}
+                      : view === "teams"
+                        ? !registry?.team || isPersonalSync(registry)
+                          ? "Sync"
+                          : "Teams"
+                        : view === "settings"
+                          ? "Settings"
+                          : view === "clients"
+                            ? (selectedClient?.name ?? "Clients")
+                            : "Servers"}
                 </h1>
                 <p className="truncate text-sm text-muted-foreground">
                   {view === "activity"
                     ? "Tool calls routed through Toolport"
                     : view === "catalog"
                       ? "Add MCP servers from the registry"
-                      : view === "playground"
-                        ? "Invoke a server's tools and see the raw result"
-                        : view === "rules"
-                          ? "Write your rules once, apply them to every AI client"
-                          : view === "hooks"
-                            ? "See what your agents do outside Toolport"
-                            : view === "permissions"
-                              ? "Rules Claude Code enforces on its own native tool calls"
-                              : view === "teams"
-                                ? "Share one MCP server set across your team"
-                                : view === "settings"
-                                  ? "Global discovery and security policy"
-                                  : view === "clients"
-                                    ? selectedClient
-                                      ? "MCP client"
-                                      : "Manage Toolport in your installed AI tools"
-                                    : loading || !registry
-                                      ? "Loading…"
-                                      : "One gateway in front of every MCP server you run"}
+                      : view === "teams"
+                        ? !registry?.team || isPersonalSync(registry)
+                          ? "Your setup, on every machine"
+                          : "Share one MCP server set across your team"
+                        : view === "settings"
+                          ? "Global discovery and security policy"
+                          : view === "clients"
+                            ? selectedClient
+                              ? "MCP client"
+                              : "Manage Toolport in your installed AI tools"
+                            : loading || !registry
+                              ? "Loading…"
+                              : "One gateway in front of every MCP server you run"}
                 </p>
               </div>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               {view === "servers" && (
                 <>
                   <div className="relative">
@@ -852,7 +884,7 @@ function App() {
                       onChange={(e) => setQuery(e.target.value)}
                       placeholder="Search servers"
                       title={`Search servers (/ or ${isMac ? "⌘" : "Ctrl"}F)`}
-                      className="h-9 w-44 pl-8"
+                      className="h-9 w-32 pl-8 sm:w-44"
                     />
                   </div>
                   <ServerDialog
@@ -869,9 +901,23 @@ function App() {
                       </Button>
                     }
                   />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    title="Browse Toolport's curated server catalog"
+                    onClick={() => selectView("catalog")}
+                  >
+                    <Store className="size-4" />
+                    Browse catalog
+                  </Button>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" aria-label="More actions">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="More actions"
+                        title="Import and server actions"
+                      >
                         <MoreHorizontal className="size-4" />
                       </Button>
                     </DropdownMenuTrigger>
@@ -957,7 +1003,7 @@ function App() {
           )}
 
           <ScrollArea className="min-h-0 flex-1">
-            <div className="p-6">
+            <div className="p-3 sm:p-6">
               <ErrorBoundary
                 resetKey={`${view}:${selectedClient?.id ?? ""}`}
                 fallback={(err, retry) => <ViewCrash error={err} onRetry={retry} />}
@@ -985,30 +1031,32 @@ function App() {
                         registry={registry}
                         loading={loading}
                         onSelectClient={selectClient}
+                        onChanged={load}
                       />
                     )
                   ) : view === "activity" ? (
-                    <ActivityView refreshKey={activityKey} registry={registry} />
+                    <ActivityView
+                      refreshKey={activityKey}
+                      registry={registry}
+                      onReviewQuarantine={() => {
+                        setSettingsPage("safety");
+                        setView("settings");
+                      }}
+                    />
                   ) : view === "catalog" ? (
                     <CatalogView registry={registry} onAdded={applyRegistryChange} />
-                  ) : view === "playground" ? (
-                    <PlaygroundView
-                      registry={registry}
-                      onRegistryChange={applyRegistryChange}
-                    />
-                  ) : view === "rules" ? (
-                    <RulesView />
-                  ) : view === "hooks" ? (
-                    <HooksView refreshKey={activityKey} />
-                  ) : view === "permissions" ? (
-                    <AgentPermissionsView />
                   ) : view === "teams" ? (
                     <TeamsView
                       registry={registry}
                       onRegistryChange={applyRegistryChange}
+                      health={health}
+                      onReprobe={() => void reprobeAfterMutation().catch(() => {})}
+                      onOpenServers={() => selectView("servers")}
                     />
                   ) : view === "settings" ? (
                     <SettingsView
+                      page={settingsPage}
+                      pendingCount={pendingCount}
                       registry={registry}
                       onRegistryChange={applyRegistryChange}
                     />
@@ -1057,22 +1105,7 @@ function App() {
                           errorServers={errorAttention}
                         />
                       )}
-                      <ServerGroup title="To finish" count={grouped.attention.length}>
-                        {grouped.attention.map(serverRow)}
-                      </ServerGroup>
-                      <ServerGroup title="Checking" count={grouped.checking.length}>
-                        {grouped.checking.map(serverRow)}
-                      </ServerGroup>
-                      <ServerGroup title="Ready" count={grouped.active.length}>
-                        {grouped.active.map(serverRow)}
-                      </ServerGroup>
-                      <ServerGroup
-                        title="Disabled"
-                        count={grouped.disabled.length}
-                        defaultCollapsed
-                      >
-                        {grouped.disabled.map(serverRow)}
-                      </ServerGroup>
+                      <div className="toolport-list">{visible.map(serverRow)}</div>
                     </div>
                   )}
                 </Suspense>
@@ -1105,16 +1138,14 @@ function App() {
               selectView("catalog");
             }}
             onProbe={reprobe}
-            onOpenPlayground={() => {
+            onOpenTools={() => {
               setShowOnboarding(false);
-              selectView("playground");
-            }}
-            onOpenRules={() => {
-              // Mark onboarding done, not merely hidden: someone who finished the rules
-              // path IS set up, and re-showing the wizard on next launch because they
-              // never added a server would be the same MCP assumption again (SBS-826).
-              finishOnboarding();
-              selectView("rules");
+              setToolsServerId(
+                registry?.servers.find((server) => isEnabled(registry, server.id))?.id ??
+                  registry?.servers[0]?.id ??
+                  null,
+              );
+              selectView("servers");
             }}
             onFinish={finishOnboarding}
           />
@@ -1122,19 +1153,26 @@ function App() {
       )}
       <GitHubStarPrompt
         justOnboarded={justOnboarded}
+        onboardingOpen={showOnboarding}
         enabledCount={enabledCount}
+        refreshKey={activityKey}
         onVisibleChange={setStarSurface}
       />
-      <PendingApprovals />
+      <PendingApprovals onCountChange={setPendingCount} />
       <TeamPairingDialog onConnected={openTeams} />
       {/* Quarantine has no global signal otherwise: the first sign used to be an agent
           call failing, with the only fix buried in Settings (SOU-293). */}
-      <QuarantineAlert onReview={() => selectView("settings")} />
+      <QuarantineAlert
+        onReview={() => {
+          selectView("settings");
+          setSettingsPage("safety");
+        }}
+      />
       <ConfirmDialog
         open={confirmDisableAll}
         onOpenChange={setConfirmDisableAll}
         title="Disable all servers?"
-        description={`This turns off all ${servers.length} servers for this profile. Clients will lose their tools until you re-enable them.`}
+        description={`This turns off all ${servers.length} servers for every client. Clients will lose their tools until you re-enable them.`}
         confirmLabel="Disable all"
         destructive
         onConfirm={handleToggleAll}
@@ -1142,21 +1180,40 @@ function App() {
       <ConfirmDialog
         open={confirmEnableTeam !== null}
         onOpenChange={(open) => {
-          if (!open) setConfirmEnableTeam(null);
+          if (!open) {
+            setEnableReviewError(null);
+            setConfirmEnableTeam(null);
+          }
         }}
         title={
-          confirmEnableTeam ? `Enable "${confirmEnableTeam.name}"?` : "Enable server?"
+          confirmEnableTeam
+            ? `Enable "${visibleExecutionText(confirmEnableTeam.name)}"?`
+            : "Enable server?"
         }
         description={
-          confirmEnableTeam
-            ? confirmEnableTeam.transport === "stdio" || confirmEnableTeam.command
-              ? `This runs a local command on your machine: ${[confirmEnableTeam.command, ...(confirmEnableTeam.args ?? [])].join(" ")}. Only enable it if you trust your team and recognize this command.`
-              : `This connects Toolport to ${confirmEnableTeam.url ?? ""}, a private/LAN address. Only enable it if you trust your team.`
-            : undefined
+          confirmEnableTeam ? (
+            <>
+              <Suspense fallback={<p>Loading definition...</p>}>
+                <ExecutionReview
+                  server={confirmEnableTeam}
+                  onReady={setReadyEnableReview}
+                />
+              </Suspense>
+              {enableReviewError && (
+                <p role="alert" className="mt-3 text-destructive">
+                  {enableReviewError}
+                </p>
+              )}
+            </>
+          ) : undefined
         }
+        contentClassName="sm:max-w-2xl"
         confirmLabel="Enable"
+        confirmDisabled={readyEnableReview !== confirmEnableTeam}
         onConfirm={() => {
           if (!confirmEnableTeam) return;
+          if (readyEnableReview !== confirmEnableTeam)
+            throw new Error("Wait for the definition to load before enabling.");
           // Re-check the definition against the one that was reviewed. Team sync runs
           // on a timer, so a push landing while this dialog is open would otherwise
           // enable a command or URL the member never saw - the confirmation carried
@@ -1164,11 +1221,13 @@ function App() {
           // instead of enabling it.
           const live = registry?.servers.find((s) => s.id === confirmEnableTeam.id);
           if (!live) {
+            setEnableReviewError(null);
             setConfirmEnableTeam(null);
             toastError("That server is no longer in your registry.");
             return;
           }
           if (!sameReviewedDefinition(confirmEnableTeam, live)) {
+            setEnableReviewError(null);
             setConfirmEnableTeam(live);
             toastError(
               "This server changed while you were reviewing it. Check it again.",
@@ -1178,7 +1237,7 @@ function App() {
             // `live` entry we just swapped in, so the re-review never appears.
             throw new Error("definition changed");
           }
-          return applyToggle(confirmEnableTeam.id, true, true);
+          return applyToggle(confirmEnableTeam.id, true, true, confirmEnableTeam);
         }}
       />
       {/* Ctrl+N. Mounted only while open so `autoOpen` fires each time, and unmounted
@@ -1219,63 +1278,11 @@ function App() {
             ? { bottom: "3.5rem" }
             : starSurface
               ? { bottom: "10rem" }
-              : undefined
+              : 16
         }
       />
     </TooltipProvider>
   );
-}
-
-/** A factual reachability baseline. Security posture remains in Settings; this only
- * summarizes the health probe and never presents a stale or partial check as healthy. */
-export function serverPostureCopy({
-  backendReachable,
-  probing,
-  enabled,
-  checked,
-  connected,
-  attention,
-  disabled,
-}: {
-  backendReachable: boolean;
-  probing: boolean;
-  enabled: number;
-  checked: number;
-  connected: number;
-  attention: number;
-  disabled: number;
-}) {
-  const complete = enabled > 0 && checked === enabled && !probing;
-  const healthy = backendReachable && complete && attention === 0;
-  const title = !backendReachable
-    ? "Reachability status unavailable"
-    : enabled === 0
-      ? "No servers enabled"
-      : probing
-        ? "Checking server reachability"
-        : checked < enabled
-          ? "Reachability check incomplete"
-          : attention === 0
-            ? `${connected} enabled server${connected === 1 ? "" : "s"} reachable`
-            : `${connected} of ${enabled} enabled servers reachable`;
-  const detail = !backendReachable
-    ? checked > 0
-      ? attention > 0
-        ? `Last known: ${connected} reachable; ${attention} need${attention === 1 ? "s" : ""} a quick check. Status may be out of date.`
-        : `Last known: ${connected} reachable. Status may be out of date.`
-      : "The last health check did not complete."
-    : enabled === 0
-      ? `${disabled} server${disabled === 1 ? "" : "s"} disabled in this profile.`
-      : probing
-        ? `${checked} of ${enabled} checked so far.`
-        : checked < enabled
-          ? `${checked} of ${enabled} checked. Refresh to try again.`
-          : attention > 0
-            ? `${attention} need${attention === 1 ? "s" : ""} a quick check.`
-            : disabled > 0
-              ? `${disabled} disabled in this profile.`
-              : "Everything enabled in this profile is ready.";
-  return { healthy, title, detail };
 }
 
 function ServerPosture({
@@ -1308,8 +1315,8 @@ function ServerPosture({
   return (
     <div
       role="status"
-      className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${
-        healthy ? "border-success/20 bg-success/5" : "border-border/70 bg-card/40"
+      className={`flex items-center gap-3 toolport-alert px-4 py-3 ${
+        healthy ? "border-success bg-success/8" : "border-info bg-info/8"
       }`}
     >
       <div
@@ -1358,13 +1365,13 @@ function ServerNextAction({
             : `${authCount + errorCount} servers need a quick check`;
   const detail =
     authCount > 0 && errorCount === 0
-      ? "Use Authenticate below to finish setup. Everything else stays available."
+      ? "Use the actions below to finish setup. Everything else stays available."
       : errorCount > 0 && authCount === 0
         ? "Open the affected rows below for the error and recovery details."
         : `${authCount} need sign-in; ${errorCount} couldn't start. The other servers stay available.`;
 
   return (
-    <div className="flex items-start gap-3 rounded-xl border border-warning/25 bg-card/45 px-4 py-3">
+    <div className="flex items-start gap-3 toolport-alert border-warning bg-warning/8 px-4 py-3">
       <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-warning/10 text-warning">
         {authCount > 0 && errorCount === 0 ? (
           <KeyRound className="size-4" />
@@ -1377,63 +1384,6 @@ function ServerNextAction({
         <p className="text-xs text-muted-foreground">{detail}</p>
       </div>
     </div>
-  );
-}
-
-/** A titled, collapsible section of server rows. Renders nothing when empty, so
- * the page only shows the buckets that have servers. Collapse state persists per
- * group; the Disabled bucket starts collapsed. */
-function ServerGroup({
-  title,
-  count,
-  defaultCollapsed = false,
-  children,
-}: {
-  title: string;
-  count: number;
-  defaultCollapsed?: boolean;
-  children: ReactNode;
-}) {
-  const slug = title.toLowerCase().replace(/\s+/g, "-");
-  const storageKey = `toolport.group.${slug}`;
-  const legacyStorageKey = `conduit.group.${slug}`;
-  const [collapsed, setCollapsed] = useState(() => {
-    const v = localStorage.getItem(storageKey) ?? localStorage.getItem(legacyStorageKey);
-    return v === null ? defaultCollapsed : v === "1";
-  });
-  if (count === 0) return null;
-  function toggle() {
-    setCollapsed((c) => {
-      const next = !c;
-      localStorage.setItem(storageKey, next ? "1" : "0");
-      localStorage.removeItem(legacyStorageKey);
-      return next;
-    });
-  }
-  return (
-    <section>
-      <button
-        onClick={toggle}
-        aria-expanded={!collapsed}
-        className="mb-2 flex w-full items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-      >
-        <ChevronDown
-          className={`size-3.5 text-muted-foreground/60 transition-transform ${
-            collapsed ? "-rotate-90" : ""
-          }`}
-          aria-hidden="true"
-        />
-        <h2 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-          {title}
-        </h2>
-        <span className="text-xs text-muted-foreground/70">{count}</span>
-      </button>
-      {!collapsed && (
-        <div className="overflow-hidden rounded-xl border border-border/60 bg-card/40 shadow-[0_1px_0_rgba(255,255,255,.02)_inset,0_10px_28px_-24px_rgba(0,0,0,.9)]">
-          {children}
-        </div>
-      )}
-    </section>
   );
 }
 

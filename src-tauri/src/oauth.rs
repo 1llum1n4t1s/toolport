@@ -6,6 +6,7 @@
 //!
 //! Loopback and cancellation behavior are tested with simulated authorization;
 //! real-provider browser sign-in still requires manual acceptance.
+use crate::http_client::{RequestHeaderExt as _, ResponseResultExt as _};
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -468,7 +469,10 @@ fn select_client_registration(endpoints: &Endpoints) -> Result<ClientRegistratio
 /// is refused, so a DNS answer mixing a public and an internal IP can't sneak the bad one
 /// through. `block_private` is left false for a server the user configured at a local/LAN
 /// address, so a self-hosted MCP auth server keeps working.
-fn screen_addrs(addrs: &[std::net::SocketAddr], block_private: bool) -> std::io::Result<()> {
+pub(crate) fn screen_addrs(
+    addrs: &[std::net::SocketAddr],
+    block_private: bool,
+) -> std::io::Result<()> {
     for sa in addrs {
         if ip_is_link_local(&sa.ip()) {
             return Err(std::io::Error::new(
@@ -492,29 +496,11 @@ fn screen_addrs(addrs: &[std::net::SocketAddr], block_private: bool) -> std::io:
     Ok(())
 }
 
-/// A DNS resolver that screens every resolved address (see [`screen_addrs`]). Installed on
-/// the OAuth agents so the check runs INSIDE ureq's resolver - covering the initial connect
-/// AND any redirect target, and closing the resolve-then-connect (DNS-rebind) window that a
-/// separate pre-check has. `block_private` is a STABLE, provenance-derived flag (whether the
-/// user's configured server is public), not a per-connect re-resolution, so a hostile host
-/// that rebinds public->private between the pre-check and the connect is still refused here.
-/// The OAuth endpoints come from an attacker-influenceable metadata document, so this is the
-/// load-bearing SSRF guard.
-pub(crate) fn screened_resolve(
-    netloc: &str,
-    block_private: bool,
-) -> std::io::Result<Vec<std::net::SocketAddr>> {
-    use std::net::ToSocketAddrs;
-    let addrs: Vec<std::net::SocketAddr> = netloc.to_socket_addrs()?.collect();
-    screen_addrs(&addrs, block_private)?;
-    Ok(addrs)
-}
-
 fn agent(block_private: bool) -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(30))
-        .resolver(move |netloc: &str| screened_resolve(netloc, block_private))
-        .build()
+    let config = crate::http_client::config_builder!()
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .build();
+    crate::http_client::screened_agent(config, block_private, screen_addrs)
 }
 
 /// Like [`agent`] but refuses to follow redirects. Used for the credential-bearing
@@ -524,30 +510,34 @@ fn agent(block_private: bool) -> ureq::Agent {
 /// redirects so providers that redirect their `.well-known` still resolve; both agents
 /// screen resolved addresses so a redirect or rebind to cloud metadata is refused.
 fn agent_no_redirect(block_private: bool) -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(30))
-        .redirects(0)
-        .resolver(move |netloc: &str| screened_resolve(netloc, block_private))
-        .build()
+    let config = crate::http_client::config_builder!()
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .max_redirects(0)
+        .build();
+    crate::http_client::screened_agent(config, block_private, screen_addrs)
 }
 
 /// Short-lived, no-redirect agent for the optional Bearer challenge probe.
 /// Discovery must not inherit the 30-second credential-exchange timeout when
 /// an older or unhealthy MCP endpoint does not answer the preflight request.
 fn challenge_probe_agent(block_private: bool) -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(5))
-        .redirects(0)
-        .resolver(move |netloc: &str| screened_resolve(netloc, block_private))
-        .build()
+    let config = crate::http_client::config_builder!()
+        .timeout_global(Some(std::time::Duration::from_secs(5)))
+        .max_redirects(0)
+        .build();
+    crate::http_client::screened_agent(config, block_private, screen_addrs)
 }
 
 fn get_json<T: serde::de::DeserializeOwned>(url: &str, block_private: bool) -> Result<T, String> {
     agent(block_private)
         .get(url)
         .call()
+        .retain_status_body()
         .map_err(|e| e.to_string())?
-        .into_json::<T>()
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json::<T>()
         .map_err(|e| e.to_string())
 }
 
@@ -559,12 +549,15 @@ fn get_optional_discovery_json<T: serde::de::DeserializeOwned>(
     url: &str,
     block_private: bool,
 ) -> Result<Option<T>, String> {
-    let response = match agent(block_private).get(url).call() {
+    let response = match agent(block_private).get(url).call().retain_status_body() {
         Ok(response) => response,
         Err(_) => return Ok(None),
     };
     response
-        .into_json::<T>()
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json::<T>()
         .map(Some)
         .map_err(|e| format!("metadata response was not valid JSON: {e}"))
 }
@@ -1020,18 +1013,19 @@ fn probe_bearer_challenge(mcp_url: &str, block_private: bool) -> Option<BearerCh
     });
     let response = challenge_probe_agent(block_private)
         .post(mcp_url)
-        .set("Content-Type", "application/json")
-        .set("Accept", "application/json, text/event-stream")
-        .set(
+        .set_header("Content-Type", "application/json")
+        .set_header("Accept", "application/json, text/event-stream")
+        .set_header(
             "MCP-Protocol-Version",
             crate::downstream::MODERN_PROTOCOL_VERSION,
         )
-        .set("Mcp-Method", "server/discover")
-        .send_json(body);
+        .set_header("Mcp-Method", "server/discover")
+        .send_json(body)
+        .retain_status_body();
     match response {
-        Err(ureq::Error::Status(code, response)) if code == 401 || code == 403 => {
-            let values = response.all("www-authenticate");
-            let challenge = bearer_challenge(values.iter().copied());
+        Err(crate::http_client::Error::Status(code, response)) if code == 401 || code == 403 => {
+            let values = response.headers().get_all("www-authenticate");
+            let challenge = bearer_challenge(values.iter().filter_map(|value| value.to_str().ok()));
             drain_probe_response(response);
             challenge
         }
@@ -1039,12 +1033,12 @@ fn probe_bearer_challenge(mcp_url: &str, block_private: bool) -> Option<BearerCh
             drain_probe_response(response);
             None
         }
-        Err(ureq::Error::Status(code, response)) => {
+        Err(crate::http_client::Error::Status(code, response)) => {
             drain_probe_response(response);
             debug_log(&format!("OAuth challenge probe returned HTTP {code}"));
             None
         }
-        Err(error @ ureq::Error::Transport(_)) => {
+        Err(error @ crate::http_client::Error::Transport(_)) => {
             debug_log(&format!("OAuth challenge probe failed: {error}"));
             None
         }
@@ -1054,8 +1048,8 @@ fn probe_bearer_challenge(mcp_url: &str, block_private: bool) -> Option<BearerCh
 /// Drain a bounded amount from probe responses so ordinary error pages do not
 /// prevent connection reuse, without allowing a hostile body to consume
 /// unbounded memory or time.
-fn drain_probe_response(response: ureq::Response) {
-    let mut reader = response.into_reader().take(8 * 1024);
+fn drain_probe_response(response: ureq::http::Response<ureq::Body>) {
+    let mut reader = response.into_body().into_reader().take(8 * 1024);
     let _ = std::io::copy(&mut reader, &mut std::io::sink());
 }
 
@@ -1212,8 +1206,12 @@ fn register_client(
     let resp: DcrResponse = agent_no_redirect(block_private)
         .post(registration_endpoint)
         .send_json(body)
+        .retain_status_body()
         .map_err(|e| e.to_string())?
-        .into_json()
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json()
         .map_err(|e| e.to_string())?;
     Ok(resp.client_id)
 }
@@ -1316,7 +1314,7 @@ fn exchange_code(
 ) -> Result<Tokens, String> {
     let resp: TokenResponse = agent_no_redirect(block_private)
         .post(token_endpoint)
-        .send_form(&[
+        .send_form([
             ("grant_type", "authorization_code"),
             ("code", code),
             ("redirect_uri", redirect_uri),
@@ -1324,8 +1322,12 @@ fn exchange_code(
             ("code_verifier", verifier),
             ("resource", resource),
         ])
+        .retain_status_body()
         .map_err(|e| e.to_string())?
-        .into_json()
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json()
         .map_err(|e| e.to_string())?;
     debug_log(&format!(
         "token response: refresh_token={} expires_in={:?}",
@@ -1359,9 +1361,39 @@ pub fn refresh(
     }
     let resp: TokenResponse = agent_no_redirect(block_private)
         .post(token_endpoint)
-        .send_form(&form)
-        .map_err(|e| e.to_string())?
-        .into_json()
+        .send_form(form)
+        .retain_status_body()
+        .map_err(|e| match e {
+            crate::http_client::Error::Status(401, _) => {
+                "OAuth refresh token was rejected; needs authentication".to_string()
+            }
+            crate::http_client::Error::Status(400, response) => {
+                // Never expose the provider body, which may echo credentials.
+                if response
+                    .into_body()
+                    .with_config()
+                    .limit(u64::MAX)
+                    .read_json::<serde_json::Value>()
+                    .ok()
+                    .and_then(|body| {
+                        body.get("error")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned)
+                    })
+                    .as_deref()
+                    == Some("invalid_grant")
+                {
+                    "OAuth refresh token expired or was revoked; needs authentication".to_string()
+                } else {
+                    "OAuth token endpoint returned status code 400".to_string()
+                }
+            }
+            other => other.to_string(),
+        })?
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json()
         .map_err(|e| e.to_string())?;
     debug_log(&format!(
         "refresh response: refresh_token={} expires_in={:?}",
@@ -1418,14 +1450,17 @@ pub fn client_credentials_token(
     let mut request = agent_no_redirect(block_private).post(token_endpoint);
     let authentication = client_authentication(method, client_id, client_secret);
     if let Some(header) = &authentication.authorization {
-        request = request.set("Authorization", header);
+        request = request.set_header("Authorization", header);
     }
     form.extend_from_slice(&authentication.form_fields);
-    let response = request.send_form(&form);
+    let response = request.send_form(form).retain_status_body();
 
     let resp: TokenResponse = response
         .map_err(|e| redact_secret(&e.to_string(), client_secret))?
-        .into_json()
+        .into_body()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json()
         .map_err(|e| redact_secret(&e.to_string(), client_secret))?;
     debug_log(&format!(
         "client_credentials response: method={} expires_in={:?} refresh_token={}",
@@ -1676,14 +1711,6 @@ fn wait_for_code_until(
             Err(e) => return Err(e.to_string()),
         }
     }
-}
-
-/// Read an HTTP request from the callback socket and return its raw query string
-/// (the part after `?` in the request target). Reads until the end of the request
-/// line/headers so a long `code` isn't truncated by a single short read.
-#[cfg(test)]
-fn read_callback_query(stream: &mut std::net::TcpStream) -> String {
-    read_callback_query_cancellable(stream, &Cancellation::default()).unwrap_or_default()
 }
 
 fn read_callback_query_cancellable(

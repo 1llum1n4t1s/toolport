@@ -1,14 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AuditEntry,
+  ClientActivity,
   AuditStats,
   AuthInfo,
   CatalogEntry,
+  CatalogSearch,
   DetectedClient,
   FolderProfile,
-  HookEvent,
-  HooksPreview,
-  HooksView as HooksViewData,
   ImportItem,
   InspectEntry,
   InstructionsStatusView,
@@ -21,24 +20,12 @@ import type {
   PendingApproval,
   ProbeResult,
   Registry,
-  RoutineSuggestion,
-  RulesImportCandidate,
-  RulesImportedFile,
-  RulesPreview,
-  RulesView,
   SavingsSummary,
   SearchTrace,
   ToolIdentity,
   ServerEntry,
   ToolCallResult,
-  Stack,
   WriteOutcome,
-  PermissionRule,
-  PermissionsPreview,
-  PermissionsView,
-  GuardMode,
-  GuardPreview,
-  GuardView,
 } from "./types";
 
 /** The hand-verified popular catalog (offline, instant). */
@@ -46,14 +33,26 @@ export function popularCatalog(): Promise<CatalogEntry[]> {
   return invoke<CatalogEntry[]>("popular_catalog");
 }
 
-/** Curated stacks: role-based server bundles for one-flow setup (offline). */
-export function listStacks(): Promise<Stack[]> {
-  return invoke<Stack[]>("list_stacks");
+/** Search the catalog (your picks + curated, then the MCP Registry). */
+export function searchCatalog(query: string): Promise<CatalogSearch> {
+  return invoke<CatalogSearch>("search_catalog", { query });
 }
 
-/** Search the catalog (your picks + curated, then the MCP Registry). */
-export function searchCatalog(query: string): Promise<CatalogEntry[]> {
-  return invoke<CatalogEntry[]>("search_catalog", { query });
+/** Content revision of Activity stores, cached behind notifications where supported. */
+export function getActivityRevision(): Promise<string> {
+  return invoke<string>("activity_revision");
+}
+
+/** Release the cached revision and native watch when Activity hides. */
+export function releaseActivityRevision(): Promise<void> {
+  return invoke("release_activity_revision");
+}
+
+/** Bounded live health probe, independent of retained Activity stores. */
+export function getActivityHealth(): Promise<
+  Pick<AuditStats, "telemetry" | "gatewayNotes">
+> {
+  return invoke("activity_health");
 }
 
 /** Recent tool-call audit entries (newest first). */
@@ -74,18 +73,41 @@ export interface SecurityEvent {
   type: string;
   /** Absent for events not tied to a specific tool (e.g. pins_load_failed). */
   server?: string;
+  /** Stable profile id; empty for the HTTP union. Older events may omit it. */
+  profile?: string;
+  /** Profiles that reported this shared definition change. */
+  profiles?: string[];
   tool?: string;
   change: string;
+  changed_fields?: string[];
+  new_fp?: string;
+  /** Captured definition requires review in Settings before bound approval. */
+  review_required?: boolean;
+  /** Older unblocked records without a captured fingerprint, shown in history. */
+  historical?: boolean;
+  parameters?: { added: string[]; removed: string[]; changed: string[] };
+  /** Current quarantine status; absent/null means unavailable. */
+  blocked?: boolean | null;
+  blocked_profiles?: string[];
   /** For tool_poison_flag: which heuristic signatures matched. */
   signatures?: string[];
   /** For tool_poison_flag: a short de-obfuscated excerpt of the matched text, so the
    * flag is verifiable instead of an opaque label. Absent when no direct phrase matched
    * (e.g. an encoded payload) or on events written before evidence was captured. */
   evidence?: string;
+  /** For sync_change_refused: the full explanation shown to the user. */
+  detail?: string;
   /** "high" = loud/actionable (poison, destructive-tool change, safety-annotation
-   * downgrade); "info" = benign non-destructive schema churn for the quiet history.
-   * Absent on events written before severity tiering; classified by type on read. */
-  severity?: "high" | "info";
+   * downgrade); "warn" = a read-only/definition-content change that the app shows on
+   * the actionable tier and quarantine-on-drift blocks; "info" = cosmetic churn for
+   * the quiet history. Absent on events written before severity tiering; classified
+   * by type on read. */
+  severity?: "high" | "warn" | "info";
+}
+
+/** Current profile's most recent unresolved baseline warning, with current policy. */
+export function getBaselineNotice(): Promise<{ ts: number; detail: string } | null> {
+  return invoke("get_baseline_notice");
 }
 
 /** Recent tool-definition integrity events (newest first). */
@@ -93,7 +115,7 @@ export function getSecurityEvents(limit = 100): Promise<SecurityEvent[]> {
   return invoke<SecurityEvent[]>("get_security_events", { limit });
 }
 
-/** Catalog exposure: exact serialized MCP bytes plus a bytes/4 token-equivalent estimate. */
+/** Net cl100k_base savings, exact MCP bytes, and separate historical estimates. */
 export function getSavingsSummary(): Promise<SavingsSummary> {
   return invoke<SavingsSummary>("savings_summary");
 }
@@ -132,7 +154,7 @@ export function removeHttpClient(id: string): Promise<Registry> {
   return invoke<Registry>("remove_http_client", { id });
 }
 
-/** List the tools one server exposes (connects on demand). Playground picker. */
+/** List the tools one server exposes (connects on demand). Server detail Tools tab. */
 export function listServerTools(serverId: string): Promise<McpTool[]> {
   return invoke<McpTool[]>("list_server_tools", { serverId });
 }
@@ -146,12 +168,12 @@ export function callTool(
   return invoke<ToolCallResult>("call_tool", { serverId, tool, arguments: args });
 }
 
-/** List the resources one server advertises (connects on demand). Playground. */
+/** List the resources one server advertises (connects on demand). Server > Tools. */
 export function listServerResources(serverId: string): Promise<McpResource[]> {
   return invoke<McpResource[]>("list_server_resources", { serverId });
 }
 
-/** List the prompts one server advertises (connects on demand). Playground. */
+/** List the prompts one server advertises (connects on demand). Server > Tools. */
 export function listServerPrompts(serverId: string): Promise<McpPrompt[]> {
   return invoke<McpPrompt[]>("list_server_prompts", { serverId });
 }
@@ -188,22 +210,6 @@ export function setToolPinned(
   return invoke<Registry>("set_tool_pinned", { serverId, tool, pinned });
 }
 
-/** Toggle the global destructive-tool deny switch. */
-export function setDenyDestructive(deny: boolean): Promise<Registry> {
-  return invoke<Registry>("set_deny_destructive", { deny });
-}
-
-/** Toggle per-call confirmation for destructive tools (intercept + preview + token). */
-export function setConfirmDestructive(confirm: boolean): Promise<Registry> {
-  return invoke<Registry>("set_confirm_destructive", { confirm });
-}
-
-/** Toggle human-in-the-loop approval: hold a gated tool call (destructive, or from an
- * untrusted-provenance server) until a person approves or denies it in the app. */
-export function setHumanApproval(on: boolean): Promise<Registry> {
-  return invoke<Registry>("set_human_approval", { on });
-}
-
 /** Tool calls currently held awaiting a human decision (the approval queue). */
 export function listPendingApprovals(): Promise<PendingApproval[]> {
   return invoke<PendingApproval[]>("list_pending_approvals");
@@ -221,30 +227,6 @@ export function decideApproval(
   scope: ApprovalScope = "once",
 ): Promise<void> {
   return invoke<void>("decide_approval", { id, approved, scope });
-}
-
-/** Strong routine candidates the gateway queued for the passive save area. */
-export function listRoutineSuggestions(): Promise<RoutineSuggestion[]> {
-  return invoke<RoutineSuggestion[]>("list_routine_suggestions");
-}
-
-/** Persist a queued suggestion. The click is the persistence authorization: the card
- * showed the same disclosure the approval prompt would, so no second prompt fires. */
-export function approveRoutineSuggestion(
-  fingerprint: string,
-  name: string,
-  description?: string,
-): Promise<unknown> {
-  return invoke<unknown>("approve_routine_suggestion", {
-    fingerprint,
-    name,
-    description,
-  });
-}
-
-/** Drop a queued suggestion and keep the same definition out for this app run. */
-export function dismissRoutineSuggestion(fingerprint: string): Promise<void> {
-  return invoke<void>("dismiss_routine_suggestion", { fingerprint });
 }
 
 /** Tools currently allowed to skip human approval (persistent "always" + this session). */
@@ -297,11 +279,6 @@ export function getSearchTraces(limit = 100): Promise<SearchTrace[]> {
   return invoke<SearchTrace[]>("get_search_traces", { limit });
 }
 
-/** Clear the search-trace log. */
-export function clearSearchTraces(): Promise<void> {
-  return invoke<void>("clear_search_traces");
-}
-
 /** Clear all retained local activity at once: audit log, discovery traces,
  * live-inspection captures, and the savings tally (incl. its carry-forward total).
  * Local, irreversible deletes; each log re-creates itself on the next event. */
@@ -310,19 +287,9 @@ export function clearActivityLogs(): Promise<void> {
 }
 
 /** Every pinned tool's verifiable identity (alias -> server/profiles + fingerprint +
- * first-seen/last-changed) for the active profile. Empty until a baseline is pinned. */
+ * first-seen/last-changed) for the default access. Empty until a baseline is pinned. */
 export function getToolIdentities(): Promise<ToolIdentity[]> {
   return invoke<ToolIdentity[]>("list_tool_identities");
-}
-
-/** Toggle quarantine-on-drift: block a high-risk tool that drifted until re-approved. */
-export function setQuarantineOnDrift(on: boolean): Promise<Registry> {
-  return invoke<Registry>("set_quarantine_on_drift", { on });
-}
-
-/** Toggle opt-in block-on-injection: fail high-confidence injection hits instead of only labeling. */
-export function setBlockOnInjection(on: boolean): Promise<Registry> {
-  return invoke<Registry>("set_block_on_injection", { on });
 }
 
 /** Toggle PII pseudonymization: replace emails, cards and keys in tool results with
@@ -338,6 +305,7 @@ export function setPiiRedaction(on: boolean): Promise<Registry> {
 /** A tool blocked after high-risk drift or loss of the integrity baseline,
  * awaiting re-approval. */
 export interface QuarantinedTool {
+  record_id: string;
   server: string;
   tool: string;
   reason: string;
@@ -345,6 +313,10 @@ export interface QuarantinedTool {
   profile: string;
   /** Concrete annotation delta when known, e.g. `readOnlyHint: true → false` (SOU-305). */
   detail?: string | null;
+  /** Definition captured with this blocked record, including schemas and annotations. */
+  definition?: Record<string, unknown> | null;
+  /** The list omits schemas; fetch a captured definition only when expanded. */
+  has_definition?: boolean;
   prev_ro?: boolean | null;
   new_ro?: boolean | null;
   prev_dh?: boolean | null;
@@ -357,15 +329,38 @@ export function listQuarantined(): Promise<QuarantinedTool[]> {
   return invoke<QuarantinedTool[]>("list_quarantined");
 }
 
+export function getQuarantineDefinition(
+  profile: string,
+  tool: string,
+  expectedRecordId: string,
+): Promise<Record<string, unknown>> {
+  return invoke<Record<string, unknown>>("get_quarantine_definition", {
+    profile,
+    tool,
+    expectedRecordId,
+  });
+}
+
 /** Re-approve a quarantined tool so the gateway re-exposes it on its next rebuild. */
-export function releaseQuarantine(profile: string, tool: string): Promise<void> {
-  return invoke<void>("release_quarantine", { profile, tool });
+export function releaseQuarantine(
+  profile: string,
+  tool: string,
+  expectedFingerprint?: string,
+  expectedRecordId?: string,
+): Promise<void> {
+  return invoke<void>("release_quarantine", {
+    profile,
+    tool,
+    expectedFingerprint,
+    expectedRecordId,
+  });
 }
 
 /** Outcome of a bulk re-approval. `skipped` names tools that stay blocked. */
 export type ReleaseAllOutcome = {
   released: number;
   skipped: string[];
+  changed?: string[];
 };
 
 /**
@@ -374,8 +369,14 @@ export type ReleaseAllOutcome = {
  * at a time. Tools whose captured definition could not be read stay blocked and
  * are returned in `skipped`.
  */
-export function releaseAllQuarantine(profile: string): Promise<ReleaseAllOutcome> {
-  return invoke<ReleaseAllOutcome>("release_all_quarantine", { profile });
+export function releaseAllQuarantine(
+  profile: string,
+  expectedRecords?: Record<string, string>,
+): Promise<ReleaseAllOutcome> {
+  return invoke<ReleaseAllOutcome>("release_all_quarantine", {
+    profile,
+    expectedRecords,
+  });
 }
 
 /** Toggle global lazy discovery (meta-tools vs full catalog) for all clients. */
@@ -388,11 +389,6 @@ export function setCodeMode(enabled: boolean): Promise<Registry> {
   return invoke<Registry>("set_code_mode", { enabled });
 }
 
-/** Opt into agent-requested Routine writes. Each save still requires human approval. */
-export function setAllowRoutineWrites(allow: boolean): Promise<Registry> {
-  return invoke<Registry>("set_allow_routine_writes", { allow });
-}
-
 /** Override one client's discovery mode ("full" | "lazy" | "grouped"), or clear it
  * (`null`) so the client inherits the global mode. Applies live via the gateway's
  * per-client resolution, no reconnect needed. */
@@ -401,11 +397,6 @@ export function setClientDiscovery(
   mode: string | null,
 ): Promise<Registry> {
   return invoke<Registry>("set_client_discovery", { clientId, mode });
-}
-
-/** Opt into agent control: let an agent enable/disable servers via the gateway. */
-export function setAllowAgentControl(allow: boolean): Promise<Registry> {
-  return invoke<Registry>("set_allow_agent_control", { allow });
 }
 
 export interface HttpBridgeStatus {
@@ -526,6 +517,11 @@ export function teamJoinPoll(
 }
 
 /** Pull the latest team config and re-merge it (no-op if unchanged). */
+/** Pair this machine again with its own sync account after its sign-in went missing. */
+export function reconnectSync(): Promise<void> {
+  return invoke<void>("reconnect_sync");
+}
+
 export function teamSync(): Promise<Registry> {
   return invoke<Registry>("team_sync");
 }
@@ -562,116 +558,6 @@ export function teamDisconnect(): Promise<Registry> {
   return invoke<Registry>("team_disconnect");
 }
 
-// ---- Personal agent rules (SBS-821) ----
-//
-// Every mutating call returns the refreshed view, so the tab never has to re-fetch to stay
-// honest about what is on disk. All of these work with no MCP server configured.
-
-/** The user's rule sets, which one is active, and each installed client's on-disk state. */
-export function rulesView(): Promise<RulesView> {
-  return invoke<RulesView>("rules_view");
-}
-
-/** Create (`id` omitted) or update a rule set, then apply it to every opted-in client. */
-export function rulesSaveSet(
-  name: string,
-  content: string,
-  id?: string,
-): Promise<RulesView> {
-  return invoke<RulesView>("rules_save_set", { id: id ?? null, name, content });
-}
-
-/** Delete a rule set. Deleting the active one also removes the files Toolport wrote. */
-export function rulesDeleteSet(id: string): Promise<RulesView> {
-  return invoke<RulesView>("rules_delete_set", { id });
-}
-
-/** Switch the active set, or pass nothing to clear it and remove our files everywhere. */
-export function rulesSetActive(id?: string): Promise<RulesView> {
-  return invoke<RulesView>("rules_set_active", { id: id ?? null });
-}
-
-/** Opt one client in or out. Opting out removes that client's rules file. */
-export function rulesSetClientEnabled(
-  clientId: string,
-  enabled: boolean,
-): Promise<RulesView> {
-  return invoke<RulesView>("rules_set_client_enabled", { clientId, enabled });
-}
-
-/**
- * Dry-run one client's write: the exact before/after bytes, without touching disk. `null` when
- * the client has no rules file we manage, or no set is active.
- *
- * Pass `content` to preview unsaved editor text. Do NOT save first to get an accurate preview: a
- * save applies to every opted-in client, which would turn the dry run into a write.
- */
-export function rulesPreview(
-  clientId: string,
-  content?: string,
-): Promise<RulesPreview | null> {
-  return invoke<RulesPreview | null>("rules_preview", {
-    clientId,
-    content: content ?? null,
-  });
-}
-
-/** Re-apply the active set to every opted-in client. */
-export function rulesApply(): Promise<RulesView> {
-  return invoke<RulesView>("rules_apply");
-}
-
-/** Overwrite ONE client's file from the set (its drift card's action); everything else reconciles. */
-export function rulesApplyClient(clientId: string): Promise<RulesView> {
-  return invoke<RulesView>("rules_apply_client", { clientId });
-}
-
-// Project-level rules (SBS-1037). Registered folders only; written only by `rulesProjectApply`.
-export function rulesProjectAdd(path: string): Promise<RulesView> {
-  return invoke<RulesView>("rules_project_add", { path });
-}
-export function rulesProjectRemove(id: string): Promise<RulesView> {
-  return invoke<RulesView>("rules_project_remove", { id });
-}
-export function rulesProjectSetSet(id: string, setId?: string): Promise<RulesView> {
-  return invoke<RulesView>("rules_project_set_set", { id, setId: setId ?? null });
-}
-export function rulesProjectSetFileEnabled(
-  id: string,
-  key: string,
-  enabled: boolean,
-): Promise<RulesView> {
-  return invoke<RulesView>("rules_project_set_file_enabled", { id, key, enabled });
-}
-export function rulesProjectApply(id: string): Promise<RulesView> {
-  return invoke<RulesView>("rules_project_apply", { id });
-}
-export function rulesProjectPreview(
-  id: string,
-  key: string,
-): Promise<RulesPreview | null> {
-  return invoke<RulesPreview | null>("rules_project_preview", { id, key });
-}
-
-/** Rules files the detected clients already have, for "Start from a file". Read-only. */
-export function rulesImportCandidates(): Promise<RulesImportCandidate[]> {
-  return invoke<RulesImportCandidate[]>("rules_import_candidates");
-}
-
-/**
- * Read one file as the seed for a new set. Read-only: nothing is saved and the file is left as it
- * was; the caller puts the text in the editor for the user to review and save.
- */
-export function rulesImportFile(
-  path: string,
-  clientName?: string,
-): Promise<RulesImportedFile> {
-  return invoke<RulesImportedFile>("rules_import_file", {
-    path,
-    clientName: clientName ?? null,
-  });
-}
-
 export interface ShareDefinitionPreview {
   id: string;
   name: string;
@@ -680,7 +566,7 @@ export interface ShareDefinitionPreview {
   fields: { label: string; value: string }[];
 }
 
-/** What sharing does, or did, to one selected server in the active profile. */
+/** What sharing does, or did, to one selected server in the local access context. */
 export interface LocalHandoff {
   id: string;
   name: string;
@@ -753,28 +639,43 @@ export function teamPairCancel(): Promise<void> {
   return invoke<void>("team_pair_cancel");
 }
 
-/** Probe every supported MCP client and read its current server configuration. */
-export function detectClients(): Promise<DetectedClient[]> {
-  return invoke<DetectedClient[]>("detect_clients");
+/** Forget a disconnected manually added location while retaining its files. */
+export function removeClientLocation(clientId: string): Promise<void> {
+  return invoke("remove_client_location", { clientId });
+}
+
+/** Probe clients; inspection also adopts newly discovered locations. */
+export function detectClients(inspectConfigs = true): Promise<DetectedClient[]> {
+  return invoke<DetectedClient[]>("detect_clients", { inspectConfigs });
+}
+
+export interface ClientLocationType {
+  id: string;
+  name: string;
+  configFile: string;
+}
+
+export function getClientLocationTypes(): Promise<ClientLocationType[]> {
+  return invoke<ClientLocationType[]>("client_location_types");
+}
+
+export function addClientLocation(clientType: string, folder: string): Promise<string> {
+  return invoke<string>("add_client_location", { clientType, folder });
 }
 
 /** Install the Toolport gateway into a client's config, optionally scoped to a
  * profile (by name). Omit profile to expose all enabled servers.
  * Pass `force: true` after the user confirms overwriting a custom entry (SOU-406).
- * `transport` is `"stdio"` (default) or `"sharedHttp"` (SOU-407).
- * Callers that already know the live transport (Apply scope) must pass it —
- * omitting defaults to stdio and would silently downgrade Shared HTTP (WS3-2). */
+ */
 export function installGateway(
   clientId: string,
   profile?: string,
   force?: boolean,
-  transport?: "stdio" | "sharedHttp",
 ): Promise<WriteOutcome> {
   return invoke<WriteOutcome>("install_gateway", {
     clientId,
     profile: profile ?? null,
     force: force ?? false,
-    transport: transport ?? "stdio",
   });
 }
 
@@ -786,18 +687,24 @@ export function uninstallGateway(clientId: string): Promise<WriteOutcome> {
 /** Import a client's servers into Toolport, then leave the client with only the
  * Toolport gateway (optionally scoped to a profile). Backs up the config first.
  * Pass `force: true` after the user confirms overwriting a custom entry (SOU-406).
- * Pass `transport` to preserve Shared HTTP on migrate (WS3-2). */
+ */
 export function migrateClient(
   clientId: string,
   profile?: string,
   force?: boolean,
-  transport?: "stdio" | "sharedHttp",
+  selected: string[] = [],
+  revision = "",
+  secretChoices?: Record<string, Record<string, boolean>>,
+  credentialInputs?: Record<string, Record<string, string>>,
 ): Promise<MigrateResult> {
   return invoke<MigrateResult>("migrate_client", {
     clientId,
+    selected,
+    revision,
+    secretChoices,
+    credentialInputs,
     profile: profile ?? null,
     force: force ?? false,
-    transport: transport ?? "stdio",
   });
 }
 
@@ -1007,8 +914,16 @@ export function takeRegistryRecoveryNotice(): Promise<RegistryRecoveryNotice | n
 }
 
 /** Pull reviewed servers from every detected client into the registry. */
-export function importServers(selected?: string[]): Promise<Registry> {
-  return invoke<Registry>("import_servers", { selected });
+export function importServers(
+  selected?: string[],
+  secretChoices?: Record<string, Record<string, boolean>>,
+  credentialInputs?: Record<string, Record<string, string>>,
+): Promise<Registry> {
+  return invoke<Registry>("import_servers", {
+    selected,
+    secretChoices,
+    credentialInputs,
+  });
 }
 
 /** Preview every detected-client server the bulk import would add. */
@@ -1057,12 +972,14 @@ export function setServerEnabled(
   serverId: string,
   enabled: boolean,
   reviewed = false,
+  reviewedDefinition?: ServerEntry,
 ): Promise<Registry> {
   return invoke<Registry>("set_server_enabled", {
     profileId,
     serverId,
     enabled,
     reviewed,
+    ...(reviewedDefinition ? { reviewedDefinition } : {}),
   });
 }
 
@@ -1074,8 +991,29 @@ export function deleteProfile(id: string): Promise<Registry> {
   return invoke<Registry>("delete_profile", { id });
 }
 
-export function setActiveProfile(id: string): Promise<Registry> {
-  return invoke<Registry>("set_active_profile", { id });
+export function setDefaultAccess(profile: string | null): Promise<Registry> {
+  return invoke<Registry>("set_default_access", { profile });
+}
+
+export function setAccessServer(
+  profileId: string,
+  serverId: string,
+  included: boolean,
+): Promise<Registry> {
+  return invoke<Registry>("set_access_server", { profileId, serverId, included });
+}
+
+export function dismissAccessUpgradeNotice(): Promise<Registry> {
+  return invoke<Registry>("dismiss_access_upgrade_notice");
+}
+
+export function dismissRemovedFeaturesNotice(): Promise<Registry> {
+  return invoke<Registry>("dismiss_removed_features_notice");
+}
+
+/** Open the folder where the 2.0 upgrade saved settings for removed features. */
+export function openExportsDir(): Promise<void> {
+  return invoke<void>("open_exports_dir");
 }
 
 /** Set (or clear with `null`) a profile's tool-granular scope for one server (SOU-189):
@@ -1110,71 +1048,84 @@ export function disableAutostart(): Promise<void> {
   return invoke<void>("disable_launch_at_login");
 }
 
-// ---- Native-agent hook sensor (SBS-822) ----
-//
-// Records what an agent does OUTSIDE the gateway (Bash, Edit, Read). Off until the user turns it
-// on. Every mutating call returns the refreshed view, so the tab never re-fetches to stay honest.
+/** Explicitly use an identical managed definition in the local access context. */
+export function teamUseManaged(serverId: string): Promise<Registry> {
+  return invoke<Registry>("team_use_managed", { serverId });
+}
 
-/** Current state: the opt-in, the events registered, and every Claude Code profile found. */
-// ---- Native permission policy for Claude Code (SBS-1058) ----
+export function setSafetyLevel(level: "off" | "ask" | "strict"): Promise<Registry> {
+  return invoke<Registry>("set_safety_level", { level });
+}
 
-export function agentPermissionsView(): Promise<PermissionsView> {
-  return invoke<PermissionsView>("agent_permissions_view");
+export interface DisconnectResult {
+  warnings?: string[];
+  clientId: string;
+  path: string;
+  dryRun: boolean;
+  error: string | null;
 }
-export function agentPermissionsSetEnabled(enabled: boolean): Promise<PermissionsView> {
-  return invoke<PermissionsView>("agent_permissions_set_enabled", { enabled });
+
+export function disconnectAllClients(): Promise<DisconnectResult[]> {
+  return invoke("disconnect_all_clients");
 }
-export function agentPermissionsSetRules(
-  rules: PermissionRule[],
-): Promise<PermissionsView> {
-  return invoke<PermissionsView>("agent_permissions_set_rules", { rules });
+
+export function previewClientSetup(
+  clientId: string,
+): Promise<import("@/lib/types").ClientSetupReview> {
+  return invoke("preview_client_setup", { clientId });
 }
-/** Dry run with the given rules (an unsaved policy) or, when omitted, the saved one. */
-export function agentPermissionsPreview(
-  rules?: PermissionRule[],
-): Promise<PermissionsPreview[]> {
-  return invoke<PermissionsPreview[]>("agent_permissions_preview", {
-    rules: rules ?? null,
+
+export function addSnippetServers(
+  text: string,
+  selected: string[],
+  secretChoices?: Record<string, Record<string, boolean>>,
+  credentialInputs?: Record<string, Record<string, string>>,
+): Promise<{
+  registry: Registry;
+  servers: { name: string; status: string; missing: string[] }[];
+}> {
+  return invoke("add_snippet_servers", {
+    text,
+    selected,
+    secretChoices,
+    credentialInputs,
   });
 }
 
-// ---- Guard hook for Cursor (SBS-1059) ----
-
-export function agentGuardView(): Promise<GuardView> {
-  return invoke<GuardView>("agent_guard_view");
+/** Recent privacy-safe session summaries, capped by the backend. */
+export function getClientSessions(): Promise<ClientActivity[]> {
+  const sinceMs = new Date().setHours(0, 0, 0, 0);
+  return invoke<ClientActivity[]>("get_client_sessions", { sinceMs });
 }
-export function agentGuardSetCursorMode(mode: GuardMode): Promise<GuardView> {
-  return invoke<GuardView>("agent_guard_set_cursor_mode", { mode });
+export function setSecretReference(
+  serverId: string,
+  key: string,
+  reference: string,
+): Promise<Registry> {
+  return invoke<Registry>("set_secret_reference", { serverId, key, reference });
 }
-export function agentGuardPreview(mode: GuardMode): Promise<GuardPreview | null> {
-  return invoke<GuardPreview | null>("agent_guard_preview", { mode });
-}
-
-export function hooksView(): Promise<HooksViewData> {
-  return invoke<HooksViewData>("hooks_view");
-}
-
-/** Turn the sensor on or off. Turning it off removes it from every profile Toolport wrote. */
-export function hooksSetEnabled(enabled: boolean): Promise<HooksViewData> {
-  return invoke<HooksViewData>("hooks_set_enabled", { enabled });
+export function testSecretReference(serverId: string, reference: string): Promise<void> {
+  return invoke<void>("test_secret_reference", { serverId, reference });
 }
 
-/**
- * Dry-run the write for every profile: the exact before/after bytes, writing nothing anywhere.
- *
- * The `after` text comes from the same renderer the real write uses, so comments and formatting
- * shown here are what actually survives.
- */
-export function hooksPreview(): Promise<HooksPreview[]> {
-  return invoke<HooksPreview[]>("hooks_preview");
+export interface TeamSyncStatus {
+  state: "synced" | "offline" | "error" | "not_checked";
+  lastSuccessMs: number | null;
+  checkedAtMs?: number;
 }
 
-/** The most recent sensor rows, newest first. */
-export function hooksRecent(limit: number): Promise<HookEvent[]> {
-  return invoke<HookEvent[]>("hooks_recent", { limit });
+export function teamSyncStatus(): Promise<TeamSyncStatus> {
+  return invoke<TeamSyncStatus>("team_sync_status");
 }
 
-/** Explicitly use an identical managed definition in the active profile. */
-export function teamUseManaged(serverId: string): Promise<Registry> {
-  return invoke<Registry>("team_use_managed", { serverId });
+export interface DataRemovalPlan {
+  dataDir: string;
+  resources: string[];
+  reportPath: string;
+}
+export function dataRemovalPlan(): Promise<DataRemovalPlan> {
+  return invoke("data_removal_plan");
+}
+export function removeToolportData(reportPath: string): Promise<void> {
+  return invoke("remove_toolport_data", { reportPath, confirmed: true });
 }

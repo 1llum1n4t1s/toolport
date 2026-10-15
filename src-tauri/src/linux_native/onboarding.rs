@@ -6,27 +6,15 @@ use std::time::{Duration, Instant};
 use adw::prelude::*;
 
 use super::state::{self, ClientGatewayState, ClientSnapshot};
-use super::ClientPage;
 
 const MARKER: &str = "gtk-onboarding-complete";
 
-pub(super) fn install(
-    app: &adw::Application,
-    parent: &adw::ApplicationWindow,
-    client_page: ClientPage,
-) {
+pub(super) fn install(app: &adw::Application, parent: &adw::ApplicationWindow) {
     if app.lookup_action("show-onboarding").is_none() {
         let action = gtk::gio::SimpleAction::new("show-onboarding", None);
         let app_for_action = app.clone();
         let parent_for_action = parent.clone();
-        let clients_for_action = client_page.clone();
-        action.connect_activate(move |_, _| {
-            present(
-                &app_for_action,
-                &parent_for_action,
-                clients_for_action.clone(),
-            )
-        });
+        action.connect_activate(move |_, _| present(&app_for_action, &parent_for_action));
         app.add_action(&action);
     }
 
@@ -35,7 +23,7 @@ pub(super) fn install(
     gtk::glib::spawn_future_local(async move {
         let needed = gtk::gio::spawn_blocking(first_run_needed).await;
         if matches!(needed, Ok(Ok(true))) {
-            present(&app, &parent, client_page);
+            present(&app, &parent);
         } else if let Ok(Err(error)) = needed {
             eprintln!("toolport: could not check native onboarding state: {error}");
         }
@@ -54,10 +42,12 @@ fn first_run_needed() -> Result<bool, String> {
     if has_servers {
         return Ok(false);
     }
-    let clients = state::detect_client_views()?;
-    Ok(should_offer(&registry, &clients))
+    Ok(!crate::clients::detect_clients()
+        .iter()
+        .any(|client| client.gateway_installed))
 }
 
+#[cfg(test)]
 fn should_offer(registry: &crate::registry::Registry, clients: &ClientSnapshot) -> bool {
     !registry
         .servers
@@ -95,7 +85,7 @@ pub(super) fn mark_complete() -> Result<(), String> {
         .map_err(|error| format!("could not save setup completion: {error}"))
 }
 
-fn present(app: &adw::Application, parent: &adw::ApplicationWindow, client_page: ClientPage) {
+fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
     if let Some(window) = app
         .windows()
         .into_iter()
@@ -132,11 +122,10 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow, client_page:
         .transition_duration(180)
         .vexpand(true)
         .build();
-    let rules_path = Rc::new(Cell::new(false));
 
     let welcome = wizard_page(
         "Welcome to Toolport",
-        "Set up servers and rules once, then share them with every supported AI client on this machine.",
+        "Set up servers once, then share them with every supported AI client on this machine.",
     );
     let benefits = gtk::Box::new(gtk::Orientation::Vertical, 8);
     benefits.add_css_class("toolport-settings-group");
@@ -175,10 +164,7 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow, client_page:
     let choose_mcp = gtk::Button::with_label("Set up MCP servers");
     choose_mcp.add_css_class("suggested-action");
     welcome_actions.append(&choose_mcp);
-    let choose_rules = gtk::Button::with_label("Write rules for my agents");
-    choose_rules.add_css_class("toolport-secondary-action");
-    welcome_actions.append(&choose_rules);
-    let choose_team = gtk::Button::with_label("Join a team");
+    let choose_team = gtk::Button::with_label("Sign in to sync");
     choose_team.add_css_class("toolport-secondary-action");
     welcome_actions.append(&choose_team);
     welcome.append(&welcome_actions);
@@ -190,75 +176,11 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow, client_page:
 
     let add = wizard_page(
         "Add your first servers",
-        "Choose a starter stack, import servers already configured in a client, or continue to the full catalog.",
+        "Review and connect a client to import your existing servers, or continue to the full catalog.",
     );
-    let stack_feedback = feedback_label("Choose a stack or continue when you are ready.");
-    add.append(&stack_feedback);
-    let stack_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    stack_list.add_css_class("toolport-settings-group");
-    for starter in crate::stacks::stacks() {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        row.add_css_class("toolport-setting-row");
-        let copy = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        copy.set_hexpand(true);
-        copy.append(
-            &gtk::Label::builder()
-                .label(&starter.name)
-                .halign(gtk::Align::Start)
-                .css_classes(["heading"])
-                .build(),
-        );
-        copy.append(
-            &gtk::Label::builder()
-                .label(&starter.description)
-                .halign(gtk::Align::Fill)
-                .xalign(0.0)
-                .wrap(true)
-                .lines(2)
-                .ellipsize(gtk::pango::EllipsizeMode::End)
-                .css_classes(["toolport-muted"])
-                .build(),
-        );
-        row.append(&copy);
-        let add_stack = gtk::Button::with_label("Add stack");
-        add_stack.add_css_class("toolport-secondary-action");
-        let entries = starter.servers;
-        let name = starter.name;
-        let feedback = stack_feedback.clone();
-        add_stack.connect_clicked(move |button| {
-            button.set_sensitive(false);
-            let button = button.clone();
-            let entries = entries.clone();
-            let name = name.clone();
-            let feedback = feedback.clone();
-            gtk::glib::spawn_future_local(async move {
-                let result = gtk::gio::spawn_blocking(move || {
-                    crate::registry_controller::add_catalog_stack(entries)
-                })
-                .await;
-                button.set_sensitive(true);
-                match result {
-                    Ok(Ok((_, count))) => {
-                        button.set_label("Added");
-                        button.set_sensitive(false);
-                        show_success(
-                            &feedback,
-                            &format!(
-                                "Added {count} server{} from {name}. They stay disabled until reviewed.",
-                                if count == 1 { "" } else { "s" }
-                            ),
-                        );
-                    }
-                    Ok(Err(error)) => show_error(&feedback, &error),
-                    Err(_) => show_error(&feedback, "the stack setup task stopped unexpectedly"),
-                }
-            });
-        });
-        row.append(&add_stack);
-        stack_list.append(&row);
-    }
-    add.append(&stack_list);
-    let import = gtk::Button::with_label("Import servers from clients");
+    let add_feedback = feedback_label("Review a client or browse the catalog when you are ready.");
+    add.append(&add_feedback);
+    let import = gtk::Button::with_label("Review and connect clients");
     import.add_css_class("toolport-secondary-action");
     add.append(&import);
     let add_nav = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -315,7 +237,7 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow, client_page:
     let call_verifier = CallVerifier::new();
     done.append(&call_verifier.root);
     let done_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let destination = gtk::Button::with_label("Open Playground");
+    let destination = gtk::Button::with_label("Open server tools");
     destination.add_css_class("toolport-secondary-action");
     destination.set_hexpand(true);
     destination.set_halign(gtk::Align::End);
@@ -333,19 +255,8 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow, client_page:
     skip.connect_clicked(move |_| finish_window(&window_for_skip, &feedback_for_skip));
 
     let stack_for_mcp = stack.clone();
-    let rules_for_mcp = rules_path.clone();
     choose_mcp.connect_clicked(move |_| {
-        rules_for_mcp.set(false);
         stack_for_mcp.set_visible_child_name("add");
-    });
-    let stack_for_rules = stack.clone();
-    let rules_for_rules = rules_path.clone();
-    let list_for_rules = connect_list.clone();
-    let feedback_for_rules = connect_feedback.clone();
-    choose_rules.connect_clicked(move |_| {
-        rules_for_rules.set(true);
-        load_clients(&list_for_rules, &feedback_for_rules);
-        stack_for_rules.set_visible_child_name("connect");
     });
 
     let app_for_team = app.clone();
@@ -368,46 +279,33 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow, client_page:
     });
     let app_for_catalog = app.clone();
     let window_for_catalog = window.clone();
-    let feedback_for_catalog = stack_feedback.clone();
+    let feedback_for_catalog = add_feedback.clone();
     catalog.connect_clicked(move |_| {
         if complete_and_close(&window_for_catalog, &feedback_for_catalog) {
             activate_page(&app_for_catalog, "show-catalog");
         }
     });
-    let app_for_import = app.clone();
-    let window_for_import = window.clone();
-    let feedback_for_import = stack_feedback.clone();
-    let client_page_for_import = client_page.clone();
+    let stack_for_import = stack.clone();
+    let list_for_import = connect_list.clone();
+    let feedback_for_import = connect_feedback.clone();
     import.connect_clicked(move |_| {
-        if complete_and_close(&window_for_import, &feedback_for_import) {
-            activate_page(&app_for_import, "show-clients");
-            client_page_for_import.preview_imports();
-        }
+        load_clients(&list_for_import, &feedback_for_import);
+        stack_for_import.set_visible_child_name("connect");
     });
     let list_for_rescan = connect_list.clone();
     let feedback_for_rescan = connect_feedback.clone();
     rescan.connect_clicked(move |_| load_clients(&list_for_rescan, &feedback_for_rescan));
     let stack_for_back_connect = stack.clone();
-    let rules_for_back = rules_path.clone();
     back_connect.connect_clicked(move |_| {
-        stack_for_back_connect.set_visible_child_name(if rules_for_back.get() {
-            "welcome"
-        } else {
-            "add"
-        });
+        stack_for_back_connect.set_visible_child_name("add");
     });
     let stack_for_done = stack.clone();
     let summary_for_done = summary.clone();
     let destination_for_done = destination.clone();
-    let rules_for_done = rules_path.clone();
     let health_for_done = check_health.clone();
     let verifier_for_done = call_verifier.clone();
     continue_connect.connect_clicked(move |_| {
-        destination_for_done.set_label(if rules_for_done.get() {
-            "Set up agent rules"
-        } else {
-            "Open Playground"
-        });
+        destination_for_done.set_label("Open server tools");
         refresh_summary(&summary_for_done);
         stack_for_done.set_visible_child_name("done");
         health_for_done.emit_clicked();
@@ -418,17 +316,9 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow, client_page:
     let app_for_destination = app.clone();
     let window_for_destination = window.clone();
     let summary_for_destination = summary.clone();
-    let rules_for_destination = rules_path.clone();
     destination.connect_clicked(move |_| {
         if complete_and_close(&window_for_destination, &summary_for_destination) {
-            activate_page(
-                &app_for_destination,
-                if rules_for_destination.get() {
-                    "show-rules"
-                } else {
-                    "show-playground"
-                },
-            );
+            activate_page(&app_for_destination, "show-server-tools");
         }
     });
     let window_for_finish = window.clone();
@@ -558,37 +448,19 @@ fn render_clients(list: &gtk::Box, feedback: &gtk::Label, snapshot: ClientSnapsh
             let list = list.clone();
             let feedback = feedback.clone();
             connect.connect_clicked(move |button| {
-                button.set_sensitive(false);
-                let button = button.clone();
-                let client_id = client_id.clone();
+                let Some(parent) = button.root().and_downcast::<gtk::Window>() else {
+                    return;
+                };
                 let list = list.clone();
                 let feedback = feedback.clone();
-                gtk::glib::spawn_future_local(async move {
-                    let result = gtk::gio::spawn_blocking(move || {
-                        crate::registry_controller::connect_client_stdio(&client_id, None, false)
-                    })
-                    .await;
-                    match result {
-                        Ok(Ok(_)) => {
-                            show_success(
-                                &feedback,
-                                "Client connected. Restart it if it was already open.",
-                            );
-                            load_clients(&list, &feedback);
-                        }
-                        Ok(Err(error)) => {
-                            button.set_sensitive(true);
-                            show_error(&feedback, &error);
-                        }
-                        Err(_) => {
-                            button.set_sensitive(true);
-                            show_error(
-                                &feedback,
-                                "the client connection task stopped unexpectedly",
-                            );
-                        }
-                    }
-                });
+                super::setup::connect(
+                    &parent,
+                    client_id.clone(),
+                    None,
+                    false,
+                    move || load_clients(&list, &feedback),
+                    None,
+                );
             });
             row.append(&connect);
         }
@@ -731,7 +603,7 @@ impl CallVerifier {
                 let Some(client) = connected else {
                     return Ok::<_, String>(None);
                 };
-                let recent = crate::audit::read_recent(1)
+                let recent = crate::audit::read_activity(1)
                     .map_err(|error| format!("could not read the activity log: {error}"))?;
                 let since = recent
                     .first()
@@ -774,7 +646,7 @@ impl CallVerifier {
             if Instant::now() >= deadline {
                 verifier.status.add_css_class("error");
                 verifier.status.set_label(
-                    "No call arrived yet. Restart the client, confirm it uses a profile with enabled servers, or test a tool in Playground.",
+                    "No call arrived yet. Restart the client, confirm it uses a profile with enabled servers, or test a tool in the server’s Tools tab.",
                 );
                 verifier.retry.set_visible(true);
                 return gtk::glib::ControlFlow::Break;
@@ -786,7 +658,7 @@ impl CallVerifier {
             let in_flight_for_read = in_flight.clone();
             gtk::glib::spawn_future_local(async move {
                 let result = gtk::gio::spawn_blocking(move || {
-                    crate::audit::read_recent(25)
+                    crate::audit::read_activity(25)
                         .map(|entries| audit_proof_after(&entries, since))
                         .map_err(|error| format!("could not read the activity log: {error}"))
                 })
@@ -1062,11 +934,32 @@ mod tests {
     }
 
     #[test]
+    fn startup_skips_setup_for_a_connected_client_without_an_ownership_record() {
+        let data = crate::registry::DataDirTestEnv::new("location-native-first-run");
+        let _env_lock = crate::clients::env_test_lock();
+        let folder = data.dir.join(".claude-work");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(
+            folder.join(".claude.json"),
+            r#"{"mcpServers":{"toolport":{"command":"/usr/bin/toolport-gateway"}}}"#,
+        )
+        .unwrap();
+        let _override = crate::clients::EnvRestore::set("CLAUDE_CONFIG_DIR", &folder);
+        assert!(crate::registry::load()
+            .unwrap()
+            .client_managed_entries
+            .is_empty());
+        assert!(!first_run_needed().unwrap());
+    }
+
+    #[test]
     fn setup_is_offered_only_without_servers_or_connected_clients() {
         let mut registry = crate::registry::Registry::default();
         let empty = ClientSnapshot {
             clients: Vec::new(),
             profiles: Vec::new(),
+            sessions: Vec::new(),
+            sessions_error: false,
         };
         assert!(should_offer(&registry, &empty));
 
@@ -1079,18 +972,26 @@ mod tests {
                 uses_connectors: false,
                 server_count: 1,
                 movable_server_count: 0,
+                other_server_count: 0,
                 gateway_state: ClientGatewayState::Connected,
                 shared_http: false,
+                legacy_bearer_argv: false,
                 scope_id: None,
                 scope_name: None,
                 discovery_mode: None,
+                inherited_discovery: None,
                 config_error: false,
+                location_removable: false,
             }],
             profiles: Vec::new(),
+            sessions: Vec::new(),
+            sessions_error: false,
         };
         assert!(!should_offer(&registry, &connected));
 
         registry.servers.push(crate::registry::ServerEntry {
+            enabled: false,
+            inherit_env: false,
             id: "real-server".into(),
             name: "Real server".into(),
             transport: "http".into(),
@@ -1126,7 +1027,10 @@ mod tests {
             "ok": true,
         });
 
-        assert_eq!(audit_proof_after(&[retained.clone()], 100), None);
+        assert_eq!(
+            audit_proof_after(std::slice::from_ref(&retained), 100),
+            None
+        );
         assert_eq!(audit_proof_after(&[unrelated, retained], 100), None);
         assert_eq!(
             audit_proof_after(&[fresh], 100),

@@ -1,3 +1,6 @@
+import { envRowSyncs } from "@/lib/envRowSyncs";
+import { secretReferenceReview } from "@/lib/secretRefs";
+import { SecretReferenceField } from "@/components/SecretReferenceField";
 import { useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
@@ -13,15 +16,25 @@ import { toast } from "sonner";
 import { toastError } from "@/lib/toast";
 import {
   addServer,
+  addSnippetServers,
+  setServerEnabled,
   parseServerSnippet,
   setSecret,
   setLaunchSecret,
   testServer,
   updateServer,
 } from "@/lib/api";
+import { ImportReviewDialog } from "@/components/ImportReviewDialog";
 import { formatArgs, parseArgs } from "@/lib/args";
 import { isDownloadLauncher } from "@/lib/launcher";
-import type { LaunchConfig, Registry, ServerEntry, Transport } from "@/lib/types";
+import { riskySyncEnv } from "@/lib/personalSync";
+import type {
+  LaunchConfig,
+  Registry,
+  ServerEntry,
+  Transport,
+  ParsedSnippetServer,
+} from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -33,6 +46,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -89,6 +103,7 @@ export function ServerDialog({
     args: formatArgs(initial?.args ?? []),
     url: initial?.url ?? "",
     cwd: initial?.cwd ?? "",
+    inheritEnv: initial?.inheritEnv ?? false,
     initializeTimeoutSeconds:
       initial?.initializeTimeoutMs == null
         ? ""
@@ -96,8 +111,22 @@ export function ServerDialog({
   });
   // Env vars (API keys etc.). Values are vaulted in the OS keychain, never stored
   // in the registry, so existing secrets show as declared keys with empty values.
-  const [envRows, setEnvRows] = useState<{ key: string; value: string }[]>(
-    initial?.env.map((e) => ({ key: e.key, value: "" })) ?? [],
+  const [envRows, setEnvRows] = useState<
+    {
+      key: string;
+      value: string;
+      secret?: boolean;
+      portable?: boolean;
+      source?: { ref: string };
+    }[]
+  >(
+    initial?.env.map((e) => ({
+      key: e.key,
+      value: e.secret ? "" : (e.value ?? ""),
+      secret: e.secret,
+      source: e.source,
+      portable: e.portable,
+    })) ?? [],
   );
   const [launch, setLaunch] = useState<LaunchConfig | null>(initial?.launch ?? null);
   const [launchValues, setLaunchValues] = useState<Record<string, string>>(
@@ -108,7 +137,11 @@ export function ServerDialog({
       ]) ?? [],
     ),
   );
+  const [localOnly, setLocalOnly] = useState(initial?.syncLocalOnly === true);
   const [bindingCleared, setBindingCleared] = useState(false);
+  const [touched, setTouched] = useState<Set<string>>(() => new Set());
+  const [pasteReview, setPasteReview] = useState<ParsedSnippetServer[] | null>(null);
+  const [reviewText, setReviewText] = useState("");
   const [busy, setBusy] = useState(false);
   const [test, setTest] = useState<TestState>(IDLE_TEST);
   const testRequestId = useRef(0);
@@ -148,6 +181,7 @@ export function ServerDialog({
     }
     if (next) {
       setPartialEdit(null);
+      setLocalOnly(initial?.syncLocalOnly === true);
       setForm({
         name: initial?.name ?? "",
         transport: (initial?.transport ?? "stdio") as Transport,
@@ -155,12 +189,21 @@ export function ServerDialog({
         args: formatArgs(initial?.args ?? []),
         url: initial?.url ?? "",
         cwd: initial?.cwd ?? "",
+        inheritEnv: initial?.inheritEnv ?? false,
         initializeTimeoutSeconds:
           initial?.initializeTimeoutMs == null
             ? ""
             : String(initial.initializeTimeoutMs / 1000),
       });
-      setEnvRows(initial?.env.map((e) => ({ key: e.key, value: "" })) ?? []);
+      setEnvRows(
+        initial?.env.map((e) => ({
+          key: e.key,
+          value: e.secret ? "" : (e.value ?? ""),
+          secret: e.secret,
+          source: e.source,
+          portable: e.portable,
+        })) ?? [],
+      );
       setLaunch(initial?.launch ?? null);
       setLaunchValues(
         Object.fromEntries(
@@ -176,6 +219,7 @@ export function ServerDialog({
       setPasteText("");
     }
     setOpen(next);
+    if (!next) setTouched(new Set());
   }
 
   function set<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
@@ -209,6 +253,11 @@ export function ServerDialog({
         toast.error("No servers found in the pasted config");
         return;
       }
+      if (servers.length > 1) {
+        setPasteReview(servers);
+        setReviewText(pasteText);
+        return;
+      }
       const s = servers[0];
       setForm({
         name: s.name || "",
@@ -217,25 +266,21 @@ export function ServerDialog({
         args: formatArgs(s.args),
         url: s.url ?? "",
         cwd: "",
+        inheritEnv: false,
         initializeTimeoutSeconds: "",
       });
       setEnvRows(
         s.env.map((e) => ({
           key: e.key,
           value: e.value ?? "",
+          secret: e.secret ?? true,
         })),
       );
       setLaunch(null);
       setLaunchValues({});
       setBindingCleared(false);
       clearTest();
-      if (servers.length > 1) {
-        toast.info(
-          `Found ${servers.length} servers, filled "${s.name}". Add the rest separately.`,
-        );
-      } else {
-        toast.success(`Parsed "${s.name}" from config`);
-      }
+      toast.success(`Parsed "${s.name}" from config`);
       setShowPaste(false);
       setPasteText("");
     } catch (e) {
@@ -251,7 +296,12 @@ export function ServerDialog({
   function buildEntry(withSecretValues: boolean): ServerEntry {
     const declared = envRows.filter((r) => r.key.trim());
     return {
+      // Saving replaces the whole entry, so an edit starts from the saved one
+      // and keeps what this dialog doesn't show, like switched-off tools.
+      ...(editing ? initial : undefined),
       id: currentEditId ?? "",
+      enabled: initial?.enabled ?? false,
+      syncLocalOnly: localOnly,
       name: form.name.trim(),
       transport: form.transport,
       command: isStdio ? form.command.trim() || null : null,
@@ -262,22 +312,36 @@ export function ServerDialog({
               ...launch,
               inputs: launch.inputs.map((input) => ({
                 ...input,
-                value: input.secret
-                  ? withSecretValues
-                    ? launchValues[input.key] || null
-                    : null
-                  : launchValues[input.key] || null,
+                value: input.source
+                  ? null
+                  : input.secret
+                    ? withSecretValues
+                      ? launchValues[input.key] || null
+                      : null
+                    : launchValues[input.key] || null,
               })),
             }
           : null,
+      headerKeys: initial?.headerKeys,
+      secretSources: initial?.secretSources,
       env: declared.map((r) => ({
         key: r.key.trim(),
-        value: withSecretValues && r.value ? r.value : null,
-        secret: true,
+        value:
+          !r.source && (withSecretValues || r.secret === false) && r.value
+            ? r.value
+            : null,
+        secret: r.source ? true : r.secret !== false,
+        ...(r.source ? { source: r.source } : {}),
+        // Left out unless saved or chosen, so sync's default for a new
+        // value applies (the box shows that default).
+        ...(!r.source && r.secret === false && r.portable !== undefined
+          ? { portable: r.portable && !riskySyncEnv(r.key) }
+          : {}),
       })),
       url: isStdio ? null : form.url.trim() || null,
       source: bindingCleared ? "manual" : (initial?.source ?? "manual"),
       cwd: isStdio ? form.cwd.trim() || null : null,
+      inheritEnv: isStdio && form.inheritEnv,
       requestTimeoutMs:
         isStdio || initialUsesLocalCommand ? null : initial?.requestTimeoutMs,
       initializeTimeoutMs: form.initializeTimeoutSeconds.trim()
@@ -310,6 +374,13 @@ export function ServerDialog({
       errors.push("Startup timeout must be greater than 0 and at most 86,400 seconds.");
     }
   }
+  const visibleErrors = errors.filter((message) =>
+    message.startsWith("Give")
+      ? touched.has("srv-name")
+      : message.startsWith("Startup")
+        ? touched.has("srv-initialize-timeout")
+        : touched.has(isStdio ? "srv-cmd" : "srv-url") || touched.has("srv-args"),
+  );
   const ownName = editing
     ? (initial?.name ?? partialEdit?.name)?.trim().toLowerCase()
     : undefined;
@@ -366,7 +437,7 @@ export function ServerDialog({
       const failedKeys: string[] = [];
       if (id) {
         for (const r of declared) {
-          if (!r.value) continue;
+          if (r.source || !r.value || r.secret === false) continue;
           const key = r.key.trim();
           try {
             result = await setSecret(id, key, r.value);
@@ -375,7 +446,7 @@ export function ServerDialog({
           }
         }
         for (const input of launch?.inputs ?? []) {
-          if (!input.secret || !launchValues[input.key]) continue;
+          if (input.source || !input.secret || !launchValues[input.key]) continue;
           try {
             result = await setLaunchSecret(id, input.key, launchValues[input.key]);
           } catch {
@@ -391,6 +462,13 @@ export function ServerDialog({
         );
         return;
       }
+      if (!wasEditing && id && declared.every((r) => r.value.trim()))
+        result = await setServerEnabled(
+          result.defaultAccessContextId ?? result.activeProfileId ?? "",
+          id,
+          true,
+        );
+      onSaved(result);
       toast.success(wasEditing ? `Saved ${entry.name}` : `Added ${entry.name}`);
       onOpenChange(false);
     } catch (e) {
@@ -400,10 +478,70 @@ export function ServerDialog({
     }
   }
 
+  if (pasteReview)
+    return (
+      <ImportReviewDialog
+        open
+        items={pasteReview.map((s, i) => ({
+          ...s,
+          key: String(i),
+          envKeys: s.env.map((e) => e.key),
+          credentials: s.env.map((e) => ({
+            key: e.key,
+            secret: e.secret ?? true,
+            present: !!e.value && !/^\$\{[^}]+\}$/.test(e.value),
+            // Snippets have no launch metadata; Import::prepare requires every env key.
+            required: true,
+          })),
+          isNew: true,
+        }))}
+        busy={busy}
+        title="Review pasted servers"
+        confirmLabel="Add selected servers"
+        onOpenChange={(open) => {
+          if (!open && !busy) setPasteReview(null);
+        }}
+        onConfirm={async (keys, choices, inputs) => {
+          setBusy(true);
+          try {
+            const next = await addSnippetServers(
+              reviewText,
+              keys,
+              choices,
+              ...(inputs ? ([inputs] as const) : ([] as const)),
+            );
+            onSaved(next.registry);
+            toast.success(
+              next.servers.map((server) => `${server.name}: ${server.status}`).join("; "),
+            );
+            setPasteReview(null);
+            setReviewText("");
+            onOpenChange(false);
+          } catch (e) {
+            toastError(String(e));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
+    );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {trigger && <DialogTrigger asChild>{trigger}</DialogTrigger>}
-      <DialogContent className="sm:max-w-md">
+      <DialogContent
+        className="sm:max-w-md"
+        onBlurCapture={(event) => {
+          if (event.target instanceof HTMLInputElement)
+            setTouched((previous) => new Set([...previous, event.target.id]));
+        }}
+      >
+        {initial &&
+          secretReferenceReview(initial).map((line) => (
+            <p key={line} className="text-sm break-all">
+              {line}
+            </p>
+          ))}
         <DialogHeader>
           <DialogTitle>{editing ? "Edit server" : "Add MCP server"}</DialogTitle>
         </DialogHeader>
@@ -451,11 +589,21 @@ export function ServerDialog({
 
         <div className="flex flex-col gap-4 py-2">
           <div className="flex flex-col gap-2">
+            {!editing && (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={localOnly}
+                  onChange={(e) => setLocalOnly(e.target.checked)}
+                />
+                This machine only
+              </label>
+            )}
             <Label htmlFor="srv-name">Name</Label>
             <Input
               id="srv-name"
               autoFocus
-              placeholder="revenuecat (work)"
+              placeholder="Server name"
               value={form.name}
               onChange={(e) => set("name", e.target.value)}
             />
@@ -520,23 +668,74 @@ export function ServerDialog({
                         {input.label}
                         {input.required ? " *" : ""}
                       </Label>
-                      <Input
-                        id={`launch-${input.key}`}
-                        type={input.secret ? "password" : "text"}
-                        value={launchValues[input.key] ?? ""}
-                        placeholder={
-                          input.secret && editing
-                            ? "Leave blank to keep vaulted value"
-                            : input.label
-                        }
-                        onChange={(event) => {
-                          setLaunchValues((values) => ({
-                            ...values,
-                            [input.key]: event.target.value,
-                          }));
-                          clearTest();
-                        }}
-                      />
+                      {input.secret && (
+                        <select
+                          aria-label={`Key source for ${input.label}`}
+                          className="self-start rounded border bg-background p-1 text-xs"
+                          value={input.source ? "reference" : "paste"}
+                          onChange={(e) => {
+                            setLaunch((l) =>
+                              l
+                                ? {
+                                    ...l,
+                                    inputs: l.inputs.map((i) =>
+                                      i.key === input.key
+                                        ? {
+                                            ...i,
+                                            source:
+                                              e.target.value === "reference"
+                                                ? { ref: "op://Engineering/Docs/key" }
+                                                : undefined,
+                                          }
+                                        : i,
+                                    ),
+                                  }
+                                : l,
+                            );
+                            clearTest();
+                          }}
+                        >
+                          <option value="paste">Paste a key</option>
+                          <option value="reference">From a password manager</option>
+                        </select>
+                      )}
+                      {input.source ? (
+                        <SecretReferenceField
+                          serverId={currentEditId ?? ""}
+                          value={input.source.ref}
+                          onChange={(ref) => {
+                            setLaunch((l) =>
+                              l
+                                ? {
+                                    ...l,
+                                    inputs: l.inputs.map((i) =>
+                                      i.key === input.key ? { ...i, source: { ref } } : i,
+                                    ),
+                                  }
+                                : l,
+                            );
+                            clearTest();
+                          }}
+                        />
+                      ) : (
+                        <Input
+                          id={`launch-${input.key}`}
+                          type={input.secret ? "password" : "text"}
+                          value={launchValues[input.key] ?? ""}
+                          placeholder={
+                            input.secret && editing
+                              ? "Leave blank to keep vaulted value"
+                              : input.label
+                          }
+                          onChange={(event) => {
+                            setLaunchValues((values) => ({
+                              ...values,
+                              [input.key]: event.target.value,
+                            }));
+                            clearTest();
+                          }}
+                        />
+                      )}
                     </div>
                   ))}
                   <p className="text-xs text-muted-foreground">
@@ -559,6 +758,21 @@ export function ServerDialog({
                   server). <code className="font-mono">~</code> and{" "}
                   <code className="font-mono">{"${VAR}"}</code> are expanded.
                 </p>
+              </div>
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex flex-col gap-1">
+                  <Label htmlFor="srv-inherit-env">Use my shell environment</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Gives this server every variable from your shell, such as AWS, GitHub
+                    or kube settings. When off it gets only PATH, HOME and other basics,
+                    plus the variables you set here.
+                  </p>
+                </div>
+                <Switch
+                  id="srv-inherit-env"
+                  checked={form.inheritEnv}
+                  onCheckedChange={(checked) => set("inheritEnv", checked)}
+                />
               </div>
             </>
           ) : (
@@ -615,21 +829,106 @@ export function ServerDialog({
               your OS keychain, never in the config.
             </p>
             {envRows.map((row, i) => (
-              <div key={i} className="flex items-center gap-2">
+              <div key={i} className="flex flex-wrap items-center gap-2">
                 <Input
                   placeholder="ENV_NAME"
                   className="font-mono"
                   value={row.key}
                   onChange={(e) => setEnvRow(i, "key", e.target.value)}
                 />
-                <Input
-                  type="password"
-                  placeholder={
-                    initial?.env.some((e) => e.key === row.key) ? "•••• (saved)" : "value"
-                  }
-                  value={row.value}
-                  onChange={(e) => setEnvRow(i, "value", e.target.value)}
-                />
+                {row.secret !== false && (
+                  <select
+                    aria-label={`Key source for ${row.key || "variable"}`}
+                    className="rounded border bg-background p-1 text-xs"
+                    value={row.source ? "reference" : "paste"}
+                    onChange={(e) =>
+                      setEnvRows((rows) =>
+                        rows.map((r, j) =>
+                          j === i
+                            ? {
+                                ...r,
+                                value: "",
+                                source:
+                                  e.target.value === "reference"
+                                    ? { ref: "op://Engineering/Docs/key" }
+                                    : undefined,
+                              }
+                            : r,
+                        ),
+                      )
+                    }
+                  >
+                    <option value="paste">Paste a key</option>
+                    <option value="reference">From a password manager</option>
+                  </select>
+                )}
+                {row.source ? (
+                  <SecretReferenceField
+                    serverId={currentEditId ?? ""}
+                    value={row.source.ref}
+                    onChange={(ref) =>
+                      setEnvRows((rows) =>
+                        rows.map((r, j) => (j === i ? { ...r, source: { ref } } : r)),
+                      )
+                    }
+                  />
+                ) : (
+                  <Input
+                    type={row.secret === false ? "text" : "password"}
+                    placeholder={
+                      initial?.env.some((e) => e.key === row.key)
+                        ? "•••• (saved)"
+                        : "value"
+                    }
+                    value={row.value}
+                    onChange={(e) => setEnvRow(i, "value", e.target.value)}
+                  />
+                )}
+                <label className="flex shrink-0 items-center gap-1 text-xs">
+                  <input
+                    type="checkbox"
+                    aria-label={`Keep ${row.key || "variable"} in keychain`}
+                    checked={row.secret !== false}
+                    onChange={(e) =>
+                      setEnvRows((rows) =>
+                        rows.map((r, j) =>
+                          j === i
+                            ? {
+                                ...r,
+                                secret: e.target.checked,
+                                source: e.target.checked ? r.source : undefined,
+                              }
+                            : r,
+                        ),
+                      )
+                    }
+                  />
+                  Keychain
+                </label>
+                {row.secret === false && (
+                  <label
+                    className="flex shrink-0 items-center gap-1 text-xs"
+                    title={
+                      riskySyncEnv(row.key)
+                        ? "This variable changes how programs run, so it always stays on this machine."
+                        : undefined
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      disabled={riskySyncEnv(row.key)}
+                      checked={envRowSyncs(row, editing ? (initial?.env ?? []) : [])}
+                      onChange={(e) =>
+                        setEnvRows((rows) =>
+                          rows.map((r, j) =>
+                            j === i ? { ...r, portable: e.target.checked } : r,
+                          ),
+                        )
+                      }
+                    />{" "}
+                    Same on every machine
+                  </label>
+                )}
                 <Button
                   size="icon"
                   variant="ghost"
@@ -652,12 +951,12 @@ export function ServerDialog({
             </Button>
           </div>
 
-          {(errors.length > 0 ||
+          {(visibleErrors.length > 0 ||
             duplicateName ||
             test.status === "ok" ||
             test.status === "fail") && (
             <div className="flex flex-col gap-1.5 text-xs">
-              {errors.map((msg) => (
+              {visibleErrors.map((msg) => (
                 <p key={msg} className="text-destructive">
                   {msg}
                 </p>

@@ -3,6 +3,7 @@
 //! Desktop shells own persistence and user-facing policy. This module owns the
 //! child process, authenticated readiness check, and clean shutdown so every
 //! shell supervises the same runtime implementation.
+use crate::http_client::{RequestHeaderExt as _, ResponseResultExt as _};
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -63,57 +64,26 @@ pub fn alive(bridge: &mut HttpBridge) -> bool {
 pub fn identity_ready(port: u16, token: &str) -> bool {
     use std::io::Read as _;
 
-    let response = match ureq::get(&format!("http://127.0.0.1:{port}/"))
-        .timeout(Duration::from_millis(300))
-        .set("Authorization", &format!("Bearer {token}"))
+    let response = match crate::http_client::agent()
+        .get(&format!("http://127.0.0.1:{port}/"))
+        .config()
+        .timeout_global(Some(Duration::from_millis(300)))
+        .build()
+        .set_header("Authorization", &format!("Bearer {token}"))
         .call()
+        .retain_status_body()
     {
-        Ok(response) if response.status() == 200 => response,
+        Ok(response) if response.status().as_u16() == 200 => response,
         _ => return false,
     };
     let mut body = String::new();
     response
+        .into_body()
         .into_reader()
         .take(4 * 1024)
         .read_to_string(&mut body)
         .is_ok()
         && body.starts_with("Toolport gateway (HTTP mode).")
-}
-
-fn proxy_selected(
-    override_value: Option<&str>,
-    topology: Option<crate::registry::GatewayTopology>,
-) -> bool {
-    match override_value.map(str::trim) {
-        Some(value) if value.eq_ignore_ascii_case("legacy") => false,
-        Some(value) if value.eq_ignore_ascii_case("daemon") => true,
-        _ => topology == Some(crate::registry::GatewayTopology::Daemon),
-    }
-}
-
-fn bridge_uses_daemon() -> bool {
-    let topology = crate::registry::load_resolved_with_source()
-        .ok()
-        .filter(|(_, source)| source.is_authoritative())
-        .map(|(registry, _)| registry.gateway_topology_effective());
-    let override_value =
-        crate::brand::env_var("TOOLPORT_GATEWAY_TOPOLOGY", "CONDUIT_GATEWAY_TOPOLOGY");
-    proxy_selected(override_value.as_deref(), topology)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::proxy_selected;
-    use crate::registry::GatewayTopology::{Daemon, Legacy};
-
-    #[test]
-    fn desktop_proxy_selection_keeps_the_legacy_rollback() {
-        assert!(proxy_selected(None, Some(Daemon)));
-        assert!(!proxy_selected(None, Some(Legacy)));
-        assert!(!proxy_selected(None, None));
-        assert!(!proxy_selected(Some("legacy"), Some(Daemon)));
-        assert!(proxy_selected(Some("daemon"), Some(Legacy)));
-    }
 }
 
 pub fn start_with_token_at(
@@ -133,7 +103,7 @@ pub fn start_with_token_at(
             "Port {port} is already in use. Stop whatever is using it, then try again."
         ));
     }
-    let bin = crate::clients::resolve_gateway_path()
+    let bin = crate::clients::resolve_gateway_path_for_launch()?
         .ok_or_else(|| "toolport-gateway binary not found next to the app".to_string())?;
     let token = match token {
         Some(token) => token,
@@ -144,19 +114,14 @@ pub fn start_with_token_at(
             bytes.iter().map(|byte| format!("{byte:02x}")).collect()
         }
     };
-    let proxy_mode = bridge_uses_daemon();
     let mut command = std::process::Command::new(&bin);
     command
-        .arg(if proxy_mode { "--http-proxy" } else { "--http" })
+        .arg("--http-proxy")
         .arg(port.to_string())
         .env("TOOLPORT_HTTP_TOKEN", &token)
         .env("CONDUIT_HTTP_TOKEN", &token)
         // The proxy treats stdin EOF as the app's service lease ending.
-        .stdin(if proxy_mode {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::null()
-        })
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(windows)]
@@ -167,7 +132,7 @@ pub fn start_with_token_at(
     let mut child = command
         .spawn()
         .map_err(|error| format!("could not start the HTTP bridge: {error}"))?;
-    let startup_timeout = if proxy_mode { 25 } else { 5 };
+    let startup_timeout = 25;
     let deadline = std::time::Instant::now() + Duration::from_secs(startup_timeout);
     loop {
         if let Ok(Some(status)) = child.try_wait() {
@@ -190,7 +155,7 @@ pub fn start_with_token_at(
     bridge.child = Some(child);
     bridge.port = Some(port);
     bridge.token = Some(token.clone());
-    bridge.proxy_mode = proxy_mode;
+    bridge.proxy_mode = true;
     Ok(HttpBridgeStatus::new(Some(port), Some(token)))
 }
 

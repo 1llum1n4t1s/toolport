@@ -1,13 +1,16 @@
+import { SETTINGS_PAGES, type SettingsSubpage } from "@/lib/settingsPages";
+import { isPersonalSync } from "@/lib/personalSync";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
-  Activity,
+  Shield,
+  KeyRound,
+  Globe,
+  Wrench,
   ArrowUpCircle,
   ClipboardList,
   Compass,
   ExternalLink,
-  FileText,
-  FlaskConical,
   FolderOpen,
   Layers,
   Loader2,
@@ -15,11 +18,14 @@ import {
   ScrollText,
   Settings,
   Share2,
-  Store,
+  CircleHelp,
+  LogOut,
+  Keyboard,
   Users,
   Zap,
-  ShieldCheck,
 } from "lucide-react";
+import { exit } from "@tauri-apps/plugin-process";
+import { Popover } from "radix-ui";
 import { getVersion } from "@tauri-apps/api/app";
 import { openExternal } from "@/lib/openUrl";
 import { toast } from "sonner";
@@ -37,18 +43,18 @@ import {
   checkForUpdate,
   installUpdate,
   releasePageUrl,
+  systemPackageUpdateAdvice,
   type SystemPackage,
   type UpdateProgress,
 } from "@/lib/updater";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ProfileBar } from "@/components/ProfileBar";
 import { ShareDialog } from "@/components/ShareDialog";
 
 const FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const NAV_ITEM = `flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors hover:bg-accent ${FOCUS_RING}`;
-const ICON_BTN = `rounded text-muted-foreground transition hover:text-foreground ${FOCUS_RING}`;
+const HELP_ITEM = `flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent ${FOCUS_RING}`;
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 function updateProgressLabel(progress: UpdateProgress | null): string {
@@ -71,13 +77,15 @@ function updateProgressLabel(progress: UpdateProgress | null): string {
  * release is published. The check is best-effort: any failure (dev build,
  * offline, no manifest yet) just shows the current version. Clicking downloads,
  * installs, and relaunches into the new version, except on .deb and .rpm installs,
- * which link to the release page instead. */
+ * which show package-manager guidance and link to release notes. */
 function VersionFooter({
   onImport,
   onReplay,
+  onShortcuts,
 }: {
   onImport: (r: Registry) => void;
   onReplay: () => void;
+  onShortcuts: () => void;
 }) {
   const [version, setVersion] = useState("");
   const [update, setUpdate] = useState<Update | null>(null);
@@ -177,10 +185,13 @@ function VersionFooter({
     const visibleUnlisten = listen<boolean>("team-window-visible", (event) => {
       if (event.payload) void runUpdateCheck(false);
     });
+    const settingsCheck = () => void runUpdateCheck(true, true);
+    window.addEventListener("toolport-check-updates", settingsCheck);
     const trayUnlisten = listen("tray-check-updates", () => {
       void runUpdateCheck(true, true);
     });
     return () => {
+      window.removeEventListener("toolport-check-updates", settingsCheck);
       window.clearInterval(interval);
       void visibleUnlisten.then((unlisten) => unlisten());
       void trayUnlisten.then((unlisten) => unlisten());
@@ -230,35 +241,35 @@ function VersionFooter({
 
   const progressLabel = updateProgressLabel(installProgress);
 
-  if (!version) return null;
   return (
-    <div className="mt-auto flex items-center justify-between gap-2 border-t px-4 py-3 text-xs">
-      {update ? (
-        <button
-          onClick={() => setShowNotes(true)}
-          disabled={installing}
-          className={`flex min-w-0 items-center gap-1.5 rounded text-success transition hover:underline disabled:opacity-70 ${FOCUS_RING}`}
-        >
-          {installing ? (
-            <Loader2 className="size-3.5 shrink-0 animate-spin" />
-          ) : (
-            <ArrowUpCircle className="size-3.5 shrink-0" />
-          )}
-          <span className="truncate">
-            {installing ? progressLabel : `Update to v${update.version}`}
-          </span>
-        </button>
-      ) : (
-        <button
-          onClick={manualCheck}
-          disabled={checking}
-          title="Check for updates"
-          className={`rounded text-muted-foreground transition hover:text-foreground disabled:opacity-70 ${FOCUS_RING}`}
-        >
-          {checking ? "Checking…" : `Toolport v${version}`}
-        </button>
-      )}
-
+    <div className="sidebar-footer mt-auto flex shrink-0 flex-wrap items-center justify-between gap-2 border-t px-4 py-3 text-xs">
+      <div className="sidebar-version min-w-0">
+        {update ? (
+          <button
+            onClick={() => setShowNotes(true)}
+            disabled={installing}
+            className={`flex min-w-0 items-center gap-1.5 rounded text-success transition hover:underline disabled:opacity-70 ${FOCUS_RING}`}
+          >
+            {installing ? (
+              <Loader2 className="size-3.5 shrink-0 animate-spin" />
+            ) : (
+              <ArrowUpCircle className="size-3.5 shrink-0" />
+            )}
+            <span className="truncate">
+              {installing ? progressLabel : `Update to v${update.version}`}
+            </span>
+          </button>
+        ) : version ? (
+          <button
+            onClick={manualCheck}
+            disabled={checking}
+            title="Check for updates"
+            className={`rounded text-muted-foreground transition hover:text-foreground disabled:opacity-70 ${FOCUS_RING}`}
+          >
+            {checking ? "Checking…" : `Toolport v${version}`}
+          </button>
+        ) : null}
+      </div>
       <UpdateNotes
         open={showNotes}
         onOpenChange={setShowNotes}
@@ -268,53 +279,73 @@ function VersionFooter({
         progressLabel={progressLabel}
         onInstall={applyUpdate}
       />
-      <div className="flex shrink-0 items-center gap-2">
-        <ShareDialog
-          onImported={onImport}
-          trigger={
-            <button
-              title="Share or import a setup"
-              aria-label="Share setup"
-              className={ICON_BTN}
-            >
-              <Share2 className="size-3.5" />
+      <Popover.Root>
+        <Popover.Trigger asChild>
+          <button
+            aria-label="Help"
+            className={`flex items-center gap-1 rounded ${FOCUS_RING}`}
+            title="Help and keyboard shortcuts (?)"
+          >
+            <CircleHelp className="size-4" />
+            <span className="sidebar-help-label">Help</span>
+          </button>
+        </Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Content
+            side="top"
+            align="start"
+            className="z-50 w-64 max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-lg border bg-popover p-2 text-popover-foreground shadow-lg"
+          >
+            <button className={HELP_ITEM} onClick={onShortcuts}>
+              <Keyboard className="size-4" />
+              Keyboard shortcuts <span className="ml-auto">?</span>
             </button>
-          }
-        />
-        <button
-          onClick={onReplay}
-          title="Run setup again"
-          aria-label="Run setup again"
-          className={ICON_BTN}
-        >
-          <Compass className="size-3.5" />
-        </button>
-        <button
-          onClick={() =>
-            openDataDir().catch(() => toastError("Couldn't open data folder"))
-          }
-          title="Open data folder (config, logs)"
-          aria-label="Open data folder"
-          className={ICON_BTN}
-        >
-          <FolderOpen className="size-3.5" />
-        </button>
-        <button
-          onClick={async () => {
-            try {
-              await navigator.clipboard.writeText(await gatherDiagnostics());
-              toast.success("Diagnostics copied, paste them into your bug report");
-            } catch {
-              toastError("Couldn't copy diagnostics");
-            }
-          }}
-          title="Copy diagnostics for a bug report"
-          aria-label="Copy diagnostics"
-          className={ICON_BTN}
-        >
-          <ClipboardList className="size-3.5" />
-        </button>
-      </div>
+            <ShareDialog
+              onImported={onImport}
+              trigger={
+                <button className={HELP_ITEM}>
+                  <Share2 className="size-4" />
+                  Share or import a setup
+                </button>
+              }
+            />
+            <button className={HELP_ITEM} onClick={onReplay}>
+              <Compass className="size-4" />
+              Run setup again
+            </button>
+            <button
+              className={HELP_ITEM}
+              onClick={() =>
+                openDataDir().catch(() => toastError("Couldn't open data folder"))
+              }
+            >
+              <FolderOpen className="size-4" />
+              Open data folder
+            </button>
+            <button
+              className={HELP_ITEM}
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(await gatherDiagnostics());
+                  toast.success("Diagnostics copied, paste them into your bug report");
+                } catch {
+                  toastError("Couldn't copy diagnostics");
+                }
+              }}
+            >
+              <ClipboardList className="size-4" />
+              Copy diagnostics
+            </button>
+            <button
+              className={HELP_ITEM}
+              onClick={() => exit(0).catch(() => toastError("Couldn't quit Toolport"))}
+            >
+              <LogOut className="size-4" />
+              Quit Toolport
+            </button>
+          </Popover.Content>
+        </Popover.Portal>
+      </Popover.Root>
     </div>
   );
 }
@@ -357,9 +388,13 @@ function UpdateNotes({
           )}
           {systemPackage && (
             <p className="text-sm text-muted-foreground">
-              This copy was installed from a .{systemPackage} package, so Toolport can't
-              replace it itself. Download the new .{systemPackage} and install it the same
-              way.
+              {systemPackageUpdateAdvice(systemPackage)}
+            </p>
+          )}
+          {!systemPackage && (
+            <p className="text-sm text-muted-foreground">
+              Toolport connections may restart during installation; restart your MCP
+              client if it disconnects.
             </p>
           )}
           <div className="flex justify-end gap-2">
@@ -373,7 +408,7 @@ function UpdateNotes({
                   void openExternal(releasePageUrl(update.version));
                 }}
               >
-                <ExternalLink className="size-4" /> Open download page
+                <ExternalLink className="size-4" /> Open release page
               </Button>
             ) : (
               <Button onClick={onInstall} disabled={installing}>
@@ -396,19 +431,27 @@ function UpdateNotes({
 }
 
 interface Props {
+  settingsPage?: SettingsSubpage;
+  onSettingsPageChange?: (page: SettingsSubpage) => void;
+  pendingCount?: number;
   registry: Registry | null;
   onRegistryChange: (registry: Registry) => void;
   view: View;
   onSelectView: (view: View) => void;
   onReplayOnboarding: () => void;
+  onShortcuts: () => void;
 }
 
 export function AppSidebar({
+  settingsPage = "general",
+  onSettingsPageChange,
+  pendingCount = 0,
   registry,
   onRegistryChange,
   view,
   onSelectView,
   onReplayOnboarding,
+  onShortcuts,
 }: Props) {
   const [savings, setSavings] = useState<SavingsSummary | null>(null);
   const [savingsStale, setSavingsStale] = useState(false);
@@ -488,13 +531,15 @@ export function AppSidebar({
   ) => (
     <button
       onClick={onClick}
+      aria-label={label}
+      title={`${label}${["Servers", "Clients", "Activity", "Settings"].includes(label) ? ` (${/Mac/.test(navigator.platform) ? "⌘" : "Ctrl"}${["Servers", "Clients", "Activity", "Settings"].indexOf(label) + 1})` : ""}`}
       aria-current={active ? "page" : undefined}
-      className={`${NAV_ITEM} ${active ? "bg-accent font-medium text-foreground" : "text-muted-foreground"}`}
+      className={`${NAV_ITEM} ${label === "Settings" ? "font-semibold" : ""} ${active ? "bg-accent font-medium text-foreground" : "text-muted-foreground"}`}
     >
       <Icon
         className={`size-4 shrink-0 ${active ? "text-primary" : "text-muted-foreground"}`}
       />
-      <span>{label}</span>
+      <span className="sidebar-label">{label}</span>
       {badge !== undefined && badge !== null && badge > 0 && (
         <span
           className="ml-auto inline-flex shrink-0 items-center rounded-full bg-warning/15 px-1.5 text-[10px] font-medium text-warning"
@@ -520,9 +565,11 @@ export function AppSidebar({
     </button>
   );
 
+  const paired = registry?.team != null;
+
   return (
-    <aside className="flex h-screen w-72 shrink-0 flex-col border-r bg-sidebar">
-      <div className="flex items-center gap-2.5 px-4 py-4">
+    <aside className="app-sidebar flex h-screen w-72 shrink-0 flex-col border-r bg-sidebar">
+      <div className="sidebar-brand flex shrink-0 items-center gap-2.5 px-4 py-4">
         <svg className="size-8" viewBox="0 0 48 48" aria-hidden="true">
           <rect width="48" height="48" rx="11" fill="#1E3A66" />
           <circle
@@ -547,48 +594,21 @@ export function AppSidebar({
           </g>
           <circle cx="24" cy="24" r="4.88" fill="#F97316" />
         </svg>
-        <div className="leading-tight">
+        <div className="sidebar-label leading-tight">
           <div className="font-semibold tracking-tight">Toolport</div>
           <div className="text-xs text-muted-foreground">MCP control center</div>
         </div>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-        {registry && (
-          <div className="px-3 pb-2">
-            <div className="px-2.5 pb-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-              Profile
-            </div>
-            <ProfileBar registry={registry} onChange={onRegistryChange} />
-          </div>
-        )}
-
         <nav aria-label="Views" className="flex flex-col gap-0.5 px-3 pt-2">
-          {navItem(Layers, "All servers", view === "servers", () =>
-            onSelectView("servers"),
-          )}
+          {navItem(Layers, "Servers", view === "servers", () => onSelectView("servers"))}
           {navItem(MonitorCog, "Clients", view === "clients", () =>
             onSelectView("clients"),
-          )}
-          {navItem(Store, "Browse catalog", view === "catalog", () =>
-            onSelectView("catalog"),
-          )}
-          {navItem(FlaskConical, "Playground", view === "playground", () =>
-            onSelectView("playground"),
           )}
           {navItem(ScrollText, "Activity", view === "activity", () =>
             onSelectView("activity"),
           )}
-          {navItem(FileText, "Agent rules", view === "rules", () =>
-            onSelectView("rules"),
-          )}
-          {navItem(Activity, "Agent activity", view === "hooks", () =>
-            onSelectView("hooks"),
-          )}
-          {navItem(ShieldCheck, "Agent permissions", view === "permissions", () =>
-            onSelectView("permissions"),
-          )}
-          {navItem(Users, "Teams", view === "teams", () => onSelectView("teams"))}
           {navItem(
             Settings,
             "Settings",
@@ -597,18 +617,48 @@ export function AppSidebar({
             quarantinedCount,
             quarantineStale,
           )}
+          {view === "settings" && (
+            <div className="ml-5 flex flex-col gap-0.5" aria-label="Settings pages">
+              {SETTINGS_PAGES.map((item, index) => (
+                <div key={item.id} className="relative">
+                  {navItem(
+                    [Settings, Wrench, Shield, KeyRound, Globe, CircleHelp][index],
+                    item.label,
+                    settingsPage === item.id,
+                    () => onSettingsPageChange?.(item.id),
+                  )}
+                  {item.id === "safety" && pendingCount > 0 && (
+                    <span
+                      className="absolute right-2 top-2 rounded-full bg-warning/15 px-1.5 text-xs text-warning"
+                      aria-label={`${pendingCount} pending approvals`}
+                    >
+                      {pendingCount}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {navItem(
+            Users,
+            paired ? (isPersonalSync(registry) ? "Sync" : "Team") : "Sign in to sync",
+            view === "teams",
+            () => onSelectView("teams"),
+            registry?.servers.filter((s) => s.teamEnableReview === true && !s.enabled)
+              .length ?? 0,
+          )}
         </nav>
 
-        {savings && savings.tokensSaved > 0 && (
+        {savings && (savings.tokenizedLoads ?? 0) > 0 && (
           <button
             onClick={() => onSelectView("activity")}
-            className="mx-3 mt-2 flex items-center gap-2 rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-left text-xs transition-colors hover:bg-success/10"
-            title={`${savingsStale ? "Catalog telemetry unavailable; showing the last loaded estimate. " : ""}Tool-definition tokens Toolport kept out of your agent's context, estimated from their serialized size. Actual model usage depends on the client and caching. Click for the breakdown.`}
+            className="sidebar-savings mx-3 mt-2 flex items-center gap-2 rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-left text-xs transition-colors hover:bg-success/10"
+            title={`${savingsStale ? "Catalog telemetry unavailable; showing the last loaded measurement. " : ""}cl100k_base tokenizer; one full catalog baseline per client session minus every catalog and search response. Sessionless HTTP and unverifiable history excluded; not model usage or billing. Click for the breakdown.`}
           >
             <Zap className="size-3.5 shrink-0 text-success" />
             <span className="text-muted-foreground">
               <span className="font-semibold text-foreground">
-                ≈{fmtTokens(savings.tokensSaved)}
+                {fmtTokens(savings.tokensSaved)}
               </span>{" "}
               tokens saved{savingsStale ? " (stale)" : ""}
             </span>
@@ -616,7 +666,11 @@ export function AppSidebar({
         )}
       </div>
 
-      <VersionFooter onImport={onRegistryChange} onReplay={onReplayOnboarding} />
+      <VersionFooter
+        onImport={onRegistryChange}
+        onReplay={onReplayOnboarding}
+        onShortcuts={onShortcuts}
+      />
     </aside>
   );
 }

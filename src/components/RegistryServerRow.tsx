@@ -1,19 +1,37 @@
-import { useEffect, useState } from "react";
-import { ChevronDown, Copy, KeyRound, LogIn, Pencil, Trash2, Users } from "lucide-react";
+import { referenceProvider } from "@/lib/secretRefs";
+import { toastError } from "@/lib/toast";
+import { isPersonalSync } from "@/lib/personalSync";
+import { invoke } from "@tauri-apps/api/core";
+import { lazy, Suspense, useEffect, useState } from "react";
+import {
+  ChevronDown,
+  Copy,
+  RefreshCw,
+  KeyRound,
+  LogIn,
+  Pencil,
+  Trash2,
+  Users,
+} from "lucide-react";
 import { isDownloadLauncher } from "@/lib/launcher";
+import { serverFailureLabel } from "@/lib/serverHealth";
 import { errorHeadline, shortenUrls } from "@/lib/errors";
 import { toast } from "sonner";
 import type { ProbeResult, Registry, ServerEntry } from "@/lib/types";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { TransportPill } from "@/components/TransportPill";
-import { SecretsDialog } from "@/components/SecretsDialog";
+import { LazySecretsDialog as SecretsDialog } from "@/components/LazySecretsDialog";
 import { ServerDialog } from "@/components/ServerDialog";
 import { LaunchSetupDialog } from "@/components/LaunchSetupDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ServerLogo } from "@/components/ServerLogo";
 
+const ServerToolsPanel = lazy(() =>
+  import("@/components/ServerToolsPanel").then((m) => ({ default: m.ServerToolsPanel })),
+);
+
 interface Props {
+  openTools?: boolean;
   server: ServerEntry;
   registry: Registry | null;
   enabled: boolean;
@@ -66,13 +84,29 @@ export function RegistryServerRow({
   onRemove,
   onRegistryChange,
   onReprobe,
+  openTools,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
+  const [detailTab, setDetailTab] = useState<"overview" | "tools">("overview");
+  useEffect(() => {
+    if (openTools) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Open the requested tools tab when navigation selects this row.
+      setExpanded(true);
+      setDetailTab("tools");
+    }
+  }, [openTools]);
 
   const target =
     server.command !== null
       ? [server.command, ...server.args].join(" ")
       : (server.url ?? "");
+  const providers = [
+    ...new Set(
+      [...server.env, ...(server.headerKeys ?? []), ...(server.launch?.inputs ?? [])]
+        .map((e) => referenceProvider(e.source?.ref)?.name)
+        .filter(Boolean),
+    ),
+  ];
   const secretCount = server.env.filter((e) => e.secret).length;
   const status = statusOf(enabled, health);
   const requiredLaunch = server.launch?.inputs.filter((input) => input.required) ?? [];
@@ -95,24 +129,27 @@ export function RegistryServerRow({
   // Team-synced servers are tagged `team:<id>`. An admin manages them centrally, so a
   // member sees a Team badge and can't edit/remove them locally (a local change would
   // just re-sync away), but still authenticates them (keys stay on their own machine).
-  const isTeam = server.source?.startsWith("team:") ?? false;
+  const personalSync = isPersonalSync(registry);
+  const isTeam = (server.source?.startsWith("team:") ?? false) && !personalSync;
 
   const label =
-    status === "connected"
-      ? `Ready · ${health?.toolCount ?? 0} tool${health?.toolCount === 1 ? "" : "s"}`
-      : status === "error"
-        ? "Error"
-        : status === "checking"
-          ? initializing
-            ? launcher
-              ? "Installing…"
-              : "Initializing…"
-            : "Checking…"
-          : requiredLaunch.length
-            ? missingPlainLaunch.length
-              ? `Setup required: ${missingPlainLaunch.map((input) => input.label).join(", ")}`
-              : "Disabled · check launch setup"
-            : "Disabled";
+    status === "needs-auth"
+      ? serverFailureLabel(health!)
+      : status === "connected"
+        ? `Ready · ${health?.toolCount ?? 0} tool${health?.toolCount === 1 ? "" : "s"}`
+        : status === "error"
+          ? serverFailureLabel(health!)
+          : status === "checking"
+            ? initializing
+              ? launcher
+                ? "Installing…"
+                : "Initializing…"
+              : "Checking…"
+            : requiredLaunch.length
+              ? missingPlainLaunch.length
+                ? `Setup required: ${missingPlainLaunch.map((input) => input.label).join(", ")}`
+                : "Disabled · check launch setup"
+              : "Disabled";
 
   // Next free "Name (N)" for the duplicate-for-another-account action.
   const existingNames = new Set(registry?.servers.map((s) => s.name.toLowerCase()) ?? []);
@@ -135,7 +172,7 @@ export function RegistryServerRow({
           button, so the toggle and Authenticate controls aren't nested inside one. */}
       <div
         onClick={() => setExpanded((v) => !v)}
-        className="flex cursor-pointer items-center gap-3 px-3.5 py-2 transition-colors hover:bg-accent/40"
+        className="flex cursor-pointer items-center gap-3 px-1 py-3 transition-colors hover:bg-accent/40"
       >
         <span className="flex items-center" onClick={stop}>
           <Switch
@@ -148,7 +185,14 @@ export function RegistryServerRow({
 
         <ServerLogo name={server.name} transport={server.transport} size={28} />
 
-        <span className="min-w-0 truncate text-sm font-medium">{server.name}</span>
+        <span title={server.name} className="min-w-0 flex-1 truncate text-sm font-[550]">
+          {server.name}
+          {providers.length > 0 && (
+            <span className="ml-2 text-[10px] font-normal text-muted-foreground">
+              Keys from {providers.join(", ")}
+            </span>
+          )}
+        </span>
 
         {isTeam ? (
           <span className="hidden shrink-0 items-center gap-1 rounded bg-info/15 px-1.5 py-0.5 text-[11px] font-medium text-info md:inline-flex">
@@ -157,7 +201,17 @@ export function RegistryServerRow({
           </span>
         ) : (
           <span className="hidden max-w-40 shrink-0 truncate rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground md:inline">
-            Personal
+            {personalSync
+              ? server.syncLocalOnly
+                ? "This machine only"
+                : registry?.team?.personalSyncState?.conflicts?.[
+                      server.teamOriginalId ?? server.id
+                    ]
+                  ? "Sync conflict"
+                  : server.teamEnableReview === true
+                    ? "Needs review"
+                    : "Synced"
+              : "Personal"}
             {server.source?.startsWith("imported:")
               ? ` · ${server.source.replace("imported:", "from ")}`
               : ""}
@@ -172,35 +226,72 @@ export function RegistryServerRow({
                 ? launcher
                   ? "Installing the server package"
                   : "Server initializing"
-                : status === "connected"
-                  ? label.replace(" · ", ", ")
-                  : STATUS_ARIA_LABEL[status]
+                : status === "needs-auth" || status === "error"
+                  ? label
+                  : status === "connected"
+                    ? label.replace(" · ", ", ")
+                    : STATUS_ARIA_LABEL[status]
             }
             className="sr-only"
           />
           {status === "needs-auth" ? (
-            <SecretsDialog
-              server={server}
-              onSaved={onRegistryChange}
-              onChanged={onReprobe}
-              trigger={
-                <button
-                  onClick={stop}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-warning/40 px-2.5 py-1 text-xs text-warning transition-colors hover:bg-warning/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-warning"
-                >
-                  <LogIn className="size-3.5" />
-                  Authenticate
-                </button>
-              }
-            />
+            <>
+              <StatusLabel status={status} label={label} error={health?.error ?? null} />
+              <SecretsDialog
+                server={server}
+                onSaved={onRegistryChange}
+                onChanged={onReprobe}
+                trigger={
+                  <button
+                    onClick={stop}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-warning/40 px-2.5 py-1 text-xs text-warning transition-colors hover:bg-warning/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-warning"
+                  >
+                    <LogIn className="size-3.5" />
+                    {health?.authTarget === "service_credential"
+                      ? "Edit service key"
+                      : "Sign in"}
+                  </button>
+                }
+              />
+            </>
           ) : (
             <StatusLabel status={status} label={label} error={health?.error ?? null} />
           )}
 
-          <TransportPill transport={server.transport} />
-
+          {health && !health.ok && health.error && (
+            <span className="flex gap-1">
+              {status === "error" && onReprobe && (
+                <button
+                  type="button"
+                  title={`Retry ${server.name} connection`}
+                  className={ACTION}
+                  disabled={busy}
+                  onClick={(e) => {
+                    stop(e);
+                    onReprobe();
+                  }}
+                >
+                  <RefreshCw className="size-3.5" aria-hidden="true" />
+                  Retry
+                </button>
+              )}
+              <button
+                type="button"
+                title="View the connection error and server output"
+                className={ACTION}
+                onClick={(e) => {
+                  stop(e);
+                  setExpanded(true);
+                  setDetailTab("overview");
+                }}
+              >
+                View log
+              </button>
+            </span>
+          )}
           <button
             type="button"
+            title={expanded ? "Hide server details" : "Show server details"}
             onClick={(e) => {
               e.stopPropagation();
               setExpanded((v) => !v);
@@ -219,122 +310,189 @@ export function RegistryServerRow({
         </span>
       </div>
 
+      {!enabled && server.teamRouteRemoved && (
+        <p className="px-3.5 pb-2 pl-12 text-xs text-muted-foreground">
+          Removed or disabled by the team. Your personal server stays off.
+        </p>
+      )}
+
       {expanded && (
         <div className="flex flex-col gap-2.5 px-3.5 pt-0.5 pb-3 pl-12">
-          {!!requiredLaunch.length && (
-            <p className="text-xs text-muted-foreground">
-              Launch setup: {requiredLaunch.map((input) => input.label).join(", ")}. Open
-              Launch setup to add or review these values before enabling.
-            </p>
-          )}
-          {target && (
-            <code className="block rounded-md bg-muted px-2 py-1.5 font-mono text-xs break-all text-muted-foreground">
-              {target}
-            </code>
-          )}
-          {status === "error" && health?.error && (
-            <div className="flex flex-col gap-1">
-              {/* Lead with a readable headline so the useful signal (exit status,
+          <div
+            role="tablist"
+            aria-label={`${server.name} details`}
+            className="flex gap-1 border-b pb-2"
+          >
+            {(["overview", "tools"] as const).map((tab) => (
+              <button
+                key={tab}
+                role="tab"
+                aria-selected={detailTab === tab}
+                className={ACTION}
+                onClick={() => setDetailTab(tab)}
+              >
+                {tab === "overview" ? "Overview" : "Tools"}
+              </button>
+            ))}
+          </div>
+          {detailTab === "tools" ? (
+            <Suspense fallback={<p>Loading tools…</p>}>
+              <ServerToolsPanel
+                serverId={server.id}
+                registry={registry}
+                onRegistryChange={onRegistryChange}
+              />
+            </Suspense>
+          ) : (
+            <>
+              {!!requiredLaunch.length && (
+                <p className="text-xs text-muted-foreground">
+                  Launch setup: {requiredLaunch.map((input) => input.label).join(", ")}.
+                  Open Launch setup to add or review these values before enabling.
+                </p>
+              )}
+              {target && (
+                <code className="block rounded-md bg-muted px-2 py-1.5 font-mono text-xs break-all text-muted-foreground">
+                  {target}
+                </code>
+              )}
+              {health && !health.ok && health.error && (
+                <div className="flex flex-col gap-1">
+                  {/* Lead with a readable headline so the useful signal (exit status,
                   EADDRINUSE, a 401) isn't buried under a stack trace + a giant
                   OAuth URL; the full output stays below, bounded and scrollable
                   with long URLs shortened. */}
-              <div className="flex items-start justify-between gap-2">
-                <p className="text-xs font-medium text-warning">
-                  {errorHeadline(health.error)}
-                </p>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void navigator.clipboard.writeText(health?.error ?? "");
-                    toast.success("Error copied");
-                  }}
-                  title="Copy the full error"
-                  className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                >
-                  <Copy className="size-3" />
-                  Copy
-                </button>
-              </div>
-              <p className="max-h-32 overflow-y-auto font-mono text-[11px] break-words whitespace-pre-wrap text-muted-foreground">
-                {shortenUrls(health.error)}
-              </p>
-            </div>
-          )}
-
-          <div className="flex flex-wrap items-center gap-1">
-            <SecretsDialog
-              server={server}
-              onSaved={onRegistryChange}
-              onChanged={onReprobe}
-              trigger={
-                <button className={ACTION}>
-                  <KeyRound className="size-3.5" />
-                  Secrets{secretCount > 0 ? ` (${secretCount})` : ""}
-                </button>
-              }
-            />
-
-            {!!server.launch?.inputs.length && (
-              <LaunchSetupDialog
-                server={server}
-                onSaved={onRegistryChange}
-                onChanged={onReprobe}
-                trigger={<button className={ACTION}>Launch setup</button>}
-              />
-            )}
-
-            {isTeam ? (
-              <span className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground">
-                <Users className="size-3.5" aria-hidden="true" />
-                Managed by your team. Ask an admin to change or remove it.
-              </span>
-            ) : (
-              <>
-                <ServerDialog
-                  onSaved={onRegistryChange}
-                  initial={{ ...server, name: duplicateName }}
-                  existingNames={registry?.servers.map((s) => s.name) ?? []}
-                  trigger={
-                    <button className={ACTION} title="Add another account">
-                      <Copy className="size-3.5" />
-                      Duplicate
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-xs font-medium text-warning">
+                      {errorHeadline(health.error)}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void navigator.clipboard.writeText(health?.error ?? "");
+                        toast.success("Error copied");
+                      }}
+                      title="Copy the full error"
+                      className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <Copy className="size-3" />
+                      Copy
                     </button>
-                  }
-                />
+                  </div>
+                  <p className="max-h-32 overflow-y-auto font-mono text-[11px] break-words whitespace-pre-wrap text-muted-foreground">
+                    {shortenUrls(health.error)}
+                  </p>
+                </div>
+              )}
 
-                <ServerDialog
+              <div className="flex flex-wrap items-center gap-1">
+                <SecretsDialog
+                  server={server}
                   onSaved={onRegistryChange}
-                  editId={server.id}
-                  initial={server}
-                  existingNames={registry?.servers.map((s) => s.name) ?? []}
+                  onChanged={onReprobe}
                   trigger={
                     <button className={ACTION}>
-                      <Pencil className="size-3.5" />
-                      Edit
+                      <KeyRound className="size-3.5" />
+                      Secrets{secretCount > 0 ? ` (${secretCount})` : ""}
                     </button>
                   }
                 />
 
-                <ConfirmDialog
-                  trigger={
-                    <button
-                      disabled={busy}
-                      className={`${ACTION} hover:bg-destructive/10 hover:text-destructive`}
-                    >
-                      <Trash2 className="size-3.5" />
-                      Remove
-                    </button>
-                  }
-                  title={`Remove ${server.name}?`}
-                  description="This deletes the server from Toolport. Any saved secrets stay in your keychain."
-                  confirmLabel="Remove"
-                  destructive
-                  onConfirm={onRemove}
-                />
-              </>
-            )}
-          </div>
+                {!!server.launch?.inputs.length && (
+                  <LaunchSetupDialog
+                    server={server}
+                    onSaved={onRegistryChange}
+                    onChanged={onReprobe}
+                    trigger={<button className={ACTION}>Launch setup</button>}
+                  />
+                )}
+
+                {personalSync && (
+                  <label className="inline-flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={server.syncLocalOnly === true}
+                      onChange={async (e) => {
+                        try {
+                          const r = await invoke<Registry>("personal_sync_local_only", {
+                            serverId: server.id,
+                            localOnly: e.target.checked,
+                          });
+                          onRegistryChange(r);
+                        } catch (error) {
+                          toastError(String(error));
+                        }
+                      }}
+                    />{" "}
+                    Keep on this machine only
+                    <span className="text-xs text-muted-foreground">
+                      Copies already on your other machines stay there.
+                    </span>
+                  </label>
+                )}
+                {personalSync && (
+                  <span className="text-xs text-muted-foreground">
+                    {server.syncLocalOnly ? "This machine only" : "Synced"}
+                  </span>
+                )}
+                {isTeam ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground">
+                    <Users className="size-3.5" aria-hidden="true" />
+                    Managed by your team. Ask an admin to change or remove it.
+                  </span>
+                ) : (
+                  <>
+                    <ServerDialog
+                      onSaved={onRegistryChange}
+                      initial={{ ...server, name: duplicateName }}
+                      existingNames={registry?.servers.map((s) => s.name) ?? []}
+                      trigger={
+                        <button className={ACTION} title="Add another account">
+                          <Copy className="size-3.5" />
+                          Duplicate
+                        </button>
+                      }
+                    />
+
+                    <ServerDialog
+                      onSaved={onRegistryChange}
+                      editId={server.id}
+                      initial={server}
+                      existingNames={registry?.servers.map((s) => s.name) ?? []}
+                      trigger={
+                        <button className={ACTION}>
+                          <Pencil className="size-3.5" />
+                          Edit
+                        </button>
+                      }
+                    />
+
+                    <ConfirmDialog
+                      trigger={
+                        <button
+                          disabled={busy}
+                          className={`${ACTION} hover:bg-destructive/10 hover:text-destructive`}
+                        >
+                          <Trash2 className="size-3.5" />
+                          Remove
+                        </button>
+                      }
+                      title={`Remove ${server.name}?`}
+                      description={
+                        personalSync && !server.syncLocalOnly
+                          ? "This removes the server from Toolport and your other machines. Any saved secrets stay in your keychain."
+                          : "This deletes the server from Toolport on this machine. Any saved secrets stay in your keychain."
+                      }
+                      confirmLabel="Remove"
+                      destructive
+                      onConfirm={onRemove}
+                    />
+                  </>
+                )}
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -353,8 +511,11 @@ function StatusLabel({
   const text = (
     <span
       aria-hidden="true"
-      className={`text-xs font-medium whitespace-nowrap ${STATUS_TEXT[status]}`}
+      className={`inline-flex items-center gap-1.5 text-[13px] whitespace-nowrap ${STATUS_TEXT[status]}`}
     >
+      <span
+        className={`size-[7px] shrink-0 rounded-full ${status === "connected" ? "bg-success" : status === "needs-auth" ? "bg-warning" : status === "error" ? "bg-destructive" : "bg-muted-foreground/60"}`}
+      />
       {label}
     </span>
   );

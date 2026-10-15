@@ -40,6 +40,12 @@ fn root_from_content(content: &str) -> Result<Value, String> {
 }
 
 fn read_root(path: &Path) -> Result<(Value, Option<String>), String> {
+    if let Some(staged) = mutation::read(path) {
+        return match staged {
+            Some(content) => Ok((root_from_content(&content)?, Some(content))),
+            None => Ok((serde_json::json!({}), None)),
+        };
+    }
     match std::fs::metadata(path) {
         Ok(_) => {
             let content = read_config_file(path)?;
@@ -343,7 +349,7 @@ fn gateway_definition(name: &str, definition: &Value) -> bool {
 
 fn retain_gateway_state(servers: &Map<String, Value>, value: &mut Value) -> Result<(), String> {
     for (name, definition) in servers {
-        if gateway_definition(name, definition) {
+        if gateway_edit_matches(name, definition.get("command").and_then(Value::as_str)) {
             // Repair may replace the command, but must preserve an explicit off
             // switch. False wins when the current and legacy fields disagree.
             if disabled(definition) {
@@ -382,7 +388,9 @@ pub(super) fn edit_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(
         retain_gateway_state(&servers, value)?;
     }
     let count = servers.len();
-    servers.retain(|name, definition| !gateway_definition(name, definition));
+    servers.retain(|name, definition| {
+        !gateway_edit_matches(name, definition.get("command").and_then(Value::as_str))
+    });
     if entry.is_none()
         && servers.is_empty()
         && fallback_map(path)?
@@ -432,14 +440,17 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let unique = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            Self(
-                std::env::temp_dir()
-                    .join(format!("toolport-zcode-{}-{unique}", std::process::id())),
-            )
+            static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            loop {
+                let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let path = std::env::temp_dir()
+                    .join(format!("toolport-zcode-{}-{sequence}", std::process::id()));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("ZCode fixture: {error}"),
+                }
+            }
         }
 
         fn native(&self) -> PathBuf {
@@ -462,6 +473,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn fixtures_reserve_distinct_directories_in_parallel() {
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..32).map(|_| scope.spawn(Fixture::new)).collect();
+            let fixtures: Vec<_> = workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect();
+            let paths: std::collections::HashSet<_> =
+                fixtures.iter().map(|fixture| &fixture.0).collect();
+            assert_eq!(paths.len(), fixtures.len());
+            assert!(fixtures.iter().all(|fixture| fixture.0.is_dir()));
+        });
+    }
+
     fn gateway() -> ServerEntry {
         crate::registry_controller::server_from_detected(
             &json_server(
@@ -481,7 +507,6 @@ mod tests {
         assert_eq!(definition.name, "ZCode");
         assert!(matches!(definition.format, Format::JsonZCodeMcp));
         assert!(!definition.uses_connectors);
-        assert!(!client_uses_mcp_remote_bridge("zcode"));
         for platform in Platform::ALL {
             let home = PathBuf::from("user-home");
             assert_eq!(
@@ -584,35 +609,6 @@ mod tests {
         );
         edit_gateway(&fixture.native(), None).unwrap();
         assert_eq!(read_root(&fixture.native()).unwrap().0, before);
-    }
-
-    #[test]
-    fn zcode_shared_http_is_native_and_keeps_authorization_in_headers() {
-        let fixture = Fixture::new();
-        let entry = gateway_entry_shared_http(
-            "zcode",
-            None,
-            &SharedHttpSpec {
-                url: "https://example.test/mcp".into(),
-                token: "test-token".into(),
-            },
-        );
-        edit_gateway(&fixture.native(), Some(&entry)).unwrap();
-        let (root, _) = read_root(&fixture.native()).unwrap();
-        assert_eq!(root["mcp"]["servers"]["toolport"]["type"], "http");
-        assert_eq!(
-            root["mcp"]["servers"]["toolport"]["url"],
-            "https://example.test/mcp"
-        );
-        assert_eq!(
-            root["mcp"]["servers"]["toolport"]["headers"]["Authorization"],
-            "Bearer test-token"
-        );
-        let servers = detect(&fixture.native()).unwrap().0;
-        assert_eq!(
-            resolve_entry_state(&servers, Some(&ManagedEntry::from_gateway_entry(&entry))),
-            GatewayEntryState::Managed
-        );
     }
 
     #[test]
