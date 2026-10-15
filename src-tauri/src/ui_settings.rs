@@ -87,7 +87,13 @@ fn initialized_settings(
             Some(path) => crate::registry::load_from_with_source(path)?.1,
             None => crate::registry::LoadSource::FirstRun,
         };
-        let existing = source != crate::registry::LoadSource::FirstRun;
+        // An empty 2.0 install may never have saved a registry, but both shells
+        // record their completed one-time startup cleanup. Ignore arbitrary logs
+        // and locks, which a genuine first launch can create before the UI mounts.
+        let prior_launch = path
+            .parent()
+            .is_some_and(|dir| dir.join(crate::guard_cleanup::COMPLETION_MARKER).is_file());
+        let existing = source != crate::registry::LoadSource::FirstRun || prior_launch;
         settings.insert(
             "language".into(),
             Value::String(if existing { "en" } else { "system" }.into()),
@@ -210,6 +216,11 @@ mod tests {
         std::fs::write(dir.path().join("gateway.log"), "startup").unwrap();
         assert_eq!(language_at(&path).unwrap(), "system");
         assert!(!suggestion_pending_at(&path).unwrap());
+        std::fs::write(
+            dir.path().join(crate::guard_cleanup::COMPLETION_MARKER),
+            "startup complete",
+        )
+        .unwrap();
         crate::registry::save_to(
             &dir.path().join("registry.json"),
             &crate::registry::Registry::default(),
@@ -217,6 +228,20 @@ mod tests {
         .unwrap();
         assert_eq!(language_at(&path).unwrap(), "system");
         assert!(!suggestion_pending_at(&path).unwrap());
+    }
+
+    #[test]
+    fn a_previously_opened_empty_install_keeps_english_without_a_registry() {
+        let dir = TestDir::new();
+        std::fs::write(
+            dir.path().join(crate::guard_cleanup::COMPLETION_MARKER),
+            "startup complete",
+        )
+        .unwrap();
+        let path = dir.path().join("ui-settings.json");
+        assert_eq!(language_at(&path).unwrap(), "en");
+        assert!(suggestion_pending_at(&path).unwrap());
+        assert!(!dir.path().join("registry.json").exists());
     }
 
     #[test]

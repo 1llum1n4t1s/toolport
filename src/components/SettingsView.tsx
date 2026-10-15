@@ -617,15 +617,16 @@ export function SettingsView({
   const suggestedLanguage = LANGUAGES.find(({ code }) => code === suggestedLocale)!;
   useEffect(() => {
     const request = ++languageSuggestionRequest.current;
+    let active = true;
     void getUiLanguageSuggestion().then(
       (pending) => {
-        if (request === languageSuggestionRequest.current)
+        if (active && request === languageSuggestionRequest.current)
           setLanguageSuggestionPending(pending);
       },
       () => undefined,
     );
     return () => {
-      ++languageSuggestionRequest.current;
+      active = false;
     };
   }, []);
   const saveLanguage = async (choice: LanguageChoice) => {
