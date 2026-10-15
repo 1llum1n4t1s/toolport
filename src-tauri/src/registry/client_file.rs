@@ -200,7 +200,9 @@ thread_local! {
 pub(crate) fn with_native_canonicalize_failure<T>(run: impl FnOnce() -> T) -> T {
     struct Reset(bool);
     impl Drop for Reset {
-        fn drop(&mut self) { FAIL_NATIVE_CANONICALIZE.with(|slot| slot.set(self.0)); }
+        fn drop(&mut self) {
+            FAIL_NATIVE_CANONICALIZE.with(|slot| slot.set(self.0));
+        }
     }
     let _reset = Reset(FAIL_NATIVE_CANONICALIZE.with(|slot| slot.replace(true)));
     run()
@@ -211,13 +213,23 @@ pub(crate) fn with_native_canonicalize_failure<T>(run: impl FnOnce() -> T) -> T 
 #[cfg(windows)]
 pub(crate) fn native_path(path: &Path) -> std::io::Result<Vec<u16>> {
     use std::os::windows::ffi::OsStrExt;
-    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty())
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let name = path.file_name().ok_or_else(|| std::io::Error::new(
-        std::io::ErrorKind::InvalidInput, "Client file path has no filename"))?;
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Client file path has no filename",
+        )
+    })?;
     let resolved = if path.as_os_str().encode_wide().count() >= 248 {
-        canonicalize_native(parent).map(|parent| parent.join(name)).unwrap_or_else(|_| path.to_path_buf())
-    } else { path.to_path_buf() };
+        canonicalize_native(parent)
+            .map(|parent| parent.join(name))
+            .unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    };
     Ok(resolved.as_os_str().encode_wide().chain(Some(0)).collect())
 }
 

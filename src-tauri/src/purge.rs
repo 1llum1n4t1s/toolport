@@ -32,9 +32,13 @@ macro_rules! root_resolver {
     ($name:ident, $kind:literal, $dirs:ident) => {
         fn $name() -> Option<PathBuf> {
             #[cfg(any(test, feature = "test-support"))]
-            if let Some(path) = crate::fixture_paths::dir($kind) { return Some(path); }
+            if let Some(path) = crate::fixture_paths::dir($kind) {
+                return Some(path);
+            }
             #[cfg(not(test))]
-            { return dirs::$dirs(); }
+            {
+                return dirs::$dirs();
+            }
             #[cfg(test)]
             None
         }
@@ -102,7 +106,10 @@ fn data_dir() -> Result<PathBuf, String> {
 }
 
 fn verify_data_ownership(dir: &Path) -> Result<(), String> {
-    verify_ownership(dir, crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR").is_some())
+    verify_ownership(
+        dir,
+        crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR").is_some(),
+    )
 }
 
 fn verify_removal_ownership(dir: &Path, all_installs: bool) -> Result<(), String> {
@@ -115,12 +122,14 @@ fn verify_removal_ownership(dir: &Path, all_installs: bool) -> Result<(), String
 }
 
 fn verify_ownership(dir: &Path, overridden: bool) -> Result<(), String> {
-    if !overridden && dir.file_name().is_some_and(|name| {
-        matches!(
-            name.to_str(),
-            Some("Toolport" | "Conduit" | "Toolport-dev" | "Conduit-dev")
-        )
-    }) {
+    if !overridden
+        && dir.file_name().is_some_and(|name| {
+            matches!(
+                name.to_str(),
+                Some("Toolport" | "Conduit" | "Toolport-dev" | "Conduit-dev")
+            )
+        })
+    {
         return Ok(());
     }
     let owned = std::fs::read(dir.join("registry.json"))
@@ -147,8 +156,12 @@ fn verify_ownership(dir: &Path, overridden: bool) -> Result<(), String> {
 
 fn custom_data_dir(dir: &Path) -> bool {
     crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR").is_some()
-        || !dir.file_name().is_some_and(|name| matches!(name.to_str(),
-            Some("Toolport" | "Conduit" | "Toolport-dev" | "Conduit-dev")))
+        || !dir.file_name().is_some_and(|name| {
+            matches!(
+                name.to_str(),
+                Some("Toolport" | "Conduit" | "Toolport-dev" | "Conduit-dev")
+            )
+        })
 }
 
 fn credential_removal_guidance(custom: bool) -> &'static str {
@@ -176,9 +189,13 @@ fn install_candidates(dir: &Path) -> Vec<PathBuf> {
     bases.push(home_dir().map(|home| crate::brand::windows_roaming_base(&home)));
     #[cfg(not(windows))]
     let _ = &mut bases;
-    bases.into_iter().flatten().flat_map(|base| {
-        ["Toolport", "Conduit", "Toolport-dev", "Conduit-dev"].map(|name| base.join(name))
-    }).collect()
+    bases
+        .into_iter()
+        .flatten()
+        .flat_map(|base| {
+            ["Toolport", "Conduit", "Toolport-dev", "Conduit-dev"].map(|name| base.join(name))
+        })
+        .collect()
 }
 
 fn other_installs(dir: &Path, candidates: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -186,17 +203,24 @@ fn other_installs(dir: &Path, candidates: Vec<PathBuf>) -> Vec<PathBuf> {
         // Explicit overrides use the direct view in registry::compute_conduit_dir.
         if crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR").is_some() {
             path.to_path_buf()
-        } else { crate::registry::devirtualized_dir(path) }
+        } else {
+            crate::registry::devirtualized_dir(path)
+        }
     })
 }
 
-fn other_installs_with(dir: &Path, candidates: Vec<PathBuf>, normalize: impl Fn(&Path) -> PathBuf) -> Vec<PathBuf> {
+fn other_installs_with(
+    dir: &Path,
+    candidates: Vec<PathBuf>,
+    normalize: impl Fn(&Path) -> PathBuf,
+) -> Vec<PathBuf> {
     let dir = normalize(dir);
     let canonical = std::fs::canonicalize(&dir).unwrap_or(dir);
     let mut others = Vec::new();
     for path in candidates {
         let path = normalize(&path);
-        if path.is_dir() && std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()) != canonical
+        if path.is_dir()
+            && std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()) != canonical
             && has_registry_evidence(&path)
             && !others.contains(&path)
         {
@@ -209,46 +233,68 @@ fn other_installs_with(dir: &Path, candidates: Vec<PathBuf>, normalize: impl Fn(
 fn has_registry_evidence(dir: &Path) -> bool {
     match std::fs::symlink_metadata(dir.join("registry.json")) {
         Ok(_) => return true,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return true, // Unreadable ownership must still block cleanup.
     }
-    std::fs::read_dir(dir).map_or(true, |entries| entries.into_iter().any(|entry| {
-        entry.map_or(true, |entry| entry.file_name().to_str().is_some_and(|name| {
-            generated_file_name(name, |name| name == "registry.json"
-                || name.starts_with("registry.json.") && owned_data_file(name))
-        }))
-    }))
+    std::fs::read_dir(dir).map_or(true, |entries| {
+        entries.into_iter().any(|entry| {
+            entry.map_or(true, |entry| {
+                entry.file_name().to_str().is_some_and(|name| {
+                    generated_file_name(name, |name| {
+                        name == "registry.json"
+                            || name.starts_with("registry.json.") && owned_data_file(name)
+                    })
+                })
+            })
+        })
+    })
 }
 
 fn inventory_server_ids(path: &Path) -> Result<Vec<String>, String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-    let registry: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-    registry["servers"].as_array().ok_or("missing servers array")?.iter().map(|server| {
-        server["id"].as_str().map(str::to_owned).ok_or_else(|| "missing server id".into())
-    }).collect()
+    let registry: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    registry["servers"]
+        .as_array()
+        .ok_or("missing servers array")?
+        .iter()
+        .map(|server| {
+            server["id"]
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "missing server id".into())
+        })
+        .collect()
 }
 
 fn other_install_server_ids(dir: &Path) -> Result<Vec<String>, String> {
     let registry = dir.join("registry.json");
-    let error = |path: &Path, error: String, recovery: bool| format!(
+    let error = |path: &Path, error: String, recovery: bool| {
+        format!(
         "Credential ownership inventory for {}: {error}. Credentials were not removed; the selected registry was retained. {}",
         path.display(),
         if recovery { "Restore a readable registry.json in this folder, or delete or rename the named recovery leftover and retry." }
         else { "Repair this registry and retry." }
-    );
+    )
+    };
     match std::fs::symlink_metadata(&registry) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         _ => return inventory_server_ids(&registry).map_err(|e| error(&registry, e, false)),
     }
     let entries = std::fs::read_dir(dir).map_err(|e| error(dir, e.to_string(), true))?;
     let mut recovery = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| error(dir, e.to_string(), true))?;
-        if entry.file_name().to_str().is_some_and(|name| generated_file_name(name, |name| {
-            name == "registry.json" || name.starts_with("registry.json.") && owned_data_file(name)
-        })) {
+        if entry.file_name().to_str().is_some_and(|name| {
+            generated_file_name(name, |name| {
+                name == "registry.json"
+                    || name.starts_with("registry.json.") && owned_data_file(name)
+            })
+        }) {
             let path = entry.path();
-            let modified = std::fs::symlink_metadata(&path).ok().and_then(|meta| meta.modified().ok());
+            let modified = std::fs::symlink_metadata(&path)
+                .ok()
+                .and_then(|meta| meta.modified().ok());
             recovery.push((modified, path));
         }
     }
@@ -256,57 +302,103 @@ fn other_install_server_ids(dir: &Path) -> Result<Vec<String>, String> {
     let mut failure = None;
     for (_, path) in recovery {
         // Inventory is read-only and never follows a recovery link or migrates it.
-        let result = std::fs::symlink_metadata(&path).map_err(|e| e.to_string()).and_then(|meta| {
-            if !meta.is_file() || is_link(&meta) { return Err("not a regular recovery file".into()); }
-            inventory_server_ids(&path)
-        });
+        let result = std::fs::symlink_metadata(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|meta| {
+                if !meta.is_file() || is_link(&meta) {
+                    return Err("not a regular recovery file".into());
+                }
+                inventory_server_ids(&path)
+            });
         match result {
             Ok(ids) => return Ok(ids),
-            Err(e) => { failure.get_or_insert_with(|| error(&path, e, true)); },
+            Err(e) => {
+                failure.get_or_insert_with(|| error(&path, e, true));
+            }
         }
     }
-    Err(failure.unwrap_or_else(|| error(&registry, "no registry or recovery file found".into(), false)))
+    Err(failure.unwrap_or_else(|| {
+        error(
+            &registry,
+            "no registry or recovery file found".into(),
+            false,
+        )
+    }))
 }
 
-fn credential_scope(dir: &Path, others: &[PathBuf], all_installs: bool) -> Result<crate::secrets::purge::Scope, String> {
+fn credential_scope(
+    dir: &Path,
+    others: &[PathBuf],
+    all_installs: bool,
+) -> Result<crate::secrets::purge::Scope, String> {
     if all_installs {
-        return Ok(crate::secrets::purge::Scope { all_installs: true, server_ids: Default::default() });
+        return Ok(crate::secrets::purge::Scope {
+            all_installs: true,
+            server_ids: Default::default(),
+        });
     }
     let registry_path = dir.join("registry.json");
     let mut ids = std::collections::HashSet::new();
     if registry_path.exists() {
         // Raw read: loading a registry can migrate it or create recovery files.
-        let error = |error| format!("Credential ownership inventory for {}: {error}", registry_path.display());
-        let registry: serde_json::Value = serde_json::from_slice(&std::fs::read(&registry_path).map_err(|e| error(e.to_string()))?)
-            .map_err(|e| error(e.to_string()))?;
-        let servers = registry["servers"].as_array().ok_or_else(|| error("missing servers array".into()))?;
-        ids.extend(servers.iter().filter_map(|server| server["id"].as_str().map(str::to_owned)));
+        let error = |error| {
+            format!(
+                "Credential ownership inventory for {}: {error}",
+                registry_path.display()
+            )
+        };
+        let registry: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&registry_path).map_err(|e| error(e.to_string()))?,
+        )
+        .map_err(|e| error(e.to_string()))?;
+        let servers = registry["servers"]
+            .as_array()
+            .ok_or_else(|| error("missing servers array".into()))?;
+        ids.extend(
+            servers
+                .iter()
+                .filter_map(|server| server["id"].as_str().map(str::to_owned)),
+        );
     }
     for other in others {
         for id in other_install_server_ids(other)? {
             ids.remove(&id);
         }
     }
-    Ok(crate::secrets::purge::Scope { all_installs, server_ids: ids })
+    Ok(crate::secrets::purge::Scope {
+        all_installs,
+        server_ids: ids,
+    })
 }
 
 fn app_resources(home: &Path) -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
-    return ["Library/Caches/com.tsout.conduit", "Library/HTTPStorages/com.tsout.conduit",
-        "Library/Preferences/com.tsout.conduit.plist", "Library/Saved Application State/com.tsout.conduit.savedState",
-        "Library/WebKit/com.tsout.conduit"].map(|path| home.join(path)).into();
+    return [
+        "Library/Caches/com.tsout.conduit",
+        "Library/HTTPStorages/com.tsout.conduit",
+        "Library/Preferences/com.tsout.conduit.plist",
+        "Library/Saved Application State/com.tsout.conduit.savedState",
+        "Library/WebKit/com.tsout.conduit",
+    ]
+    .map(|path| home.join(path))
+    .into();
     #[cfg(target_os = "windows")]
     return vec![home.join("AppData/Local/com.tsout.conduit")];
     #[cfg(target_os = "linux")]
     {
         let _ = home;
-        [cache_dir(), data_local_dir()].into_iter().flatten()
-            .flat_map(|base| [base.join("com.tsout.conduit")]).collect()
+        [cache_dir(), data_local_dir()]
+            .into_iter()
+            .flatten()
+            .flat_map(|base| [base.join("com.tsout.conduit")])
+            .collect()
     }
 }
 
 fn remove_app_resources(report: &mut Report, shared: bool) {
-    let Some(home) = home_dir() else { return; };
+    let Some(home) = home_dir() else {
+        return;
+    };
     remove_resources(app_resources(&home), shared, report);
 }
 
@@ -316,12 +408,18 @@ fn remove_resources(paths: Vec<PathBuf>, shared: bool, report: &mut Report) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
-                report.leftovers.push(Leftover { path: path.display().to_string(), error: error.to_string() });
+                report.leftovers.push(Leftover {
+                    path: path.display().to_string(),
+                    error: error.to_string(),
+                });
                 continue;
             }
         };
         if shared {
-            report.preserved.push(format!("{} (shared app storage; another install or custom data directory is in use)", path.display()));
+            report.preserved.push(format!(
+                "{} (shared app storage; another install or custom data directory is in use)",
+                path.display()
+            ));
         } else {
             if metadata.is_dir() && !is_link(&metadata) {
                 remove_contents(&path, &[], report);
@@ -331,10 +429,11 @@ fn remove_resources(paths: Vec<PathBuf>, shared: bool, report: &mut Report) {
     }
 }
 
-pub fn plan() -> Result<Plan, String> { plan_with_scope(false) }
+pub fn plan() -> Result<Plan, String> {
+    plan_with_scope(false)
+}
 
 pub fn plan_with_scope(all_installs: bool) -> Result<Plan, String> {
-
     let dir = data_dir()?;
     verify_removal_ownership(&dir, all_installs)?;
     let others = other_installs(&dir, install_candidates(&dir));
@@ -361,8 +460,18 @@ pub fn plan_with_scope(all_installs: bool) -> Result<Plan, String> {
             .iter()
             .map(|path| format!("{} (only Toolport's startup entry)", path.display())),
     );
-    resources.extend(app_resources(&home).iter().map(|path| format!("{} (app cache/preferences/WebView storage; preserved when shared)", path.display())));
-    resources.extend(others.iter().map(|path| format!("{} (other install detected; its data is preserved)", path.display())));
+    resources.extend(app_resources(&home).iter().map(|path| {
+        format!(
+            "{} (app cache/preferences/WebView storage; preserved when shared)",
+            path.display()
+        )
+    }));
+    resources.extend(others.iter().map(|path| {
+        format!(
+            "{} (other install detected; its data is preserved)",
+            path.display()
+        )
+    }));
     Ok(Plan {
         data_dir: dir.display().to_string(),
         resources,
@@ -381,12 +490,15 @@ fn open_removal_report(report_path: &Path) -> Result<std::fs::File, String> {
     }
     match options.open(report_path) {
         Ok(file) => return Ok(file),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error.to_string()),
     }
     let metadata = std::fs::symlink_metadata(report_path).map_err(|error| error.to_string())?;
     if !metadata.is_file() || is_link(&metadata) {
-        return Err(format!("Refusing non-file removal report: {}", report_path.display()));
+        return Err(format!(
+            "Refusing non-file removal report: {}",
+            report_path.display()
+        ));
     }
     let mut nonce = [0u8; 16];
     getrandom::getrandom(&mut nonce).map_err(|error| error.to_string())?;
@@ -394,13 +506,19 @@ fn open_removal_report(report_path: &Path) -> Result<std::fs::File, String> {
     let previous = report_path.with_extension(format!("previous-{suffix}.json"));
     // A new hard link preserves exact bytes without overwriting an older archive.
     // An earlier child still holding stdout can finish writing to this archive.
-    std::fs::hard_link(report_path, &previous).map_err(|error| format!(
-        "Could not preserve previous removal report {}: {error}. Rename it and retry.", report_path.display()
-    ))?;
+    std::fs::hard_link(report_path, &previous).map_err(|error| {
+        format!(
+            "Could not preserve previous removal report {}: {error}. Rename it and retry.",
+            report_path.display()
+        )
+    })?;
     std::fs::remove_file(report_path).map_err(|error| error.to_string())?;
-    options.open(report_path).map_err(|error| format!(
-        "Could not create removal report: {error}. Previous report saved at {}.", previous.display()
-    ))
+    options.open(report_path).map_err(|error| {
+        format!(
+            "Could not create removal report: {error}. Previous report saved at {}.",
+            previous.display()
+        )
+    })
 }
 
 /// The pipe stays open until the entire desktop process exits, including workers.
@@ -441,7 +559,9 @@ pub fn launch_after_exit(report_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn run() -> Result<Report, String> { run_with_scope(false) }
+pub fn run() -> Result<Report, String> {
+    run_with_scope(false)
+}
 
 pub fn run_with_scope(all_installs: bool) -> Result<Report, String> {
     let dir = data_dir()?;
@@ -466,7 +586,11 @@ pub fn run_with_scope(all_installs: bool) -> Result<Report, String> {
         remove_autostart,
     )?;
     if report.leftovers.is_empty() {
-        remove_app_resources(&mut report, !others.is_empty() || crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR").is_some());
+        remove_app_resources(
+            &mut report,
+            !others.is_empty()
+                || crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR").is_some(),
+        );
     }
     Ok(report)
 }
@@ -491,14 +615,15 @@ fn run_with(
     report.leftovers.extend(preflight(&dir));
     inventory_startup(&mut report)?;
     if !report.leftovers.is_empty() {
-        report.notes.push("Preflight failed. Clients, data, credentials and startup entries are unchanged.".into());
+        report.notes.push(
+            "Preflight failed. Clients, data, credentials and startup entries are unchanged."
+                .into(),
+        );
         return Ok(report);
     }
     let owner_path = dir.join("broker/owner.lock");
-    if std::fs::symlink_metadata(dir.join("broker"))
-        .is_ok_and(|metadata| is_link(&metadata))
-        || std::fs::symlink_metadata(&owner_path)
-            .is_ok_and(|metadata| is_link(&metadata))
+    if std::fs::symlink_metadata(dir.join("broker")).is_ok_and(|metadata| is_link(&metadata))
+        || std::fs::symlink_metadata(&owner_path).is_ok_and(|metadata| is_link(&metadata))
     {
         return Err(format!(
             "Refusing symlinked broker ownership path: {}",
@@ -554,7 +679,9 @@ fn run_with(
     // Finish startup cleanup before touching credentials. Foreign entries are informational.
     autostart(&mut report)?;
     if !report.leftovers.is_empty() {
-        report.notes.push("Startup cleanup failed. Data and credentials were retained for retry.".into());
+        report
+            .notes
+            .push("Startup cleanup failed. Data and credentials were retained for retry.".into());
         return Ok(report);
     }
     let mut team_token_in_file = false;
@@ -573,7 +700,8 @@ fn run_with(
             report.leftovers.extend(removal.leftovers);
         }
         Err(error) => report.leftovers.push(Leftover {
-            path: "keychain:conduit-mcp (inventory unavailable)".into(), error,
+            path: "keychain:conduit-mcp (inventory unavailable)".into(),
+            error,
         }),
     }
     if !report.leftovers.is_empty() {
@@ -591,7 +719,11 @@ fn run_with(
         ],
         &mut report,
     );
-    if team_token_in_file && report.removed.contains(&dir.join("secrets.enc").display().to_string()) {
+    if team_token_in_file
+        && report
+            .removed
+            .contains(&dir.join("secrets.enc").display().to_string())
+    {
         report.notes.push("Team tokens deleted from this machine were removed locally only; no server-side revoke endpoint is available in the Teams client.".into());
     }
     // Bounded long-ID backup names need the location inventory on the next pass.
@@ -633,9 +765,14 @@ fn run_with(
 
 pub(crate) fn is_link(metadata: &std::fs::Metadata) -> bool {
     #[cfg(windows)]
-    { use std::os::windows::fs::MetadataExt; metadata.file_attributes() & 0x400 != 0 }
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
     #[cfg(not(windows))]
-    { metadata.file_type().is_symlink() }
+    {
+        metadata.file_type().is_symlink()
+    }
 }
 
 #[cfg(test)]
@@ -728,18 +865,23 @@ fn hex_name(value: &str, length: usize) -> bool {
 }
 
 fn decimal(value: &str) -> bool {
-    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) && value.parse::<u128>().is_ok()
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && value.parse::<u128>().is_ok()
 }
 
 // registry::atomic_write and lock_at generate siblings of a known file, never
 // siblings of a directory. Apply the same rule at every selected depth.
 fn generated_file_name(name: &str, owned: impl Fn(&str) -> bool) -> bool {
-    if owned(name) { return true; }
+    if owned(name) {
+        return true;
+    }
     if let Some(base) = name.strip_suffix(".conduit-tmp") {
         return base.rsplit_once('.').is_some_and(|(base, seq)| {
-            decimal(seq) && base.rsplit_once('.').is_some_and(|(base, pid)| {
-                decimal(pid) && pid.parse::<u32>().is_ok() && owned(base)
-            })
+            decimal(seq)
+                && base.rsplit_once('.').is_some_and(|(base, pid)| {
+                    decimal(pid) && pid.parse::<u32>().is_ok() && owned(base)
+                })
         });
     }
     name.strip_suffix(".lock").is_some_and(owned)
@@ -772,100 +914,185 @@ fn owned_data_name(name: &str, legacy: &std::collections::HashSet<String>) -> bo
 }
 
 fn owned_data_file(name: &str) -> bool {
-    if DATA_FILES.contains(&name) || matches!(name, "gateway.log.1" | "daemon.log.1" | "tool-cache.servers.json") {
+    if DATA_FILES.contains(&name)
+        || matches!(
+            name,
+            "gateway.log.1" | "daemon.log.1" | "tool-cache.servers.json"
+        )
+    {
         return true;
     }
     if let Some(suffix) = name.strip_prefix("registry.json.") {
         return matches!(suffix, "bak" | "bak.seq")
             || suffix.strip_prefix("bak.").is_some_and(decimal)
-            || suffix.strip_prefix('v').and_then(|s| s.strip_suffix(".bak")).is_some_and(|s| {
-                s.split_once('-').is_some_and(|(v, ms)| decimal(v) && v.parse::<u32>().is_ok() && decimal(ms))
-            })
+            || suffix
+                .strip_prefix('v')
+                .and_then(|s| s.strip_suffix(".bak"))
+                .is_some_and(|s| {
+                    s.split_once('-').is_some_and(|(v, ms)| {
+                        decimal(v) && v.parse::<u32>().is_ok() && decimal(ms)
+                    })
+                })
             || suffix.strip_prefix("unreadable-").is_some_and(|s| {
-                decimal(s) || s.strip_prefix("sha256-").is_some_and(|hash| hex_name(hash, 64))
+                decimal(s)
+                    || s.strip_prefix("sha256-")
+                        .is_some_and(|hash| hex_name(hash, 64))
             });
     }
-    if name.strip_prefix("daemon-").and_then(|s| s.strip_suffix(".json")).is_some_and(|s| hex_name(s, 64))
-        || name.strip_prefix("team-activity-").and_then(|s| s.strip_suffix(".json")).is_some_and(|s| hex_name(s, 32)) {
+    if name
+        .strip_prefix("daemon-")
+        .and_then(|s| s.strip_suffix(".json"))
+        .is_some_and(|s| hex_name(s, 64))
+        || name
+            .strip_prefix("team-activity-")
+            .and_then(|s| s.strip_suffix(".json"))
+            .is_some_and(|s| hex_name(s, 32))
+    {
         return true;
     }
-    ["tool-cache-", "tool-pins-", "quarantine-"].iter().any(|prefix| {
-        let Some(suffix) = name.strip_prefix(prefix) else { return false; };
-        let key = suffix.strip_suffix(".json").and_then(|s| s.strip_prefix("v2-"));
-        if let Some(key) = key {
-            let key = if *prefix == "tool-cache-" { key.strip_suffix(".servers").unwrap_or(key) } else { key };
-            return hex_name(key, 64);
-        }
-        // Legacy names are ambiguous without the registry's actual profile refs.
-        false
-    })
+    ["tool-cache-", "tool-pins-", "quarantine-"]
+        .iter()
+        .any(|prefix| {
+            let Some(suffix) = name.strip_prefix(prefix) else {
+                return false;
+            };
+            let key = suffix
+                .strip_suffix(".json")
+                .and_then(|s| s.strip_prefix("v2-"));
+            if let Some(key) = key {
+                let key = if *prefix == "tool-cache-" {
+                    key.strip_suffix(".servers").unwrap_or(key)
+                } else {
+                    key
+                };
+                return hex_name(key, 64);
+            }
+            // Legacy names are ambiguous without the registry's actual profile refs.
+            false
+        })
 }
 
 fn gateway_file(name: &str) -> bool {
-    if name == "gateway-manifest.json" { return true; }
+    if name == "gateway-manifest.json" {
+        return true;
+    }
     let stem = name.strip_suffix(".exe").unwrap_or(name);
     ["toolport-gateway", "conduit-gateway"].iter().any(|base| {
-        if stem == *base { return true; }
-        let Some(suffix) = stem.strip_prefix(base).and_then(|s| s.strip_prefix('-')) else { return false; };
-        if ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc", "x86_64-apple-darwin", "aarch64-apple-darwin"].contains(&suffix) {
+        if stem == *base {
+            return true;
+        }
+        let Some(suffix) = stem.strip_prefix(base).and_then(|s| s.strip_prefix('-')) else {
+            return false;
+        };
+        if [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+        ]
+        .contains(&suffix)
+        {
             return true;
         }
         // Published versions, including prerelease versions and a 12-hex digest.
         let core = suffix.split(['-', '+']).next().unwrap_or_default();
-        core.split('.').count() == 3 && core.split('.').all(decimal)
-            && suffix.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+        core.split('.').count() == 3
+            && core.split('.').all(decimal)
+            && suffix
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
     })
 }
 
 fn bin_file(name: &str) -> bool {
-    if generated_file_name(name, gateway_file) { return true; }
+    if generated_file_name(name, gateway_file) {
+        return true;
+    }
     if let Some(base) = name.strip_prefix('.').and_then(|s| s.strip_suffix(".tmp")) {
-        return base.rsplit_once('.').is_some_and(|(base, stamp)| decimal(stamp)
-            && base.rsplit_once('.').is_some_and(|(base, pid)| decimal(pid) && gateway_file(base)));
+        return base.rsplit_once('.').is_some_and(|(base, stamp)| {
+            decimal(stamp)
+                && base
+                    .rsplit_once('.')
+                    .is_some_and(|(base, pid)| decimal(pid) && gateway_file(base))
+        });
     }
     // clients::refresh_legacy_gateway uses with_extension(<128-bit id>.tmp).
-    name.strip_suffix(".tmp").and_then(|s| s.rsplit_once('.'))
+    name.strip_suffix(".tmp")
+        .and_then(|s| s.rsplit_once('.'))
         .is_some_and(|(base, id)| hex_name(id, 32) && gateway_file(base))
 }
 
 fn backup_file(client: &crate::clients::PurgeBackupClient, name: &str) -> bool {
     name == "moved-servers.json"
-        || name.strip_prefix("original-").and_then(|s| s.strip_suffix(".json")).is_some_and(|s| hex_name(s, 64))
-        || name.split_once('-').is_some_and(|(stamp, basename)| decimal(stamp)
-            && stamp.parse::<u128>().is_ok() && client.owns_basename(basename))
+        || name
+            .strip_prefix("original-")
+            .and_then(|s| s.strip_suffix(".json"))
+            .is_some_and(|s| hex_name(s, 64))
+        || name.split_once('-').is_some_and(|(stamp, basename)| {
+            decimal(stamp) && stamp.parse::<u128>().is_ok() && client.owns_basename(basename)
+        })
 }
 
 fn export_file(name: &str) -> bool {
-    [("rules-", ".md"), ("routines-", ".json"), ("agent-permissions-", ".json")].iter().any(|(prefix, ext)| {
-        let Some(date) = name.strip_prefix(prefix).and_then(|s| s.strip_suffix(ext)) else { return false; };
+    [
+        ("rules-", ".md"),
+        ("routines-", ".json"),
+        ("agent-permissions-", ".json"),
+    ]
+    .iter()
+    .any(|(prefix, ext)| {
+        let Some(date) = name.strip_prefix(prefix).and_then(|s| s.strip_suffix(ext)) else {
+            return false;
+        };
         let parts: Vec<_> = date.split('-').collect();
-        (parts.len() == 3 || parts.len() == 4) && parts[0].len() == 4 && decimal(parts[0])
-            && parts[1].len() == 2 && parts[1].parse::<u8>().is_ok_and(|m| (1..=12).contains(&m))
-            && parts[2].len() == 2 && parts[2].parse::<u8>().is_ok_and(|d| (1..=31).contains(&d))
-            && (parts.len() == 3 || decimal(parts[3]) && parts[3].parse::<u32>().is_ok_and(|n| n >= 2))
+        (parts.len() == 3 || parts.len() == 4)
+            && parts[0].len() == 4
+            && decimal(parts[0])
+            && parts[1].len() == 2
+            && parts[1].parse::<u8>().is_ok_and(|m| (1..=12).contains(&m))
+            && parts[2].len() == 2
+            && parts[2].parse::<u8>().is_ok_and(|d| (1..=31).contains(&d))
+            && (parts.len() == 3
+                || decimal(parts[3]) && parts[3].parse::<u32>().is_ok_and(|n| n >= 2))
     })
 }
 
 fn pid_json(name: &str) -> bool {
-    name.strip_suffix(".json").is_some_and(|s| decimal(s) && s.parse::<u32>().is_ok())
+    name.strip_suffix(".json")
+        .is_some_and(|s| decimal(s) && s.parse::<u32>().is_ok())
 }
 
 fn oauth_file(name: &str) -> bool {
-    if let Some(hash) = name.strip_prefix("auth-write-").and_then(|s| s.strip_suffix(".lock")) {
+    if let Some(hash) = name
+        .strip_prefix("auth-write-")
+        .and_then(|s| s.strip_suffix(".lock"))
+    {
         return hex_name(hash, 64);
     }
-    [".lock", ".owner"].iter().any(|ext| name.strip_suffix(ext).is_some_and(|s| hex_name(s, 64)))
+    [".lock", ".owner"]
+        .iter()
+        .any(|ext| name.strip_suffix(ext).is_some_and(|s| hex_name(s, 64)))
 }
 
 fn vector_file(name: &str) -> bool {
-    hex_name(name, 64) || name.strip_suffix(".tmp").is_some_and(|base| {
-        base.rsplit_once('.').is_some_and(|(base, seq)| decimal(seq)
-            && base.rsplit_once('.').is_some_and(|(hash, pid)| hex_name(hash, 64) && decimal(pid)))
-    })
+    hex_name(name, 64)
+        || name.strip_suffix(".tmp").is_some_and(|base| {
+            base.rsplit_once('.').is_some_and(|(base, seq)| {
+                decimal(seq)
+                    && base
+                        .rsplit_once('.')
+                        .is_some_and(|(hash, pid)| hex_name(hash, 64) && decimal(pid))
+            })
+        })
 }
 
 #[derive(PartialEq)]
-enum DataEntry { File, Directory }
+enum DataEntry {
+    File,
+    Directory,
+}
 
 #[cfg(test)]
 fn owned_data_entry(relative: &Path) -> Option<DataEntry> {
@@ -873,23 +1100,52 @@ fn owned_data_entry(relative: &Path) -> Option<DataEntry> {
 }
 
 #[cfg(test)]
-fn owned_data_entry_with_legacy(relative: &Path, legacy: &std::collections::HashSet<String>) -> Option<DataEntry> {
+fn owned_data_entry_with_legacy(
+    relative: &Path,
+    legacy: &std::collections::HashSet<String>,
+) -> Option<DataEntry> {
     // Pure name checks must not read the location store or require a data root.
     owned_data_entry_with_backups(relative, legacy, &Default::default())
 }
 
-fn owned_data_entry_with_backups(relative: &Path, legacy: &std::collections::HashSet<String>, backups: &std::collections::HashMap<String, crate::clients::PurgeBackupClient>) -> Option<DataEntry> {
-    let backup_client = |name: &str| backups.get(name).cloned()
-        .or_else(|| crate::clients::purge_backup_short_location(name));
+fn owned_data_entry_with_backups(
+    relative: &Path,
+    legacy: &std::collections::HashSet<String>,
+    backups: &std::collections::HashMap<String, crate::clients::PurgeBackupClient>,
+) -> Option<DataEntry> {
+    let backup_client = |name: &str| {
+        backups
+            .get(name)
+            .cloned()
+            .or_else(|| crate::clients::purge_backup_short_location(name))
+    };
     let parts: Option<Vec<_>> = relative.iter().map(|part| part.to_str()).collect();
     let parts = parts?;
     let file = match parts.as_slice() {
-        [name] if matches!(*name, "logs" | "bin" | "broker" | "backups" | "exports" | "children" | "daemon-runs" | "oauth-locks" | "search-vectors") => return Some(DataEntry::Directory),
+        [name]
+            if matches!(
+                *name,
+                "logs"
+                    | "bin"
+                    | "broker"
+                    | "backups"
+                    | "exports"
+                    | "children"
+                    | "daemon-runs"
+                    | "oauth-locks"
+                    | "search-vectors"
+            ) =>
+        {
+            return Some(DataEntry::Directory)
+        }
         [name] => owned_data_name(name, legacy),
         ["bin", name] => bin_file(name),
         ["broker", name] => matches!(*name, "owner.lock" | "approval.sock"),
-        ["backups", client] if backup_client(client).is_some() => return Some(DataEntry::Directory),
-        ["backups", client, name] => backup_client(client).is_some_and(|client| generated_file_name(name, |name| backup_file(&client, name))),
+        ["backups", client] if backup_client(client).is_some() => {
+            return Some(DataEntry::Directory)
+        }
+        ["backups", client, name] => backup_client(client)
+            .is_some_and(|client| generated_file_name(name, |name| backup_file(&client, name))),
         ["exports", name] => generated_file_name(name, export_file),
         ["children" | "daemon-runs", name] => generated_file_name(name, pid_json),
         ["oauth-locks", name] => oauth_file(name),
@@ -902,10 +1158,14 @@ fn owned_data_entry_with_backups(relative: &Path, legacy: &std::collections::Has
 
 fn legacy_store_names(dir: &Path) -> std::collections::HashSet<String> {
     // Snapshot before registry deletion, without migration or recovery writes.
-    let registry = std::fs::read(dir.join("registry.json")).ok()
+    let registry = std::fs::read(dir.join("registry.json"))
+        .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
     let mut names = std::collections::HashSet::new();
-    if let Some(profiles) = registry.as_ref().and_then(|value| value["profiles"].as_array()) {
+    if let Some(profiles) = registry
+        .as_ref()
+        .and_then(|value| value["profiles"].as_array())
+    {
         for profile in profiles {
             for field in ["id", "name"] {
                 if let Some(reference) = profile[field].as_str() {
@@ -913,7 +1173,9 @@ fn legacy_store_names(dir: &Path) -> std::collections::HashSet<String> {
                     if !slug.is_empty() {
                         for prefix in ["tool-cache-", "tool-pins-", "quarantine-"] {
                             names.insert(format!("{prefix}{slug}.json"));
-                            if prefix == "tool-cache-" { names.insert(format!("{prefix}{slug}.servers.json")); }
+                            if prefix == "tool-cache-" {
+                                names.insert(format!("{prefix}{slug}.servers.json"));
+                            }
                         }
                     }
                 }
@@ -929,28 +1191,59 @@ fn remove_data_contents(dir: &Path, keep: &[PathBuf], report: &mut Report) {
     remove_selected_contents(dir, dir, keep, &legacy, &backups, report);
 }
 
-fn remove_selected_contents(root: &Path, dir: &Path, keep: &[PathBuf], legacy: &std::collections::HashSet<String>, backups: &std::collections::HashMap<String, crate::clients::PurgeBackupClient>, report: &mut Report) {
-    let entries = match std::fs::read_dir(dir).and_then(|entries| entries.collect::<Result<Vec<_>, _>>()) {
-        Ok(entries) => entries,
-        Err(error) => {
-            report.leftovers.push(Leftover { path: dir.display().to_string(), error: error.to_string() });
-            return;
-        }
-    };
+fn remove_selected_contents(
+    root: &Path,
+    dir: &Path,
+    keep: &[PathBuf],
+    legacy: &std::collections::HashSet<String>,
+    backups: &std::collections::HashMap<String, crate::clients::PurgeBackupClient>,
+    report: &mut Report,
+) {
+    let entries =
+        match std::fs::read_dir(dir).and_then(|entries| entries.collect::<Result<Vec<_>, _>>()) {
+            Ok(entries) => entries,
+            Err(error) => {
+                report.leftovers.push(Leftover {
+                    path: dir.display().to_string(),
+                    error: error.to_string(),
+                });
+                return;
+            }
+        };
     for entry in entries {
         let path = entry.path();
-        if keep.contains(&path) { continue; }
-        let selected = path.strip_prefix(root).ok().and_then(|relative| owned_data_entry_with_backups(relative, legacy, backups));
+        if keep.contains(&path) {
+            continue;
+        }
+        let selected = path
+            .strip_prefix(root)
+            .ok()
+            .and_then(|relative| owned_data_entry_with_backups(relative, legacy, backups));
         match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if selected == Some(DataEntry::Directory) && metadata.is_dir() && !is_link(&metadata) => {
+            Ok(metadata)
+                if selected == Some(DataEntry::Directory)
+                    && metadata.is_dir()
+                    && !is_link(&metadata) =>
+            {
                 remove_selected_contents(root, &path, keep, legacy, backups, report);
                 if !keep.iter().any(|keep| keep.starts_with(&path)) {
                     remove_empty_dirs(&path, report);
                 }
             }
-            Ok(metadata) if selected == Some(DataEntry::File) && !metadata.is_dir() && !is_link(&metadata) => remove_path(&path, report),
-            Ok(_) => report.preserved.push(format!("{} (not a Toolport-created entry)", path.display())),
-            Err(error) => report.leftovers.push(Leftover { path: path.display().to_string(), error: error.to_string() }),
+            Ok(metadata)
+                if selected == Some(DataEntry::File)
+                    && !metadata.is_dir()
+                    && !is_link(&metadata) =>
+            {
+                remove_path(&path, report)
+            }
+            Ok(_) => report
+                .preserved
+                .push(format!("{} (not a Toolport-created entry)", path.display())),
+            Err(error) => report.leftovers.push(Leftover {
+                path: path.display().to_string(),
+                error: error.to_string(),
+            }),
         }
     }
 }
@@ -974,7 +1267,11 @@ fn remove_contents(dir: &Path, keep: &[PathBuf], report: &mut Report) {
                     continue;
                 }
                 match entry.file_type() {
-                    Ok(kind) if kind.is_dir() && std::fs::symlink_metadata(&path).is_ok_and(|metadata| !is_link(&metadata)) => {
+                    Ok(kind)
+                        if kind.is_dir()
+                            && std::fs::symlink_metadata(&path)
+                                .is_ok_and(|metadata| !is_link(&metadata)) =>
+                    {
                         remove_contents(&path, keep, report);
                         // A directory holding the owner lock stays until it is released.
                         if !keep.iter().any(|keep| keep.starts_with(&path)) {
@@ -1000,11 +1297,17 @@ fn remove_empty_dirs(dir: &Path, report: &mut Report) {
     match std::fs::read_dir(dir) {
         Ok(mut entries) => match entries.next() {
             None => remove_path(dir, report),
-            Some(Ok(_)) => {}, // Selected cleanup already reported preserved children.
-            Some(Err(error)) => report.leftovers.push(Leftover { path: dir.display().to_string(), error: error.to_string() }),
+            Some(Ok(_)) => {} // Selected cleanup already reported preserved children.
+            Some(Err(error)) => report.leftovers.push(Leftover {
+                path: dir.display().to_string(),
+                error: error.to_string(),
+            }),
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
-        Err(error) => report.leftovers.push(Leftover { path: dir.display().to_string(), error: error.to_string() }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => report.leftovers.push(Leftover {
+            path: dir.display().to_string(),
+            error: error.to_string(),
+        }),
     }
 }
 
@@ -1023,7 +1326,9 @@ fn owned_autostart(contents: &str, name: &str) -> bool {
     }
 }
 
-fn remove_autostart(report: &mut Report) -> Result<(), String> { startup_entries(true, report) }
+fn remove_autostart(report: &mut Report) -> Result<(), String> {
+    startup_entries(true, report)
+}
 
 fn startup_entries(remove: bool, report: &mut Report) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -1042,11 +1347,17 @@ fn startup_entries(remove: bool, report: &mut Report) -> Result<(), String> {
 fn startup_files(files: Vec<PathBuf>, remove: bool, report: &mut Report) {
     for (path, name) in files.iter().zip(AUTOSTART_NAMES) {
         match std::fs::read_to_string(path) {
-            Ok(contents) if owned_autostart(&contents, name) => { if remove { remove_path(path, report); } },
+            Ok(contents) if owned_autostart(&contents, name) => {
+                if remove {
+                    remove_path(path, report);
+                }
+            }
             Ok(_) => {
                 let preserved = format!("{} (foreign startup entry preserved)", path.display());
-                if !report.preserved.contains(&preserved) { report.preserved.push(preserved); }
-            },
+                if !report.preserved.contains(&preserved) {
+                    report.preserved.push(preserved);
+                }
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => report.leftovers.push(Leftover {
                 path: path.display().to_string(),
@@ -1097,14 +1408,30 @@ mod tests {
         let mut configs = Vec::new();
         for (kind, folder, basename) in [
             ("claude-code", ".claude2".to_owned(), ".claude.json"),
-            ("claude-code", format!(".claude-{}", "x".repeat(210)), ".claude.json"),
-            ("claude-code", format!(".claude-{}", "é".repeat(100)), ".claude.json"),
+            (
+                "claude-code",
+                format!(".claude-{}", "x".repeat(210)),
+                ".claude.json",
+            ),
+            (
+                "claude-code",
+                format!(".claude-{}", "é".repeat(100)),
+                ".claude.json",
+            ),
             ("codex", "manual-codex".to_owned(), "config.toml"),
         ] {
             let folder = home.join(folder);
             std::fs::create_dir(&folder).unwrap();
             let config = folder.join(basename);
-            std::fs::write(&config, if kind == "codex" { r#"model = "fixture""# } else { r#"{"mcpServers":{}}"# }).unwrap();
+            std::fs::write(
+                &config,
+                if kind == "codex" {
+                    r#"model = "fixture""#
+                } else {
+                    r#"{"mcpServers":{}}"#
+                },
+            )
+            .unwrap();
             let id = crate::clients::add_client_location(kind, folder.to_str().unwrap()).unwrap();
             let write = crate::clients::write_servers(&id, &[]).unwrap();
             backups.push(PathBuf::from(write.backup.unwrap()));
@@ -1117,38 +1444,76 @@ mod tests {
         let long_dir = backups[1].parent().unwrap();
         let component = long_dir.file_name().unwrap().to_str().unwrap();
         assert_eq!(component.len(), 185);
-        let wrong_hash = env.dir.join("backups").join(format!("{}-{}", &component[..120], "0".repeat(64)));
+        let wrong_hash =
+            env.dir
+                .join("backups")
+                .join(format!("{}-{}", &component[..120], "0".repeat(64)));
         std::fs::create_dir(&wrong_hash).unwrap();
         std::fs::write(wrong_hash.join("123-.claude.json"), "user bytes").unwrap();
         let lookalike = env.dir.join("client-locations.json.notes");
         std::fs::write(&lookalike, "user bytes").unwrap();
         // Store and backup atomic-write siblings use exactly the same grammar.
-        for name in ["client-locations.json.lock", "client-locations.json.123.1.conduit-tmp"] {
+        for name in [
+            "client-locations.json.lock",
+            "client-locations.json.123.1.conduit-tmp",
+        ] {
             std::fs::write(env.dir.join(name), "generated").unwrap();
         }
         let snapshot = crate::clients::purge_backup_inventory();
         std::fs::remove_file(env.dir.join("client-locations.json")).unwrap();
-        assert!(owned_data_entry_with_backups(backups[1].strip_prefix(&env.dir).unwrap(), &Default::default(), &snapshot).is_some(), "snapshot survives store deletion");
+        assert!(
+            owned_data_entry_with_backups(
+                backups[1].strip_prefix(&env.dir).unwrap(),
+                &Default::default(),
+                &snapshot
+            )
+            .is_some(),
+            "snapshot survives store deletion"
+        );
         // Restore the writer's inventory for the full removal path.
         for (config, _) in &configs {
-            crate::clients::add_client_location(if config.file_name().unwrap() == "config.toml" { "codex" } else { "claude-code" }, config.parent().unwrap().to_str().unwrap()).unwrap();
+            crate::clients::add_client_location(
+                if config.file_name().unwrap() == "config.toml" {
+                    "codex"
+                } else {
+                    "claude-code"
+                },
+                config.parent().unwrap().to_str().unwrap(),
+            )
+            .unwrap();
         }
         let report = run_with(
-            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
-            || Ok(crate::secrets::purge::Removal::default()), |_| Ok(()), |_| Ok(()),
-        ).unwrap();
+            |_| Vec::new(),
+            || Ok(Vec::new()),
+            |_| Vec::new(),
+            || Ok(crate::secrets::purge::Removal::default()),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
         assert!(report.leftovers.is_empty(), "{:?}", report.leftovers);
         assert!(!env.dir.join("client-locations.json").exists());
         for backup in backups {
             assert!(!backup.exists(), "{}", backup.display());
             let dir = backup.parent().unwrap();
-            assert_eq!(std::fs::read(dir.join("2024-taxes.pdf")).unwrap(), b"user bytes");
-            assert_eq!(std::fs::read(dir.join("123-config.toml.notes")).unwrap(), b"user bytes");
+            assert_eq!(
+                std::fs::read(dir.join("2024-taxes.pdf")).unwrap(),
+                b"user bytes"
+            );
+            assert_eq!(
+                std::fs::read(dir.join("123-config.toml.notes")).unwrap(),
+                b"user bytes"
+            );
             assert_eq!(std::fs::read_dir(dir).unwrap().count(), 2);
         }
-        assert_eq!(std::fs::read(wrong_hash.join("123-.claude.json")).unwrap(), b"user bytes");
+        assert_eq!(
+            std::fs::read(wrong_hash.join("123-.claude.json")).unwrap(),
+            b"user bytes"
+        );
         assert_eq!(std::fs::read(lookalike).unwrap(), b"user bytes");
-        for (config, bytes) in configs { assert_eq!(std::fs::read(config).unwrap(), bytes); }
+        for (config, bytes) in configs {
+            assert_eq!(std::fs::read(config).unwrap(), bytes);
+        }
     }
 
     #[test]
@@ -1252,24 +1617,45 @@ mod tests {
         let _home = crate::clients::TestHome::set(&home);
         let config = folder.join(".claude.json");
         std::fs::write(&config, "{}").unwrap();
-        let id = crate::clients::add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
+        let id =
+            crate::clients::add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
         let write = crate::clients::write_servers(&id, &[]).unwrap();
         let backup = PathBuf::from(write.backup.unwrap());
         let record = write.recovery_path.unwrap();
-        let component = backup.parent().unwrap().file_name().unwrap().to_str().unwrap();
-        let wrong = env.dir.join("backups").join(format!("{}-{}", &component[..120], "0".repeat(64)));
+        let component = backup
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let wrong =
+            env.dir
+                .join("backups")
+                .join(format!("{}-{}", &component[..120], "0".repeat(64)));
         std::fs::create_dir(&wrong).unwrap();
         let copied = wrong.join(record.file_name().unwrap());
         std::fs::copy(&record, &copied).unwrap();
         crate::clients::remove_client_location(&id).unwrap();
         std::fs::remove_dir_all(&folder).unwrap();
         let report = run_with(
-            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
-            || Ok(crate::secrets::purge::Removal::default()), |_| Ok(()), |_| Ok(()),
-        ).unwrap();
+            |_| Vec::new(),
+            || Ok(Vec::new()),
+            |_| Vec::new(),
+            || Ok(crate::secrets::purge::Removal::default()),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
         assert!(report.leftovers.is_empty(), "{:?}", report.leftovers);
-        assert!(!backup.parent().unwrap().exists(), "forgotten generated folder removed");
-        assert!(copied.exists(), "a copied valid record cannot claim another folder");
+        assert!(
+            !backup.parent().unwrap().exists(),
+            "forgotten generated folder removed"
+        );
+        assert!(
+            copied.exists(),
+            "a copied valid record cannot claim another folder"
+        );
     }
 
     #[test]
@@ -1281,8 +1667,12 @@ mod tests {
         assert_eq!(home_dir(), Some(root.clone()));
         assert!(config_dir().unwrap().starts_with(&root));
         assert!(data_dir_root().unwrap().starts_with(&root));
-        assert!(install_candidates(&env.dir.join("data/Toolport")).into_iter().all(|path| path.starts_with(&env.dir)));
-        assert!(app_resources(&root).into_iter().all(|path| path.starts_with(&root)));
+        assert!(install_candidates(&env.dir.join("data/Toolport"))
+            .into_iter()
+            .all(|path| path.starts_with(&env.dir)));
+        assert!(app_resources(&root)
+            .into_iter()
+            .all(|path| path.starts_with(&root)));
         let plan = plan().unwrap();
         assert!(Path::new(&plan.report_path).starts_with(&root));
     }
@@ -1322,9 +1712,16 @@ mod tests {
         let mut report = Report::default();
         #[cfg(windows)]
         {
-            let status = std::process::Command::new("cmd").args(["/C", "mklink", "/J"])
-                .arg(dir.join("junction")).arg(&native).status().unwrap();
-            assert!(status.success(), "Windows junction fixture could not be created");
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(dir.join("junction"))
+                .arg(&native)
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "Windows junction fixture could not be created"
+            );
         }
         remove_contents(&dir, &[], &mut report);
         assert!(report.leftovers.is_empty(), "{:?}", report.leftovers);
@@ -1393,9 +1790,13 @@ mod tests {
             || Ok(Vec::new()),
             |_| Vec::new(),
             || {
-                Ok(crate::secrets::purge::Removal { leftovers: vec![Leftover {
-                    path: "secret-service:/fixture/locked-item".into(), error: "locked".into(),
-                }], ..Default::default() })
+                Ok(crate::secrets::purge::Removal {
+                    leftovers: vec![Leftover {
+                        path: "secret-service:/fixture/locked-item".into(),
+                        error: "locked".into(),
+                    }],
+                    ..Default::default()
+                })
             },
             |_| Ok(()),
             |_| Ok(()),
@@ -1496,7 +1897,11 @@ mod tests {
         std::fs::create_dir(&dir).unwrap();
         std::fs::write(dir.join("personal.txt"), "keep").unwrap();
         assert!(verify_ownership(&dir, true).is_err());
-        std::fs::write(dir.join("registry.json"), r#"{"version":1,"servers":[],"profiles":[]}"#).unwrap();
+        std::fs::write(
+            dir.join("registry.json"),
+            r#"{"version":1,"servers":[],"profiles":[]}"#,
+        )
+        .unwrap();
         assert!(verify_ownership(&dir, true).is_ok());
     }
 
@@ -1504,10 +1909,19 @@ mod tests {
     fn purge_preflight_blocks_before_disconnect_or_any_deletion() {
         let env = crate::registry::DataDirTestEnv::new("purge_read_only_preflight");
         let report = run_with(
-            |_| vec![Leftover { path: "busy daemon".into(), error: "active listener".into() }],
-            || panic!("must not disconnect"), |_| panic!("must not stop"),
-            || panic!("must not delete credentials"), |_| Ok(()), |_| panic!("must not delete startup"),
-        ).unwrap();
+            |_| {
+                vec![Leftover {
+                    path: "busy daemon".into(),
+                    error: "active listener".into(),
+                }]
+            },
+            || panic!("must not disconnect"),
+            |_| panic!("must not stop"),
+            || panic!("must not delete credentials"),
+            |_| Ok(()),
+            |_| panic!("must not delete startup"),
+        )
+        .unwrap();
         assert!(report.clients.is_empty() && report.removed.is_empty());
         assert_eq!(report.leftovers[0].path, "busy daemon");
         assert!(env.dir.exists());
@@ -1517,11 +1931,20 @@ mod tests {
     fn purge_startup_inventory_failure_keeps_clients_and_credentials() {
         let _env = crate::registry::DataDirTestEnv::new("purge_startup_inventory");
         let report = run_with(
-            |_| Vec::new(), || panic!("must not disconnect"), |_| panic!("must not stop"),
+            |_| Vec::new(),
+            || panic!("must not disconnect"),
+            |_| panic!("must not stop"),
             || panic!("must not delete credentials"),
-            |report| { report.leftovers.push(Leftover { path: "startup".into(), error: "unreadable".into() }); Ok(()) },
+            |report| {
+                report.leftovers.push(Leftover {
+                    path: "startup".into(),
+                    error: "unreadable".into(),
+                });
+                Ok(())
+            },
             |_| panic!("must not delete startup"),
-        ).unwrap();
+        )
+        .unwrap();
         assert!(report.removed.is_empty() && report.clients.is_empty());
     }
 
@@ -1537,14 +1960,26 @@ mod tests {
         // The startup file lives outside the selected data folder.
         std::fs::write(data.join("secrets.enc"), "fixture").unwrap();
         let report = run_with(
-            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
+            |_| Vec::new(),
+            || Ok(Vec::new()),
+            |_| Vec::new(),
             || Ok(crate::secrets::purge::Removal::default()),
-            |report| { startup_files(files.clone(), false, report); Ok(()) },
-            |report| { startup_files(files.clone(), true, report); Ok(()) },
-        ).unwrap();
+            |report| {
+                startup_files(files.clone(), false, report);
+                Ok(())
+            },
+            |report| {
+                startup_files(files.clone(), true, report);
+                Ok(())
+            },
+        )
+        .unwrap();
         assert!(report.leftovers.is_empty());
         assert_eq!(report.preserved.len(), 1);
-        assert_eq!(std::fs::read_to_string(&files[0]).unwrap(), "foreign startup entry");
+        assert_eq!(
+            std::fs::read_to_string(&files[0]).unwrap(),
+            "foreign startup entry"
+        );
         assert!(!data.join("secrets.enc").exists());
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -1554,10 +1989,20 @@ mod tests {
         let env = crate::registry::DataDirTestEnv::new("purge_startup_delete");
         std::fs::write(env.dir.join("registry.json"), "keep").unwrap();
         let report = run_with(
-            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
-            || panic!("must not delete credentials"), |_| Ok(()),
-            |report| { report.leftovers.push(Leftover { path: "startup".into(), error: "denied".into() }); Ok(()) },
-        ).unwrap();
+            |_| Vec::new(),
+            || Ok(Vec::new()),
+            |_| Vec::new(),
+            || panic!("must not delete credentials"),
+            |_| Ok(()),
+            |report| {
+                report.leftovers.push(Leftover {
+                    path: "startup".into(),
+                    error: "denied".into(),
+                });
+                Ok(())
+            },
+        )
+        .unwrap();
         assert!(report.removed.is_empty());
         assert!(env.dir.join("registry.json").exists());
     }
@@ -1568,20 +2013,36 @@ mod tests {
         let dev = env.dir.join("Toolport-dev");
         let main = env.dir.join("Toolport");
         let legacy = env.dir.join("Conduit");
-        for dir in [&dev, &main, &legacy] { std::fs::create_dir(dir).unwrap(); }
-        std::fs::write(dev.join("registry.json"), r#"{"servers":[{"id":"shared"},{"id":"dev-only"}],"team":{}}"#).unwrap();
-        std::fs::write(main.join("registry.json"), r#"{"servers":[{"id":"shared"}]}"#).unwrap();
+        for dir in [&dev, &main, &legacy] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        std::fs::write(
+            dev.join("registry.json"),
+            r#"{"servers":[{"id":"shared"},{"id":"dev-only"}],"team":{}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            main.join("registry.json"),
+            r#"{"servers":[{"id":"shared"}]}"#,
+        )
+        .unwrap();
         std::fs::write(legacy.join("registry.json"), r#"{"servers":[]}"#).unwrap();
         let others = other_installs(&dev, vec![dev.clone(), main.clone(), legacy.clone()]);
         let candidates = install_candidates(&dev);
         assert!(candidates.contains(&main) && candidates.contains(&legacy));
         assert!(others.contains(&main) && others.contains(&legacy));
         let scope = credential_scope(&dev, &others, false).unwrap();
-        assert_eq!(scope.server_ids, std::collections::HashSet::from(["dev-only".into()]));
+        assert_eq!(
+            scope.server_ids,
+            std::collections::HashSet::from(["dev-only".into()])
+        );
         assert!(!scope.all_installs);
         let scope = credential_scope(&dev, &[], false).unwrap();
         assert!(!scope.all_installs);
-        assert_eq!(scope.server_ids, std::collections::HashSet::from(["shared".into(), "dev-only".into()]));
+        assert_eq!(
+            scope.server_ids,
+            std::collections::HashSet::from(["shared".into(), "dev-only".into()])
+        );
         assert!(credential_scope(&dev, &others, true).unwrap().all_installs);
         std::fs::remove_file(main.join("registry.json")).unwrap();
         assert!(credential_scope(&dev, &others, false).is_err());
@@ -1592,7 +2053,9 @@ mod tests {
         let home = Path::new("/fixture/home");
         let paths = app_resources(home);
         assert!(!paths.is_empty());
-        assert!(paths.iter().all(|path| path.to_string_lossy().contains("com.tsout.conduit")));
+        assert!(paths
+            .iter()
+            .all(|path| path.to_string_lossy().contains("com.tsout.conduit")));
         #[cfg(target_os = "macos")]
         assert_eq!(paths.len(), 5);
     }
@@ -1616,12 +2079,31 @@ mod tests {
     fn purge_data_names_preserve_user_files_after_first_run() {
         let env = crate::registry::DataDirTestEnv::new("purge_data_names");
         crate::registry::save(&crate::registry::Registry::default()).unwrap();
-        for name in ["personal.txt", "registry.json.owner-notes", "registry.json.bak.notes", "daemon-notes", "quarantine-notes.txt"] {
+        for name in [
+            "personal.txt",
+            "registry.json.owner-notes",
+            "registry.json.bak.notes",
+            "daemon-notes",
+            "quarantine-notes.txt",
+        ] {
             std::fs::write(env.dir.join(name), "keep").unwrap();
         }
         std::fs::create_dir_all(env.dir.join("documents/broker")).unwrap();
         std::fs::write(env.dir.join("documents/broker/notes"), "keep nested").unwrap();
-        for name in ["registry.json.bak", "registry.json.bak.123", "registry.json.v2-123.bak", "registry.json.123.1.conduit-tmp", "registry.json.unreadable-123", "registry.personal-sync-status.json", "daemon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json", "tool-cache-v2-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json", "team-activity-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json.lock", "secret-service.lock", "downstream_backoff.json", "agent-guard-removed"] {
+        for name in [
+            "registry.json.bak",
+            "registry.json.bak.123",
+            "registry.json.v2-123.bak",
+            "registry.json.123.1.conduit-tmp",
+            "registry.json.unreadable-123",
+            "registry.personal-sync-status.json",
+            "daemon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+            "tool-cache-v2-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+            "team-activity-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json.lock",
+            "secret-service.lock",
+            "downstream_backoff.json",
+            "agent-guard-removed",
+        ] {
             std::fs::write(env.dir.join(name), "fixture").unwrap();
         }
         for name in ["bin/toolport-gateway", "bin/gateway-manifest.json", "broker/approval.sock",
@@ -1639,14 +2121,22 @@ mod tests {
         }
         std::fs::create_dir(env.dir.join("logs")).unwrap();
         let report = run_with(
-            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
-            || Ok(crate::secrets::purge::Removal::default()), |_| Ok(()), |_| Ok(()),
-        ).unwrap();
+            |_| Vec::new(),
+            || Ok(Vec::new()),
+            |_| Vec::new(),
+            || Ok(crate::secrets::purge::Removal::default()),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
         assert!(report.leftovers.is_empty(), "{:?}", report.leftovers);
         assert_eq!(report.preserved.len(), 6);
         assert!(!env.dir.join("registry.json").exists());
         assert!(!env.dir.join("secret-service.lock").exists());
-        assert_eq!(std::fs::read_to_string(env.dir.join("documents/broker/notes")).unwrap(), "keep nested");
+        assert_eq!(
+            std::fs::read_to_string(env.dir.join("documents/broker/notes")).unwrap(),
+            "keep nested"
+        );
         assert_eq!(std::fs::read_dir(&env.dir).unwrap().count(), 6);
     }
 
@@ -1676,15 +2166,34 @@ mod tests {
     #[test]
     fn purge_team_note_requires_a_deleted_team_token() {
         let env = crate::registry::DataDirTestEnv::new("purge_team_note");
-        for (team_token_removed, team_token_in_file) in [(false, false), (true, false), (false, true)] {
+        for (team_token_removed, team_token_in_file) in
+            [(false, false), (true, false), (false, true)]
+        {
             std::fs::write(env.dir.join("secrets.enc"), "fixture").unwrap();
             let report = run_with(
-                |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
-                || Ok(crate::secrets::purge::Removal { removed: vec!["fixture credential".into()], team_token_removed, team_token_in_file, ..Default::default() }),
-                |_| Ok(()), |_| Ok(()),
-            ).unwrap();
+                |_| Vec::new(),
+                || Ok(Vec::new()),
+                |_| Vec::new(),
+                || {
+                    Ok(crate::secrets::purge::Removal {
+                        removed: vec!["fixture credential".into()],
+                        team_token_removed,
+                        team_token_in_file,
+                        ..Default::default()
+                    })
+                },
+                |_| Ok(()),
+                |_| Ok(()),
+            )
+            .unwrap();
             assert!(report.leftovers.is_empty());
-            assert_eq!(report.notes.iter().any(|note| note.contains("removed locally only")), team_token_removed || team_token_in_file);
+            assert_eq!(
+                report
+                    .notes
+                    .iter()
+                    .any(|note| note.contains("removed locally only")),
+                team_token_removed || team_token_in_file
+            );
         }
     }
 
@@ -1693,24 +2202,50 @@ mod tests {
         let env = crate::registry::DataDirTestEnv::new("purge_undiscovered");
         let selected = env.dir.join("config/Toolport");
         let custom = env.dir.join("data/toolport-work");
-        for dir in [&selected, &custom] { std::fs::create_dir_all(dir).unwrap(); }
-        std::fs::write(selected.join("registry.json"), r#"{"servers":[{"id":"mine"}]}"#).unwrap();
-        std::fs::write(custom.join("registry.json"), r#"{"servers":[{"id":"work"}]}"#).unwrap();
-        let candidates = install_candidates(&selected).into_iter().filter(|path| path.starts_with(&env.dir)).collect();
+        for dir in [&selected, &custom] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(
+            selected.join("registry.json"),
+            r#"{"servers":[{"id":"mine"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            custom.join("registry.json"),
+            r#"{"servers":[{"id":"work"}]}"#,
+        )
+        .unwrap();
+        let candidates = install_candidates(&selected)
+            .into_iter()
+            .filter(|path| path.starts_with(&env.dir))
+            .collect();
         let others = other_installs(&selected, candidates);
         assert!(!others.contains(&custom));
         let scope = credential_scope(&selected, &others, false).unwrap();
         assert!(!scope.all_installs, "discovery cannot prove sole ownership");
-        assert_eq!(scope.server_ids, std::collections::HashSet::from(["mine".into()]));
+        assert_eq!(
+            scope.server_ids,
+            std::collections::HashSet::from(["mine".into()])
+        );
     }
 
     #[test]
     fn purge_generated_path_collisions_preserve_user_bytes() {
         let env = crate::registry::DataDirTestEnv::new("purge_collisions");
         crate::registry::save(&crate::registry::Registry::default()).unwrap();
-        let collisions = ["backups/tax.zip", "bin/personal-script", "logs/other-app.log", "daemon-notes.json",
-            "broker/notes", "broker/nested/broker/notes", "children/notes.json", "exports/rules-notes.md",
-            "oauth-locks/notes.lock", "search-vectors/notes", "daemon-runs/notes.json"];
+        let collisions = [
+            "backups/tax.zip",
+            "bin/personal-script",
+            "logs/other-app.log",
+            "daemon-notes.json",
+            "broker/notes",
+            "broker/nested/broker/notes",
+            "children/notes.json",
+            "exports/rules-notes.md",
+            "oauth-locks/notes.lock",
+            "search-vectors/notes",
+            "daemon-runs/notes.json",
+        ];
         for name in collisions {
             let path = env.dir.join(name);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1718,19 +2253,38 @@ mod tests {
         }
         std::fs::write(env.dir.join("bin/toolport-gateway"), "gateway").unwrap();
         let report = run_with(
-            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
-            || Ok(crate::secrets::purge::Removal::default()), |_| Ok(()), |_| Ok(()),
-        ).unwrap();
+            |_| Vec::new(),
+            || Ok(Vec::new()),
+            |_| Vec::new(),
+            || Ok(crate::secrets::purge::Removal::default()),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
         assert!(report.leftovers.is_empty(), "{:?}", report.leftovers);
         for name in collisions {
-            assert_eq!(std::fs::read_to_string(env.dir.join(name)).unwrap(), "user bytes", "{name}");
+            assert_eq!(
+                std::fs::read_to_string(env.dir.join(name)).unwrap(),
+                "user bytes",
+                "{name}"
+            );
             // Unknown directories are reported as a whole and never traversed.
-            let reported = if name == "broker/nested/broker/notes" { "broker/nested" } else { name };
+            let reported = if name == "broker/nested/broker/notes" {
+                "broker/nested"
+            } else {
+                name
+            };
             let reported_path = env.dir.join(reported);
-            assert!(report.preserved.iter().any(|path| {
-                path.strip_suffix(" (not a Toolport-created entry)")
-                    .is_some_and(|path| Path::new(path).components().eq(reported_path.components()))
-            }), "{name}: {:?}", report.preserved);
+            assert!(
+                report.preserved.iter().any(|path| {
+                    path.strip_suffix(" (not a Toolport-created entry)")
+                        .is_some_and(|path| {
+                            Path::new(path).components().eq(reported_path.components())
+                        })
+                }),
+                "{name}: {:?}",
+                report.preserved
+            );
         }
         assert!(!env.dir.join("bin/toolport-gateway").exists());
         assert!(!env.dir.join("registry.json").exists());
@@ -1756,17 +2310,28 @@ mod tests {
         std::fs::write(&other_registry, r#"{"servers":[{"id":"theirs"}]}"#).unwrap();
         let scope = credential_scope(&env.dir, &[other], false).unwrap();
         let report = run_with(
-            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
+            |_| Vec::new(),
+            || Ok(Vec::new()),
+            |_| Vec::new(),
             || {
                 assert!(!scope.all_installs);
                 assert!(scope.server_ids.contains("mine") && !scope.server_ids.contains("theirs"));
-                Ok(crate::secrets::purge::remove_fixture_accounts(&scope, &["mine::TOKEN", "theirs::TOKEN"]))
-            }, |_| Ok(()), |_| Ok(()),
-        ).unwrap();
+                Ok(crate::secrets::purge::remove_fixture_accounts(
+                    &scope,
+                    &["mine::TOKEN", "theirs::TOKEN"],
+                ))
+            },
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
         assert!(report.removed.contains(&"mine::TOKEN".into()));
         assert!(!report.removed.contains(&"theirs::TOKEN".into()));
         assert!(report.preserved.contains(&"theirs::TOKEN".into()));
-        assert!(report.notes.iter().any(|note| note.contains("may belong to another Toolport install")));
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("may belong to another Toolport install")));
         assert!(report.leftovers.is_empty());
         assert!(!selected.exists());
     }
@@ -1782,10 +2347,24 @@ mod tests {
             "backups/claude-code/123-claude-settings-aaaaaaaaaaaaaaaa.json.123.1.conduit-tmp"] {
             assert!(owned_data_entry(Path::new(path)).is_some(), "{path}");
         }
-        for path in ["daemon-notes.json", "daemon-123.json", "team-activity-notes.json", "tool-cache-v2-work.json",
-            "registry.json.notes.conduit-tmp", "bin/personal-script", "bin/toolport-gateway-notes", "bin/toolport-gateway.unknown.tmp",
-            "backups/tax.zip", "backups/claude-code/tax.zip", "backups/personal/123-file.json", "logs/other-app.log",
-            "broker/personal", "exports/rules-notes.md", "oauth-locks/notes.lock", "children/notes.json"] {
+        for path in [
+            "daemon-notes.json",
+            "daemon-123.json",
+            "team-activity-notes.json",
+            "tool-cache-v2-work.json",
+            "registry.json.notes.conduit-tmp",
+            "bin/personal-script",
+            "bin/toolport-gateway-notes",
+            "bin/toolport-gateway.unknown.tmp",
+            "backups/tax.zip",
+            "backups/claude-code/tax.zip",
+            "backups/personal/123-file.json",
+            "logs/other-app.log",
+            "broker/personal",
+            "exports/rules-notes.md",
+            "oauth-locks/notes.lock",
+            "children/notes.json",
+        ] {
             assert!(owned_data_entry(Path::new(path)).is_none(), "{path}");
         }
     }
@@ -1794,7 +2373,9 @@ mod tests {
     fn purge_directory_name_collisions_preserve_files_and_links() {
         let env = crate::registry::DataDirTestEnv::new("purge_directory_collisions");
         crate::registry::save(&crate::registry::Registry::default()).unwrap();
-        for name in ["bin", "backups"] { std::fs::write(env.dir.join(name), "user bytes").unwrap(); }
+        for name in ["bin", "backups"] {
+            std::fs::write(env.dir.join(name), "user bytes").unwrap();
+        }
         std::fs::create_dir(env.dir.join("gateway.log")).unwrap();
         std::fs::write(env.dir.join("gateway.log/personal.txt"), "nested bytes").unwrap();
         #[cfg(unix)]
@@ -1802,24 +2383,51 @@ mod tests {
             std::fs::create_dir(env.dir.join("native")).unwrap();
             std::fs::write(env.dir.join("native/personal.txt"), "native bytes").unwrap();
             std::os::unix::fs::symlink(env.dir.join("native"), env.dir.join("exports")).unwrap();
-            std::os::unix::fs::symlink(env.dir.join("native/personal.txt"), env.dir.join("secrets.enc")).unwrap();
+            std::os::unix::fs::symlink(
+                env.dir.join("native/personal.txt"),
+                env.dir.join("secrets.enc"),
+            )
+            .unwrap();
         }
         let report = run_with(
-            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
-            || Ok(crate::secrets::purge::Removal::default()), |_| Ok(()), |_| Ok(()),
-        ).unwrap();
+            |_| Vec::new(),
+            || Ok(Vec::new()),
+            |_| Vec::new(),
+            || Ok(crate::secrets::purge::Removal::default()),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
         assert!(report.leftovers.is_empty(), "{:?}", report.leftovers);
         for name in ["bin", "backups"] {
-            assert_eq!(std::fs::read_to_string(env.dir.join(name)).unwrap(), "user bytes");
+            assert_eq!(
+                std::fs::read_to_string(env.dir.join(name)).unwrap(),
+                "user bytes"
+            );
             let path = env.dir.join(name).display().to_string();
-            assert!(report.preserved.iter().any(|entry| entry.starts_with(&path)));
+            assert!(report
+                .preserved
+                .iter()
+                .any(|entry| entry.starts_with(&path)));
         }
-        assert_eq!(std::fs::read_to_string(env.dir.join("gateway.log/personal.txt")).unwrap(), "nested bytes");
+        assert_eq!(
+            std::fs::read_to_string(env.dir.join("gateway.log/personal.txt")).unwrap(),
+            "nested bytes"
+        );
         #[cfg(unix)]
         {
-            assert!(std::fs::symlink_metadata(env.dir.join("exports")).unwrap().file_type().is_symlink());
-            assert!(std::fs::symlink_metadata(env.dir.join("secrets.enc")).unwrap().file_type().is_symlink());
-            assert_eq!(std::fs::read_to_string(env.dir.join("native/personal.txt")).unwrap(), "native bytes");
+            assert!(std::fs::symlink_metadata(env.dir.join("exports"))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert!(std::fs::symlink_metadata(env.dir.join("secrets.enc"))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(
+                std::fs::read_to_string(env.dir.join("native/personal.txt")).unwrap(),
+                "native bytes"
+            );
         }
     }
 
@@ -1829,16 +2437,32 @@ mod tests {
         let selected = env.dir.join("toolport-data");
         let dev = env.dir.join("Toolport-dev");
         let checkout = env.dir.join("toolport");
-        for dir in [&selected, &dev, &checkout] { std::fs::create_dir(dir).unwrap(); }
-        std::fs::write(selected.join("registry.json"), r#"{"servers":[{"id":"mine"}]}"#).unwrap();
+        for dir in [&selected, &dev, &checkout] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        std::fs::write(
+            selected.join("registry.json"),
+            r#"{"servers":[{"id":"mine"}]}"#,
+        )
+        .unwrap();
         std::fs::create_dir(dev.join("logs")).unwrap();
         std::fs::write(dev.join("logs/other-app.log"), "user bytes").unwrap();
         std::fs::write(checkout.join("Cargo.toml"), "git checkout").unwrap();
         // Supplying the lowercase candidate models case-insensitive discovery.
         let others = other_installs(&selected, vec![dev.clone(), checkout]);
-        assert!(others.is_empty(), "leftovers and a checkout have no registry: {others:?}");
-        assert!(credential_scope(&selected, &others, false).unwrap().server_ids.contains("mine"));
-        for evidence in ["registry.json.bak", "registry.json.123.1.conduit-tmp", "registry.json.unreadable-123"] {
+        assert!(
+            others.is_empty(),
+            "leftovers and a checkout have no registry: {others:?}"
+        );
+        assert!(credential_scope(&selected, &others, false)
+            .unwrap()
+            .server_ids
+            .contains("mine"));
+        for evidence in [
+            "registry.json.bak",
+            "registry.json.123.1.conduit-tmp",
+            "registry.json.unreadable-123",
+        ] {
             std::fs::write(dev.join(evidence), "recovery bytes").unwrap();
             let others = other_installs(&selected, vec![dev.clone()]);
             assert_eq!(others.as_slice(), std::slice::from_ref(&dev));
@@ -1854,7 +2478,9 @@ mod tests {
         let env = crate::registry::DataDirTestEnv::new("purge_r4_plan");
         let selected = env.dir.join("Toolport");
         let other = env.dir.join("Toolport-dev");
-        for dir in [&selected, &other] { std::fs::create_dir(dir).unwrap(); }
+        for dir in [&selected, &other] {
+            std::fs::create_dir(dir).unwrap();
+        }
         let bytes = br#"{"version":1,"servers":[{"id":"mine"}],"profiles":[]}"#;
         std::fs::write(selected.join("registry.json"), bytes).unwrap();
         std::fs::write(selected.join("secrets.enc"), "encrypted fixture").unwrap();
@@ -1863,9 +2489,18 @@ mod tests {
         let _selected = crate::registry::DataDirOverride::set(&selected);
         let error = plan().expect_err("both Settings shells must reject the plan before exit");
         assert!(error.contains(broken.to_str().unwrap()), "{error}");
-        assert_eq!(std::fs::read(selected.join("registry.json")).unwrap(), bytes);
-        assert_eq!(std::fs::read_to_string(selected.join("secrets.enc")).unwrap(), "encrypted fixture");
-        assert!(!selected.join("broker").exists(), "planning must not start cleanup");
+        assert_eq!(
+            std::fs::read(selected.join("registry.json")).unwrap(),
+            bytes
+        );
+        assert_eq!(
+            std::fs::read_to_string(selected.join("secrets.enc")).unwrap(),
+            "encrypted fixture"
+        );
+        assert!(
+            !selected.join("broker").exists(),
+            "planning must not start cleanup"
+        );
     }
 
     #[test]
@@ -1876,12 +2511,21 @@ mod tests {
         std::fs::write(&registry, bytes).unwrap();
         std::fs::write(env.dir.join("secrets.enc"), "encrypted bytes").unwrap();
         let error = plan().expect_err("planning must reject a foreign registry");
-        assert!(error.contains("ownership") && error.contains(&env.dir.display().to_string()), "{error}");
+        assert!(
+            error.contains("ownership") && error.contains(&env.dir.display().to_string()),
+            "{error}"
+        );
         assert_eq!(std::fs::read(&registry).unwrap(), bytes);
-        assert_eq!(std::fs::read(env.dir.join("secrets.enc")).unwrap(), b"encrypted bytes");
+        assert_eq!(
+            std::fs::read(env.dir.join("secrets.enc")).unwrap(),
+            b"encrypted bytes"
+        );
         std::fs::remove_file(&registry).unwrap();
         for all_installs in [false, true] {
-            assert!(plan_with_scope(all_installs).err().unwrap().contains("ownership"));
+            assert!(plan_with_scope(all_installs)
+                .err()
+                .unwrap()
+                .contains("ownership"));
         }
         // Explicit global recovery keeps the execution path's corrupt-file exception.
         std::fs::write(&registry, "{broken").unwrap();
@@ -1891,7 +2535,11 @@ mod tests {
     #[test]
     fn purge_r5_recovery_only_inventory_uses_newest_readable_registry_without_writes() {
         let env = crate::registry::DataDirTestEnv::new("purge_r5_recovery_inventory");
-        std::fs::write(env.dir.join("registry.json"), r#"{"servers":[{"id":"mine"},{"id":"shared"}]}"#).unwrap();
+        std::fs::write(
+            env.dir.join("registry.json"),
+            r#"{"servers":[{"id":"mine"},{"id":"shared"}]}"#,
+        )
+        .unwrap();
         let other = env.dir.join("Toolport-dev");
         std::fs::create_dir(&other).unwrap();
         let old = other.join("registry.json.bak");
@@ -1903,18 +2551,32 @@ mod tests {
             (&corrupt, "broken", 3),
         ] {
             std::fs::write(path, bytes).unwrap();
-            std::fs::File::options().write(true).open(path).unwrap().set_times(
-                std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
-            ).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(
+                    std::fs::FileTimes::new().set_modified(
+                        std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds),
+                    ),
+                )
+                .unwrap();
         }
         for _ in 0..2 {
             let others = other_installs(&env.dir, vec![other.clone()]);
-            let scope = credential_scope(&env.dir, &others, false).expect("readable recovery ownership must converge");
+            let scope = credential_scope(&env.dir, &others, false)
+                .expect("readable recovery ownership must converge");
             assert!(scope.server_ids.contains("mine") && !scope.server_ids.contains("shared"));
             assert!(!scope.all_installs);
             assert!(!other.join("registry.json").exists());
-            assert_eq!(std::fs::read_to_string(&old).unwrap(), r#"{"servers":[{"id":"mine"}]}"#);
-            assert_eq!(std::fs::read_to_string(&newest).unwrap(), r#"{"servers":[{"id":"shared"}]}"#);
+            assert_eq!(
+                std::fs::read_to_string(&old).unwrap(),
+                r#"{"servers":[{"id":"mine"}]}"#
+            );
+            assert_eq!(
+                std::fs::read_to_string(&newest).unwrap(),
+                r#"{"servers":[{"id":"shared"}]}"#
+            );
             assert_eq!(std::fs::read_to_string(&corrupt).unwrap(), "broken");
         }
     }
@@ -1922,19 +2584,34 @@ mod tests {
     #[test]
     fn purge_r5_unreadable_recovery_names_existing_file_and_rename_allows_retry() {
         let env = crate::registry::DataDirTestEnv::new("purge_r5_recovery_retry");
-        std::fs::write(env.dir.join("registry.json"), r#"{"servers":[{"id":"mine"}]}"#).unwrap();
+        std::fs::write(
+            env.dir.join("registry.json"),
+            r#"{"servers":[{"id":"mine"}]}"#,
+        )
+        .unwrap();
         let other = env.dir.join("Toolport-dev");
         std::fs::create_dir(&other).unwrap();
         let leftover = other.join("registry.json.unreadable-123");
         std::fs::write(&leftover, "broken").unwrap();
         let others = other_installs(&env.dir, vec![other.clone()]);
         let error = credential_scope(&env.dir, &others, false).err().unwrap();
-        assert!(error.contains(&leftover.display().to_string()) && error.contains("rename") && !error.contains("--all-installs"), "{error}");
+        assert!(
+            error.contains(&leftover.display().to_string())
+                && error.contains("rename")
+                && !error.contains("--all-installs"),
+            "{error}"
+        );
         std::fs::rename(&leftover, other.join("saved-recovery.json")).unwrap();
         let others = other_installs(&env.dir, vec![other.clone()]);
         assert!(others.is_empty());
-        assert!(credential_scope(&env.dir, &others, false).unwrap().server_ids.contains("mine"));
-        assert_eq!(std::fs::read_to_string(other.join("saved-recovery.json")).unwrap(), "broken");
+        assert!(credential_scope(&env.dir, &others, false)
+            .unwrap()
+            .server_ids
+            .contains("mine"));
+        assert_eq!(
+            std::fs::read_to_string(other.join("saved-recovery.json")).unwrap(),
+            "broken"
+        );
     }
 
     #[test]
@@ -1944,7 +2621,9 @@ mod tests {
         let path = env.dir.join("Toolport-removal-report-fixture.json");
         let report = open_removal_report(&path).unwrap();
         assert!(std::process::Command::new(env.dir.join("absent-gateway"))
-            .stdout(report).spawn().is_err());
+            .stdout(report)
+            .spawn()
+            .is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"");
         let timeout_report = b"{\"leftovers\":[{\"error\":\"Toolport did not close\"}]}";
         let mut retry = open_removal_report(&path).expect("same-plan retry after spawn failure");
@@ -1957,13 +2636,22 @@ mod tests {
         retry.write_all(b"{\"removed\":[]}").unwrap();
         drop(retry);
         assert_eq!(std::fs::read(&path).unwrap(), b"{\"removed\":[]}");
-        let mut archived: Vec<_> = std::fs::read_dir(&env.dir).unwrap().filter_map(|entry| {
-            let path = entry.unwrap().path();
-            path.file_name().unwrap().to_string_lossy().contains(".previous-")
-                .then(|| std::fs::read(path).unwrap())
-        }).collect();
+        let mut archived: Vec<_> = std::fs::read_dir(&env.dir)
+            .unwrap()
+            .filter_map(|entry| {
+                let path = entry.unwrap().path();
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains(".previous-")
+                    .then(|| std::fs::read(path).unwrap())
+            })
+            .collect();
         archived.sort();
-        assert_eq!(archived, [b"".to_vec(), [timeout_report.as_slice(), b"\n"].concat()]);
+        assert_eq!(
+            archived,
+            [b"".to_vec(), [timeout_report.as_slice(), b"\n"].concat()]
+        );
     }
 
     #[cfg(unix)]
@@ -1976,19 +2664,46 @@ mod tests {
         std::os::unix::fs::symlink(&target, &report).unwrap();
         assert!(open_removal_report(&report).is_err());
         assert_eq!(std::fs::read_to_string(target).unwrap(), "user bytes");
-        assert!(std::fs::symlink_metadata(report).unwrap().file_type().is_symlink());
+        assert!(std::fs::symlink_metadata(report)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[test]
     fn purge_r4_custom_directory_guidance_explains_post_removal_limit() {
         let env = crate::registry::DataDirTestEnv::new("purge_r4_guidance");
         let report = run_with(
-            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
-            || Ok(crate::secrets::purge::Removal { preserved: vec!["__conduit_master_key__".into()], ..Default::default() }),
-            |_| Ok(()), |_| Ok(()),
-        ).unwrap();
-        assert!(report.notes.iter().any(|note| note.contains("custom data directory") && note.contains("before") && note.contains("credential manager")), "{:?}", report.notes);
-        assert!(report.notes.iter().any(|note| note.contains("Toolport's") && note.contains("master key") && note.contains("HTTP")), "{:?}", report.notes);
+            |_| Vec::new(),
+            || Ok(Vec::new()),
+            |_| Vec::new(),
+            || {
+                Ok(crate::secrets::purge::Removal {
+                    preserved: vec!["__conduit_master_key__".into()],
+                    ..Default::default()
+                })
+            },
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("custom data directory")
+                    && note.contains("before")
+                    && note.contains("credential manager")),
+            "{:?}",
+            report.notes
+        );
+        assert!(
+            report.notes.iter().any(|note| note.contains("Toolport's")
+                && note.contains("master key")
+                && note.contains("HTTP")),
+            "{:?}",
+            report.notes
+        );
         assert!(env.dir.exists());
     }
 
@@ -1996,28 +2711,60 @@ mod tests {
     fn purge_r4_timestamped_backups_and_legacy_store_collisions_preserve_bytes() {
         let env = crate::registry::DataDirTestEnv::new("purge_r4_patterns");
         crate::registry::save(&crate::registry::Registry::default()).unwrap();
-        let collisions = ["backups/claude-code/2024-taxes.pdf", "backups/claude-code/1791750000000-taxes.pdf", "quarantine-notes.json", "tool-cache-notes.json"];
+        let collisions = [
+            "backups/claude-code/2024-taxes.pdf",
+            "backups/claude-code/1791750000000-taxes.pdf",
+            "quarantine-notes.json",
+            "tool-cache-notes.json",
+        ];
         for name in collisions {
             let path = env.dir.join(name);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, "user bytes").unwrap();
         }
-        let generated = ["backups/claude-code/1791750000000-.claude.json", "backups/claude-code/1791750000000-claude-0123456789abcdef.json", "backups/claude-code/1791750000000-claude-settings-0123456789abcdef.json", "quarantine-default.json", "tool-cache-default.json", "tool-pins-default.json"];
-        for name in generated { std::fs::write(env.dir.join(name), "generated fixture").unwrap(); }
+        let generated = [
+            "backups/claude-code/1791750000000-.claude.json",
+            "backups/claude-code/1791750000000-claude-0123456789abcdef.json",
+            "backups/claude-code/1791750000000-claude-settings-0123456789abcdef.json",
+            "quarantine-default.json",
+            "tool-cache-default.json",
+            "tool-pins-default.json",
+        ];
+        for name in generated {
+            std::fs::write(env.dir.join(name), "generated fixture").unwrap();
+        }
         let report = run_with(
-            |_| Vec::new(), || Ok(Vec::new()), |_| Vec::new(),
-            || Ok(crate::secrets::purge::Removal::default()), |_| Ok(()), |_| Ok(()),
-        ).unwrap();
+            |_| Vec::new(),
+            || Ok(Vec::new()),
+            |_| Vec::new(),
+            || Ok(crate::secrets::purge::Removal::default()),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
         assert!(report.leftovers.is_empty());
         for name in collisions {
-            assert_eq!(std::fs::read_to_string(env.dir.join(name)).unwrap(), "user bytes", "{name}");
+            assert_eq!(
+                std::fs::read_to_string(env.dir.join(name)).unwrap(),
+                "user bytes",
+                "{name}"
+            );
             let expected = env.dir.join(name);
-            assert!(report.preserved.iter().any(|entry| {
-                entry.strip_suffix(" (not a Toolport-created entry)")
-                    .is_some_and(|entry| Path::new(entry).components().eq(expected.components()))
-            }), "{name}: {:?}", report.preserved);
+            assert!(
+                report.preserved.iter().any(|entry| {
+                    entry
+                        .strip_suffix(" (not a Toolport-created entry)")
+                        .is_some_and(|entry| {
+                            Path::new(entry).components().eq(expected.components())
+                        })
+                }),
+                "{name}: {:?}",
+                report.preserved
+            );
         }
-        for name in generated { assert!(!env.dir.join(name).exists(), "{name}"); }
+        for name in generated {
+            assert!(!env.dir.join(name).exists(), "{name}");
+        }
     }
 
     #[test]
@@ -2031,12 +2778,22 @@ mod tests {
             std::fs::create_dir_all(dir).unwrap();
             std::fs::write(dir.join("registry.json"), r#"{"servers":[]}"#).unwrap();
         }
-        let others = other_installs_with(&real, vec![shadow.clone(), dev_shadow, dev.clone()], |path| {
-            if let Ok(relative) = path.strip_prefix(env.dir.join("virtualized")) {
-                env.dir.join("real").join(relative)
-            } else { path.to_path_buf() }
-        });
-        assert_eq!(others, [dev], "compare and inventory every candidate in the selected UNC view");
+        let others = other_installs_with(
+            &real,
+            vec![shadow.clone(), dev_shadow, dev.clone()],
+            |path| {
+                if let Ok(relative) = path.strip_prefix(env.dir.join("virtualized")) {
+                    env.dir.join("real").join(relative)
+                } else {
+                    path.to_path_buf()
+                }
+            },
+        );
+        assert_eq!(
+            others,
+            [dev],
+            "compare and inventory every candidate in the selected UNC view"
+        );
     }
 
     #[test]
@@ -2045,15 +2802,36 @@ mod tests {
         let config = env.dir.join("hooks.json");
         let original = r#"{"hooks":{}}"#;
         std::fs::write(&config, original).unwrap();
-        crate::clients::write_settings_key_for("cursor", &config, Some(original),
-            &serde_json::json!({"hooks":{"fixture":[]}}), "hooks").unwrap();
-        let backups: Vec<_> = std::fs::read_dir(env.dir.join("backups/cursor")).unwrap()
-            .map(|entry| entry.unwrap().path()).filter(|path| path.file_name().and_then(|name| name.to_str())
-                .is_some_and(|name| name.contains("-claude-settings-") && name.ends_with(".json"))).collect();
-        assert_eq!(backups.len(), 1, "select the settings copy, not the original recovery snapshot");
+        crate::clients::write_settings_key_for(
+            "cursor",
+            &config,
+            Some(original),
+            &serde_json::json!({"hooks":{"fixture":[]}}),
+            "hooks",
+        )
+        .unwrap();
+        let backups: Vec<_> = std::fs::read_dir(env.dir.join("backups/cursor"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.contains("-claude-settings-") && name.ends_with(".json")
+                    })
+            })
+            .collect();
+        assert_eq!(
+            backups.len(),
+            1,
+            "select the settings copy, not the original recovery snapshot"
+        );
         let backup = &backups[0];
         assert_eq!(std::fs::read_to_string(backup).unwrap(), original);
-        assert!(owned_data_entry(backup.strip_prefix(&env.dir).unwrap()).is_some(), "{}", backup.display());
+        assert!(
+            owned_data_entry(backup.strip_prefix(&env.dir).unwrap()).is_some(),
+            "{}",
+            backup.display()
+        );
     }
-
 }

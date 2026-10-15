@@ -1394,9 +1394,15 @@ pub fn connect_remote_classified(
     }
     let url = secrets::get_vault_secret_result(&server.id, secrets::IMPORTED_URL_KEY)
         .map_err(|_| "Keychain unavailable. Unlock it and retry.".to_string())?
-        .ok_or_else(|| "Missing imported endpoint. Import its native definition again.".to_string())?;
+        .ok_or_else(|| {
+            "Missing imported endpoint. Import its native definition again.".to_string()
+        })?;
     if server.url.as_deref() != Some(&crate::import_credentials::shown_url(&url)) {
-        return Err("The endpoint changed. Review and import its credentials again.".to_string().into());
+        return Err(
+            "The endpoint changed. Review and import its credentials again."
+                .to_string()
+                .into(),
+        );
     }
     let mut resolved = server.clone();
     resolved.url = Some(url);
@@ -1994,13 +2000,25 @@ mod tests {
         secrets::tests::with_isolated_vault(|| {
             let endpoint = RotatingEndpoint::new();
             let mut server = remote_server(&endpoint.url, None);
-            server.unknown_fields.insert("headerKeys".into(), serde_json::json!([{"key":"Authorization","env":"AUTH"}]));
-            for (saved, expected) in [(None,""),(Some("bare-token"),"Bearer bare-token"),(Some("Bearer x"),"Bearer x")] {
-                if let Some(value)=saved {secrets::set_secret(&server.id,"AUTH",value).unwrap();}
-                let mut connection=connect_remote(&server).unwrap();
-                assert_eq!(connection.call("fixture",serde_json::json!({})).unwrap()["authorization"],expected);
+            server.unknown_fields.insert(
+                "headerKeys".into(),
+                serde_json::json!([{"key":"Authorization","env":"AUTH"}]),
+            );
+            for (saved, expected) in [
+                (None, ""),
+                (Some("bare-token"), "Bearer bare-token"),
+                (Some("Bearer x"), "Bearer x"),
+            ] {
+                if let Some(value) = saved {
+                    secrets::set_secret(&server.id, "AUTH", value).unwrap();
+                }
+                let mut connection = connect_remote(&server).unwrap();
+                assert_eq!(
+                    connection.call("fixture", serde_json::json!({})).unwrap()["authorization"],
+                    expected
+                );
             }
-            assert_eq!(endpoint.count(),0);
+            assert_eq!(endpoint.count(), 0);
         });
     }
     #[test]
@@ -4319,7 +4337,10 @@ mod reference_redaction_tests {
     #[test]
     fn reference_errors_are_opaque_and_auth_triggers_reconnection() {
         let reference = "op://auth-test/item/key";
-        assert_eq!(crate::secret_refs::test_cached_value(reference, "old"), "old");
+        assert_eq!(
+            crate::secret_refs::test_cached_value(reference, "old"),
+            "old"
+        );
         let redaction = Redaction(vec!["synthetic-ref-value".into()], vec![reference.into()]);
         let e = redaction.connection_error(
             crate::downstream::TransportError::Fatal("tail ends in ref-value".into()),
@@ -4337,7 +4358,10 @@ mod reference_redaction_tests {
             true,
         );
         assert!(e.is_health_failure());
-        assert_eq!(crate::secret_refs::test_cached_value(reference, "new"), "new");
+        assert_eq!(
+            crate::secret_refs::test_cached_value(reference, "new"),
+            "new"
+        );
         assert!(!e.to_string().contains("synthetic-ref-value"));
         let payload=redaction.value(serde_json::json!({"content":[{"text":"synthetic-ref-value"}],"synthetic-ref-value":"synthetic-ref-value"}));
         assert!(!payload.to_string().contains("synthetic-ref-value"));

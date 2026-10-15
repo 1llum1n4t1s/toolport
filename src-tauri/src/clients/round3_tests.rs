@@ -2,7 +2,8 @@ use super::*;
 
 fn entry(command: &Path) -> ServerEntry {
     serde_json::from_value(serde_json::json!({"id":"toolport", "name":"toolport",
-        "transport":"stdio", "command":command.to_str().unwrap()})).unwrap()
+        "transport":"stdio", "command":command.to_str().unwrap()}))
+    .unwrap()
 }
 
 #[cfg(unix)]
@@ -26,9 +27,13 @@ fn round3_legacy_linked_and_backup_profiles_keep_references_and_repair() {
     std::fs::write(&old, "old").unwrap();
     std::fs::write(&current, "new").unwrap();
     let raw = serde_json::json!({"mcpServers":{"my-toolport":{"command":old,"env":{"TOOLPORT_PROFILE":"work"}}}}).to_string();
-    let paths: Vec<_> = [".claude-work", ".claude-old", ".claude-backup-2026"].iter()
-        .map(|folder| root.join(folder).join(".claude.json")).collect();
-    for path in &paths { std::fs::write(path, &raw).unwrap(); }
+    let paths: Vec<_> = [".claude-work", ".claude-old", ".claude-backup-2026"]
+        .iter()
+        .map(|folder| root.join(folder).join(".claude.json"))
+        .collect();
+    for path in &paths {
+        std::fs::write(path, &raw).unwrap();
+    }
     assert!(locations::all().is_empty());
     let references = referenced_gateway_paths().unwrap();
     assert!(references.contains(&old));
@@ -38,14 +43,23 @@ fn round3_legacy_linked_and_backup_profiles_keep_references_and_repair() {
     repoint_other_claude_configs(current.to_str().unwrap(), &mut outcome);
     assert_eq!(outcome.extra_claude_repointed.len(), 3);
     for path in &paths {
-        let value: serde_json::Value = serde_json::from_str(&read_config_file(path).unwrap()).unwrap();
-        assert_eq!(value["mcpServers"]["toolport"]["command"], current.to_str().unwrap());
-        assert_eq!(value["mcpServers"]["toolport"]["env"]["TOOLPORT_PROFILE"], "work");
+        let value: serde_json::Value =
+            serde_json::from_str(&read_config_file(path).unwrap()).unwrap();
+        assert_eq!(
+            value["mcpServers"]["toolport"]["command"],
+            current.to_str().unwrap()
+        );
+        assert_eq!(
+            value["mcpServers"]["toolport"]["env"]["TOOLPORT_PROFILE"],
+            "work"
+        );
         assert!(value["mcpServers"].get("my-toolport").is_none());
     }
     std::fs::write(&paths[0], "{broken").unwrap();
     assert!(referenced_gateway_paths().is_none());
-    assert!(detect_clients().iter().any(|row| row.config_path == paths[0].to_string_lossy() && row.error.is_some()));
+    assert!(detect_clients()
+        .iter()
+        .any(|row| row.config_path == paths[0].to_string_lossy() && row.error.is_some()));
 }
 
 #[test]
@@ -68,7 +82,10 @@ fn round3_main_client_recognizes_repoints_and_deduplicates_custom_gateway_names(
     assert_eq!(outcome.repointed.len(), 1);
     let value: serde_json::Value = serde_json::from_str(&read_config_file(&path).unwrap()).unwrap();
     assert_eq!(value["mcpServers"].as_object().unwrap().len(), 2);
-    assert_eq!(value["mcpServers"]["toolport"]["command"], current.to_str().unwrap());
+    assert_eq!(
+        value["mcpServers"]["toolport"]["command"],
+        current.to_str().unwrap()
+    );
     uninstall_gateway("cursor").unwrap();
     assert!(!read_client(&def).gateway_installed);
 }
@@ -84,10 +101,17 @@ fn round3_missing_automatic_config_and_folder_are_absent_not_errors() {
         std::fs::create_dir(&folder).unwrap();
         let path = folder.join(".claude.json");
         std::fs::write(&path, "{}").unwrap();
-        detect_clients_for_display_in(machine_defs(true), crate::registry::Registry::default(), None).unwrap();
+        detect_clients_for_display_in(
+            machine_defs(true),
+            crate::registry::Registry::default(),
+            None,
+        )
+        .unwrap();
         let def = find_def("claude-code@claude2").unwrap();
         std::fs::remove_file(&path).unwrap();
-        if remove_folder { std::fs::remove_dir(&folder).unwrap(); }
+        if remove_folder {
+            std::fs::remove_dir(&folder).unwrap();
+        }
         let row = read_client(&def);
         assert!(row.error.is_none(), "{:?}", row.error);
         assert!(!row.config_exists);
@@ -107,7 +131,11 @@ fn round3_unreadable_store_blocks_pruning_and_bulk_disconnect_reports_error() {
     crate::registry::save(&crate::registry::Registry::default()).unwrap();
     let folder = data.dir.join("external");
     std::fs::create_dir(&folder).unwrap();
-    std::fs::write(folder.join(".claude.json"), r#"{"mcpServers":{"toolport":{"command":"/old/toolport-gateway"}}}"#).unwrap();
+    std::fs::write(
+        folder.join(".claude.json"),
+        r#"{"mcpServers":{"toolport":{"command":"/old/toolport-gateway"}}}"#,
+    )
+    .unwrap();
     add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
     std::fs::write(data.dir.join("client-locations.json"), "{broken").unwrap();
     assert!(referenced_gateway_paths().is_none());
@@ -162,22 +190,46 @@ fn round3_configured_connected_location_reclaims_main_identity() {
     let folder = data.dir.join(".claude2");
     std::fs::create_dir(&folder).unwrap();
     std::fs::write(folder.join(".claude.json"), "{}").unwrap();
-    let location = machine_defs(true).into_iter().find(|def| def.client_id() == "claude-code@claude2").unwrap();
+    let location = machine_defs(true)
+        .into_iter()
+        .find(|def| def.client_id() == "claude-code@claude2")
+        .unwrap();
     locations::remember(location.location.as_ref().unwrap()).unwrap();
     let current = data.dir.join("toolport-gateway");
     std::fs::write(&current, "fixture").unwrap();
     let mut gateway = entry(&current);
-    gateway.env.push(crate::registry::EnvVar { key: crate::brand::CLIENT_ID.into(), value: Some("claude-code@claude2".into()), secret:false, unknown_fields:Default::default() });
+    gateway.env.push(crate::registry::EnvVar {
+        key: crate::brand::CLIENT_ID.into(),
+        value: Some("claude-code@claude2".into()),
+        secret: false,
+        unknown_fields: Default::default(),
+    });
     install_or_remove("claude-code@claude2", Some(&gateway)).unwrap();
     let _override = EnvRestore::set("CLAUDE_CONFIG_DIR", &folder);
-    let rows = detect_clients_for_display_in(machine_defs(true), crate::registry::Registry::default(), Some(current.clone())).unwrap();
+    let rows = detect_clients_for_display_in(
+        machine_defs(true),
+        crate::registry::Registry::default(),
+        Some(current.clone()),
+    )
+    .unwrap();
     let main = rows.iter().find(|row| row.id == "claude-code").unwrap();
     assert!(main.error.is_none());
-    let outcome = repoint_stale_gateways_in(current.to_str().unwrap(), vec![main.clone()], &HashMap::new());
+    let outcome = repoint_stale_gateways_in(
+        current.to_str().unwrap(),
+        vec![main.clone()],
+        &HashMap::new(),
+    );
     assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
-    let value: serde_json::Value = serde_json::from_str(&read_config_file(&folder.join(".claude.json")).unwrap()).unwrap();
-    assert_eq!(value["mcpServers"]["toolport"]["env"][crate::brand::CLIENT_ID], "claude-code");
-    assert_eq!(value["mcpServers"]["toolport"]["env"][crate::brand::ATTRIBUTION_ID], "claude-code");
+    let value: serde_json::Value =
+        serde_json::from_str(&read_config_file(&folder.join(".claude.json")).unwrap()).unwrap();
+    assert_eq!(
+        value["mcpServers"]["toolport"]["env"][crate::brand::CLIENT_ID],
+        "claude-code"
+    );
+    assert_eq!(
+        value["mcpServers"]["toolport"]["env"][crate::brand::ATTRIBUTION_ID],
+        "claude-code"
+    );
     assert!(!rows.iter().any(|row| row.id == "claude-code@claude2"));
 }
 
@@ -237,10 +289,20 @@ fn round3_windows_long_native_path_falls_back_when_canonicalization_fails() {
     let data = crate::registry::DataDirTestEnv::new("round3-windows-long-fallback");
     let _env_lock = env_test_lock();
     let _client_env = isolated_client_env(&data.dir);
-    let path = data.dir.join("x".repeat(200)).join("y".repeat(100)).join("config.json");
+    let path = data
+        .dir
+        .join("x".repeat(200))
+        .join("y".repeat(100))
+        .join("config.json");
     crate::registry::client_file::with_native_canonicalize_failure(|| {
         let native = crate::registry::client_file::native_path(&path).unwrap();
-        assert_eq!(native, path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>());
+        assert_eq!(
+            native,
+            path.as_os_str()
+                .encode_wide()
+                .chain(Some(0))
+                .collect::<Vec<_>>()
+        );
     });
 }
 
@@ -261,14 +323,25 @@ fn round3_location_disconnect_removes_both_reserved_names_after_adoption() {
     let id = add_client_location("claude-code", folder.to_str().unwrap()).unwrap();
     let gateway = data.dir.join("toolport-gateway");
     std::fs::write(&gateway, "fixture").unwrap();
-    let rows = detect_clients_for_display_in(vec![find_def(&id).unwrap()], crate::registry::Registry::default(), Some(gateway)).unwrap();
+    let rows = detect_clients_for_display_in(
+        vec![find_def(&id).unwrap()],
+        crate::registry::Registry::default(),
+        Some(gateway),
+    )
+    .unwrap();
     assert!(rows[0].error.is_none());
     let value: serde_json::Value = serde_json::from_str(&read_config_file(&path).unwrap()).unwrap();
     assert_eq!(value["mcpServers"].as_object().unwrap().len(), 2);
-    assert_eq!(value["mcpServers"]["foreign"], original["mcpServers"]["foreign"]);
+    assert_eq!(
+        value["mcpServers"]["foreign"],
+        original["mcpServers"]["foreign"]
+    );
     uninstall_gateway(&id).unwrap();
     assert!(!read_client(&find_def(&id).unwrap()).gateway_installed);
     let value: serde_json::Value = serde_json::from_str(&read_config_file(&path).unwrap()).unwrap();
     assert_eq!(value["mcpServers"].as_object().unwrap().len(), 1);
-    assert_eq!(value["mcpServers"]["foreign"], original["mcpServers"]["foreign"]);
+    assert_eq!(
+        value["mcpServers"]["foreign"],
+        original["mcpServers"]["foreign"]
+    );
 }

@@ -650,15 +650,27 @@ fn default_new_values_portable(before: &Registry, reg: &mut Registry) {
         let old = before.servers.iter().find(|s| s.id == server.id);
         let had_env = |key: &str| old.is_some_and(|o| o.env.iter().any(|e| e.key == key));
         let had_input = |key: &str| {
-            old.is_some_and(|o| o.launch.iter().flat_map(|l| &l.inputs).any(|i| i.key == key))
+            old.is_some_and(|o| {
+                o.launch
+                    .iter()
+                    .flat_map(|l| &l.inputs)
+                    .any(|i| i.key == key)
+            })
         };
-        for e in server.env.iter_mut().filter(|e| !e.secret && !had_env(&e.key)) {
-            if e.unknown_fields.contains_key("portable") || e.unknown_fields.contains_key("source") {
+        for e in server
+            .env
+            .iter_mut()
+            .filter(|e| !e.secret && !had_env(&e.key))
+        {
+            if e.unknown_fields.contains_key("portable") || e.unknown_fields.contains_key("source")
+            {
                 continue;
             }
             let value = e.value.as_deref().unwrap_or("");
-            e.unknown_fields
-                .insert("portable".into(), json!(!looks_machine_local(&e.key, value)));
+            e.unknown_fields.insert(
+                "portable".into(),
+                json!(!looks_machine_local(&e.key, value)),
+            );
         }
         for i in server
             .launch
@@ -666,12 +678,15 @@ fn default_new_values_portable(before: &Registry, reg: &mut Registry) {
             .flat_map(|l| &mut l.inputs)
             .filter(|i| !i.secret && !had_input(&i.key))
         {
-            if i.unknown_fields.contains_key("portable") || i.unknown_fields.contains_key("source") {
+            if i.unknown_fields.contains_key("portable") || i.unknown_fields.contains_key("source")
+            {
                 continue;
             }
             let value = i.value.as_deref().unwrap_or("");
-            i.unknown_fields
-                .insert("portable".into(), json!(!looks_machine_local(&i.key, value)));
+            i.unknown_fields.insert(
+                "portable".into(),
+                json!(!looks_machine_local(&i.key, value)),
+            );
         }
     }
 }
@@ -2447,13 +2462,19 @@ mod tests {
         let mut registry = machine();
         let before = definitions(&registry);
         let id = crate::clients::add_client_location("codex", folder.to_str().unwrap()).unwrap();
-        registry.client_scopes.insert(id.clone(), "private-access".into());
+        registry
+            .client_scopes
+            .insert(id.clone(), "private-access".into());
         registry.client_discovery.insert(id, "lazy".into());
         assert_eq!(definitions(&registry), before);
         let export = serde_json::to_string(&definitions(&registry)).unwrap();
         assert!(!export.contains(folder.to_str().unwrap()));
         assert!(!export.contains("private-access"));
-        assert!(!serde_json::to_value(&registry).unwrap().as_object().unwrap().contains_key("clientLocations"));
+        assert!(!serde_json::to_value(&registry)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("clientLocations"));
     }
 
     #[test]
@@ -2468,7 +2489,10 @@ mod tests {
                 .map(str::to_string)
                 .collect()
         };
-        assert_eq!(list("const RISKY_SYNC_ENV_PREFIXES = ["), RISKY_SYNC_ENV_PREFIXES);
+        assert_eq!(
+            list("const RISKY_SYNC_ENV_PREFIXES = ["),
+            RISKY_SYNC_ENV_PREFIXES
+        );
         assert_eq!(list("const RISKY_SYNC_ENV = new Set(["), RISKY_SYNC_ENV);
     }
 
@@ -2800,7 +2824,8 @@ mod tests {
         assert!(log.contains("sync_change_refused"));
         assert!(!log.contains("DO_NOT_LOG_THIS"));
         crate::telemetry::flush();
-        let calls = std::fs::read_to_string(crate::audit::audit_path().unwrap()).unwrap_or_default();
+        let calls =
+            std::fs::read_to_string(crate::audit::audit_path().unwrap()).unwrap_or_default();
         assert!(!calls.contains("sync"));
         for key in [
             "JAVA_TOOL_OPTIONS",
@@ -3446,8 +3471,12 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert!(keep_local(r.servers.iter().find(|s| s.id == "fresh").unwrap()));
-        assert!(!keep_local(r.servers.iter().find(|s| s.id != "fresh").unwrap()));
+        assert!(keep_local(
+            r.servers.iter().find(|s| s.id == "fresh").unwrap()
+        ));
+        assert!(!keep_local(
+            r.servers.iter().find(|s| s.id != "fresh").unwrap()
+        ));
         assert!(!state(&r).unwrap().pending.contains_key("fresh"));
         set_new_servers_local_only(false).unwrap();
         let (r, ()) = crate::registry::update(|r| {
@@ -3455,7 +3484,9 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert!(!keep_local(r.servers.iter().find(|s| s.id == "later").unwrap()));
+        assert!(!keep_local(
+            r.servers.iter().find(|s| s.id == "later").unwrap()
+        ));
         assert!(state(&r).unwrap().pending.contains_key("later"));
     }
     #[test]
@@ -3842,14 +3873,19 @@ mod tests {
     }
     #[test]
     fn review_names_only_the_arguments_that_changed() {
-        let mut server = local(json!({"id":"a","name":"a","transport":"stdio","command":"npx","args":["--mode","fast","--verbose"],"env":[]}));
+        let mut server = local(
+            json!({"id":"a","name":"a","transport":"stdio","command":"npx","args":["--mode","fast","--verbose"],"env":[]}),
+        );
         let approved = execution_review_fields(&server);
         server
             .unknown_fields
             .insert("syncExecutionReview".into(), json!(approved));
         server.args[1] = "slow".into();
         let text = execution_review_lines(&server).join("\n");
-        assert!(text.contains("Arguments changed:\n  2. slow (was fast)"), "{text}");
+        assert!(
+            text.contains("Arguments changed:\n  2. slow (was fast)"),
+            "{text}"
+        );
         assert!(!text.contains("--verbose"), "{text}");
         assert!(!text.contains("1. --mode"), "{text}");
     }
@@ -3873,7 +3909,14 @@ mod tests {
         }
         record(&before, &mut r).unwrap();
         let flag = |key: &str| {
-            r.servers[0].env.iter().find(|e| e.key == key).unwrap().unknown_fields.get("portable").cloned()
+            r.servers[0]
+                .env
+                .iter()
+                .find(|e| e.key == key)
+                .unwrap()
+                .unknown_fields
+                .get("portable")
+                .cloned()
         };
         assert_eq!(flag("NOTES_MODE"), Some(json!(true)));
         assert_eq!(flag("NOTES_DIR"), Some(json!(false)));

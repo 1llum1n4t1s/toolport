@@ -29,21 +29,42 @@ struct Snapshot {
 
 /// Read only valid writer provenance when a forgotten location has no store row.
 pub(super) fn purge_backup_config_paths(dir: &Path) -> Vec<String> {
-    std::fs::read_dir(dir).into_iter().flatten().filter_map(Result::ok).filter_map(|entry| {
-        let path = entry.path();
-        let name = path.file_name()?.to_str()?;
-        let hash = name.strip_prefix("original-")?.strip_suffix(".json")?;
-        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) { return None; }
-        let metadata = std::fs::symlink_metadata(&path).ok()?;
-        if !metadata.is_file() || crate::purge::is_link(&metadata) { return None; }
-        let record: Snapshot = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
-        if record.version != 1 || !matches!(record.format, Format::JsonMcpServers)
-            || crate::registry::sha256_hex(&record.config_path) != hash
-            || record.original.as_deref().map(crate::registry::sha256_hex) != record.original_hash
-            || record.last_written.as_deref().map(crate::registry::sha256_hex) != record.last_written_hash
-        { return None; }
-        Some(record.config_path)
-    }).collect()
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?;
+            let hash = name.strip_prefix("original-")?.strip_suffix(".json")?;
+            if hash.len() != 64
+                || !hash
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return None;
+            }
+            let metadata = std::fs::symlink_metadata(&path).ok()?;
+            if !metadata.is_file() || crate::purge::is_link(&metadata) {
+                return None;
+            }
+            let record: Snapshot = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+            if record.version != 1
+                || !matches!(record.format, Format::JsonMcpServers)
+                || crate::registry::sha256_hex(&record.config_path) != hash
+                || record.original.as_deref().map(crate::registry::sha256_hex)
+                    != record.original_hash
+                || record
+                    .last_written
+                    .as_deref()
+                    .map(crate::registry::sha256_hex)
+                    != record.last_written_hash
+            {
+                return None;
+            }
+            Some(record.config_path)
+        })
+        .collect()
 }
 
 pub(super) fn record_path(client_id: &str, path: &Path) -> Result<PathBuf, String> {
@@ -337,29 +358,42 @@ fn original_gateways(
     // An existing legacy move record proves the first captured gateway was
     // already installed by Toolport. Unowned customized gateway definitions
     // are part of the original and must round-trip just like other entries.
-    let mut names = if client_id.contains('@') || moved::missing_names(client_id, format, path)?.is_empty() {
-        Vec::new()
-    } else {
-        gateway_names(format, &mutation::value(format, text)?)
-    };
+    let mut names =
+        if client_id.contains('@') || moved::missing_names(client_id, format, path)?.is_empty() {
+            Vec::new()
+        } else {
+            gateway_names(format, &mutation::value(format, text)?)
+        };
     // Main adapters and automatic v1 profiles retain binary ownership. New
     // locations only adopt reserved names. Disconnect must not resurrect a gateway
     // from the initial snapshot after repair renamed or deduplicated it.
     let registry = crate::registry_controller::registry_for_disconnect()?;
-    let servers = text.map(|text| parse_client_content(format, text)).transpose()?.unwrap_or_default();
-    let main_adapter = find_def(client_id).is_some() && locations::legacy_gateway_ownership(client_id)
-        && entry_state_for(gateway_entry_for_client(client_id, &servers), registry.client_managed_entries.get(client_id)) == GatewayEntryState::Managed;
+    let servers = text
+        .map(|text| parse_client_content(format, text))
+        .transpose()?
+        .unwrap_or_default();
+    let main_adapter = find_def(client_id).is_some()
+        && locations::legacy_gateway_ownership(client_id)
+        && entry_state_for(
+            gateway_entry_for_client(client_id, &servers),
+            registry.client_managed_entries.get(client_id),
+        ) == GatewayEntryState::Managed;
     if client_id.contains('@') || main_adapter {
         if let Some(text) = text {
             for server in parse_client_content(format, text)? {
-                if (main_adapter || gateway_identity_matches(&server.name, &server.name, None)) && command_is_gateway_binary(server.command.as_deref().unwrap_or(""))
-                    && !names.contains(&server.name) { names.push(server.name); }
+                if (main_adapter || gateway_identity_matches(&server.name, &server.name, None))
+                    && command_is_gateway_binary(server.command.as_deref().unwrap_or(""))
+                    && !names.contains(&server.name)
+                {
+                    names.push(server.name);
+                }
             }
         }
     }
     if let (Some(record), Some(text)) = (registry.client_managed_entries.get(client_id), text) {
         for server in parse_client_content(format, text)? {
-            if (locations::legacy_gateway_ownership(client_id) || gateway_identity_matches(&server.name, &server.name, None))
+            if (locations::legacy_gateway_ownership(client_id)
+                || gateway_identity_matches(&server.name, &server.name, None))
                 && detected_is_gateway(&server)
                 && managed_matches_detected(&server, record)
                 && !names.contains(&server.name)

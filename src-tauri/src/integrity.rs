@@ -414,7 +414,12 @@ fn pin_fingerprint(tool: &Value, parts: &DefinitionParts) -> String {
     let mut h = Sha256::new();
     h.update(name.as_bytes());
     h.update([0u8]);
-    for part in [&parts.description, &parts.input_schema, &parts.output_schema, &parts.annotations] {
+    for part in [
+        &parts.description,
+        &parts.input_schema,
+        &parts.output_schema,
+        &parts.annotations,
+    ] {
         h.update(part.as_bytes());
         h.update([0u8]);
     }
@@ -2095,7 +2100,10 @@ fn active_definition_review_names(profile: Option<&str>) -> BTreeSet<String> {
 
 /// Explicit definition reviews survive every safety level, including Off.
 pub fn review_quarantined(profile: Option<&str>) -> Result<BTreeSet<String>, String> {
-    off_review_read(profile, load_quarantine(profile).map(|q| review_quarantine_set(&q)))
+    off_review_read(
+        profile,
+        load_quarantine(profile).map(|q| review_quarantine_set(&q)),
+    )
 }
 
 /// Watcher enforcement also retains retired review names in case they return.
@@ -2123,7 +2131,8 @@ pub fn pending_definition_review(profile: Option<&str>) -> bool {
 
 // Off ignores ordinary store errors, but an explicit pending review fails closed.
 fn off_review_read(
-    profile: Option<&str>, read: Result<BTreeSet<String>, String>,
+    profile: Option<&str>,
+    read: Result<BTreeSet<String>, String>,
 ) -> Result<BTreeSet<String>, String> {
     match read {
         Err(_) => Ok(active_definition_review_names(profile)),
@@ -2475,10 +2484,23 @@ fn all_quarantined_inner(summary: bool) -> Result<Vec<Value>, String> {
             if summary {
                 let has_definition = record["definition"].is_object();
                 if let Some(object) = record.as_object_mut() {
-                    object.retain(|key, _| matches!(key.as_str(),
-                        "server" | "tool" | "reason" | "ts" | "detail" | "change" |
-                        "severity" | "definition_fp" | "prev_ro" | "new_ro" | "prev_dh" | "new_dh"
-                    ));
+                    object.retain(|key, _| {
+                        matches!(
+                            key.as_str(),
+                            "server"
+                                | "tool"
+                                | "reason"
+                                | "ts"
+                                | "detail"
+                                | "change"
+                                | "severity"
+                                | "definition_fp"
+                                | "prev_ro"
+                                | "new_ro"
+                                | "prev_dh"
+                                | "new_dh"
+                        )
+                    });
                 }
                 record["has_definition"] = json!(has_definition);
                 // Release operates on the store key, including older unqualified records.
@@ -2504,7 +2526,8 @@ pub fn all_quarantined_count() -> Result<usize, String> {
 
 fn with_quarantined_summaries<T>(read: impl FnOnce(&[Value]) -> T) -> Result<T, String> {
     let stamp = quarantine_summary_stamp();
-    let mut cache = QUARANTINE_SUMMARY_CACHE.lock()
+    let mut cache = QUARANTINE_SUMMARY_CACHE
+        .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let (Some(stamp), Some(cached)) = (stamp.as_ref(), cache.as_ref()) {
         if stamp == &cached.stamp {
@@ -2524,17 +2547,29 @@ fn with_quarantined_summaries<T>(read: impl FnOnce(&[Value]) -> T) -> Result<T, 
 /// Fetch only the definition belonging to the displayed finding. A changed or
 /// removed record cannot substitute a different definition in an open review.
 pub fn quarantine_definition(
-    profile: Option<&str>, tool: &str, expected_id: &str,
+    profile: Option<&str>,
+    tool: &str,
+    expected_id: &str,
 ) -> Result<Value, String> {
     let path = quarantine_path(profile).ok_or("Could not resolve the quarantine store")?;
     with_store_lock(&path, || {
         let store = load_quarantine(profile)?;
-        let record = store.get(tool).ok_or("This finding is no longer blocked. Refresh the list.")?;
+        let record = store
+            .get(tool)
+            .ok_or("This finding is no longer blocked. Refresh the list.")?;
         if quarantine_record_id(record) != expected_id {
-            return Err("The blocked finding changed. Refresh and review the latest definition.".into());
+            return Err(
+                "The blocked finding changed. Refresh and review the latest definition.".into(),
+            );
         }
-        record.get("definition").filter(|definition| definition.is_object()).cloned()
-            .ok_or_else(|| "This finding has no saved definition. Approving captures it for one more review.".into())
+        record
+            .get("definition")
+            .filter(|definition| definition.is_object())
+            .cloned()
+            .ok_or_else(|| {
+                "This finding has no saved definition. Approving captures it for one more review."
+                    .into()
+            })
     })
 }
 
@@ -2556,7 +2591,11 @@ pub fn release(profile: Option<&str>, tool: &str) -> Result<bool, String> {
 }
 
 /// Release only the record displayed by the caller.
-pub fn release_record(profile: Option<&str>, tool: &str, expected_id: &str) -> Result<bool, String> {
+pub fn release_record(
+    profile: Option<&str>,
+    tool: &str,
+    expected_id: &str,
+) -> Result<bool, String> {
     let path = quarantine_path(profile).ok_or("Could not resolve the quarantine store")?;
     with_store_lock(&path, || {
         let quarantine = load_quarantine(profile)?;
@@ -2590,11 +2629,14 @@ pub fn quarantine_record_id(record: &Value) -> String {
             self.0.update(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
     let mut writer = HashWriter(Sha256::new());
     if let Some(object) = record.as_object() {
-        let stored: BTreeMap<_, _> = object.iter()
+        let stored: BTreeMap<_, _> = object
+            .iter()
             .filter(|(key, _)| !matches!(key.as_str(), "profile" | "record_id"))
             .collect();
         serde_json::to_writer(&mut writer, &stored).expect("JSON values serialize");
@@ -2704,7 +2746,13 @@ fn release_pending_pin(tool: &str, record: &Value) -> Result<Option<Pin>, String
     }
 }
 
-fn apply_release_pin(pins: &mut Pins, tool: &str, pending: Option<Pin>, reviewed: bool, stamp: u64) {
+fn apply_release_pin(
+    pins: &mut Pins,
+    tool: &str,
+    pending: Option<Pin>,
+    reviewed: bool,
+    stamp: u64,
+) {
     if let Some(pending) = pending {
         let pin = merge_pending_pin(pins.get(tool), pending, stamp);
         pins.insert(tool.to_string(), pin);
@@ -2850,7 +2898,11 @@ fn release_all_inner_with_records(
     if released > 0 {
         save_quarantine(profile, &remaining)?;
     }
-    Ok(ReleaseAllOutcome { released, skipped, changed })
+    Ok(ReleaseAllOutcome {
+        released,
+        skipped,
+        changed,
+    })
 }
 
 /// From `check`'s drift `events` and the `current` tool list, quarantine the HIGH-RISK
@@ -3051,7 +3103,9 @@ fn apply_quarantine_inner_with(
             // time by Block/Confirm/Require-approval if those are on.
             _ => continue,
         };
-        if q.get(tool).is_none_or(|record| quarantine_priority(e) > quarantine_priority(record)) {
+        if q.get(tool)
+            .is_none_or(|record| quarantine_priority(e) > quarantine_priority(record))
+        {
             let server = e.get("server").and_then(Value::as_str).unwrap_or("?");
             let (definition, source) = current
                 .pin_values()
@@ -3072,9 +3126,10 @@ fn apply_quarantine_inner_with(
                 "pending_pin": pending,
                 "definition": definition,
             });
-            if events.iter().any(|event| {
-                event["tool"] == e["tool"] && event["review_required"] == true
-            }) {
+            if events
+                .iter()
+                .any(|event| event["tool"] == e["tool"] && event["review_required"] == true)
+            {
                 rec["review_required"] = json!(true);
             }
             // Concrete annotation prior→new (SOU-305). Optional: older events / poison
@@ -4650,7 +4705,8 @@ fn quarantine_summary_stamp() -> Option<ReviewStamp> {
                 files.insert(path.clone(), review_file_stamp(&path, &metadata)?);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                missing_quarantine_store((!profile.is_empty()).then_some(profile.as_str()), &path).ok()?;
+                missing_quarantine_store((!profile.is_empty()).then_some(profile.as_str()), &path)
+                    .ok()?;
             }
             Err(_) => return None,
         }
@@ -4664,7 +4720,9 @@ fn review_file_stamp(path: &Path, metadata: &std::fs::Metadata) -> Option<Review
     #[cfg(windows)]
     let identity = {
         use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
         let file = std::fs::File::open(path).ok()?;
         let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
         // The file handle and writable output buffer remain live for the call.
@@ -4672,7 +4730,11 @@ fn review_file_stamp(path: &Path, metadata: &std::fs::Metadata) -> Option<Review
             return None;
         }
         let info = unsafe { info.assume_init() };
-        (info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow)
+        (
+            info.dwVolumeSerialNumber,
+            info.nFileIndexHigh,
+            info.nFileIndexLow,
+        )
     };
     #[cfg(not(windows))]
     let _ = path;
@@ -4680,7 +4742,12 @@ fn review_file_stamp(path: &Path, metadata: &std::fs::Metadata) -> Option<Review
         modified: metadata.modified().ok()?,
         len: metadata.len(),
         #[cfg(unix)]
-        identity: (metadata.dev(), metadata.ino(), metadata.ctime(), metadata.ctime_nsec()),
+        identity: (
+            metadata.dev(),
+            metadata.ino(),
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+        ),
         #[cfg(windows)]
         identity,
         #[cfg(not(any(unix, windows)))]
@@ -5317,13 +5384,15 @@ mod tests {
             (Some("work"), Some("work")),
             (Some("work"), None),
         ] {
-            for (event_fp, record_fp) in [(None, None), (Some("v2:new"), None), (None, Some("v2:new"))]
+            for (event_fp, record_fp) in
+                [(None, None), (Some("v2:new"), None), (None, Some("v2:new"))]
             {
                 let mut record = json!({"tool":"srv__update", "change":"changed"});
                 if let Some(fp) = record_fp {
                     record["definition_fp"] = json!(fp);
                 }
-                save_quarantine(profile, &BTreeMap::from([("srv__update".into(), record)])).unwrap();
+                save_quarantine(profile, &BTreeMap::from([("srv__update".into(), record)]))
+                    .unwrap();
                 let mut event = json!({"type":"tool_drift", "tool":"srv__update", "server":"srv", "change":"changed", "ts":1});
                 if let Some(profile) = event_profile {
                     event["profile"] = json!(profile);
@@ -5478,7 +5547,10 @@ mod tests {
         {
             use std::os::unix::ffi::OsStringExt;
             let name = std::ffi::OsString::from_vec(vec![0xff]);
-            assert!(!review_input_name(&name), "invalid UTF-8 is unrelated input");
+            assert!(
+                !review_input_name(&name),
+                "invalid UTF-8 is unrelated input"
+            );
             // macOS filesystems reject this name with EILSEQ. Exercise the
             // directory-entry path on Linux and the same production filter on Unix.
             #[cfg(target_os = "linux")]
@@ -6119,22 +6191,35 @@ mod tests {
                 ("srv__same".into(), quarantine_record_id(&unchanged)),
             ]);
             let replaced = json!({"tool":"srv__old", "change":"changed", "ts":2});
-            save_quarantine(profile, &BTreeMap::from([
-                ("srv__old".into(), replaced.clone()),
-                ("srv__same".into(), unchanged),
-                ("srv__new".into(), json!({"tool":"srv__new", "change":"changed", "ts":2})),
-            ])).unwrap();
+            save_quarantine(
+                profile,
+                &BTreeMap::from([
+                    ("srv__old".into(), replaced.clone()),
+                    ("srv__same".into(), unchanged),
+                    (
+                        "srv__new".into(),
+                        json!({"tool":"srv__new", "change":"changed", "ts":2}),
+                    ),
+                ]),
+            )
+            .unwrap();
             assert!(release_record(profile, "srv__old", &expected["srv__old"]).is_err());
             let outcome = release_all_records(profile, &expected).unwrap();
             assert_eq!(outcome.released, 1);
             assert_eq!(outcome.changed, vec!["srv__new", "srv__old"]);
             assert!(outcome.skipped.is_empty());
             assert_eq!(load_quarantine(profile).unwrap()["srv__old"], replaced);
-            assert_eq!(quarantined(profile).unwrap(), BTreeSet::from([
-                "srv__new".into(), "srv__old".into(),
-            ]));
+            assert_eq!(
+                quarantined(profile).unwrap(),
+                BTreeSet::from(["srv__new".into(), "srv__old".into(),])
+            );
             // Empty bound lists must never fall back to the unbound bulk form.
-            assert_eq!(release_all_records(profile, &BTreeMap::new()).unwrap().released, 0);
+            assert_eq!(
+                release_all_records(profile, &BTreeMap::new())
+                    .unwrap()
+                    .released,
+                0
+            );
         }
     }
 
@@ -6145,9 +6230,14 @@ mod tests {
         for profile in [None, Some("work")] {
             for bulk in [false, true] {
                 save_pins(profile, &Pins::new()).unwrap();
-                save_quarantine(profile, &BTreeMap::from([(
-                    "srv__wipe".into(), json!({"tool":"srv__wipe", "change":"changed"}),
-                )])).unwrap();
+                save_quarantine(
+                    profile,
+                    &BTreeMap::from([(
+                        "srv__wipe".into(),
+                        json!({"tool":"srv__wipe", "change":"changed"}),
+                    )]),
+                )
+                .unwrap();
                 if bulk {
                     assert_eq!(release_all(profile).unwrap().released, 1);
                 } else {
@@ -6156,7 +6246,8 @@ mod tests {
                 let tools = vec![destructive_tool("srv__wipe", "Unseen definition.")];
                 let events = check_staged(profile, &tools).unwrap();
                 assert!(events.iter().any(|e| e["tool"] == "srv__wipe"
-                    && e["change"] == "changed" && e["severity"] == "high"));
+                    && e["change"] == "changed"
+                    && e["severity"] == "high"));
                 apply_quarantine(profile, &tools, &events).unwrap();
                 accept_quarantined_pins(profile).unwrap();
                 assert!(quarantined(profile).unwrap().contains("srv__wipe"));
@@ -6188,16 +6279,30 @@ mod tests {
         let summaries = all_quarantined_summaries().unwrap();
         assert_eq!(full.len(), summaries.len());
         for (record, summary) in full.iter().zip(&summaries) {
-            assert!(summary.get("definition").is_none(), "list IPC must not include full schemas per row");
+            assert!(
+                summary.get("definition").is_none(),
+                "list IPC must not include full schemas per row"
+            );
             assert!(summary.get("pending_pin").is_none());
             assert_eq!(summary["has_definition"], true);
             assert_eq!(summary["record_id"], record["record_id"]);
             let mut stored = record.clone();
             stored.as_object_mut().unwrap().remove("record_id");
             stored.as_object_mut().unwrap().remove("profile");
-            assert_eq!(record["record_id"], format!("{:x}", Sha256::digest(stored.to_string().as_bytes())));
+            assert_eq!(
+                record["record_id"],
+                format!("{:x}", Sha256::digest(stored.to_string().as_bytes()))
+            );
             let profile = summary["profile"].as_str().unwrap();
-            assert_eq!(quarantine_definition((!profile.is_empty()).then_some(profile), "srv__wipe", summary["record_id"].as_str().unwrap()).unwrap(), tools[0]);
+            assert_eq!(
+                quarantine_definition(
+                    (!profile.is_empty()).then_some(profile),
+                    "srv__wipe",
+                    summary["record_id"].as_str().unwrap()
+                )
+                .unwrap(),
+                tools[0]
+            );
         }
     }
 
@@ -6222,18 +6327,35 @@ mod tests {
         std::fs::write(&path, "").unwrap();
         assert!(all_quarantined_summaries().is_err());
         std::fs::write(&path, "{}").unwrap();
-        assert!(!all_quarantined_summaries().unwrap().iter().any(|record| record["profile"] == ""));
+        assert!(!all_quarantined_summaries()
+            .unwrap()
+            .iter()
+            .any(|record| record["profile"] == ""));
     }
 
     #[test]
     fn quarantine_summary_cache_ignores_security_appends() {
         let _lock = crate::registry::data_dir_test_lock();
         let data = TestDataDir::new("quarantine-summary-security-append");
-        save_quarantine(None, &BTreeMap::from([("srv__read".into(), json!({"tool":"srv__read", "change":"changed", "ts":1}))])).unwrap();
+        save_quarantine(
+            None,
+            &BTreeMap::from([(
+                "srv__read".into(),
+                json!({"tool":"srv__read", "change":"changed", "ts":1}),
+            )]),
+        )
+        .unwrap();
         let first = all_quarantined_summaries().unwrap();
         std::fs::write(data.path.join("security.jsonl"), "{}\n").unwrap();
         let stamp = quarantine_summary_stamp().unwrap();
-        assert!(QUARANTINE_SUMMARY_CACHE.lock().unwrap().as_ref().is_some_and(|cache| cache.stamp == stamp), "security append invalidated the quarantine summary cache");
+        assert!(
+            QUARANTINE_SUMMARY_CACHE
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|cache| cache.stamp == stamp),
+            "security append invalidated the quarantine summary cache"
+        );
         assert_eq!(all_quarantined_summaries().unwrap(), first);
         assert_eq!(all_quarantined_count().unwrap(), first.len());
         // Scope discovery and missing-store guards still run on a warm cache.
@@ -6251,9 +6373,21 @@ mod tests {
         let old = json!({"tool":"srv__wipe", "change":"changed", "definition":{"name":"old"}});
         let id = quarantine_record_id(&old);
         save_quarantine(None, &BTreeMap::from([("srv__wipe".into(), old)])).unwrap();
-        assert_eq!(quarantine_definition(None, "srv__wipe", &id).unwrap()["name"], "old");
-        save_quarantine(None, &BTreeMap::from([("srv__wipe".into(), json!({"tool":"srv__wipe", "change":"poison", "definition":{"name":"new"}}))])).unwrap();
-        assert!(quarantine_definition(None, "srv__wipe", &id).unwrap_err().contains("changed"));
+        assert_eq!(
+            quarantine_definition(None, "srv__wipe", &id).unwrap()["name"],
+            "old"
+        );
+        save_quarantine(
+            None,
+            &BTreeMap::from([(
+                "srv__wipe".into(),
+                json!({"tool":"srv__wipe", "change":"poison", "definition":{"name":"new"}}),
+            )]),
+        )
+        .unwrap();
+        assert!(quarantine_definition(None, "srv__wipe", &id)
+            .unwrap_err()
+            .contains("changed"));
         assert!(quarantined(None).unwrap().contains("srv__wipe"));
     }
 
@@ -6262,26 +6396,39 @@ mod tests {
         let _lock = crate::registry::data_dir_test_lock();
         let _data = TestDataDir::new("quarantine-reason-severity");
         let current = vec![destructive_tool("srv__wipe", "Changed definition.")];
-        let poison = json!({"tool":"srv__wipe", "server":"srv", "change":"poison", "severity":"high"});
+        let poison =
+            json!({"tool":"srv__wipe", "server":"srv", "change":"poison", "severity":"high"});
         for review in [false, true] {
             for reverse in [false, true] {
                 save_quarantine(None, &Quarantine::new()).unwrap();
                 let changed = json!({"tool":"srv__wipe", "server":"srv", "change":"changed", "severity":"high", "review_required":review});
-                let events = if reverse { vec![poison.clone(), changed.clone()] } else { vec![changed.clone(), poison.clone()] };
+                let events = if reverse {
+                    vec![poison.clone(), changed.clone()]
+                } else {
+                    vec![changed.clone(), poison.clone()]
+                };
                 apply_quarantine(None, &current, &events).unwrap();
                 let record = load_quarantine(None).unwrap()["srv__wipe"].clone();
                 assert_eq!(record["reason"], "a poisoned definition was detected");
                 assert_eq!(record["change"], "poison");
                 // A later softer event cannot replace the warning either.
                 apply_quarantine(None, &current, &[changed]).unwrap();
-                assert_eq!(load_quarantine(None).unwrap()["srv__wipe"]["reason"], record["reason"]);
+                assert_eq!(
+                    load_quarantine(None).unwrap()["srv__wipe"]["reason"],
+                    record["reason"]
+                );
             }
         }
         save_quarantine(None, &Quarantine::new()).unwrap();
-        let warn = json!({"tool":"srv__wipe", "server":"srv", "change":"changed", "severity":"warn"});
+        let warn =
+            json!({"tool":"srv__wipe", "server":"srv", "change":"changed", "severity":"warn"});
         apply_quarantine(None, &current, &[warn]).unwrap();
         apply_quarantine(None, &current, &[poison]).unwrap();
-        assert_eq!(load_quarantine(None).unwrap()["srv__wipe"]["change"], "poison", "upgrade an already blocked softer finding");
+        assert_eq!(
+            load_quarantine(None).unwrap()["srv__wipe"]["change"],
+            "poison",
+            "upgrade an already blocked softer finding"
+        );
     }
 
     #[test]
@@ -6293,27 +6440,53 @@ mod tests {
                 for change in ["changed", "tamper"] {
                     let tool = destructive_tool("srv__wipe", "Unseen preview definition.");
                     let pin = pin_of(&tool);
-                    save_pins(profile, &BTreeMap::from([("srv__wipe".into(), pin.clone())])).unwrap();
-                    let mut old = json!({"tool":"srv__wipe", "change":change, "definition_fp":pin.fp});
+                    save_pins(
+                        profile,
+                        &BTreeMap::from([("srv__wipe".into(), pin.clone())]),
+                    )
+                    .unwrap();
+                    let mut old =
+                        json!({"tool":"srv__wipe", "change":change, "definition_fp":pin.fp});
                     if change == "tamper" {
                         old["pending_pin"] = json!(pin);
                     }
-                    save_quarantine(profile, &BTreeMap::from([("srv__wipe".into(), old.clone())])).unwrap();
+                    save_quarantine(
+                        profile,
+                        &BTreeMap::from([("srv__wipe".into(), old.clone())]),
+                    )
+                    .unwrap();
                     let id = quarantine_record_id(&old);
                     if bulk {
-                        assert_eq!(release_all_records(profile, &BTreeMap::from([("srv__wipe".into(), id)])).unwrap().released, 1);
+                        assert_eq!(
+                            release_all_records(
+                                profile,
+                                &BTreeMap::from([("srv__wipe".into(), id)])
+                            )
+                            .unwrap()
+                            .released,
+                            1
+                        );
                     } else {
                         assert!(release_record(profile, "srv__wipe", &id).unwrap());
                     }
                     let current = vec![tool.clone()];
                     let events = check_staged(profile, &current).unwrap();
-                    assert!(events.iter().any(|e| e["review_required"] == true), "{change} preview approval published an unseen v3 definition");
+                    assert!(
+                        events.iter().any(|e| e["review_required"] == true),
+                        "{change} preview approval published an unseen v3 definition"
+                    );
                     apply_quarantine(profile, &current, &events).unwrap();
                     accept_quarantined_pins(profile).unwrap();
                     let captured = load_quarantine(profile).unwrap()["srv__wipe"].clone();
                     assert_eq!(captured["definition"], tool);
-                    assert!(release_record(profile, "srv__wipe", &quarantine_record_id(&captured)).unwrap());
-                    assert!(check_staged(profile, &current).unwrap().is_empty(), "bound approval must end the review cycle");
+                    assert!(
+                        release_record(profile, "srv__wipe", &quarantine_record_id(&captured))
+                            .unwrap()
+                    );
+                    assert!(
+                        check_staged(profile, &current).unwrap().is_empty(),
+                        "bound approval must end the review cycle"
+                    );
                 }
             }
         }
@@ -6325,18 +6498,32 @@ mod tests {
         let _data = TestDataDir::new("pending-review-store-failure");
         for profile in [None, Some("work")] {
             let tools = vec![destructive_tool("srv__wipe", "Captured definition.")];
-            save_pins(profile, &BTreeMap::from([("srv__wipe".into(), pin_of(&tools[0]))])).unwrap();
+            save_pins(
+                profile,
+                &BTreeMap::from([("srv__wipe".into(), pin_of(&tools[0]))]),
+            )
+            .unwrap();
             let path = quarantine_path(profile).unwrap();
             std::fs::write(&path, "corrupt").unwrap();
-            assert!(review_quarantined(profile).unwrap().is_empty(), "ordinary Off errors must not block");
+            assert!(
+                review_quarantined(profile).unwrap().is_empty(),
+                "ordinary Off errors must not block"
+            );
             assert!(review_quarantined_checked(profile).unwrap().is_empty());
             let old = json!({"tool":"srv__wipe", "change":"changed"});
-            save_quarantine(profile, &BTreeMap::from([("srv__wipe".into(), old.clone())])).unwrap();
+            save_quarantine(
+                profile,
+                &BTreeMap::from([("srv__wipe".into(), old.clone())]),
+            )
+            .unwrap();
             release_record(profile, "srv__wipe", &quarantine_record_id(&old)).unwrap();
             let events = check_staged(profile, &tools).unwrap();
             apply_quarantine(profile, &tools, &events).unwrap();
             accept_quarantined_pins(profile).unwrap();
-            assert!(matches!(load_pins(profile), PinsLoad::Loaded(pins) if pins["srv__wipe"].review_pending), "pin acceptance must not consume user review");
+            assert!(
+                matches!(load_pins(profile), PinsLoad::Loaded(pins) if pins["srv__wipe"].review_pending),
+                "pin acceptance must not consume user review"
+            );
             let captured = load_quarantine(profile).unwrap();
             std::fs::write(&path, "corrupt").unwrap();
             assert_eq!(
@@ -6351,8 +6538,13 @@ mod tests {
             save_quarantine(profile, &captured).unwrap();
             let id = quarantine_record_id(&captured["srv__wipe"]);
             assert!(release_record(profile, "srv__wipe", &id).unwrap());
-            assert!(matches!(load_pins(profile), PinsLoad::Loaded(pins) if !pins["srv__wipe"].review_on_upgrade && !pins["srv__wipe"].review_pending));
-            assert!(check_staged(profile, &tools).unwrap().is_empty(), "second approval must end the review");
+            assert!(
+                matches!(load_pins(profile), PinsLoad::Loaded(pins) if !pins["srv__wipe"].review_on_upgrade && !pins["srv__wipe"].review_pending)
+            );
+            assert!(
+                check_staged(profile, &tools).unwrap().is_empty(),
+                "second approval must end the review"
+            );
         }
     }
 
@@ -6364,9 +6556,17 @@ mod tests {
             for deleted in [false, true] {
                 for staged in [false, true] {
                     let tools = vec![destructive_tool("srv__wipe", "Captured definition.")];
-                    save_pins(profile, &BTreeMap::from([("srv__wipe".into(), pin_of(&tools[0]))])).unwrap();
+                    save_pins(
+                        profile,
+                        &BTreeMap::from([("srv__wipe".into(), pin_of(&tools[0]))]),
+                    )
+                    .unwrap();
                     let old = json!({"tool":"srv__wipe", "change":"changed"});
-                    save_quarantine(profile, &BTreeMap::from([("srv__wipe".into(), old.clone())])).unwrap();
+                    save_quarantine(
+                        profile,
+                        &BTreeMap::from([("srv__wipe".into(), old.clone())]),
+                    )
+                    .unwrap();
                     release_record(profile, "srv__wipe", &quarantine_record_id(&old)).unwrap();
                     let events = check_staged(profile, &tools).unwrap();
                     apply_quarantine(profile, &tools, &events).unwrap();
@@ -6376,17 +6576,34 @@ mod tests {
                     } else {
                         save_quarantine(profile, &Quarantine::new()).unwrap();
                     }
-                    let events = if staged { check_staged(profile, &tools) } else { check(profile, &tools) }.unwrap();
-                    assert!(events.iter().any(|e| e["review_required"] == true), "pending review vanished after its quarantine row was lost");
-                    assert!(pending_definition_review(profile), "catalog pin writes must retain the review");
+                    let events = if staged {
+                        check_staged(profile, &tools)
+                    } else {
+                        check(profile, &tools)
+                    }
+                    .unwrap();
+                    assert!(
+                        events.iter().any(|e| e["review_required"] == true),
+                        "pending review vanished after its quarantine row was lost"
+                    );
+                    assert!(
+                        pending_definition_review(profile),
+                        "catalog pin writes must retain the review"
+                    );
                     apply_quarantine(profile, &tools, &events).unwrap();
                     accept_quarantined_pins(profile).unwrap();
                     let captured = load_quarantine(profile).unwrap()["srv__wipe"].clone();
                     assert_eq!(captured["definition"], tools[0]);
                     assert!(review_quarantined(profile).unwrap().contains("srv__wipe"));
-                    assert!(release_record(profile, "srv__wipe", &quarantine_record_id(&captured)).unwrap());
+                    assert!(
+                        release_record(profile, "srv__wipe", &quarantine_record_id(&captured))
+                            .unwrap()
+                    );
                     assert!(!pending_definition_review(profile));
-                    assert!(check_staged(profile, &tools).unwrap().is_empty(), "one bound approval must end the review");
+                    assert!(
+                        check_staged(profile, &tools).unwrap().is_empty(),
+                        "one bound approval must end the review"
+                    );
                 }
             }
         }
@@ -6970,19 +7187,29 @@ mod tests {
         for profile in [None, Some("work")] {
             for write in ["catalog", "staged", "quarantined"] {
                 let tools = vec![destructive_tool("srv__wipe", "Changed definition.")];
-                let mut old = pin_of(&destructive_tool("srv__wipe", "Previously captured definition."));
+                let mut old = pin_of(&destructive_tool(
+                    "srv__wipe",
+                    "Previously captured definition.",
+                ));
                 old.review_pending = true;
                 save_pins(profile, &BTreeMap::from([("srv__wipe".into(), old)])).unwrap();
                 let event = json!({"tool":"srv__wipe", "change":"changed", "severity":"high"});
                 match write {
-                    "catalog" => { check(profile, &tools).unwrap(); }
-                    "staged" => { accept_staged_pins(profile, &tools, &[event]).unwrap(); }
+                    "catalog" => {
+                        check(profile, &tools).unwrap();
+                    }
+                    "staged" => {
+                        accept_staged_pins(profile, &tools, &[event]).unwrap();
+                    }
                     _ => {
                         save_quarantine(profile, &BTreeMap::from([("srv__wipe".into(), json!({"tool":"srv__wipe", "change":"changed", "pending_pin":pin_of(&tools[0])}))])).unwrap();
                         accept_quarantined_pins(profile).unwrap();
                     }
                 }
-                assert!(matches!(load_pins(profile), PinsLoad::Loaded(pins) if pins["srv__wipe"].review_pending), "{write} consumed a pending review");
+                assert!(
+                    matches!(load_pins(profile), PinsLoad::Loaded(pins) if pins["srv__wipe"].review_pending),
+                    "{write} consumed a pending review"
+                );
             }
         }
     }
@@ -7013,9 +7240,9 @@ mod tests {
                 assert!(pins["srv__wipe"].review_on_upgrade);
                 let current = vec![destructive_tool("srv__wipe", "Unseen definition.")];
                 let events = check_staged(profile, &current).unwrap();
-                assert!(events.iter().any(|event| {
-                    event["tool"] == "srv__wipe" && event["severity"] == "high"
-                }));
+                assert!(events
+                    .iter()
+                    .any(|event| { event["tool"] == "srv__wipe" && event["severity"] == "high" }));
             }
         }
     }
@@ -7030,10 +7257,7 @@ mod tests {
         save_pins(None, &BTreeMap::from([(tool.to_string(), pin)])).unwrap();
         save_quarantine(
             None,
-            &BTreeMap::from([(
-                tool.to_string(),
-                json!({"tool": tool, "change": "changed"}),
-            )]),
+            &BTreeMap::from([(tool.to_string(), json!({"tool": tool, "change": "changed"}))]),
         )
         .unwrap();
         let error = release_all_inner(
@@ -7423,8 +7647,14 @@ mod tests {
                 ToolDefinition::new(t).with_source_input_schema(Some(schema_part_hash(sent))),
             )])
         };
-        let first = catalog(json!({"type": "object", "properties": {"zone": {"type": "string"}}}), &served);
-        let second = catalog(json!({"type": "object", "properties": {"zone": {"type": ["string"]}}}), &served);
+        let first = catalog(
+            json!({"type": "object", "properties": {"zone": {"type": "string"}}}),
+            &served,
+        );
+        let second = catalog(
+            json!({"type": "object", "properties": {"zone": {"type": ["string"]}}}),
+            &served,
+        );
         assert!(check(profile, &first).unwrap().is_empty());
         assert!(
             check(profile, &second).unwrap().is_empty(),

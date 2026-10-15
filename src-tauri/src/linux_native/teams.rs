@@ -225,7 +225,8 @@ impl TeamsPage {
             .set_label(if personal { "Sync" } else { "Teams" });
         self.plan_badge.set_visible(false);
         // The personal page states its status itself; the intro is for joining and teams.
-        self.intro.set_visible(!(personal && registry.team.is_some()));
+        self.intro
+            .set_visible(!(personal && registry.team.is_some()));
         self.intro.set_label(if personal { "Set up once. Your servers follow you to every machine. Secret values and approvals stay on this machine." } else { "One shared server set, governed by your team. Credentials stay on each machine." });
         let notice = self.sync_notice.borrow_mut().take();
         let mut display = serde_json::to_value(&registry).unwrap_or_default();
@@ -270,7 +271,9 @@ impl TeamsPage {
                 self.show_sync_status(&registry);
             } else {
                 self.set_status(&notice, is_error);
-                if !is_error { self.feedback.add_css_class("success"); }
+                if !is_error {
+                    self.feedback.add_css_class("success");
+                }
             }
             if let Some(team) = registry.team.clone() {
                 self.render_connected(registry, team);
@@ -297,7 +300,10 @@ impl TeamsPage {
     }
 
     fn show_sync_status(&self, registry: &crate::registry::Registry) {
-        if !crate::personal_sync::is_personal(registry) { self.render_sync_status(); return; }
+        if !crate::personal_sync::is_personal(registry) {
+            self.render_sync_status();
+            return;
+        }
         let recent_error = self.action_error.borrow().as_ref().and_then(|(error, at)| {
             (at.elapsed() < std::time::Duration::from_secs(30)).then(|| error.clone())
         });
@@ -640,7 +646,10 @@ impl TeamsPage {
                 .map(|s| s.name.as_str())
                 .unwrap_or(id);
             attention.append(&attention_item(
-                &format!("{} could not sync", crate::personal_sync::visible_text(name)),
+                &format!(
+                    "{} could not sync",
+                    crate::personal_sync::visible_text(name)
+                ),
                 Some(error),
                 None,
             ));
@@ -735,7 +744,9 @@ impl TeamsPage {
         account.add_css_class("toolport-sync-list");
         let plan = crate::personal_sync::account_display_lines(&registry)
             .into_iter()
-            .filter(|line| !line.starts_with("Last synced") && !line.starts_with("Waiting for first sync"))
+            .filter(|line| {
+                !line.starts_with("Last synced") && !line.starts_with("Waiting for first sync")
+            })
             .collect::<Vec<_>>()
             .join(" · ");
         let manage = gtk::Button::with_label("Manage plan");
@@ -764,7 +775,9 @@ impl TeamsPage {
 
     /// The status line under the title: the banner plus when sync last ran.
     fn update_sync_line(&self, registry: &crate::registry::Registry) {
-        let Some(line) = self.sync_line.borrow().clone() else { return };
+        let Some(line) = self.sync_line.borrow().clone() else {
+            return;
+        };
         let (message, healthy) = crate::personal_sync::banner(registry);
         let last = crate::personal_sync::status_lines(
             &serde_json::Value::Null,
@@ -773,11 +786,13 @@ impl TeamsPage {
         .pop()
         .unwrap_or_default();
         let message = message.trim_end_matches('.');
-        line.set_label(&if last.is_empty() || message.starts_with("Waiting for first sync") {
-            message.to_string()
-        } else {
-            format!("{message} · {last}")
-        });
+        line.set_label(
+            &if last.is_empty() || message.starts_with("Waiting for first sync") {
+                message.to_string()
+            } else {
+                format!("{message} · {last}")
+            },
+        );
         if healthy {
             line.add_css_class("healthy");
         } else {
@@ -792,7 +807,9 @@ impl TeamsPage {
         local: Option<&serde_json::Value>,
         remote: &serde_json::Value,
     ) {
-        let Some(parent) = self.app.active_window() else { return };
+        let Some(parent) = self.app.active_window() else {
+            return;
+        };
         #[allow(deprecated)]
         let dialog = adw::MessageDialog::new(
             Some(&parent),
@@ -1448,7 +1465,13 @@ fn list_row(title: &str, detail: Option<&str>, actions: &[gtk::Button]) -> gtk::
     row.add_css_class("toolport-sync-row");
     let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
     text.set_hexpand(true);
-    text.append(&gtk::Label::builder().label(title).xalign(0.0).css_classes(["heading"]).build());
+    text.append(
+        &gtk::Label::builder()
+            .label(title)
+            .xalign(0.0)
+            .css_classes(["heading"])
+            .build(),
+    );
     if let Some(detail) = detail.filter(|d| !d.is_empty()) {
         text.append(
             &gtk::Label::builder()
@@ -1485,10 +1508,17 @@ fn conflict_name(
 }
 
 /// A server and where it lives: on every machine, or only this one.
-fn sync_server_row(server: &crate::registry::ServerEntry, tag: Option<&str>, page: TeamsPage) -> gtk::Box {
+fn sync_server_row(
+    server: &crate::registry::ServerEntry,
+    tag: Option<&str>,
+    page: TeamsPage,
+) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     row.add_css_class("toolport-sync-row");
-    row.append(&super::branding::server_logo(&server.name, &server.transport));
+    row.append(&super::branding::server_logo(
+        &server.name,
+        &server.transport,
+    ));
     let name = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     name.set_hexpand(true);
     name.append(
@@ -1595,26 +1625,57 @@ pub(super) fn execution_review_content(server: &crate::registry::ServerEntry) ->
     let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let previous = server.unknown_fields.get("syncExecutionReview");
     for text in crate::personal_sync::execution_review_lines(server) {
-        let label = gtk::Label::builder().label(&text).wrap(true)
-            .wrap_mode(gtk::pango::WrapMode::WordChar).selectable(true).xalign(0.0).build();
-        if previous.is_some() && text != "New server" { label.add_css_class("warning"); }
-        if text == "New server" { label.add_css_class("heading"); }
+        let label = gtk::Label::builder()
+            .label(&text)
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .selectable(true)
+            .xalign(0.0)
+            .build();
+        if previous.is_some() && text != "New server" {
+            label.add_css_class("warning");
+        }
+        if text == "New server" {
+            label.add_css_class("heading");
+        }
         content.append(&label);
     }
     if previous.is_some() {
         let full = gtk::Box::new(gtk::Orientation::Vertical, 8);
         for (key, value) in crate::personal_sync::execution_review_fields(server) {
-            full.append(&gtk::Label::builder().label(crate::personal_sync::review_display(server, &crate::personal_sync::review_field_line(&key, &value)))
-                .wrap(true).wrap_mode(gtk::pango::WrapMode::WordChar).selectable(true).xalign(0.0).build());
+            full.append(
+                &gtk::Label::builder()
+                    .label(crate::personal_sync::review_display(
+                        server,
+                        &crate::personal_sync::review_field_line(&key, &value),
+                    ))
+                    .wrap(true)
+                    .wrap_mode(gtk::pango::WrapMode::WordChar)
+                    .selectable(true)
+                    .xalign(0.0)
+                    .build(),
+            );
         }
-        content.append(&gtk::Expander::builder().label("Show full definition").child(&full).build());
+        content.append(
+            &gtk::Expander::builder()
+                .label("Show full definition")
+                .child(&full)
+                .build(),
+        );
     }
     content
 }
-pub(super) fn execution_review_scroll(server: &crate::registry::ServerEntry) -> gtk::ScrolledWindow {
-    gtk::ScrolledWindow::builder().min_content_height(120).max_content_height(340)
-        .hscrollbar_policy(gtk::PolicyType::Never).vscrollbar_policy(gtk::PolicyType::Automatic)
-        .propagate_natural_height(true).child(&execution_review_content(server)).build()
+pub(super) fn execution_review_scroll(
+    server: &crate::registry::ServerEntry,
+) -> gtk::ScrolledWindow {
+    gtk::ScrolledWindow::builder()
+        .min_content_height(120)
+        .max_content_height(340)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_height(true)
+        .child(&execution_review_content(server))
+        .build()
 }
 fn review_server_row(
     server: crate::registry::ServerEntry,
@@ -2130,7 +2191,9 @@ mod tests {
             "id":"review","name":"Review","transport":"stdio","command":"echo","args":["old"],"env":[]
         })).unwrap();
         let previous = crate::personal_sync::execution_review_fields(&server);
-        server.unknown_fields.insert("syncExecutionReview".into(), serde_json::json!(previous));
+        server
+            .unknown_fields
+            .insert("syncExecutionReview".into(), serde_json::json!(previous));
         server.args = vec!["new".into()];
         let scroll = super::execution_review_scroll(&server);
         assert_eq!(scroll.hscrollbar_policy(), gtk::PolicyType::Never);
@@ -2139,39 +2202,66 @@ mod tests {
         let child = scroll.child().unwrap();
         let child = if let Ok(viewport) = child.clone().downcast::<gtk::Viewport>() {
             viewport.child().unwrap()
-        } else { child };
+        } else {
+            child
+        };
         let content = child.downcast::<gtk::Box>().unwrap();
-        let label = content.first_child().unwrap().downcast::<gtk::Label>().unwrap();
-        assert!(label.label().contains("new")); assert!(label.has_css_class("warning"));
-        let expander = content.last_child().unwrap().downcast::<gtk::Expander>().unwrap();
-        assert_eq!(expander.label().as_deref(), Some("Show full definition")); assert!(!expander.is_expanded());
-        let mut text = String::new(); collect(expander.child().unwrap().upcast_ref(), &mut text);
-        assert!(text.contains("Command: echo")); assert!(text.contains("Uses this machine's environment: no"));
-        assert!(!text.contains("URL:")); assert!(!text.contains("null")); assert!(!text.contains("CHANGED"));
+        let label = content
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::Label>()
+            .unwrap();
+        assert!(label.label().contains("new"));
+        assert!(label.has_css_class("warning"));
+        let expander = content
+            .last_child()
+            .unwrap()
+            .downcast::<gtk::Expander>()
+            .unwrap();
+        assert_eq!(expander.label().as_deref(), Some("Show full definition"));
+        assert!(!expander.is_expanded());
+        let mut text = String::new();
+        collect(expander.child().unwrap().upcast_ref(), &mut text);
+        assert!(text.contains("Command: echo"));
+        assert!(text.contains("Uses this machine's environment: no"));
+        assert!(!text.contains("URL:"));
+        assert!(!text.contains("null"));
+        assert!(!text.contains("CHANGED"));
     }
     #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn personal_sync_lists_what_syncs_and_waits_on_conflicts() {
         adw::init().unwrap();
         let _data = crate::registry::DataDirTestEnv::new("gtk-personal-conflicts");
-        let app = adw::Application::builder().flags(gtk::gio::ApplicationFlags::NON_UNIQUE).build();
+        let app = adw::Application::builder()
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
         app.register(gtk::gio::Cancellable::NONE).unwrap();
-        let (_, servers, _) = super::super::build_content(&app, crate::approval_broker::start_native());
+        let (_, servers, _) =
+            super::super::build_content(&app, crate::approval_broker::start_native());
         let page = super::TeamsPage::new(&app, servers);
         let mut reg = crate::registry::Registry { team: Some(serde_json::from_value(serde_json::json!({"teamId":"solo","role":"admin","serverUrl":"http://127.0.0.1:1","accountStatus":{"personalSync":true,"plan":"pro","canReceiveConfig":true},"personalSyncState":{"initialized":true,"pending":{"docs-http":{"localId":"docs-http","after":{"name":"Toolport docs","url":"https://example.com/this"}}},"conflicts":{"docs-http":{"name":"Toolport docs","url":"https://gitmcp.io/btsouth/Toolport2026"}}}})).unwrap()), ..Default::default() };
         let server: crate::registry::ServerEntry = serde_json::from_value(serde_json::json!({"id":"docs-http","name":"Toolport docs","transport":"http","url":"https://example.com/this","env":[],"enabled":false,"source":"team:solo","personalSyncEntry":true})).unwrap();
-        reg.servers.push(server.clone()); crate::registry::save(&reg).unwrap();
+        reg.servers.push(server.clone());
+        crate::registry::save(&reg).unwrap();
         *page.sync_notice.borrow_mut() = Some(("Sync is up to date".into(), false));
         page.render(reg);
         assert!(!page.feedback.has_css_class("success"));
-        let mut text = String::new(); collect(page.root.upcast_ref(), &mut text);
+        let mut text = String::new();
+        collect(page.root.upcast_ref(), &mut text);
         // The conflict waits in Needs you; its versions open in Compare.
-        assert!(text.contains("Toolport docs changed on two machines")); assert!(text.contains("Compare"));
-        assert!(text.contains("Every machine")); assert!(text.contains("This machine")); assert!(text.contains("changed on two machines"));
+        assert!(text.contains("Toolport docs changed on two machines"));
+        assert!(text.contains("Compare"));
+        assert!(text.contains("Every machine"));
+        assert!(text.contains("This machine"));
+        assert!(text.contains("changed on two machines"));
         // Sync no longer turns servers on or off.
-        assert!(!text.contains("Review and enable")); assert!(!text.contains("Turned off")); assert!(!page.plan_badge.is_visible());
+        assert!(!text.contains("Review and enable"));
+        assert!(!text.contains("Turned off"));
+        assert!(!page.plan_badge.is_visible());
         // Turned off elsewhere, nothing to confirm: no review text.
-        assert!(!text.contains("New server")); assert!(!text.contains("Nothing in this definition changed"));
+        assert!(!text.contains("New server"));
+        assert!(!text.contains("Nothing in this definition changed"));
     }
 
     use super::share_preview_dialog;
@@ -2269,8 +2359,11 @@ mod tests {
         crate::registry::save(&reg).unwrap();
         let review = crate::teams::member_review(&reg).unwrap();
         let parent = adw::ApplicationWindow::builder().build();
-        let app = adw::Application::builder().application_id("app.toolport.ReviewFixture").build();
-        let (_, server_page, _) = super::super::build_content(&app, crate::approval_broker::start_native());
+        let app = adw::Application::builder()
+            .application_id("app.toolport.ReviewFixture")
+            .build();
+        let (_, server_page, _) =
+            super::super::build_content(&app, crate::approval_broker::start_native());
         let page = super::TeamsPage::new(&app, server_page);
         let dialog = super::member_review_dialog(&parent, &review);
         let content = dialog.extra_child().unwrap();

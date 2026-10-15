@@ -300,7 +300,12 @@ fn mcp_request(scratch: &Scratch, daemon: &ChildGuard, method: &str, params: Val
             "clientInfo":{"name":"crash","version":"1"}}}),
         None,
     );
-    let session = initialize.headers().get("Mcp-Session-Id").and_then(|value| value.to_str().ok()).unwrap().to_string();
+    let session = initialize
+        .headers()
+        .get("Mcp-Session-Id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap()
+        .to_string();
     let reply = post(
         json!({"jsonrpc":"2.0","id":2,"method":method,"params":params}),
         Some(&session),

@@ -301,8 +301,7 @@ pub(crate) fn append_lines_with_outcome(
         }
         // A failed rotation keeps the appended history intact, but must be
         // reported so telemetry health does not claim complete persistence.
-        atomic_write(path, &tail)
-            .map_err(crate::telemetry::AppendError::after_append)?;
+        atomic_write(path, &tail).map_err(crate::telemetry::AppendError::after_append)?;
     }
     Ok(())
 }
@@ -1106,7 +1105,6 @@ fn team_safety_floor_default() -> SafetyLevel {
     SafetyLevel::Off
 }
 
-
 /// 1.x protections an upgrader had on that their 2.0 level does not include.
 /// Set only by the v1 migration and cleared when the user picks a level, so an
 /// upgrade never quietly loosens or tightens what they chose.
@@ -1144,7 +1142,10 @@ pub const GO_BACK_TO_1X_URL: &str =
 /// The upgrade notice for removed features this install used. The React shell
 /// keeps the same wording in `src/lib/removedFeatures.ts`.
 pub fn removed_features_message(features: &[String]) -> String {
-    let names: Vec<&str> = features.iter().map(|id| removed_feature_label(id)).collect();
+    let names: Vec<&str> = features
+        .iter()
+        .map(|id| removed_feature_label(id))
+        .collect();
     let list = match names.as_slice() {
         [one] => (*one).to_string(),
         [first, second] => format!("{first} and {second}"),
@@ -1158,7 +1159,10 @@ pub fn removed_features_message(features: &[String]) -> String {
 
 /// A new GitHub issue with only the feature names filled in.
 pub fn removed_features_issue_url(features: &[String]) -> String {
-    let names: Vec<&str> = features.iter().map(|id| removed_feature_label(id)).collect();
+    let names: Vec<&str> = features
+        .iter()
+        .map(|id| removed_feature_label(id))
+        .collect();
     let title = format!("I need {} in Toolport 2.0", names.join(", "));
     let body = format!(
         "Toolport 2.0 removed: {}.\n\nWhat I used it for:\n\n",
@@ -1194,10 +1198,19 @@ impl KeptV1Safety {
     /// same wording in `src/lib/keptSafety.ts`.
     pub fn summary(self) -> Option<String> {
         let parts: Vec<&str> = [
-            (self.hold_untrusted, "asks before calls from shared or registry servers"),
+            (
+                self.hold_untrusted,
+                "asks before calls from shared or registry servers",
+            ),
             (self.deny_destructive, "hides destructive tools"),
-            (self.quarantine_on_drift, "pauses tools whose definitions change"),
-            (self.block_on_injection, "blocks results that look like prompt injection"),
+            (
+                self.quarantine_on_drift,
+                "pauses tools whose definitions change",
+            ),
+            (
+                self.block_on_injection,
+                "blocks results that look like prompt injection",
+            ),
         ]
         .into_iter()
         .filter_map(|(on, text)| on.then_some(text))
@@ -3259,7 +3272,8 @@ pub fn invalidate_data_dir_cache() {
 pub(crate) fn devirtualized_dir(path: &Path) -> PathBuf {
     #[cfg(windows)]
     if msix::has_package_identity() {
-        if dirs::home_dir().and_then(|home| msix::unc_twin(&home))
+        if dirs::home_dir()
+            .and_then(|home| msix::unc_twin(&home))
             .is_some_and(|home| std::fs::metadata(home).is_ok())
         {
             return msix::unc_twin(path).unwrap_or_else(|| path.to_path_buf());
@@ -3285,9 +3299,15 @@ fn compute_conduit_dir() -> (Option<PathBuf>, DirResolution) {
         }
         let real_home = devirtualized_dir(&home);
         if real_home != home {
-            (Some(under_roaming(&real_home)), DirResolution::Devirtualized)
+            (
+                Some(under_roaming(&real_home)),
+                DirResolution::Devirtualized,
+            )
         } else {
-            (Some(under_roaming(&home)), DirResolution::VirtualizedFallback)
+            (
+                Some(under_roaming(&home)),
+                DirResolution::VirtualizedFallback,
+            )
         }
     }
     #[cfg(not(windows))]
@@ -9153,7 +9173,10 @@ mod safety_level_tests {
             "removedFeaturesNotice".into(),
             serde_json::json!({ "features": ["agentRules", "routines"] }),
         );
-        assert_eq!(registry.removed_features_notice(), ["agentRules", "routines"]);
+        assert_eq!(
+            registry.removed_features_notice(),
+            ["agentRules", "routines"]
+        );
         assert_eq!(
             removed_features_issue_url(&registry.removed_features_notice()),
             "https://github.com/btsouth/toolport/issues/new?title=I%20need%20Agent%20rules%2C%20Routines%20in%20Toolport%202.0&body=Toolport%202.0%20removed%3A%20Agent%20rules%2C%20Routines.%0A%0AWhat%20I%20used%20it%20for%3A%0A%0A"
@@ -9169,12 +9192,19 @@ mod safety_level_tests {
     #[test]
     fn kept_v1_protections_are_summarized_for_settings() {
         assert_eq!(KeptV1Safety::default().summary(), None);
-        let one = KeptV1Safety { hold_untrusted: true, ..Default::default() };
+        let one = KeptV1Safety {
+            hold_untrusted: true,
+            ..Default::default()
+        };
         assert_eq!(
             one.summary().unwrap(),
             "Kept from 1.x: Toolport also asks before calls from shared or registry servers."
         );
-        let two = KeptV1Safety { hold_untrusted: true, block_on_injection: true, ..Default::default() };
+        let two = KeptV1Safety {
+            hold_untrusted: true,
+            block_on_injection: true,
+            ..Default::default()
+        };
         assert_eq!(
             two.summary().unwrap(),
             "Kept from 1.x: Toolport also asks before calls from shared or registry servers and blocks results that look like prompt injection."
@@ -9225,7 +9255,10 @@ mod safety_level_tests {
             value[field] = serde_json::json!(true);
             let registry: Registry = serde_json::from_value(value).unwrap();
             assert_eq!(registry.safety_level_effective(), level, "{field}");
-            assert_eq!(registry.deny_destructive_effective(), field == "denyDestructive");
+            assert_eq!(
+                registry.deny_destructive_effective(),
+                field == "denyDestructive"
+            );
             assert_eq!(
                 registry.quarantine_on_drift_effective(),
                 field == "quarantineOnDrift"

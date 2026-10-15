@@ -365,12 +365,12 @@ pub fn record_catalog_surfaces(
     let mut by_server_bytes = BTreeMap::<String, u64>::new();
     if first {
         for (name, bytes) in &full.tools {
-        if !exposed.tools.contains_key(name) {
-            if let Some(server) = route(name) {
-                *by_server_bytes.entry(server).or_default() += bytes;
+            if !exposed.tools.contains_key(name) {
+                if let Some(server) = route(name) {
+                    *by_server_bytes.entry(server).or_default() += bytes;
+                }
             }
         }
-    }
     }
     let full_bytes = if first { full.bytes } else { 0 };
     let exposed_bytes = exposed.json.get().len() as u64;

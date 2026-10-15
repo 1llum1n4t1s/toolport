@@ -254,7 +254,9 @@ pub(super) fn server_logo(name: &str, transport: &str) -> gtk::Image {
         Some("microsoft") => Some(include_bytes!("../../icons/server-logos/microsoft.png")),
         Some("parallel") => Some(include_bytes!("../../icons/server-logos/parallel.png")),
         Some("playwright") => Some(include_bytes!("../../icons/server-logos/playwright.png")),
-        Some("sequentialthinking") => Some(include_bytes!("../../icons/server-logos/sequentialthinking.png")),
+        Some("sequentialthinking") => Some(include_bytes!(
+            "../../icons/server-logos/sequentialthinking.png"
+        )),
         Some("tavily") => Some(include_bytes!("../../icons/server-logos/tavily.png")),
         Some("time") => Some(include_bytes!("../../icons/server-logos/time.png")),
         _ => None,
@@ -338,14 +340,20 @@ mod tests {
             .map(|entry| entry.name)
             .filter(|name| server_logo_key(name).is_none())
             .collect();
-        assert!(missing.is_empty(), "catalog servers without a logo: {missing:?}");
+        assert!(
+            missing.is_empty(),
+            "catalog servers without a logo: {missing:?}"
+        );
     }
 
     #[test]
     fn reference_server_icons_match_only_the_leading_word() {
         assert_eq!(server_logo_key("Time"), Some("time"));
         assert_eq!(server_logo_key("Memory"), Some("memory"));
-        assert_eq!(server_logo_key("Sequential Thinking"), Some("sequentialthinking"));
+        assert_eq!(
+            server_logo_key("Sequential Thinking"),
+            Some("sequentialthinking")
+        );
         assert_eq!(server_logo_key("Showtime"), None);
         assert_eq!(server_logo_key("Team memory"), None);
         assert_eq!(server_logo_key("Exa Search"), Some("exa"));

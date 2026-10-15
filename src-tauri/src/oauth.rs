@@ -1321,7 +1321,8 @@ fn exchange_code(
             ("client_id", client_id),
             ("code_verifier", verifier),
             ("resource", resource),
-        ]).retain_status_body()
+        ])
+        .retain_status_body()
         .map_err(|e| e.to_string())?
         .into_body()
         .with_config()
@@ -1360,7 +1361,8 @@ pub fn refresh(
     }
     let resp: TokenResponse = agent_no_redirect(block_private)
         .post(token_endpoint)
-        .send_form(form).retain_status_body()
+        .send_form(form)
+        .retain_status_body()
         .map_err(|e| match e {
             crate::http_client::Error::Status(401, _) => {
                 "OAuth refresh token was rejected; needs authentication".to_string()

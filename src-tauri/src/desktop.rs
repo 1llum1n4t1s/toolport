@@ -135,12 +135,14 @@ async fn detect_clients(
     let mut list = tauri::async_runtime::spawn_blocking(move || {
         clients::detect_clients_with_inspection(inspect_configs.unwrap_or(true))
     })
-        .await
-        .map_err(|e| e.to_string())??;
+    .await
+    .map_err(|e| e.to_string())??;
     // Adoption may have updated ownership on disk.
     if inspect_configs.unwrap_or(true) {
         let fresh = crate::registry::load()?;
-        *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = fresh;
+        *state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = fresh;
     }
     // Ownership record lives on the registry (SOU-406).
     let managed = state
@@ -154,19 +156,25 @@ async fn detect_clients(
 
 #[tauri::command]
 async fn client_location_types() -> Result<Vec<clients::ClientLocationType>, String> {
-    tauri::async_runtime::spawn_blocking(clients::client_location_types).await.map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(clients::client_location_types)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn remove_client_location(client_id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || clients::remove_client_location(&client_id))
-        .await.map_err(|e| e.to_string())?
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 async fn add_client_location(client_type: String, folder: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || clients::add_client_location(&client_type, &folder))
-        .await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        clients::add_client_location(&client_type, &folder)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1636,13 +1644,19 @@ async fn list_quarantined(app: AppHandle) -> Result<Vec<serde_json::Value>, Stri
 
 #[tauri::command]
 async fn get_quarantine_definition(
-    profile: String, tool: String, expected_record_id: String,
+    profile: String,
+    tool: String,
+    expected_record_id: String,
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         integrity::quarantine_definition(
-            (!profile.is_empty()).then_some(profile.as_str()), &tool, &expected_record_id,
+            (!profile.is_empty()).then_some(profile.as_str()),
+            &tool,
+            &expected_record_id,
         )
-    }).await.map_err(|e| format!("definition read task join failed: {e}"))?
+    })
+    .await
+    .map_err(|e| format!("definition read task join failed: {e}"))?
 }
 
 /// Keys of quarantine entries we have already observed this process. `None` = not
@@ -2192,7 +2206,8 @@ async fn team_instructions_status() -> Option<teams::InstructionsStatusView> {
 #[tauri::command]
 async fn team_sync_status() -> crate::team_sync_status::SyncStatus {
     tauri::async_runtime::spawn_blocking(crate::team_sync_status::current)
-        .await.unwrap_or_default()
+        .await
+        .unwrap_or_default()
 }
 
 // --- Agent hook sensor (SBS-822), retired -------------------------------------

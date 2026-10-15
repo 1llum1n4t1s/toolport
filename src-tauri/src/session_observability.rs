@@ -68,10 +68,15 @@ pub fn telemetry_principal(client: &str) -> Option<&str> {
 /// Scope lookup keeps the raw launch ID. Display and diagnostics reject private values.
 pub fn display_client_id(id: &str) -> String {
     if id.contains(['@', '%']) {
-        if !id.is_empty() && id.len() <= 1024
-            && id.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_.@%".contains(&c))
+        if !id.is_empty()
+            && id.len() <= 1024
+            && id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"-_.@%".contains(&c))
             && crate::registry::redact_secret_text(id) == id
-        { return id.into(); }
+        {
+            return id.into();
+        }
         return "[private]".into();
     }
     match display_label(id) {
@@ -441,7 +446,11 @@ mod tests {
             .is_some()));
         assert_eq!(display_client_id("claude-code"), "claude-code");
         assert_eq!(telemetry_principal("p08-client"), Some("p08-client"));
-        for id in ["adapter-pid-123", "/home/private/customer.env", "sk-live-abcdefghijk123456789"] {
+        for id in [
+            "adapter-pid-123",
+            "/home/private/customer.env",
+            "sk-live-abcdefghijk123456789",
+        ] {
             assert_eq!(telemetry_principal(id), None);
         }
     }
@@ -501,10 +510,25 @@ mod tests {
     #[test]
     fn private_paths_never_reach_session_or_correlated_audit_rows() {
         let data = crate::registry::DataDirTestEnv::new("f3-label-paths");
-        for path in ["/home/private/customer.env", "C:\\private\\customer.env", "~/private/customer.env", "\\\\server\\private\\customer.env", "file:///home/private/customer.env", "file:///home/private/my customer.env", "../private/customer.env", "private/customer.env", "/home/private/my customer.env", "C:\\private\\my customer.env", "\\\\server\\private folder\\customer.env"] {
+        for path in [
+            "/home/private/customer.env",
+            "C:\\private\\customer.env",
+            "~/private/customer.env",
+            "\\\\server\\private\\customer.env",
+            "file:///home/private/customer.env",
+            "file:///home/private/my customer.env",
+            "../private/customer.env",
+            "private/customer.env",
+            "/home/private/my customer.env",
+            "C:\\private\\my customer.env",
+            "\\\\server\\private folder\\customer.env",
+        ] {
             let label = format!("review {path} sk-live-abcdefghijk123456789");
             let session = Session::start(None, None, Some(&label), "stdio", "initialize");
-            let _context = ContextGuard::enter(Context {run_id:Some("opaque".into()), ..session.context()});
+            let _context = ContextGuard::enter(Context {
+                run_id: Some("opaque".into()),
+                ..session.context()
+            });
             let mut row = json!({"tool":"run_script", "ok":false});
             enrich(&mut row);
             assert!(!row.to_string().contains("customer.env"), "{row}");
@@ -516,7 +540,10 @@ mod tests {
         let audit = std::fs::read_to_string(data.dir.join("audit.jsonl")).unwrap();
         assert!(!audit.contains("customer.env"), "{audit}");
         assert!(!audit.contains("sk-live-abcdefghijk123456789"));
-        assert_eq!(display_label("Claude Code 1.2.3-beta"), Some("Claude Code 1.2.3-beta".into()));
+        assert_eq!(
+            display_label("Claude Code 1.2.3-beta"),
+            Some("Claude Code 1.2.3-beta".into())
+        );
     }
 
     #[test]

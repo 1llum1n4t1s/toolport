@@ -1723,7 +1723,10 @@ fn matrix_rollout_default_selects_the_shared_daemon() {
         .args(["--remove-data", "--confirm"])
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("SystemRoot", std::env::var_os("SystemRoot").unwrap_or_default())
+        .env(
+            "SystemRoot",
+            std::env::var_os("SystemRoot").unwrap_or_default(),
+        )
         .env("WINDIR", std::env::var_os("WINDIR").unwrap_or_default())
         .env("TOOLPORT_TEST_ROOT", dir.join("purge-home"))
         .env("USERPROFILE", dir.join("purge-home"))
@@ -1732,14 +1735,23 @@ fn matrix_rollout_default_selects_the_shared_daemon() {
         .env("XDG_CONFIG_HOME", dir.join("purge-home/.config"))
         .env("XDG_DATA_HOME", dir.join("purge-home/.local/share"))
         .env("XDG_CACHE_HOME", dir.join("purge-home/.cache"))
-        .env("TOOLPORT_DATA_DIR", &dir).env("HOME", dir.join("purge-home"))
-        .env_remove("DBUS_SESSION_BUS_ADDRESS").output().unwrap();
+        .env("TOOLPORT_DATA_DIR", &dir)
+        .env("HOME", dir.join("purge-home"))
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .output()
+        .unwrap();
     assert!(!removal.status.success());
     let report: Value = serde_json::from_slice(&removal.stdout).unwrap();
     assert!(report["clients"].as_array().unwrap().is_empty());
     assert!(report["removed"].as_array().unwrap().is_empty());
-    assert_eq!(std::fs::read(dir.join("registry.json")).unwrap(), registry_before);
-    assert_eq!(text_of(&a.call_tool(&tool_a, json!({ "text": "still connected" }))), "still connected");
+    assert_eq!(
+        std::fs::read(dir.join("registry.json")).unwrap(),
+        registry_before
+    );
+    assert_eq!(
+        text_of(&a.call_tool(&tool_a, json!({ "text": "still connected" }))),
+        "still connected"
+    );
 
     assert_eq!(topology["ordinaryLaunches"], 1);
     assert_eq!(topology["rootedLaunches"], 0);
@@ -1830,7 +1842,8 @@ fn matrix_rollout_default_selects_the_shared_daemon() {
     conduit_lib::http_client::agent()
         .delete(&lease_url)
         .set_header("Authorization", &format!("Bearer {token}"))
-        .force_send_body().send_json(lease_body)
+        .force_send_body()
+        .send_json(lease_body)
         .retain_status_body()
         .expect("private bearer releases public bridge lease");
     assert!(matches!(
@@ -2410,7 +2423,8 @@ fn approve_displayed_quarantine(record: &Value) -> Result<(), String> {
         (!scope.is_empty()).then_some(scope),
         record["tool"].as_str().unwrap(),
         record["record_id"].as_str().unwrap(),
-    ).map(|_| ())
+    )
+    .map(|_| ())
 }
 
 #[test]
@@ -2421,41 +2435,87 @@ fn matrix_first_quarantine_approval_rejects_a_replaced_record() {
     let _data_dir = registry::DataDirOverride::set(&dir);
     write_registry(&dir, vec![], vec![]);
     let path = dir.join("quarantine.json");
-    std::fs::write(&path, json!({"srv__wipe":{"tool":"srv__wipe", "change":"changed", "ts":1}}).to_string()).unwrap();
+    std::fs::write(
+        &path,
+        json!({"srv__wipe":{"tool":"srv__wipe", "change":"changed", "ts":1}}).to_string(),
+    )
+    .unwrap();
     let displayed = conduit_lib::integrity::all_quarantined().unwrap().remove(0);
-    std::fs::write(&path, json!({"srv__wipe":{"tool":"srv__wipe", "change":"poison", "ts":2}}).to_string()).unwrap();
-    assert!(approve_displayed_quarantine(&displayed).is_err(), "first UI approval must reject a replaced finding");
-    assert!(conduit_lib::integrity::quarantined(None).unwrap().contains("srv__wipe"));
+    std::fs::write(
+        &path,
+        json!({"srv__wipe":{"tool":"srv__wipe", "change":"poison", "ts":2}}).to_string(),
+    )
+    .unwrap();
+    assert!(
+        approve_displayed_quarantine(&displayed).is_err(),
+        "first UI approval must reject a replaced finding"
+    );
+    assert!(conduit_lib::integrity::quarantined(None)
+        .unwrap()
+        .contains("srv__wipe"));
 }
 
-fn preview_approval_requires_gateway_review(level: registry::SafetyLevel, bulk: bool, lost_store: Option<bool>) {
+fn preview_approval_requires_gateway_review(
+    level: registry::SafetyLevel,
+    bulk: bool,
+    lost_store: Option<bool>,
+) {
     let _guard = CASE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let _data_lock = registry::data_dir_test_lock();
     let (_fixture, dir) = Fixture::new("preview-release-review");
     let _data_dir = registry::DataDirOverride::set(&dir);
-    write_registry(&dir, vec![mock_server_entry("files", &dir.join("downstream.jsonl"), None)], vec![]);
+    write_registry(
+        &dir,
+        vec![mock_server_entry(
+            "files",
+            &dir.join("downstream.jsonl"),
+            None,
+        )],
+        vec![],
+    );
     let path = dir.join("registry.json");
     let mut reg = registry::load_from(&path).unwrap();
     if level == registry::SafetyLevel::Ask {
         assert_eq!(reg.safety_level_effective(), level);
-        assert!(!reg.quarantine_on_drift_effective(), "Ask must use default drift settings");
+        assert!(
+            !reg.quarantine_on_drift_effective(),
+            "Ask must use default drift settings"
+        );
     } else {
         reg.set_safety_level(level);
         registry::save_to(&path, &reg).unwrap();
     }
     let name = "files__echo";
-    let tools = vec![json!({"name":name, "description":"Preview-era echo", "inputSchema":{"type":"object"}})];
+    let tools = vec![
+        json!({"name":name, "description":"Preview-era echo", "inputSchema":{"type":"object"}}),
+    ];
     for scope in [None, reg.active_profile_id.as_deref()] {
         conduit_lib::integrity::check(scope, &tools).unwrap();
-        conduit_lib::integrity::apply_quarantine(scope, &tools, &[json!({"type":"pins_load_failed", "change":"tamper", "severity":"high"})]).unwrap();
+        conduit_lib::integrity::apply_quarantine(
+            scope,
+            &tools,
+            &[json!({"type":"pins_load_failed", "change":"tamper", "severity":"high"})],
+        )
+        .unwrap();
     }
-    for store in [dir.join("quarantine.json"), dir.join(format!("quarantine-v2-{}.json", registry::profile_store_key(reg.active_profile_id.as_deref().unwrap())))] {
+    for store in [
+        dir.join("quarantine.json"),
+        dir.join(format!(
+            "quarantine-v2-{}.json",
+            registry::profile_store_key(reg.active_profile_id.as_deref().unwrap())
+        )),
+    ] {
         let mut records: Value = serde_json::from_slice(&std::fs::read(&store).unwrap()).unwrap();
-        assert!(records[name]["pending_pin"]["fp"].as_str().unwrap().starts_with("v3:"));
+        assert!(records[name]["pending_pin"]["fp"]
+            .as_str()
+            .unwrap()
+            .starts_with("v3:"));
         records[name].as_object_mut().unwrap().remove("definition");
         std::fs::write(store, records.to_string()).unwrap();
     }
-    let mut running = if level == registry::SafetyLevel::Off || lost_store.is_some() { None } else {
+    let mut running = if level == registry::SafetyLevel::Off || lost_store.is_some() {
+        None
+    } else {
         let mut client = spawn_adapter(&dir, &AdapterOptions::default());
         client.initialize("matrix-preview-release-review");
         client.wait_for_tool("__add", Duration::from_secs(30));
@@ -2469,8 +2529,16 @@ fn preview_approval_requires_gateway_review(level: registry::SafetyLevel, bulk: 
         let scope = record["profile"].as_str().unwrap();
         let scope = (!scope.is_empty()).then_some(scope);
         if bulk {
-            let expected = std::collections::BTreeMap::from([(name.into(), record["record_id"].as_str().unwrap().into())]);
-            assert_eq!(conduit_lib::integrity::release_all_records(scope, &expected).unwrap().released, 1);
+            let expected = std::collections::BTreeMap::from([(
+                name.into(),
+                record["record_id"].as_str().unwrap().into(),
+            )]);
+            assert_eq!(
+                conduit_lib::integrity::release_all_records(scope, &expected)
+                    .unwrap()
+                    .released,
+                1
+            );
         } else {
             approve_displayed_quarantine(record).unwrap();
         }
@@ -2482,8 +2550,18 @@ fn preview_approval_requires_gateway_review(level: registry::SafetyLevel, bulk: 
             conduit_lib::integrity::accept_quarantined_pins(scope).unwrap();
             assert!(conduit_lib::integrity::pending_definition_review(scope));
         }
-        for store in [dir.join("quarantine.json"), dir.join(format!("quarantine-v2-{}.json", registry::profile_store_key(reg.active_profile_id.as_deref().unwrap())))] {
-            if deleted { std::fs::remove_file(store).unwrap(); } else { std::fs::write(store, "{}").unwrap(); }
+        for store in [
+            dir.join("quarantine.json"),
+            dir.join(format!(
+                "quarantine-v2-{}.json",
+                registry::profile_store_key(reg.active_profile_id.as_deref().unwrap())
+            )),
+        ] {
+            if deleted {
+                std::fs::remove_file(store).unwrap();
+            } else {
+                std::fs::write(store, "{}").unwrap();
+            }
         }
     }
     let mut client = running.take().unwrap_or_else(|| {
@@ -2494,14 +2572,27 @@ fn preview_approval_requires_gateway_review(level: registry::SafetyLevel, bulk: 
     });
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        assert!(!client.tool_names().contains(&name.to_string()), "unseen definition published at {level:?}, bulk={bulk}");
+        assert!(
+            !client.tool_names().contains(&name.to_string()),
+            "unseen definition published at {level:?}, bulk={bulk}"
+        );
         let records = conduit_lib::integrity::all_quarantined_summaries().unwrap();
-        if !records.is_empty() && records.iter().all(|r| r["has_definition"] == true) { break; }
-        assert!(Instant::now() < deadline, "no captured review at {level:?}, bulk={bulk}\n{}", client.diagnostics());
+        if !records.is_empty() && records.iter().all(|r| r["has_definition"] == true) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no captured review at {level:?}, bulk={bulk}\n{}",
+            client.diagnostics()
+        );
         std::thread::sleep(Duration::from_millis(25));
-    };
+    }
     for route in [name, "toolport_call_tool"] {
-        let args = if route == name { json!({"text":"unreviewed"}) } else { json!({"name":name, "arguments":{"text":"unreviewed"}}) };
+        let args = if route == name {
+            json!({"text":"unreviewed"})
+        } else {
+            json!({"name":name, "arguments":{"text":"unreviewed"}})
+        };
         assert_eq!(client.call_tool(route, args)["isError"], true);
     }
     // Another publication and watcher pass must retain the captured block.
@@ -2513,45 +2604,83 @@ fn preview_approval_requires_gateway_review(level: registry::SafetyLevel, bulk: 
     for record in captured {
         assert_eq!(record["has_definition"], true);
         let scope = record["profile"].as_str().unwrap();
-        let definition = conduit_lib::integrity::quarantine_definition((!scope.is_empty()).then_some(scope), name, record["record_id"].as_str().unwrap()).unwrap();
+        let definition = conduit_lib::integrity::quarantine_definition(
+            (!scope.is_empty()).then_some(scope),
+            name,
+            record["record_id"].as_str().unwrap(),
+        )
+        .unwrap();
         assert_eq!(definition["name"], name);
         approve_displayed_quarantine(&record).unwrap();
     }
     client.wait_for_tool(name, Duration::from_secs(10));
-    assert_eq!(client.call_tool(name, json!({"text":"approved"}))["isError"], false);
-    assert_eq!(client.call_tool("toolport_call_tool", json!({"name":name, "arguments":{"text":"approved"}}))["isError"], false);
+    assert_eq!(
+        client.call_tool(name, json!({"text":"approved"}))["isError"],
+        false
+    );
+    assert_eq!(
+        client.call_tool(
+            "toolport_call_tool",
+            json!({"name":name, "arguments":{"text":"approved"}})
+        )["isError"],
+        false
+    );
 }
 
 #[test]
-fn matrix_preview_approval_ask_single() { preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, false, None); }
+fn matrix_preview_approval_ask_single() {
+    preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, false, None);
+}
 #[test]
-fn matrix_preview_approval_ask_bulk() { preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, true, None); }
+fn matrix_preview_approval_ask_bulk() {
+    preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, true, None);
+}
 #[test]
-fn matrix_preview_approval_strict_single() { preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, false, None); }
+fn matrix_preview_approval_strict_single() {
+    preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, false, None);
+}
 #[test]
-fn matrix_preview_approval_strict_bulk() { preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, true, None); }
+fn matrix_preview_approval_strict_bulk() {
+    preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, true, None);
+}
 #[test]
-fn matrix_preview_approval_off_single() { preview_approval_requires_gateway_review(registry::SafetyLevel::Off, false, None); }
+fn matrix_preview_approval_off_single() {
+    preview_approval_requires_gateway_review(registry::SafetyLevel::Off, false, None);
+}
 #[test]
-fn matrix_preview_approval_off_bulk() { preview_approval_requires_gateway_review(registry::SafetyLevel::Off, true, None); }
+fn matrix_preview_approval_off_bulk() {
+    preview_approval_requires_gateway_review(registry::SafetyLevel::Off, true, None);
+}
 
 #[test]
-fn matrix_pending_review_ask_empty_store() { preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, false, Some(false)); }
+fn matrix_pending_review_ask_empty_store() {
+    preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, false, Some(false));
+}
 
 #[test]
-fn matrix_pending_review_ask_deleted_store() { preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, true, Some(true)); }
+fn matrix_pending_review_ask_deleted_store() {
+    preview_approval_requires_gateway_review(registry::SafetyLevel::Ask, true, Some(true));
+}
 
 #[test]
-fn matrix_pending_review_strict_empty_store() { preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, false, Some(false)); }
+fn matrix_pending_review_strict_empty_store() {
+    preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, false, Some(false));
+}
 
 #[test]
-fn matrix_pending_review_strict_deleted_store() { preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, true, Some(true)); }
+fn matrix_pending_review_strict_deleted_store() {
+    preview_approval_requires_gateway_review(registry::SafetyLevel::Strict, true, Some(true));
+}
 
 #[test]
-fn matrix_pending_review_off_empty_store() { preview_approval_requires_gateway_review(registry::SafetyLevel::Off, false, Some(false)); }
+fn matrix_pending_review_off_empty_store() {
+    preview_approval_requires_gateway_review(registry::SafetyLevel::Off, false, Some(false));
+}
 
 #[test]
-fn matrix_pending_review_off_deleted_store() { preview_approval_requires_gateway_review(registry::SafetyLevel::Off, true, Some(true)); }
+fn matrix_pending_review_off_deleted_store() {
+    preview_approval_requires_gateway_review(registry::SafetyLevel::Off, true, Some(true));
+}
 
 #[test]
 fn matrix_retired_review_off_pin_store_failure() {
@@ -2821,24 +2950,52 @@ fn matrix_legacy_summary_release_uses_store_key() {
     write_registry(&dir, vec![], vec![]);
     let reg = registry::load_from(&dir.join("registry.json")).unwrap();
     let scope = reg.active_profile_id.as_deref().unwrap();
-    for (profile, path) in [("", dir.join("quarantine.json")), (scope, dir.join(format!("quarantine-v2-{}.json", registry::profile_store_key(scope))))] {
+    for (profile, path) in [
+        ("", dir.join("quarantine.json")),
+        (
+            scope,
+            dir.join(format!(
+                "quarantine-v2-{}.json",
+                registry::profile_store_key(scope)
+            )),
+        ),
+    ] {
         let record = json!({"tool":"wipe", "change":"changed", "ts":1, "definition":{"name":"srv__wipe", "inputSchema":{"type":"object"}}});
         std::fs::write(&path, json!({"srv__wipe":record}).to_string()).unwrap();
-        let displayed = conduit_lib::integrity::all_quarantined_summaries().unwrap().into_iter()
-            .find(|row| row["profile"] == profile).unwrap();
+        let displayed = conduit_lib::integrity::all_quarantined_summaries()
+            .unwrap()
+            .into_iter()
+            .find(|row| row["profile"] == profile)
+            .unwrap();
         assert_eq!(displayed["tool"], "srv__wipe");
-        assert_eq!(displayed["record_id"], conduit_lib::integrity::quarantine_record_id(&record));
-        assert_eq!(conduit_lib::integrity::quarantine_definition(
-            (!profile.is_empty()).then_some(profile), "srv__wipe", displayed["record_id"].as_str().unwrap(),
-        ).unwrap(), record["definition"]);
-        let newer = json!({"tool":"wipe", "change":"poison", "ts":2, "definition":record["definition"]});
+        assert_eq!(
+            displayed["record_id"],
+            conduit_lib::integrity::quarantine_record_id(&record)
+        );
+        assert_eq!(
+            conduit_lib::integrity::quarantine_definition(
+                (!profile.is_empty()).then_some(profile),
+                "srv__wipe",
+                displayed["record_id"].as_str().unwrap(),
+            )
+            .unwrap(),
+            record["definition"]
+        );
+        let newer =
+            json!({"tool":"wipe", "change":"poison", "ts":2, "definition":record["definition"]});
         std::fs::write(&path, json!({"srv__wipe":newer}).to_string()).unwrap();
         assert!(approve_displayed_quarantine(&displayed).is_err());
-        let current = conduit_lib::integrity::all_quarantined_summaries().unwrap().into_iter()
-            .find(|row| row["profile"] == profile).unwrap();
+        let current = conduit_lib::integrity::all_quarantined_summaries()
+            .unwrap()
+            .into_iter()
+            .find(|row| row["profile"] == profile)
+            .unwrap();
         assert!(conduit_lib::integrity::release_record(
-            (!profile.is_empty()).then_some(profile), current["tool"].as_str().unwrap(), current["record_id"].as_str().unwrap(),
-        ).unwrap());
+            (!profile.is_empty()).then_some(profile),
+            current["tool"].as_str().unwrap(),
+            current["record_id"].as_str().unwrap(),
+        )
+        .unwrap());
     }
 }
 
@@ -2918,7 +3075,10 @@ fn quarantine_release_restores_calls(reserved_alias: bool, product_release: bool
         let displayed = conduit_lib::integrity::all_quarantined_summaries().unwrap();
         assert_eq!(displayed.len(), 2);
         for record in displayed {
-            assert_eq!(record["tool"], policy_name, "UI release must use the store key, not the older tool field");
+            assert_eq!(
+                record["tool"], policy_name,
+                "UI release must use the store key, not the older tool field"
+            );
             approve_displayed_quarantine(&record).unwrap();
         }
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -2929,9 +3089,9 @@ fn quarantine_release_restores_calls(reserved_alias: bool, product_release: bool
                 .filter(|record| record["tool"] == policy_name)
                 .collect();
             if !records.is_empty()
-                && records
-                    .iter()
-                    .all(|record| record["has_definition"] == true && record["definition_fp"].is_string())
+                && records.iter().all(|record| {
+                    record["has_definition"] == true && record["definition_fp"].is_string()
+                })
             {
                 break records;
             }
@@ -2958,8 +3118,11 @@ fn quarantine_release_restores_calls(reserved_alias: bool, product_release: bool
         for record in captured {
             let scope = record["profile"].as_str().unwrap();
             let definition = conduit_lib::integrity::quarantine_definition(
-                (!scope.is_empty()).then_some(scope), policy_name, record["record_id"].as_str().unwrap(),
-            ).unwrap();
+                (!scope.is_empty()).then_some(scope),
+                policy_name,
+                record["record_id"].as_str().unwrap(),
+            )
+            .unwrap();
             assert_eq!(definition["name"], policy_name);
             assert!(definition["inputSchema"].is_object());
             assert!(record["reason"]
@@ -4773,10 +4936,7 @@ fn protocol_lane_unknown_names_never_request_approval_or_leak_hidden_matches() {
     );
     none.initialize("protocol-no-access");
     for name in ["files__read_item", "files__private_guessed"] {
-        let text = protocol_lane_error(
-            &none.call_tool(name, json!({})),
-            "Unknown tool:",
-        );
+        let text = protocol_lane_error(&none.call_tool(name, json!({})), "Unknown tool:");
         assert!(
             text.contains("toolport_search_tools") && !text.contains("Mock files"),
             "{text}"
@@ -4841,25 +5001,51 @@ fn protocol_lane_cursor_name_budget_routes_the_same_tools_as_claude() {
     let (_fixture, dir) = Fixture::new("protocol-client-name-budget");
     let medium = format!("read_{}", "x".repeat(49));
     let long = format!("read_{}", "item_".repeat(20));
-    let tools = [protocol_lane_tool(&medium, false), protocol_lane_tool(&long, false)];
-    write_registry(&dir, vec![protocol_lane_server(&dir, "files", &tools)], vec![]);
+    let tools = [
+        protocol_lane_tool(&medium, false),
+        protocol_lane_tool(&long, false),
+    ];
+    write_registry(
+        &dir,
+        vec![protocol_lane_server(&dir, "files", &tools)],
+        vec![],
+    );
     let path = dir.join("registry.json");
     let mut reg = registry::load_from(&path).unwrap();
-    for client in ["cursor", "claude-code"] { reg.set_client_discovery(client, Some("full")); }
+    for client in ["cursor", "claude-code"] {
+        reg.set_client_discovery(client, Some("full"));
+    }
     registry::save_to(&path, &reg).unwrap();
-    let default_aliases = conduit_lib::router::Router::server_tool_aliases("files", &tools, Default::default());
+    let default_aliases =
+        conduit_lib::router::Router::server_tool_aliases("files", &tools, Default::default());
     for (client_id, budget) in [("cursor", 52), ("claude-code", 64)] {
-        let mut client = spawn_adapter(&dir, &AdapterOptions {
-            client_id: Some(client_id), ..Default::default()
-        });
+        let mut client = spawn_adapter(
+            &dir,
+            &AdapterOptions {
+                client_id: Some(client_id),
+                ..Default::default()
+            },
+        );
         client.initialize(client_id);
-        client.wait_for_tool_where("client budget catalog", |name| name.starts_with("files__"), Duration::from_secs(30));
+        client.wait_for_tool_where(
+            "client budget catalog",
+            |name| name.starts_with("files__"),
+            Duration::from_secs(30),
+        );
         let listed = client.request("tools/list", json!({}));
-        let aliases: Vec<_> = listed["result"]["tools"].as_array().unwrap().iter()
-            .filter_map(|tool| tool["name"].as_str()).filter(|name| name.starts_with("files__"))
-            .map(str::to_string).collect();
+        let aliases: Vec<_> = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .filter(|name| name.starts_with("files__"))
+            .map(str::to_string)
+            .collect();
         assert_eq!(aliases.len(), 2, "{listed}");
-        assert!(aliases.iter().all(|name| name.len() <= budget), "{aliases:?}");
+        assert!(
+            aliases.iter().all(|name| name.len() <= budget),
+            "{aliases:?}"
+        );
         let mut originals = Vec::new();
         for alias in aliases {
             let response = client.call_tool(&alias, json!({}));
@@ -4974,7 +5160,14 @@ fn protocol_lane_policy_refusals_explain_the_reason_and_fix() {
             client.call_tool(name, json!({})),
             client.call_tool("toolport_call_tool", json!({"name":name,"arguments":{}})),
         ] {
-            let text = protocol_lane_error(&result, if case == "client" { "Unknown tool:" } else { "Blocked by Toolport:" });
+            let text = protocol_lane_error(
+                &result,
+                if case == "client" {
+                    "Unknown tool:"
+                } else {
+                    "Blocked by Toolport:"
+                },
+            );
             assert!(
                 text.contains(reason) && text.contains(fix),
                 "{case}: {text}"
@@ -5007,7 +5200,10 @@ fn protocol_lane_cold_calls_wait_for_catalog_or_report_starting() {
         client.initialize("protocol-cold");
         // Load the mock process while keeping its catalog unavailable. Windows
         // process loading must not consume the unchanged 400/4000 ms fixture delay.
-        assert!(!client.tool_names().iter().any(|name| name == "files__read_item"));
+        assert!(!client
+            .tool_names()
+            .iter()
+            .any(|name| name == "files__read_item"));
         wait_until(
             || release.with_extension("ready").exists(),
             "cold mock process startup",
@@ -5359,10 +5555,7 @@ fn protocol_lane_long_server_aliases_keep_both_identity_parts_and_cached_routes(
             },
         );
         none.initialize("protocol-long-server-no-access");
-        let refused = protocol_lane_error(
-            &none.call_tool(alias, json!({})),
-            "Unknown tool:",
-        );
+        let refused = protocol_lane_error(&none.call_tool(alias, json!({})), "Unknown tool:");
         assert!(refused.contains("toolport_search_tools"), "{refused}");
         assert_eq!(
             transcript_method_count(

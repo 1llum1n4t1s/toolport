@@ -5042,9 +5042,7 @@ fn with_client_environment(
     process: &std::collections::BTreeMap<String, String>,
 ) -> std::collections::BTreeMap<String, String> {
     for (name, value) in process {
-        login
-            .entry(name.clone())
-            .or_insert_with(|| value.clone());
+        login.entry(name.clone()).or_insert_with(|| value.clone());
     }
     login
 }
@@ -18309,7 +18307,10 @@ mod login_environment_tests {
     #[test]
     fn inherited_environment_adds_client_only_names_under_login_values() {
         let login = BTreeMap::from([
-            ("PATH".to_string(), "/home/u/.local/bin:/usr/bin".to_string()),
+            (
+                "PATH".to_string(),
+                "/home/u/.local/bin:/usr/bin".to_string(),
+            ),
             ("LOGIN_KEY".to_string(), "login".to_string()),
         ]);
         let process = BTreeMap::from([
@@ -18321,7 +18322,10 @@ mod login_environment_tests {
         assert_eq!(env["LOGIN_KEY"], "login");
         assert_eq!(env["AWS_PROFILE"], "work");
         let child: BTreeMap<_, _> = child_environment(&env, &[], false).into_iter().collect();
-        assert!(!child.contains_key("AWS_PROFILE"), "opt-out servers keep the allowlist");
+        assert!(
+            !child.contains_key("AWS_PROFILE"),
+            "opt-out servers keep the allowlist"
+        );
     }
 
     #[test]

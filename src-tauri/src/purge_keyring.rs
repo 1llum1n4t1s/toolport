@@ -19,10 +19,15 @@ pub(crate) struct Scope {
 
 impl Scope {
     fn owns(&self, account: &str) -> bool {
-        self.all_installs || account.split_once("::")
-            .is_some_and(|(id, _)| id != "__toolport_internal__" && id != "__conduit_master_key__"
-                && id != crate::teams::TEAM_TOKEN_SERVER && id != "__toolport_http_bridge__"
-                && id != "__toolport_http_clients__" && self.server_ids.contains(id))
+        self.all_installs
+            || account.split_once("::").is_some_and(|(id, _)| {
+                id != "__toolport_internal__"
+                    && id != "__conduit_master_key__"
+                    && id != crate::teams::TEAM_TOKEN_SERVER
+                    && id != "__toolport_http_bridge__"
+                    && id != "__toolport_http_clients__"
+                    && self.server_ids.contains(id)
+            })
     }
 }
 
@@ -36,13 +41,19 @@ fn remove_owned<T>(
 ) -> Removal {
     let mut report = Removal::default();
     // Finish the read-only inventory before deleting even one credential.
-    let inventory: Vec<_> = entries.into_iter().map(|entry| {
-        let attrs = attributes(&entry);
-        (entry, attrs)
-    }).collect();
+    let inventory: Vec<_> = entries
+        .into_iter()
+        .map(|entry| {
+            let attrs = attributes(&entry);
+            (entry, attrs)
+        })
+        .collect();
     for (entry, attrs) in &inventory {
         if let Err(error) = attrs {
-            report.leftovers.push(Leftover { path: path(entry), error: error.clone() });
+            report.leftovers.push(Leftover {
+                path: path(entry),
+                error: error.clone(),
+            });
         }
     }
     if !report.leftovers.is_empty() {
@@ -66,9 +77,15 @@ fn remove_owned<T>(
 }
 
 fn record_deleted(account: &str, path: String, report: &mut Removal) {
-    let team = format!("{}::{}", crate::teams::TEAM_TOKEN_SERVER, crate::teams::TEAM_TOKEN_KEY);
+    let team = format!(
+        "{}::{}",
+        crate::teams::TEAM_TOKEN_SERVER,
+        crate::teams::TEAM_TOKEN_KEY
+    );
     report.team_token_removed |= account == team
-        || account.strip_prefix(&team).is_some_and(|suffix| suffix.starts_with("::toolport-chunk::"));
+        || account
+            .strip_prefix(&team)
+            .is_some_and(|suffix| suffix.starts_with("::toolport-chunk::"));
     report.removed.push(path);
 }
 
@@ -82,15 +99,28 @@ fn skipped_keyring(reason: &str) -> Removal {
 
 #[cfg(target_os = "linux")]
 fn no_keyring(team_token_in_file: bool) -> Removal {
-    Removal { team_token_in_file, notes: vec!["No keyring in use; encrypted file secrets are removed with the data folder.".into()], ..Removal::default() }
+    Removal {
+        team_token_in_file,
+        notes: vec![
+            "No keyring in use; encrypted file secrets are removed with the data folder.".into(),
+        ],
+        ..Removal::default()
+    }
 }
 
 #[cfg(target_os = "linux")]
 fn unavailable(error: &dbus_secret_service::Error) -> bool {
     match error {
         dbus_secret_service::Error::Unavailable => true,
-        dbus_secret_service::Error::Dbus(error) => matches!(error.name(),
-            Some("org.freedesktop.DBus.Error.ServiceUnknown" | "org.freedesktop.DBus.Error.NameHasNoOwner" | "org.freedesktop.DBus.Error.NoServer" | "org.freedesktop.DBus.Error.FileNotFound")),
+        dbus_secret_service::Error::Dbus(error) => matches!(
+            error.name(),
+            Some(
+                "org.freedesktop.DBus.Error.ServiceUnknown"
+                    | "org.freedesktop.DBus.Error.NameHasNoOwner"
+                    | "org.freedesktop.DBus.Error.NoServer"
+                    | "org.freedesktop.DBus.Error.FileNotFound"
+            )
+        ),
         _ => false,
     }
 }
@@ -107,11 +137,20 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
     // Follow the real backend selector, but still inventory an available desktop
     // keyring: selecting the file backend does not remove its older OS tokens.
     let file_active = super::file::active();
-    let team_token_in_file = file_active && super::file::get_secret_result(crate::teams::TEAM_TOKEN_SERVER, crate::teams::TEAM_TOKEN_KEY)
-        .ok().flatten().is_some();
+    let team_token_in_file = file_active
+        && super::file::get_secret_result(
+            crate::teams::TEAM_TOKEN_SERVER,
+            crate::teams::TEAM_TOKEN_KEY,
+        )
+        .ok()
+        .flatten()
+        .is_some();
     crate::hostenv::restore_session_bus_env();
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })));
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }))
+        });
     let desktop_runtime = runtime.exists();
     if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none_or(|address| address.is_empty()) {
         return Ok(if desktop_runtime {
@@ -123,8 +162,14 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
     }
     let service = match SecretService::connect_with_max_prompt_timeout(EncryptionType::Dh, 5) {
         Ok(service) => service,
-        Err(error) if missing_bus(&error) && file_active && !desktop_runtime => return Ok(no_keyring(team_token_in_file)),
-        Err(error) if unavailable(&error) => return Ok(skipped_keyring(&format!("Secret Service is unavailable: {error}"))),
+        Err(error) if missing_bus(&error) && file_active && !desktop_runtime => {
+            return Ok(no_keyring(team_token_in_file))
+        }
+        Err(error) if unavailable(&error) => {
+            return Ok(skipped_keyring(&format!(
+                "Secret Service is unavailable: {error}"
+            )))
+        }
         Err(error) => return Err(error.to_string()),
     };
     let entries = service
@@ -140,8 +185,17 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
             item.get_attributes()
                 .map_err(|error| error.to_string())
                 .and_then(|attrs| {
-                    Ok((attrs.get("service").cloned().ok_or("Missing service attribute")?,
-                        attrs.get("username").cloned().or_else(|| attrs.get("account").cloned()).ok_or("Missing account attribute")?))
+                    Ok((
+                        attrs
+                            .get("service")
+                            .cloned()
+                            .ok_or("Missing service attribute")?,
+                        attrs
+                            .get("username")
+                            .cloned()
+                            .or_else(|| attrs.get("account").cloned())
+                            .ok_or("Missing account attribute")?,
+                    ))
                 })
         },
         |item| format!("secret-service:{}", item.path),
@@ -192,7 +246,9 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
             } else {
                 ""
             };
-            let account = target.strip_suffix(&format!(".{}", super::SERVICE)).unwrap_or("");
+            let account = target
+                .strip_suffix(&format!(".{}", super::SERVICE))
+                .unwrap_or("");
             Ok((service.into(), account.into()))
         },
         |entry| {
@@ -258,7 +314,10 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
                     continue;
                 };
                 let Some(account) = account(&attributes) else {
-                    report.leftovers.push(Leftover { path: "keychain:conduit-mcp/legacy".into(), error: "Missing account attribute".into() });
+                    report.leftovers.push(Leftover {
+                        path: "keychain:conduit-mcp/legacy".into(),
+                        error: "Missing account attribute".into(),
+                    });
                     continue;
                 };
                 let path = format!("keychain:conduit-mcp/legacy/{account}");
@@ -312,9 +371,15 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
         let status = SecItemCopyMatching(query.as_concrete_TypeRef().cast(), &mut result);
         if status == 0 && !result.is_null() {
             let entries = CFArray::<CFDictionary>::wrap_under_create_rule(result.cast());
-            let accounts: Option<Vec<_>> = entries.iter().map(|attributes| account(&attributes)).collect();
+            let accounts: Option<Vec<_>> = entries
+                .iter()
+                .map(|attributes| account(&attributes))
+                .collect();
             if accounts.is_none() {
-                report.leftovers.push(Leftover { path: "keychain:conduit-mcp/data-protection".into(), error: "Missing account attribute; no credentials removed".into() });
+                report.leftovers.push(Leftover {
+                    path: "keychain:conduit-mcp/data-protection".into(),
+                    error: "Missing account attribute; no credentials removed".into(),
+                });
             }
             let inventory_failed = !report.leftovers.is_empty();
             for account in accounts.unwrap_or_default() {
@@ -323,7 +388,9 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
                     report.preserved.push(account);
                     continue;
                 }
-                if inventory_failed { continue; }
+                if inventory_failed {
+                    continue;
+                }
                 let mut delete = base.clone();
                 delete.push((
                     k(kSecAttrAccount.cast()),
@@ -351,21 +418,39 @@ pub(crate) fn remove(scope: &Scope) -> Result<Removal, String> {
     }
     if report.leftovers.is_empty() {
         for (reference, account, path) in legacy {
-            let status = unsafe { security_framework_sys::keychain_item::SecKeychainItemDelete(reference.as_CFTypeRef().cast_mut().cast()) };
-            if status == 0 { record_deleted(&account, path, &mut report); }
-            else { report.leftovers.push(Leftover { path, error: format!("SecKeychainItemDelete: {status}") }); }
+            let status = unsafe {
+                security_framework_sys::keychain_item::SecKeychainItemDelete(
+                    reference.as_CFTypeRef().cast_mut().cast(),
+                )
+            };
+            if status == 0 {
+                record_deleted(&account, path, &mut report);
+            } else {
+                report.leftovers.push(Leftover {
+                    path,
+                    error: format!("SecKeychainItemDelete: {status}"),
+                });
+            }
         }
     } else {
-        report.preserved.extend(legacy.into_iter().map(|(_, _, path)| format!("{path} (retained after keychain cleanup failure)")));
+        report.preserved.extend(
+            legacy
+                .into_iter()
+                .map(|(_, _, path)| format!("{path} (retained after keychain cleanup failure)")),
+        );
     }
     Ok(report)
 }
 
 #[cfg(test)]
 pub(crate) fn remove_fixture_accounts(scope: &Scope, accounts: &[&str]) -> Removal {
-    remove_owned(accounts.iter().copied(), scope,
+    remove_owned(
+        accounts.iter().copied(),
+        scope,
         |account| Ok((super::SERVICE.into(), (*account).into())),
-        |account| (*account).into(), |_| Ok(()))
+        |account| (*account).into(),
+        |_| Ok(()),
+    )
 }
 
 #[cfg(test)]
@@ -381,7 +466,10 @@ mod tests {
         let mut deleted = Vec::new();
         let leftovers = remove_owned(
             items,
-            &Scope { all_installs: true, server_ids: Default::default() },
+            &Scope {
+                all_installs: true,
+                server_ids: Default::default(),
+            },
             |item| Ok((item.0.into(), item.1.into())),
             |item| item.1.into(),
             |item| {
@@ -399,9 +487,24 @@ mod tests {
     }
     #[test]
     fn purge_scoped_keyring_preserves_other_install_master_and_chunks() {
-        let items = ["mine::TOKEN", "mine::TOKEN::toolport-chunk::generation::0", "main::TOKEN", "__conduit_master_key__", "__conduit_team__::member_token"];
-        let scope = Scope { all_installs: false, server_ids: std::collections::HashSet::from(["mine".into()]) };
-        let report = remove_owned(items, &scope, |account| Ok(("conduit-mcp".into(), (*account).into())), |account| (*account).into(), |_| Ok(()));
+        let items = [
+            "mine::TOKEN",
+            "mine::TOKEN::toolport-chunk::generation::0",
+            "main::TOKEN",
+            "__conduit_master_key__",
+            "__conduit_team__::member_token",
+        ];
+        let scope = Scope {
+            all_installs: false,
+            server_ids: std::collections::HashSet::from(["mine".into()]),
+        };
+        let report = remove_owned(
+            items,
+            &scope,
+            |account| Ok(("conduit-mcp".into(), (*account).into())),
+            |account| (*account).into(),
+            |_| Ok(()),
+        );
         assert_eq!(report.removed, items[..2]);
         assert_eq!(report.preserved, items[2..]);
         assert!(report.leftovers.is_empty());
@@ -409,10 +512,23 @@ mod tests {
 
     #[test]
     fn purge_keyring_inventory_failure_never_deletes_an_earlier_item() {
-        let scope = Scope { all_installs: true, server_ids: Default::default() };
-        let report = remove_owned(["readable", "unreadable"], &scope,
-            |account| if *account == "unreadable" { Err("denied".into()) } else { Ok(("conduit-mcp".into(), (*account).into())) },
-            |account| (*account).into(), |_| panic!("inventory must finish before deletion"));
+        let scope = Scope {
+            all_installs: true,
+            server_ids: Default::default(),
+        };
+        let report = remove_owned(
+            ["readable", "unreadable"],
+            &scope,
+            |account| {
+                if *account == "unreadable" {
+                    Err("denied".into())
+                } else {
+                    Ok(("conduit-mcp".into(), (*account).into()))
+                }
+            },
+            |account| (*account).into(),
+            |_| panic!("inventory must finish before deletion"),
+        );
         assert!(report.removed.is_empty());
         assert_eq!(report.leftovers[0].path, "unreadable");
     }
@@ -427,9 +543,23 @@ mod tests {
 
     #[test]
     fn purge_explicit_global_scope_removes_master_internal_and_deleted_server_accounts() {
-        let items = ["__conduit_master_key__", "__toolport_internal__::task_key", "deleted-server::TOKEN", "mine::TOKEN::toolport-chunk::generation::0"];
-        let scope = Scope { all_installs: true, server_ids: Default::default() };
-        let report = remove_owned(items, &scope, |account| Ok(("conduit-mcp".into(), (*account).into())), |account| (*account).into(), |_| Ok(()));
+        let items = [
+            "__conduit_master_key__",
+            "__toolport_internal__::task_key",
+            "deleted-server::TOKEN",
+            "mine::TOKEN::toolport-chunk::generation::0",
+        ];
+        let scope = Scope {
+            all_installs: true,
+            server_ids: Default::default(),
+        };
+        let report = remove_owned(
+            items,
+            &scope,
+            |account| Ok(("conduit-mcp".into(), (*account).into())),
+            |account| (*account).into(),
+            |_| Ok(()),
+        );
         assert_eq!(report.removed, items);
         assert!(report.preserved.is_empty() && report.leftovers.is_empty());
         assert!(!report.team_token_removed);
@@ -438,28 +568,69 @@ mod tests {
     #[test]
     fn purge_team_token_note_tracks_successful_deletion_only() {
         let team = "__conduit_team__::member_token";
-        let scope = Scope { all_installs: true, server_ids: Default::default() };
+        let scope = Scope {
+            all_installs: true,
+            server_ids: Default::default(),
+        };
         for delete_team in [false, true] {
-            let report = remove_owned(["mine::TOKEN", team], &scope,
-                |account| Ok(("conduit-mcp".into(), (*account).into())), |account| (*account).into(),
-                |account| if *account == team && !delete_team { Err("locked".into()) } else { Ok(()) });
+            let report = remove_owned(
+                ["mine::TOKEN", team],
+                &scope,
+                |account| Ok(("conduit-mcp".into(), (*account).into())),
+                |account| (*account).into(),
+                |account| {
+                    if *account == team && !delete_team {
+                        Err("locked".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
             assert_eq!(report.team_token_removed, delete_team);
         }
-        let report = remove_owned([team], &Scope { all_installs: false, server_ids: Default::default() },
-            |account| Ok(("conduit-mcp".into(), (*account).into())), |account| (*account).into(), |_| panic!("shared token must stay"));
+        let report = remove_owned(
+            [team],
+            &Scope {
+                all_installs: false,
+                server_ids: Default::default(),
+            },
+            |account| Ok(("conduit-mcp".into(), (*account).into())),
+            |account| (*account).into(),
+            |_| panic!("shared token must stay"),
+        );
         assert!(!report.team_token_removed);
     }
 
     #[test]
     fn purge_default_scope_preserves_shared_and_unknown_accounts_even_without_detected_installs() {
-        let items = ["mine::TOKEN", "mine::TOKEN::toolport-chunk::generation::0", "work::TOKEN",
-            "__conduit_master_key__", "__toolport_internal__::task_key", "__conduit_team__::member_token",
-            "__toolport_http_bridge__::TOKEN", "__toolport_http_clients__::fixture", "unknown"];
-        let scope = Scope { all_installs: false, server_ids: std::collections::HashSet::from([
-            "mine".into(), "__toolport_internal__".into(), "__conduit_team__".into(),
-            "__toolport_http_bridge__".into(), "__toolport_http_clients__".into()]) };
-        let report = remove_owned(items, &scope, |account| Ok(("conduit-mcp".into(), (*account).into())),
-            |account| (*account).into(), |_| Ok(()));
+        let items = [
+            "mine::TOKEN",
+            "mine::TOKEN::toolport-chunk::generation::0",
+            "work::TOKEN",
+            "__conduit_master_key__",
+            "__toolport_internal__::task_key",
+            "__conduit_team__::member_token",
+            "__toolport_http_bridge__::TOKEN",
+            "__toolport_http_clients__::fixture",
+            "unknown",
+        ];
+        let scope = Scope {
+            all_installs: false,
+            server_ids: std::collections::HashSet::from([
+                "mine".into(),
+                "__toolport_internal__".into(),
+                "__conduit_team__".into(),
+                "__toolport_http_bridge__".into(),
+                "__toolport_http_clients__".into(),
+            ]),
+        };
+        let report = remove_owned(
+            items,
+            &scope,
+            |account| Ok(("conduit-mcp".into(), (*account).into())),
+            |account| (*account).into(),
+            |_| Ok(()),
+        );
         assert_eq!(report.removed, items[..2]);
         assert_eq!(report.preserved, items[2..]);
         assert!(!report.team_token_removed);
@@ -467,12 +638,25 @@ mod tests {
 
     #[test]
     fn purge_r4_preserved_credentials_report_accounts_instead_of_object_paths() {
-        let report = remove_owned([("/org/freedesktop/secrets/item/1", "__conduit_master_key__"),
-            ("/org/freedesktop/secrets/item/2", "__toolport_http_bridge__::TOKEN")],
-            &Scope { all_installs: false, server_ids: Default::default() },
-            |item| Ok(("conduit-mcp".into(), item.1.into())), |item| item.0.into(),
-            |_| panic!("shared keys must stay"));
-        assert_eq!(report.preserved, ["__conduit_master_key__", "__toolport_http_bridge__::TOKEN"]);
+        let report = remove_owned(
+            [
+                ("/org/freedesktop/secrets/item/1", "__conduit_master_key__"),
+                (
+                    "/org/freedesktop/secrets/item/2",
+                    "__toolport_http_bridge__::TOKEN",
+                ),
+            ],
+            &Scope {
+                all_installs: false,
+                server_ids: Default::default(),
+            },
+            |item| Ok(("conduit-mcp".into(), item.1.into())),
+            |item| item.0.into(),
+            |_| panic!("shared keys must stay"),
+        );
+        assert_eq!(
+            report.preserved,
+            ["__conduit_master_key__", "__toolport_http_bridge__::TOKEN"]
+        );
     }
-
 }

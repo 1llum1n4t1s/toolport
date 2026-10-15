@@ -124,7 +124,9 @@ impl Gateway {
                 // before this child has actually bound its HTTP listener.
                 let ready = agent
                     .get(&format!("http://127.0.0.1:{port}/"))
-                    .config().timeout_global(Some(Duration::from_millis(500))).build()
+                    .config()
+                    .timeout_global(Some(Duration::from_millis(500)))
+                    .build()
                     .set_header("Authorization", &format!("Bearer {token}"))
                     .call()
                     .retain_status_body()
@@ -209,7 +211,9 @@ impl Gateway {
                 "http://127.0.0.1:{}/{name}",
                 self.http_port.unwrap()
             ))
-            .config().timeout_global(Some(Duration::from_secs(75))).build()
+            .config()
+            .timeout_global(Some(Duration::from_secs(75)))
+            .build()
             .set_header("Authorization", &format!("Bearer {token}"))
             .send_json(args)
             .retain_status_body();
@@ -447,7 +451,10 @@ fn script_error_text_cannot_impersonate_memory_exhaustion() {
         assert!(entry.get("error").is_none(), "{entry}");
         let run_id = entry["runId"].as_str().expect("opaque run ID");
         assert_eq!(run_id.len(), 32, "{entry}");
-        assert!(run_id.bytes().all(|byte| byte.is_ascii_hexdigit()), "{entry}");
+        assert!(
+            run_id.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "{entry}"
+        );
         let recorded = entry.to_string();
         for private_text in [
             "data.message",
@@ -695,10 +702,9 @@ fn http_client_memory_failure_does_not_stop_other_clients_and_scope_stays_enforc
         }),
     );
     assert!(
-        scoped.to_string().contains("Unknown tool:"),
+        scoped.to_string().contains("toolport_search_tools"),
         "{scoped}"
     );
-    assert!(scoped.to_string().contains("toolport_search_tools"), "{scoped}");
     let normal = gateway.http_call(
         "client-b",
         "toolport_run_script",

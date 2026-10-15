@@ -208,7 +208,11 @@ mod tests {
             }
             migrate_v2_to_v3(&mut value, &context).unwrap();
             let reg: Registry = serde_json::from_value(value).unwrap();
-            assert_eq!(reg.chosen_global_discovery_mode(), expected, "{lazy:?} {mode:?}");
+            assert_eq!(
+                reg.chosen_global_discovery_mode(),
+                expected,
+                "{lazy:?} {mode:?}"
+            );
             // Codex and Cursor would resolve to Full under Auto.
             for client in ["codex", "cursor", "claude-code"] {
                 let resolved = crate::clients::client_discovery_mode(&reg, client);
@@ -221,7 +225,10 @@ mod tests {
         migrate_v2_to_v3(&mut value, &context).unwrap();
         let mut reg: Registry = serde_json::from_value(value).unwrap();
         reg.set_lazy_discovery(false);
-        assert_eq!(crate::clients::client_discovery_mode(&reg, "claude-code"), "full");
+        assert_eq!(
+            crate::clients::client_discovery_mode(&reg, "claude-code"),
+            "full"
+        );
     }
 
     #[test]

@@ -14,21 +14,51 @@ impl RootGuard {
 }
 #[cfg(test)]
 impl Drop for RootGuard {
-    fn drop(&mut self) { ROOT.with(|slot| { slot.replace(self.0.take()); }); }
+    fn drop(&mut self) {
+        ROOT.with(|slot| {
+            slot.replace(self.0.take());
+        });
+    }
 }
 
 pub(crate) fn dir(kind: &str) -> Option<PathBuf> {
     #[cfg(test)]
-    let root = ROOT.with(|slot| slot.borrow().clone()).or_else(crate::clients::home)?;
+    let root = ROOT
+        .with(|slot| slot.borrow().clone())
+        .or_else(crate::clients::home)?;
     #[cfg(not(test))]
     let root = PathBuf::from(std::env::var_os("TOOLPORT_TEST_ROOT")?);
     assert!(root.is_absolute(), "fixture root must be absolute");
     let suffix = match kind {
         "home" => "",
-        "config" => if cfg!(windows) { "AppData/Roaming" } else { ".config" },
-        "data" => if cfg!(windows) { "AppData/Roaming" } else { ".local/share" },
-        "local-data" => if cfg!(windows) { "AppData/Local" } else { ".local/share" },
-        "cache" => if cfg!(windows) { "AppData/Local" } else { ".cache" },
+        "config" => {
+            if cfg!(windows) {
+                "AppData/Roaming"
+            } else {
+                ".config"
+            }
+        }
+        "data" => {
+            if cfg!(windows) {
+                "AppData/Roaming"
+            } else {
+                ".local/share"
+            }
+        }
+        "local-data" => {
+            if cfg!(windows) {
+                "AppData/Local"
+            } else {
+                ".local/share"
+            }
+        }
+        "cache" => {
+            if cfg!(windows) {
+                "AppData/Local"
+            } else {
+                ".cache"
+            }
+        }
         _ => unreachable!("known fixture root"),
     };
     Some(root.join(suffix))

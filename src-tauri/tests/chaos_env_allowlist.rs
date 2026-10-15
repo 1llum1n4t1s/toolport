@@ -143,7 +143,10 @@ fn an_adapter_started_daemon_passes_client_env_only_to_opted_in_servers() {
     let mut client = Client::start_with_env(
         scratch.path(),
         "client-env",
-        &[("SHELL", "/nonexistent-shell"), ("CLIENT_ONLY_KEY", "from-client")],
+        &[
+            ("SHELL", "/nonexistent-shell"),
+            ("CLIENT_ONLY_KEY", "from-client"),
+        ],
     );
     for id in ["inherits", "filtered"] {
         assert!(
@@ -153,7 +156,9 @@ fn an_adapter_started_daemon_passes_client_env_only_to_opted_in_servers() {
         );
     }
     assert!(
-        scratch.read("inherits.env").contains("CLIENT_ONLY_KEY=from-client"),
+        scratch
+            .read("inherits.env")
+            .contains("CLIENT_ONLY_KEY=from-client"),
         "the daemon dropped the client's environment"
     );
     assert!(!scratch.read("filtered.env").contains("CLIENT_ONLY_KEY"));

@@ -341,11 +341,16 @@ pub fn request_shutdown_if_idle(descriptor: &DaemonDescriptor) -> Result<(), Str
 
 /// Stale or malformed descriptors are data, not live-process evidence.
 fn purge_descriptors(data_dir: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(data_dir).into_iter().flatten().flatten().filter_map(|entry| {
-        let name = entry.file_name();
-        let name = name.to_str()?;
-        (name.starts_with("daemon-") && name.ends_with(".json")).then(|| entry.path())
-    }).collect()
+    std::fs::read_dir(data_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            (name.starts_with("daemon-") && name.ends_with(".json")).then(|| entry.path())
+        })
+        .collect()
 }
 
 fn purge_descriptor_process(
@@ -359,7 +364,9 @@ fn purge_descriptor_process(
     };
     match process.is_host_daemon {
         Some(false) => return Ok(false),
-        None => return Err("Could not verify this gateway's daemon role; close it and retry".into()),
+        None => {
+            return Err("Could not verify this gateway's daemon role; close it and retry".into())
+        }
         Some(true) => {}
     }
     if !owned(pid) {
@@ -369,30 +376,53 @@ fn purge_descriptor_process(
 }
 
 fn verified_purge_descriptor(path: &Path) -> Result<Option<DaemonDescriptor>, String> {
-    let Some(descriptor) = read_descriptor(path) else { return Ok(None); };
+    let Some(descriptor) = read_descriptor(path) else {
+        return Ok(None);
+    };
     // PID liveness alone is unsafe: it may now be a completely unrelated process.
     let processes = crate::gateway_publish::list_gateway_processes();
-    if !purge_descriptor_process(descriptor.pid, &processes, crate::gateway_publish::purge_process_owned)? {
+    if !purge_descriptor_process(
+        descriptor.pid,
+        &processes,
+        crate::gateway_publish::purge_process_owned,
+    )? {
         return Ok(None);
     }
     match attempt_identity_probe(&descriptor) {
-        Ok(identity) if identity.pid == descriptor.pid && identity.compat == descriptor.compat
-            && identity.protocol == descriptor.protocol => Ok(Some(descriptor)),
-        Ok(_) => Err("Live daemon identity does not match its descriptor; close it and retry".into()),
-        Err(ProbeFailure::Answered(_) | ProbeFailure::Unreachable) => Err("Live daemon could not prove its authenticated identity; close it and retry".into()),
-        Err(ProbeFailure::Silent) => Err("Daemon did not answer its authenticated identity probe; close it and retry".into()),
+        Ok(identity)
+            if identity.pid == descriptor.pid
+                && identity.compat == descriptor.compat
+                && identity.protocol == descriptor.protocol =>
+        {
+            Ok(Some(descriptor))
+        }
+        Ok(_) => {
+            Err("Live daemon identity does not match its descriptor; close it and retry".into())
+        }
+        Err(ProbeFailure::Answered(_) | ProbeFailure::Unreachable) => {
+            Err("Live daemon could not prove its authenticated identity; close it and retry".into())
+        }
+        Err(ProbeFailure::Silent) => {
+            Err("Daemon did not answer its authenticated identity probe; close it and retry".into())
+        }
     }
 }
 
 fn probe_purge_idle(descriptor: &DaemonDescriptor) -> Result<(), String> {
     let topology: serde_json::Value = crate::http_client::agent()
         .get(&format!("http://{}{}", descriptor.endpoint, TOPOLOGY_PATH))
-        .config().timeout_global(Some(CONTROL_TIMEOUT)).build()
+        .config()
+        .timeout_global(Some(CONTROL_TIMEOUT))
+        .build()
         .set_header("Authorization", &format!("Bearer {}", descriptor.token))
-        .call().map_err(|error| error.to_string())?
-        .body_mut().read_json().map_err(|error| error.to_string())?;
+        .call()
+        .map_err(|error| error.to_string())?
+        .body_mut()
+        .read_json()
+        .map_err(|error| error.to_string())?;
     if topology["pid"].as_u64() != Some(descriptor.pid as u64)
-        || topology["compat"].as_str() != Some(descriptor.compat.as_str()) {
+        || topology["compat"].as_str() != Some(descriptor.compat.as_str())
+    {
         return Err("Daemon topology does not match its descriptor".into());
     }
     if topology["purgeIdle"].as_bool() != Some(true) {
@@ -409,7 +439,10 @@ pub(crate) fn purge_idle_blockers(data_dir: &Path) -> Vec<crate::purge::Leftover
             descriptor.map_or(Ok(()), |descriptor| probe_purge_idle(&descriptor))
         });
         if let Err(error) = result {
-            leftovers.push(crate::purge::Leftover { path: path.display().to_string(), error });
+            leftovers.push(crate::purge::Leftover {
+                path: path.display().to_string(),
+                error,
+            });
         }
     }
     leftovers
@@ -420,13 +453,21 @@ pub(crate) fn stop_for_purge(data_dir: &Path) -> Vec<crate::purge::Leftover> {
     let mut leftovers = Vec::new();
     for path in purge_descriptors(data_dir) {
         let result = (|| {
-            let Some(descriptor) = verified_purge_descriptor(&path)? else { return Ok(()); };
+            let Some(descriptor) = verified_purge_descriptor(&path)? else {
+                return Ok(());
+            };
             probe_purge_idle(&descriptor)?;
             request_shutdown_if_idle(&descriptor)?;
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             while process_exists(descriptor.pid) {
                 // Recheck image identity too: never wait forever on a reused PID.
-                if !purge_descriptor_process(descriptor.pid, &crate::gateway_publish::list_gateway_processes(), crate::gateway_publish::purge_process_owned)? { return Ok(()); }
+                if !purge_descriptor_process(
+                    descriptor.pid,
+                    &crate::gateway_publish::list_gateway_processes(),
+                    crate::gateway_publish::purge_process_owned,
+                )? {
+                    return Ok(());
+                }
                 if std::time::Instant::now() >= deadline {
                     return Err(format!("Daemon PID {} remains busy or could not exit. Close active sessions and retry.", descriptor.pid));
                 }
@@ -435,7 +476,10 @@ pub(crate) fn stop_for_purge(data_dir: &Path) -> Vec<crate::purge::Leftover> {
             Ok(())
         })();
         if let Err(error) = result {
-            leftovers.push(crate::purge::Leftover { path: path.display().to_string(), error });
+            leftovers.push(crate::purge::Leftover {
+                path: path.display().to_string(),
+                error,
+            });
         }
     }
     leftovers
@@ -468,7 +512,14 @@ fn classify_probe_error(error: crate::http_client::Error) -> ProbeFailure {
         if let Some(connect) = crate::http_client::connect_error(transport) {
             return match connect {
                 ureq::Error::Timeout(_) => ProbeFailure::Silent,
-                ureq::Error::Io(io) if matches!(io.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => ProbeFailure::Silent,
+                ureq::Error::Io(io)
+                    if matches!(
+                        io.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    ProbeFailure::Silent
+                }
                 _ => ProbeFailure::Unreachable,
             };
         }
@@ -1487,10 +1538,19 @@ mod tests {
         std::fs::write(&malformed, "invalid json").unwrap();
         assert!(verified_purge_descriptor(&malformed).unwrap().is_none());
         let reused = env.dir.join("daemon-reused.json");
-        std::fs::write(&reused, serde_json::to_vec(&DaemonDescriptor {
-            endpoint: "127.0.0.1:1".into(), token: "fixture".into(), pid: std::process::id(),
-            compat: "fixture".into(), protocol: PROTOCOL_GENERATION, created_at_ms: 0,
-        }).unwrap()).unwrap();
+        std::fs::write(
+            &reused,
+            serde_json::to_vec(&DaemonDescriptor {
+                endpoint: "127.0.0.1:1".into(),
+                token: "fixture".into(),
+                pid: std::process::id(),
+                compat: "fixture".into(),
+                protocol: PROTOCOL_GENERATION,
+                created_at_ms: 0,
+            })
+            .unwrap(),
+        )
+        .unwrap();
         assert!(verified_purge_descriptor(&reused).unwrap().is_none());
         assert!(purge_idle_blockers(&env.dir).is_empty());
         assert!(stop_for_purge(&env.dir).is_empty());
@@ -1500,16 +1560,21 @@ mod tests {
     #[test]
     fn purge_unknown_daemon_role_or_owner_blocks_instead_of_becoming_stale() {
         let mut process = crate::gateway_publish::GatewayProcess {
-            pid: 42, start_time: None, is_host_daemon: None, path: None,
-            basename: "toolport-gateway.exe".into(), parent: None,
+            pid: 42,
+            start_time: None,
+            is_host_daemon: None,
+            path: None,
+            basename: "toolport-gateway.exe".into(),
+            parent: None,
         };
         assert!(purge_descriptor_process(42, &[process.clone()], |_| false).is_err());
         process.is_host_daemon = Some(true);
         assert!(purge_descriptor_process(42, &[process.clone()], |_| false).is_err());
         assert!(purge_descriptor_process(42, &[process.clone()], |_| true).unwrap());
         process.is_host_daemon = Some(false);
-        assert!(!purge_descriptor_process(42, &[process], |_| panic!("proven other role")).unwrap());
+        assert!(
+            !purge_descriptor_process(42, &[process], |_| panic!("proven other role")).unwrap()
+        );
         assert!(!purge_descriptor_process(42, &[], |_| panic!("no gateway process")).unwrap());
     }
-
 }

@@ -1519,7 +1519,9 @@ pub fn release_all_quarantine_records(
 
 fn release_all_quarantine_inner(
     profiles: &[String],
-    expected: Option<&std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>>,
+    expected: Option<
+        &std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    >,
 ) -> ReleaseAllSummary {
     let mut summary = ReleaseAllSummary::default();
     let empty = std::collections::BTreeMap::new();
@@ -1543,7 +1545,8 @@ fn release_all_quarantine_inner(
         let scope = (!profile.is_empty()).then_some(profile.as_str());
         let result = match expected {
             Some(expected) => crate::integrity::release_all_records(
-                scope, expected.get(profile).unwrap_or(&empty),
+                scope,
+                expected.get(profile).unwrap_or(&empty),
             ),
             None => crate::integrity::release_all(scope),
         };
@@ -3364,30 +3367,50 @@ mod tests {
         // Existing scopes already have stores on a live install. Avoid making
         // this fixture trigger legacy global-store migration while scanning.
         for profile in &registry.profiles {
-            let path = dir.join(format!("quarantine-v2-{}.json", registry::profile_store_key(&profile.id)));
+            let path = dir.join(format!(
+                "quarantine-v2-{}.json",
+                registry::profile_store_key(&profile.id)
+            ));
             std::fs::write(path, "{}").unwrap();
         }
-        std::fs::write(dir.join("quarantine.json"), serde_json::json!({
-            "srv__read": {"tool":"srv__read", "change":"changed", "ts":1}
-        }).to_string()).unwrap();
+        std::fs::write(
+            dir.join("quarantine.json"),
+            serde_json::json!({
+                "srv__read": {"tool":"srv__read", "change":"changed", "ts":1}
+            })
+            .to_string(),
+        )
+        .unwrap();
         let displayed = crate::integrity::all_quarantined().unwrap();
         let expected = std::collections::BTreeMap::from([(
-            "".to_string(), std::collections::BTreeMap::from([(
-                "srv__read".to_string(), displayed[0]["record_id"].as_str().unwrap().to_string(),
+            "".to_string(),
+            std::collections::BTreeMap::from([(
+                "srv__read".to_string(),
+                displayed[0]["record_id"].as_str().unwrap().to_string(),
             )]),
         )]);
         let new_scope = registry.add_profile("New scope");
-        let path = dir.join(format!("quarantine-v2-{}.json", registry::profile_store_key(&new_scope)));
-        std::fs::write(path, serde_json::json!({
-            "other__read": {"tool":"other__read", "change":"changed", "ts":2}
-        }).to_string()).unwrap();
+        let path = dir.join(format!(
+            "quarantine-v2-{}.json",
+            registry::profile_store_key(&new_scope)
+        ));
+        std::fs::write(
+            path,
+            serde_json::json!({
+                "other__read": {"tool":"other__read", "change":"changed", "ts":2}
+            })
+            .to_string(),
+        )
+        .unwrap();
         registry::save(&registry).unwrap();
         let summary = release_all_quarantine_records(&["".into()], &expected);
         assert_eq!(summary.released, 1);
         assert_eq!(summary.changed, vec!["other__read"]);
         assert!(summary.skipped.is_empty());
         assert!(summary.failed.is_empty());
-        assert!(crate::integrity::quarantined(Some(&new_scope)).unwrap().contains("other__read"));
+        assert!(crate::integrity::quarantined(Some(&new_scope))
+            .unwrap()
+            .contains("other__read"));
         assert!(crate::integrity::quarantined(None).unwrap().is_empty());
         drop(data);
         std::fs::remove_dir_all(dir).unwrap();
@@ -4710,8 +4733,8 @@ mod tests {
     #[test]
     fn plain_env_edits_refuse_bad_names_credentials_and_portable_overrides() {
         let mut entry = server("plain");
-        entry.env = serde_json::from_value(serde_json::json!([{"key":"TOKEN","secret":true}]))
-            .unwrap();
+        entry.env =
+            serde_json::from_value(serde_json::json!([{"key":"TOKEN","secret":true}])).unwrap();
         let before = entry.env.clone();
         for (key, local_only) in [
             ("BAD NAME", None),
@@ -4724,7 +4747,10 @@ mod tests {
                 value: "v".into(),
                 local_only,
             }];
-            assert!(apply_plain_env(&mut entry, edits).is_err(), "{key} accepted");
+            assert!(
+                apply_plain_env(&mut entry, edits).is_err(),
+                "{key} accepted"
+            );
         }
         let dup = |key: &str| PlainEnvEdit {
             key: key.into(),
@@ -5017,7 +5043,10 @@ mod tests {
         existing.inherit_env = true;
         registry.servers.push(existing);
         apply_update_server_fields(&mut registry, "one", fields("One", "stdio")).unwrap();
-        assert!(registry.servers[0].inherit_env, "None keeps the saved choice");
+        assert!(
+            registry.servers[0].inherit_env,
+            "None keeps the saved choice"
+        );
         let mut off = fields("One", "stdio");
         off.inherit_env = Some(false);
         apply_update_server_fields(&mut registry, "one", off).unwrap();

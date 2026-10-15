@@ -103,7 +103,10 @@ pub fn resolve_args_for_prewarm(server: &ServerEntry) -> Result<ResolvedArgs, St
 pub fn check_ready_for_enable(server: &ServerEntry) -> Result<(), String> {
     let mut staged = server.clone();
     for input in staged.launch.iter_mut().flat_map(|l| &mut l.inputs) {
-        if crate::secret_refs::source(&input.unknown_fields).map_err(|e| e.to_string())?.is_some() {
+        if crate::secret_refs::source(&input.unknown_fields)
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
             input.value = Some("<reference>".into());
         }
     }

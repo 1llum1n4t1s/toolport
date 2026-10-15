@@ -2886,9 +2886,7 @@ fn stage_publisher_handoffs(
         let personal_on = before.enabled_here(id);
         // A personal server that an earlier share handed off is off here only
         // because its Team copy is in use. Re-sharing a change must keep that route.
-        let using_team_copy =
-            !personal_on
-            && crate::local_auth::bound_copy_enabled(before, id);
+        let using_team_copy = !personal_on && crate::local_auth::bound_copy_enabled(before, id);
         // Sync may revoke this route after the share was confirmed. A stale
         // handoff snapshot must not turn its personal original back on.
         let removed_shared_route = using_team_copy && managed_copy_of(reg, id).is_err();
@@ -2922,8 +2920,8 @@ fn stage_publisher_handoffs(
                     }
                 }
                 Err(reason) => {
-                    let team_on = managed_copy_of(reg, id)
-                        .is_ok_and(|managed| reg.enabled_here(&managed));
+                    let team_on =
+                        managed_copy_of(reg, id).is_ok_and(|managed| reg.enabled_here(&managed));
                     let route = if reg.enabled_here(id) {
                         "Your personal server stays on in this profile."
                     } else if team_on {

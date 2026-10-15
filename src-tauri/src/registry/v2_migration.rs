@@ -102,7 +102,9 @@ pub(super) fn migrate_v1_to_v2(
     if let Some(servers) = registry.get_mut("servers").and_then(Value::as_array_mut) {
         for server in servers.iter_mut().filter_map(Value::as_object_mut) {
             let local = server.get("transport").and_then(Value::as_str) == Some("stdio")
-                || server.get("command").is_some_and(|command| !command.is_null());
+                || server
+                    .get("command")
+                    .is_some_and(|command| !command.is_null());
             if local && !server.contains_key("inheritEnv") {
                 server.insert("inheritEnv".to_string(), Value::Bool(true));
             }
@@ -147,7 +149,10 @@ fn removed_features_used(
         (permissions, "agentPermissions"),
         (on("hooksEnabled"), "activityHooks"),
         (routines, "routines"),
-        (on("allowAgentControl") || on("allowRoutineWrites"), "agentControl"),
+        (
+            on("allowAgentControl") || on("allowRoutineWrites"),
+            "agentControl",
+        ),
     ]
     .into_iter()
     .filter_map(|(used, id)| used.then_some(id))
@@ -706,7 +711,10 @@ mod tests {
         // Servers are unchanged apart from keeping the 1.x environment.
         let mut servers = v2["servers"].clone();
         assert_eq!(servers[0]["inheritEnv"], true, "local github server");
-        assert!(servers[1].get("inheritEnv").is_none(), "remote linear server");
+        assert!(
+            servers[1].get("inheritEnv").is_none(),
+            "remote linear server"
+        );
         servers[0].as_object_mut().unwrap().remove("inheritEnv");
         assert_eq!(servers, v1["servers"]);
         // Kept exactly as they were.
@@ -959,7 +967,11 @@ mod tests {
         let cases: [(Value, &str, Value); 9] = [
             // Nothing on in 1.x stays Off: no new approval prompts.
             (json!({}), "off", json!(null)),
-            (json!({"denyDestructive": true}), "off", json!({"denyDestructive": true})),
+            (
+                json!({"denyDestructive": true}),
+                "off",
+                json!({"denyDestructive": true}),
+            ),
             (
                 json!({"quarantineOnDrift": true}),
                 "off",
@@ -971,10 +983,18 @@ mod tests {
                 json!({"blockOnInjection": true}),
             ),
             // 1.x approval also held untrusted servers' calls.
-            (json!({"humanApproval": true}), "ask", json!({"holdUntrusted": true})),
+            (
+                json!({"humanApproval": true}),
+                "ask",
+                json!({"holdUntrusted": true}),
+            ),
             (json!({"confirmDestructive": true}), "ask", json!(null)),
             // Team locks are not the member's choice and stay as they were.
-            (json!({"teamForcedDenyDestructive": true}), "off", json!(null)),
+            (
+                json!({"teamForcedDenyDestructive": true}),
+                "off",
+                json!(null),
+            ),
             // A level picked in a 2.0 preview wins over the old flags.
             (
                 json!({"safetyLevel": "off", "denyDestructive": true}),
@@ -994,7 +1014,11 @@ mod tests {
             }
             migrate_v1_to_v2(&mut value, &context(&dir)).unwrap();
             assert_eq!(value["safetyLevel"], expected, "{flags}");
-            assert_eq!(value.get("keptV1Safety").cloned().unwrap_or(json!(null)), kept, "{flags}");
+            assert_eq!(
+                value.get("keptV1Safety").cloned().unwrap_or(json!(null)),
+                kept,
+                "{flags}"
+            );
             assert_eq!(level_name(as_1x_reader(&value)), expected, "{flags}");
             // The 1.x mirror still enforces the same protections.
             for key in ["denyDestructive", "quarantineOnDrift", "blockOnInjection"] {
@@ -1045,7 +1069,13 @@ mod tests {
         migrate_v1_to_v2(&mut used, &context(&dir)).unwrap();
         assert_eq!(
             used["removedFeaturesNotice"]["features"],
-            json!(["agentRules", "agentPermissions", "activityHooks", "routines", "agentControl"])
+            json!([
+                "agentRules",
+                "agentPermissions",
+                "activityHooks",
+                "routines",
+                "agentControl"
+            ])
         );
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -519,7 +519,13 @@ fn a_saturated_daemon_still_answers_its_probe_and_is_never_duplicated() {
                              "params": { "name": "mock__echo", "arguments": { "text": "slow" } } }),
                 );
                 if let Err(conduit_lib::http_client::Error::Status(503, response)) = result {
-                    assert_eq!(response.headers().get("Retry-After").and_then(|value| value.to_str().ok()), Some("1"));
+                    assert_eq!(
+                        response
+                            .headers()
+                            .get("Retry-After")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("1")
+                    );
                     shed.fetch_add(1, Ordering::SeqCst);
                 }
             })

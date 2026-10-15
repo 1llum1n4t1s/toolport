@@ -1587,7 +1587,9 @@ mod tests {
 
 /// Only messages constructed by this module may bypass downstream prose redaction.
 pub fn safe_status(message: &str) -> Option<String> {
-    if message == ENV_SYNC_BLOCKED { return Some(message.into()); }
+    if message == ENV_SYNC_BLOCKED {
+        return Some(message.into());
+    }
     for p in PROVIDERS {
         for state in [
             ErrorState::InvalidReference,
@@ -1816,7 +1818,7 @@ mod review_regressions {
     fn personal_sync_env_reference_explains_block_and_replacement() {
         let server = remote("team:personal-pro");
         let message = check_policy(&server, "env:AUTH").unwrap_err().message;
-        assert_eq!(safe_status(&message),Some(message.clone()));
+        assert_eq!(safe_status(&message), Some(message.clone()));
         assert!(
             message.contains("personal Pro sync")
                 && message.contains("Blocked")

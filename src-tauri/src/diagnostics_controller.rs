@@ -233,10 +233,7 @@ mod tests {
             ..Default::default()
         };
         let text = super::registry_summary(&reg);
-        assert!(
-            text.contains("default access: Default access\n"),
-            "{text}"
-        );
+        assert!(text.contains("default access: Default access\n"), "{text}");
         assert!(!text.contains("active profile"));
     }
 }

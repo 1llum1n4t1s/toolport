@@ -42,7 +42,9 @@ fn first_run_needed() -> Result<bool, String> {
     if has_servers {
         return Ok(false);
     }
-    Ok(!crate::clients::detect_clients().iter().any(|client| client.gateway_installed))
+    Ok(!crate::clients::detect_clients()
+        .iter()
+        .any(|client| client.gateway_installed))
 }
 
 #[cfg(test)]
@@ -937,9 +939,16 @@ mod tests {
         let _env_lock = crate::clients::env_test_lock();
         let folder = data.dir.join(".claude-work");
         std::fs::create_dir(&folder).unwrap();
-        std::fs::write(folder.join(".claude.json"), r#"{"mcpServers":{"toolport":{"command":"/usr/bin/toolport-gateway"}}}"#).unwrap();
+        std::fs::write(
+            folder.join(".claude.json"),
+            r#"{"mcpServers":{"toolport":{"command":"/usr/bin/toolport-gateway"}}}"#,
+        )
+        .unwrap();
         let _override = crate::clients::EnvRestore::set("CLAUDE_CONFIG_DIR", &folder);
-        assert!(crate::registry::load().unwrap().client_managed_entries.is_empty());
+        assert!(crate::registry::load()
+            .unwrap()
+            .client_managed_entries
+            .is_empty());
         assert!(!first_run_needed().unwrap());
     }
 

@@ -1464,7 +1464,9 @@ pub(crate) fn purge_blockers(data_dir: &Path) -> Vec<crate::purge::Leftover> {
         .iter()
         .filter(|process| {
             process.pid != std::process::id()
-                && !descriptors.iter().any(|descriptor| descriptor.pid == process.pid)
+                && !descriptors
+                    .iter()
+                    .any(|descriptor| descriptor.pid == process.pid)
                 && (stale_process_in_scope(process, data_dir, &descriptors)
                     // These platforms cannot reliably inspect another process's data-dir
                     // environment. Preserve data while any same-user adapter is unscoped.
@@ -4806,5 +4808,4 @@ mod tests {
         assert!(purge_unscoped_process_blocks(Some(true)));
         assert!(!purge_unscoped_process_blocks(Some(false)));
     }
-
 }

@@ -552,9 +552,7 @@ pub(super) fn detect_client_views() -> Result<ClientSnapshot, String> {
             .cloned();
         client.scope_name = Some(client_access_label(&registry, client.scope_id.as_deref()));
         client.discovery_mode = registry.client_discovery.get(&client.id).cloned();
-        client.inherited_discovery = registry
-            .chosen_global_discovery_mode()
-            .map(str::to_string);
+        client.inherited_discovery = registry.chosen_global_discovery_mode().map(str::to_string);
     }
     clients.sort_by(|left, right| {
         right

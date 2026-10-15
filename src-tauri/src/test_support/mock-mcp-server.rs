@@ -567,7 +567,8 @@ fn handle(cfg: &Config, state: &mut State, req: &Value, pre: &mut Vec<Value>) ->
                 .unwrap_or_else(|| json!({}));
             // Keep echo's argument behavior in custom catalogs too.
             if name != "echo"
-                && fixture_tools().is_some_and(|tools| tools.iter().any(|tool| tool["name"] == name))
+                && fixture_tools()
+                    .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == name))
             {
                 return Some(success(
                     id,
@@ -1052,7 +1053,10 @@ fn serve_stdio() {
             std::fs::write(release.with_extension("ready"), "ready").unwrap();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             while !release.exists() {
-                assert!(std::time::Instant::now() < deadline, "startup gate was not released");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "startup gate was not released"
+                );
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }

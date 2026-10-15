@@ -157,13 +157,19 @@ mod tests {
     #[test]
     fn a_chosen_global_mode_beats_built_in_client_defaults() {
         let mut registry = crate::registry::Registry::default();
-        assert_eq!(super::super::client_discovery_mode(&registry, "codex"), "full");
+        assert_eq!(
+            super::super::client_discovery_mode(&registry, "codex"),
+            "full"
+        );
         assert_eq!(
             super::super::client_discovery_mode(&registry, "claude-code"),
             "lazy"
         );
         registry.set_discovery_mode("lazy");
-        assert_eq!(super::super::client_discovery_mode(&registry, "codex"), "lazy");
+        assert_eq!(
+            super::super::client_discovery_mode(&registry, "codex"),
+            "lazy"
+        );
         registry.set_discovery_mode("grouped");
         assert_eq!(
             super::super::client_discovery_mode(&registry, "cursor"),
@@ -171,7 +177,10 @@ mod tests {
         );
         // A per-client choice still wins over the global one.
         registry.set_client_discovery("cursor", Some("full"));
-        assert_eq!(super::super::client_discovery_mode(&registry, "cursor"), "full");
+        assert_eq!(
+            super::super::client_discovery_mode(&registry, "cursor"),
+            "full"
+        );
         // 1.x "Find tools as needed" turned off meant full for everyone.
         let v1 = crate::registry::Registry {
             lazy_discovery: false,
@@ -216,7 +225,12 @@ mod tests {
         let mut registry = crate::registry::Registry::default();
         registry.set_client_discovery("claude-code", Some("full"));
         let before = serde_json::to_value(&registry).unwrap();
-        for id in ["codex", "client:codex", "adapter:codex", "adapter:client:codex"] {
+        for id in [
+            "codex",
+            "client:codex",
+            "adapter:codex",
+            "adapter:client:codex",
+        ] {
             let caps = super::super::discovery_capabilities(id);
             assert_eq!(caps.cold_full_list_wait_ms, 8_000, "{id}");
             assert_eq!(caps.tools_list_changed, Some(false), "{id}");

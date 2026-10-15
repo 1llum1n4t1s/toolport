@@ -30,7 +30,11 @@ impl Drop for Clear {
 }
 
 pub(super) fn legacy_gateway_ownership() -> bool {
-    PENDING.with(|slot| slot.borrow().as_ref().is_some_and(|pending| pending.legacy_gateway_ownership))
+    PENDING.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|pending| pending.legacy_gateway_ownership)
+    })
 }
 
 pub(super) fn read(path: &Path) -> Option<Option<String>> {
@@ -229,7 +233,10 @@ fn run_inner<T>(
                 | Format::YamlMcpServers
                 | Format::YamlMcpServersList
         )
-        && !matches!(client_id.split('@').next().unwrap_or(client_id), "vscode" | "zed" | "opencode" | "kilo-code");
+        && !matches!(
+            client_id.split('@').next().unwrap_or(client_id),
+            "vscode" | "zed" | "opencode" | "kilo-code"
+        );
     for _ in 0..3 {
         if !value(format, original.as_deref())?.is_object() {
             return Err("Client config root must be an object; leaving it untouched".into());
@@ -300,8 +307,9 @@ fn run_inner<T>(
                 pending.disconnecting,
                 jsonc_settings,
             )?;
-            let commit = super::locations::validate_mutation(client_id, path)
-                .and_then(|()| crate::registry::client_file::commit(path, &revision, output.as_deref()));
+            let commit = super::locations::validate_mutation(client_id, path).and_then(|()| {
+                crate::registry::client_file::commit(path, &revision, output.as_deref())
+            });
             if commit.is_err() {
                 recovery.rollback()?;
             }
