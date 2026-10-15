@@ -1105,11 +1105,9 @@ fn build_sidebar(
             button.add_css_class("toolport-settings-parent");
         }
         if let Some(index) = NAV_SHORTCUTS.iter().position(|name| *name == target) {
-            button.set_tooltip_text(Some(&format!(
-                "{} (Ctrl+{})",
-                crate::i18n::lookup(label),
-                index + 1
-            )));
+            l10n::bind_tooltip_with(&button, move || {
+                format!("{} (Ctrl+{})", crate::i18n::lookup(label), index + 1)
+            });
         }
         button.set_child(Some(&row));
         button.add_css_class("flat");

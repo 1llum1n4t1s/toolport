@@ -202,6 +202,13 @@ pub(super) fn bind_text(widget: &impl IsA<gtk::Widget>, source: &'static str) {
 }
 
 pub(super) fn bind_tooltip(widget: &impl IsA<gtk::Widget>, source: &'static str) {
+    bind_tooltip_with(widget, move || crate::i18n::lookup(source));
+}
+
+pub(super) fn bind_tooltip_with(
+    widget: &impl IsA<gtk::Widget>,
+    formatter: impl Fn() -> String + 'static,
+) {
     let weak = widget.as_ref().downgrade();
     register(
         widget.as_ref(),
@@ -210,7 +217,7 @@ pub(super) fn bind_tooltip(widget: &impl IsA<gtk::Widget>, source: &'static str)
             let Some(widget) = weak.upgrade() else {
                 return false;
             };
-            widget.set_tooltip_text(Some(&crate::i18n::lookup(source)));
+            widget.set_tooltip_text(Some(&formatter()));
             true
         }),
     );
