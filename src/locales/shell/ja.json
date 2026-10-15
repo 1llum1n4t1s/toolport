@@ -274,5 +274,8 @@
   "Wait for the definition to load before enabling.": "有効にする前に、定義がロードされるまで待ちます。",
   "Working…": "動作中…",
   "You were removed from the team. Its shared servers have been removed from your setup.": "あなたはチームから削除されました。その共有サーバーはセットアップから削除されました。",
-  "Your setup, on every machine": "すべてのマシンで同じ設定を"
+  "Your setup, on every machine": "すべてのマシンで同じ設定を",
+  "Toolport is now available in {language}.": "Toolportが{language}で利用できるようになりました。",
+  "Switch to {language}": "{language}に切り替え",
+  "Keep English": "英語のままにする"
 }

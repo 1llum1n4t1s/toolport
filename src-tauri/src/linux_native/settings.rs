@@ -671,7 +671,56 @@ l10n::bind_dialog_heading(&error_dialog, msg("Could not start data removal"));
             .position(|code| *code == choice)
             .unwrap_or(0) as u32;
         language_picker.set_selected(selected);
+        let suggestion = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        suggestion.add_css_class("toolport-settings-group");
+        suggestion.add_css_class("toolport-padded-group");
+        suggestion.set_widget_name("toolport-language-suggestion");
+        suggestion.set_visible(false);
+        let suggested = crate::i18n::suggested_language(true);
+        if let Some((locale, name)) = suggested {
+            let label = gtk::Label::builder().xalign(0.0).wrap(true).build();
+            l10n::bind_formatted_label(
+                &label,
+                msg("Toolport is now available in {language}."),
+                &[("language", name)],
+            );
+            suggestion.append(&label);
+            let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let switch = gtk::Button::new();
+            l10n::bind_button_with(&switch, move || {
+                trf("Switch to {language}", &[("language", name)])
+            });
+            let keep = l10n::button("Keep English");
+            actions.append(&switch);
+            actions.append(&keep);
+            suggestion.append(&actions);
+            for (button, choice) in [(switch, locale), (keep, "en")] {
+                let picker = language_picker.downgrade();
+                let feedback = feedback.downgrade();
+                let notice = suggestion.downgrade();
+                button.connect_clicked(move |_| {
+                    if let (Some(picker), Some(feedback), Some(notice)) =
+                        (picker.upgrade(), feedback.upgrade(), notice.upgrade())
+                    {
+                        save_ui_language(&picker, &feedback, &notice, choice.to_owned());
+                    }
+                });
+            }
+            let notice = suggestion.downgrade();
+            gtk::glib::spawn_future_local(async move {
+                let pending =
+                    gtk::gio::spawn_blocking(crate::ui_settings::language_suggestion_pending).await;
+                if let Some(notice) = notice.upgrade() {
+                    // A user may already have acted while the worker was reading.
+                    if notice.widget_name() == "toolport-language-suggestion" {
+                        notice.set_visible(matches!(pending, Ok(Ok(true))));
+                    }
+                }
+            });
+        }
+        general.append(&suggestion);
         let feedback_for_language = feedback.clone();
+        let notice_for_language = suggestion.clone();
         language_picker.connect_selected_notify(move |picker| {
             if l10n::dropdown_rebinding(picker) {
                 return;
@@ -679,51 +728,16 @@ l10n::bind_dialog_heading(&error_dialog, msg("Could not start data removal"));
             let Some(choice) = crate::ui_settings::LANGUAGES.get(picker.selected() as usize) else {
                 return;
             };
-            // GTK can deliver a selected notification after the model refresh.
-            // An unchanged saved choice must not start another save/refresh cycle.
+            // Ignore model refresh notifications for an unchanged saved choice.
             if *choice == crate::i18n::language() {
                 return;
             }
-            let choice = (*choice).to_owned();
-            picker.set_sensitive(false);
-            let picker = picker.downgrade();
-            let feedback = feedback_for_language.downgrade();
-            gtk::glib::MainContext::default().spawn_local(async move {
-                let saved = gtk::gio::spawn_blocking(move || crate::i18n::set_language(&choice))
-                    .await
-                    .unwrap_or_else(|_| Err("language preference worker stopped".to_owned()));
-                if let Some(picker) = picker.upgrade() {
-                    picker.set_sensitive(true);
-                }
-                match saved {
-                    Ok(()) => {
-                        if let Some(feedback) = feedback.upgrade() {
-                            feedback.set_label("");
-                            feedback.remove_css_class("error");
-                        }
-                        l10n::refresh_bindings();
-                        super::tray::refresh_language();
-                    }
-                    Err(error) => {
-                        if let Some(picker) = picker.upgrade() {
-                            let saved = crate::i18n::language();
-                            let selected = crate::ui_settings::LANGUAGES
-                                .iter()
-                                .position(|code| *code == saved)
-                                .unwrap_or(0) as u32;
-                            picker.set_selected(selected);
-                        }
-                        if let Some(feedback) = feedback.upgrade() {
-                            l10n::bind_formatted_label(
-                                &feedback,
-                                msg("Could not save language: {error}"),
-                                &[("error", &error)],
-                            );
-                            feedback.add_css_class("error");
-                        }
-                    }
-                }
-            });
+            save_ui_language(
+                picker,
+                &feedback_for_language,
+                &notice_for_language,
+                (*choice).to_owned(),
+            );
         });
         language_row.append(&language_picker);
         startup.append(&language_row);
@@ -3251,6 +3265,57 @@ fn level_name(level: crate::registry::SafetyLevel) -> &'static str {
 fn source_label(source: &'static str, label: gtk::Label) -> gtk::Label {
     l10n::bind_label(&label, source);
     label
+}
+
+fn save_ui_language(
+    picker: &gtk::DropDown,
+    feedback: &gtk::Label,
+    notice: &gtk::Box,
+    choice: String,
+) {
+    // Mark any initial pending read stale before submitting a newer user choice.
+    notice.set_widget_name("toolport-language-suggestion-changed");
+    picker.set_sensitive(false);
+    notice.set_sensitive(false);
+    let picker = picker.downgrade();
+    let feedback = feedback.downgrade();
+    let notice = notice.downgrade();
+    gtk::glib::spawn_future_local(async move {
+        let saved = gtk::gio::spawn_blocking(move || crate::i18n::set_language(&choice))
+            .await
+            .unwrap_or_else(|_| Err("language preference worker stopped".to_owned()));
+        if let Some(picker) = picker.upgrade() {
+            // Refresh under the existing rebinding guard, including button saves.
+            l10n::bind_language_choices(&picker);
+            picker.set_sensitive(true);
+        }
+        if let Some(notice) = notice.upgrade() {
+            notice.set_sensitive(true);
+            if saved.is_ok() {
+                notice.set_visible(false);
+            }
+        }
+        match saved {
+            Ok(()) => {
+                if let Some(feedback) = feedback.upgrade() {
+                    feedback.set_label("");
+                    feedback.remove_css_class("error");
+                }
+                l10n::refresh_bindings();
+                super::tray::refresh_language();
+            }
+            Err(error) => {
+                if let Some(feedback) = feedback.upgrade() {
+                    l10n::bind_formatted_label(
+                        &feedback,
+                        msg("Could not save language: {error}"),
+                        &[("error", &error)],
+                    );
+                    feedback.add_css_class("error");
+                }
+            }
+        }
+    });
 }
 
 fn source_button<B: IsA<gtk::Button>>(source: &'static str, button: B) -> B {

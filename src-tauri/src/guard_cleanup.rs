@@ -170,9 +170,12 @@ pub fn remove_at(path: &Path) -> Result<(), String> {
     }
 }
 
+/// Shared per-install evidence that a desktop launch completed startup.
+pub(crate) const COMPLETION_MARKER: &str = "agent-guard-removed";
+
 /// The data-directory marker that records the one-time removal has run.
 fn marker_path() -> Option<PathBuf> {
-    Some(crate::registry::conduit_dir()?.join("agent-guard-removed"))
+    Some(crate::registry::conduit_dir()?.join(COMPLETION_MARKER))
 }
 
 /// Remove the retired guard from every file it was installed into, once per data

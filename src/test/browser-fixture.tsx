@@ -22,6 +22,23 @@ import "../index.css";
 
 if (!import.meta.env.DEV) throw new Error("Fixtures require the development server");
 
+// Capture install origin before fixture startup creates any data. Session
+// storage stands in for the backend's machine-local settings and install marker.
+const fixtureInstallOrigin =
+  sessionStorage.getItem("toolport-fixture-install-origin") ??
+  (new URLSearchParams(location.search).has("language-upgrader") ? "existing" : "fresh");
+sessionStorage.setItem("toolport-fixture-install-origin", fixtureInstallOrigin);
+if (sessionStorage.getItem("toolport-fixture-language") === null) {
+  sessionStorage.setItem(
+    "toolport-fixture-language",
+    fixtureInstallOrigin === "existing" ? "en" : "system",
+  );
+  sessionStorage.setItem(
+    "toolport-fixture-language-suggestion",
+    String(fixtureInstallOrigin === "existing"),
+  );
+}
+
 const servers: ServerEntry[] = ["GitHub", "Linear", "Stripe"].map((name, i) => ({
   id: `fixture-${i}`,
   name,
@@ -687,11 +704,37 @@ mockIPC(
         const saved = sessionStorage.getItem("toolport-fixture-language");
         return isLanguageChoice(saved) ? saved : "system";
       }
+      case "get_ui_language_suggestion": {
+        const pending =
+          sessionStorage.getItem("toolport-fixture-language-suggestion") === "true";
+        if (
+          !calls.set_ui_language &&
+          new URLSearchParams(location.search).has("language-suggestion-delay")
+        ) {
+          return new Promise((resolve) => {
+            setTimeout(() => {
+              sessionStorage.setItem(
+                "toolport-fixture-delayed-suggestion-returned",
+                String(
+                  Number(
+                    sessionStorage.getItem(
+                      "toolport-fixture-delayed-suggestion-returned",
+                    ) ?? "0",
+                  ) + 1,
+                ),
+              );
+              resolve(pending);
+            }, 1000);
+          });
+        }
+        return pending;
+      }
       case "set_ui_language":
         if (new URLSearchParams(location.search).has("language-save-error"))
           throw new Error("Fixture settings are read-only");
         if (!isLanguageChoice(args.language)) throw new Error("Invalid language choice");
         sessionStorage.setItem("toolport-fixture-language", args.language);
+        sessionStorage.setItem("toolport-fixture-language-suggestion", "false");
         return null;
       case "get_registry":
         return registry;

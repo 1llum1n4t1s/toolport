@@ -274,5 +274,8 @@
   "Wait for the definition to load before enabling.": "Attendez que la définition se charge avant de l'activer.",
   "Working…": "En cours…",
   "You were removed from the team. Its shared servers have been removed from your setup.": "Vous avez été supprimé de l'équipe. Ses serveurs partagés ont été supprimés de votre configuration.",
-  "Your setup, on every machine": "Votre configuration, sur chaque machine"
+  "Your setup, on every machine": "Votre configuration, sur chaque machine",
+  "Toolport is now available in {language}.": "Toolport est maintenant disponible en {language}.",
+  "Switch to {language}": "Passer à {language}",
+  "Keep English": "Garder l’anglais"
 }

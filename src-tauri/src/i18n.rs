@@ -170,6 +170,25 @@ pub fn resolve_locale(tags: impl IntoIterator<Item = impl AsRef<str>>) -> &'stat
     "en"
 }
 
+/// Only offer a supported non-English system locale to an undecided upgrader.
+pub fn suggested_language(pending: bool) -> Option<(&'static str, &'static str)> {
+    suggested_language_for(pending, sys_locale::get_locales())
+}
+
+fn suggested_language_for(
+    pending: bool,
+    tags: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Option<(&'static str, &'static str)> {
+    if !pending {
+        return None;
+    }
+    let locale = resolve_locale(tags);
+    LANGUAGES
+        .iter()
+        .copied()
+        .find(|(code, _)| *code == locale && *code != "en")
+}
+
 fn update_language(choice: String) -> bool {
     let requested = if choice == "system" {
         resolve_locale(sys_locale::get_locales())
@@ -343,5 +362,15 @@ mod tests {
     fn headless_messages_stay_english_without_catalog_assets() {
         assert!(catalog("de").is_none());
         assert_eq!(lookup_for("de", "Language"), "Language");
+    }
+    #[test]
+    fn suggestions_require_pending_and_a_supported_non_english_system() {
+        assert_eq!(
+            suggested_language_for(true, ["ja-JP"]),
+            Some(("ja", "日本語"))
+        );
+        assert_eq!(suggested_language_for(false, ["ja-JP"]), None);
+        assert_eq!(suggested_language_for(true, ["en-US"]), None);
+        assert_eq!(suggested_language_for(true, ["nl-NL"]), None);
     }
 }
