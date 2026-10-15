@@ -1129,3 +1129,12 @@ export function dataRemovalPlan(): Promise<DataRemovalPlan> {
 export function removeToolportData(reportPath: string): Promise<void> {
   return invoke("remove_toolport_data", { reportPath, confirmed: true });
 }
+
+/** Per-machine UI preference, deliberately separate from synced registry data. */
+export function getUiLanguage(): Promise<string> {
+  return invoke<string>("get_ui_language");
+}
+
+export function setUiLanguage(language: string): Promise<void> {
+  return invoke<void>("set_ui_language", { language });
+}

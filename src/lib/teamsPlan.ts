@@ -1,3 +1,5 @@
+import { msg, translate } from "./i18n";
+
 /**
  * What Toolport Teams costs, in one place.
  *
@@ -51,3 +53,31 @@ export const TEAMS_PAID_LINE = `Team is $${TEAMS_BASE_PRICE}/month (or $${TEAMS_
 export const PRO_MONTHLY_PRICE = 5;
 export const PRO_ANNUAL_PRICE = 48;
 export const PRO_LINE = `Pro is $${PRO_MONTHLY_PRICE}/month or $${PRO_ANNUAL_PRICE}/year for one person on unlimited devices. Try it free for 14 days, no card.`;
+
+// Translate at render time so switching language updates pricing immediately.
+const FREE_TEMPLATE = msg("Free: {people} person, 1 device. No card required.");
+const PAID_TEMPLATE = msg(
+  "Team is ${monthly}/month (or ${annual}/year) for your whole team, up to {people} people, then ${seatMonthly}/month per additional person (or ${seatAnnual}/year on annual billing), and adds access control, rate limits, and audit. Same price hosted or self-hosted.",
+);
+const PRO_TEMPLATE = msg(
+  "Pro is ${monthly}/month or ${annual}/year for one person on unlimited devices. Try it free for 14 days, no card.",
+);
+
+export function teamsFreeLine(): string {
+  return translate(FREE_TEMPLATE, { people: TEAMS_FREE_SEATS });
+}
+export function teamsPaidLine(): string {
+  return translate(PAID_TEMPLATE, {
+    monthly: TEAMS_BASE_PRICE,
+    annual: TEAMS_ANNUAL_PRICE,
+    people: TEAMS_TEAM_SEATS,
+    seatMonthly: TEAMS_SEAT_PRICE,
+    seatAnnual: TEAMS_ANNUAL_SEAT_PRICE,
+  });
+}
+export function proLine(): string {
+  return translate(PRO_TEMPLATE, {
+    monthly: PRO_MONTHLY_PRICE,
+    annual: PRO_ANNUAL_PRICE,
+  });
+}

@@ -1,3 +1,4 @@
+import { msg, Trans, translate, useI18n, type SourceMessage } from "@/lib/i18n";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Check, Globe, Loader2, ShieldAlert, Trash2, X } from "lucide-react";
@@ -20,29 +21,31 @@ const TIMEOUT_MS = 120_000;
 type Reason = PendingApproval["reason"];
 
 /** How each gate reason presents: label, badge tone, and an icon. */
-const REASON: Record<Reason, { label: string; className: string; Icon: typeof Trash2 }> =
-  {
-    destructive: {
-      label: "Destructive",
-      className: "bg-destructive/10 text-destructive",
-      Icon: Trash2,
-    },
-    untrusted_source: {
-      label: "Untrusted source",
-      className: "bg-warning/15 text-warning",
-      Icon: Globe,
-    },
-    destructive_and_untrusted: {
-      label: "Destructive · untrusted",
-      className: "bg-destructive/10 text-destructive",
-      Icon: Trash2,
-    },
-    pii_cross_server: {
-      label: "Releases private data",
-      className: "bg-destructive/10 text-destructive",
-      Icon: ShieldAlert,
-    },
-  };
+const REASON: Record<
+  Reason,
+  { label: SourceMessage; className: string; Icon: typeof Trash2 }
+> = {
+  destructive: {
+    label: msg("Destructive"),
+    className: "bg-destructive/10 text-destructive",
+    Icon: Trash2,
+  },
+  untrusted_source: {
+    label: msg("Untrusted source"),
+    className: "bg-warning/15 text-warning",
+    Icon: Globe,
+  },
+  destructive_and_untrusted: {
+    label: msg("Destructive · untrusted"),
+    className: "bg-destructive/10 text-destructive",
+    Icon: Trash2,
+  },
+  pii_cross_server: {
+    label: msg("Releases private data"),
+    className: "bg-destructive/10 text-destructive",
+    Icon: ShieldAlert,
+  },
+};
 
 /**
  * The human-in-the-loop queue: tool calls and URL elicitations the gateway is holding
@@ -54,6 +57,7 @@ const REASON: Record<Reason, { label: string; className: string; Icon: typeof Tr
 export function PendingApprovals({
   onCountChange,
 }: { onCountChange?: (count: number) => void } = {}) {
+  const { t } = useI18n();
   const [pending, setPending] = useState<PendingApproval[]>([]);
   // Ids with a decision in flight: shown dimmed + disabled, removed authoritatively by the
   // resolved event / poll (NOT optimistically), so a poll landing before the backend
@@ -132,7 +136,9 @@ export function PendingApprovals({
       // events. A delayed or missed event must not leave the decision onscreen.
       await refresh();
     } catch (e) {
-      toastError(`Couldn't record your decision: ${e}`);
+      toastError(
+        translate("Couldn't record your decision: {value1}", { value1: String(e) }),
+      );
       setResolving((s) => {
         const n = new Set(s);
         n.delete(id);
@@ -170,24 +176,38 @@ export function PendingApprovals({
         onKeyDown={onKeyDown}
         role="alertdialog"
         aria-modal="false"
-        aria-label="Tool calls awaiting your approval"
+        aria-label={translate("Tool calls awaiting your approval")}
         className="animate-in fade-in slide-in-from-top-2 pointer-events-auto relative flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-r-[10px] border-l-[3px] border-warning bg-popover shadow-2xl outline-none focus-visible:ring-2 focus-visible:ring-warning"
       >
         {/* Announce count changes to screen readers without re-announcing on every countdown
          * tick (the visible timer lives elsewhere; this text only changes when the count does). */}
         <div aria-live="assertive" className="sr-only">
-          {pending.length} request{pending.length > 1 ? "s" : ""} awaiting your action.
-          Press Escape to cancel.
+          <Trans
+            message={
+              pending.length > 1
+                ? msg("{value1} requests awaiting your action. Press Escape to cancel.")
+                : msg("{value1} request awaiting your action. Press Escape to cancel.")
+            }
+            values={{ value1: pending.length }}
+          />
         </div>
         <header className="flex shrink-0 items-center gap-3 border-b border-border/60 px-4 py-3">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-warning/15 text-warning">
             <ShieldAlert className="size-4" />
           </span>
           <div className="min-w-0">
-            <div className="text-sm font-semibold leading-tight">Action required</div>
+            <div className="text-sm font-semibold leading-tight">
+              {t("Action required")}
+            </div>
             <div className="text-xs text-muted-foreground">
-              {pending.length} request{pending.length > 1 ? "s" : ""} held — no action
-              cancels it
+              <Trans
+                message={
+                  pending.length > 1
+                    ? msg("{value1} requests held — no action cancels it")
+                    : msg("{value1} request held — no action cancels it")
+                }
+                values={{ value1: pending.length }}
+              />
             </div>
           </div>
         </header>
@@ -201,7 +221,10 @@ export function PendingApprovals({
             const reportedLabel =
               a.clientLabel &&
               a.clientLabel !== clientName &&
-              !clientName.endsWith(" (reported)")
+              !!a.clientName &&
+              !["An AI client", "Unknown client", "Unrecorded client"].includes(
+                a.clientName,
+              )
                 ? a.clientLabel
                 : null;
             const urlElicitation = a.urlElicitation;
@@ -244,14 +267,14 @@ export function PendingApprovals({
                       className="mt-1 text-xs"
                       title={clientIdentityTooltip(a) ?? a.client ?? undefined}
                     >
-                      {clientName} wants to run this ·{" "}
+                      {translate("{client} wants to run this", { client: clientName })} ·{" "}
                       {a.reason === "destructive"
-                        ? "destructive tool"
+                        ? translate("destructive tool")
                         : a.reason === "destructive_and_untrusted"
-                          ? "destructive tool from an untrusted source"
+                          ? translate("destructive tool from an untrusted source")
                           : a.reason === "pii_cross_server"
-                            ? "cross-server data release"
-                            : "untrusted source"}
+                            ? translate("cross-server data release")
+                            : translate("untrusted source")}
                     </div>
                     {reportedLabel && (
                       <div
@@ -259,19 +282,23 @@ export function PendingApprovals({
                         title={reportedLabel}
                         dir="auto"
                       >
-                        Reports itself as: {shortenClientLabel(reportedLabel, 60)}
+                        {translate("Reports itself as: {label}", {
+                          label: shortenClientLabel(reportedLabel, 60),
+                        })}
                       </div>
                     )}
                   </div>
                   {urlElicitation ? (
                     <Badge className="bg-warning/15 text-warning">
-                      <Globe className="size-3" />
-                      External link
+                      <Trans
+                        message={msg("{value1}External link")}
+                        values={{ value1: <Globe className="size-3" /> }}
+                      />
                     </Badge>
                   ) : (
                     <Badge className={reason.className}>
                       <reason.Icon className="size-3" />
-                      {reason.label}
+                      {t(reason.label)}
                     </Badge>
                   )}
                 </div>
@@ -283,7 +310,10 @@ export function PendingApprovals({
                 {piiRelease && (
                   <div className="mb-3">
                     <div className="mb-1 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
-                      Would send to {piiRelease.server}
+                      <Trans
+                        message={msg("Would send to {value1}")}
+                        values={{ value1: piiRelease.server }}
+                      />
                     </div>
                     <ul className="divide-y divide-border/60 toolport-alert border-destructive bg-destructive/8">
                       {piiRelease.values.map((v) => (
@@ -292,23 +322,36 @@ export function PendingApprovals({
                             {v.value}
                           </div>
                           <div className="mt-0.5 text-muted-foreground">
-                            {v.token} · from {v.origins.join(", ")}
+                            <Trans
+                              message={msg("{value1} · from {value2}")}
+                              values={{ value1: v.token, value2: v.origins.join(", ") }}
+                            />
                           </div>
                         </li>
                       ))}
                     </ul>
                     <p className="mt-1.5 text-xs text-muted-foreground">
-                      {piiRelease.server} has never seen{" "}
-                      {piiRelease.values.length === 1 ? "this value" : "these values"}.
-                      Approving releases {piiRelease.values.length === 1 ? "it" : "them"}{" "}
-                      to that server for the rest of this session, and nothing else.
+                      <Trans
+                        message={
+                          piiRelease.values.length === 1
+                            ? msg(
+                                "{value1} has never seen this value. Approving releases it to that server for the rest of this session, and nothing else.",
+                              )
+                            : msg(
+                                "{value1} has never seen these values. Approving releases them to that server for the rest of this session, and nothing else.",
+                              )
+                        }
+                        values={{ value1: piiRelease.server }}
+                      />
                     </p>
                   </div>
                 )}
 
                 <div className="mb-3">
                   <div className="mb-1 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
-                    {urlElicitation ? "Why this is needed" : "Arguments"}
+                    {urlElicitation
+                      ? translate("Why this is needed")
+                      : translate("Arguments")}
                   </div>
                   {urlElicitation ? (
                     <div className="rounded-md border border-border/60 bg-muted/40 p-2.5 text-sm leading-relaxed">
@@ -328,19 +371,26 @@ export function PendingApprovals({
                       (urgent ? "text-destructive" : "text-muted-foreground")
                     }
                   >
-                    <span
-                      aria-hidden
-                      className="inline-block h-1 w-16 overflow-hidden rounded-full bg-border"
-                    >
-                      <span
-                        className={
-                          "block h-full rounded-full transition-[width] duration-1000 ease-linear " +
-                          (urgent ? "bg-destructive" : "bg-warning")
-                        }
-                        style={{ width: `${pct}%` }}
-                      />
-                    </span>
-                    {remaining}s left
+                    <Trans
+                      message={msg("{value1}{value2}s left")}
+                      values={{
+                        value1: (
+                          <span
+                            aria-hidden
+                            className="inline-block h-1 w-16 overflow-hidden rounded-full bg-border"
+                          >
+                            <span
+                              className={
+                                "block h-full rounded-full transition-[width] duration-1000 ease-linear " +
+                                (urgent ? "bg-destructive" : "bg-warning")
+                              }
+                              style={{ width: `${pct}%` }}
+                            />
+                          </span>
+                        ),
+                        value2: remaining,
+                      }}
+                    />
                   </div>
                   <div className="flex shrink-0 gap-2">
                     <Button
@@ -350,7 +400,7 @@ export function PendingApprovals({
                       onClick={() => void decide(a.id, false)}
                     >
                       {isBusy ? <Loader2 className="animate-spin" /> : <X />}
-                      {urlElicitation ? "Cancel" : "Deny"}
+                      {urlElicitation ? t("Cancel") : t("Deny")}
                     </Button>
                     {urlElicitation && (
                       <Button
@@ -359,8 +409,10 @@ export function PendingApprovals({
                         disabled={isBusy}
                         onClick={() => void openExternal(urlElicitation.url)}
                       >
-                        <Globe />
-                        Open link
+                        <Trans
+                          message={msg("{value1}Open link")}
+                          values={{ value1: <Globe /> }}
+                        />
                       </Button>
                     )}
                     <Button
@@ -370,7 +422,7 @@ export function PendingApprovals({
                       className="bg-[color-mix(in_oklch,var(--success),black_16%)] text-white shadow-sm hover:bg-[color-mix(in_oklch,var(--success),black_26%)]"
                     >
                       {isBusy ? <Loader2 className="animate-spin" /> : <Check />}
-                      {urlElicitation ? "Continue" : "Approve"}
+                      {urlElicitation ? t("Continue") : t("Approve")}
                     </Button>
                   </div>
                 </div>
@@ -381,13 +433,13 @@ export function PendingApprovals({
                     release on one (SBS-696). */}
                 {!urlElicitation && !piiRelease && (
                   <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
-                    <span>Skip next time?</span>
+                    <span>{translate("Skip next time?")}</span>
                     <button
                       disabled={isBusy}
                       onClick={() => void decide(a.id, true, "session")}
                       className="font-medium text-foreground/80 underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
                     >
-                      Allow for this session
+                      {translate("Allow for this session")}
                     </button>
                     <span className="text-muted-foreground/40">·</span>
                     <button
@@ -395,7 +447,7 @@ export function PendingApprovals({
                       onClick={() => void decide(a.id, true, "always")}
                       className="font-medium text-foreground/80 underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
                     >
-                      Always allow this tool
+                      {translate("Always allow this tool")}
                     </button>
                   </div>
                 )}

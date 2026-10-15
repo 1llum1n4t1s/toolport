@@ -1,3 +1,4 @@
+import { translate, useI18n } from "@/lib/i18n";
 import { useState } from "react";
 import { testSecretReference } from "@/lib/api";
 import { SECRET_PROVIDERS, referenceProvider } from "@/lib/secretRefs";
@@ -13,6 +14,7 @@ export function SecretReferenceField({
   value: string;
   onChange: (reference: string) => void;
 }) {
+  const { t } = useI18n();
   const [result, setResult] = useState("");
   const [busy, setBusy] = useState(false);
   const provider = referenceProvider(value) ?? SECRET_PROVIDERS[0];
@@ -26,13 +28,17 @@ export function SecretReferenceField({
     try {
       await testSecretReference(serverId, value);
       setResult(
-        "Success in the desktop app environment. The MCP client gateway may use different environment variables or PATH.",
+        translate(
+          "Success in the desktop app environment. The MCP client gateway may use different environment variables or PATH.",
+        ),
       );
     } catch (error) {
       setResult(
         typeof error === "object" && error && "message" in error
           ? String(error.message)
-          : "Could not test the reference. Check the provider locally and retry.",
+          : translate(
+              "Could not test the reference. Check the provider locally and retry.",
+            ),
       );
     } finally {
       setBusy(false);
@@ -41,9 +47,9 @@ export function SecretReferenceField({
   return (
     <div className="flex w-full flex-col gap-2">
       <label className="text-xs">
-        Provider
+        {t("Provider")}
         <select
-          aria-label="Password manager provider"
+          aria-label={t("Password manager provider")}
           className="ml-2 rounded border bg-background p-1"
           value={provider.scheme}
           disabled={busy}
@@ -60,7 +66,7 @@ export function SecretReferenceField({
       </label>
       <div className="flex gap-2">
         <Input
-          aria-label="Secret reference"
+          aria-label={t("Secret reference")}
           value={value}
           disabled={busy}
           placeholder={provider.example}
@@ -74,13 +80,13 @@ export function SecretReferenceField({
           disabled={busy || !value}
           onClick={() => void test()}
         >
-          {busy ? "Testing…" : "Test"}
+          {busy ? t("Testing…") : t("Test")}
         </Button>
       </div>
       <p className="text-xs text-muted-foreground">
-        Test uses the desktop app environment. The MCP client gateway may use different
-        environment variables or PATH. Only the reference syncs. Sign in to this provider
-        on each machine.
+        {t(
+          "Test uses the desktop app environment. The MCP client gateway may use different environment variables or PATH. Only the reference syncs. Sign in to this provider on each machine.",
+        )}
       </p>
       {result && (
         <p role="status" className="text-xs">

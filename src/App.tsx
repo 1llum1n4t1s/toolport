@@ -1,3 +1,6 @@
+import { technicalText } from "@/lib/i18n";
+import { translate } from "@/lib/i18n";
+import { useI18n } from "@/lib/i18n";
 import { needsTeamEnableReview, sameReviewedDefinition } from "@/lib/importReview";
 import { serverPostureCopy } from "@/lib/serverPosture";
 import { type SettingsSubpage } from "@/lib/settingsPages";
@@ -109,6 +112,7 @@ import { subscribeToTrayApprovals } from "@/lib/trayApprovals";
 const BULK_DISABLE_CONFIRM_MIN = 3;
 
 function App() {
+  const { t } = useI18n();
   const { resolved: resolvedTheme } = useTheme();
   const [registry, setRegistry] = useState<Registry | null>(null);
   const registryRef = useRef<Registry | null>(null);
@@ -296,13 +300,24 @@ function App() {
           const when = fmtTs(recovery.recoveredAtMs);
           const detail =
             recovery.reason === "corrupt"
-              ? `The registry file was damaged. Restored from backup (${when}).`
+              ? translate(
+                  "The registry file was damaged. Restored from backup ({when}).",
+                  { when },
+                )
               : recovery.reason === "missing"
-                ? `The registry file was missing. Restored from backup (${when}).`
-                : `${recovery.reason}. Loaded from backup (${when}).`;
-          toast.warning("Registry recovered from backup", {
+                ? translate(
+                    "The registry file was missing. Restored from backup ({when}).",
+                    { when },
+                  )
+                : translate("{reason}. Loaded from backup ({when}).", {
+                    reason: recovery.reason,
+                    when,
+                  });
+          toast.warning(translate("Registry recovered from backup"), {
             description: recovery.quarantinePath
-              ? `${detail} A copy of the bad file was saved for inspection.`
+              ? translate("{value1} A copy of the bad file was saved for inspection.", {
+                  value1: detail,
+                })
               : detail,
             duration: 12_000,
           });
@@ -314,12 +329,17 @@ function App() {
             const results = await reprobeAfterMutation();
             if (results.length > 0) {
               const up = results.filter((r) => r.ok).length;
-              toast.success(`${up} of ${results.length} servers healthy`);
+              toast.success(
+                translate("{value1} of {value2} servers healthy", {
+                  value1: up,
+                  value2: results.length,
+                }),
+              );
             } else {
-              toast.success("Refreshed");
+              toast.success(translate("Refreshed"));
             }
           } catch {
-            toast.warning("Refreshed, but couldn't check server health");
+            toast.warning(translate("Refreshed, but couldn't check server health"));
           }
         } else {
           void reprobe().catch(() => {});
@@ -328,7 +348,7 @@ function App() {
         // After the first successful load, a refresh failure shouldn't blow away a
         // working list. Surface it as a toast and keep what's on screen.
         if (loadedOnce.current) {
-          toastError(`Couldn't refresh: ${e}`);
+          toastError(translate("Couldn't refresh: {value1}", { value1: String(e) }));
         } else {
           setError(String(e));
         }
@@ -356,7 +376,10 @@ function App() {
         setClients(detected);
       })
       .catch((error) => {
-        if (active) toastError(`Couldn't refresh clients: ${error}`);
+        if (active)
+          toastError(
+            translate("Couldn't refresh clients: {value1}", { value1: String(error) }),
+          );
       });
     return () => {
       active = false;
@@ -407,13 +430,15 @@ function App() {
   useEffect(() => {
     const unlisten = listen("team-removed", () => {
       toast.warning(
-        "You were removed from the team. Its shared servers have been removed from your setup.",
+        t(
+          "You were removed from the team. Its shared servers have been removed from your setup.",
+        ),
       );
     });
     return () => {
       void unlisten.then((f) => f());
     };
-  }, []);
+  }, [t]);
 
   // A refresh emits one `server-probed` event per server as its probe finishes, so
   // each row resolves the moment its own result is in - a slow npx cold-start no
@@ -440,11 +465,12 @@ function App() {
       const names = [...new Set(apps.map((a) => a.client))].join(", ");
       toast.warning(
         apps.length === 1
-          ? `${names} is still starting an old gateway`
-          : `${names} are still starting an old gateway`,
+          ? t("{value1} is still starting an old gateway", { value1: names })
+          : t("{value1} are still starting an old gateway", { value1: names }),
         {
-          description:
+          description: t(
             "They cached the old path at startup, so restarting them is the only way to pick up the current gateway. Settings keeps the list.",
+          ),
           duration: 10000,
         },
       );
@@ -452,7 +478,7 @@ function App() {
     return () => {
       void unlisten.then((f) => f());
     };
-  }, []);
+  }, [t]);
 
   // Required Teams work lives in Rust for the application's lifetime. The webview
   // observes results; hiding/minimizing it cannot stop config delivery or reporting.
@@ -463,7 +489,7 @@ function App() {
         toast.dismiss("personal-sync-background");
     });
     const unlistenErrors = listen<string>("team-sync-error", (event) => {
-      toastError("Sync needs attention", {
+      toastError(translate("Sync needs attention"), {
         id: "personal-sync-background",
         description: event.payload.replace(/team server/g, "sync service"),
       });
@@ -671,7 +697,7 @@ function App() {
         setEnableReviewError(e instanceof Error ? e.message : String(e));
         throw e;
       }
-      toastError(`Couldn't toggle: ${e}`);
+      toastError(translate("Couldn't toggle: {value1}", { value1: String(e) }));
     } finally {
       setBusyId(null);
     }
@@ -693,9 +719,9 @@ function App() {
     setBusyId(serverId);
     try {
       applyRegistryChange(await removeServer(serverId));
-      toast.success(`Removed "${name}"`);
+      toast.success(translate('Removed "{value1}"', { value1: name }));
     } catch (e) {
-      toastError(`Couldn't remove: ${e}`);
+      toastError(translate("Couldn't remove: {value1}", { value1: String(e) }));
     } finally {
       setBusyId(null);
     }
@@ -712,24 +738,30 @@ function App() {
     if (enable && pendingReview > 0 && pendingReview === servers.length - enabledCount) {
       toast.message(
         pendingReview === 1
-          ? "That team server still needs review in Teams."
-          : `${pendingReview} team servers still need review in Teams.`,
+          ? translate("That team server still needs review in Teams.")
+          : translate("{value1} team servers still need review in Teams.", {
+              value1: pendingReview,
+            }),
       );
       return;
     }
     setTogglingAll(true);
     try {
       applyRegistryChange(await setAllEnabled(profileId, enable));
-      let message = enable ? "Enabled all servers" : "Disabled all servers";
+      let message = enable
+        ? translate("Enabled all servers")
+        : translate("Disabled all servers");
       if (enable && pendingReview > 0) {
         message =
           pendingReview === 1
-            ? "Enabled servers. 1 team server still needs review."
-            : `Enabled servers. ${pendingReview} team servers still need review.`;
+            ? translate("Enabled servers. 1 team server still needs review.")
+            : translate("Enabled servers. {value1} team servers still need review.", {
+                value1: pendingReview,
+              });
       }
       toast.success(message);
     } catch (e) {
-      toastError(`Couldn't update servers: ${e}`);
+      toastError(translate("Couldn't update servers: {value1}", { value1: String(e) }));
     } finally {
       setTogglingAll(false);
     }
@@ -740,12 +772,12 @@ function App() {
     try {
       const preview = await previewImportServers();
       if (preview.length === 0) {
-        toast.success("Nothing new to import");
+        toast.success(translate("Nothing new to import"));
         return;
       }
       setImportPreview(preview);
     } catch (e) {
-      toastError(`Couldn't prepare import: ${e}`);
+      toastError(translate("Couldn't prepare import: {value1}", { value1: String(e) }));
     } finally {
       setImporting(false);
     }
@@ -760,12 +792,14 @@ function App() {
       const added = next.servers.length - before;
       toast.success(
         added > 0
-          ? `Imported ${added} server${added === 1 ? "" : "s"}`
-          : "Nothing new to import",
+          ? added === 1
+            ? translate("Imported {value1} server", { value1: added })
+            : translate("Imported {value1} servers", { value1: added })
+          : translate("Nothing new to import"),
       );
       setImportPreview(null);
     } catch (e) {
-      toastError(`Import failed: ${e}`);
+      toastError(translate("Import failed: {value1}", { value1: String(e) }));
     } finally {
       setImporting(false);
     }
@@ -823,10 +857,9 @@ function App() {
                     size="sm"
                     className="-ml-2 text-muted-foreground"
                     onClick={() => selectView("clients")}
-                    aria-label="Back to clients"
+                    aria-label={t("Back to clients")}
                   >
-                    <ArrowLeft className="size-4" />
-                    Clients
+                    <ArrowLeft className="size-4" /> {t("Clients")}{" "}
                   </Button>
                   <div className="h-7 w-px bg-border" aria-hidden="true" />
                   <ClientLogo
@@ -839,37 +872,39 @@ function App() {
               <div className="min-w-0">
                 <h1 className="truncate text-[22px] font-[650] tracking-tight">
                   {view === "activity"
-                    ? "Activity"
+                    ? t("Activity")
                     : view === "catalog"
-                      ? "Browse catalog"
+                      ? translate("Browse catalog")
                       : view === "teams"
                         ? !registry?.team || isPersonalSync(registry)
-                          ? "Sync"
-                          : "Teams"
+                          ? translate("Sync")
+                          : translate("Teams")
                         : view === "settings"
-                          ? "Settings"
+                          ? translate("Settings")
                           : view === "clients"
-                            ? (selectedClient?.name ?? "Clients")
-                            : "Servers"}
+                            ? (selectedClient?.name ?? translate("Clients"))
+                            : translate("Servers")}
                 </h1>
                 <p className="truncate text-sm text-muted-foreground">
                   {view === "activity"
-                    ? "Tool calls routed through Toolport"
+                    ? t("Tool calls routed through Toolport")
                     : view === "catalog"
-                      ? "Add MCP servers from the registry"
+                      ? translate("Add MCP servers from the registry")
                       : view === "teams"
                         ? !registry?.team || isPersonalSync(registry)
-                          ? "Your setup, on every machine"
-                          : "Share one MCP server set across your team"
+                          ? translate("Your setup, on every machine")
+                          : translate("Share one MCP server set across your team")
                         : view === "settings"
-                          ? "Global discovery and security policy"
+                          ? translate("Global discovery and security policy")
                           : view === "clients"
                             ? selectedClient
-                              ? "MCP client"
-                              : "Manage Toolport in your installed AI tools"
+                              ? translate("MCP client")
+                              : translate("Manage Toolport in your installed AI tools")
                             : loading || !registry
-                              ? "Loading…"
-                              : "One gateway in front of every MCP server you run"}
+                              ? translate("Loading…")
+                              : translate(
+                                  "One gateway in front of every MCP server you run",
+                                )}
                 </p>
               </div>
             </div>
@@ -882,8 +917,10 @@ function App() {
                       ref={searchRef}
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
-                      placeholder="Search servers"
-                      title={`Search servers (/ or ${isMac ? "⌘" : "Ctrl"}F)`}
+                      placeholder={translate("Search servers")}
+                      title={translate("Search servers (/ or {value1}F)", {
+                        value1: String(isMac ? "⌘" : "Ctrl"),
+                      })}
                       className="h-9 w-32 pl-8 sm:w-44"
                     />
                   </div>
@@ -894,29 +931,28 @@ function App() {
                       <Button
                         variant="outline"
                         size="sm"
-                        title={`Add server (${isMac ? "⌘" : "Ctrl"}N)`}
+                        title={isMac ? t("Add server (⌘N)") : t("Add server (CtrlN)")}
                       >
-                        <Plus className="size-4" />
-                        Add server
+                        <Plus className="size-4" /> {t("Add server")}{" "}
                       </Button>
                     }
                   />
                   <Button
                     variant="outline"
                     size="sm"
-                    title="Browse Toolport's curated server catalog"
+                    title={translate("Browse Toolport's curated server catalog")}
                     onClick={() => selectView("catalog")}
                   >
                     <Store className="size-4" />
-                    Browse catalog
+                    {translate("Browse catalog")}
                   </Button>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button
                         variant="ghost"
                         size="icon"
-                        aria-label="More actions"
-                        title="Import and server actions"
+                        aria-label={translate("More actions")}
+                        title={translate("Import and server actions")}
                       >
                         <MoreHorizontal className="size-4" />
                       </Button>
@@ -925,7 +961,7 @@ function App() {
                     <DropdownMenuContent align="end" className="w-38">
                       <DropdownMenuItem onClick={handleImport}>
                         <Download className="mr-2 size-4" />
-                        <span>Import</span>
+                        <span>{t("Import")}</span>
                       </DropdownMenuItem>
 
                       {servers.length > 0 && (
@@ -949,13 +985,15 @@ function App() {
                           disabled={togglingAll || busyId !== null || query.trim() !== ""}
                           title={
                             query.trim() !== ""
-                              ? "Clear the search to enable or disable all servers"
+                              ? t("Clear the search to enable or disable all servers")
                               : undefined
                           }
                         >
                           <ServerOff className="mr-2 size-4" />
                           <span>
-                            {enabledCount < servers.length ? "Enable all" : "Disable all"}
+                            {enabledCount < servers.length
+                              ? t("Enable all")
+                              : t("Disable all")}
                           </span>
                         </DropdownMenuItem>
                       )}
@@ -967,13 +1005,17 @@ function App() {
                 variant="ghost"
                 size="icon"
                 className="size-8"
-                aria-label="Refresh"
-                title={`Reload servers, clients, and health (${isMac ? "⌘" : "Ctrl"}R)`}
+                aria-label={t("Refresh")}
+                title={
+                  isMac
+                    ? t("Reload servers, clients, and health (⌘R)")
+                    : t("Reload servers, clients, and health (CtrlR)")
+                }
                 onClick={() => load(true)}
                 disabled={loading}
               >
                 <RefreshCw
-                  className={`size-4 ${loading || probing ? "animate-spin" : ""}`}
+                  className={`size-4 ${String(loading || probing ? "animate-spin" : "")}`}
                 />
               </Button>
             </div>
@@ -987,8 +1029,10 @@ function App() {
             >
               <WifiOff className="size-4 shrink-0" aria-hidden="true" />
               <span className="min-w-0 flex-1">
-                Toolport's backend didn't respond to the last health check. Some features
-                may be unavailable, and server status may be stale.
+                {" "}
+                {t(
+                  "Toolport's backend didn't respond to the last health check. Some features may be unavailable, and server status may be stale.",
+                )}{" "}
               </span>
               <Button
                 variant="outline"
@@ -997,7 +1041,8 @@ function App() {
                 onClick={() => void reprobe().catch(() => {})}
                 disabled={probing}
               >
-                Retry
+                {" "}
+                {t("Retry")}{" "}
               </Button>
             </Callout>
           )}
@@ -1077,15 +1122,15 @@ function App() {
                   ) : visible.length === 0 ? (
                     <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-3 py-6 text-center">
                       <p className="text-sm text-muted-foreground">
-                        No servers match "{query}".
+                        {" "}
+                        {t('No servers match "{query}".', { query })}
                       </p>
                       <button
                         type="button"
                         onClick={() => setQuery("")}
                         className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                       >
-                        <X className="size-3.5" />
-                        Clear search
+                        <X className="size-3.5" /> {t("Clear search")}{" "}
                       </button>
                     </div>
                   ) : (
@@ -1171,9 +1216,12 @@ function App() {
       <ConfirmDialog
         open={confirmDisableAll}
         onOpenChange={setConfirmDisableAll}
-        title="Disable all servers?"
-        description={`This turns off all ${servers.length} servers for every client. Clients will lose their tools until you re-enable them.`}
-        confirmLabel="Disable all"
+        title={translate("Disable all servers?")}
+        description={translate(
+          "This turns off all {value1} servers for every client. Clients will lose their tools until you re-enable them.",
+          { value1: String(servers.length) },
+        )}
+        confirmLabel={translate("Disable all")}
         destructive
         onConfirm={handleToggleAll}
       />
@@ -1187,13 +1235,15 @@ function App() {
         }}
         title={
           confirmEnableTeam
-            ? `Enable "${visibleExecutionText(confirmEnableTeam.name)}"?`
-            : "Enable server?"
+            ? translate('Enable "{value1}"?', {
+                value1: String(visibleExecutionText(confirmEnableTeam.name)),
+              })
+            : translate("Enable server?")
         }
         description={
           confirmEnableTeam ? (
             <>
-              <Suspense fallback={<p>Loading definition...</p>}>
+              <Suspense fallback={<p>{t("Loading definition...")}</p>}>
                 <ExecutionReview
                   server={confirmEnableTeam}
                   onReady={setReadyEnableReview}
@@ -1208,12 +1258,14 @@ function App() {
           ) : undefined
         }
         contentClassName="sm:max-w-2xl"
-        confirmLabel="Enable"
+        confirmLabel={translate("Enable")}
         confirmDisabled={readyEnableReview !== confirmEnableTeam}
         onConfirm={() => {
           if (!confirmEnableTeam) return;
           if (readyEnableReview !== confirmEnableTeam)
-            throw new Error("Wait for the definition to load before enabling.");
+            throw new Error(
+              translate("Wait for the definition to load before enabling."),
+            );
           // Re-check the definition against the one that was reviewed. Team sync runs
           // on a timer, so a push landing while this dialog is open would otherwise
           // enable a command or URL the member never saw - the confirmation carried
@@ -1223,14 +1275,16 @@ function App() {
           if (!live) {
             setEnableReviewError(null);
             setConfirmEnableTeam(null);
-            toastError("That server is no longer in your registry.");
+            toastError(translate("That server is no longer in your registry."));
             return;
           }
           if (!sameReviewedDefinition(confirmEnableTeam, live)) {
             setEnableReviewError(null);
             setConfirmEnableTeam(live);
             toastError(
-              "This server changed while you were reviewing it. Check it again.",
+              translate(
+                "This server changed while you were reviewing it. Check it again.",
+              ),
             );
             // Reject so ConfirmDialog skips its setOpen(false) - a normal return
             // would close the dialog and onOpenChange(false) would null out the
@@ -1254,7 +1308,7 @@ function App() {
       <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Keyboard shortcuts</DialogTitle>
+            <DialogTitle>{t("Keyboard shortcuts")}</DialogTitle>
           </DialogHeader>
           <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 text-sm">
             {shortcutHelp(isMac).map((row) => (
@@ -1302,6 +1356,7 @@ function ServerPosture({
   attention: number;
   disabled: number;
 }) {
+  useI18n();
   const { healthy, title, detail } = serverPostureCopy({
     backendReachable,
     probing,
@@ -1315,23 +1370,21 @@ function ServerPosture({
   return (
     <div
       role="status"
-      className={`flex items-center gap-3 toolport-alert px-4 py-3 ${
-        healthy ? "border-success bg-success/8" : "border-info bg-info/8"
-      }`}
+      className={`flex items-center gap-3 toolport-alert px-4 py-3 ${String(healthy ? "border-success bg-success/8" : "border-info bg-info/8")}`}
     >
       <div
-        className={`grid size-8 shrink-0 place-items-center rounded-lg ${
+        className={`grid size-8 shrink-0 place-items-center rounded-lg ${String(
           healthy
             ? "bg-success/10 text-success"
             : probing
               ? "bg-info/10 text-info"
-              : "bg-muted text-muted-foreground"
-        }`}
+              : "bg-muted text-muted-foreground",
+        )}`}
       >
         {healthy ? (
           <CircleCheck className="size-4" />
         ) : (
-          <RefreshCw className={`size-4 ${probing ? "animate-spin" : ""}`} />
+          <RefreshCw className={`size-4 ${String(probing ? "animate-spin" : "")}`} />
         )}
       </div>
       <div>
@@ -1351,24 +1404,30 @@ function ServerNextAction({
   authServers: ServerEntry[];
   errorServers: ServerEntry[];
 }) {
+  const { t } = useI18n();
   const authCount = authServers.length;
   const errorCount = errorServers.length;
   const title =
     authCount === 1 && errorCount === 0
-      ? `Sign in to ${authServers[0].name}`
+      ? t("Sign in to {value1}", { value1: authServers[0].name })
       : authCount > 0 && errorCount === 0
-        ? `Sign in to ${authCount} servers`
+        ? t("Sign in to {value1} servers", { value1: authCount })
         : errorCount === 1 && authCount === 0
-          ? `${errorServers[0].name} couldn't start`
+          ? t("{value1} couldn't start", { value1: errorServers[0].name })
           : errorCount > 0 && authCount === 0
-            ? `${errorCount} servers couldn't start`
-            : `${authCount + errorCount} servers need a quick check`;
+            ? t("{value1} servers couldn't start", { value1: errorCount })
+            : t("{value1} servers need a quick check", {
+                value1: authCount + errorCount,
+              });
   const detail =
     authCount > 0 && errorCount === 0
-      ? "Use the actions below to finish setup. Everything else stays available."
+      ? t("Use the actions below to finish setup. Everything else stays available.")
       : errorCount > 0 && authCount === 0
-        ? "Open the affected rows below for the error and recovery details."
-        : `${authCount} need sign-in; ${errorCount} couldn't start. The other servers stay available.`;
+        ? t("Open the affected rows below for the error and recovery details.")
+        : t(
+            "{value1} need sign-in; {value2} couldn't start. The other servers stay available.",
+            { value1: authCount, value2: errorCount },
+          );
 
   return (
     <div className="flex items-start gap-3 toolport-alert border-warning bg-warning/8 px-4 py-3">
@@ -1396,26 +1455,34 @@ function EmptyState({
   onImport: () => void;
   onBrowseCatalog: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
       <ServerOff className="size-10 text-muted-foreground/50" />
       <div>
-        <p className="font-medium">No servers in Toolport yet</p>
+        <p className="font-medium">{t("No servers in Toolport yet")}</p>
         <p className="text-sm text-muted-foreground">
           {importable > 0
-            ? `Found ${importable} server${importable === 1 ? "" : "s"} in your installed clients. Import them to get started.`
-            : "Browse the catalog to add one, or import servers from a client."}
+            ? importable === 1
+              ? t(
+                  "Found {value1} server in your installed clients. Import them to get started.",
+                  { value1: importable },
+                )
+              : t(
+                  "Found {value1} servers in your installed clients. Import them to get started.",
+                  { value1: importable },
+                )
+            : t("Browse the catalog to add one, or import servers from a client.")}
         </p>
       </div>
       {importable > 0 ? (
         <Button onClick={onImport}>
-          <Download className="size-4" />
-          Import {importable} from clients
+          <Download className="size-4" /> {t("Import")} {importable}{" "}
+          {t("from clients")}{" "}
         </Button>
       ) : (
         <Button onClick={onBrowseCatalog}>
-          <Store className="size-4" />
-          Browse catalog
+          <Store className="size-4" /> {t("Browse catalog")}{" "}
         </Button>
       )}
     </div>
@@ -1423,42 +1490,50 @@ function EmptyState({
 }
 
 function ViewCrash({ error, onRetry }: { error: Error; onRetry: () => void }) {
+  const { t } = useI18n();
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
       <TriangleAlert className="size-10 text-warning" />
       <div>
-        <p className="font-medium">Something went wrong in this view</p>
+        <p className="font-medium">{t("Something went wrong in this view")}</p>
         <p className="max-w-md text-sm text-muted-foreground">
-          The rest of Toolport is still running. Try again, or reload the window if it
-          keeps happening.
+          {" "}
+          {t(
+            "The rest of Toolport is still running. Try again, or reload the window if it keeps happening.",
+          )}{" "}
         </p>
         <p className="mt-2 font-mono text-xs text-muted-foreground/70">{error.message}</p>
       </div>
       <div className="flex gap-2">
         <Button variant="outline" onClick={onRetry}>
-          Try again
+          {" "}
+          {t("Try again")}{" "}
         </Button>
-        <Button onClick={() => window.location.reload()}>Reload</Button>
+        <Button onClick={() => window.location.reload()}>{t("Reload")}</Button>
       </div>
     </div>
   );
 }
 
 function ErrorState({ message }: { message: string }) {
+  const { t } = useI18n();
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
       <TriangleAlert className="size-10 text-warning" />
       <div>
-        <p className="font-medium">Couldn't reach the backend</p>
+        <p className="font-medium">{t("Couldn't reach the backend")}</p>
         <p className="max-w-md text-sm text-muted-foreground">
           {import.meta.env.DEV ? (
             <>
-              Make sure you're running the desktop app with{" "}
-              <code className="font-mono">npm run tauri dev</code>, not the browser-only
-              dev server.
+              {" "}
+              {t("Make sure you're running the desktop app with")}{" "}
+              <code className="font-mono">{technicalText("npm run tauri dev")}</code>
+              {t(", not the browser-only dev server.")}{" "}
             </>
           ) : (
-            <>Toolport's backend didn't start. Try quitting and reopening the app.</>
+            <>
+              {t("Toolport's backend didn't start. Try quitting and reopening the app.")}
+            </>
           )}
         </p>
         <p className="mt-2 font-mono text-xs text-muted-foreground/70">{message}</p>

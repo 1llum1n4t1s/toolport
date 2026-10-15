@@ -1,3 +1,5 @@
+import { initializeLanguage, isLanguageChoice, LanguageProvider } from "@/lib/i18n";
+import { LocalizationControls } from "./localization-controls";
 import { securityFixture } from "./security-fixture";
 const fixtureLocations: import("@/lib/types").DetectedClient[] = [];
 // Separate development entry. Never imported by the shipping application.
@@ -681,6 +683,16 @@ mockIPC(
           registry.clientDiscovery[String(args.clientId)] = String(args.mode);
         else delete registry.clientDiscovery[String(args.clientId)];
         return { ...registry, clientDiscovery: { ...registry.clientDiscovery } };
+      case "get_ui_language": {
+        const saved = sessionStorage.getItem("toolport-fixture-language");
+        return isLanguageChoice(saved) ? saved : "system";
+      }
+      case "set_ui_language":
+        if (new URLSearchParams(location.search).has("language-save-error"))
+          throw new Error("Fixture settings are read-only");
+        if (!isLanguageChoice(args.language)) throw new Error("Invalid language choice");
+        sessionStorage.setItem("toolport-fixture-language", args.language);
+        return null;
       case "get_registry":
         return registry;
       case "client_location_types":
@@ -973,7 +985,21 @@ mockIPC(
   { shouldMockEvents: true },
 );
 
-if (new URLSearchParams(location.search).has("logos")) {
+if (
+  new URLSearchParams(location.search).has("localization-controls") ||
+  new URLSearchParams(location.search).has("logos") ||
+  memberReviewFixture ||
+  personalFixture
+)
+  await initializeLanguage();
+
+if (new URLSearchParams(location.search).has("localization-controls")) {
+  createRoot(document.getElementById("root")!).render(
+    <LanguageProvider>
+      <LocalizationControls server={servers[0]} registry={registry} />
+    </LanguageProvider>,
+  );
+} else if (new URLSearchParams(location.search).has("logos")) {
   const paths = Object.keys(import.meta.glob("../assets/client-logos/*.svg"));
   const aliases: Record<string, string> = {
     claude: "claude-desktop",
@@ -1022,7 +1048,11 @@ if (new URLSearchParams(location.search).has("logos")) {
       </main>
     );
   }
-  createRoot(document.getElementById("root")!).render(<ReviewFixture />);
+  createRoot(document.getElementById("root")!).render(
+    <LanguageProvider>
+      <ReviewFixture />
+    </LanguageProvider>,
+  );
 } else {
   await import("../main");
 }

@@ -1,3 +1,4 @@
+import { useI18n, Trans } from "@/lib/i18n";
 import { SecretReferenceField } from "@/components/SecretReferenceField";
 import { invoke } from "@tauri-apps/api/core";
 import { useState, type ReactNode } from "react";
@@ -26,6 +27,7 @@ interface Props {
 
 /** Setup values are member-local even when the server definition comes from a team. */
 export function LaunchSetupDialog({ server, trigger, onSaved, onChanged }: Props) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [values, setValues] = useState<Record<string, string>>({});
@@ -80,11 +82,11 @@ export function LaunchSetupDialog({ server, trigger, onSaved, onChanged }: Props
         onSaved(result);
         onChanged?.();
       }
-      toast.success(result ? "Launch setup saved" : "Launch setup unchanged");
+      toast.success(result ? t("Launch setup saved") : t("Launch setup unchanged"));
       setOpen(false);
     } catch (error) {
       if (result) onSaved(result);
-      toastError(`Could not save launch setup: ${error}`);
+      toastError(t("Could not save launch setup: {value1}", { value1: String(error) }));
     } finally {
       setBusy(false);
     }
@@ -95,7 +97,12 @@ export function LaunchSetupDialog({ server, trigger, onSaved, onChanged }: Props
       <DialogTrigger asChild>{trigger}</DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Launch setup for {server.name}</DialogTitle>
+          <DialogTitle>
+            <Trans
+              message={"Launch setup for {value1}"}
+              values={{ value1: server.name }}
+            />
+          </DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-3 py-2">
           {inputs.map((input) => (
@@ -106,7 +113,7 @@ export function LaunchSetupDialog({ server, trigger, onSaved, onChanged }: Props
               </Label>
               {input.secret && (
                 <select
-                  aria-label={`Key source for ${input.label}`}
+                  aria-label={t("Key source for {value1}", { value1: input.label })}
                   className="self-start rounded border bg-background p-1 text-xs"
                   value={references[input.key] !== undefined ? "reference" : "paste"}
                   onChange={(e) =>
@@ -119,8 +126,8 @@ export function LaunchSetupDialog({ server, trigger, onSaved, onChanged }: Props
                     }))
                   }
                 >
-                  <option value="paste">Paste a key</option>
-                  <option value="reference">From a password manager</option>
+                  <option value="paste">{t("Paste a key")}</option>
+                  <option value="reference">{t("From a password manager")}</option>
                 </select>
               )}
               {references[input.key] !== undefined ? (
@@ -135,7 +142,9 @@ export function LaunchSetupDialog({ server, trigger, onSaved, onChanged }: Props
                   type={input.secret ? "password" : "text"}
                   value={values[input.key] ?? ""}
                   placeholder={
-                    input.secret ? "Leave blank to keep any vaulted value" : input.label
+                    input.secret
+                      ? t("Leave blank to keep any vaulted value")
+                      : input.label
                   }
                   onChange={(event) =>
                     setValues((current) => ({
@@ -154,19 +163,20 @@ export function LaunchSetupDialog({ server, trigger, onSaved, onChanged }: Props
                       setPortable((p) => ({ ...p, [input.key]: e.target.checked }))
                     }
                   />{" "}
-                  Same on every machine
+                  {t("Same on every machine")}
                 </label>
               )}
             </div>
           ))}
           <p className="text-xs text-muted-foreground">
-            Pasted keys stay in Toolport's vault. Password manager references sync to your
-            other machines. Sign in to the provider on each machine.
+            {t(
+              "Pasted keys stay in Toolport's vault. Password manager references sync to your other machines. Sign in to the provider on each machine.",
+            )}
           </p>
         </div>
         <DialogFooter>
           <Button disabled={busy} onClick={save}>
-            {busy ? "Saving…" : "Save setup"}
+            {busy ? t("Saving…") : t("Save setup")}
           </Button>
         </DialogFooter>
       </DialogContent>

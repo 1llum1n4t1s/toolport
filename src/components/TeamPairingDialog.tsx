@@ -1,3 +1,4 @@
+import { translate, useI18n } from "@/lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
@@ -16,6 +17,7 @@ import { teamPairCancel, teamPairState, type TeamPairEvent } from "@/lib/api";
  * attempt: it closes as soon as pairing ends, success opens Teams, and a failure
  * replaces it with the reason. Hiding it leaves pairing running. */
 export function TeamPairingDialog({ onConnected }: { onConnected: () => void }) {
+  const { t } = useI18n();
   const [shown, setShown] = useState<TeamPairEvent | null>(null);
   const [cancelling, setCancelling] = useState(false);
   // The latest callback, so the subscription below runs once per mount.
@@ -31,11 +33,11 @@ export function TeamPairingDialog({ onConnected }: { onConnected: () => void }) 
       setCancelling(false);
       if (event.state === "connected") {
         setShown(null);
-        toast.success("Toolport is signed in to sync.");
+        toast.success(translate("Toolport is signed in to sync."));
         connected.current();
       } else if (event.state === "cancelled") {
         setShown(null);
-        toast("Connection request cancelled.");
+        toast(translate("Connection request cancelled."));
       } else {
         setShown(event);
       }
@@ -68,32 +70,35 @@ export function TeamPairingDialog({ onConnected }: { onConnected: () => void }) 
         {shown?.state === "failed" ? (
           <>
             <DialogHeader>
-              <DialogTitle>Connection not completed</DialogTitle>
+              <DialogTitle>{t("Connection not completed")}</DialogTitle>
               <DialogDescription>
-                {shown.message} Nothing was connected. Start again from the sync website
-                when you are ready.
+                {shown.message}{" "}
+                {t(
+                  "Nothing was connected. Start again from the sync website when you are ready.",
+                )}
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
-              <Button onClick={hide}>Close</Button>
+              <Button onClick={hide}>{t("Close")}</Button>
             </DialogFooter>
           </>
         ) : (
           <>
             <DialogHeader>
-              <DialogTitle>Approve this device in your browser</DialogTitle>
+              <DialogTitle>{t("Approve this device in your browser")}</DialogTitle>
               <DialogDescription>
-                Device check: <span className="font-mono">{shown?.check}</span>. Approve
-                only if the browser shows this same check, the intended setup and your
-                account. This request expires in five minutes. You can hide this message;
-                Toolport finishes connecting when you approve.
+                {t("Device check:")}
+                <span className="font-mono">{shown?.check}</span>
+                {t(
+                  ". Approve only if the browser shows this same check, the intended setup and your account. This request expires in five minutes. You can hide this message; Toolport finishes connecting when you approve.",
+                )}
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
               <Button variant="destructive" onClick={cancel} disabled={cancelling}>
-                {cancelling ? "Cancelling…" : "Cancel request"}
+                {cancelling ? t("Cancelling…") : t("Cancel request")}
               </Button>
-              <Button onClick={hide}>Hide</Button>
+              <Button onClick={hide}>{t("Hide")}</Button>
             </DialogFooter>
           </>
         )}

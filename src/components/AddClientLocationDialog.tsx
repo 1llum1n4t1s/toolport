@@ -1,3 +1,5 @@
+import { technicalText } from "@/lib/i18n";
+import { translate, useI18n } from "@/lib/i18n";
 import { useEffect, useId, useState } from "react";
 import {
   addClientLocation,
@@ -23,6 +25,7 @@ export function AddClientLocationDialog({
   onOpenChange: (open: boolean) => void;
   onAdded: (id: string) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const typeId = useId();
   const folderId = useId();
   const [types, setTypes] = useState<ClientLocationType[]>([]);
@@ -41,7 +44,9 @@ export function AddClientLocationDialog({
       })
       .catch(() => {
         if (current)
-          setError("Could not load client types. Close this dialog and try again.");
+          setError(
+            translate("Could not load client types. Close this dialog and try again."),
+          );
       });
     return () => {
       current = false;
@@ -57,10 +62,11 @@ export function AddClientLocationDialog({
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add client location</DialogTitle>
+          <DialogTitle>{t("Add client location")}</DialogTitle>
           <DialogDescription>
-            Choose the folder this client uses for its configuration. Locations stay on
-            this machine. Connecting is a separate step.
+            {t(
+              "Choose the folder this client uses for its configuration. Locations stay on this machine. Connecting is a separate step.",
+            )}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -82,7 +88,7 @@ export function AddClientLocationDialog({
           }}
         >
           <div className="flex flex-col gap-2 text-sm">
-            <label htmlFor={typeId}>Client type</label>
+            <label htmlFor={typeId}>{t("Client type")}</label>
             <select
               id={typeId}
               className="h-9 rounded-md border border-input bg-background px-3"
@@ -98,20 +104,22 @@ export function AddClientLocationDialog({
             </select>
           </div>
           <div className="flex flex-col gap-2 text-sm">
-            <label htmlFor={folderId}>Config folder</label>
+            <label htmlFor={folderId}>{t("Config folder")}</label>
             <Input
               id={folderId}
               value={folder}
               onChange={(event) => setFolder(event.target.value)}
-              placeholder="~/.claude2"
+              placeholder={technicalText("~/.claude2")}
               disabled={saving}
               autoFocus
             />
           </div>
           {selected && (
             <p className="text-xs text-muted-foreground">
-              Toolport will use {selected.configFile} in this folder. For Codex, choose
-              its CODEX_HOME folder.
+              {t(
+                "Toolport will use {file} in this folder. For Codex, choose its CODEX_HOME folder.",
+                { file: selected.configFile },
+              )}
             </p>
           )}
           {error && (
@@ -120,7 +128,7 @@ export function AddClientLocationDialog({
             </p>
           )}
           <Button type="submit" disabled={saving || !folder.trim() || !selected}>
-            {saving ? "Adding…" : "Add location"}
+            {saving ? t("Adding…") : t("Add location")}
           </Button>
         </form>
       </DialogContent>

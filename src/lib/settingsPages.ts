@@ -1,25 +1,34 @@
+import { msg } from "@/lib/i18n";
 export const SETTINGS_PAGES = [
-  { id: "general", label: "General", description: "Startup, appearance and updates." },
-  { id: "tools", label: "Tools", description: "How agents find and use your tools." },
+  {
+    id: "general",
+    label: msg("General"),
+    description: msg("Startup, appearance and updates."),
+  },
+  {
+    id: "tools",
+    label: msg("Tools"),
+    description: msg("How agents find and use your tools."),
+  },
   {
     id: "safety",
-    label: "Safety",
-    description: "How Toolport handles risky tool calls.",
+    label: msg("Safety"),
+    description: msg("How Toolport handles risky tool calls."),
   },
   {
     id: "access",
-    label: "Access",
-    description: "Limit which servers and tools each client can use.",
+    label: msg("Access"),
+    description: msg("Limit which servers and tools each client can use."),
   },
   {
     id: "connections",
-    label: "Connections",
-    description: "Your local HTTP endpoint and gateway processes.",
+    label: msg("Connections"),
+    description: msg("Your local HTTP endpoint and gateway processes."),
   },
   {
     id: "help",
-    label: "Help and data",
-    description: "Support reports, local files and removing Toolport.",
+    label: msg("Help and data"),
+    description: msg("Support reports, local files and removing Toolport."),
   },
 ] as const;
 export type SettingsSubpage = (typeof SETTINGS_PAGES)[number]["id"];

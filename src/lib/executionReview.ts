@@ -1,3 +1,4 @@
+import { msg, translate } from "./i18n";
 import type { ArgBinding, ServerEntry } from "./types";
 export { inputDisplayName } from "./inputDisplayName";
 
@@ -6,8 +7,9 @@ import { referenceDestinationLines } from "./secretRefs";
 import { inputDisplayName } from "./inputDisplayName";
 export { visibleExecutionText } from "./visibleExecutionText";
 
-export const ARGS_REVIEW_LINE =
-  "Arguments changed on another machine and could not be matched to the secret values saved here. Toolport kept this machine's arguments. Check them before enabling.";
+export const ARGS_REVIEW_LINE = msg(
+  "Arguments changed on another machine and could not be matched to the secret values saved here. Toolport kept this machine's arguments. Check them before enabling.",
+);
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
@@ -131,7 +133,7 @@ export function reviewDisplay(server: ServerEntry, line: string): string {
   const swap = (text: string, from: string, to: string) => text.split(from).join(to);
   let out = swap(line, "<launch-input>", "<secret>");
   const launch = server.launch;
-  if (!launch) return out;
+  if (!launch) return localizeReviewLine(server, out);
   const pasted = launch.inputs.filter(
     (input) => input.secret && input.label.startsWith("Imported argument"),
   );
@@ -146,7 +148,88 @@ export function reviewDisplay(server: ServerEntry, line: string): string {
     out = swap(out, `Input: ${key} =`, `${name} =`);
     out = swap(out, `{${key}}`, `<${name}>`);
   }
-  return out;
+  return localizeReviewLine(server, out);
+}
+// Field names and values above are persisted consent data. Translate only the
+// presentation after matching and replacing the canonical secret references.
+const REVIEW_LABELS = [
+  msg("Command"),
+  msg("Arguments"),
+  msg("Working folder"),
+  msg("Uses this machine's environment"),
+  msg("Argument values"),
+  msg("URL"),
+  msg("Environment"),
+  msg("Input"),
+  msg("Header"),
+] as const;
+function localizeReviewValue(server: ServerEntry, key: string, value: string): string {
+  // Consent values can be arbitrary commands, paths or plain credential fields.
+  // Only translate a sentinel when the typed definition establishes its meaning.
+  const field = /^(Environment|Input|Header): (.*)$/.exec(key);
+  if (field) {
+    const rows =
+      field[1] === "Environment"
+        ? server.env
+        : field[1] === "Input"
+          ? (server.launch?.inputs ?? [])
+          : (server.headerKeys ?? []);
+    const row = rows.find((row) => show(row.key) === field[2]);
+    if (!row) return value === "Removed" ? translate("Removed") : value;
+    if ("env" in row && row.env && value === `Uses environment: ${show(row.env)}`)
+      return translate("Uses environment: {name}", { name: show(row.env) });
+    if (row.source?.ref && value === `Password manager: ${show(row.source.ref)}`)
+      return translate("Password manager: {reference}", {
+        reference: show(row.source.ref),
+      });
+    if ("secret" in row && row.secret && value === "<masked secret>")
+      return translate("<masked secret>");
+    if ((!("value" in row) || row.value == null) && value === "Set on this machine")
+      return translate("Set on this machine");
+    return value;
+  }
+  if (key === "Uses this machine's environment") {
+    if (value === "yes") return translate("yes");
+    if (value === "no") return translate("no");
+  }
+  if (key === "Argument values") return displayArgumentValues(value);
+  if (!(key in executionReviewFields(server)) && value === "Removed")
+    return translate("Removed");
+  return value;
+}
+/** Display counterpart of argumentValues; persisted consent values stay English. */
+export function displayArgumentValues(value: string): string {
+  return value
+    .split("\n")
+    .map((line) => {
+      const match = /^Argument (\d+) = (.*)$/.exec(line);
+      return match
+        ? translate("Argument {position} = {value}", {
+            position: match[1],
+            value: match[2],
+          })
+        : line;
+    })
+    .join("\n");
+}
+function localizeReviewLine(server: ServerEntry, line: string): string {
+  if (line === "New server") return line;
+  const fields = /^(Environment|Input|Header): ([^\n]*?) = ([\s\S]*)$/.exec(line);
+  if (fields) {
+    const label = REVIEW_LABELS.find((source) => source === fields[1])!;
+    return `${translate(label)}: ${fields[2]} = ${localizeReviewValue(server, `${fields[1]}: ${fields[2]}`, fields[3])}`;
+  }
+  const secret = /^(.*) = secret, entered on each machine$/.exec(line);
+  if (secret)
+    return translate("{name} = secret, entered on each machine", { name: secret[1] });
+  const separator = line.indexOf(": ");
+  if (separator >= 0) {
+    const key = line.slice(0, separator);
+    const label = REVIEW_LABELS.find((source) => source === key);
+    if (label)
+      return `${translate(label)}: ${localizeReviewValue(server, key, line.slice(separator + 2))}`;
+  }
+  return line;
 }
 export function executionReviewLines(server: ServerEntry): string[] {
   return executionReviewRawLines(server).map((line) => reviewDisplay(server, line));
@@ -161,14 +244,27 @@ function changedArguments(before: string, after: string): string {
       .filter((line) => line.includes(". "))
       .map((line) => line.slice(line.indexOf(". ") + 2));
   const [a, b] = [items(before), items(after)];
-  let out = "Arguments changed:";
+  let out = translate("Arguments changed:");
   for (let i = 0; i < Math.max(a.length, b.length); i++) {
     if (a[i] !== undefined && b[i] !== undefined && a[i] !== b[i])
-      out += `\n  ${i + 1}. ${b[i]} (was ${a[i]})`;
+      out +=
+        "\n  " +
+        translate("{position}. {value} (was {previous})", {
+          position: i + 1,
+          value: b[i],
+          previous: a[i],
+        });
     else if (a[i] === undefined && b[i] !== undefined)
-      out += `\n  ${i + 1}. ${b[i]} (added)`;
+      out +=
+        "\n  " +
+        translate("{position}. {value} (added)", { position: i + 1, value: b[i] });
     else if (a[i] !== undefined && b[i] === undefined)
-      out += `\n  ${i + 1}. removed (was ${a[i]})`;
+      out +=
+        "\n  " +
+        translate("{position}. removed (was {previous})", {
+          position: i + 1,
+          previous: a[i],
+        });
   }
   return out;
 }
@@ -188,10 +284,13 @@ function executionReviewRawLines(server: ServerEntry): string[] {
   for (const key of Object.keys(previous ?? {}))
     if (!(key in fields))
       lines.push(executionReviewFieldLine(visibleExecutionText(key), "Removed"));
-  if (server.personalSyncArgsReview) lines.push(ARGS_REVIEW_LINE);
+  if (server.personalSyncArgsReview) lines.push(translate(ARGS_REVIEW_LINE));
   for (const n of missingSecretArgs(server))
     lines.push(
-      `Argument ${n} is a secret that does not sync. Edit this server and enter it on this machine before enabling.`,
+      translate(
+        "Argument {position} is a secret that does not sync. Edit this server and enter it on this machine before enabling.",
+        { position: n },
+      ),
     );
   // Consent is to a reference reaching a destination, so this stays visible
   // even when neither the reference nor the destination changed.
@@ -199,8 +298,10 @@ function executionReviewRawLines(server: ServerEntry): string[] {
   if (previous && !lines.length)
     lines.push(
       references.length
-        ? "Approve these password manager entries for this machine."
-        : "Nothing in this definition changed. Confirm it to run it on this machine.",
+        ? translate("Approve these password manager entries for this machine.")
+        : translate(
+            "Nothing in this definition changed. Confirm it to run it on this machine.",
+          ),
     );
   lines.push(...references);
   return previous ? lines : ["New server", ...lines];

@@ -1,3 +1,4 @@
+import { translate } from "@/lib/i18n";
 /** The hosted Toolport Teams **app**, prefilled as the default server URL. Self-hosters
  * replace it with their own server. */
 export const HOSTED_TEAMS_URL = "https://teams.toolport.app";
@@ -34,17 +35,18 @@ export const TEAMS_CREATE_URL = `${HOSTED_TEAMS_URL}/?intent=create-team&from=ap
 
 export function teamUrlError(raw: string): string | null {
   const value = raw.trim();
-  if (!value) return "Server URL is required.";
+  if (!value) return translate("Server URL is required.");
 
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    return "Team server URL must start with https://.";
+    return translate("Team server URL must start with https://.");
   }
 
   if (url.protocol === "https:") return null;
-  if (url.protocol !== "http:") return "Team server URL must start with https://.";
+  if (url.protocol !== "http:")
+    return translate("Team server URL must start with https://.");
 
   const host = url.hostname.toLowerCase();
   const loopback =
@@ -56,5 +58,7 @@ export function teamUrlError(raw: string): string | null {
 
   return loopback
     ? null
-    : "Team server URL must use https:// unless it is loopback HTTP for local development.";
+    : translate(
+        "Team server URL must use https:// unless it is loopback HTTP for local development.",
+      );
 }

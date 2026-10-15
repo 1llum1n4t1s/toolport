@@ -1,3 +1,4 @@
+import { msg, translate, useI18n } from "@/lib/i18n";
 import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ArgBinding, Registry } from "@/lib/types";
@@ -11,8 +12,8 @@ import {
 } from "@/lib/api";
 import { HOSTED_TEAMS_URL, TEAMS_CREATE_URL, teamUrlError } from "@/lib/teamUrl";
 import { accountStatusText, planName, syncSignInUrl } from "@/lib/personalSync";
-import { argumentValues } from "@/lib/executionReview";
-import { PRO_LINE, TEAMS_FREE_LINE } from "@/lib/teamsPlan";
+import { argumentValues, displayArgumentValues } from "@/lib/executionReview";
+import { proLine, teamsFreeLine } from "@/lib/teamsPlan";
 import { openExternal } from "@/lib/openUrl";
 import { visibleExecutionText as visibleText } from "@/lib/visibleExecutionText";
 import { Button } from "./ui/button";
@@ -69,32 +70,35 @@ function AttentionItem({
 }
 
 function conflictFields(value: unknown): Record<string, string> {
-  if (!value || typeof value !== "object") return { Server: "Removed" };
+  if (!value || typeof value !== "object")
+    return { [translate("Server")]: translate("Removed") };
   const v = value as Record<string, unknown>;
   const fields: Record<string, string> = {};
   for (const [key, label] of Object.entries({
-    name: "Name",
-    transport: "Transport",
-    command: "Command",
-    cwd: "Working directory",
-    url: "URL",
-    disabled: "Disabled",
-    requestTimeoutMs: "Request timeout",
-    initializeTimeoutMs: "Startup timeout",
-    disabledTools: "Disabled tools",
+    name: translate("Name"),
+    transport: translate("Transport"),
+    command: translate("Command"),
+    cwd: translate("Working directory"),
+    url: translate("URL"),
+    disabled: translate("Disabled"),
+    requestTimeoutMs: translate("Request timeout"),
+    initializeTimeoutMs: translate("Startup timeout"),
+    disabledTools: translate("Disabled tools"),
   })) {
     if (v[key] != null) fields[label] = visibleText(String(v[key]));
   }
   if (Array.isArray(v.args))
     v.args.forEach((arg, i) => {
-      fields[`Argument ${i + 1}`] = visibleText(String(arg));
+      fields[translate("Argument {value0}", { value0: i + 1 })] = visibleText(
+        String(arg),
+      );
     });
   // Same plain labels and masking as the execution review.
   const launch = v.launch as { inputs?: unknown[]; bindings?: ArgBinding[] } | undefined;
-  for (const [label, rows] of [
-    ["Environment", v.env],
-    ["Input", launch?.inputs],
-    ["Header", v.headerKeys],
+  for (const [kind, rows, label] of [
+    ["Environment", v.env, translate("Environment")],
+    ["Input", launch?.inputs, translate("Input")],
+    ["Header", v.headerKeys, translate("Header")],
   ] as const) {
     if (Array.isArray(rows))
       for (const row of rows as {
@@ -105,33 +109,38 @@ function conflictFields(value: unknown): Record<string, string> {
         source?: { ref?: string };
       }[])
         fields[`${label}: ${visibleText(row.key)}`] =
-          label === "Header" && typeof row.env === "string"
-            ? `Uses environment: ${visibleText(row.env)}`
+          kind === "Header" && typeof row.env === "string"
+            ? translate("Uses environment: {value0}", { value0: visibleText(row.env) })
             : row.source?.ref
-              ? `Password manager: ${visibleText(row.source.ref)}`
+              ? translate("Password manager: {value0}", {
+                  value0: visibleText(row.source.ref),
+                })
               : row.secret
-                ? "<masked secret>"
+                ? translate("<masked secret>")
                 : row.value != null
                   ? visibleText(
                       typeof row.value === "string"
                         ? row.value
                         : JSON.stringify(row.value),
                     )
-                  : "Set on this machine";
+                  : translate("Set on this machine");
   }
   if (Array.isArray(launch?.bindings) && launch.bindings.length)
-    fields["Argument values"] = argumentValues(launch.bindings);
+    fields[translate("Argument values")] = displayArgumentValues(
+      argumentValues(launch.bindings),
+    );
   return fields;
 }
 function ConflictVersions({ local, remote }: { local: unknown; remote: unknown }) {
+  const { t } = useI18n();
   const left = conflictFields(local),
     right = conflictFields(remote);
   const keys = [...new Set([...Object.keys(left), ...Object.keys(right)])];
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       {[
-        ["This machine", left],
-        ["Other machine", right],
+        [t("This machine"), left],
+        [t("Other machine"), right],
       ].map(([title, fields]) => (
         <div key={String(title)}>
           <h4 className="font-medium">{String(title)}</h4>
@@ -143,7 +152,7 @@ function ConflictVersions({ local, remote }: { local: unknown; remote: unknown }
               >
                 <dt>{key}</dt>
                 <dd className="whitespace-pre-wrap">
-                  {(fields as Record<string, string>)[key] ?? "Not set"}
+                  {(fields as Record<string, string>)[key] ?? translate("Not set")}
                 </dd>
               </div>
             ))}
@@ -162,6 +171,7 @@ export function PersonalSyncView({
   onRegistryChange: (r: Registry) => void;
   onOpenServers?: () => void;
 }) {
+  const { t } = useI18n();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [url, setUrl] = useState(HOSTED_TEAMS_URL);
@@ -180,7 +190,9 @@ export function PersonalSyncView({
           } else if (result.status === "pending") setPending({ ...pending });
           else {
             setPending(null);
-            setError("The invitation was declined or expired. Get a new manual code.");
+            setError(
+              translate("The invitation was declined or expired. Get a new manual code."),
+            );
           }
         })
         .catch((e) => {
@@ -217,24 +229,37 @@ export function PersonalSyncView({
     !!Object.keys(sync?.publishErrors ?? {}).length;
   const lastSynced = sync?.lastSyncedAt
     ? now - sync.lastSyncedAt < 60_000
-      ? "Last synced just now"
-      : `Last synced ${Math.floor((now - sync.lastSyncedAt) / 60_000)} ${
-          Math.floor((now - sync.lastSyncedAt) / 60_000) === 1 ? "minute" : "minutes"
-        } ago`
+      ? t("Last synced just now")
+      : t(
+          Math.floor((now - sync.lastSyncedAt) / 60_000) === 1
+            ? msg("Last synced {count} minute ago")
+            : msg("Last synced {count} minutes ago"),
+          { count: Math.floor((now - sync.lastSyncedAt) / 60_000) },
+        )
     : null;
   const failed = !!(error || sync?.error || team?.accountStatusError);
   const summary = failed
-    ? "Last sync did not finish"
+    ? t("Last sync did not finish")
     : Object.keys(sync?.conflicts ?? {}).length
-      ? "Changes need your choice"
+      ? t("Changes need your choice")
       : arrivals.length
-        ? `${arrivals.length} ${arrivals.length === 1 ? "server is" : "servers are"} waiting for review on this machine`
+        ? t(
+            arrivals.length === 1
+              ? msg("{count} server is waiting for review on this machine")
+              : msg("{count} servers are waiting for review on this machine"),
+            { count: arrivals.length },
+          )
         : !lastSynced
-          ? "Waiting for first sync"
+          ? t("Waiting for first sync")
           : Object.keys(sync?.pending ?? {}).length
-            ? "Changes waiting to sync"
-            : "Sync is up to date";
-  const healthy = summary === "Sync is up to date";
+            ? t("Changes waiting to sync")
+            : t("Sync is up to date");
+  const healthy =
+    !failed &&
+    !Object.keys(sync?.conflicts ?? {}).length &&
+    arrivals.length === 0 &&
+    !!lastSynced &&
+    !Object.keys(sync?.pending ?? {}).length;
   const statusLine = lastSynced ? `${summary} · ${lastSynced}` : summary;
   async function run(work: () => Promise<void>) {
     setBusy(true);
@@ -249,11 +274,12 @@ export function PersonalSyncView({
   }
   return (
     <div className="mx-auto max-w-2xl space-y-4">
-      <h2 className="text-[22px] font-[650] tracking-tight">Sync</h2>
+      <h2 className="text-[22px] font-[650] tracking-tight">{t("Sync")}</h2>
       {!team && (
         <p className="text-sm text-muted-foreground">
-          Set up once. Your servers follow you to every machine. Secret values and
-          approvals stay on this machine.
+          {t(
+            "Set up once. Your servers follow you to every machine. Secret values and approvals stay on this machine.",
+          )}
         </p>
       )}
       {(error || sync?.error || team?.accountStatusError) && (
@@ -278,35 +304,38 @@ export function PersonalSyncView({
             }
             disabled={busy}
           >
-            Sign in to sync
+            {t("Sign in to sync")}
           </Button>
           <p className="text-sm">
-            {TEAMS_FREE_LINE} {PRO_LINE}
+            {teamsFreeLine()} {proLine()}
           </p>
           {pending && (
             <Callout variant="warning">
               <p>
-                Waiting for invitation approval. Leave this open, it finishes on its own.
+                {t(
+                  "Waiting for invitation approval. Leave this open, it finishes on its own.",
+                )}
               </p>
               <Button variant="outline" onClick={() => setPending(null)}>
-                Cancel request
+                {t("Cancel request")}
               </Button>
             </Callout>
           )}
           <details className="rounded-lg border p-4">
             <summary className="cursor-pointer text-sm font-medium">
-              Use a manual code
+              {t("Use a manual code")}
             </summary>
             <p className="mt-3 text-sm text-muted-foreground">
-              If your browser cannot open Toolport, copy the manual code shown after
-              approving this device.
+              {t(
+                "If your browser cannot open Toolport, copy the manual code shown after approving this device.",
+              )}
             </p>
             <label className="mt-3 block text-sm">
-              Sync service URL
+              {t("Sync service URL")}
               <Input value={url} onChange={(e) => setUrl(e.target.value)} />
             </label>
             <label className="mt-3 block text-sm">
-              Manual code
+              {t("Manual code")}
               <Input value={code} onChange={(e) => setCode(e.target.value)} />
             </label>
             <Button
@@ -322,12 +351,14 @@ export function PersonalSyncView({
                     return;
                   }
                   if (result.status !== "connected")
-                    throw new Error("Could not sign in. Get a new manual code.");
+                    throw new Error(
+                      translate("Could not sign in. Get a new manual code."),
+                    );
                   onRegistryChange(result.registry ?? (await getRegistry()));
                 })
               }
             >
-              Sign in with code
+              {t("Sign in with code")}
             </Button>
           </details>
         </>
@@ -342,7 +373,7 @@ export function PersonalSyncView({
             {sync?.signInRequired ? (
               // Sync cannot succeed without sign-in.
               <Button disabled={busy} onClick={() => void run(() => reconnectSync())}>
-                Sign in
+                {t("Sign in")}
               </Button>
             ) : (
               <Button
@@ -354,18 +385,20 @@ export function PersonalSyncView({
                   })
                 }
               >
-                Sync now
+                {t("Sync now")}
               </Button>
             )}
           </div>
           {needsYou && (
-            <section aria-label="Needs you">
-              <SectionLabel>Needs you</SectionLabel>
+            <section aria-label={t("Needs you")}>
+              <SectionLabel>{t("Needs you")}</SectionLabel>
               <div className="divide-y divide-warning/15 rounded-r-lg border-l-3 border-warning bg-warning/7">
                 {sync?.chooseLocalServers && (
                   <AttentionItem
-                    title="Choose which servers sync"
-                    detail="Servers you already had start on This machine. Switch any you want everywhere below."
+                    title={t("Choose which servers sync")}
+                    detail={t(
+                      "Servers you already had start on This machine. Switch any you want everywhere below.",
+                    )}
                   >
                     <Button
                       size="sm"
@@ -379,19 +412,21 @@ export function PersonalSyncView({
                         )
                       }
                     >
-                      Done
+                      {t("Done")}
                     </Button>
                   </AttentionItem>
                 )}
                 {arrivals.map((s) => (
                   <AttentionItem
                     key={s.id}
-                    title={`${visibleText(s.name)} arrived from another machine`}
-                    detail="Review it in Servers before it runs here."
+                    title={translate("{value0} arrived from another machine", {
+                      value0: visibleText(s.name),
+                    })}
+                    detail={translate("Review it in Servers before it runs here.")}
                   >
                     {onOpenServers && (
                       <Button size="sm" variant="outline" onClick={onOpenServers}>
-                        Open in Servers
+                        {translate("Open in Servers")}
                       </Button>
                     )}
                   </AttentionItem>
@@ -405,9 +440,13 @@ export function PersonalSyncView({
                   return (
                     <AttentionItem
                       key={id}
-                      label={`Sync conflict ${id}`}
-                      title={`${visibleText(name)} changed on two machines`}
-                      detail="Pick which version to keep. This machine's version is saved until you choose."
+                      label={translate("Sync conflict {value0}", { value0: id })}
+                      title={translate("{value0} changed on two machines", {
+                        value0: visibleText(name),
+                      })}
+                      detail={translate(
+                        "Pick which version to keep. This machine's version is saved until you choose.",
+                      )}
                       open={comparing === id}
                       expanded={
                         <div className="space-y-3">
@@ -440,8 +479,8 @@ export function PersonalSyncView({
                               }
                             >
                               {keepMine
-                                ? "Keep this machine's version"
-                                : "Use synced version"}
+                                ? translate("Keep this machine's version")
+                                : translate("Use synced version")}
                             </Button>
                           ))}
                         </div>
@@ -453,7 +492,7 @@ export function PersonalSyncView({
                         aria-expanded={comparing === id}
                         onClick={() => setComparing(comparing === id ? null : id)}
                       >
-                        Compare
+                        {translate("Compare")}
                       </Button>
                     </AttentionItem>
                   );
@@ -462,21 +501,23 @@ export function PersonalSyncView({
                   <AttentionItem
                     key={id}
                     role="alert"
-                    title={`${
-                      registry.servers.find((s) => s.id === sync?.pending?.[id]?.localId)
-                        ?.name ?? id
-                    } could not sync`}
+                    title={translate("{value0} could not sync", {
+                      value0:
+                        registry.servers.find(
+                          (s) => s.id === sync?.pending?.[id]?.localId,
+                        )?.name ?? id,
+                    })}
                     detail={message}
                   />
                 ))}
               </div>
             </section>
           )}
-          <section aria-label="Servers">
+          <section aria-label={t("Servers")}>
             <div className="flex items-center gap-2">
-              <SectionLabel className="flex-1">Servers</SectionLabel>
+              <SectionLabel className="flex-1">{t("Servers")}</SectionLabel>
               <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                Sync new servers
+                {t("Sync new servers")}
                 <select
                   className="rounded-md border bg-background px-2 py-1 text-xs text-foreground"
                   value={sync?.newServersLocalOnly ? "here" : "every"}
@@ -492,8 +533,8 @@ export function PersonalSyncView({
                     );
                   }}
                 >
-                  <option value="every">Every machine</option>
-                  <option value="here">This machine</option>
+                  <option value="every">{t("Every machine")}</option>
+                  <option value="here">{t("This machine")}</option>
                 </select>
               </label>
             </div>
@@ -501,9 +542,9 @@ export function PersonalSyncView({
               {registry.servers.map((s) => {
                 const conflict = sync?.conflicts?.[s.teamOriginalId ?? s.id];
                 const tag = conflict
-                  ? "changed on two machines"
+                  ? translate("changed on two machines")
                   : arrivals.includes(s)
-                    ? "needs review"
+                    ? translate("needs review")
                     : null;
                 return (
                   <li key={s.id} className="flex items-center gap-3 py-2.5">
@@ -514,7 +555,7 @@ export function PersonalSyncView({
                     </span>
                     <div
                       role="radiogroup"
-                      aria-label={`Where ${s.name} lives`}
+                      aria-label={translate("Where {value0} lives", { value0: s.name })}
                       className="flex shrink-0 rounded-lg border bg-muted/40 p-0.5"
                     >
                       {[false, true].map((localOnly) => {
@@ -528,8 +569,10 @@ export function PersonalSyncView({
                             disabled={busy}
                             title={
                               localOnly
-                                ? "Stop syncing. Other machines keep their copy."
-                                : "Sync this server to your other machines"
+                                ? translate(
+                                    "Stop syncing. Other machines keep their copy.",
+                                  )
+                                : translate("Sync this server to your other machines")
                             }
                             className={`rounded-md px-2.5 py-1 text-xs ${
                               active
@@ -548,7 +591,9 @@ export function PersonalSyncView({
                               );
                             }}
                           >
-                            {localOnly ? "This machine" : "Every machine"}
+                            {localOnly
+                              ? translate("This machine")
+                              : translate("Every machine")}
                           </button>
                         );
                       })}
@@ -558,25 +603,30 @@ export function PersonalSyncView({
               })}
               {!registry.servers.length && (
                 <li className="py-2.5 text-sm text-muted-foreground">
-                  No servers yet. Servers you add here show up on your other machines.
+                  {t(
+                    "No servers yet. Servers you add here show up on your other machines.",
+                  )}
                 </li>
               )}
             </ul>
             <p className="mt-2 text-xs text-muted-foreground">
-              Keys and sign-ins never leave a machine. Switching a server to This machine
-              stops syncing it; other machines keep their copy until you remove it there.
+              {t(
+                "Keys and sign-ins never leave a machine. Switching a server to This machine stops syncing it; other machines keep their copy until you remove it there.",
+              )}
             </p>
           </section>
-          <section aria-label="Your account">
-            <SectionLabel>Account</SectionLabel>
+          <section aria-label={t("Your account")}>
+            <SectionLabel>{t("Account")}</SectionLabel>
             <div className="divide-y">
               <div className="flex items-center gap-3 py-2.5">
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium">Your account</p>
+                  <p className="font-medium">{t("Your account")}</p>
                   {sync?.signInRequired ? (
                     <p className="text-xs text-muted-foreground">
-                      Saved account plan: {planName(status?.plan)}. Sign in to confirm
-                      your account and resume sync.
+                      {t(
+                        "Saved account plan: {plan}. Sign in to confirm your account and resume sync.",
+                        { plan: planName(status?.plan) },
+                      )}
                     </p>
                   ) : status ? (
                     accountStatusText(status).map((line) => (
@@ -586,7 +636,7 @@ export function PersonalSyncView({
                     ))
                   ) : (
                     <p className="text-xs text-muted-foreground">
-                      Account status unavailable. Retry sync.
+                      {t("Account status unavailable. Retry sync.")}
                     </p>
                   )}
                 </div>
@@ -595,7 +645,7 @@ export function PersonalSyncView({
                   variant="outline"
                   onClick={() => void run(() => openExternal(team.serverUrl))}
                 >
-                  Manage plan
+                  {t("Manage plan")}
                 </Button>
                 <Button
                   size="sm"
@@ -605,14 +655,14 @@ export function PersonalSyncView({
                     void run(async () => onRegistryChange(await teamDisconnect()))
                   }
                 >
-                  Sign out
+                  {t("Sign out")}
                 </Button>
               </div>
               <div className="flex items-center gap-3 py-2.5">
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium">Teams</p>
+                  <p className="font-medium">{t("Teams")}</p>
                   <p className="text-xs text-muted-foreground">
-                    Share servers with other people. Your own servers stay yours.
+                    {t("Share servers with other people. Your own servers stay yours.")}
                   </p>
                 </div>
                 <Button
@@ -620,7 +670,7 @@ export function PersonalSyncView({
                   variant="outline"
                   onClick={() => void run(() => openExternal(TEAMS_CREATE_URL))}
                 >
-                  Create a team
+                  {t("Create a team")}
                 </Button>
               </div>
             </div>

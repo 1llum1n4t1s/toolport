@@ -37,6 +37,16 @@ use crate::server_runtime::{probe_one, probe_one_bounded, ProbeResult};
 use crate::teams;
 use crate::vendors;
 
+#[tauri::command]
+fn get_ui_language() -> Result<String, String> {
+    crate::ui_settings::language()
+}
+
+#[tauri::command]
+fn set_ui_language(language: String) -> Result<(), String> {
+    crate::ui_settings::set_language(&language)
+}
+
 type RegistryState = Mutex<Registry>;
 
 struct TrayMenuState {
@@ -4273,6 +4283,8 @@ pub fn run() {
             add_client_location,
             remove_client_location,
             get_registry,
+            get_ui_language,
+            set_ui_language,
             take_registry_recovery_notice,
             import_servers,
             preview_import_servers,

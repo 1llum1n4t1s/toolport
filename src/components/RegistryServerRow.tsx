@@ -1,3 +1,4 @@
+import { msg, Trans, translate, useI18n, type SourceMessage } from "@/lib/i18n";
 import { referenceProvider } from "@/lib/secretRefs";
 import { toastError } from "@/lib/toast";
 import { isPersonalSync } from "@/lib/personalSync";
@@ -63,12 +64,12 @@ const STATUS_TEXT: Record<Status, string> = {
   error: "text-destructive",
 };
 
-const STATUS_ARIA_LABEL: Record<Status, string> = {
-  disabled: "Server disabled",
-  checking: "Checking connection",
-  connected: "Connected",
-  "needs-auth": "Authentication required",
-  error: "Connection error",
+const STATUS_ARIA_LABEL: Record<Status, SourceMessage> = {
+  disabled: msg("Server disabled"),
+  checking: msg("Checking connection"),
+  connected: msg("Connected"),
+  "needs-auth": msg("Authentication required"),
+  error: msg("Connection error"),
 };
 
 const ACTION =
@@ -86,6 +87,7 @@ export function RegistryServerRow({
   onReprobe,
   openTools,
 }: Props) {
+  const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const [detailTab, setDetailTab] = useState<"overview" | "tools">("overview");
   useEffect(() => {
@@ -136,20 +138,27 @@ export function RegistryServerRow({
     status === "needs-auth"
       ? serverFailureLabel(health!)
       : status === "connected"
-        ? `Ready · ${health?.toolCount ?? 0} tool${health?.toolCount === 1 ? "" : "s"}`
+        ? translate(
+            health?.toolCount === 1
+              ? msg("Ready · {count} tool")
+              : msg("Ready · {count} tools"),
+            { count: health?.toolCount ?? 0 },
+          )
         : status === "error"
           ? serverFailureLabel(health!)
           : status === "checking"
             ? initializing
               ? launcher
-                ? "Installing…"
-                : "Initializing…"
-              : "Checking…"
+                ? translate("Installing…")
+                : translate("Initializing…")
+              : translate("Checking…")
             : requiredLaunch.length
               ? missingPlainLaunch.length
-                ? `Setup required: ${missingPlainLaunch.map((input) => input.label).join(", ")}`
-                : "Disabled · check launch setup"
-              : "Disabled";
+                ? translate("Setup required: {value0}", {
+                    value0: missingPlainLaunch.map((input) => input.label).join(", "),
+                  })
+                : translate("Disabled · check launch setup")
+              : translate("Disabled");
 
   // Next free "Name (N)" for the duplicate-for-another-account action.
   const existingNames = new Set(registry?.servers.map((s) => s.name.toLowerCase()) ?? []);
@@ -179,7 +188,7 @@ export function RegistryServerRow({
             checked={enabled}
             disabled={busy}
             onCheckedChange={onToggle}
-            aria-label={`Toggle ${server.name}`}
+            aria-label={t("Toggle {value1}", { value1: server.name })}
           />
         </span>
 
@@ -189,31 +198,33 @@ export function RegistryServerRow({
           {server.name}
           {providers.length > 0 && (
             <span className="ml-2 text-[10px] font-normal text-muted-foreground">
-              Keys from {providers.join(", ")}
+              {t("Keys from {providers}", { providers: providers.join(", ") })}
             </span>
           )}
         </span>
 
         {isTeam ? (
           <span className="hidden shrink-0 items-center gap-1 rounded bg-info/15 px-1.5 py-0.5 text-[11px] font-medium text-info md:inline-flex">
-            <Users className="size-3" aria-hidden="true" />
-            Team
+            <Trans
+              message={msg("{value1}Team")}
+              values={{ value1: <Users className="size-3" aria-hidden="true" /> }}
+            />
           </span>
         ) : (
           <span className="hidden max-w-40 shrink-0 truncate rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground md:inline">
             {personalSync
               ? server.syncLocalOnly
-                ? "This machine only"
+                ? translate("This machine only")
                 : registry?.team?.personalSyncState?.conflicts?.[
                       server.teamOriginalId ?? server.id
                     ]
-                  ? "Sync conflict"
+                  ? translate("Sync conflict")
                   : server.teamEnableReview === true
-                    ? "Needs review"
-                    : "Synced"
-              : "Personal"}
+                    ? translate("Needs review")
+                    : translate("Synced")
+              : translate("Personal")}
             {server.source?.startsWith("imported:")
-              ? ` · ${server.source.replace("imported:", "from ")}`
+              ? ` · ${t("from {client}", { client: server.source.slice("imported:".length) })}`
               : ""}
           </span>
         )}
@@ -224,13 +235,13 @@ export function RegistryServerRow({
             aria-label={
               initializing
                 ? launcher
-                  ? "Installing the server package"
-                  : "Server initializing"
+                  ? translate("Installing the server package")
+                  : translate("Server initializing")
                 : status === "needs-auth" || status === "error"
                   ? label
                   : status === "connected"
                     ? label.replace(" · ", ", ")
-                    : STATUS_ARIA_LABEL[status]
+                    : t(STATUS_ARIA_LABEL[status])
             }
             className="sr-only"
           />
@@ -248,8 +259,8 @@ export function RegistryServerRow({
                   >
                     <LogIn className="size-3.5" />
                     {health?.authTarget === "service_credential"
-                      ? "Edit service key"
-                      : "Sign in"}
+                      ? translate("Edit service key")
+                      : translate("Sign in")}
                   </button>
                 }
               />
@@ -263,7 +274,7 @@ export function RegistryServerRow({
               {status === "error" && onReprobe && (
                 <button
                   type="button"
-                  title={`Retry ${server.name} connection`}
+                  title={translate("Retry {value0} connection", { value0: server.name })}
                   className={ACTION}
                   disabled={busy}
                   onClick={(e) => {
@@ -272,12 +283,12 @@ export function RegistryServerRow({
                   }}
                 >
                   <RefreshCw className="size-3.5" aria-hidden="true" />
-                  Retry
+                  {translate("Retry")}
                 </button>
               )}
               <button
                 type="button"
-                title="View the connection error and server output"
+                title={translate("View the connection error and server output")}
                 className={ACTION}
                 onClick={(e) => {
                   stop(e);
@@ -285,20 +296,26 @@ export function RegistryServerRow({
                   setDetailTab("overview");
                 }}
               >
-                View log
+                {translate("View log")}
               </button>
             </span>
           )}
           <button
             type="button"
-            title={expanded ? "Hide server details" : "Show server details"}
+            title={
+              expanded
+                ? translate("Hide server details")
+                : translate("Show server details")
+            }
             onClick={(e) => {
               e.stopPropagation();
               setExpanded((v) => !v);
             }}
             aria-expanded={expanded}
             aria-label={
-              expanded ? `Hide ${server.name} details` : `Show ${server.name} details`
+              expanded
+                ? t("Hide {value1} details", { value1: server.name })
+                : t("Show {value1} details", { value1: server.name })
             }
             className="rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
@@ -312,7 +329,7 @@ export function RegistryServerRow({
 
       {!enabled && server.teamRouteRemoved && (
         <p className="px-3.5 pb-2 pl-12 text-xs text-muted-foreground">
-          Removed or disabled by the team. Your personal server stays off.
+          {translate("Removed or disabled by the team. Your personal server stays off.")}
         </p>
       )}
 
@@ -320,7 +337,7 @@ export function RegistryServerRow({
         <div className="flex flex-col gap-2.5 px-3.5 pt-0.5 pb-3 pl-12">
           <div
             role="tablist"
-            aria-label={`${server.name} details`}
+            aria-label={translate("{value0} details", { value0: server.name })}
             className="flex gap-1 border-b pb-2"
           >
             {(["overview", "tools"] as const).map((tab) => (
@@ -331,12 +348,12 @@ export function RegistryServerRow({
                 className={ACTION}
                 onClick={() => setDetailTab(tab)}
               >
-                {tab === "overview" ? "Overview" : "Tools"}
+                {tab === "overview" ? translate("Overview") : translate("Tools")}
               </button>
             ))}
           </div>
           {detailTab === "tools" ? (
-            <Suspense fallback={<p>Loading tools…</p>}>
+            <Suspense fallback={<p>{translate("Loading tools…")}</p>}>
               <ServerToolsPanel
                 serverId={server.id}
                 registry={registry}
@@ -347,8 +364,10 @@ export function RegistryServerRow({
             <>
               {!!requiredLaunch.length && (
                 <p className="text-xs text-muted-foreground">
-                  Launch setup: {requiredLaunch.map((input) => input.label).join(", ")}.
-                  Open Launch setup to add or review these values before enabling.
+                  {t(
+                    "Launch setup: {inputs}. Open Launch setup to add or review these values before enabling.",
+                    { inputs: requiredLaunch.map((input) => input.label).join(", ") },
+                  )}
                 </p>
               )}
               {target && (
@@ -371,13 +390,13 @@ export function RegistryServerRow({
                       onClick={(e) => {
                         e.stopPropagation();
                         void navigator.clipboard.writeText(health?.error ?? "");
-                        toast.success("Error copied");
+                        toast.success(translate("Error copied"));
                       }}
-                      title="Copy the full error"
+                      title={translate("Copy the full error")}
                       className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                       <Copy className="size-3" />
-                      Copy
+                      {translate("Copy")}
                     </button>
                   </div>
                   <p className="max-h-32 overflow-y-auto font-mono text-[11px] break-words whitespace-pre-wrap text-muted-foreground">
@@ -394,7 +413,8 @@ export function RegistryServerRow({
                   trigger={
                     <button className={ACTION}>
                       <KeyRound className="size-3.5" />
-                      Secrets{secretCount > 0 ? ` (${secretCount})` : ""}
+                      {translate("Secrets")}
+                      {secretCount > 0 ? ` (${secretCount})` : ""}
                     </button>
                   }
                 />
@@ -404,7 +424,9 @@ export function RegistryServerRow({
                     server={server}
                     onSaved={onRegistryChange}
                     onChanged={onReprobe}
-                    trigger={<button className={ACTION}>Launch setup</button>}
+                    trigger={
+                      <button className={ACTION}>{translate("Launch setup")}</button>
+                    }
                   />
                 )}
 
@@ -425,21 +447,25 @@ export function RegistryServerRow({
                         }
                       }}
                     />{" "}
-                    Keep on this machine only
+                    {translate("Keep on this machine only")}
                     <span className="text-xs text-muted-foreground">
-                      Copies already on your other machines stay there.
+                      {translate("Copies already on your other machines stay there.")}
                     </span>
                   </label>
                 )}
                 {personalSync && (
                   <span className="text-xs text-muted-foreground">
-                    {server.syncLocalOnly ? "This machine only" : "Synced"}
+                    {server.syncLocalOnly
+                      ? translate("This machine only")
+                      : translate("Synced")}
                   </span>
                 )}
                 {isTeam ? (
                   <span className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground">
                     <Users className="size-3.5" aria-hidden="true" />
-                    Managed by your team. Ask an admin to change or remove it.
+                    {translate(
+                      "Managed by your team. Ask an admin to change or remove it.",
+                    )}
                   </span>
                 ) : (
                   <>
@@ -448,9 +474,12 @@ export function RegistryServerRow({
                       initial={{ ...server, name: duplicateName }}
                       existingNames={registry?.servers.map((s) => s.name) ?? []}
                       trigger={
-                        <button className={ACTION} title="Add another account">
+                        <button
+                          className={ACTION}
+                          title={translate("Add another account")}
+                        >
                           <Copy className="size-3.5" />
-                          Duplicate
+                          {translate("Duplicate")}
                         </button>
                       }
                     />
@@ -463,7 +492,7 @@ export function RegistryServerRow({
                       trigger={
                         <button className={ACTION}>
                           <Pencil className="size-3.5" />
-                          Edit
+                          {translate("Edit")}
                         </button>
                       }
                     />
@@ -475,16 +504,20 @@ export function RegistryServerRow({
                           className={`${ACTION} hover:bg-destructive/10 hover:text-destructive`}
                         >
                           <Trash2 className="size-3.5" />
-                          Remove
+                          {translate("Remove")}
                         </button>
                       }
-                      title={`Remove ${server.name}?`}
+                      title={translate("Remove {value0}?", { value0: server.name })}
                       description={
                         personalSync && !server.syncLocalOnly
-                          ? "This removes the server from Toolport and your other machines. Any saved secrets stay in your keychain."
-                          : "This deletes the server from Toolport on this machine. Any saved secrets stay in your keychain."
+                          ? translate(
+                              "This removes the server from Toolport and your other machines. Any saved secrets stay in your keychain.",
+                            )
+                          : translate(
+                              "This deletes the server from Toolport on this machine. Any saved secrets stay in your keychain.",
+                            )
                       }
-                      confirmLabel="Remove"
+                      confirmLabel={translate("Remove")}
                       destructive
                       onConfirm={onRemove}
                     />

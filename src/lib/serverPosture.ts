@@ -1,3 +1,4 @@
+import { translate } from "@/lib/i18n";
 /** A factual reachability baseline. Security posture remains in Settings; this only
  * summarizes the health probe and never presents a stale or partial check as healthy. */
 export function serverPostureCopy({
@@ -20,32 +21,54 @@ export function serverPostureCopy({
   const complete = enabled > 0 && checked === enabled && !probing;
   const healthy = backendReachable && complete && attention === 0;
   const title = !backendReachable
-    ? "Reachability status unavailable"
+    ? translate("Reachability status unavailable")
     : enabled === 0
-      ? "No servers enabled"
+      ? translate("No servers enabled")
       : probing
-        ? "Checking server reachability"
+        ? translate("Checking server reachability")
         : checked < enabled
-          ? "Reachability check incomplete"
+          ? translate("Reachability check incomplete")
           : attention === 0
-            ? `${connected} enabled server${connected === 1 ? "" : "s"} reachable`
-            : `${connected} of ${enabled} enabled servers reachable`;
+            ? connected === 1
+              ? translate("{connected} enabled server reachable", { connected })
+              : translate("{connected} enabled servers reachable", { connected })
+            : translate("{connected} of {enabled} enabled servers reachable", {
+                connected,
+                enabled,
+              });
   const detail = !backendReachable
     ? checked > 0
       ? attention > 0
-        ? `Last known: ${connected} reachable; ${attention} need${attention === 1 ? "s" : ""} a quick check. Status may be out of date.`
-        : `Last known: ${connected} reachable. Status may be out of date.`
-      : "The last health check did not complete."
+        ? attention === 1
+          ? translate(
+              "Last known: {connected} reachable; {attention} needs a quick check. Status may be out of date.",
+              { connected, attention },
+            )
+          : translate(
+              "Last known: {connected} reachable; {attention} need a quick check. Status may be out of date.",
+              { connected, attention },
+            )
+        : translate("Last known: {connected} reachable. Status may be out of date.", {
+            connected,
+          })
+      : translate("The last health check did not complete.")
     : enabled === 0
-      ? `${disabled} server${disabled === 1 ? "" : "s"} turned off.`
+      ? disabled === 1
+        ? translate("{disabled} server turned off.", { disabled })
+        : translate("{disabled} servers turned off.", { disabled })
       : probing
-        ? `${checked} of ${enabled} checked so far.`
+        ? translate("{checked} of {enabled} checked so far.", { checked, enabled })
         : checked < enabled
-          ? `${checked} of ${enabled} checked. Refresh to try again.`
+          ? translate("{checked} of {enabled} checked. Refresh to try again.", {
+              checked,
+              enabled,
+            })
           : attention > 0
-            ? `${attention} need${attention === 1 ? "s" : ""} a quick check.`
+            ? attention === 1
+              ? translate("{attention} needs a quick check.", { attention })
+              : translate("{attention} need a quick check.", { attention })
             : disabled > 0
-              ? `${disabled} turned off.`
-              : "Every enabled server is ready.";
+              ? translate("{disabled} turned off.", { disabled })
+              : translate("Every enabled server is ready.");
   return { healthy, title, detail };
 }

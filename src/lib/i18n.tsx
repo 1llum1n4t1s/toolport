@@ -6,6 +6,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import { getUiLanguage, setUiLanguage } from "./api";
 
 export const LANGUAGES = [
   { code: "en", label: "English" },
@@ -18,6 +19,12 @@ export const LANGUAGES = [
   { code: "de", label: "Deutsch" },
   { code: "pt-BR", label: "Português (Brasil)" },
 ] as const;
+
+declare const sourceMessage: unique symbol;
+export type SourceMessage = string & { readonly [sourceMessage]: true };
+export function msg<const T extends string>(message: T): T & SourceMessage {
+  return message as T & SourceMessage;
+}
 
 export type Locale = (typeof LANGUAGES)[number]["code"];
 export type LanguageChoice = "system" | Locale;
@@ -40,7 +47,6 @@ export function isLanguageChoice(value: unknown): value is LanguageChoice {
   return value === "system" || LANGUAGES.some(({ code }) => code === value);
 }
 
-// Keep localization state and UI behavior consistent.
 export function resolveLocale(languages: readonly string[]): Locale {
   for (const tag of languages) {
     const normalized = tag.replace(/_/g, "-").toLowerCase();
@@ -81,10 +87,12 @@ let snapshot = {
   locale: initialLanguage === "system" ? systemLocale() : initialLanguage,
   loading: false,
   error: false,
+  saveError: false,
 };
 let messages: Messages = {};
 let loadedLocale: Locale = "en";
 let generation = 0;
+let saves: Promise<void> = Promise.resolve();
 const listeners = new Set<() => void>();
 const cache = new Map<Locale, Promise<Messages>>();
 
@@ -116,32 +124,83 @@ function loadMessages(locale: Locale): Promise<Messages> {
   return pending;
 }
 
-// Keep localization state and UI behavior consistent.
-export async function setLanguage(language: LanguageChoice): Promise<void> {
-  if (!isLanguageChoice(language)) return;
-  const locale = language === "system" ? systemLocale() : language;
-  const request = ++generation;
+function cacheLanguage(language: LanguageChoice) {
   try {
     localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
   } catch {
-// Keep localization state and UI behavior consistent.
+    // Storage can be unavailable in private or restricted webviews.
   }
-  snapshot = { language, locale, loading: loadedLocale !== locale, error: false };
+}
+
+async function applyLanguage(
+  language: LanguageChoice,
+  request: number,
+  saveError = false,
+) {
+  const locale = language === "system" ? systemLocale() : language;
+  if (request !== generation) return;
+  snapshot = {
+    ...snapshot,
+    language,
+    loading: loadedLocale !== locale,
+    error: false,
+    saveError,
+  };
   notify();
   try {
     const nextMessages = await loadMessages(locale);
     if (request !== generation) return;
     messages = nextMessages;
     loadedLocale = locale;
-    snapshot = { language, locale, loading: false, error: false };
+    snapshot = { language, locale, loading: false, error: false, saveError };
   } catch {
     if (request !== generation) return;
-// Keep localization state and UI behavior consistent.
     messages = {};
     loadedLocale = "en";
-    snapshot = { language, locale, loading: false, error: true };
+    snapshot = { language, locale: "en", loading: false, error: true, saveError };
   }
+  document.documentElement.lang = snapshot.locale;
+  document.documentElement.dir = "ltr";
   notify();
+}
+
+/** Resolve machine settings and its dictionary before mounting any UI. */
+export async function initializeLanguage(): Promise<void> {
+  const request = ++generation;
+  let language = readLanguage();
+  let saveError = false;
+  try {
+    const saved = await getUiLanguage();
+    if (!isLanguageChoice(saved)) throw new Error("Invalid language setting");
+    language = saved;
+    if (request === generation) cacheLanguage(language);
+  } catch {
+    // Keep cached startup usable, while exposing that settings could not be read.
+    saveError = true;
+  }
+  await applyLanguage(language, request, saveError);
+}
+
+export async function setLanguage(language: LanguageChoice): Promise<void> {
+  if (!isLanguageChoice(language)) throw new Error("Invalid language choice");
+  const request = ++generation;
+  // Serialize persistence as well as guarding display updates: an older slow save
+  // must never overwrite a newer choice on disk.
+  const save = saves.then(() => setUiLanguage(language));
+  saves = save.catch(() => undefined);
+  const applying = applyLanguage(language, request);
+  try {
+    await save;
+    if (request === generation) cacheLanguage(language);
+  } catch {
+    await applying;
+    if (request === generation) {
+      snapshot = { ...snapshot, saveError: true };
+      notify();
+    }
+    return;
+  }
+  await applying;
 }
 
 function translatedMessage(message: string): string {
@@ -160,7 +219,6 @@ export function translate(message: string, values: Values = {}): string {
 export function useI18n() {
   const current = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const t = useMemo(() => {
-// Keep localization state and UI behavior consistent.
     void current;
     return (message: string, values?: Values) => translate(message, values);
   }, [current]);
@@ -170,14 +228,13 @@ export function useI18n() {
 export function LanguageProvider({ children }: { children: ReactNode }) {
   const { language, locale } = useI18n();
   useEffect(() => {
-    void setLanguage(readLanguage());
     const onStorage = (event: StorageEvent) => {
       if (event.key === LANGUAGE_STORAGE_KEY || event.key === null) {
-        void setLanguage(readLanguage());
+        void initializeLanguage();
       }
     };
     const onSystemLanguage = () => {
-      if (snapshot.language === "system") void setLanguage("system");
+      if (snapshot.language === "system") void applyLanguage("system", ++generation);
     };
     window.addEventListener("storage", onStorage);
     window.addEventListener("languagechange", onSystemLanguage);
@@ -193,7 +250,6 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   return children;
 }
 
-// Keep localization state and UI behavior consistent.
 export function Trans({
   message,
   values = {},
@@ -211,4 +267,9 @@ export function Trans({
       </Fragment>
     );
   });
+}
+
+/** Commands, paths and protocol examples shown verbatim, outside the catalog. */
+export function technicalText(value: string): string {
+  return value;
 }

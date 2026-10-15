@@ -1,120 +1,217 @@
 #!/usr/bin/env node
-// 辞書の欠落・重複・補間破損をビルド前に検出する。
+// Check catalog integrity and statically marked UI messages before shipping.
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const languages = ["en", "ja", "zh-CN", "zh-TW", "ko", "es", "fr", "de", "pt-BR"];
-const groups = ["common", "shell", "connections", "workflows"];
-const errors = [];
-const messages = new Set();
-const placeholders = (text) =>
-  [...new Set(text.match(/\{[a-zA-Z][a-zA-Z0-9_]*\}/g) || [])].sort().join(",");
+export const languages = ["en", "ja", "zh-CN", "zh-TW", "ko", "es", "fr", "de", "pt-BR"];
+export const groups = ["common", "shell", "connections", "workflows"];
+const translationFunctions = new Set(["t", "tr", "translate", "msg"]);
+const displayAttributes = new Set([
+  "title",
+  "placeholder",
+  "aria-label",
+  "aria-description",
+  "alt",
+  "label",
+  "description",
+  "message",
+  "tooltip",
+  "helperText",
+  "emptyLabel",
+]);
+const hasWords = (value) => /\p{L}/u.test(value);
+const placeholders = (value) =>
+  [...value.matchAll(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g)]
+    .map((match) => match[1])
+    .sort()
+    .join(",");
 
-async function catalog(group, language) {
-  const file = path.join(root, "src", "locales", group, `${language}.json`);
-  const source = await readFile(file, "utf8");
-  // JSON.parseだけでは後勝ちになる同名キーも、構文木から検出する。
-  const tree = ts.parseJsonText(file, source);
-  const names = new Set();
+export function parseCatalog(source, name, errors) {
+  const tree = ts.parseJsonText(name, source);
+  const seen = new Set();
   function visit(node) {
     if (ts.isPropertyAssignment(node)) {
       const key = node.name.text;
-      if (names.has(key)) errors.push(`${group}/${language}: duplicate key ${key}`);
-      names.add(key);
+      if (seen.has(key)) errors.push(`${name}: duplicate key ${key}`);
+      seen.add(key);
     }
     ts.forEachChild(node, visit);
   }
   visit(tree);
-  const parsed = JSON.parse(source);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    throw new Error(`Invalid catalog: ${file}`);
-  return parsed;
-}
-
-let total = 0;
-for (const group of groups) {
-  const english = await catalog(group, "en");
-  total += Object.keys(english).length;
-  for (const [key, value] of Object.entries(english)) {
-    if (!key.trim() || key !== value)
-      errors.push(`${group}/en: source and value must match: ${key}`);
-    messages.add(key);
-  }
-  for (const language of languages.slice(1)) {
-    const translated = await catalog(group, language);
-    for (const key of Object.keys(english)) {
-      const value = translated[key];
-      if (typeof value !== "string" || !value.trim())
-        errors.push(`${group}/${language}: missing ${key}`);
-      else if (placeholders(key) !== placeholders(value))
-        errors.push(`${group}/${language}: invalid placeholders in ${key}`);
+  try {
+    const value = JSON.parse(source);
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("catalog must be an object");
+    for (const [key, message] of Object.entries(value)) {
+      if (!key.trim() || typeof message !== "string" || !message.trim())
+        errors.push(`${name}: invalid message ${JSON.stringify(key)}`);
     }
-    for (const key of Object.keys(translated)) {
-      if (!Object.hasOwn(english, key))
-        errors.push(`${group}/${language}: unknown key ${key}`);
-    }
+    return value;
+  } catch (error) {
+    errors.push(`${name}: invalid JSON: ${error.message}`);
+    return {};
   }
 }
 
-async function sourceFiles(dir) {
-  const result = [];
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    if (entry.name === "locales" || entry.name === "test") continue;
-    const file = path.join(dir, entry.name);
-    if (entry.isDirectory()) result.push(...(await sourceFiles(file)));
-    else if (/\.(ts|tsx)$/.test(file) && !/\.test\.|i18n\.tsx$/.test(file))
-      result.push(file);
+export function checkCatalogs(catalogs, localeNames = languages, groupNames = groups) {
+  const errors = [];
+  const messages = new Set();
+  for (const language of localeNames) {
+    const owners = new Map();
+    for (const group of groupNames) {
+      const catalog = catalogs[group]?.[language];
+      if (!catalog) {
+        errors.push(`${group}/${language}: missing catalog`);
+        continue;
+      }
+      const english = catalogs[group]?.en ?? {};
+      for (const [key, value] of Object.entries(catalog)) {
+        if (owners.has(key))
+          errors.push(
+            `${group}/${language}: duplicate key across groups: ${key} (also ${owners.get(key)})`,
+          );
+        owners.set(key, group);
+        if (typeof value !== "string" || !value.trim()) {
+          errors.push(`${group}/${language}: invalid message ${key}`);
+          continue;
+        }
+        if (language === "en") {
+          messages.add(key);
+          if (key !== value || !key.trim())
+            errors.push(`${group}/en: source and value must match: ${key}`);
+        } else if (!Object.hasOwn(english, key)) {
+          errors.push(`${group}/${language}: unknown key ${key}`);
+        } else if (placeholders(key) !== placeholders(value)) {
+          errors.push(`${group}/${language}: invalid placeholders in ${key}`);
+        }
+      }
+      for (const key of Object.keys(english)) {
+        if (!Object.hasOwn(catalog, key))
+          errors.push(`${group}/${language}: missing ${key}`);
+      }
+    }
   }
-  return result;
+  return { errors, messages };
 }
-for (const file of await sourceFiles(path.join(root, "src"))) {
-  const source = await readFile(file, "utf8");
-  const tree = ts.createSourceFile(
-    file,
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    file.endsWith("tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
-  function check(node) {
+
+function callName(node) {
+  if (!ts.isCallExpression(node)) return undefined;
+  return ts.isIdentifier(node.expression) ? node.expression.text : undefined;
+}
+
+// TypeScript retains unique-symbol brand properties on intersections and unions.
+// Requiring the brand closes the gap between msg-marked definitions and t(label).
+export function isMarkedType(type) {
+  if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Never))
+    return false;
+  if (type.isUnion()) return type.types.every(isMarkedType);
+  return type
+    .getProperties()
+    .some((property) => property.escapedName.toString().startsWith("__@sourceMessage@"));
+}
+
+export function checkSource(source, file, messages, checker) {
+  const errors = [];
+  const tree =
+    typeof source === "string"
+      ? ts.createSourceFile(
+          file,
+          source,
+          ts.ScriptTarget.Latest,
+          true,
+          file.endsWith("tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+        )
+      : source;
+  const report = (node, message) => {
+    const line = tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+    errors.push(`${file}:${line}: ${message}`);
+  };
+  function checkMessage(node) {
     if (!node) return;
-    if (ts.isStringLiteralLike(node) && !messages.has(node.text)) {
-      const line = tree.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-      errors.push(
-        `${path.relative(root, file)}:${line}: missing source message ${node.text}`,
-      );
+    if (
+      ts.isParenthesizedExpression(node) ||
+      ts.isAsExpression(node) ||
+      ts.isSatisfiesExpression(node)
+    )
+      return checkMessage(node.expression);
+    if (ts.isStringLiteralLike(node)) {
+      if (!messages.has(node.text))
+        report(node, `missing source message ${JSON.stringify(node.text)}`);
     } else if (ts.isConditionalExpression(node)) {
-      check(node.whenTrue);
-      check(node.whenFalse);
+      checkMessage(node.whenTrue);
+      checkMessage(node.whenFalse);
+    } else if (callName(node) === "msg") {
+      checkMessage(node.arguments[0]);
+    } else if (!checker || !isMarkedType(checker.getTypeAtLocation(node))) {
+      report(
+        node,
+        "dynamic source message must come from msg(...) with the SourceMessage brand",
+      );
     }
+  }
+  function rawText(node) {
+    if (ts.isStringLiteralLike(node) && hasWords(node.text))
+      report(node, `unlocalized UI text ${JSON.stringify(node.text)}`);
+    else if (ts.isConditionalExpression(node)) {
+      rawText(node.whenTrue);
+      rawText(node.whenFalse);
+    } else if (
+      ts.isParenthesizedExpression(node) ||
+      ts.isAsExpression(node) ||
+      ts.isSatisfiesExpression(node)
+    )
+      rawText(node.expression);
+    else if (
+      ts.isBinaryExpression(node) &&
+      [
+        ts.SyntaxKind.PlusToken,
+        ts.SyntaxKind.AmpersandAmpersandToken,
+        ts.SyntaxKind.BarBarToken,
+        ts.SyntaxKind.QuestionQuestionToken,
+      ].includes(node.operatorToken.kind)
+    ) {
+      rawText(node.left);
+      rawText(node.right);
+    } else if (
+      ts.isTemplateExpression(node) &&
+      [node.head.text, ...node.templateSpans.map((span) => span.literal.text)].some(
+        hasWords,
+      )
+    )
+      report(node, "unlocalized interpolated UI text");
   }
   function visit(node) {
+    if (ts.isCallExpression(node) && translationFunctions.has(callName(node))) {
+      if (!node.arguments[0]) report(node, "translation requires a source message");
+      else checkMessage(node.arguments[0]);
+    }
+    if (ts.isJsxText(node) && hasWords(node.text))
+      report(node, `unlocalized JSX text ${JSON.stringify(node.text.trim())}`);
     if (
-      ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      ["t", "tr", "translate"].includes(node.expression.text) &&
-      node.arguments[0]
+      ts.isJsxExpression(node) &&
+      node.expression &&
+      (ts.isJsxElement(node.parent) || ts.isJsxFragment(node.parent))
     )
-      check(node.arguments[0]);
-    if (
-      ts.isJsxAttribute(node) &&
-      node.name.getText(tree) === "message" &&
-      node.initializer &&
-      (ts.isStringLiteral(node.initializer) || ts.isJsxExpression(node.initializer))
-    )
-      check(
-        ts.isJsxExpression(node.initializer)
-          ? node.initializer.expression
-          : node.initializer,
-      );
-    const translatedCall = (value) =>
-      value &&
-      ts.isCallExpression(value) &&
-      ts.isIdentifier(value.expression) &&
-      ["t", "tr", "translate"].includes(value.expression.text);
+      rawText(node.expression);
+    if (ts.isJsxAttribute(node) && node.initializer) {
+      const name = node.name.getText(tree);
+      const expression = ts.isJsxExpression(node.initializer)
+        ? node.initializer.expression
+        : node.initializer;
+      if (displayAttributes.has(name) && expression) {
+        const tag = node.parent.parent.tagName?.getText(tree);
+        if (tag === "Trans" && name === "message") checkMessage(expression);
+        else rawText(expression);
+      }
+      if (
+        ["id", "key"].includes(name) &&
+        expression &&
+        translationFunctions.has(callName(expression))
+      )
+        report(node, "keep element identifiers stable across languages");
+    }
     if (
       ts.isBinaryExpression(node) &&
       [
@@ -123,34 +220,219 @@ for (const file of await sourceFiles(path.join(root, "src"))) {
         ts.SyntaxKind.EqualsEqualsToken,
         ts.SyntaxKind.ExclamationEqualsToken,
       ].includes(node.operatorToken.kind) &&
-      (translatedCall(node.left) || translatedCall(node.right))
-    ) {
-      const line = tree.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-      errors.push(
-        `${path.relative(root, file)}:${line}: translate display text, not comparison values`,
-      );
-    }
-    if (
-      ts.isJsxAttribute(node) &&
-      ["key", "id"].includes(node.name.getText(tree)) &&
-      node.initializer &&
-      ts.isJsxExpression(node.initializer) &&
-      translatedCall(node.initializer.expression)
-    ) {
-      const line = tree.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-      errors.push(
-        `${path.relative(root, file)}:${line}: keep element identifiers stable across languages`,
-      );
-    }
+      [node.left, node.right].some((value) => translationFunctions.has(callName(value)))
+    )
+      report(node, "translate display text, not comparison values");
     ts.forEachChild(node, visit);
   }
   visit(tree);
+  return errors;
 }
-if (errors.length) {
-  console.error(errors.join("\n"));
-  process.exitCode = 1;
-} else {
-  console.log(
-    `Locale check passed: ${languages.length} languages, ${total} catalog entries (${messages.size} unique source messages).`,
-  );
+
+// A small Rust lexer keeps comments and raw strings from producing false calls.
+// Native translation calls use tr("source") or trf("source", parameters).
+export function checkRustSource(source, file, messages) {
+  const tokens = [];
+  const errors = [];
+  let offset = 0;
+  while (offset < source.length) {
+    const rest = source.slice(offset);
+    if (/^\s/.test(rest)) {
+      offset++;
+      continue;
+    }
+    if (rest.startsWith("//")) {
+      const end = source.indexOf("\n", offset);
+      offset = end < 0 ? source.length : end;
+      continue;
+    }
+    if (rest.startsWith("/*")) {
+      offset += 2;
+      let depth = 1;
+      while (offset < source.length && depth) {
+        if (source.startsWith("/*", offset)) {
+          depth++;
+          offset += 2;
+        } else if (source.startsWith("*/", offset)) {
+          depth--;
+          offset += 2;
+        } else offset++;
+      }
+      continue;
+    }
+    const raw = /^r(#{0,255})"/.exec(rest);
+    if (raw) {
+      const endMarker = '"' + raw[1];
+      const end = source.indexOf(endMarker, offset + raw[0].length);
+      if (end < 0) break; // rustc reports unterminated source strings.
+      tokens.push({
+        text: source.slice(offset + raw[0].length, end),
+        string: true,
+        offset,
+      });
+      offset = end + endMarker.length;
+      continue;
+    }
+    if (rest[0] === '"') {
+      let end = offset + 1;
+      while (end < source.length) {
+        if (source[end] === "\\") end += 2;
+        else if (source[end++] === '"') break;
+      }
+      const literal = source.slice(offset, end);
+      let text;
+      try {
+        text = literal
+          .slice(1, -1)
+          .replace(
+            /\\(u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|\r?\n\s*|[nrt0\\"'])/g,
+            (_, escape) => {
+              if (escape.startsWith("u{"))
+                return String.fromCodePoint(
+                  parseInt(escape.slice(2, -1).replaceAll("_", ""), 16),
+                );
+              if (escape.startsWith("x"))
+                return String.fromCharCode(parseInt(escape.slice(1), 16));
+              if (escape.includes("\n")) return "";
+              return {
+                n: "\n",
+                r: "\r",
+                t: "\t",
+                0: "\0",
+                "\\": "\\",
+                '"': '"',
+                "'": "'",
+              }[escape];
+            },
+          );
+      } catch {
+        text = undefined;
+      }
+      tokens.push({ text, string: true, offset });
+      offset = end;
+      continue;
+    }
+    const character = /^'(?:\\.|[^'\\])'/u.exec(rest);
+    if (character) {
+      offset += character[0].length;
+      continue;
+    }
+    const identifier = /^[a-zA-Z_][a-zA-Z0-9_]*/.exec(rest);
+    const text = identifier?.[0] ?? rest[0];
+    tokens.push({ text, offset });
+    offset += text.length;
+  }
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (
+      token.string ||
+      !["tr", "trf"].includes(token.text) ||
+      tokens[index + 1]?.text !== "(" ||
+      tokens[index - 1]?.text === "fn"
+    )
+      continue;
+    const argument = tokens[index + 2];
+    const line = source.slice(0, token.offset).split("\n").length;
+    if (!argument?.string || ![",", ")"].includes(tokens[index + 3]?.text))
+      errors.push(`${file}:${line}: native source message must be a string literal`);
+    else if (!messages.has(argument.text))
+      errors.push(
+        `${file}:${line}: missing source message ${JSON.stringify(argument.text)}`,
+      );
+  }
+  return errors;
+}
+
+async function sourceFiles(dir, rust = false) {
+  const files = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    if (["locales", "test", "node_modules"].includes(entry.name)) continue;
+    const file = path.join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...(await sourceFiles(file, rust)));
+    else if (
+      rust
+        ? file.endsWith(".rs")
+        : /\.(ts|tsx)$/.test(file) && !/\.(test|spec)\.|i18n\.tsx$|\.d\.ts$/.test(file)
+    )
+      files.push(file);
+  }
+  return files;
+}
+
+export async function checkLocales(root) {
+  const catalogs = {};
+  const errors = [];
+  const groupNames = (
+    await readdir(path.join(root, "src/locales"), { withFileTypes: true })
+  )
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+  for (const group of groups)
+    if (!groupNames.includes(group)) errors.push(`${group}: missing catalog group`);
+  for (const group of groupNames) {
+    catalogs[group] = {};
+    for (const language of languages) {
+      const file = path.join(root, "src/locales", group, `${language}.json`);
+      try {
+        catalogs[group][language] = parseCatalog(
+          await readFile(file, "utf8"),
+          `${group}/${language}`,
+          errors,
+        );
+      } catch (error) {
+        errors.push(`${group}/${language}: ${error.message}`);
+      }
+    }
+  }
+  const catalogResult = checkCatalogs(catalogs, languages, groupNames);
+  errors.push(...catalogResult.errors);
+  const files = await sourceFiles(path.join(root, "src"));
+  const configPath = ts.findConfigFile(root, ts.sys.fileExists);
+  let options = {
+    jsx: ts.JsxEmit.ReactJSX,
+    target: ts.ScriptTarget.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    module: ts.ModuleKind.ESNext,
+  };
+  if (configPath) {
+    const config = ts.readConfigFile(configPath, ts.sys.readFile);
+    options = ts.parseJsonConfigFileContent(config.config, ts.sys, root).options;
+  }
+  const program = ts.createProgram(files, options);
+  const checker = program.getTypeChecker();
+  for (const file of files)
+    errors.push(
+      ...checkSource(
+        program.getSourceFile(file),
+        path.relative(root, file),
+        catalogResult.messages,
+        checker,
+      ),
+    );
+  try {
+    for (const file of await sourceFiles(path.join(root, "src-tauri/src"), true))
+      errors.push(
+        ...checkRustSource(
+          await readFile(file, "utf8"),
+          path.relative(root, file),
+          catalogResult.messages,
+        ),
+      );
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  return { errors, count: catalogResult.messages.size };
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const result = await checkLocales(root);
+  if (result.errors.length) {
+    console.error(result.errors.join("\n"));
+    process.exitCode = 1;
+  } else
+    console.log(
+      `Locale check passed: ${languages.length} languages, ${result.count} unique source messages.`,
+    );
 }

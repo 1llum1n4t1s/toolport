@@ -1,3 +1,4 @@
+import { translate } from "./i18n";
 import type { ServerEntry } from "./types";
 
 /** What a person calls a launch input. Inputs created from pasted arguments
@@ -16,6 +17,6 @@ export function inputDisplayName(server: ServerEntry, key: string): string {
   if (index === undefined) return label;
   const flag = server.args[index - 1];
   return index > 0 && flag?.startsWith("-")
-    ? `Value for ${flag} (argument ${index + 1})`
-    : `Secret argument ${index + 1}`;
+    ? translate("Value for {flag} (argument {position})", { flag, position: index + 1 })
+    : translate("Secret argument {position}", { position: index + 1 });
 }

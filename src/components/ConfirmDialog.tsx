@@ -1,3 +1,4 @@
+import { useI18n } from "@/lib/i18n";
 import { useId, useState, type ReactNode } from "react";
 import {
   Dialog,
@@ -39,14 +40,15 @@ export function ConfirmDialog({
   title,
   contentClassName = "sm:max-w-sm",
   description,
-  confirmLabel = "Confirm",
+  confirmLabel,
   confirmDisabled = false,
-  cancelLabel = "Cancel",
+  cancelLabel,
   destructive = false,
   onConfirm,
   open: openProp,
   onOpenChange,
 }: Props) {
+  const { t } = useI18n();
   const [openState, setOpenState] = useState(false);
   const [busy, setBusy] = useState(false);
   // Rich (element) descriptions contain block elements (div/p/ul), which are
@@ -102,14 +104,14 @@ export function ConfirmDialog({
           ))}
         <DialogFooter>
           <Button variant="ghost" onClick={() => setOpen(false)} disabled={busy}>
-            {cancelLabel}
+            {cancelLabel ?? t("Cancel")}
           </Button>
           <Button
             variant={destructive ? "destructive" : "default"}
             onClick={handleConfirm}
             disabled={busy || confirmDisabled}
           >
-            {confirmLabel}
+            {confirmLabel ?? t("Confirm")}
           </Button>
         </DialogFooter>
       </DialogContent>

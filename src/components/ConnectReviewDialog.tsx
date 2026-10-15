@@ -1,3 +1,4 @@
+import { translate, useI18n } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { Check, Loader2 } from "lucide-react";
 import { migrateClient, previewClientSetup } from "@/lib/api";
@@ -21,6 +22,7 @@ export function ConnectReviewDialog({
   onClose: () => void;
   onConnected: (registry: Registry) => void;
 }) {
+  const { t, locale } = useI18n();
   const [review, setReview] = useState<ClientSetupReview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -73,13 +75,15 @@ export function ConnectReviewDialog({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {result ? `${clientName} connected` : `Connect ${clientName}`}
+              {result
+                ? t("{value0} connected", { value0: clientName })
+                : t("Connect {value0}", { value0: clientName })}
             </DialogTitle>
           </DialogHeader>
           {result ? (
             <div className="flex flex-col gap-3 text-sm">
               <Check className="mx-auto size-10 text-success" />
-              <p>Restart {clientName} to load Toolport.</p>
+              <p>{t("Restart {client} to load Toolport.", { client: clientName })}</p>
               <ul className="divide-y rounded-lg border">
                 {result.servers.map((row) => {
                   return (
@@ -90,12 +94,12 @@ export function ConnectReviewDialog({
                       <div>
                         <p className="font-medium">{row.name}</p>
                         <p className="text-xs text-muted-foreground">
-                          {row.toolCount} tools ·{" "}
+                          {translate("{count} tools", { count: row.toolCount })} ·{" "}
                           {row.credentialState === "stored"
-                            ? "Stored in keychain"
+                            ? translate("Stored in keychain")
                             : row.credentialState === "missing"
-                              ? "Needs input"
-                              : "No credentials needed"}
+                              ? translate("Needs input")
+                              : translate("No credentials needed")}
                         </p>
                       </div>
                     </li>
@@ -108,7 +112,7 @@ export function ConnectReviewDialog({
                 </p>
               ))}
               <details>
-                <summary>What your agent sees</summary>
+                <summary>{t("What your agent sees")}</summary>
                 <ul className="mt-2 font-mono text-xs">
                   {result.tools.map((t) => (
                     <li key={t.name}>{t.name}</li>
@@ -116,20 +120,28 @@ export function ConnectReviewDialog({
                 </ul>
               </details>
               <details>
-                <summary>Details</summary>
-                <p className="mt-2 break-all">Config: {result.outcome.path}</p>
+                <summary>{t("Details")}</summary>
+                <p className="mt-2 break-all">
+                  {t("Config: {path}", { path: result.outcome.path })}
+                </p>
                 {result.outcome.backup && (
                   <>
                     <p>
                       {result.backupDate
-                        ? `Backup saved ${new Date(result.backupDate * 1000).toLocaleString()}`
-                        : "Backup saved"}
+                        ? t("Backup saved {value0}", {
+                            value0: new Date(result.backupDate * 1000).toLocaleString(
+                              locale,
+                            ),
+                          })
+                        : t("Backup saved")}
                     </p>
-                    <p className="break-all">Backup: {result.outcome.backup}</p>
+                    <p className="break-all">
+                      {t("Backup: {path}", { path: result.outcome.backup })}
+                    </p>
                   </>
                 )}
               </details>
-              <Button onClick={onClose}>Done</Button>
+              <Button onClick={onClose}>{t("Done")}</Button>
             </div>
           ) : error ? (
             <>
@@ -142,12 +154,13 @@ export function ConnectReviewDialog({
                   setAttempt(attempt + 1);
                 }}
               >
-                Retry
+                {t("Retry")}
               </Button>
             </>
           ) : (
             <p>
-              <Loader2 className="inline size-4 animate-spin" /> Reading client config...
+              <Loader2 className="inline size-4 animate-spin" />{" "}
+              {t("Reading client config...")}
             </p>
           )}
         </DialogContent>
@@ -161,12 +174,21 @@ export function ConnectReviewDialog({
       allowEmpty
       requireCredentials
       error={error}
-      details={`Config: ${review.configPath}\nBackups will be saved in ${review.backupDir}`}
-      title={`Review and connect ${clientName}`}
+      details={t("Config: {value0}\nBackups will be saved in {value1}", {
+        value0: review.configPath,
+        value1: review.backupDir,
+      })}
+      title={t("Review and connect {value0}", { value0: clientName })}
       confirmLabel={
-        busy ? "Checking gateway..." : error ? "Retry" : "Connect to Toolport"
+        busy ? t("Checking gateway...") : error ? t("Retry") : t("Connect to Toolport")
       }
-      description={`Selected entries move into Toolport after verification.${force ? " This replaces the customized Toolport entry." : ""}`}
+      description={
+        force
+          ? t(
+              "Selected entries move into Toolport after verification. This replaces the customized Toolport entry.",
+            )
+          : t("Selected entries move into Toolport after verification.")
+      }
       onOpenChange={(open) => {
         if (!open && !busy) onClose();
       }}
