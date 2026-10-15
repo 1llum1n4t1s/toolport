@@ -708,14 +708,20 @@ mockIPC(
         const pending =
           sessionStorage.getItem("toolport-fixture-language-suggestion") === "true";
         if (
-          calls[command] === 1 &&
+          !calls.set_ui_language &&
           new URLSearchParams(location.search).has("language-suggestion-delay")
         ) {
           return new Promise((resolve) => {
             setTimeout(() => {
               sessionStorage.setItem(
                 "toolport-fixture-delayed-suggestion-returned",
-                "true",
+                String(
+                  Number(
+                    sessionStorage.getItem(
+                      "toolport-fixture-delayed-suggestion-returned",
+                    ) ?? "0",
+                  ) + 1,
+                ),
               );
               resolve(pending);
             }, 1000);

@@ -291,20 +291,24 @@ try {
     .poll(() =>
       page.evaluate(() => window.toolportFixture.calls.get_ui_language_suggestion ?? 0),
     )
-    .toBe(1);
+    .toBeGreaterThanOrEqual(1);
+  const initialSuggestionCalls = await page.evaluate(
+    () => window.toolportFixture.calls.get_ui_language_suggestion,
+  );
   await page.locator("#interface-language").selectOption("fr");
   await expect
     .poll(() =>
       page.evaluate(() => window.toolportFixture.calls.get_ui_language_suggestion ?? 0),
     )
-    .toBe(2);
+    .toBe(initialSuggestionCalls + 1);
+  // Wait for every stale initial read, including StrictMode's repeated effect.
   await expect
     .poll(() =>
       page.evaluate(() =>
         sessionStorage.getItem("toolport-fixture-delayed-suggestion-returned"),
       ),
     )
-    .toBe("true");
+    .toBe(String(initialSuggestionCalls));
   await expect(page.getByTestId("language-suggestion")).toHaveCount(0);
   expect(await pendingSuggestion()).toBe("false");
 
