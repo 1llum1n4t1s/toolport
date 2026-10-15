@@ -2441,10 +2441,13 @@ impl ClientPage {
         summary.set_column_spacing(10);
         summary.set_column_homogeneous(true);
         let mut values = Vec::new();
-        for (column, (value, label)) in
-            [("–", "Installed"), ("–", "Connected"), ("–", "Configured")]
-                .into_iter()
-                .enumerate()
+        for (column, (value, label)) in [
+            ("–", crate::i18n::msg("Installed")),
+            ("–", crate::i18n::msg("Connected")),
+            ("–", crate::i18n::msg("Configured")),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let (item, value) = summary_item(value, label);
             item.set_size_request(0, -1);
@@ -3129,27 +3132,44 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
             .build(),
     );
     if client.gateway_state == state::ClientGatewayState::Connected {
-        let mode = crate::clients::discovery_capabilities(&client.id).resolve_mode(
-            client
-                .discovery_mode
-                .as_deref()
-                .or(client.inherited_discovery.as_deref()),
-        );
-        let discovery_hint = match mode {
-            "full" => crate::i18n::msg("Full tool list. Client per-tool permission rules need Full mode."),
-            "grouped" => {
-                crate::i18n::msg("Browse a server, then call tools. Client per-tool permission rules need Full mode.")
-            }
-            _ => crate::i18n::msg("Search, then call tools. Client per-tool permission rules need Full mode."),
-        };
-        copy.append(
-            &gtk::Label::builder()
-                .label(discovery_hint)
-                .xalign(0.0)
-                .wrap(true)
-                .css_classes(["toolport-muted"])
-                .build(),
-        );
+        let capabilities = crate::clients::discovery_capabilities(&client.id);
+        let chosen = client
+            .discovery_mode
+            .as_deref()
+            .or(client.inherited_discovery.as_deref());
+        let hint = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["toolport-muted"])
+            .build();
+        if let Some(max) = capabilities.auto_full_max_tools_for(chosen) {
+            // Auto lists a small catalog in full for this client, then switches to search.
+            let max = max.to_string();
+            l10n::bind_label_with(&hint, move || {
+                crate::i18n::trf(
+                    "Auto: {mode}",
+                    &[(
+                        "mode",
+                        &crate::i18n::trf(
+                            "full up to {count} tools, then lazy",
+                            &[("count", &max)],
+                        ),
+                    )],
+                )
+            });
+        } else {
+            l10n::bind_label(
+                &hint,
+                match capabilities.resolve_mode(chosen) {
+                    "full" => crate::i18n::msg("Full tool list. Client per-tool permission rules need Full mode."),
+                    "grouped" => {
+                        crate::i18n::msg("Browse a server, then call tools. Client per-tool permission rules need Full mode.")
+                    }
+                    _ => crate::i18n::msg("Search, then call tools. Client per-tool permission rules need Full mode."),
+                },
+            );
+        }
+        copy.append(&hint);
     }
     heading.append(&copy);
     if client.gateway_state == state::ClientGatewayState::Customized {
@@ -5652,18 +5672,21 @@ fn security_notice_card(
     let is_change = event["type"] == "tool_drift";
     let review_required = is_change && event["review_required"] == true;
     let dismiss = gtk::Button::builder()
-        .label(if review_required {
-            "Review in Settings"
-        } else if is_change {
-            "Accept this tool"
-        } else {
-            "Reviewed"
-        })
         .tooltip_text(crate::i18n::tr(
             "Accept this occurrence; a later change will reappear",
         ))
         .css_classes(["flat"])
         .build();
+    l10n::bind_button(
+        &dismiss,
+        if review_required {
+            crate::i18n::msg("Review in Settings")
+        } else if is_change {
+            crate::i18n::msg("Accept this tool")
+        } else {
+            crate::i18n::msg("Reviewed")
+        },
+    );
     dismiss.set_sensitive(review_required || !is_change || change_can_be_accepted(event));
     let accepted_event = event.clone();
     let key = security_dismissal_key(event);
@@ -9278,9 +9301,10 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
     authenticate.add_css_class("suggested-action");
     authenticate.set_valign(gtk::Align::Center);
     authenticate.set_visible(false);
-    authenticate.set_tooltip_text(Some(
+    l10n::bind_tooltip(
+        &authenticate,
         "This server responded but needs credentials before its tools are available",
-    ));
+    );
     {
         let server_for_auth = server.clone();
         let page_for_auth = page.clone();
@@ -9417,9 +9441,10 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
         badge.set_valign(gtk::Align::Center);
         badge.set_halign(gtk::Align::Start);
         badge.add_css_class("review");
-        badge.set_tooltip_text(Some(
+        l10n::bind_tooltip(
+            &badge,
             "Review the exact command and credential references before enabling this server",
-        ));
+        );
         let app = page.app.clone();
         badge.connect_clicked(move |_| {
             if let Some(action) = app.lookup_action("show-teams") {
@@ -9681,9 +9706,10 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
     actions.append(&settings);
 
     let duplicate = action_menu_button(crate::i18n::msg("Duplicate"), "edit-copy-symbolic");
-    duplicate.set_tooltip_text(Some(
+    l10n::bind_tooltip(
+        &duplicate,
         "Add another account: a new entry with the same connection, named separately",
-    ));
+    );
     duplicate.set_sensitive(matches!(
         server.transport_id.as_str(),
         "stdio" | "http" | "sse"
@@ -9972,7 +9998,8 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                     secret_status.set_visible(true);
                     match result {
                         Ok(Ok(true)) => {
-                            secret_status.set_label(
+                            l10n::bind_text(
+                                &secret_status,
                                 "A client secret is stored in the keychain. It cannot be shown again; leave the field blank to keep it.",
                             );
                             secret_retry.set_visible(false);
@@ -9990,7 +10017,8 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                             );
                         }
                         _ => {
-                            secret_status.set_label(
+                            l10n::bind_text(
+                                &secret_status,
                                 "Couldn't check the stored secret. Unknown is not the same as absent.",
                             );
                             secret_retry.set_visible(true);
@@ -11524,16 +11552,19 @@ fn open_server_editor_prefilled(
     });
 
     let credentials = gtk::Label::builder()
-        .label(if editing {
-            "Existing credentials, tool settings, and newer configuration fields are preserved. Use the server card's Credentials action to add or replace secret values."
-        } else {
-            "Save the server first, then use its Credentials action to store secret values in the system keychain."
-        })
         .halign(gtk::Align::Start)
         .xalign(0.0)
         .wrap(true)
         .css_classes(["toolport-editor-note", "caption"])
         .build();
+    l10n::bind_label(
+        &credentials,
+        if editing {
+            crate::i18n::msg("Existing credentials, tool settings, and newer configuration fields are preserved. Use the server card's Credentials action to add or replace secret values.")
+        } else {
+            crate::i18n::msg("Save the server first, then use its Credentials action to store secret values in the system keychain.")
+        },
+    );
     form.append(&credentials);
 
     if !editing {
