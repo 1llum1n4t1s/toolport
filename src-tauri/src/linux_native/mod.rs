@@ -1140,13 +1140,10 @@ fn build_sidebar(
                 child.add_css_class("toolport-nav-item");
                 let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
                 row.append(&gtk::Image::from_icon_name(icon));
-                row.append(
-                    &gtk::Label::builder()
-                        .label(crate::i18n::lookup(label))
-                        .xalign(0.0)
-                        .hexpand(true)
-                        .build(),
-                );
+                let section_label = l10n::label(label);
+                section_label.set_xalign(0.0);
+                section_label.set_hexpand(true);
+                row.append(&section_label);
                 if index == 2 {
                     let badge = gtk::Label::builder()
                         .visible(false)
