@@ -11024,6 +11024,7 @@ fn open_server_editor_prefilled(
         .default_height(660)
         .build();
     editor.add_css_class("toolport-editor");
+    l10n::bind_window_title(&editor, if editing { "Edit server" } else { "Add server" });
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
