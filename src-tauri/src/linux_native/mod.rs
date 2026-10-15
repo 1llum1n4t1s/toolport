@@ -311,7 +311,7 @@ fn ensure_url_scheme_handlers() {
             return;
         }
         let desktop_path = applications.join(format!("{}.desktop", APP_ID));
-        let contents = format!("[Desktop Entry]\nType=Application\nName=Toolport\nExec={} %u\nIcon=toolport\nNoDisplay=true\nMimeType=x-scheme-handler/toolport;x-scheme-handler/conduit;\n", format!("{}", exe.display()));
+        let contents = format!("[Desktop Entry]\nType=Application\nName=Toolport\nExec={} %u\nIcon=toolport\nNoDisplay=true\nMimeType=x-scheme-handler/toolport;x-scheme-handler/conduit;\n", exe.display());
         if std::fs::write(&desktop_path, contents).is_err() {
             return;
         }
