@@ -46,6 +46,13 @@ async fn get_ui_language() -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn get_ui_language_suggestion() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(crate::ui_settings::language_suggestion_pending)
+        .await
+        .map_err(|error| format!("language settings worker failed: {error}"))?
+}
+
+#[tauri::command]
 async fn set_ui_language(app: AppHandle, language: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || crate::i18n::set_language(&language))
         .await
@@ -4305,6 +4312,7 @@ pub fn run() {
             remove_client_location,
             get_registry,
             get_ui_language,
+            get_ui_language_suggestion,
             set_ui_language,
             take_registry_recovery_notice,
             import_servers,

@@ -1135,6 +1135,10 @@ export function getUiLanguage(): Promise<string> {
   return invoke<string>("get_ui_language");
 }
 
+export function getUiLanguageSuggestion(): Promise<boolean> {
+  return invoke<boolean>("get_ui_language_suggestion");
+}
+
 export function setUiLanguage(language: string): Promise<void> {
   return invoke<void>("set_ui_language", { language });
 }

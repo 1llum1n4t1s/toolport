@@ -67,7 +67,10 @@ try {
     await context.addInitScript(
       ({ saved, blocked, watchKey }) => {
         // Session storage emulates the backend; localStorage is only React's cache.
-        if (sessionStorage.getItem("toolport-fixture-language") === null)
+        if (
+          saved !== null &&
+          sessionStorage.getItem("toolport-fixture-language") === null
+        )
           sessionStorage.setItem("toolport-fixture-language", saved);
         localStorage.setItem("toolport.onboarded", "1");
         if (blocked) {
@@ -215,6 +218,136 @@ try {
     await page.evaluate(() => sessionStorage.getItem("toolport-fixture-language")),
   ).toBe("en");
 
+  async function settings() {
+    await page
+      .getByRole("button", {
+        name: text(await page.locator("html").getAttribute("lang"), "Settings"),
+        exact: true,
+      })
+      .click();
+    await expect(page.locator("#interface-language")).toBeVisible();
+  }
+  async function pendingSuggestion() {
+    return page.evaluate(() =>
+      sessionStorage.getItem("toolport-fixture-language-suggestion"),
+    );
+  }
+  // Simulate a pre-localization install with no language choice. Its first UI
+  // paint remains English on a Japanese system; the offer lives in General.
+  await open({
+    locale: "ja-JP",
+    saved: null,
+    query: "language-upgrader",
+    watchKey: "Servers",
+  });
+  await expect(page.getByText("GitHub", { exact: true }).first()).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  expect(
+    (await page.evaluate(() => window.localizationPaints)).every(
+      (paint) => paint.lang === "en",
+    ),
+  ).toBe(true);
+  await settings();
+  await expect(page.getByTestId("language-suggestion")).toContainText(
+    "Toolport is now available in 日本語.",
+  );
+  await expect(page.locator("#interface-language")).toHaveValue("en");
+  await page.screenshot({ path: path.join(output, "ja-upgrader-notice.png") });
+  await page.getByRole("button", { name: "Keep English", exact: true }).click();
+  await expect(page.getByTestId("language-suggestion")).toHaveCount(0);
+  expect(await pendingSuggestion()).toBe("false");
+  await page.reload();
+  await settings();
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.getByTestId("language-suggestion")).toHaveCount(0);
+
+  await open({ locale: "ja-JP", saved: null, query: "language-upgrader" });
+  await settings();
+  await page.getByRole("button", { name: "Switch to 日本語", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "ja");
+  await expect(page.getByTestId("language-suggestion")).toHaveCount(0);
+  expect(await pendingSuggestion()).toBe("false");
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", "ja");
+  await settings();
+  await expect(page.getByTestId("language-suggestion")).toHaveCount(0);
+
+  await open({ locale: "ja-JP", saved: null, query: "language-upgrader" });
+  await settings();
+  await expect(page.getByTestId("language-suggestion")).toBeVisible();
+  await page.locator("#interface-language").selectOption("fr");
+  await expect(page.locator("html")).toHaveAttribute("lang", "fr");
+  await expect(page.getByTestId("language-suggestion")).toHaveCount(0);
+  expect(await pendingSuggestion()).toBe("false");
+
+  // A stale initial pending read must not restore the offer after a newer save.
+  await open({
+    locale: "ja-JP",
+    saved: null,
+    query: "language-upgrader&language-suggestion-delay",
+  });
+  await settings();
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.toolportFixture.calls.get_ui_language_suggestion ?? 0),
+    )
+    .toBe(1);
+  await page.locator("#interface-language").selectOption("fr");
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.toolportFixture.calls.get_ui_language_suggestion ?? 0),
+    )
+    .toBe(2);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        sessionStorage.getItem("toolport-fixture-delayed-suggestion-returned"),
+      ),
+    )
+    .toBe("true");
+  await expect(page.getByTestId("language-suggestion")).toHaveCount(0);
+  expect(await pendingSuggestion()).toBe("false");
+
+  // Both notice actions retain the offer on failure, even if the display
+  // language changes optimistically. The backend remains pinned to English.
+  for (const action of ["Keep English", "Switch to 日本語"]) {
+    await open({
+      locale: "ja-JP",
+      saved: null,
+      query: "language-upgrader&language-save-error",
+    });
+    await settings();
+    await page.getByRole("button", { name: action, exact: true }).click();
+    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(page.getByTestId("language-suggestion")).toBeVisible();
+    expect(await pendingSuggestion()).toBe("true");
+    expect(
+      await page.evaluate(() => sessionStorage.getItem("toolport-fixture-language")),
+    ).toBe("en");
+  }
+  for (const locale of ["en-US", "it-IT"]) {
+    await open({ locale, saved: null, query: "language-upgrader" });
+    await settings();
+    await expect(page.locator("html")).toHaveAttribute("lang", "en");
+    await expect(page.getByTestId("language-suggestion")).toHaveCount(0);
+    expect(await pendingSuggestion()).toBe("true");
+  }
+  for (const saved of ["de", "system"]) {
+    await open({ locale: "ja-JP", saved, query: "language-upgrader" });
+    await expect(page.locator("html")).toHaveAttribute(
+      "lang",
+      saved === "system" ? "ja" : saved,
+    );
+    await settings();
+    await expect(page.getByTestId("language-suggestion")).toHaveCount(0);
+    await expect(page.locator("#interface-language")).toHaveValue(saved);
+  }
+  await open({ locale: "ja-JP", saved: null, query: "" });
+  await expect(page.locator("html")).toHaveAttribute("lang", "ja");
+  await settings();
+  await expect(page.locator("#interface-language")).toHaveValue("system");
+  await expect(page.getByTestId("language-suggestion")).toHaveCount(0);
+
   // Capture real 2.0 screens in the requested languages, and exercise the member
   // review and personal sync fixtures without touching native state.
   for (const language of ["ja", "de", "zh-TW"]) {
@@ -275,6 +408,13 @@ try {
           "unsaved input",
           "save error",
           "2.0 review and sync",
+          "upgrader English first paint and Japanese suggestion screenshot",
+          "Keep English and Switch persistence",
+          "manual language selection dismisses suggestion",
+          "failed suggestion saves retain offer",
+          "stale suggestion response does not override a save",
+          "English and unsupported systems have no offer",
+          "fresh install and existing saved choices preserved",
         ],
       },
       null,

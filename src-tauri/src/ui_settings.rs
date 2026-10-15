@@ -63,12 +63,61 @@ fn language_from(settings: &Map<String, Value>) -> Result<String, String> {
 }
 
 pub fn language() -> Result<String, String> {
-    language_at(&settings_path()?)
+    language_at(
+        &settings_path()?,
+        crate::registry::resolved_path().as_deref(),
+    )
 }
 
-fn language_at(path: &Path) -> Result<String, String> {
+fn language_at(path: &Path, registry: Option<&Path>) -> Result<String, String> {
     let _lock = lock_settings(path)?;
-    language_from(&read_settings(path)?)
+    language_from(&initialized_settings(path, registry)?)
+}
+
+// Both shells call language() before their startup work can create a registry.
+// Persist the result once so later backend writes cannot reclassify a fresh run.
+// Use the registry's existing first-run/recovery decision, not data-dir contents.
+fn initialized_settings(
+    path: &Path,
+    registry: Option<&Path>,
+) -> Result<Map<String, Value>, String> {
+    let mut settings = read_settings(path)?;
+    if !settings.contains_key("language") {
+        let source = match registry {
+            Some(path) => crate::registry::load_from_with_source(path)?.1,
+            None => crate::registry::LoadSource::FirstRun,
+        };
+        let existing = source != crate::registry::LoadSource::FirstRun;
+        settings.insert(
+            "language".into(),
+            Value::String(if existing { "en" } else { "system" }.into()),
+        );
+        settings.insert("languageSuggestionPending".into(), Value::Bool(existing));
+        write_settings(path, &settings)?;
+    }
+    Ok(settings)
+}
+
+/// Machine-local upgrade suggestion; never synced with the registry.
+pub fn language_suggestion_pending() -> Result<bool, String> {
+    suggestion_pending_at(
+        &settings_path()?,
+        crate::registry::resolved_path().as_deref(),
+    )
+}
+
+fn suggestion_pending_at(path: &Path, registry: Option<&Path>) -> Result<bool, String> {
+    let _lock = lock_settings(path)?;
+    let settings = initialized_settings(path, registry)?;
+    Ok(settings
+        .get("languageSuggestionPending")
+        .and_then(Value::as_bool)
+        .unwrap_or(false))
+}
+
+fn write_settings(path: &Path, settings: &Map<String, Value>) -> Result<(), String> {
+    let raw = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
+    crate::registry::atomic_write(path, &raw)
 }
 
 pub fn set_language(language: &str) -> Result<(), String> {
@@ -82,8 +131,8 @@ fn set_language_at(path: &Path, language: &str) -> Result<(), String> {
     let _lock = lock_settings(path)?;
     let mut settings = read_settings(path)?;
     settings.insert("language".to_owned(), Value::String(language.to_owned()));
-    let raw = serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
-    crate::registry::atomic_write(path, &raw)
+    settings.insert("languageSuggestionPending".into(), Value::Bool(false));
+    write_settings(path, &settings)
 }
 
 fn lock_settings(path: &Path) -> Result<std::fs::File, String> {
@@ -109,6 +158,14 @@ fn lock_settings(path: &Path) -> Result<std::fs::File, String> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn language_at(path: &Path) -> Result<String, String> {
+        super::language_at(path, Some(&path.with_file_name("registry.json")))
+    }
+
+    fn suggestion_pending_at(path: &Path) -> Result<bool, String> {
+        super::suggestion_pending_at(path, Some(&path.with_file_name("registry.json")))
+    }
 
     struct TestDir(PathBuf);
     impl TestDir {
@@ -146,6 +203,90 @@ mod tests {
     }
 
     #[test]
+    fn fresh_choice_is_pinned_before_later_backend_registry_writes() {
+        let dir = TestDir::new();
+        let path = dir.path().join("ui-settings.json");
+        // A first launch may already have locks, logs and other backend files.
+        std::fs::write(dir.path().join("gateway.log"), "startup").unwrap();
+        assert_eq!(language_at(&path).unwrap(), "system");
+        assert!(!suggestion_pending_at(&path).unwrap());
+        crate::registry::save_to(
+            &dir.path().join("registry.json"),
+            &crate::registry::Registry::default(),
+        )
+        .unwrap();
+        assert_eq!(language_at(&path).unwrap(), "system");
+        assert!(!suggestion_pending_at(&path).unwrap());
+    }
+
+    #[test]
+    fn existing_install_keeps_english_until_a_choice_clears_its_suggestion() {
+        let dir = TestDir::new();
+        let path = dir.path().join("ui-settings.json");
+        crate::registry::save_to(
+            &dir.path().join("registry.json"),
+            &crate::registry::Registry::default(),
+        )
+        .unwrap();
+        assert_eq!(language_at(&path).unwrap(), "en");
+        assert!(suggestion_pending_at(&path).unwrap());
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(language_at(&path).unwrap(), "en");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "migration saves only once"
+        );
+        assert!(set_language_at(&path, "unsupported").is_err());
+        assert!(suggestion_pending_at(&path).unwrap());
+        for choice in ["en", "ja", "system", "de"] {
+            let mut settings = read_settings(&path).unwrap();
+            settings.insert("languageSuggestionPending".into(), Value::Bool(true));
+            write_settings(&path, &settings).unwrap();
+            set_language_at(&path, choice).unwrap();
+            assert_eq!(language_at(&path).unwrap(), choice);
+            assert!(!suggestion_pending_at(&path).unwrap());
+        }
+    }
+
+    #[test]
+    fn legacy_and_recovered_registries_are_existing_installs() {
+        let _lock = crate::registry::data_dir_test_lock();
+        for legacy in [true, false] {
+            let dir = TestDir::new();
+            let _data = crate::registry::DataDirOverride::set(dir.path());
+            let registry = dir.path().join("registry.json");
+            let mut document = serde_json::to_value(crate::registry::Registry::default()).unwrap();
+            if legacy {
+                document["version"] = Value::from(1);
+                std::fs::write(&registry, serde_json::to_string(&document).unwrap()).unwrap();
+            } else {
+                std::fs::write(
+                    registry.with_extension("json.bak"),
+                    serde_json::to_string(&document).unwrap(),
+                )
+                .unwrap();
+            }
+            let path = dir.path().join("ui-settings.json");
+            assert_eq!(language_at(&path).unwrap(), "en");
+            assert!(suggestion_pending_at(&path).unwrap());
+        }
+    }
+
+    #[test]
+    fn saved_choices_are_never_reclassified_or_rewritten() {
+        let dir = TestDir::new();
+        let path = dir.path().join("ui-settings.json");
+        for choice in LANGUAGES {
+            let raw = format!(r#"{{"language":"{choice}","future":42}}"#);
+            std::fs::write(&path, &raw).unwrap();
+            assert_eq!(language_at(&path).unwrap(), *choice);
+            assert!(!suggestion_pending_at(&path).unwrap());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        }
+    }
+
+    #[test]
     fn updates_preserve_other_fields_and_reject_invalid_choices() {
         let dir = TestDir::new();
         let path = dir.path().join("ui-settings.json");
@@ -177,7 +318,7 @@ mod tests {
             .collect();
         assert_eq!(backups.len(), 1);
         assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), "broken");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+        assert_eq!(read_settings(&path).unwrap()["language"], "system");
         set_language_at(&path, "ja").unwrap();
         assert_eq!(language_at(&path).unwrap(), "ja");
         assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), "broken");

@@ -274,5 +274,8 @@
   "Wait for the definition to load before enabling.": "等待定義載入後再啟用。",
   "Working…": "正在處理…",
   "You were removed from the team. Its shared servers have been removed from your setup.": "您已被移出團隊。其共享伺服器已從您的設定中刪除。",
-  "Your setup, on every machine": "您在每臺機器上的設定"
+  "Your setup, on every machine": "您在每臺機器上的設定",
+  "Toolport is now available in {language}.": "Toolport 現已提供{language}介面。",
+  "Switch to {language}": "切換為{language}",
+  "Keep English": "保留英文"
 }

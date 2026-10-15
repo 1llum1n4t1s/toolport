@@ -1,5 +1,5 @@
 import { getLocale, translate } from "@/lib/i18n";
-import { LANGUAGES, type LanguageChoice, useI18n } from "@/lib/i18n";
+import { LANGUAGES, resolveLocale, type LanguageChoice, useI18n } from "@/lib/i18n";
 import { type SettingsSubpage, SETTINGS_PAGES } from "@/lib/settingsPages";
 import { toast } from "sonner";
 import { useCallback, useEffect, useMemo, useState, useRef, type ReactNode } from "react";
@@ -47,6 +47,7 @@ import {
   removeToolportData,
   getRegistry,
   getBaselineNotice,
+  getUiLanguageSuggestion,
   type DisconnectResult,
   disableAutostart,
   enableAutostart,
@@ -607,6 +608,42 @@ export function SettingsView({
     error: languageError,
     saveError,
   } = useI18n();
+  const [languageSuggestionPending, setLanguageSuggestionPending] = useState(false);
+  const [languageSaving, setLanguageSaving] = useState(false);
+  const languageSuggestionRequest = useRef(0);
+  const suggestedLocale = resolveLocale(
+    navigator.languages?.length ? navigator.languages : [navigator.language],
+  );
+  const suggestedLanguage = LANGUAGES.find(({ code }) => code === suggestedLocale)!;
+  useEffect(() => {
+    const request = ++languageSuggestionRequest.current;
+    void getUiLanguageSuggestion().then(
+      (pending) => {
+        if (request === languageSuggestionRequest.current)
+          setLanguageSuggestionPending(pending);
+      },
+      () => undefined,
+    );
+    return () => {
+      ++languageSuggestionRequest.current;
+    };
+  }, []);
+  const saveLanguage = async (choice: LanguageChoice) => {
+    const request = ++languageSuggestionRequest.current;
+    setLanguageSaving(true);
+    try {
+      await setLanguage(choice);
+      // setLanguage reports save errors through the store, so consult the
+      // authoritative flag before removing the offer, including same-choice saves.
+      const pending = await getUiLanguageSuggestion();
+      if (request === languageSuggestionRequest.current)
+        setLanguageSuggestionPending(pending);
+    } catch {
+      // Retain the offer when persistence or the status request fails.
+    } finally {
+      if (request === languageSuggestionRequest.current) setLanguageSaving(false);
+    }
+  };
   const [purgePlan, setPurgePlan] = useState<import("@/lib/api").DataRemovalPlan | null>(
     null,
   );
@@ -1086,6 +1123,33 @@ export function SettingsView({
           className="settings-page flex flex-col gap-4"
           aria-label={translate("general")}
         >
+          {languageSuggestionPending && suggestedLocale !== "en" && (
+            <div
+              data-testid="language-suggestion"
+              className="flex flex-wrap items-center gap-3 rounded-md border px-3 py-2.5 text-sm"
+            >
+              <p className="min-w-0 flex-1">
+                {t("Toolport is now available in {language}.", {
+                  language: suggestedLanguage.label,
+                })}
+              </p>
+              <Button
+                size="sm"
+                disabled={languageSaving}
+                onClick={() => void saveLanguage(suggestedLocale)}
+              >
+                {t("Switch to {language}", { language: suggestedLanguage.label })}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={languageSaving}
+                onClick={() => void saveLanguage("en")}
+              >
+                {t("Keep English")}
+              </Button>
+            </div>
+          )}
           <div className="flex items-center gap-2.5 rounded-md border px-3 py-2.5 text-sm">
             <Monitor className="size-4 shrink-0 text-info" />
             <label
@@ -1100,7 +1164,10 @@ export function SettingsView({
             <select
               id="interface-language"
               value={language}
-              onChange={(event) => void setLanguage(event.target.value as LanguageChoice)}
+              onChange={(event) =>
+                void saveLanguage(event.target.value as LanguageChoice)
+              }
+              disabled={languageSaving}
               aria-busy={languageLoading}
               className="max-w-48 rounded-md border bg-background px-2 py-1.5 text-sm"
             >
