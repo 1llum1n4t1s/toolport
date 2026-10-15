@@ -384,6 +384,7 @@ function ResourcesPanel({ serverId }: { serverId: string }) {
   const [reading, setReading] = useState(false);
   const [result, setResult] = useState<unknown>(null);
   const [readError, setReadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -401,7 +402,11 @@ function ResourcesPanel({ serverId }: { serverId: string }) {
     return () => {
       alive = false;
     };
-  }, [serverId]);
+  }, [serverId, reloadKey]);
+
+  function retryList() {
+    setReloadKey((n) => n + 1);
+  }
 
   async function read(uri: string) {
     setSelected(uri);
@@ -418,7 +423,17 @@ function ResourcesPanel({ serverId }: { serverId: string }) {
   }
 
   if (loading) return <Connecting />;
-  if (error) return <Callout variant="danger">{error}</Callout>;
+  if (error)
+    return (
+      <div className="flex flex-col gap-3">
+        <Callout variant="danger">{error}</Callout>
+        <div>
+          <Button size="sm" variant="outline" onClick={retryList}>
+            {t("Retry")}
+          </Button>
+        </div>
+      </div>
+    );
   if (!resources || resources.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
@@ -483,6 +498,7 @@ function PromptsPanel({ serverId }: { serverId: string }) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<unknown>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -500,7 +516,11 @@ function PromptsPanel({ serverId }: { serverId: string }) {
     return () => {
       alive = false;
     };
-  }, [serverId]);
+  }, [serverId, reloadKey]);
+
+  function retryList() {
+    setReloadKey((n) => n + 1);
+  }
 
   const prompt = prompts?.find((p) => p.name === selected) ?? null;
 
@@ -540,7 +560,17 @@ function PromptsPanel({ serverId }: { serverId: string }) {
   }
 
   if (loading) return <Connecting />;
-  if (error) return <Callout variant="danger">{error}</Callout>;
+  if (error)
+    return (
+      <div className="flex flex-col gap-3">
+        <Callout variant="danger">{error}</Callout>
+        <div>
+          <Button size="sm" variant="outline" onClick={retryList}>
+            {t("Retry")}
+          </Button>
+        </div>
+      </div>
+    );
   if (!prompts || prompts.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
