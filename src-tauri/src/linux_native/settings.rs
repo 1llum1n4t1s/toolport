@@ -673,6 +673,7 @@ l10n::bind_dialog_heading(&error_dialog, msg("Could not start data removal"));
         language_picker.set_selected(selected);
         let suggestion = gtk::Box::new(gtk::Orientation::Vertical, 8);
         suggestion.add_css_class("toolport-settings-group");
+        suggestion.add_css_class("toolport-padded-group");
         suggestion.set_widget_name("toolport-language-suggestion");
         suggestion.set_visible(false);
         let suggested = crate::i18n::suggested_language(true);
