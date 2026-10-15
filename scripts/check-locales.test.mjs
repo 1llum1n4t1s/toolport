@@ -6,6 +6,7 @@ import {
   checkMessageIntegrity,
   checkRustSource,
   checkSource,
+  isCoverageGap,
   isMarkedType,
   parseCatalog,
 } from "./check-locales.mjs";
@@ -270,4 +271,30 @@ test("Rust conditional messages validate every result branch", () => {
     ).join("\n"),
     /must be a string literal/,
   );
+});
+
+test("coverage gaps only warn, while broken catalogs and misuse still fail", () => {
+  const catalogs = {
+    common: {
+      en: { "Welcome {name}": "Welcome {name}", Ready: "Ready" },
+      ja: { "Welcome {name}": "ようこそ {other}" },
+    },
+  };
+  const catalogErrors = checkCatalogs(catalogs, ["en", "ja"], ["common"]).errors;
+  const gaps = [
+    ...catalogErrors.filter((error) => /missing Ready/.test(error)),
+    ...sourceErrors('t("Not in the catalog yet")'),
+    ...sourceErrors("<p>Plain text</p>"),
+    ...sourceErrors("t(label)"),
+  ];
+  assert.equal(gaps.length, 4);
+  for (const gap of gaps) assert.ok(isCoverageGap(gap), gap);
+  const broken = [
+    ...catalogErrors.filter((error) => /invalid placeholders/.test(error)),
+    ...sourceErrors('<div key={t("Hello")} />'),
+    ...sourceErrors('if (t("Hello") === value) {}'),
+    "common/de: missing catalog",
+  ];
+  assert.equal(broken.length, 4);
+  for (const error of broken) assert.ok(!isCoverageGap(error), error);
 });

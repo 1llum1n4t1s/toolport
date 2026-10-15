@@ -16,28 +16,33 @@ the fix is for 1.24.
 
 ## Localization
 
-The React/Tauri interface supports English, Japanese, Simplified and Traditional
-Chinese, Korean, Spanish, French, German, and Brazilian Portuguese. Choose a
-language in Settings → General → Language, or select System language to follow
-the operating system. The choice is saved locally and applies without restarting
-or discarding unsaved input. Unsupported system languages fall back to English.
+The desktop app and the Linux GTK app are available in English, Japanese,
+Simplified and Traditional Chinese, Korean, Spanish, French, German, and
+Brazilian Portuguese. People choose a language in Settings → General → Language.
 
-Use `useI18n().t("English source message", { name })` in components and
-`translate(...)` in helpers. Keep module-level labels in English and translate
-them when rendering. Add messages to every language under `src/locales/` in the
-relevant `common`, `shell`, `connections`, `workflows`, or `native` group. English keys and
-values must match. Use complete sentences with named `{placeholders}`; do not
-translate identifiers, commands, URLs, or text supplied by users or MCP servers.
-For embedded links or emphasis use `Trans` with React elements as values, never
-HTML strings. Include `t` in memo/callback dependencies that generate UI text.
+**You don't need to translate anything to contribute.** Write new UI text in
+English and wrap it: `useI18n().t("English sentence", { name })` in components,
+`translate(...)` in helpers, `crate::i18n::tr(...)` or `trf(...)` in Rust. If you
+can, also add the sentence to `src/locales/<group>/en.json` (key and value both
+the English text). Anything without a translation shows in English, CI only
+warns about it, and maintainers fill in the other languages before a stable
+release. Fluent speakers are very welcome to fix or add translations; product
+terms for each language are in `src/locales/GLOSSARY.md`.
 
-`npm run check:locales` checks key parity, duplicate keys across every group,
-placeholders, literal messages, marked dynamic labels and native calls.
-`npm run smoke:localization` runs the browser fixture through every language,
-persistence, draft preservation, cold first paint, OS fallback, blocked storage,
-dictionary recovery, formatting fallback and failed preference writes. It also
-captures the main, Settings, Activity, review and personal sync screens.
-Both are included in `verify:frontend`.
+A few rules CI does enforce, because breaking them breaks the app:
+
+- Use complete sentences with named `{placeholders}`, and keep the same
+  placeholders in every translation.
+- Don't translate identifiers, commands, URLs, or text that comes from users or
+  MCP servers.
+- Never compare, key or store translated text. Translate only what is shown.
+- For links or emphasis inside a sentence, use `Trans` with React elements as
+  values, never HTML strings.
+
+`npm run check:locales` runs these checks and lists untranslated text as
+warnings. `npm run check:locales:complete` treats those warnings as errors; stable
+releases run it. `npm run smoke:localization` runs the browser fixture through
+every language. Both `check:locales` and the smoke run in `verify:frontend` and CI.
 Translations ship with the application; the running app never contacts a
 translation service. Language catalogs are loaded on demand with English as
 the fallback if a dictionary cannot be loaded. The GTK interface, tray menus and native notifications use the same embedded
