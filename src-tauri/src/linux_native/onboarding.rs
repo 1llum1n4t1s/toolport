@@ -625,9 +625,9 @@ impl CallVerifier {
         let copy = l10n::button("Copy prompt");
         copy.add_css_class("toolport-secondary-action");
         copy.connect_clicked(move |button| {
-            button
-                .clipboard()
-                .set_text("List the tools you can use through Toolport.");
+            button.clipboard().set_text(&crate::i18n::tr(
+                "List the tools you can use through Toolport.",
+            ));
             l10n::bind_text(button, "Copied");
         });
         prompt_row.append(&copy);

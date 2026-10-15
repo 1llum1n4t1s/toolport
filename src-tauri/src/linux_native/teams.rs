@@ -2242,8 +2242,8 @@ fn member_review_content(review: &crate::teams::MemberReview) -> gtk::ScrolledWi
             ));
         }
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        for (name, accept) in [("Accept", true), ("Reject", false)] {
-            let button = gtk::Button::with_label(name);
+        for (name, accept) in [(msg("Accept"), true), (msg("Reject"), false)] {
+            let button = l10n::button(name);
             button.set_widget_name(&format!(
                 "{}:{}",
                 if accept { "accept" } else { "reject" },

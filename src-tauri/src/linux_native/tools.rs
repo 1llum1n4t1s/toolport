@@ -1244,7 +1244,8 @@ fn open_json_action(
     root.append(&form_scroll);
     root.append(&editor_scroll);
     if has_form {
-        let json_toggle = gtk::ToggleButton::with_label("Edit as JSON");
+        let json_toggle = gtk::ToggleButton::new();
+        l10n::bind_button(json_toggle.upcast_ref(), "Edit as JSON");
         json_toggle.add_css_class("flat");
         json_toggle.set_halign(gtk::Align::Start);
         let widgets_for_toggle = widgets.clone();

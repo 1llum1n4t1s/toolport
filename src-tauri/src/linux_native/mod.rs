@@ -1958,12 +1958,7 @@ impl ServerPage {
                 *self.last_snapshot.borrow_mut() = None;
                 self.reset_summary();
                 l10n::bind_text(&self.section_title, "Servers");
-                self.list.append(&state_card(
-                    "network-server-symbolic",
-                    &crate::i18n::tr("Toolport is ready for setup"),
-                    &crate::i18n::tr("Use Add server for a custom endpoint or open Catalog for a curated starting point. Valid servers turn on. Missing setup inputs stay off."),
-                    false,
-                ));
+                self.list.append(&state_card("network-server-symbolic", crate::i18n::msg("Toolport is ready for setup"), crate::i18n::msg("Use Add server for a custom endpoint or open Catalog for a curated starting point. Valid servers turn on. Missing setup inputs stay off."), false));
             }
             state::RegistryState::Unavailable => {
                 self.clear_server_list();
@@ -1972,12 +1967,7 @@ impl ServerPage {
                 self.enabled_count.set_label("–");
                 self.section_title
                     .set_label(&crate::i18n::tr("Servers unavailable"));
-                self.list.append(&state_card(
-                    "dialog-warning-symbolic",
-                    &crate::i18n::tr("Configuration could not be displayed"),
-                    &crate::i18n::tr("Toolport left the registry untouched. Open the app again to inspect or recover it."),
-                    true,
-                ));
+                self.list.append(&state_card("dialog-warning-symbolic", crate::i18n::msg("Configuration could not be displayed"), crate::i18n::msg("Toolport left the registry untouched. Open the app again to inspect or recover it."), true));
             }
             state::RegistryState::NewerVersion(message) => {
                 self.clear_server_list();
@@ -1986,13 +1976,11 @@ impl ServerPage {
                 self.enabled_count.set_label("–");
                 self.section_title
                     .set_label(&crate::i18n::tr("Servers unavailable"));
-                self.list.append(&state_card(
+                self.list.append(&state_card_formatted(
                     "software-update-available-symbolic",
-                    &crate::i18n::tr("Update Toolport"),
-                    &crate::i18n::trf(
-                        "{value0} Toolport left the registry untouched.",
-                        &[("value0", &message.to_string())],
-                    ),
+                    crate::i18n::msg("Update Toolport"),
+                    crate::i18n::msg("{value0} Toolport left the registry untouched."),
+                    &[("value0", &message.to_string())],
                     true,
                 ));
             }
@@ -2053,8 +2041,8 @@ impl ServerPage {
             self.posture.set_visible(false);
             self.list.append(&state_card(
                 "network-server-symbolic",
-                &crate::i18n::tr("No servers yet"),
-                &crate::i18n::tr(
+                crate::i18n::msg("No servers yet"),
+                crate::i18n::msg(
                     "Use Add server to connect your first local command or remote endpoint.",
                 ),
                 false,
@@ -2131,8 +2119,8 @@ impl ServerPage {
         *self.rows.borrow_mut() = rows;
         let no_matches = state_card(
             "edit-find-symbolic",
-            &crate::i18n::tr("No matching servers"),
-            &crate::i18n::tr("Try a different server name or transport."),
+            crate::i18n::msg("No matching servers"),
+            crate::i18n::msg("Try a different server name or transport."),
             false,
         );
         self.list.append(&no_matches);
@@ -2733,8 +2721,8 @@ impl ClientPage {
         if installed.is_empty() {
             self.list.append(&state_card(
                 "computer-symbolic",
-                &crate::i18n::tr("No supported clients detected"),
-                &crate::i18n::tr("Install or open a supported AI client, then scan again."),
+                crate::i18n::msg("No supported clients detected"),
+                crate::i18n::msg("Install or open a supported AI client, then scan again."),
                 false,
             ));
         }
@@ -2759,14 +2747,18 @@ impl ClientPage {
         // Supported-but-absent clients: collapsed so they don't crowd the real
         // list, but visible so the user knows what Toolport could manage.
         if !absent.is_empty() {
-            let expander = gtk::Expander::new(Some(&crate::i18n::trf(
-                if absent.len() == 1 {
-                    crate::i18n::msg("Not installed · {value0} supported client")
-                } else {
-                    crate::i18n::msg("Not installed · {value0} supported clients")
-                },
-                &[("value0", &format!("{}", absent.len()))],
-            )));
+            let expander = {
+                let widget = gtk::Expander::new(None);
+                widget.set_label_widget(Some(&l10n::formatted_label(
+                    if absent.len() == 1 {
+                        crate::i18n::msg("Not installed · {value0} supported client")
+                    } else {
+                        crate::i18n::msg("Not installed · {value0} supported clients")
+                    },
+                    &[("value0", &format!("{}", absent.len()))],
+                )));
+                widget
+            };
             expander.add_css_class("toolport-card");
             let names = gtk::Label::builder()
                 .label(
@@ -2798,10 +2790,14 @@ impl ClientPage {
             });
         }
         if !sessions.is_empty() {
-            let expander = gtk::Expander::new(Some(&crate::i18n::trf(
-                "Recent client activity · {value0}",
-                &[("value0", &format!("{}", sessions.len()))],
-            )));
+            let expander = {
+                let widget = gtk::Expander::new(None);
+                widget.set_label_widget(Some(&l10n::formatted_label(
+                    "Recent client activity · {value0}",
+                    &[("value0", &format!("{}", sessions.len()))],
+                )));
+                widget
+            };
             expander.add_css_class("toolport-card");
             let rows = gtk::Box::new(gtk::Orientation::Vertical, 8);
             for client in sessions {
@@ -2971,16 +2967,36 @@ fn toolport_menu_button(label: &str) -> gtk::Button {
         .build()
 }
 
-fn toolport_menu_choice_button(label: &str, selected: bool) -> gtk::Button {
+fn toolport_menu_source_button(source: &'static str) -> gtk::Button {
+    let button = toolport_menu_button(source);
+    let label = button
+        .child()
+        .and_downcast::<gtk::Label>()
+        .expect("menu caption");
+    l10n::bind_label(&label, source);
+    button
+}
+fn toolport_menu_formatted_button(source: &'static str, values: &[(&str, &str)]) -> gtk::Button {
+    let button = toolport_menu_button("");
+    let label = button
+        .child()
+        .and_downcast::<gtk::Label>()
+        .expect("menu caption");
+    l10n::bind_formatted_label(&label, source, values);
+    button
+}
+fn toolport_menu_choice_button(label: &'static str, selected: bool) -> gtk::Button {
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    content.append(
-        &gtk::Label::builder()
+    content.append(&{
+        let widget = gtk::Label::builder()
             .label(label)
             .halign(gtk::Align::Start)
             .xalign(0.0)
             .hexpand(true)
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, label);
+        widget
+    });
     if selected {
         content.append(
             &gtk::Image::builder()
@@ -3164,6 +3180,8 @@ fn client_card(client: &state::ClientView, page: ClientPage) -> gtk::Box {
 l10n::bind_dialog_heading(&dialog, "Remove client location?");
 l10n::bind_dialog_body(&dialog, "This forgets the added location. Your client config and backups are kept. Auto-detected Claude folders still appear in Clients.");
             dialog.add_responses(&[("cancel", "Cancel"), ("remove", "Remove location")]);
+l10n::bind_dialog_response(&dialog,"cancel","Cancel");
+l10n::bind_dialog_response(&dialog,"remove","Remove location");
             let id = id.clone();
             let page = page.clone();
             dialog.connect_response(Some("remove"), move |_, _| {
@@ -3279,7 +3297,7 @@ fn append_client_discovery_actions(
             (Some(stored), Some(mode)) => stored.trim().eq_ignore_ascii_case(mode),
             _ => false,
         };
-        let button = toolport_menu_choice_button(&crate::i18n::lookup(label), selected);
+        let button = toolport_menu_choice_button(label, selected);
         let tooltip = match mode {
             Some("full") => crate::i18n::tr("Full tool list. Client per-tool permission rules need Full mode."),
             Some("grouped") => crate::i18n::tr("Browse a server, then call tools. Client per-tool permission rules need Full mode."),
@@ -3338,14 +3356,14 @@ fn connected_client_actions_menu(client: state::ClientView, page: ClientPage) ->
 
     if client.movable_server_count > 0 && !client.config_error {
         let count = client.movable_server_count;
-        let migrate = toolport_menu_button(&crate::i18n::trf(
+        let migrate = toolport_menu_formatted_button(
             if count == 1 {
                 crate::i18n::msg("Move {count} server into Toolport")
             } else {
                 crate::i18n::msg("Move {count} servers into Toolport")
             },
             &[("count", &count.to_string())],
-        ));
+        );
         let client_for_migrate = client.clone();
         let page_for_migrate = page.clone();
         let menu_for_migrate = menu.clone();
@@ -3360,7 +3378,7 @@ fn connected_client_actions_menu(client: state::ClientView, page: ClientPage) ->
     append_client_discovery_actions(&content, &client, &page, &menu);
     content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
-    let disconnect = toolport_menu_button(&crate::i18n::tr("Disconnect from Toolport"));
+    let disconnect = toolport_menu_source_button(crate::i18n::msg("Disconnect from Toolport"));
     disconnect.add_css_class("destructive-action");
     let menu_for_disconnect = menu.clone();
     disconnect.connect_clicked(move |button| {
@@ -3733,9 +3751,9 @@ impl ActivityPage {
         export_actions.set_margin_bottom(6);
         export_actions.set_margin_start(6);
         export_actions.set_margin_end(6);
-        let export_json = toolport_menu_button(&crate::i18n::tr("Export JSON"));
+        let export_json = toolport_menu_source_button(crate::i18n::msg("Export JSON"));
         export_actions.append(&export_json);
-        let export_csv = toolport_menu_button(&crate::i18n::tr("Export CSV"));
+        let export_csv = toolport_menu_source_button(crate::i18n::msg("Export CSV"));
         export_actions.append(&export_csv);
         export_menu.set_child(Some(&export_actions));
         export_button.set_popover(Some(&export_menu));
@@ -3912,11 +3930,14 @@ impl ActivityPage {
             .css_classes(["toolport-muted", "caption"])
             .build();
         savings_banner.append(&savings_old_estimate);
-        let savings_counting = gtk::Expander::builder()
-            .label(crate::i18n::tr("How this is measured"))
-            .expanded(false)
-            .child(&savings_detail)
-            .build();
+        let savings_counting = {
+            let widget = gtk::Expander::builder()
+                .expanded(false)
+                .child(&savings_detail)
+                .build();
+            widget.set_label_widget(Some(&l10n::label("How this is measured")));
+            widget
+        };
         savings_banner.append(&savings_counting);
         performance.append(&savings_banner);
 
@@ -3994,7 +4015,11 @@ impl ActivityPage {
         show_more_calls.set_visible(false);
         page.append(&show_more_calls);
 
-        let performance_expander = gtk::Expander::new(Some("Performance and savings"));
+        let performance_expander = {
+            let widget = gtk::Expander::new(None);
+            widget.set_label_widget(Some(&l10n::label("Performance and savings")));
+            widget
+        };
         performance_expander.add_css_class("toolport-details-expander");
         performance_expander.set_child(Some(&performance));
         page.append(&performance_expander);
@@ -4034,7 +4059,11 @@ impl ActivityPage {
         });
         let security_list = gtk::Box::new(gtk::Orientation::Vertical, 10);
         security.append(&security_list);
-        let security_expander = gtk::Expander::new(Some("Protection history"));
+        let security_expander = {
+            let widget = gtk::Expander::new(None);
+            widget.set_label_widget(Some(&l10n::label("Protection history")));
+            widget
+        };
         security_expander.add_css_class("toolport-card");
         security_expander.set_child(Some(&security));
         diagnostics.append(&security_expander);
@@ -4083,11 +4112,19 @@ impl ActivityPage {
         });
         let inspect_list = gtk::Box::new(gtk::Orientation::Vertical, 10);
         technical.append(&inspect_list);
-        let technical_expander = gtk::Expander::new(Some("Technical records"));
+        let technical_expander = {
+            let widget = gtk::Expander::new(None);
+            widget.set_label_widget(Some(&l10n::label("Technical records")));
+            widget
+        };
         technical_expander.add_css_class("toolport-card");
         technical_expander.set_child(Some(&technical));
         diagnostics.append(&technical_expander);
-        let diagnostics_expander = gtk::Expander::new(Some("Security and diagnostics"));
+        let diagnostics_expander = {
+            let widget = gtk::Expander::new(None);
+            widget.set_label_widget(Some(&l10n::label("Security and diagnostics")));
+            widget
+        };
         diagnostics_expander.add_css_class("toolport-details-expander");
         diagnostics_expander.set_child(Some(&diagnostics));
         page.append(&diagnostics_expander);
@@ -4752,12 +4789,14 @@ impl ActivityPage {
                 .append(&tool_change_group_card(&group, self.clone()));
         }
         if !older.is_empty() {
-            let history = gtk::Expander::builder()
-                .label(crate::i18n::trf(
+            let history = {
+                let widget = gtk::Expander::builder().build();
+                widget.set_label_widget(Some(&l10n::formatted_label(
                     "{value0} older tool-change records. Open history to review them.",
                     &[("value0", &format!("{}", older.len()))],
-                ))
-                .build();
+                )));
+                widget
+            };
             let rows = gtk::Box::new(gtk::Orientation::Vertical, 8);
             let page = self.clone();
             let history_rows = rows.clone();
@@ -5001,8 +5040,8 @@ impl ActivityPage {
             self.show_more_calls.set_visible(false);
             self.list.append(&state_card(
                 "view-list-symbolic",
-                &crate::i18n::tr("No activity yet"),
-                &crate::i18n::tr("Calls and approval outcomes will appear here with their timing."),
+                crate::i18n::msg("No activity yet"),
+                crate::i18n::msg("Calls and approval outcomes will appear here with their timing."),
                 false,
             ));
             return;
@@ -5017,8 +5056,8 @@ impl ActivityPage {
             self.show_more_calls.set_visible(false);
             self.list.append(&state_card(
                 "edit-find-symbolic",
-                &crate::i18n::tr("No matching activity"),
-                &crate::i18n::tr("Nothing saved matches the current filter."),
+                crate::i18n::msg("No matching activity"),
+                crate::i18n::msg("Nothing saved matches the current filter."),
                 false,
             ));
             return;
@@ -6121,10 +6160,11 @@ fn inspect_card(capture: &serde_json::Value, expanded_rows: ActivityExpansionSta
         .min_content_height(120)
         .max_content_height(280)
         .build();
-    let details = gtk::Expander::builder()
-        .label(crate::i18n::tr("Inspect request and response"))
-        .child(&scroll)
-        .build();
+    let details = {
+        let widget = gtk::Expander::builder().child(&scroll).build();
+        widget.set_label_widget(Some(&l10n::label("Inspect request and response")));
+        widget
+    };
     bind_activity_expander(
         &details,
         activity_row_key("inspect", capture),
@@ -7373,9 +7413,11 @@ fn approval_card(
 
     let arguments = serde_json::to_string_pretty(&view.arguments)
         .unwrap_or_else(|_| crate::i18n::tr("Arguments could not be displayed"));
-    let details = gtk::Expander::builder()
-        .label(crate::i18n::tr("Review arguments"))
-        .build();
+    let details = {
+        let widget = gtk::Expander::builder().build();
+        widget.set_label_widget(Some(&l10n::label("Review arguments")));
+        widget
+    };
     details.set_child(Some(
         &gtk::Label::builder()
             .label(arguments)
@@ -7454,7 +7496,7 @@ fn approval_card(
             (crate::i18n::msg("For this session"), "session"),
             (crate::i18n::msg("Always for this definition"), "always"),
         ] {
-            let choice = toolport_menu_button(&crate::i18n::lookup(label));
+            let choice = toolport_menu_source_button(label);
             let id = view.id.clone();
             let page = page.clone();
             let remember = remember.clone();
@@ -7691,9 +7733,9 @@ fn build_content(
     profile_action_list.set_margin_bottom(6);
     profile_action_list.set_margin_start(6);
     profile_action_list.set_margin_end(6);
-    let enable_all = toolport_menu_button(&crate::i18n::tr("Enable all reviewed servers"));
+    let enable_all = toolport_menu_source_button(crate::i18n::msg("Enable all reviewed servers"));
     profile_action_list.append(&enable_all);
-    let disable_all = toolport_menu_button(&crate::i18n::tr("Disable all servers"));
+    let disable_all = toolport_menu_source_button(crate::i18n::msg("Disable all servers"));
     profile_action_list.append(&disable_all);
     profile_popover.set_child(Some(&profile_action_list));
     profile_actions.set_popover(Some(&profile_popover));
@@ -7971,11 +8013,7 @@ fn share_setup(page: ServerPage) {
     root.append(&header);
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
     body.add_css_class("toolport-editor-body");
-    body.append(&editor_intro(
-        "send-to-symbolic",
-        &crate::i18n::tr("Share a secret-free setup"),
-        &crate::i18n::tr("Keychain values, inline credentials, and the local gateway are always excluded. Share links expire after 90 days."),
-    ));
+    body.append(&editor_intro("send-to-symbolic", crate::i18n::msg("Share a secret-free setup"), crate::i18n::msg("Keychain values, inline credentials, and the local gateway are always excluded. Share links expire after 90 days.")));
     let feedback = gtk::Label::builder()
         .halign(gtk::Align::Fill)
         .xalign(0.0)
@@ -7992,7 +8030,7 @@ fn share_setup(page: ServerPage) {
         l10n::bind_placeholder(&widget, "Setup name (optional)");
         widget
     };
-    body.append(&editor_field(&crate::i18n::tr("Name"), &name));
+    body.append(&editor_field(crate::i18n::msg("Name"), &name));
     let description = {
         let widget = gtk::Entry::builder()
             .placeholder_text(crate::i18n::tr("What this setup is for (optional)"))
@@ -8001,10 +8039,10 @@ fn share_setup(page: ServerPage) {
         l10n::bind_placeholder(&widget, "What this setup is for (optional)");
         widget
     };
-    body.append(&editor_field(&crate::i18n::tr("Description"), &description));
+    body.append(&editor_field(crate::i18n::msg("Description"), &description));
     body.append(&section_heading(
-        &crate::i18n::tr("Servers to include"),
-        &crate::i18n::tr("Everything is included unless you uncheck it."),
+        crate::i18n::msg("Servers to include"),
+        crate::i18n::msg("Everything is included unless you uncheck it."),
     ));
     let select_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let select_all = l10n::button("All");
@@ -8300,8 +8338,8 @@ fn open_paste_import(page: ServerPage) {
     body.add_css_class("toolport-editor-body");
     body.append(&editor_intro(
         "edit-paste-symbolic",
-        &crate::i18n::tr("Paste a Toolport setup"),
-        &crate::i18n::tr(
+        crate::i18n::msg("Paste a Toolport setup"),
+        crate::i18n::msg(
             "Paste the JSON someone exported. Nothing is imported until you review it.",
         ),
     ));
@@ -9377,7 +9415,7 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
                 return gtk::glib::Propagation::Proceed;
             }
             toggle.set_sensitive(false);
-            status_for_toggle.set_label("Updating");
+            l10n::bind_text(&status_for_toggle, "Updating");
 
             let server_id = server_id.clone();
             let server_name = server_name.clone();
@@ -9463,7 +9501,10 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
     actions.set_margin_bottom(6);
     actions.set_margin_start(6);
     actions.set_margin_end(6);
-    let test = action_menu_button("Test connection", "network-transmit-receive-symbolic");
+    let test = action_menu_button(
+        crate::i18n::msg("Test connection"),
+        "network-transmit-receive-symbolic",
+    );
     let server_for_test = server.clone();
     let page_for_test = page.clone();
     test.connect_clicked(move |button| {
@@ -9471,13 +9512,16 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
     });
     actions.append(&test);
 
-    let tools = action_menu_button("Server details and tools", "applications-science-symbolic");
+    let tools = action_menu_button(
+        crate::i18n::msg("Server details and tools"),
+        "applications-science-symbolic",
+    );
     let server_for_tools = server.clone();
     let page_for_tools = page.clone();
     tools.connect_clicked(move |_| open_server_details(&server_for_tools, &page_for_tools, true));
     actions.append(&tools);
 
-    let edit = action_menu_button("Edit", "document-edit-symbolic");
+    let edit = action_menu_button(crate::i18n::msg("Edit"), "document-edit-symbolic");
     edit.set_sensitive(matches!(
         server.transport_id.as_str(),
         "stdio" | "http" | "sse"
@@ -9488,13 +9532,16 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
         open_server_editor(Some(server_for_edit.clone()), page_for_edit.clone())
     });
     actions.append(&edit);
-    let settings = action_menu_button("Sync settings", "emblem-synchronizing-symbolic");
+    let settings = action_menu_button(
+        crate::i18n::msg("Sync settings"),
+        "emblem-synchronizing-symbolic",
+    );
     let sync_id = server.id.clone();
     let sync_page = page.clone();
     settings.connect_clicked(move |_| open_sync_settings(&sync_id, &sync_page));
     actions.append(&settings);
 
-    let duplicate = action_menu_button("Duplicate", "edit-copy-symbolic");
+    let duplicate = action_menu_button(crate::i18n::msg("Duplicate"), "edit-copy-symbolic");
     duplicate.set_tooltip_text(Some(
         "Add another account: a new entry with the same connection, named separately",
     ));
@@ -9510,7 +9557,10 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
     actions.append(&duplicate);
 
     if matches!(server.transport_id.as_str(), "http" | "sse") {
-        let authentication = action_menu_button("Authentication", "system-lock-screen-symbolic");
+        let authentication = action_menu_button(
+            crate::i18n::msg("Authentication"),
+            "system-lock-screen-symbolic",
+        );
         let server_for_authentication = server.clone();
         let page_for_authentication = page.clone();
         authentication.connect_clicked(move |_| {
@@ -9522,7 +9572,8 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
         actions.append(&authentication);
     }
 
-    let credentials = action_menu_button("Credentials", "dialog-password-symbolic");
+    let credentials =
+        action_menu_button(crate::i18n::msg("Credentials"), "dialog-password-symbolic");
     let server_for_credentials = server.clone();
     let page_for_credentials = page.clone();
     credentials.connect_clicked(move |_| {
@@ -9530,7 +9581,7 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
     });
     actions.append(&credentials);
 
-    let remove = action_menu_button("Remove", "user-trash-symbolic");
+    let remove = action_menu_button(crate::i18n::msg("Remove"), "user-trash-symbolic");
     remove.add_css_class("destructive-action");
     let server_id = server.id.clone();
     let server_name = server.name.clone();
@@ -9609,18 +9660,14 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
     content.add_css_class("toolport-editor-body");
-    content.append(&editor_intro(
-        "system-lock-screen-symbolic",
-        "Remote authentication",
-        "Use browser sign-in when supported, or paste a token supplied by your provider. Toolport stores credentials in the system keychain.",
-    ));
+    content.append(&editor_intro("system-lock-screen-symbolic", crate::i18n::msg("Remote authentication"), crate::i18n::msg("Use browser sign-in when supported, or paste a token supplied by your provider. Toolport stores credentials in the system keychain.")));
     let feedback = gtk::Label::builder()
         .halign(gtk::Align::Fill)
         .xalign(0.0)
         .wrap(true)
         .css_classes(["toolport-feedback"])
         .build();
-    feedback.set_label("Checking the system keychain…");
+    l10n::bind_text(&feedback, "Checking the system keychain…");
     content.append(&feedback);
 
     // What the server actually wants, probed live so the user does not have to
@@ -9647,8 +9694,10 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
     let token_section = gtk::Box::new(gtk::Orientation::Vertical, 10);
     token_section.add_css_class("toolport-form-section");
     token_section.append(&section_heading(
-        "Bearer token",
-        "Saving a manual token replaces any previous browser sign-in for this server.",
+        crate::i18n::msg("Bearer token"),
+        crate::i18n::msg(
+            "Saving a manual token replaces any previous browser sign-in for this server.",
+        ),
     ));
     let token = {
         let widget = gtk::PasswordEntry::builder()
@@ -9684,10 +9733,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
 
     let client_section = gtk::Box::new(gtk::Orientation::Vertical, 10);
     client_section.add_css_class("toolport-form-section");
-    client_section.append(&section_heading(
-        "Client credentials",
-        "For unattended OAuth servers. The client secret is stored only in the system keychain.",
-    ));
+    client_section.append(&section_heading(crate::i18n::msg("Client credentials"), crate::i18n::msg("For unattended OAuth servers. The client secret is stored only in the system keychain.")));
     let client_id = {
         let widget = gtk::Entry::builder()
             .placeholder_text("OAuth client id")
@@ -9747,8 +9793,11 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
         l10n::bind_placeholder(&widget, "Scopes (optional)");
         widget
     };
-    client_section.append(&editor_field("Client id", &client_id));
-    client_section.append(&editor_field("Client secret", &client_secret));
+    client_section.append(&editor_field(crate::i18n::msg("Client id"), &client_id));
+    client_section.append(&editor_field(
+        crate::i18n::msg("Client secret"),
+        &client_secret,
+    ));
     // Whether a secret is actually vaulted is a keychain question, not a
     // registry one: a lost/locked keychain must not read as "stored", and
     // unknown must not read as absent (SBS-722).
@@ -9794,7 +9843,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                             );
                         }
                         Ok(Ok(false)) => {
-                            secret_status.set_label("No client secret is stored yet.");
+                            l10n::bind_text(&secret_status, "No client secret is stored yet.");
                             secret_retry.set_visible(false);
                             l10n::bind_placeholder(
                                 client_secret.upcast_ref::<gtk::Widget>(),
@@ -9815,8 +9864,11 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
         let check_for_retry = check.clone();
         secret_retry.connect_clicked(move |_| check_for_retry());
     }
-    client_section.append(&editor_field("Token endpoint auth method", &method));
-    client_section.append(&editor_field("Scope", &scope));
+    client_section.append(&editor_field(
+        crate::i18n::msg("Token endpoint auth method"),
+        &method,
+    ));
+    client_section.append(&editor_field(crate::i18n::msg("Scope"), &scope));
     let client_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     client_actions.set_halign(gtk::Align::End);
     let remove_client = l10n::button("Remove client credentials");
@@ -9894,7 +9946,10 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                 feedback_for_status.add_css_class("error");
             }
             Err(_) => {
-                feedback_for_status.set_label("The keychain status check stopped unexpectedly.");
+                l10n::bind_text(
+                    &feedback_for_status,
+                    "The keychain status check stopped unexpectedly.",
+                );
                 feedback_for_status.add_css_class("error");
             }
         }
@@ -9957,7 +10012,10 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                     feedback.add_css_class("error");
                 }
                 Err(_) => {
-                    feedback.set_label("The client-credentials update stopped unexpectedly.");
+                    l10n::bind_text(
+                        &feedback,
+                        "The client-credentials update stopped unexpectedly.",
+                    );
                     feedback.add_css_class("error");
                 }
             }
@@ -10005,7 +10063,10 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                 }
                 Err(_) => {
                     button.set_sensitive(true);
-                    feedback.set_label("The client-credentials removal stopped unexpectedly.");
+                    l10n::bind_text(
+                        &feedback,
+                        "The client-credentials removal stopped unexpectedly.",
+                    );
                     feedback.add_css_class("error");
                 }
             }
@@ -10032,7 +10093,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
         let remove_before = remove_before_oauth.clone();
         sign_in.connect_clicked(move |button| {
             if server_url.is_empty() {
-                feedback.set_label("This server does not have a remote URL to sign in to.");
+                l10n::bind_text(&feedback, "This server does not have a remote URL to sign in to.");
                 feedback.add_css_class("error");
                 return;
             }
@@ -10047,7 +10108,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
             remove_before.set(remove.is_sensitive());
             remove.set_sensitive(false);
             cancel.set_visible(true);
-            feedback.set_label("Opening your browser. Approve access there. Waiting up to 3 minutes for the callback. Closed the browser? Cancel sign-in, then sign in again to reopen it. Closing this panel cancels sign-in. The main window closes to tray; Quit Toolport exits.");
+            l10n::bind_text(&feedback, "Opening your browser. Approve access there. Waiting up to 3 minutes for the callback. Closed the browser? Cancel sign-in, then sign in again to reopen it. Closing this panel cancels sign-in. The main window closes to tray; Quit Toolport exits.");
             feedback.remove_css_class("error");
             feedback.remove_css_class("success");
             let server_id = server_id.clone();
@@ -10080,7 +10141,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                 cancel.set_visible(false);
                 match result {
                     Ok(Ok(())) => {
-                        feedback.set_label("Browser sign-in completed and the token is stored in the system keychain.");
+                        l10n::bind_text(&feedback, "Browser sign-in completed and the token is stored in the system keychain.");
                         feedback.remove_css_class("error");
                         feedback.add_css_class("success");
                         remove.set_sensitive(true);
@@ -10093,7 +10154,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                         feedback.add_css_class("error");
                     }
                     Err(_) => {
-                        feedback.set_label("Browser sign-in stopped unexpectedly. Sign in with browser to try again.");
+                        l10n::bind_text(&feedback, "Browser sign-in stopped unexpectedly. Sign in with browser to try again.");
                         feedback.add_css_class("error");
                     }
                 }
@@ -10119,7 +10180,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
             epoch.set(epoch.get().wrapping_add(1));
             let generation = epoch.get();
             button.set_sensitive(false);
-            feedback.set_label("Cancelling browser sign-in…");
+            l10n::bind_text(&feedback, "Cancelling browser sign-in…");
             let epoch = epoch.clone();
             let feedback = feedback.clone();
             let sign_in = sign_in.clone();
@@ -10160,14 +10221,14 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
     save.connect_clicked(move |button| {
         let value = token.text().to_string();
         if value.is_empty() {
-            feedback_for_save.set_label("Paste a token before storing it.");
+            l10n::bind_text(&feedback_for_save, "Paste a token before storing it.");
             feedback_for_save.add_css_class("error");
             return;
         }
         let remove_was_sensitive = remove_for_save.is_sensitive();
         button.set_sensitive(false);
         remove_for_save.set_sensitive(false);
-        feedback_for_save.set_label("Storing token in the system keychain…");
+        l10n::bind_text(&feedback_for_save, "Storing token in the system keychain…");
         feedback_for_save.remove_css_class("error");
         let server_id = server_id.clone();
         let reprobe_id = server_id.clone();
@@ -10184,7 +10245,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
             button.set_sensitive(true);
             match result {
                 Ok(Ok(())) => {
-                    feedback.set_label("Bearer token stored in the system keychain.");
+                    l10n::bind_text(&feedback, "Bearer token stored in the system keychain.");
                     feedback.remove_css_class("error");
                     feedback.add_css_class("success");
                     remove.set_sensitive(true);
@@ -10201,7 +10262,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                     remove.set_sensitive(remove_was_sensitive);
                 }
                 Err(_) => {
-                    feedback.set_label("The token update stopped unexpectedly.");
+                    l10n::bind_text(&feedback, "The token update stopped unexpectedly.");
                     feedback.add_css_class("error");
                     remove.set_sensitive(remove_was_sensitive);
                 }
@@ -10219,7 +10280,10 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
             return;
         }
         button.set_sensitive(false);
-        feedback_for_remove.set_label("Removing token from the system keychain…");
+        l10n::bind_text(
+            &feedback_for_remove,
+            "Removing token from the system keychain…",
+        );
         feedback_for_remove.remove_css_class("error");
         let server_id = server_id.clone();
         let reprobe_id = server_id.clone();
@@ -10234,7 +10298,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
             .await;
             match result {
                 Ok(Ok(())) => {
-                    feedback.set_label("No bearer token is stored for this server.");
+                    l10n::bind_text(&feedback, "No bearer token is stored for this server.");
                     feedback.remove_css_class("error");
                     feedback.add_css_class("success");
                     page.show_confirmation(&crate::i18n::trf(
@@ -10251,7 +10315,7 @@ fn open_authentication_editor(server: state::ServerView, page: ServerPage) {
                 }
                 Err(_) => {
                     button.set_sensitive(true);
-                    feedback.set_label("The token removal stopped unexpectedly.");
+                    l10n::bind_text(&feedback, "The token removal stopped unexpectedly.");
                     feedback.add_css_class("error");
                 }
             }
@@ -10327,19 +10391,21 @@ fn test_server_connection(server: &state::ServerView, button: &gtk::Button, page
     });
 }
 
-fn action_menu_button(label: &str, icon: &str) -> gtk::Button {
+fn action_menu_button(label: &'static str, icon: &str) -> gtk::Button {
     let button = gtk::Button::new();
     button.set_halign(gtk::Align::Fill);
     button.add_css_class("toolport-action-item");
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 9);
     row.append(&gtk::Image::from_icon_name(icon));
-    row.append(
-        &gtk::Label::builder()
+    row.append(&{
+        let widget = gtk::Label::builder()
             .label(label)
             .halign(gtk::Align::Start)
             .hexpand(true)
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, label);
+        widget
+    });
     button.set_child(Some(&row));
     button
 }
@@ -10434,11 +10500,7 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
         .build();
     let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
     content.add_css_class("toolport-editor-body");
-    let intro = editor_intro(
-        "dialog-password-symbolic",
-        "Server credentials",
-        "Paste a key into the system keychain or save a password manager reference. Only references sync.",
-    );
+    let intro = editor_intro("dialog-password-symbolic", crate::i18n::msg("Server credentials"), crate::i18n::msg("Paste a key into the system keychain or save a password manager reference. Only references sync."));
     content.append(&intro);
     let feedback = gtk::Label::builder()
         .halign(gtk::Align::Fill)
@@ -10452,8 +10514,8 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
     let stored = gtk::Box::new(gtk::Orientation::Vertical, 10);
     stored.add_css_class("toolport-form-section");
     stored.append(&section_heading(
-        "Stored credentials",
-        "Enter a new value only when you want to replace one.",
+        crate::i18n::msg("Stored credentials"),
+        crate::i18n::msg("Enter a new value only when you want to replace one."),
     ));
     // Secret command arguments are vaulted like keys but are not environment
     // variables, so they save through the launch-input path.
@@ -10550,7 +10612,7 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
         replace.connect_clicked(move |button| {
             let secret = value.text().to_string();
             if secret.is_empty() {
-                feedback_for_replace.set_label("Enter a replacement value first.");
+                l10n::bind_text(&feedback_for_replace, "Enter a replacement value first.");
                 feedback_for_replace.set_visible(true);
                 return;
             }
@@ -10646,7 +10708,7 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
         save.connect_clicked(move |button| {
             let secret = value.text().to_string();
             if secret.is_empty() {
-                feedback.set_label("Enter a value first.");
+                l10n::bind_text(&feedback, "Enter a value first.");
                 feedback.set_visible(true);
                 return;
             }
@@ -10680,8 +10742,8 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
     let add_section = gtk::Box::new(gtk::Orientation::Vertical, 10);
     add_section.add_css_class("toolport-form-section");
     add_section.append(&section_heading(
-        "Add credential",
-        "Use the environment variable name expected by this server.",
+        crate::i18n::msg("Add credential"),
+        crate::i18n::msg("Use the environment variable name expected by this server."),
     ));
     let add_row = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let new_key = gtk::Entry::builder()
@@ -10733,7 +10795,10 @@ fn open_credentials_editor(server: state::ServerView, page: ServerPage) {
         let key = new_key.text().to_string();
         let secret = new_value.text().to_string();
         if key.trim().is_empty() || secret.is_empty() {
-            feedback_for_add.set_label("Enter both a variable name and a secret value.");
+            l10n::bind_text(
+                &feedback_for_add,
+                "Enter both a variable name and a secret value.",
+            );
             feedback_for_add.set_visible(true);
             return;
         }
@@ -10873,7 +10938,10 @@ fn finish_credential_update(
             button.set_sensitive(true);
         }
         Err(_) => {
-            feedback.set_label("Could not update credential: the operation stopped");
+            l10n::bind_text(
+                &feedback,
+                "Could not update credential: the operation stopped",
+            );
             feedback.set_visible(true);
             button.set_sensitive(true);
         }
@@ -11006,7 +11074,10 @@ fn open_server_editor_prefilled(
     local_only.set_visible(
         !editing && crate::registry::load().is_ok_and(|r| crate::personal_sync::is_personal(&r)),
     );
-    local_only.set_tooltip_text(Some("Keep this new server on this machine from the start."));
+    l10n::bind_tooltip(
+        &local_only,
+        "Keep this new server on this machine from the start.",
+    );
     form.append(&local_only);
 
     // Pasted env values wait here until the add commits; the entry itself never
@@ -11033,10 +11104,10 @@ fn open_server_editor_prefilled(
     let identity = gtk::Box::new(gtk::Orientation::Vertical, 8);
     identity.add_css_class("toolport-form-section");
     identity.append(&section_heading(
-        "Identity",
-        "Choose a clear name that will make sense in every AI client.",
+        crate::i18n::msg("Identity"),
+        crate::i18n::msg("Choose a clear name that will make sense in every AI client."),
     ));
-    identity.append(&editor_field("Server name", &name));
+    identity.append(&editor_field(crate::i18n::msg("Server name"), &name));
     if !editing {
         // Soft warning only: multiple accounts under one name are legitimate,
         // the user just needs to know a second entry is what they will get.
@@ -11088,10 +11159,10 @@ fn open_server_editor_prefilled(
     let connection = gtk::Box::new(gtk::Orientation::Vertical, 10);
     connection.add_css_class("toolport-form-section");
     connection.append(&section_heading(
-        &crate::i18n::tr("Connection"),
-        &crate::i18n::tr("Toolport will validate these fields before saving."),
+        crate::i18n::msg("Connection"),
+        crate::i18n::msg("Toolport will validate these fields before saving."),
     ));
-    connection.append(&editor_field(&crate::i18n::tr("Transport"), &transport));
+    connection.append(&editor_field(crate::i18n::msg("Transport"), &transport));
 
     let command = gtk::Entry::builder()
         .text(
@@ -11104,7 +11175,7 @@ fn open_server_editor_prefilled(
         .hexpand(true)
         .css_classes(["toolport-input"])
         .build();
-    let command_row = editor_field(&crate::i18n::tr("Command"), &command);
+    let command_row = editor_field(crate::i18n::msg("Command"), &command);
     connection.append(&command_row);
 
     let args = gtk::TextView::new();
@@ -11125,7 +11196,7 @@ fn open_server_editor_prefilled(
         .min_content_height(96)
         .build();
     args_scroller.add_css_class("toolport-text-area");
-    let args_row = editor_field(&crate::i18n::tr("Arguments, one per line"), &args_scroller);
+    let args_row = editor_field(crate::i18n::msg("Arguments, one per line"), &args_scroller);
     connection.append(&args_row);
 
     let original_launch = server.as_ref().and_then(|server| server.launch.clone());
@@ -11144,10 +11215,7 @@ fn open_server_editor_prefilled(
         if !launch.inputs.is_empty() {
             let section = gtk::Box::new(gtk::Orientation::Vertical, 8);
             section.add_css_class("toolport-form-section");
-            section.append(&section_heading(
-                &crate::i18n::tr("Launch setup"),
-                &crate::i18n::tr("Paste a key or use a password manager reference. Leave a saved key blank to keep it."),
-            ));
+            section.append(&section_heading(crate::i18n::msg("Launch setup"), crate::i18n::msg("Paste a key or use a password manager reference. Leave a saved key blank to keep it.")));
             for input in &launch.inputs {
                 let field = {
                     let widget = gtk::Entry::builder()
@@ -11175,7 +11243,7 @@ fn open_server_editor_prefilled(
                     );
                     widget
                 };
-                let row = editor_field(&input.label, &field);
+                let row = editor_field_data(&input.label, &field);
                 let source = if input.secret {
                     let existing = crate::secret_refs::source(&input.unknown_fields)
                         .ok()
@@ -11243,7 +11311,7 @@ fn open_server_editor_prefilled(
         l10n::bind_placeholder(&widget, "Optional working directory");
         widget
     };
-    let cwd_row = editor_field(&crate::i18n::tr("Working directory"), &cwd);
+    let cwd_row = editor_field(crate::i18n::msg("Working directory"), &cwd);
     let inherit_env = gtk::Switch::builder()
         .active(server.as_ref().is_some_and(|server| server.inherit_env))
         .valign(gtk::Align::Center)
@@ -11290,7 +11358,7 @@ fn open_server_editor_prefilled(
         .hexpand(true)
         .css_classes(["toolport-input"])
         .build();
-    let url_row = editor_field(&crate::i18n::tr("Server URL"), &url);
+    let url_row = editor_field(crate::i18n::msg("Server URL"), &url);
     connection.append(&url_row);
     test.set_halign(gtk::Align::End);
     connection.append(&test);
@@ -11329,7 +11397,11 @@ fn open_server_editor_prefilled(
     form.append(&credentials);
 
     if !editing {
-        let paste = gtk::Expander::new(Some("Start from a pasted config"));
+        let paste = {
+            let widget = gtk::Expander::new(None);
+            widget.set_label_widget(Some(&l10n::label("Start from a pasted config")));
+            widget
+        };
         paste.add_css_class("toolport-paste-expander");
         let paste_content = gtk::Box::new(gtk::Orientation::Vertical, 8);
         paste_content.set_margin_top(6);
@@ -11887,7 +11959,7 @@ fn save_launch_entries(
     Ok(registry)
 }
 
-fn editor_field(label: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
+fn editor_field_data(label: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Vertical, 6);
     row.append(
         &gtk::Label::builder()
@@ -11896,6 +11968,21 @@ fn editor_field(label: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
             .css_classes(["toolport-field-label"])
             .build(),
     );
+    row.append(child);
+    row
+}
+
+fn editor_field(label: &'static str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    row.append(&{
+        let widget = gtk::Label::builder()
+            .label(label)
+            .halign(gtk::Align::Start)
+            .css_classes(["toolport-field-label"])
+            .build();
+        l10n::bind_label(&widget, label);
+        widget
+    });
     row.append(child);
     row
 }
@@ -11985,7 +12072,7 @@ fn collect_server_fields(
     }
 }
 
-fn editor_intro(icon: &str, title: &str, subtitle: &str) -> gtk::Box {
+fn editor_intro(icon: &str, title: &'static str, subtitle: &'static str) -> gtk::Box {
     let intro = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     intro.add_css_class("toolport-editor-intro");
     let icon = gtk::Image::from_icon_name(icon);
@@ -11993,46 +12080,54 @@ fn editor_intro(icon: &str, title: &str, subtitle: &str) -> gtk::Box {
     intro.append(&icon);
     let copy = gtk::Box::new(gtk::Orientation::Vertical, 3);
     copy.set_hexpand(true);
-    copy.append(
-        &gtk::Label::builder()
+    copy.append(&{
+        let widget = gtk::Label::builder()
             .label(title)
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["title-2"])
-            .build(),
-    );
-    copy.append(
-        &gtk::Label::builder()
+            .build();
+        l10n::bind_label(&widget, title);
+        widget
+    });
+    copy.append(&{
+        let widget = gtk::Label::builder()
             .label(subtitle)
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["toolport-muted"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, subtitle);
+        widget
+    });
     intro.append(&copy);
     intro
 }
 
-fn section_heading(title: &str, subtitle: &str) -> gtk::Box {
+fn section_heading(title: &'static str, subtitle: &'static str) -> gtk::Box {
     let heading = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    heading.append(
-        &gtk::Label::builder()
+    heading.append(&{
+        let widget = gtk::Label::builder()
             .label(title)
             .halign(gtk::Align::Start)
             .css_classes(["toolport-section-label"])
-            .build(),
-    );
-    heading.append(
-        &gtk::Label::builder()
+            .build();
+        l10n::bind_label(&widget, title);
+        widget
+    });
+    heading.append(&{
+        let widget = gtk::Label::builder()
             .label(subtitle)
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
             .css_classes(["toolport-muted", "caption"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, subtitle);
+        widget
+    });
     heading
 }
 
@@ -12053,10 +12148,7 @@ type PlainEnvRows = std::rc::Rc<std::cell::RefCell<Vec<PlainEnvRow>>>;
 fn plain_env_section(values: &[state::PlainEnvView], personal: bool) -> (gtk::Box, PlainEnvRows) {
     let section = gtk::Box::new(gtk::Orientation::Vertical, 8);
     section.add_css_class("toolport-form-section");
-    section.append(&section_heading(
-        &crate::i18n::tr("Environment"),
-        &crate::i18n::tr("Plain settings the command reads, such as a region or a feature flag. Keys and tokens belong in Credentials."),
-    ));
+    section.append(&section_heading(crate::i18n::msg("Environment"), crate::i18n::msg("Plain settings the command reads, such as a region or a feature flag. Keys and tokens belong in Credentials.")));
     let list = gtk::Box::new(gtk::Orientation::Vertical, 8);
     section.append(&list);
     let rows: PlainEnvRows = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -12290,7 +12382,7 @@ fn confirm_remove_server(server_id: &str, server_name: &str, page: ServerPage) {
     dialog.present();
 }
 
-fn state_card(icon_name: &str, title: &str, body: &str, error: bool) -> gtk::Box {
+fn state_card(icon_name: &str, title: &'static str, body: &'static str, error: bool) -> gtk::Box {
     let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
     card.add_css_class("toolport-state-card");
     if error {
@@ -12300,23 +12392,43 @@ fn state_card(icon_name: &str, title: &str, body: &str, error: bool) -> gtk::Box
     icon.set_pixel_size(32);
     icon.add_css_class("toolport-state-icon");
     card.append(&icon);
-    card.append(
-        &gtk::Label::builder()
+    card.append(&{
+        let widget = gtk::Label::builder()
             .label(title)
             .wrap(true)
             .justify(gtk::Justification::Center)
             .css_classes(["heading"])
-            .build(),
-    );
-    card.append(
-        &gtk::Label::builder()
+            .build();
+        l10n::bind_label(&widget, title);
+        widget
+    });
+    card.append(&{
+        let widget = gtk::Label::builder()
             .label(body)
             .wrap(true)
             .justify(gtk::Justification::Center)
             .max_width_chars(52)
             .css_classes(["toolport-muted"])
-            .build(),
-    );
+            .build();
+        l10n::bind_label(&widget, body);
+        widget
+    });
+    card
+}
+
+fn state_card_formatted(
+    icon: &str,
+    title: &'static str,
+    source: &'static str,
+    values: &[(&str, &str)],
+    error: bool,
+) -> gtk::Box {
+    let card = state_card(icon, title, "", error);
+    let body = card
+        .last_child()
+        .and_downcast::<gtk::Label>()
+        .expect("state card body label");
+    l10n::bind_formatted_label(&body, source, values);
     card
 }
 

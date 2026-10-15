@@ -1369,7 +1369,7 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
         let dialog = gtk::FileDialog::builder()
             .title(tr("Choose a project folder"))
             .modal(true)
-            .accept_label("Choose")
+            .accept_label(tr("Choose"))
             .build();
         let page = self.clone();
         dialog.select_folder(Some(&parent), gtk::gio::Cancellable::NONE, move |result| {

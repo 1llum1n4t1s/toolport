@@ -362,6 +362,8 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
                     let entry = gtk::PasswordEntry::builder().show_peek_icon(true).build();
                     prompt.set_extra_child(Some(&entry));
                     prompt.add_responses(&[("cancel", "Cancel"), ("save", "Use for connection")]);
+                    l10n::bind_dialog_response(&prompt, "cancel", "Cancel");
+                    l10n::bind_dialog_response(&prompt, "save", "Use for connection");
                     prompt.set_response_appearance("save", adw::ResponseAppearance::Suggested);
                     prompt.set_default_response(Some("save"));
                     prompt.set_close_response("cancel");
@@ -369,7 +371,7 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
                     prompt.connect_response(None, move |_, response| {
                         if response == "save" && !entry.text().is_empty() {
                             inputs.borrow_mut().entry(name.clone()).or_default().insert(key.clone(), entry.text().to_string());
-                            value_row.set_subtitle("Ready for connection");
+                            value_row.set_subtitle(&crate::i18n::tr("Ready for connection"));
                             refresh();
                         }
                     });
