@@ -178,7 +178,6 @@ struct AdapterOptions<'a> {
     elicitation: bool,
 }
 
-
 fn spawn_adapter(dir: &Path, options: &AdapterOptions) -> AdapterClient {
     let index = NEXT.fetch_add(1, Ordering::Relaxed);
     let client_id = options

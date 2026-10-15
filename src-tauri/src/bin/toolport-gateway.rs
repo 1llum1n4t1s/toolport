@@ -29584,14 +29584,7 @@ mod tests {
 
         let listener_inflight = Arc::clone(&inflight);
         std::thread::spawn(move || {
-            serve_http_loop_with_inflight(
-                server,
-                state,
-                None,
-                search,
-                true,
-                listener_inflight,
-            )
+            serve_http_loop_with_inflight(server, state, None, search, true, listener_inflight)
         });
         std::thread::sleep(Duration::from_millis(50));
 
@@ -46539,7 +46532,11 @@ mod tests {
         let anonymous = probe(&state, None, false);
         assert_eq!(anonymous.status, 401, "body={}", anonymous.body);
         let registered_client = probe(&state, Some(&caller), false);
-        assert_eq!(registered_client.status, 401, "body={}", registered_client.body);
+        assert_eq!(
+            registered_client.status, 401,
+            "body={}",
+            registered_client.body
+        );
         let registered_topology = handle_http_with_headers(
             &state,
             &SearchGuard::default(),

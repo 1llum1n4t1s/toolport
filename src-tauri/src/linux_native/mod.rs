@@ -861,32 +861,35 @@ fn run_startup_maintenance() {
 }
 
 fn show_registry_startup_failure(app: &adw::Application, error: &str) {
-        if let Some(window) = app.active_window() { window.present(); return; }
-        let path = crate::registry::resolved_path()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "the Toolport data directory".to_string());
-        let window = adw::ApplicationWindow::builder()
-            .application(app)
-            .title("Toolport could not start safely")
-            .default_width(620)
-            .default_height(360)
-            .resizable(true)
-            .build();
-        let page = gtk::Box::new(gtk::Orientation::Vertical, 16);
-        page.set_margin_top(20);
-        page.set_margin_bottom(20);
-        page.set_margin_start(20);
-        page.set_margin_end(20);
-        page.append(
-            &gtk::Label::builder()
-                .label("Toolport could not start safely")
-                .halign(gtk::Align::Fill)
+    if let Some(window) = app.active_window() {
+        window.present();
+        return;
+    }
+    let path = crate::registry::resolved_path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "the Toolport data directory".to_string());
+    let window = adw::ApplicationWindow::builder()
+        .application(app)
+        .title("Toolport could not start safely")
+        .default_width(620)
+        .default_height(360)
+        .resizable(true)
+        .build();
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    page.set_margin_top(20);
+    page.set_margin_bottom(20);
+    page.set_margin_start(20);
+    page.set_margin_end(20);
+    page.append(
+        &gtk::Label::builder()
+            .label("Toolport could not start safely")
+            .halign(gtk::Align::Fill)
             .xalign(0.0)
-                .wrap(true)
-                .css_classes(["title-1"])
-                .build(),
-        );
-        page.append(
+            .wrap(true)
+            .css_classes(["title-1"])
+            .build(),
+    );
+    page.append(
             &gtk::Label::builder()
                 .label("The registry was not replaced. Close other Toolport processes and try again. If the problem continues, restore a registry backup or move the unreadable registry aside before reopening Toolport.")
                 .halign(gtk::Align::Fill)

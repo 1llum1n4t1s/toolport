@@ -701,6 +701,7 @@ fn http_client_memory_failure_does_not_stop_other_clients_and_scope_stays_enforc
             "script": "return toolport.call('s__echo', { text: 'denied' });"
         }),
     );
+    assert!(scoped.to_string().contains("Unknown tool:"), "{scoped}");
     assert!(
         scoped.to_string().contains("toolport_search_tools"),
         "{scoped}"

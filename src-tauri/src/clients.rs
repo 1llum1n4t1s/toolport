@@ -33,13 +33,13 @@ mod mutation;
 mod restore;
 pub(crate) use restore::after_capture_conflict as record_config_capture_conflict;
 pub(crate) use restore::after_rollback as record_config_rollback;
-mod zcode;
 #[cfg(test)]
 mod round3_tests;
 #[cfg(test)]
 mod round4_tests;
 #[cfg(test)]
 mod round5_tests;
+mod zcode;
 
 /// One MCP server, normalized across every client format.
 #[derive(Debug, Clone, Serialize)]
@@ -2944,7 +2944,9 @@ fn parse_json_snippet(
                 .get("command")
                 .is_some_and(|command| command.is_string() || command.is_array())
                 && !servers.get("url").is_some_and(serde_json::Value::is_string)
-                && !servers.get("type").is_some_and(serde_json::Value::is_string)
+                && !servers
+                    .get("type")
+                    .is_some_and(serde_json::Value::is_string)
                 && !servers
                     .get("enabled")
                     .is_some_and(serde_json::Value::is_boolean)
