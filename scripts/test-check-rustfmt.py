@@ -26,6 +26,42 @@ class ChangedFormatting(unittest.TestCase):
     def test_formatter_insertion_at_eof(self):
         self.assertEqual(check.format_edits("line\n", "line\n\n", {0}), [(1, 1, ["\n"])])
 
+    def test_fix_keeps_lines_rustfmt_moves(self):
+        # A stand-in formatter that sorts `use` lines, like rustfmt does.
+        def sort_uses(text):
+            lines = text.splitlines(keepends=True)
+            uses = sorted(line for line in lines if line.startswith("use "))
+            return "".join(uses + [line for line in lines if not line.startswith("use ")])
+
+        source = "use b;\nuse a;\nfn f() {}\n"
+        formatted = sort_uses(source)
+        fixed, whole = check.fix_source(source, formatted, {1}, sort_uses)
+        self.assertEqual(fixed, formatted)
+        self.assertTrue(whole)
+        self.assertEqual(sorted(fixed.splitlines()), sorted(source.splitlines()))
+
+    def test_fix_stays_partial_when_safe(self):
+        def squeeze(text):
+            return text.replace("  ", " ")
+
+        source = "old  bad\nkeep\nnew  bad\n"
+        fixed, whole = check.fix_source(source, squeeze(source), {2}, squeeze)
+        self.assertEqual(fixed, "old  bad\nkeep\nnew bad\n")
+        self.assertFalse(whole)
+
+    def test_fix_falls_back_when_partial_result_does_not_parse(self):
+        source = "use b;\nuse a;\nfn f() {}\n"
+        formatted = "use a;\nuse b;\nfn f() {}\n"
+
+        def rejects_partial(text):
+            if text != source:
+                raise check.subprocess.CalledProcessError(1, "rustfmt")
+            return formatted
+
+        fixed, whole = check.fix_source(source, formatted, {1}, rejects_partial)
+        self.assertEqual(fixed, formatted)
+        self.assertTrue(whole)
+
     def test_renames_keep_both_paths(self):
         status = "M\0src-tauri/a.rs\0R087\0src-tauri/old.rs\0src-tauri/new.rs\0A\0src-tauri/b.rs\0"
         self.assertEqual(
