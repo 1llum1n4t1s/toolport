@@ -1,3 +1,4 @@
+import { LANGUAGES, type LanguageChoice, useI18n } from "@/lib/i18n";
 import { type SettingsSubpage, SETTINGS_PAGES } from "@/lib/settingsPages";
 import { toast } from "sonner";
 import { useCallback, useEffect, useMemo, useState, useRef, type ReactNode } from "react";
@@ -988,7 +989,43 @@ export function SettingsView({
       </SectionHeading>
       {page === "general" && (
         <section className="settings-page flex flex-col gap-4" aria-label="general">
-          {toggle(
+          <div className="flex items-center gap-2.5 rounded-md border px-3 py-2.5 text-sm">
+          <Monitor className="size-4 shrink-0 text-info" />
+          <label
+            htmlFor="interface-language"
+            className="flex min-w-0 flex-1 flex-col leading-tight"
+          >
+            <span className="font-medium">{t("Language")}</span>
+            <span className="text-xs text-muted-foreground">
+              {t("Choose the language used in Toolport.")}
+            </span>
+          </label>
+          <select
+            id="interface-language"
+            value={language}
+            onChange={(event) => void setLanguage(event.target.value as LanguageChoice)}
+            aria-busy={languageLoading}
+            className="max-w-48 rounded-md border bg-background px-2 py-1.5 text-sm"
+          >
+            <option value="system">{t("System language")}</option>
+            {LANGUAGES.map(({ code, label }) => (
+              <option key={code} value={code}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </div>
+        {languageLoading && (
+          <p role="status" className="text-xs text-muted-foreground">
+            {t("Loading language…")}
+          </p>
+        )}
+        {languageError && (
+          <p role="alert" className="text-xs text-destructive">
+            {t("Couldn't load this language. Reload Toolport to retry.")}
+          </p>
+        )}
+        {toggle(
             Power,
             autostart.status === "ready" && autostart.enabled,
             "text-info",

@@ -23,10 +23,12 @@ if (!args.has("--headless")) {
   for (const name of [
     "format:check",
     "lint",
+    "check:locales",
     "build",
     "test",
     "bench:bundle",
     "smoke:browser",
+    "smoke:localization",
   ])
     runNpm(name);
 }
