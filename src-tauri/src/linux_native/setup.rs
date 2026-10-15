@@ -55,7 +55,7 @@ pub(super) fn review(
     title: &str,
     items: Vec<SetupItem>,
     disclosure: &str,
-    confirm_label: &str,
+    confirm_label: &'static str,
     require_credentials: bool,
     action: impl Fn(
             Vec<String>,
@@ -80,7 +80,9 @@ pub(super) fn review(
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
     let cancel = l10n::button("Cancel");
-    let confirm = gtk::Button::with_label(confirm_label);
+    // Keep action dispatch on the source key, independent of its translated label.
+    let confirm = l10n::button(confirm_label);
+    confirm.set_widget_name("toolport-setup-confirm");
     confirm.add_css_class("suggested-action");
     header.pack_start(&cancel);
     header.pack_end(&confirm);
@@ -670,7 +672,7 @@ pub(super) fn connect(
                     &crate::i18n::tr("Review and connect"),
                     preview.items,
                     &disclosure,
-                    &crate::i18n::tr("Connect to Toolport"),
+                    crate::i18n::msg("Connect to Toolport"),
                     true,
                     move |selected, choices, inputs| {
                         let outcome = crate::registry_controller::migrate_client_reviewed_inputs(
@@ -701,7 +703,7 @@ pub(super) fn connect(
                 &crate::i18n::tr("Could not review setup"),
                 Vec::new(),
                 &error,
-                &crate::i18n::tr("Close"),
+                crate::i18n::msg("Close"),
                 false,
                 |_, _, _| Err(crate::i18n::tr("Fix the client config and retry.")),
                 || {},
@@ -712,7 +714,7 @@ pub(super) fn connect(
                 &crate::i18n::tr("Could not review setup"),
                 Vec::new(),
                 &crate::i18n::tr("Client review stopped."),
-                &crate::i18n::tr("Close"),
+                crate::i18n::msg("Close"),
                 false,
                 |_, _, _| Err(crate::i18n::tr("Retry from Clients.")),
                 || {},
@@ -745,30 +747,50 @@ mod tests {
     #[ignore = "requires isolated GTK display"]
     fn close_action_closes_review_error() {
         adw::init().unwrap();
-        let parent = gtk::Window::new();
-        review(
-            &parent,
-            "Could not review setup",
-            Vec::new(),
-            "Invalid fixture config",
-            "Close",
-            false,
-            |_, _, _| Err("not an import".into()),
-            || {},
-            None,
-        );
-        let window = review_window();
-        assert!(descendants(window.upcast_ref())
-            .iter()
-            .filter(|w| w.is::<gtk::Expander>())
-            .all(|w| w.has_css_class("toolport-details-expander")));
-        let button = descendants(window.upcast_ref())
-            .into_iter()
-            .filter_map(|w| w.downcast::<gtk::Button>().ok())
-            .find(|b| b.label().as_deref() == Some("Close"))
-            .unwrap();
-        button.emit_clicked();
-        assert!(!window.is_visible(), "Close must close the error dialog");
+        let _lock = crate::registry::data_dir_test_lock();
+        let scratch = std::env::temp_dir().join(format!(
+            "toolport-setup-close-regression-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _data = crate::registry::DataDirOverride::set(&scratch);
+        let previous = crate::i18n::language();
+        for language in ["en", "de", "ja"] {
+            crate::i18n::set_language(language).unwrap();
+            let parent = gtk::Window::new();
+            review(
+                &parent,
+                "Could not review setup",
+                Vec::new(),
+                "Invalid fixture config",
+                crate::i18n::msg("Close"),
+                false,
+                |_, _, _| Err("not an import".into()),
+                || {},
+                None,
+            );
+            let window = review_window();
+            assert!(descendants(window.upcast_ref())
+                .iter()
+                .filter(|w| w.is::<gtk::Expander>())
+                .all(|w| w.has_css_class("toolport-details-expander")));
+            let button = descendants(window.upcast_ref())
+                .into_iter()
+                .filter_map(|w| w.downcast::<gtk::Button>().ok())
+                .find(|b| b.widget_name() == "toolport-setup-confirm")
+                .unwrap();
+            assert_eq!(
+                button.label().as_deref(),
+                Some(crate::i18n::tr("Close").as_str())
+            );
+            button.emit_clicked();
+            assert!(
+                !window.is_visible(),
+                "Close must close the {language} error dialog"
+            );
+        }
+        crate::i18n::set_language(&previous).unwrap();
+        std::fs::remove_dir_all(scratch).unwrap();
     }
 
     #[test]

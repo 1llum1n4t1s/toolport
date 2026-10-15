@@ -2647,7 +2647,7 @@ impl ClientPage {
         let page = self.clone();
         setup::review(&parent, &crate::i18n::tr("Review servers to import"), items,
             &crate::i18n::tr("Review each command and URL. Values are saved using your keychain choices. Missing inputs stay off."),
-            &crate::i18n::tr("Import selected servers"), false, move |selected, choices, inputs| {
+            crate::i18n::msg("Import selected servers"), false, move |selected, choices, inputs| {
                 let (registry, added) = crate::registry_controller::import_client_servers_inputs(selected, &choices, &inputs)?;
                 let missing = registry.servers.iter().filter(|server| !server.enabled && server.source.as_deref().is_some_and(|source| source.starts_with("imported:"))).map(|server| server.name.clone()).collect::<Vec<_>>();
                 let message = if missing.is_empty() { crate::i18n::trf("Imported {value0} servers. Check their status under Servers.", &[("value0", &format!("{}", added))]) } else { crate::i18n::trf("Imported {value0} servers. Needs input: {value1}", &[("value0", &format!("{}", added)), ("value1", &missing.join(", ").to_string())]) };
@@ -11603,7 +11603,7 @@ fn open_server_editor_prefilled(
                         let Some(parent) = fill.root().and_downcast::<gtk::Window>() else { return; };
                         // Snippets have no launch metadata; Import::prepare requires every env key.
                         let items = servers.iter().enumerate().map(|(i, s)| crate::registry_controller::SetupItem {key:i.to_string(),name:s.name.clone(),transport:s.transport.clone(),command:s.command.clone(),args:s.args.clone(),url:s.url.clone(),env_keys:s.env.iter().map(|e| e.key.clone()).collect(),is_new:true,credentials:s.env.iter().map(|e|crate::registry_controller::CredentialReview{key:e.key.clone(),secret:crate::import_credentials::secret_env(&e.key,e.value.as_deref()),present:e.value.as_deref().is_some_and(crate::import_credentials::provided),required:true}).collect(),updates:Vec::new(),unsupported:None}).collect();
-                        setup::review(&parent, &crate::i18n::tr("Review pasted servers"), items, &crate::i18n::tr("Review each command and URL. Credentials go to the keychain. Missing inputs stay off."), &crate::i18n::tr("Add selected servers"), false, move |selected,choices,inputs| {
+                        setup::review(&parent, &crate::i18n::tr("Review pasted servers"), items, &crate::i18n::tr("Review each command and URL. Credentials go to the keychain. Missing inputs stay off."), crate::i18n::msg("Add selected servers"), false, move |selected,choices,inputs| {
                             let outcome = crate::registry_controller::add_snippet_servers_inputs(&text, &selected, &choices, &inputs)?;
                             if !outcome.failed.is_empty() { return Err(crate::i18n::tr("Could not save credentials. Open Credentials and retry.")); }
                             Ok(outcome.servers.iter().map(|s|format!("{}: {}",s.name,s.status)).collect::<Vec<_>>().join("\n").into())
