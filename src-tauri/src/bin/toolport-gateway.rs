@@ -28498,7 +28498,6 @@ mod tests {
         assert!(explicit_on.code_mode);
     }
 
-
     /// A failed registry load must not advertise or run Code Mode, even when
     /// a later request snapshot contains an explicit opt-in.
     #[test]
