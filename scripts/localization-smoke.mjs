@@ -227,6 +227,10 @@ try {
     await expect(page.locator("html")).toHaveAttribute("lang", language);
     await expect(page.getByText("GitHub", { exact: true }).first()).toBeVisible();
     await noEnglishPaint(language);
+    await expect(page.locator(".sidebar-savings")).toContainText(
+      text(language, "tokens saved"),
+    );
+    await expect(page.locator(".sidebar-savings")).toContainText("35.0k");
     await page.screenshot({ path: path.join(output, `${language}-main.png`) });
     await page
       .getByRole("button", { name: text(language, "Settings"), exact: true })
@@ -236,6 +240,13 @@ try {
     await page
       .getByRole("button", { name: text(language, "Activity"), exact: true })
       .click();
+    // Wait for the actual fixture savings panel, not the loading skeleton.
+    await expect(
+      page.getByText(text(language, "net tokens saved"), { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText(text(language, "net tokens saved"), { exact: true }).locator(".."),
+    ).toContainText("35.0k");
     await page.screenshot({ path: path.join(output, `${language}-activity.png`) });
     expect(await page.evaluate(() => window.toolportFixture.missing)).toEqual([]);
     for (const query of ["teams-review", "personal-sync=trial"]) {

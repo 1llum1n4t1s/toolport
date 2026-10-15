@@ -3,6 +3,7 @@ import test from "node:test";
 import ts from "typescript";
 import {
   checkCatalogs,
+  checkMessageIntegrity,
   checkRustSource,
   checkSource,
   isMarkedType,
@@ -178,4 +179,57 @@ test("Rust comments, string contents and function declarations are not translati
   const source =
     '// tr("Missing")\n/* nested /* tr("Missing") */ comment */\nconst DEMO: &str = r###"tr("Missing")"###; fn tr(message: &str) {}';
   assert.deepEqual(checkRustSource(source, "native.rs", messages), []);
+});
+
+test("message boundaries preserve intentional source whitespace", () => {
+  assert.deepEqual(checkMessageIntegrity(" Hello\n", " Bonjour\n"), []);
+  for (const [key, value] of [
+    ["Hello", " Bonjour"],
+    ["Hello", "Bonjour "],
+    [" Hello", "Bonjour"],
+    ["Hello\n", "Bonjour "],
+  ])
+    assert.match(checkMessageIntegrity(key, value).join("\n"), /whitespace mismatch/);
+});
+
+test("versions, URLs, code, paths and protocol methods survive translation verbatim", () => {
+  const samples = [
+    ["Toolport v{version}", "Toolport gegen {version}"],
+    ["Open https://example.com/mcp.", "Ouvrir https://example.fr/mcp."],
+    ["Use `npm run start`", "Utiliser `npm commencer`"],
+    ["Choose ~/projects/my-app", "Choisir ~/projets/mon-app"],
+    ["Use /path/to/project", "Utiliser /chemin/vers/projet"],
+    ["Run ./<file>.deb", "Lancer ./<fichier>.deb"],
+    ["Read tools/list twice: tools/list", "Lire tools/list"],
+    ["Open https://example.com/mcp", "Ouvrir https://example.com/mcp-renamed"],
+    ["Use ~/project", "Utiliser ~/project-copy"],
+    ["Toolport v{version}", "Toolport vv{version}"],
+    ['Run "/Applications/My App.app/tool"', 'Lancer "/Applications/My App.app/outil"'],
+  ];
+  for (const [key, value] of samples)
+    assert.match(
+      checkMessageIntegrity(key, value).join("\n"),
+      /changed technical literal/,
+      key,
+    );
+  assert.deepEqual(
+    checkMessageIntegrity(
+      "Open https://example.com/mcp.",
+      "Ouvrir https://example.com/mcp。",
+    ),
+    [],
+  );
+  assert.deepEqual(checkMessageIntegrity("Ready v{version}", "v{version} prêt"), []);
+});
+
+test("LLM token terms cannot become crypto coins or auth tokens", () => {
+  for (const word of ["代币", "代幣", "權杖", "权杖", "令牌"])
+    assert.match(
+      checkMessageIntegrity("Net tokens saved", word).join("\n"),
+      /banned LLM-token/,
+    );
+  assert.deepEqual(checkMessageIntegrity("Bearer token", "持有者令牌"), []);
+  assert.deepEqual(checkMessageIntegrity("Access token", "存取權杖"), []);
+  assert.deepEqual(checkMessageIntegrity("Saved auth token", "已保存认证令牌"), []);
+  assert.deepEqual(checkMessageIntegrity("Tokens saved", "節省的 Token"), []);
 });

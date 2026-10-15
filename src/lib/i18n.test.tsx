@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 
 const backend = vi.hoisted(() => ({
@@ -18,6 +18,8 @@ beforeEach(() => {
   vi.doUnmock("../locales/de");
 });
 
+afterEach(() => vi.useRealTimers());
+
 describe("machine language bootstrap", () => {
   it("loads the authoritative saved dictionary before bootstrap resolves", async () => {
     localStorage.setItem("toolport-language", "en");
@@ -29,6 +31,72 @@ describe("machine language bootstrap", () => {
     expect(i18n.getLocale()).toBe("ja");
     expect(document.documentElement.lang).toBe("ja");
     expect(localStorage.getItem("toolport-language")).toBe("ja");
+  });
+
+  it("finishes startup after the deadline when settings IPC never settles", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem("toolport-language", "en");
+    backend.getUiLanguage.mockReturnValue(new Promise(() => {}));
+    const i18n = await import("./i18n");
+    let mounted = false;
+    const startup = i18n.initializeLanguage().then(() => {
+      mounted = true;
+    });
+    await vi.advanceTimersByTimeAsync(1499);
+    expect(mounted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await startup;
+    expect(mounted).toBe(true);
+    expect(i18n.getLocale()).toBe("en");
+    expect(i18n.translate("Language")).toBe("Language");
+    expect(backend.getUiLanguage).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies a late authoritative response after mounting the cached dictionary", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem("toolport-language", "en");
+    let reply!: (language: string) => void;
+    backend.getUiLanguage.mockReturnValue(
+      new Promise((resolve) => {
+        reply = resolve;
+      }),
+    );
+    vi.doMock("../locales/ja", () => ({ default: { Language: "日本語" } }));
+    const i18n = await import("./i18n");
+    const startup = i18n.initializeLanguage();
+    await vi.advanceTimersByTimeAsync(1500);
+    await startup;
+    expect(i18n.getLocale()).toBe("en");
+    vi.useRealTimers();
+    reply("ja");
+    await vi.waitFor(() => expect(i18n.getLocale()).toBe("ja"));
+    expect(i18n.translate("Language")).toBe("日本語");
+    expect(localStorage.getItem("toolport-language")).toBe("ja");
+  });
+
+  it("ignores a late startup response after the user chooses another language", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem("toolport-language", "en");
+    let reply!: (language: string) => void;
+    backend.getUiLanguage.mockReturnValue(
+      new Promise((resolve) => {
+        reply = resolve;
+      }),
+    );
+    vi.doMock("../locales/ja", () => ({ default: { Language: "日本語" } }));
+    vi.doMock("../locales/de", () => ({ default: { Language: "Sprache" } }));
+    const i18n = await import("./i18n");
+    const startup = i18n.initializeLanguage();
+    await vi.advanceTimersByTimeAsync(1500);
+    await startup;
+    vi.useRealTimers();
+    await i18n.setLanguage("de");
+    reply("ja");
+    await vi.dynamicImportSettled();
+    expect(i18n.getLocale()).toBe("de");
+    expect(i18n.translate("Language")).toBe("Sprache");
+    expect(localStorage.getItem("toolport-language")).toBe("de");
+    expect(backend.setUiLanguage.mock.calls).toEqual([["de"]]);
   });
 
   it("loads the system dictionary before bootstrap resolves", async () => {

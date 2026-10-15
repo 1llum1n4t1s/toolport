@@ -167,18 +167,39 @@ async function applyLanguage(
 /** Resolve machine settings and its dictionary before mounting any UI. */
 export async function initializeLanguage(): Promise<void> {
   const request = ++generation;
-  let language = readLanguage();
-  let saveError = false;
-  try {
-    const saved = await getUiLanguage();
-    if (!isLanguageChoice(saved)) throw new Error("Invalid language setting");
-    language = saved;
-    if (request === generation) cacheLanguage(language);
-  } catch {
-    // Keep cached startup usable, while exposing that settings could not be read.
-    saveError = true;
+  const cached = readLanguage();
+  const response = Promise.resolve()
+    .then(getUiLanguage)
+    .then((saved) => {
+      if (!isLanguageChoice(saved)) throw new Error("Invalid language setting");
+      return saved;
+    });
+  const answer = response.then(
+    (language) => ({ kind: "saved" as const, language }),
+    () => ({ kind: "failed" as const }),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<{ kind: "timeout" }>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "timeout" }), 1500);
+  });
+  const result = await Promise.race([answer, deadline]);
+  clearTimeout(timer);
+  if (result.kind === "saved") {
+    if (request === generation) cacheLanguage(result.language);
+    await applyLanguage(result.language, request);
+    return;
   }
-  await applyLanguage(language, request, saveError);
+  if (result.kind === "timeout") {
+    // Keep the late authoritative reply useful, but a selection made after
+    // bootstrap takes precedence. A new generation also cancels cached loads.
+    void answer.then(async (late) => {
+      if (late.kind !== "saved" || request !== generation) return;
+      const latest = ++generation;
+      cacheLanguage(late.language);
+      await applyLanguage(late.language, latest);
+    });
+  }
+  await applyLanguage(cached, request, true);
 }
 
 export async function setLanguage(language: LanguageChoice): Promise<void> {

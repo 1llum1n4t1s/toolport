@@ -28,6 +28,80 @@ const placeholders = (value) =>
     .sort()
     .join(",");
 
+// Auth tokens are credentials; all other token messages describe model usage.
+export function isLlmTokenMessage(key) {
+  if (!/\btokens?\b/i.test(key)) return false;
+  if (
+    /tokens saved|savings|baseline|estimate|schemas?|agent context|fewer tokens|model searched/i.test(
+      key,
+    )
+  )
+    return true;
+  return (
+    !/^(Token|Copy token|New token|Hide token|Show token|Remove token|Store token|Paste a new token|Copy this token now|Copy this token now, it won't be shown again\.|Reveal token)$/i.test(
+      key.trim(),
+    ) &&
+    !/auth|bearer|access token|sign-in|keychain|credential|private|clipboard|copied|copy the|token endpoint|HTTP (endpoint|client) token|team token|each gets|disconnect this token|token removal|token update|paste|storing|browser|provider|requests? a token|get a token/i.test(
+      key,
+    )
+  );
+}
+
+// Extract only technical literals, not ordinary prose containing a slash.
+export function protectedLiterals(key) {
+  const patterns = [
+    /v\{[a-zA-Z][a-zA-Z0-9_]*\}/g,
+    /`[^`]+`/g,
+    /(?<=")(?:\/|~\/|[A-Za-z]:\\)[^"]+(?=")/g,
+    /\btoolport\.app(?:\/[^\s"']*)?/g,
+    /https?:\/\/[^\s<>"']*/g,
+    /(?:~\/|\.\/|\/[A-Za-z][A-Za-z0-9_.-]*\/|[A-Za-z]:\\)[^\s"']*/g,
+    /\b(?:tools|resources|prompts)\/[a-z_]+\b/g,
+  ];
+  return [
+    ...new Set(
+      patterns.flatMap((pattern) =>
+        [...key.matchAll(pattern)].map((match) => match[0].replace(/[.,;:!?)]*$/, "")),
+      ),
+    ),
+  ].filter(Boolean);
+}
+
+export function checkMessageIntegrity(key, value) {
+  const errors = [];
+  const edges = (text) => [text.match(/^\s*/u)[0], text.match(/\s*$/u)[0]];
+  if (JSON.stringify(edges(key)) !== JSON.stringify(edges(value)))
+    errors.push("whitespace mismatch");
+  if (placeholders(key) !== placeholders(value)) errors.push("invalid placeholders");
+  for (const literal of protectedLiterals(key)) {
+    // A preserved prefix is not the same URL/path (example.com.evil or
+    // ~/project-renamed). Protocol-only examples deliberately allow a suffix.
+    const count = (text) => {
+      let total = 0;
+      for (
+        let at = text.indexOf(literal);
+        at !== -1;
+        at = text.indexOf(literal, at + literal.length)
+      ) {
+        const after = text.slice(at + literal.length);
+        const extended =
+          !literal.startsWith("`") &&
+          !literal.endsWith("://") &&
+          !/^(?:tools|resources|prompts)\//.test(literal) &&
+          /^(?:[A-Za-z0-9_/~\\<>@%+?=#&:-]|\.[A-Za-z0-9])/u.test(after);
+        const prefixedVersion =
+          /^v\{/.test(literal) && /[A-Za-z0-9_]$/.test(text.slice(0, at));
+        if (!extended && !prefixedVersion) total++;
+      }
+      return total;
+    };
+    if (count(key) !== count(value)) errors.push(`changed technical literal ${literal}`);
+  }
+  if (isLlmTokenMessage(key) && /代币|代幣|權杖|权杖|令牌/u.test(value))
+    errors.push("banned LLM-token term");
+  return errors;
+}
+
 export function parseCatalog(source, name, errors) {
   const tree = ts.parseJsonText(name, source);
   const seen = new Set();
@@ -83,8 +157,10 @@ export function checkCatalogs(catalogs, localeNames = languages, groupNames = gr
             errors.push(`${group}/en: source and value must match: ${key}`);
         } else if (!Object.hasOwn(english, key)) {
           errors.push(`${group}/${language}: unknown key ${key}`);
-        } else if (placeholders(key) !== placeholders(value)) {
-          errors.push(`${group}/${language}: invalid placeholders in ${key}`);
+        }
+        if (language !== "en") {
+          for (const error of checkMessageIntegrity(key, value))
+            errors.push(`${group}/${language}: ${error} in ${key}`);
         }
       }
       for (const key of Object.keys(english)) {

@@ -38,13 +38,17 @@ use crate::teams;
 use crate::vendors;
 
 #[tauri::command]
-fn get_ui_language() -> Result<String, String> {
-    crate::ui_settings::language()
+async fn get_ui_language() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(crate::ui_settings::language)
+        .await
+        .map_err(|error| format!("language settings worker failed: {error}"))?
 }
 
 #[tauri::command]
-fn set_ui_language(language: String) -> Result<(), String> {
-    crate::ui_settings::set_language(&language)
+async fn set_ui_language(language: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::ui_settings::set_language(&language))
+        .await
+        .map_err(|error| format!("language settings worker failed: {error}"))?
 }
 
 type RegistryState = Mutex<Registry>;
