@@ -30,6 +30,25 @@ def format_edits(source, formatted, changed):
     return edits
 
 
+def fix_source(source, formatted, changed, rustfmt):
+    """Apply only the affected edits, unless that would lose or duplicate code.
+
+    rustfmt can move a line (sorting `use` or `mod` items), which difflib shows
+    as a deletion in one hunk and an insertion in another. Applying only the half
+    that touches a changed line would drop or duplicate it. A correct partial
+    format still formats to the same result as the original, so check that and
+    format the whole file otherwise. Returns the new text and whether the whole
+    file was used.
+    """
+    lines = source.splitlines(keepends=True)
+    for first, last, replacement in reversed(format_edits(source, formatted, changed)):
+        lines[first:last] = replacement
+    patched = "".join(lines)
+    if rustfmt(patched) == formatted:
+        return patched, False
+    return formatted, True
+
+
 def changed_files(status):
     """Parse `git diff --name-status -z`; renames and copies keep (old, new) paths."""
     fields = [field for field in status.split("\0") if field]
@@ -40,6 +59,12 @@ def changed_files(status):
         files.append(tuple(fields[:count]))
         del fields[:count]
     return files
+
+
+def rustfmt(source):
+    return subprocess.check_output(
+        ["rustfmt", "--edition", "2021", "--emit", "stdout"], input=source, text=True
+    )
 
 
 def resolve_base(base):
@@ -80,20 +105,17 @@ def main():
             continue
         checked += 1
         source = Path(name).read_text()
-        formatted = subprocess.check_output(
-            ["rustfmt", "--edition", "2021", "--emit", "stdout"],
-            input=source,
-            text=True,
-        )
+        formatted = rustfmt(source)
         edits = format_edits(source, formatted, changed)
         if not edits:
             continue
         if args.fix:
-            lines = source.splitlines(keepends=True)
-            for first, last, replacement in reversed(edits):
-                lines[first:last] = replacement
-            Path(name).write_text("".join(lines))
-            print(f"Formatted changed hunks: {name}")
+            fixed, whole = fix_source(source, formatted, changed, rustfmt)
+            Path(name).write_text(fixed)
+            if whole:
+                print(f"Formatted the whole file, rustfmt moved lines across hunks: {name}")
+            else:
+                print(f"Formatted changed hunks: {name}")
         else:
             failed = True
             for first, _, _ in edits:
