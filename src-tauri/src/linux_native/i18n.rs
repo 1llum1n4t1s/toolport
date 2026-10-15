@@ -481,9 +481,18 @@ pub(super) fn bind_language_choices(widget: &gtk::DropDown) {
                 })
                 .collect();
             let refs: Vec<_> = values.iter().map(String::as_str).collect();
-            let model = gtk::StringList::new(&refs);
-            widget.set_model(Some(&model));
-            widget.set_selected(selected);
+            // Keep the popup's selection model stable while its selected
+            // notification is being handled. Only System needs retranslation.
+            if let Some(model) = widget.model().and_downcast::<gtk::StringList>() {
+                if model.string(0).as_deref() != Some(refs[0]) {
+                    model.splice(0, 1, &[refs[0]]);
+                }
+            } else {
+                widget.set_model(Some(&gtk::StringList::new(&refs)));
+            }
+            if widget.selected() != selected {
+                widget.set_selected(selected);
+            }
             drop(notifications);
             true
         }),
