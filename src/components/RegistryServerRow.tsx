@@ -22,7 +22,7 @@ import type { ProbeResult, Registry, ServerEntry } from "@/lib/types";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { LazySecretsDialog as SecretsDialog } from "@/components/LazySecretsDialog";
-import { ServerDialog } from "@/components/ServerDialog";
+import { LazyServerDialog as ServerDialog } from "@/components/LazyServerDialog";
 import { LaunchSetupDialog } from "@/components/LaunchSetupDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ServerLogo } from "@/components/ServerLogo";

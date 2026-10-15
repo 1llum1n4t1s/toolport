@@ -62,7 +62,7 @@ import { PendingApprovals } from "@/components/PendingApprovals";
 import { TeamPairingDialog } from "@/components/TeamPairingDialog";
 import { QuarantineAlert } from "@/components/QuarantineAlert";
 import { RegistryServerRow } from "@/components/RegistryServerRow";
-import { ServerDialog } from "@/components/ServerDialog";
+import { LazyServerDialog as ServerDialog } from "@/components/LazyServerDialog";
 import { ImportReviewDialog } from "@/components/ImportReviewDialog";
 
 // Secondary destinations are code-split so the initial bundle only carries the
