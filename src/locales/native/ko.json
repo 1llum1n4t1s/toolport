@@ -286,6 +286,7 @@
   "Everything is included unless you uncheck it.": "체크를 해제하지 않는 한 모든 것이 포함되어 있습니다.",
   "Expand to load definition.": "정의를 로드하려면 확장하세요.",
   "Expand to review the changed tools": "확장하여 변경된 도구를 검토하세요.",
+  "Export": "내보내기",
   "Export CSV": "CSV 내보내기",
   "Export JSON": "JSON 내보내기",
   "Export Toolport setup": "Toolport 설정 내보내기",

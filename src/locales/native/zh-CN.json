@@ -286,6 +286,7 @@
   "Everything is included unless you uncheck it.": "除非您取消选中它，否则一切都包括在内。",
   "Expand to load definition.": "展开以加载定义。",
   "Expand to review the changed tools": "展开以查看更改的工具",
+  "Export": "导出",
   "Export CSV": "导出 CSV",
   "Export JSON": "导出 JSON",
   "Export Toolport setup": "导出Toolport设置",

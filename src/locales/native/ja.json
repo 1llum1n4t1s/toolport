@@ -286,6 +286,7 @@
   "Everything is included unless you uncheck it.": "チェックを外さない限り、すべてが含まれます。",
   "Expand to load definition.": "展開して定義を読み込む。",
   "Expand to review the changed tools": "展開して変更されたツールを確認します",
+  "Export": "エクスポート",
   "Export CSV": "CSVのエクスポート",
   "Export JSON": "エクスポート JSON",
   "Export Toolport setup": "Toolport セットアップをエクスポート",

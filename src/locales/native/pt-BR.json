@@ -286,6 +286,7 @@
   "Everything is included unless you uncheck it.": "Tudo está incluído, a menos que você desmarque.",
   "Expand to load definition.": "Expanda para carregar a definição.",
   "Expand to review the changed tools": "Expanda para revisar as ferramentas alteradas",
+  "Export": "Exportar",
   "Export CSV": "Exportar CSV",
   "Export JSON": "Exportar JSON",
   "Export Toolport setup": "Exportar configuração Toolport",
