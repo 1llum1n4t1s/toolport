@@ -682,6 +682,64 @@ fn opencode_wildcards_decide_state_and_writes_never_widen_a_blanket_rule() {
 }
 
 #[test]
+fn opencode_permission_shorthand_is_spelled_out_not_refused() {
+    // `"permission": "allow"` is what OpenCode writes for "allow everything".
+    let mut config = serde_json::json!({"permission": "allow", "mcp": {}});
+    opencode_toggle(&mut config, "orca-cli", true).unwrap();
+    assert_eq!(
+        config,
+        serde_json::json!({
+            "permission": {"*": "allow", "skill": {"orca-cli": "deny"}},
+            "mcp": {}
+        })
+    );
+    assert_eq!(
+        opencode_denied(&config),
+        BTreeSet::from(["orca-cli".to_string()])
+    );
+    // A blanket deny turns every skill off; turning one back on adds an explicit allow.
+    let mut deny_all = serde_json::json!({"permission": "deny"});
+    assert!(rules_deny(&opencode_rules(&deny_all), "inbox"));
+    opencode_toggle(&mut deny_all, "inbox", false).unwrap();
+    assert!(!rules_deny(&opencode_rules(&deny_all), "inbox"));
+    assert!(rules_deny(&opencode_rules(&deny_all), "other"));
+    // v2 all-actions rules reach skills only when they cover every resource.
+    let v2 = serde_json::json!({"permissions": [
+        {"action": "*", "resource": "*", "effect": "deny"},
+        {"action": "*", "resource": "inbox", "effect": "allow"}
+    ]});
+    assert!(rules_deny(&opencode_rules(&v2), "inbox"));
+}
+
+#[test]
+fn opencode_permission_shorthand_scans_and_toggles_end_to_end() {
+    let home = Home::new();
+    home.skill(".agents/skills/inbox", "inbox", "Inbox");
+    home.write(
+        ".config/opencode/opencode.json",
+        r#"{"permission": "allow", "mcp": {"toolport": {"type": "local"}}}"#,
+    );
+    let inv = scan(&home.env(), &only(&["opencode"]), None);
+    assert_eq!(state(&inv, "inbox", "opencode"), Some(State::On));
+    let key = skill(&inv, "inbox").key.clone();
+    set_state(
+        &home.env(),
+        &inv,
+        "opencode",
+        &key,
+        Wanted::Off,
+        &TestWriter::default(),
+    )
+    .unwrap();
+    let inv = scan(&home.env(), &only(&["opencode"]), None);
+    assert_eq!(state(&inv, "inbox", "opencode"), Some(State::Off));
+    let saved: serde_json::Value =
+        serde_json::from_str(&home.read(".config/opencode/opencode.json")).unwrap();
+    assert_eq!(saved["permission"]["*"], "allow");
+    assert_eq!(saved["mcp"]["toolport"]["type"], "local");
+}
+
+#[test]
 fn opencode_wildcard_deny_shows_skills_off() {
     let home = Home::new();
     home.skill(".agents/skills/inbox", "inbox", "Inbox");

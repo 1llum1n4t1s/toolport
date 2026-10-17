@@ -976,25 +976,39 @@ fn read_disabled(switch: Switch, env: &Env) -> Disabled {
 /// pattern.
 fn opencode_rules(config: &serde_json::Value) -> Vec<(String, bool)> {
     let mut rules = Vec::new();
-    if let Some(map) = config
-        .get("permission")
-        .and_then(|p| p.get("skill"))
-        .and_then(|s| s.as_object())
-    {
-        let entry = |(name, effect): (&String, &serde_json::Value)| {
-            (name.clone(), effect.as_str() == Some("deny"))
-        };
-        rules.extend(map.iter().filter(|(n, _)| n.contains('*')).map(entry));
-        rules.extend(map.iter().filter(|(n, _)| !n.contains('*')).map(entry));
+    let deny = |effect: &serde_json::Value| effect.as_str() == Some("deny");
+    // v1: `"permission": "deny"` covers every tool; in an object, `"*"` and `"skill"` apply in
+    // the order written, then named skills. OpenCode 2 reads v1 files the same way.
+    match config.get("permission") {
+        Some(all @ serde_json::Value::String(_)) => rules.push(("*".into(), deny(all))),
+        Some(serde_json::Value::Object(permission)) => {
+            for (key, value) in permission {
+                match (key.as_str(), value) {
+                    ("*" | "skill", serde_json::Value::String(_)) => {
+                        rules.push(("*".into(), deny(value)))
+                    }
+                    ("skill", serde_json::Value::Object(map)) => {
+                        let entry = |(name, effect): (&String, &serde_json::Value)| {
+                            (name.clone(), deny(effect))
+                        };
+                        rules.extend(map.iter().filter(|(n, _)| n.contains('*')).map(entry));
+                        rules.extend(map.iter().filter(|(n, _)| !n.contains('*')).map(entry));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
     }
     if let Some(list) = config.get("permissions").and_then(|p| p.as_array()) {
         for rule in list {
-            if rule.get("action").and_then(|a| a.as_str()) != Some("skill") {
+            let action = rule.get("action").and_then(|a| a.as_str());
+            let Some(resource) = rule.get("resource").and_then(|r| r.as_str()) else {
                 continue;
-            }
-            if let Some(resource) = rule.get("resource").and_then(|r| r.as_str()) {
-                let deny = rule.get("effect").and_then(|e| e.as_str()) == Some("deny");
-                rules.push((resource.to_string(), deny));
+            };
+            // An all-actions rule only reaches skills when it covers every resource.
+            if action == Some("skill") || (action == Some("*") && resource == "*") {
+                rules.push((resource.to_string(), rule.get("effect").is_some_and(deny)));
             }
         }
     }
@@ -1397,7 +1411,7 @@ fn switch_place(switch: Switch) -> &'static str {
         Switch::ClaudeOverrides => "skillOverrides",
         Switch::CodexConfig => "config.toml",
         Switch::CopilotSettings => "disabledSkills",
-        Switch::OpencodePermissions => "permissions",
+        Switch::OpencodePermissions => "opencode.json",
         Switch::HermesConfig => "config.yaml",
         Switch::GeminiSettings => "settings.json",
         Switch::None(_) => "settings",
@@ -2485,12 +2499,18 @@ fn opencode_toggle(
     // string such as `"skill": "deny"` covers every skill, so it is refused, not replaced.
     let v1 = root.get("permission").is_some() && root.get("permissions").is_none();
     if v1 {
+        // `"permission": "allow"` is shorthand for every tool. Spell it out as `"*"` so a skill
+        // rule can follow it; OpenCode reads the two the same way.
+        if let Some(all) = root
+            .get("permission")
+            .and_then(|p| p.as_str())
+            .map(str::to_string)
+        {
+            root["permission"] = serde_json::json!({ "*": all });
+        }
+        object_at(root, &["permission", "skill"])?.remove(name);
+        let still_denied = rules_deny(&opencode_rules(root), name);
         let map = object_at(root, &["permission", "skill"])?;
-        map.remove(name);
-        let still_denied = rules_deny(
-            &opencode_rules(&serde_json::json!({"permission": {"skill": map.clone()}})),
-            name,
-        );
         if off {
             map.insert(name.into(), "deny".into());
         } else if still_denied {
