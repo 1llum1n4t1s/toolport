@@ -503,7 +503,10 @@ mod tests {
             Some("claude-code")
         );
         let broken = clients[2].claude_profile.as_ref().unwrap();
-        assert_eq!(broken.folder, "~/.claude2");
+        assert_eq!(
+            broken.folder,
+            format!("~{}.claude2", std::path::MAIN_SEPARATOR)
+        );
         assert_eq!(broken.account, None);
 
         // The default and its copy alone: one profile, with the copy behind a note.
@@ -542,6 +545,8 @@ mod tests {
         assert!(clients.iter().all(|client| client.claude_profile.is_none()));
     }
 
+    // Launchers are shell scripts with Unix paths; `/home/me` is not absolute on Windows.
+    #[cfg(unix)]
     #[test]
     fn config_dir_values_only_accept_plain_paths() {
         let home = Path::new("/home/me");
