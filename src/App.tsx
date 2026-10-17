@@ -108,7 +108,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { useTheme } from "@/lib/theme";
 import { fmtTs } from "@/lib/utils";
 import { createSingleFlight } from "@/lib/singleFlight";
-import { resolveShortcut, shortcutHelp } from "@/lib/shortcuts";
+import { resolveShortcut, shortcutHelp, SKILLS_REFRESH_EVENT } from "@/lib/shortcuts";
 import { subscribeToTrayApprovals } from "@/lib/trayApprovals";
 
 /** Above this many servers, "Disable all" asks for confirmation first. */
@@ -560,7 +560,9 @@ function App() {
           break;
         case "refresh":
           e.preventDefault();
-          void load(true);
+          if (viewRef.current === "skills")
+            window.dispatchEvent(new Event(SKILLS_REFRESH_EVENT));
+          else void load(true);
           break;
         case "help":
           e.preventDefault();

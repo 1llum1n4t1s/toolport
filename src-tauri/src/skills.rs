@@ -30,6 +30,8 @@ const PREVIEW_CHARS: usize = 4000;
 #[derive(Debug, Clone)]
 pub struct Env {
     pub home: PathBuf,
+    /// `home` with symlinks resolved, so canonical skill paths still count as inside it.
+    pub home_real: PathBuf,
     pub config: PathBuf,
     /// Claude Code's own folder (`CLAUDE_CONFIG_DIR`, default `~/.claude`).
     pub claude: PathBuf,
@@ -49,6 +51,7 @@ impl Env {
         let config = home.join(".config");
         Env {
             home: home.to_path_buf(),
+            home_real: canon(home).unwrap_or_else(|_| home.to_path_buf()),
             claude: home.join(".claude"),
             claude_compat: home.join(".claude"),
             codex: home.join(".codex"),
@@ -105,11 +108,16 @@ impl Env {
 
     /// `~`-relative display form of a path under home.
     pub fn display(&self, path: &Path) -> String {
-        match path.strip_prefix(&self.home) {
-            Ok(rest) if rest.as_os_str().is_empty() => "~".into(),
-            Ok(rest) => format!("~/{}", rest.display()),
-            Err(_) => path.display().to_string(),
+        for base in [&self.home, &self.home_real] {
+            if let Ok(rest) = path.strip_prefix(base) {
+                return if rest.as_os_str().is_empty() {
+                    "~".into()
+                } else {
+                    format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display())
+                };
+            }
         }
+        path.display().to_string()
     }
 }
 
@@ -623,6 +631,10 @@ pub struct Skill {
 pub struct SkillState {
     pub state: State,
     pub via: String,
+    /// The name this client's own setting uses, when it differs from the skill name
+    /// (Claude Code plugin skills are `plugin:skill`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub switch_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -666,6 +678,22 @@ pub struct Issue {
 // ---------------------------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------------------------
+
+/// `canonicalize` without Windows' `\\?\` prefix, so results compare with ordinary paths.
+fn canon(path: &Path) -> std::io::Result<PathBuf> {
+    let real = std::fs::canonicalize(path)?;
+    #[cfg(windows)]
+    {
+        let text = real.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return Ok(PathBuf::from(format!(r"\\{rest}")));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return Ok(PathBuf::from(rest));
+        }
+    }
+    Ok(real)
+}
 
 fn read_text(path: &Path) -> Option<String> {
     let meta = std::fs::metadata(path).ok()?;
@@ -771,7 +799,7 @@ fn walk_dir(
     seen: &mut BTreeSet<PathBuf>,
     out: &mut Vec<Found>,
 ) {
-    let Ok(real_dir) = std::fs::canonicalize(dir) else {
+    let Ok(real_dir) = canon(dir) else {
         return;
     };
     if !seen.insert(real_dir) {
@@ -804,7 +832,7 @@ fn walk_dir(
         let skill_md = path.join("SKILL.md");
         if skill_md.is_file() {
             out.push(Found {
-                real: std::fs::canonicalize(&skill_md).ok(),
+                real: canon(&skill_md).ok(),
                 link: skill_md,
                 root_label: root.label,
                 root_path: root.path.clone(),
@@ -821,6 +849,9 @@ fn walk_dir(
 #[derive(Debug, Default, Clone)]
 struct Disabled {
     off: BTreeSet<String>,
+    /// OpenCode's ordered skill rules (pattern, deny); the last match wins. When present they
+    /// decide instead of `off`.
+    rules: Vec<(String, bool)>,
     name_only: BTreeSet<String>,
     /// Absolute paths (SKILL.md or its folder) turned off by path.
     off_paths: BTreeSet<PathBuf>,
@@ -898,8 +929,7 @@ fn read_disabled(switch: Switch, env: &Env) -> Disabled {
                 };
                 let path = PathBuf::from(path);
                 if path.exists() {
-                    d.off_paths
-                        .insert(std::fs::canonicalize(&path).unwrap_or(path.clone()));
+                    d.off_paths.insert(canon(&path).unwrap_or(path.clone()));
                     d.off_paths.insert(path);
                 } else {
                     d.stale_paths.push(path.display().to_string());
@@ -934,50 +964,84 @@ fn read_disabled(switch: Switch, env: &Env) -> Disabled {
         Switch::OpencodePermissions => {
             let v = read_json(&opencode_config_path(env)).unwrap_or_default();
             d.off = opencode_denied(&v);
+            d.rules = opencode_rules(&v);
         }
         Switch::None(_) => {}
     }
     d
 }
 
-/// Skill names an OpenCode config denies. v2 uses an ordered `permissions` rule list where the
-/// last matching rule wins; v1 used a `permission.skill` map.
-fn opencode_denied(config: &serde_json::Value) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
+/// OpenCode's skill rules in the order it applies them; the last matching rule wins. v2 uses
+/// an ordered `permissions` list; v1 used a `permission.skill` map where an exact name beats a
+/// pattern.
+fn opencode_rules(config: &serde_json::Value) -> Vec<(String, bool)> {
+    let mut rules = Vec::new();
     if let Some(map) = config
         .get("permission")
         .and_then(|p| p.get("skill"))
         .and_then(|s| s.as_object())
     {
-        for (name, effect) in map {
-            if effect.as_str() == Some("deny") && name != "*" {
-                out.insert(name.clone());
-            }
-        }
+        let entry = |(name, effect): (&String, &serde_json::Value)| {
+            (name.clone(), effect.as_str() == Some("deny"))
+        };
+        rules.extend(map.iter().filter(|(n, _)| n.contains('*')).map(entry));
+        rules.extend(map.iter().filter(|(n, _)| !n.contains('*')).map(entry));
     }
-    if let Some(rules) = config.get("permissions").and_then(|p| p.as_array()) {
-        let mut verdict: BTreeMap<String, bool> = BTreeMap::new();
-        for rule in rules {
+    if let Some(list) = config.get("permissions").and_then(|p| p.as_array()) {
+        for rule in list {
             if rule.get("action").and_then(|a| a.as_str()) != Some("skill") {
                 continue;
             }
-            let Some(resource) = rule.get("resource").and_then(|r| r.as_str()) else {
-                continue;
-            };
-            if resource == "*" {
-                continue;
+            if let Some(resource) = rule.get("resource").and_then(|r| r.as_str()) {
+                let deny = rule.get("effect").and_then(|e| e.as_str()) == Some("deny");
+                rules.push((resource.to_string(), deny));
             }
-            let deny = rule.get("effect").and_then(|e| e.as_str()) == Some("deny");
-            verdict.insert(resource.to_string(), deny);
         }
-        out.extend(
-            verdict
-                .into_iter()
-                .filter(|(_, deny)| *deny)
-                .map(|(n, _)| n),
-        );
     }
-    out
+    rules
+}
+
+/// Whether the last rule matching `name` denies it.
+fn rules_deny(rules: &[(String, bool)], name: &str) -> bool {
+    rules
+        .iter()
+        .rev()
+        .find(|(pattern, _)| glob_match(pattern, name))
+        .is_some_and(|(_, deny)| *deny)
+}
+
+/// `*` matches any run of characters, `?` one character.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
+    let (mut pi, mut ti, mut star, mut mark) = (0, 0, None, 0);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ti;
+            pi += 1;
+        } else if let Some(at) = star {
+            pi = at + 1;
+            mark += 1;
+            ti = mark;
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|c| *c == '*')
+}
+
+/// Exact skill names an OpenCode config ends up denying.
+fn opencode_denied(config: &serde_json::Value) -> BTreeSet<String> {
+    let rules = opencode_rules(config);
+    rules
+        .iter()
+        .filter(|(pattern, _)| !pattern.contains(['*', '?']))
+        .filter(|(pattern, _)| rules_deny(&rules, pattern))
+        .map(|(pattern, _)| pattern.clone())
+        .collect()
 }
 
 // --- skill records -----------------------------------------------------------------------------
@@ -1028,18 +1092,17 @@ fn git_repo(dir: &Path, home: &Path) -> Option<String> {
     None
 }
 
-fn classify(real: &Path, env: &Env) -> (Source, String) {
+fn classify(real: &Path, env: &Env, project: Option<&Path>) -> (Source, String) {
     let under = |base: &Path| {
-        std::fs::canonicalize(base)
-            .map(|b| real.starts_with(&b))
-            .unwrap_or(false)
-            || real.starts_with(base)
+        canon(base).map(|b| real.starts_with(&b)).unwrap_or(false) || real.starts_with(base)
     };
     let text = real.to_string_lossy();
     if under(&env.parked()) {
         return (Source::Parked, tr("Parked in ~/.agents/disabled-skills"));
     }
-    if !real.starts_with(&env.home) {
+    let inside =
+        |base: &Path| real.starts_with(base) || canon(base).is_ok_and(|b| real.starts_with(b));
+    if !inside(&env.home) && !project.is_some_and(inside) {
         return (
             Source::Package,
             tr("Installed by a system package; updates replace edits"),
@@ -1097,10 +1160,14 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
 
     for def in &defs {
         let mut roots = (def.roots)(env);
+        // Project folders keep their documented order and come after the agent's own folders:
+        // Claude Code ranks personal skills above project ones when names collide.
         if let Some(project) = project {
-            for rel in def.project_roots {
-                roots.insert(0, Root::deep(project.join(rel), "project"));
-            }
+            roots.extend(
+                def.project_roots
+                    .iter()
+                    .map(|rel| Root::deep(project.join(rel), "project")),
+            );
         }
         agents.push(Agent {
             id: def.id.into(),
@@ -1138,7 +1205,7 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             let key = f.real.as_ref().unwrap_or(&f.link).display().to_string();
             let record = skills
                 .entry(key.clone())
-                .or_insert_with(|| new_skill(&f, env));
+                .or_insert_with(|| new_skill(&f, env, project));
             let link_display = env.display(f.link.parent().unwrap_or(&f.link));
             let link_display = if f.real.is_none() {
                 env.display(&f.link)
@@ -1165,24 +1232,36 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             reached.push((key, f, via));
         }
 
-        for (key, f, via) in &reached {
+        // Plugin skills are namespaced (`plugin:skill`), so they never collide with your own.
+        let dedup_name = |key: &str, f: &Found| {
             let name = skills[key].name.clone();
+            f.root_label
+                .ends_with("plugin")
+                .then(|| plugin_of(&f.root_path).map(|p| format!("{p}:{name}")))
+                .flatten()
+                .unwrap_or(name)
+        };
+        let names: Vec<String> = reached.iter().map(|(k, f, _)| dedup_name(k, f)).collect();
+        for (index, (key, f, via)) in reached.iter().enumerate() {
+            let name = skills[key].name.clone();
+            let unique = names[index].clone();
             let broken = f.real.is_none();
             let shadowed = !broken
                 && match def.dedup {
-                    Dedup::NameFirstWins => match by_name.get(&name) {
+                    Dedup::NameFirstWins => match by_name.get(&unique) {
                         Some(winner) if winner != key => true,
                         _ => {
-                            by_name.insert(name.clone(), key.clone());
+                            by_name.insert(unique.clone(), key.clone());
                             false
                         }
                     },
                     Dedup::RealPathLaterWins => {
                         let later = reached
                             .iter()
+                            .zip(&names)
                             .rev()
-                            .find(|(k, f, _)| f.real.is_some() && skills[k].name == name)
-                            .map(|(k, _, _)| k.clone());
+                            .find(|((_, f, _), n)| f.real.is_some() && **n == unique)
+                            .map(|((k, _, _), _)| k.clone());
                         later.as_deref() != Some(key.as_str())
                     }
                 };
@@ -1208,6 +1287,11 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             let named = |set: &BTreeSet<String>| {
                 set.contains(&name) || plugin_name.as_ref().is_some_and(|p| set.contains(p))
             };
+            let switched_off = if disabled.rules.is_empty() {
+                named(&disabled.off)
+            } else {
+                rules_deny(&disabled.rules, &name)
+            };
             let (state, via) = if broken {
                 (
                     State::Broken,
@@ -1224,7 +1308,7 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                         &[("name", &name), ("client", def.name)],
                     ),
                 )
-            } else if path_off || named(&disabled.off) {
+            } else if path_off || switched_off {
                 (
                     State::Off,
                     trf("Off in {place}", &[("place", switch_place(def.switch))]),
@@ -1235,9 +1319,14 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 (State::On, via.clone())
             };
             if let Some(record) = skills.get_mut(key) {
-                record
-                    .states
-                    .insert(def.id.into(), SkillState { state, via });
+                record.states.insert(
+                    def.id.into(),
+                    SkillState {
+                        state,
+                        via,
+                        switch_name: plugin_name.clone(),
+                    },
+                );
             }
         }
     }
@@ -1261,7 +1350,9 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
     // Parked skills nobody loads.
     for f in walk_root(&Root::flat(env.parked(), "parked")) {
         let key = f.real.as_ref().unwrap_or(&f.link).display().to_string();
-        skills.entry(key).or_insert_with(|| new_skill(&f, env));
+        skills
+            .entry(key)
+            .or_insert_with(|| new_skill(&f, env, project));
     }
 
     let rules = scan_rules(env, &defs, project);
@@ -1313,7 +1404,7 @@ fn switch_place(switch: Switch) -> &'static str {
     }
 }
 
-fn new_skill(f: &Found, env: &Env) -> Skill {
+fn new_skill(f: &Found, env: &Env, project: Option<&Path>) -> Skill {
     match &f.real {
         None => {
             let name = f
@@ -1350,7 +1441,7 @@ fn new_skill(f: &Found, env: &Env) -> Skill {
         Some(real) => {
             let file = read_skill_file(real);
             let folder = real.parent().unwrap_or(real).to_path_buf();
-            let (source, source_note) = classify(real, env);
+            let (source, source_note) = classify(real, env, project);
             Skill {
                 key: real.display().to_string(),
                 description_chars: file.description.chars().count(),
@@ -1431,7 +1522,7 @@ fn scan_rules(env: &Env, defs: &[AgentDef], project: Option<&Path>) -> Vec<RuleF
             loaded_any = true;
             let mut chain = vec![step("file", env.display(&source.path))];
             if is_link(&source.path) {
-                if let Ok(real) = std::fs::canonicalize(&source.path) {
+                if let Ok(real) = canon(&source.path) {
                     chain.push(step("link", env.display(&real)));
                 }
             }
@@ -1439,13 +1530,16 @@ fn scan_rules(env: &Env, defs: &[AgentDef], project: Option<&Path>) -> Vec<RuleF
             if source.imports {
                 follow_imports(&mut files, env, &source.path, scope, def.id, &chain, 0);
             } else if let Some(text) =
-                read_text(&std::fs::canonicalize(&source.path).unwrap_or(source.path.clone()))
+                read_text(&canon(&source.path).unwrap_or(source.path.clone()))
             {
-                let skipped = imports(
+                let skipped: Vec<PathBuf> = imports(
                     &text,
                     source.path.parent().unwrap_or(Path::new("/")),
                     &env.home,
-                );
+                )
+                .into_iter()
+                .filter(|p| p.is_file())
+                .collect();
                 if let Some(file) = files.get_mut(&rule_key(&source.path)) {
                     if let Some(c) = file.agents.get_mut(def.id) {
                         c.extend(
@@ -1469,7 +1563,7 @@ fn step(kind: &str, path: String) -> ChainStep {
 }
 
 fn rule_key(path: &Path) -> String {
-    std::fs::canonicalize(path)
+    canon(path)
         .unwrap_or_else(|_| path.to_path_buf())
         .display()
         .to_string()
@@ -1516,10 +1610,11 @@ fn follow_imports(
     chain: &[ChainStep],
     depth: usize,
 ) {
-    if depth >= 4 {
+    // Claude Code follows imports up to five hops.
+    if depth >= 5 {
         return;
     }
-    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let real = canon(path).unwrap_or_else(|_| path.to_path_buf());
     let Some(text) = read_text(&real) else {
         return;
     };
@@ -1560,13 +1655,15 @@ fn list_names(names: &[String]) -> String {
             "{first} and {second}",
             &[("first", &names[0]), ("second", &names[1])],
         ),
-        n => trf(
-            "{first} and {second}",
-            &[
-                ("first", &names[..n - 1].join(", ")),
-                ("second", &names[n - 1]),
-            ],
-        ),
+        n => {
+            let head = names[1..n - 1].iter().fold(names[0].clone(), |acc, name| {
+                trf("{first}, {second}", &[("first", &acc), ("second", name)])
+            });
+            trf(
+                "{first} and {second}",
+                &[("first", &head), ("second", &names[n - 1])],
+            )
+        }
     }
 }
 
@@ -1991,7 +2088,19 @@ impl Writer for DiskWriter {
         crate::registry::atomic_write(path, contents)
     }
     fn remove_link(&self, path: &Path) -> Result<(), String> {
-        std::fs::remove_file(path).map_err(|e| e.to_string())
+        if !is_link(path) {
+            return Err(tr("Toolport only removes links, not folders or files."));
+        }
+        // Windows stores a link to a folder as a directory symlink, removed with remove_dir.
+        std::fs::remove_file(path)
+            .or_else(|e| {
+                if cfg!(windows) {
+                    std::fs::remove_dir(path)
+                } else {
+                    Err(e)
+                }
+            })
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -2026,34 +2135,53 @@ pub fn set_state(
     match def.switch {
         Switch::ClaudeOverrides => {
             let path = claude_settings_path(env);
+            // Plugin skills are switched by their `plugin:skill` name, so turning one off never
+            // touches your own skill with the same short name.
+            let name = skill.states[agent]
+                .switch_name
+                .clone()
+                .unwrap_or_else(|| skill.name.clone());
+            // A bare-name entry also covers a plugin skill. Clear it on turn-on only when no
+            // other skill Claude Code loads uses that short name.
+            let bare_is_only_this = name != skill.name
+                && !inventory.skills.iter().any(|s| {
+                    s.key != skill.key
+                        && s.name == skill.name
+                        && s.states
+                            .get(agent)
+                            .is_some_and(|st| st.switch_name.is_none())
+                });
             edit_json(agent, &path, writer, |root| {
-                let map = object_at(root, &["skillOverrides"]);
+                let map = object_at(root, &["skillOverrides"])?;
                 match wanted {
                     Wanted::On => {
-                        map.remove(&skill.name);
+                        map.remove(&name);
+                        if bare_is_only_this {
+                            map.remove(&skill.name);
+                        }
                     }
                     Wanted::NameOnly => {
-                        map.insert(skill.name.clone(), "name-only".into());
+                        map.insert(name.clone(), "name-only".into());
                     }
                     Wanted::Off => {
-                        map.insert(skill.name.clone(), "off".into());
+                        map.insert(name.clone(), "off".into());
                     }
                 }
-                "skillOverrides"
+                Ok("skillOverrides")
             })
         }
         Switch::CopilotSettings => {
             let path = copilot_settings_path(env);
             edit_json(agent, &path, writer, |root| {
-                toggle_list(root, &["disabledSkills"], &skill.name, off);
-                "disabledSkills"
+                toggle_list(root, &["disabledSkills"], &skill.name, off)?;
+                Ok("disabledSkills")
             })
         }
         Switch::GeminiSettings => {
             let path = gemini_settings_path(env);
             edit_json(agent, &path, writer, |root| {
-                toggle_list(root, &["skills", "disabled"], &skill.name, off);
-                "skills"
+                toggle_list(root, &["skills", "disabled"], &skill.name, off)?;
+                Ok("skills")
             })
         }
         Switch::OpencodePermissions => {
@@ -2078,18 +2206,35 @@ pub fn set_state(
             if paths.is_empty() {
                 paths.push(PathBuf::from(&skill.key));
             }
-            edit_codex(agent, &path, writer, &paths, off)
+            edit_codex(agent, &path, writer, &paths, Path::new(&skill.key), off)
         }
         Switch::HermesConfig => {
             let path = hermes_config_path(env);
-            let text = read_text(&path).unwrap_or_default();
-            let mut names = read_disabled(Switch::HermesConfig, env).off;
+            let text = read_existing(&path)?;
+            // Start from what the file says, not a lenient read: a list Toolport couldn't parse
+            // must not be rewritten as empty.
+            let parsed: Option<serde_yaml::Value> = if text.trim().is_empty() {
+                None
+            } else {
+                Some(serde_yaml::from_str(&text).map_err(|e| not_valid(&path, &e.to_string()))?)
+            };
+            let mut names: BTreeSet<String> = BTreeSet::new();
+            if let Some(list) = parsed
+                .as_ref()
+                .and_then(|v| v.get("skills"))
+                .and_then(|s| s.get("disabled"))
+            {
+                let items = list
+                    .as_sequence()
+                    .ok_or_else(|| wrong_shape("skills.disabled"))?;
+                names.extend(items.iter().filter_map(|x| x.as_str().map(str::to_string)));
+            }
             if off {
                 names.insert(skill.name.clone());
             } else {
                 names.remove(&skill.name);
             }
-            let next = set_yaml_skills_disabled(&text, &names.into_iter().collect::<Vec<_>>());
+            let next = set_yaml_skills_disabled(&text, &names.into_iter().collect::<Vec<_>>())?;
             if next != text {
                 writer.backup(agent, &path)?;
                 writer.write(&path, &next)?;
@@ -2101,11 +2246,45 @@ pub fn set_state(
 }
 
 fn expand(env: &Env, display: &str) -> PathBuf {
-    match display.strip_prefix("~/") {
+    match display
+        .strip_prefix("~/")
+        .or_else(|| display.strip_prefix(&format!("~{}", std::path::MAIN_SEPARATOR)))
+    {
         Some(rest) => env.home.join(rest),
         None if display == "~" => env.home.clone(),
         None => PathBuf::from(display),
     }
+}
+
+/// Backs a file up the first time it is changed and passes later backups through as done, so
+/// a fix that edits one file many times keeps the copy from before the fix.
+struct BackupOnce<'a> {
+    inner: &'a dyn Writer,
+    done: std::cell::RefCell<BTreeSet<PathBuf>>,
+}
+
+impl Writer for BackupOnce<'_> {
+    fn backup(&self, client: &str, path: &Path) -> Result<(), String> {
+        if self.done.borrow().contains(path) {
+            return Ok(());
+        }
+        self.inner.backup(client, path)?;
+        self.done.borrow_mut().insert(path.to_path_buf());
+        Ok(())
+    }
+    fn write(&self, path: &Path, contents: &str) -> Result<(), String> {
+        self.inner.write(path, contents)
+    }
+    fn remove_link(&self, path: &Path) -> Result<(), String> {
+        self.inner.remove_link(path)
+    }
+}
+
+/// True only when `path` is a symlink whose target is missing. An unreadable target or an
+/// unmounted volume is not proof the link is broken.
+fn dangling(path: &Path) -> bool {
+    is_link(path)
+        && matches!(std::fs::metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
 }
 
 /// Run every fix the issue offers. Returns how many changes were made.
@@ -2120,29 +2299,40 @@ pub fn apply_fix(
         .iter()
         .find(|i| i.id == issue_id)
         .ok_or_else(|| tr("That problem is already gone. Refresh to see the latest."))?;
+    let writer = &BackupOnce {
+        inner: writer,
+        done: Default::default(),
+    };
     match issue.id.as_str() {
         "off-elsewhere" => {
+            // Keep going past a client that refuses, so one odd config doesn't block the rest.
             let mut done = 0;
+            let mut first_error = None;
             for (skill, _, on) in off_elsewhere(&inventory.skills) {
                 for agent in on {
                     let can = inventory
                         .agents
                         .iter()
                         .any(|a| a.id == agent && a.can_toggle);
-                    if can {
-                        set_state(env, inventory, &agent, &skill.key, Wanted::Off, writer)?;
-                        done += 1;
+                    if !can {
+                        continue;
+                    }
+                    match set_state(env, inventory, &agent, &skill.key, Wanted::Off, writer) {
+                        Ok(()) => done += 1,
+                        Err(e) => {
+                            first_error.get_or_insert(e);
+                        }
                     }
                 }
             }
-            Ok(done)
+            first_error.map_or(Ok(done), Err)
         }
         "broken-links" => {
             let mut done = 0;
             for key in &issue.skills {
                 let path = Path::new(key);
                 // Re-check at apply time: only remove a link that still dangles.
-                if is_link(path) && !path.exists() {
+                if dangling(path) {
                     writer.remove_link(path)?;
                     done += 1;
                 }
@@ -2151,10 +2341,10 @@ pub fn apply_fix(
         }
         "codex-stale" => {
             let path = codex_config_path(env);
-            let text = read_text(&path).ok_or("Couldn't read Codex's config.toml")?;
+            let text = read_existing(&path)?;
             let mut doc: toml_edit::DocumentMut = text
                 .parse()
-                .map_err(|e| format!("Codex config.toml: {e}"))?;
+                .map_err(|e| not_valid(&path, &format!("{e}")))?;
             let mut removed = 0;
             if let Some(arr) = doc
                 .get_mut("skills")
@@ -2182,28 +2372,44 @@ pub fn apply_fix(
     }
 }
 
+/// The file's text, or an empty string when it doesn't exist yet. A file that exists but can't be
+/// read (too big, not UTF-8, no permission) is an error, never treated as empty.
+fn read_existing(path: &Path) -> Result<String, String> {
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    read_text(path).ok_or_else(|| {
+        trf(
+            "Couldn't read {file}",
+            &[("file", &path.display().to_string())],
+        )
+    })
+}
+
+fn not_valid(path: &Path, error: &str) -> String {
+    trf(
+        "{file} isn't valid: {error}",
+        &[("file", &path.display().to_string()), ("error", error)],
+    )
+}
+
 fn edit_json(
     agent: &str,
     path: &Path,
     writer: &dyn Writer,
-    change: impl FnOnce(&mut serde_json::Value) -> &'static str,
+    change: impl FnOnce(&mut serde_json::Value) -> Result<&'static str, String>,
 ) -> Result<(), String> {
-    let original = if path.exists() {
-        read_text(path).ok_or_else(|| format!("Couldn't read {}", path.display()))?
-    } else {
-        String::new()
-    };
+    let original = read_existing(path)?;
     let mut value: serde_json::Value = if original.trim().is_empty() {
         serde_json::json!({})
     } else {
-        json5::from_str(&original)
-            .map_err(|e| format!("{} isn't valid JSON: {e}", path.display()))?
+        json5::from_str(&original).map_err(|e| not_valid(path, &e.to_string()))?
     };
     if !value.is_object() {
-        return Err(format!("{} isn't a JSON object", path.display()));
+        return Err(not_valid(path, &tr("not a JSON object")));
     }
     let before = value.clone();
-    let key = change(&mut value);
+    let key = change(&mut value)?;
     if value == before {
         return Ok(());
     }
@@ -2219,72 +2425,101 @@ fn edit_json(
     writer.write(path, &next)
 }
 
+/// A setting whose current value isn't the shape Toolport writes. Replacing it would change
+/// what the user set, so refuse instead.
+fn wrong_shape(key: &str) -> String {
+    trf(
+        "{key} isn't in a shape Toolport can change. Edit it by hand.",
+        &[("key", key)],
+    )
+}
+
 fn object_at<'a>(
     root: &'a mut serde_json::Value,
     keys: &[&str],
-) -> &'a mut serde_json::Map<String, serde_json::Value> {
+) -> Result<&'a mut serde_json::Map<String, serde_json::Value>, String> {
     let mut cur = root;
-    for key in keys {
-        let obj = cur.as_object_mut().expect("object");
+    for (depth, key) in keys.iter().enumerate() {
+        let obj = cur
+            .as_object_mut()
+            .ok_or_else(|| wrong_shape(&keys[..depth].join(".")))?;
         let next = obj
             .entry(key.to_string())
             .or_insert_with(|| serde_json::json!({}));
         if !next.is_object() {
-            *next = serde_json::json!({});
+            return Err(wrong_shape(&keys[..=depth].join(".")));
         }
         cur = next;
     }
-    cur.as_object_mut().expect("object")
+    cur.as_object_mut()
+        .ok_or_else(|| wrong_shape(&keys.join(".")))
 }
 
-fn toggle_list(root: &mut serde_json::Value, keys: &[&str], name: &str, off: bool) {
-    let (last, parents) = keys.split_last().expect("keys");
-    let parent = if parents.is_empty() {
-        root.as_object_mut().expect("object")
-    } else {
-        object_at(root, parents)
-    };
+fn toggle_list(
+    root: &mut serde_json::Value,
+    keys: &[&str],
+    name: &str,
+    off: bool,
+) -> Result<(), String> {
+    let (last, parents) = keys.split_last().ok_or_else(|| wrong_shape(""))?;
+    let parent = object_at(root, parents)?;
     let list = parent
         .entry(last.to_string())
         .or_insert_with(|| serde_json::json!([]));
-    if !list.is_array() {
-        *list = serde_json::json!([]);
-    }
-    let arr = list.as_array_mut().expect("array");
+    let arr = list
+        .as_array_mut()
+        .ok_or_else(|| wrong_shape(&keys.join(".")))?;
     arr.retain(|v| v.as_str() != Some(name));
     if off {
         arr.push(serde_json::Value::String(name.into()));
     }
+    Ok(())
 }
 
-fn opencode_toggle(root: &mut serde_json::Value, name: &str, off: bool) -> &'static str {
-    // v1 configs keep a `permission` object; follow the shape already in the file.
+fn opencode_toggle(
+    root: &mut serde_json::Value,
+    name: &str,
+    off: bool,
+) -> Result<&'static str, String> {
+    // v1 configs keep a `permission` object; follow the shape already in the file. A single
+    // string such as `"skill": "deny"` covers every skill, so it is refused, not replaced.
     let v1 = root.get("permission").is_some() && root.get("permissions").is_none();
     if v1 {
-        let map = object_at(root, &["permission", "skill"]);
+        let map = object_at(root, &["permission", "skill"])?;
+        map.remove(name);
+        let still_denied = rules_deny(
+            &opencode_rules(&serde_json::json!({"permission": {"skill": map.clone()}})),
+            name,
+        );
         if off {
             map.insert(name.into(), "deny".into());
-        } else {
-            map.remove(name);
+        } else if still_denied {
+            map.insert(name.into(), "allow".into());
         }
-        return "permission";
+        return Ok("permission");
     }
-    let obj = root.as_object_mut().expect("object");
+    let obj = root.as_object_mut().ok_or_else(|| wrong_shape(""))?;
     let rules = obj
         .entry("permissions")
         .or_insert_with(|| serde_json::json!([]));
-    if !rules.is_array() {
-        *rules = serde_json::json!([]);
-    }
-    let arr = rules.as_array_mut().expect("array");
+    let arr = rules
+        .as_array_mut()
+        .ok_or_else(|| wrong_shape("permissions"))?;
     arr.retain(|r| {
         !(r.get("action").and_then(|a| a.as_str()) == Some("skill")
             && r.get("resource").and_then(|x| x.as_str()) == Some(name))
     });
+    // A wildcard rule can still deny it; an explicit allow after it wins.
+    let still_denied = rules_deny(
+        &opencode_rules(&serde_json::json!({"permissions": arr.clone()})),
+        name,
+    );
     if off {
         arr.push(serde_json::json!({"action": "skill", "resource": name, "effect": "deny"}));
+    } else if still_denied {
+        arr.push(serde_json::json!({"action": "skill", "resource": name, "effect": "allow"}));
     }
-    "permissions"
+    Ok("permissions")
 }
 
 fn edit_codex(
@@ -2292,12 +2527,12 @@ fn edit_codex(
     path: &Path,
     writer: &dyn Writer,
     paths: &[PathBuf],
+    skill_real: &Path,
     off: bool,
 ) -> Result<(), String> {
-    let text = read_text(path).unwrap_or_default();
-    let mut doc: toml_edit::DocumentMut = text
-        .parse()
-        .map_err(|e| format!("Codex config.toml: {e}"))?;
+    let text = read_existing(path)?;
+    let mut doc: toml_edit::DocumentMut =
+        text.parse().map_err(|e| not_valid(path, &format!("{e}")))?;
     let wanted: BTreeSet<String> = paths.iter().map(|p| p.display().to_string()).collect();
     let skills = doc.entry("skills").or_insert_with(|| {
         let mut t = toml_edit::Table::new();
@@ -2306,7 +2541,7 @@ fn edit_codex(
     });
     let skills = skills
         .as_table_like_mut()
-        .ok_or("Codex config.toml has a non-table `skills` key")?;
+        .ok_or_else(|| wrong_shape("skills"))?;
     if skills.get("config").is_none() {
         skills.insert(
             "config",
@@ -2316,12 +2551,16 @@ fn edit_codex(
     let arr = skills
         .get_mut("config")
         .and_then(|c| c.as_array_of_tables_mut())
-        .ok_or("Codex config.toml has a non-array `skills.config`")?;
-    arr.retain(|t| {
-        !t.get("path")
-            .and_then(|p| p.as_str())
-            .is_some_and(|p| wanted.contains(p))
-    });
+        .ok_or_else(|| wrong_shape("skills.config"))?;
+    // Codex also matches an entry written as the folder or the resolved path, so clear every
+    // entry that reaches this skill, not only the exact paths Toolport writes.
+    let reaches = |p: &str| {
+        let entry = Path::new(p);
+        wanted.contains(p)
+            || canon(entry).is_ok_and(|r| r == skill_real)
+            || canon(&entry.join("SKILL.md")).is_ok_and(|r| r == skill_real)
+    };
+    arr.retain(|t| !t.get("path").and_then(|p| p.as_str()).is_some_and(reaches));
     if off {
         for p in paths {
             let mut t = toml_edit::Table::new();
@@ -2342,7 +2581,7 @@ fn edit_codex(
 
 /// Replace (or add) the `disabled` list under the top-level `skills:` key of a YAML file while
 /// leaving every other line, including comments, as it was.
-fn set_yaml_skills_disabled(text: &str, names: &[String]) -> String {
+fn set_yaml_skills_disabled(text: &str, names: &[String]) -> Result<String, String> {
     let flow = if names.is_empty() {
         "[]".to_string()
     } else {
@@ -2356,14 +2595,23 @@ fn set_yaml_skills_disabled(text: &str, names: &[String]) -> String {
         )
     };
     let lines: Vec<&str> = text.lines().collect();
-    let Some(skills_at) = lines.iter().position(|l| l.trim_end() == "skills:") else {
+    // The top-level `skills:` key, with or without a trailing comment. A value on the same line
+    // (`skills: {disabled: [a]}`) is a flow mapping this editor doesn't rewrite.
+    fn key_rest(line: &str) -> Option<&str> {
+        line.strip_prefix("skills:").map(str::trim)
+    }
+    let Some(skills_at) = lines.iter().position(|l| key_rest(l).is_some()) else {
         let mut out = text.to_string();
         if !out.is_empty() && !out.ends_with('\n') {
             out.push('\n');
         }
         out.push_str(&format!("skills:\n  disabled: {flow}\n"));
-        return out;
+        return Ok(out);
     };
+    let rest = key_rest(lines[skills_at]).unwrap_or_default();
+    if !rest.is_empty() && !rest.starts_with('#') {
+        return Err(wrong_shape("skills"));
+    }
     // Child block: following lines that are blank or indented.
     let mut end = skills_at + 1;
     while end < lines.len() && (lines[end].trim().is_empty() || lines[end].starts_with([' ', '\t']))
@@ -2411,7 +2659,7 @@ fn set_yaml_skills_disabled(text: &str, names: &[String]) -> String {
     if text.ends_with('\n') || text.is_empty() {
         joined.push('\n');
     }
-    joined
+    Ok(joined)
 }
 
 /// Paths the UI may open or reveal: skill folders and files, and rules files from a fresh scan.
@@ -2442,12 +2690,17 @@ pub fn inventory(project: Option<&str>) -> Result<Inventory, String> {
     Ok(scan(&env, &present_clients(), project.as_deref()))
 }
 
+/// Toolport's own skill writes run one at a time, so two quick toggles of the same file can't
+/// both read the old contents.
+static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn set_skill_state(
     agent: &str,
     key: &str,
     wanted: Wanted,
     project: Option<&str>,
 ) -> Result<Inventory, String> {
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let env = Env::current().ok_or_else(|| tr("Couldn't find your home folder"))?;
     let inv = inventory(project)?;
     set_state(&env, &inv, agent, key, wanted, &DiskWriter)?;
@@ -2455,10 +2708,21 @@ pub fn set_skill_state(
 }
 
 pub fn fix_issue(issue_id: &str, project: Option<&str>) -> Result<Inventory, String> {
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let env = Env::current().ok_or_else(|| tr("Couldn't find your home folder"))?;
     let inv = inventory(project)?;
     apply_fix(&env, &inv, issue_id, &DiskWriter)?;
     inventory(project)
+}
+
+/// Files Toolport hands to the default app. Anything else is revealed, never opened.
+fn opens_as_text(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        matches!(
+            e.to_ascii_lowercase().as_str(),
+            "md" | "mdc" | "markdown" | "txt" | "yaml" | "yml" | "json" | "toml"
+        )
+    })
 }
 
 /// Open an inventory file in its default app, or its folder when `reveal` is set.
@@ -2468,6 +2732,9 @@ pub fn open_path(path: &str, reveal: bool, project: Option<&str>) -> Result<(), 
         return Err(tr("Toolport only opens skill and rules files it found."));
     }
     let target = PathBuf::from(path);
+    // The default app for a script is often the shell. A rules file can @import any path, so
+    // only text files are opened; anything else is shown in its folder instead.
+    let reveal = reveal || (target.is_file() && !opens_as_text(&target));
     let target = if reveal && target.is_file() {
         target.parent().map(Path::to_path_buf).unwrap_or(target)
     } else {
@@ -2476,5 +2743,5 @@ pub fn open_path(path: &str, reveal: bool, project: Option<&str>) -> Result<(), 
     crate::diagnostics_controller::open_in_default_app(&target)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;

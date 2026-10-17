@@ -381,5 +381,8 @@
   "{count} rules files": "규칙 파일 {count}개",
   "{count} things need a look": "확인이 필요한 항목 {count}개",
   "{size} · {lines} lines": "{size} · {lines}줄",
-  "{skill} in {client}": "{client}의 {skill}"
+  "{skill} in {client}": "{client}의 {skill}",
+  "{client}: {state}": "{client}: {state}",
+  "Couldn't copy the path": "경로를 복사할 수 없습니다",
+  "That project folder is gone. Showing global only.": "해당 프로젝트 폴더가 없습니다. 전역 항목만 표시합니다."
 }

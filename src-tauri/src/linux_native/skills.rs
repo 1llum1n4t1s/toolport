@@ -38,6 +38,9 @@ pub(super) struct SkillsPage {
     project: Rc<RefCell<Option<String>>>,
     generation: Rc<Cell<u64>>,
     busy: Rc<Cell<bool>>,
+    /// A refresh asked for while a write runs; it starts when the write ends so it never reads
+    /// the file halfway through a change.
+    refresh_pending: Rc<Cell<bool>>,
     /// Cards the user opened, kept open across a rescan.
     expanded: Rc<RefCell<HashSet<String>>>,
 }
@@ -81,6 +84,19 @@ fn small_logo(id: &str, size: i32) -> gtk::Image {
     image.set_pixel_size(size);
     image.set_valign(gtk::Align::Start);
     image
+}
+
+/// The first part of a file, as the React view's Preview block shows it.
+fn preview_label(text: &str) -> gtk::Label {
+    gtk::Label::builder()
+        .label(text)
+        .halign(gtk::Align::Fill)
+        .xalign(0.0)
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .selectable(true)
+        .css_classes(["monospace", "toolport-muted", "toolport-value-card"])
+        .build()
 }
 
 fn clear(list: &gtk::Box) {
@@ -292,6 +308,7 @@ impl SkillsPage {
             project: Rc::default(),
             generation: Rc::default(),
             busy: Rc::default(),
+            refresh_pending: Rc::default(),
             expanded: Rc::default(),
         };
         {
@@ -325,6 +342,10 @@ impl SkillsPage {
     }
 
     pub(super) fn refresh(&self) {
+        if self.busy.get() {
+            self.refresh_pending.set(true);
+            return;
+        }
         let generation = self.generation.get().wrapping_add(1);
         self.generation.set(generation);
         self.refresh_button.set_sensitive(false);
@@ -340,6 +361,8 @@ impl SkillsPage {
             page.refresh_button.set_sensitive(true);
             match result {
                 Ok(Ok(inv)) => {
+                    // A fresh scan supersedes an old error or note.
+                    page.show_feedback("", false);
                     page.inventory.replace(Some(inv));
                     page.render();
                 }
@@ -348,6 +371,26 @@ impl SkillsPage {
                     page.show_feedback(&crate::i18n::tr("Couldn't read skills and rules"), true)
                 }
             }
+        });
+    }
+
+    /// Scan again without clearing the message a failed write just showed.
+    fn rescan_keeping_feedback(&self) {
+        let generation = self.generation.get().wrapping_add(1);
+        self.generation.set(generation);
+        let project = self.project.borrow().clone();
+        let page = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            let result =
+                gtk::gio::spawn_blocking(move || crate::skills::inventory(project.as_deref()))
+                    .await;
+            if generation != page.generation.get() {
+                return;
+            }
+            if let Ok(Ok(inv)) = result {
+                page.inventory.replace(Some(inv));
+            }
+            page.render();
         });
     }
 
@@ -390,8 +433,16 @@ impl SkillsPage {
         work: impl FnOnce(Option<String>) -> Result<Inventory, String> + Send + 'static,
     ) {
         if self.busy.replace(true) {
+            // Snap the control that fired back to what is saved, after this signal returns.
+            self.show_feedback(
+                &crate::i18n::tr("Wait for the last change to finish."),
+                false,
+            );
+            let page = self.clone();
+            gtk::glib::idle_add_local_once(move || page.render());
             return;
         }
+        // Supersede any scan in flight; its result would predate this write.
         let generation = self.generation.get().wrapping_add(1);
         self.generation.set(generation);
         let project = self.project.borrow().clone();
@@ -399,16 +450,37 @@ impl SkillsPage {
         gtk::glib::spawn_future_local(async move {
             let result = gtk::gio::spawn_blocking(move || work(project)).await;
             page.busy.set(false);
+            page.refresh_button.set_sensitive(true);
+            if page.refresh_pending.replace(false) {
+                // A rescan or project change came in during the write: run it now, after the
+                // write, and keep this write's message.
+                match &result {
+                    Ok(Ok(_)) => page.show_feedback(&success, false),
+                    Ok(Err(error)) => page.show_feedback(error, true),
+                    Err(_) => page.show_feedback(&crate::i18n::tr("Couldn't fix this"), true),
+                }
+                page.rescan_keeping_feedback();
+                return;
+            }
+            if generation != page.generation.get() {
+                return;
+            }
             match result {
                 Ok(Ok(inv)) => {
                     page.inventory.replace(Some(inv));
                     page.show_feedback(&success, false);
+                    page.render();
                 }
-                Ok(Err(error)) => page.show_feedback(&error, true),
-                Err(_) => page.show_feedback(&crate::i18n::tr("Couldn't fix this"), true),
+                Ok(Err(error)) => {
+                    page.show_feedback(&error, true);
+                    // Part of a write may have landed; show what is on disk now.
+                    page.rescan_keeping_feedback();
+                }
+                Err(_) => {
+                    page.show_feedback(&crate::i18n::tr("Couldn't fix this"), true);
+                    page.rescan_keeping_feedback();
+                }
             }
-            // Redraw either way so a refused switch flips back.
-            page.render();
         });
     }
 
@@ -669,15 +741,31 @@ impl SkillsPage {
             facts.push(crate::i18n::trf("git repo: {name}", &[("name", repo)]));
         }
         if skill.source != Source::Broken {
-            facts.push(crate::i18n::trf(
-                "{size} · {lines} lines",
-                &[
-                    ("size", &fmt_bytes(skill.size_bytes)),
-                    ("lines", &skill.lines.to_string()),
-                ],
-            ));
+            facts.push(if skill.lines == 1 {
+                crate::i18n::trf("{size} · 1 line", &[("size", &fmt_bytes(skill.size_bytes))])
+            } else {
+                crate::i18n::trf(
+                    "{size} · {lines} lines",
+                    &[
+                        ("size", &fmt_bytes(skill.size_bytes)),
+                        ("lines", &skill.lines.to_string()),
+                    ],
+                )
+            });
         }
         detail.append(&muted(&facts.join(" · ")));
+        let others: Vec<&str> = skill
+            .links
+            .iter()
+            .map(String::as_str)
+            .filter(|l| *l != skill.path)
+            .collect();
+        if !others.is_empty() {
+            detail.append(&muted(&crate::i18n::trf(
+                "Reached by {paths}",
+                &[("paths", &others.join(", "))],
+            )));
+        }
         detail.append(&self.file_actions(&skill.path, &skill.folder, "Open SKILL.md"));
 
         let agents = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -686,6 +774,9 @@ impl SkillsPage {
             agents.append(&self.agent_row(agent, skill));
         }
         detail.append(&agents);
+        if !skill.preview.is_empty() {
+            detail.append(&preview_label(&skill.preview));
+        }
         detail
     }
 
@@ -804,7 +895,11 @@ impl SkillsPage {
                 &[("skill", &skill.name), ("client", &agent.name)],
             ))
             .build();
+        let busy = self.busy.clone();
         switch.connect_state_set(move |_, active| {
+            if busy.get() {
+                return gtk::glib::Propagation::Stop;
+            }
             set(if active { Wanted::On } else { Wanted::Off });
             gtk::glib::Propagation::Proceed
         });
@@ -880,6 +975,18 @@ impl SkillsPage {
             .label_widget(&title)
             .css_classes(["toolport-details-expander"])
             .build();
+        let open_key = format!("rule:{}", rule.key);
+        expander.set_expanded(self.expanded.borrow().contains(&open_key));
+        {
+            let expanded = self.expanded.clone();
+            expander.connect_expanded_notify(move |expander| {
+                if expander.is_expanded() {
+                    expanded.borrow_mut().insert(open_key.clone());
+                } else {
+                    expanded.borrow_mut().remove(&open_key);
+                }
+            });
+        }
         let detail = gtk::Box::new(gtk::Orientation::Vertical, 8);
         detail.set_margin_top(8);
         let folder = std::path::Path::new(&rule.path)
@@ -943,6 +1050,9 @@ impl SkillsPage {
             agents.append(&row);
         }
         detail.append(&agents);
+        if !rule.preview.is_empty() {
+            detail.append(&preview_label(&rule.preview));
+        }
         expander.set_child(Some(&detail));
         card.append(&expander);
         card

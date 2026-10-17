@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import {
   AlertTriangle,
@@ -40,6 +48,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { fixSkillIssue, openSkillPath, setSkillState, skillsInventory } from "@/lib/api";
+import { SKILLS_REFRESH_EVENT } from "@/lib/shortcuts";
 import { translate, useI18n } from "@/lib/i18n";
 import { toastError } from "@/lib/toast";
 import type {
@@ -59,6 +68,7 @@ type Tab = "skills" | "rules" | "issues";
 /** Claude Code keeps this many description characters (mirrors DESCRIPTION_CAP in skills.rs). */
 const DESCRIPTION_CAP = 1536;
 const PROJECT_KEY = "toolport-skills-project";
+const TAB_ORDER: Tab[] = ["skills", "rules", "issues"];
 const COLUMN = 28;
 const SOURCE_ORDER: SkillSource[] = [
   "yours",
@@ -328,9 +338,13 @@ function FileActions({
             size="icon-sm"
             aria-label={t("Copy path")}
             onClick={() =>
-              void navigator.clipboard
-                .writeText(path)
-                .then(() => toast.success(t("Path copied")))
+              void navigator.clipboard.writeText(path).then(
+                () => toast.success(t("Path copied")),
+                (error) =>
+                  toastError(t("Couldn't copy the path"), {
+                    description: errorText(error),
+                  }),
+              )
             }
           >
             <Copy />
@@ -401,6 +415,18 @@ function StateControl({
       ["name-only", t("Name only")],
       ["off", t("Off")],
     ];
+    // Radio group keyboard pattern: one tab stop, arrows move and select.
+    const onKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+      const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+      if (step === undefined || busy) return;
+      event.preventDefault();
+      const index = options.findIndex(([value]) => value === current);
+      const next = options[(index + step + options.length) % options.length][0];
+      onChange(next);
+      event.currentTarget.parentElement
+        ?.querySelector<HTMLButtonElement>(`[data-value="${next}"]`)
+        ?.focus();
+    };
     return (
       <div
         role="radiogroup"
@@ -412,7 +438,10 @@ function StateControl({
             key={value}
             type="button"
             role="radio"
+            data-value={value}
             aria-checked={current === value}
+            tabIndex={current === value ? 0 : -1}
+            onKeyDown={onKeyDown}
             disabled={busy}
             onClick={() => current !== value && onChange(value)}
             className={cn(
@@ -545,10 +574,12 @@ function SkillDetail({
       <Field label={t("Source")}>{skill.sourceNote}</Field>
       {skill.source !== "broken" && (
         <Field label={t("Size")}>
-          {t("{size} · {lines} lines", {
-            size: fmtBytes(skill.sizeBytes),
-            lines: skill.lines.toLocaleString(),
-          })}
+          {skill.lines === 1
+            ? t("{size} · 1 line", { size: fmtBytes(skill.sizeBytes) })
+            : t("{size} · {lines} lines", {
+                size: fmtBytes(skill.sizeBytes),
+                lines: skill.lines.toLocaleString(),
+              })}
         </Field>
       )}
       {skill.modifiedSecs !== null && (
@@ -910,6 +941,8 @@ export function SkillsView() {
 
   // Latest request wins, so a slow scan of an old project can't overwrite a newer one.
   const request = useRef(0);
+  // The project the user has picked right now; a write that returns for another one is stale.
+  const projectRef = useRef(project);
   const fetchInventory = useCallback(() => {
     const id = ++request.current;
     return skillsInventory(project)
@@ -918,6 +951,13 @@ export function SkillsView() {
           if (id !== request.current) return;
           setInv(next);
           setError(null);
+          // The backend drops a saved folder that no longer exists; follow it.
+          if (project && next.project === null) {
+            writeProject(null);
+            projectRef.current = null;
+            setProject(null);
+            toast.info(t("That project folder is gone. Showing global only."));
+          }
         },
         (e) => {
           if (id === request.current) setError(errorText(e));
@@ -926,7 +966,7 @@ export function SkillsView() {
       .finally(() => {
         if (id === request.current) setLoading(false);
       });
-  }, [project]);
+  }, [project, t]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -937,6 +977,22 @@ export function SkillsView() {
   useEffect(() => {
     void fetchInventory();
   }, [fetchInventory, locale]);
+
+  // The app's Refresh shortcut rescans here instead of reloading servers.
+  useEffect(() => {
+    const onRefresh = () => void load();
+    window.addEventListener(SKILLS_REFRESH_EVENT, onRefresh);
+    return () => window.removeEventListener(SKILLS_REFRESH_EVENT, onRefresh);
+  }, [load]);
+
+  /** Show a write's result unless the user has moved to another project meanwhile. */
+  function applyWrite(next: SkillsInventory, forProject: string | null) {
+    if (projectRef.current !== forProject) return;
+    request.current++;
+    setInv(next);
+    setError(null);
+    setLoading(false);
+  }
 
   const skillAgents = useMemo(
     () => inv?.agents.filter((a) => a.supportsSkills) ?? [],
@@ -972,29 +1028,35 @@ export function SkillsView() {
     inv?.skills.find((s) => s.key === selectedSkill) ?? visibleSkills[0] ?? null;
   const rule = inv?.rules.find((r) => r.key === selectedRule) ?? visibleRules[0] ?? null;
 
+  function switchProject(next: string | null) {
+    if (next === projectRef.current) return;
+    writeProject(next);
+    projectRef.current = next;
+    setLoading(true);
+    setProject(next);
+  }
+
   async function chooseProject() {
     try {
       const picked = await openFolderDialog({ directory: true, multiple: false });
-      if (typeof picked === "string") {
-        writeProject(picked);
-        setProject(picked);
-      }
+      if (typeof picked === "string") switchProject(picked);
     } catch (e) {
       toastError(t("Couldn't open the folder picker"), { description: errorText(e) });
     }
   }
 
   function clearProject() {
-    writeProject(null);
-    setProject(null);
+    switchProject(null);
   }
 
   async function change(agent: SkillAgent, target: SkillEntry, wanted: SkillWanted) {
     setBusy(true);
+    const forProject = project;
     try {
-      const next = await setSkillState(agent.id, target.key, wanted, project);
-      request.current++;
-      setInv(next);
+      applyWrite(
+        await setSkillState(agent.id, target.key, wanted, forProject),
+        forProject,
+      );
       toast.success(
         wanted === "off"
           ? t("Turned off {skill} in {client}", {
@@ -1021,6 +1083,8 @@ export function SkillsView() {
           description: errorText(e),
         },
       );
+      // Show what is on disk now, whatever the write managed to do.
+      void load();
     } finally {
       setBusy(false);
     }
@@ -1028,17 +1092,40 @@ export function SkillsView() {
 
   async function fix(issue: SkillIssue) {
     setBusy(true);
+    const forProject = project;
     try {
-      const next = await fixSkillIssue(issue.id, project);
-      request.current++;
-      setInv(next);
+      applyWrite(await fixSkillIssue(issue.id, forProject), forProject);
       toast.success(t("Fixed: {title}", { title: issue.title }));
     } catch (e) {
       toastError(t("Couldn't fix this"), { description: errorText(e) });
+      // Part of a fix may have landed before the error; rescan so the page shows it.
+      void load();
       throw e;
     } finally {
       setBusy(false);
     }
+  }
+
+  // Tabs follow the APG pattern: one tab stop, arrows and Home/End move between tabs.
+  const tabRefs = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
+  function selectTab(next: Tab) {
+    // An agent filter from one tab can name an agent the other tab has no column for.
+    setFocus(null);
+    setTab(next);
+  }
+  function onTabKey(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    const index = TAB_ORDER.indexOf(tab);
+    const target = {
+      ArrowRight: (index + 1) % TAB_ORDER.length,
+      ArrowLeft: (index - 1 + TAB_ORDER.length) % TAB_ORDER.length,
+      Home: 0,
+      End: TAB_ORDER.length - 1,
+    }[event.key];
+    if (target === undefined) return;
+    event.preventDefault();
+    const next = TAB_ORDER[target];
+    selectTab(next);
+    tabRefs.current[next]?.focus();
   }
 
   const tabs: [Tab, string, number, boolean][] = [
@@ -1116,10 +1203,17 @@ export function SkillsView() {
         {tabs.map(([id, label, count, warn]) => (
           <button
             key={id}
+            id={`skills-tab-${id}`}
+            ref={(node) => {
+              tabRefs.current[id] = node;
+            }}
             type="button"
             role="tab"
             aria-selected={tab === id}
-            onClick={() => setTab(id)}
+            aria-controls={`skills-panel-${id}`}
+            tabIndex={tab === id ? 0 : -1}
+            onKeyDown={onTabKey}
+            onClick={() => selectTab(id)}
             className={cn(
               "-mb-px flex items-center gap-2 border-b-2 pb-2.5 text-sm transition-colors focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
               tab === id
@@ -1201,7 +1295,7 @@ export function SkillsView() {
             {inv.issues[0].title}
           </span>
         </span>
-        <Button variant="outline" size="sm" onClick={() => setTab("issues")}>
+        <Button variant="outline" size="sm" onClick={() => selectTab("issues")}>
           {t("Review")}
         </Button>
       </div>
@@ -1285,7 +1379,10 @@ export function SkillsView() {
                             <StateDot
                               key={agent.id}
                               state={s.states[agent.id]?.state}
-                              label={`${agent.name}: ${stateLabel(s.states[agent.id]?.state)}`}
+                              label={t("{client}: {state}", {
+                                client: agent.name,
+                                state: stateLabel(s.states[agent.id]?.state),
+                              })}
                             />
                           ))}
                         </span>
@@ -1341,7 +1438,7 @@ export function SkillsView() {
             scopes.map(({ scope, items }) => (
               <div key={scope}>
                 <GroupHeader
-                  open={!collapsed.has(`rules:${scope}`)}
+                  open={!collapsed.has(`rules:${scope}`) || Boolean(needle)}
                   onToggle={() =>
                     setCollapsed((prev) => {
                       const next = new Set(prev);
@@ -1361,7 +1458,7 @@ export function SkillsView() {
                         : undefined
                   }
                 />
-                {!collapsed.has(`rules:${scope}`) &&
+                {(!collapsed.has(`rules:${scope}`) || Boolean(needle)) &&
                   items.map((r) => (
                     <button
                       key={r.key}
@@ -1386,9 +1483,10 @@ export function SkillsView() {
                           <StateDot
                             key={agent.id}
                             state={r.agents[agent.id] ? "on" : undefined}
-                            label={`${agent.name}: ${
-                              r.agents[agent.id] ? t("Loaded") : t("Not loaded")
-                            }`}
+                            label={t("{client}: {state}", {
+                              client: agent.name,
+                              state: r.agents[agent.id] ? t("Loaded") : t("Not loaded"),
+                            })}
                           />
                         ))}
                       </span>
@@ -1444,7 +1542,13 @@ export function SkillsView() {
   return (
     <div className="flex flex-col gap-4">
       {header}
-      {body}
+      <div
+        role="tabpanel"
+        id={`skills-panel-${tab}`}
+        aria-labelledby={`skills-tab-${tab}`}
+      >
+        {body}
+      </div>
     </div>
   );
 }

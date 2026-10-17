@@ -381,5 +381,8 @@
   "{count} rules files": "{count} rules files",
   "{count} things need a look": "{count} things need a look",
   "{size} · {lines} lines": "{size} · {lines} lines",
-  "{skill} in {client}": "{skill} in {client}"
+  "{skill} in {client}": "{skill} in {client}",
+  "{client}: {state}": "{client}: {state}",
+  "Couldn't copy the path": "Couldn't copy the path",
+  "That project folder is gone. Showing global only.": "That project folder is gone. Showing global only."
 }

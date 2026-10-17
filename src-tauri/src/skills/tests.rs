@@ -404,8 +404,8 @@ fn set_state_refuses_clients_without_a_switch_and_name_only_outside_claude() {
 fn opencode_v1_permission_map_is_read_and_written_in_place() {
     let mut config = serde_json::json!({"permission": {"skill": {"a": "deny"}}});
     assert!(opencode_denied(&config).contains("a"));
-    opencode_toggle(&mut config, "a", false);
-    opencode_toggle(&mut config, "b", true);
+    opencode_toggle(&mut config, "a", false).unwrap();
+    opencode_toggle(&mut config, "b", true).unwrap();
     assert!(config.get("permissions").is_none());
     assert_eq!(opencode_denied(&config), BTreeSet::from(["b".to_string()]));
     // v2: the last matching rule wins.
@@ -420,22 +420,23 @@ fn opencode_v1_permission_map_is_read_and_written_in_place() {
 fn yaml_disabled_list_edits_keep_other_lines() {
     let names = vec!["a".to_string(), "b".to_string()];
     assert_eq!(
-        set_yaml_skills_disabled("", &names),
+        set_yaml_skills_disabled("", &names).unwrap(),
         "skills:\n  disabled: [\"a\", \"b\"]\n"
     );
     assert_eq!(
-        set_yaml_skills_disabled("model: x\n", &names),
+        set_yaml_skills_disabled("model: x\n", &names).unwrap(),
         "model: x\nskills:\n  disabled: [\"a\", \"b\"]\n"
     );
     assert_eq!(
         set_yaml_skills_disabled(
             "skills:\n    disabled:\n    - old\n    - older\n    other: 1\nnext: 2\n",
             &names
-        ),
+        )
+        .unwrap(),
         "skills:\n    disabled: [\"a\", \"b\"]\n    other: 1\nnext: 2\n"
     );
     assert_eq!(
-        set_yaml_skills_disabled("skills:\n  disabled: [x]\n", &[]),
+        set_yaml_skills_disabled("skills:\n  disabled: [x]\n", &[]).unwrap(),
         "skills:\n  disabled: []\n"
     );
 }
@@ -647,4 +648,240 @@ fn front_matter_that_isnt_valid_yaml_still_gives_name_and_description() {
     let (_, folded) =
         front_matter("---\nname: x\ndescription: >\n  First line: more\n  second\nother: 1\n---\n");
     assert_eq!(folded.as_deref(), Some("First line: more second"));
+}
+
+#[test]
+fn opencode_wildcards_decide_state_and_writes_never_widen_a_blanket_rule() {
+    // v2: a later wildcard deny turns everything off; an explicit allow after it wins.
+    let v2 = serde_json::json!({"permissions": [
+        {"action": "skill", "resource": "keep", "effect": "allow"},
+        {"action": "skill", "resource": "*", "effect": "deny"}
+    ]});
+    let rules = opencode_rules(&v2);
+    assert!(rules_deny(&rules, "keep"));
+    assert!(rules_deny(&rules, "anything"));
+    let mut config = v2.clone();
+    opencode_toggle(&mut config, "keep", false).unwrap();
+    assert!(!rules_deny(&opencode_rules(&config), "keep"));
+    assert!(rules_deny(&opencode_rules(&config), "other"));
+    // Patterns match by glob.
+    assert!(glob_match("orca-*", "orca-cli"));
+    assert!(!glob_match("orca-*", "inbox"));
+    // v1: one string for every skill is refused, never replaced by a single-skill map.
+    let mut blanket = serde_json::json!({"permission": {"skill": "deny"}});
+    assert!(opencode_toggle(&mut blanket, "x", true).is_err());
+    assert_eq!(
+        blanket,
+        serde_json::json!({"permission": {"skill": "deny"}})
+    );
+    // v1 map with a wildcard: turning one on adds an allow instead of only removing its entry.
+    let mut map = serde_json::json!({"permission": {"skill": {"*": "deny", "x": "deny"}}});
+    opencode_toggle(&mut map, "x", false).unwrap();
+    assert_eq!(map["permission"]["skill"]["x"], "allow");
+    assert!(rules_deny(&opencode_rules(&map), "y"));
+}
+
+#[test]
+fn opencode_wildcard_deny_shows_skills_off() {
+    let home = Home::new();
+    home.skill(".agents/skills/inbox", "inbox", "Inbox");
+    home.write(
+        ".config/opencode/opencode.json",
+        r#"{"permissions": [{"action": "skill", "resource": "*", "effect": "deny"}]}"#,
+    );
+    let inv = scan(&home.env(), &only(&["opencode"]), None);
+    assert_eq!(state(&inv, "inbox", "opencode"), Some(State::Off));
+}
+
+#[test]
+fn json_settings_in_an_unexpected_shape_are_refused_not_replaced() {
+    let home = Home::new();
+    home.skill(".agents/skills/inbox", "inbox", "Inbox");
+    home.write(".copilot/settings.json", r#"{"disabledSkills": "inbox"}"#);
+    let env = home.env();
+    let inv = scan(&env, &only(&["github-copilot-cli"]), None);
+    let key = skill(&inv, "inbox").key.clone();
+    let writer = TestWriter::default();
+    assert!(set_state(&env, &inv, "github-copilot-cli", &key, Wanted::Off, &writer).is_err());
+    assert_eq!(
+        home.read(".copilot/settings.json"),
+        r#"{"disabledSkills": "inbox"}"#
+    );
+}
+
+#[test]
+fn hermes_edits_keep_comments_and_refuse_what_they_cannot_read() {
+    let names = vec!["a".to_string()];
+    // A comment after the key is still the same key, not a reason to add a second one.
+    assert_eq!(
+        set_yaml_skills_disabled("skills: # mine\n  other: 1\n", &names).unwrap(),
+        "skills: # mine\n  disabled: [\"a\"]\n  other: 1\n"
+    );
+    // A flow mapping on the key's line is refused.
+    assert!(set_yaml_skills_disabled("skills: {disabled: [b]}\n", &names).is_err());
+
+    // A config serde_yaml can't parse keeps its list: the toggle fails instead.
+    let home = Home::new();
+    home.skill(".hermes/skills/notes", "notes", "Notes");
+    let broken = "skills:\n  disabled: [x]\nmodel: a\nmodel: b\n";
+    home.write(".hermes/config.yaml", broken);
+    let env = home.env();
+    let inv = scan(&env, &only(&["hermes"]), None);
+    let key = skill(&inv, "notes").key.clone();
+    let writer = TestWriter::default();
+    assert!(set_state(&env, &inv, "hermes", &key, Wanted::Off, &writer).is_err());
+    assert_eq!(home.read(".hermes/config.yaml"), broken);
+}
+
+#[test]
+fn codex_turn_on_clears_entries_written_as_the_folder_or_real_path() {
+    let home = Home::new();
+    let real = home.skill(".agents/skills/inbox", "inbox", "Inbox");
+    let folder = real.parent().unwrap().display().to_string();
+    home.write(
+        ".codex/config.toml",
+        &format!("[[skills.config]]\npath = \"{folder}\"\nenabled = false\n"),
+    );
+    let env = home.env();
+    let inv = scan(&env, &only(&["codex"]), None);
+    assert_eq!(state(&inv, "inbox", "codex"), Some(State::Off));
+    let key = skill(&inv, "inbox").key.clone();
+    let writer = TestWriter::default();
+    set_state(&env, &inv, "codex", &key, Wanted::On, &writer).unwrap();
+    let inv = scan(&env, &only(&["codex"]), None);
+    assert_eq!(state(&inv, "inbox", "codex"), Some(State::On));
+}
+
+#[test]
+fn unreadable_codex_config_is_an_error_not_an_empty_file() {
+    let home = Home::new();
+    home.skill(".agents/skills/inbox", "inbox", "Inbox");
+    home.write(".codex/config.toml", "model = \"x\"\n");
+    let env = home.env();
+    let inv = scan(&env, &only(&["codex"]), None);
+    let key = skill(&inv, "inbox").key.clone();
+    // Too big to read: the write must fail rather than replace the file.
+    let big = format!(
+        "model = \"x\"\n# {}\n",
+        "x".repeat(MAX_FILE_BYTES as usize + 1)
+    );
+    home.write(".codex/config.toml", &big);
+    let writer = TestWriter::default();
+    assert!(set_state(&env, &inv, "codex", &key, Wanted::Off, &writer).is_err());
+    assert_eq!(home.read(".codex/config.toml").len(), big.len());
+}
+
+#[test]
+fn claude_plugin_skills_switch_by_plugin_name_and_dont_clash_with_yours() {
+    let home = Home::new();
+    home.write(
+        ".claude/settings.json",
+        r#"{"enabledPlugins": {"tools@market": true}}"#,
+    );
+    home.skill(
+        ".claude/plugins/cache/market/tools/1.0.0/skills/review",
+        "review",
+        "Plugin review",
+    );
+    home.skill(".claude/skills/review", "review", "My review");
+    let env = home.env();
+    let inv = scan(&env, &only(&["claude-code"]), None);
+    let mine = inv
+        .skills
+        .iter()
+        .find(|s| s.description == "My review")
+        .unwrap();
+    let plugin = inv
+        .skills
+        .iter()
+        .find(|s| s.description == "Plugin review")
+        .unwrap();
+    assert_eq!(mine.states["claude-code"].state, State::On);
+    assert_eq!(plugin.states["claude-code"].state, State::On);
+    assert!(!inv.issues.iter().any(|i| i.id == "clashes"));
+    let writer = TestWriter::default();
+    set_state(&env, &inv, "claude-code", &plugin.key, Wanted::Off, &writer).unwrap();
+    let settings = home.read(".claude/settings.json");
+    assert!(settings.contains(r#""tools:review": "off""#), "{settings}");
+    let inv = scan(&env, &only(&["claude-code"]), None);
+    let mine = inv
+        .skills
+        .iter()
+        .find(|s| s.description == "My review")
+        .unwrap();
+    assert_eq!(mine.states["claude-code"].state, State::On);
+}
+
+#[test]
+fn a_fix_that_edits_one_file_many_times_backs_it_up_once() {
+    let home = Home::new();
+    for name in ["a", "b", "c", "d", "e", "f", "g"] {
+        home.skill(&format!(".agents/skills/{name}"), name, "Skill");
+        home.link(
+            &format!(".claude/skills/{name}"),
+            &home.path(&format!(".agents/skills/{name}")),
+        );
+    }
+    home.write(
+        ".claude/settings.json",
+        r#"{"skillOverrides": {"a": "off", "b": "off", "c": "off", "d": "off", "e": "off", "f": "off", "g": "off"}}"#,
+    );
+    home.write(".copilot/settings.json", "{}");
+    let env = home.env();
+    let inv = scan(&env, &only(&["claude-code", "github-copilot-cli"]), None);
+    let writer = TestWriter::default();
+    assert_eq!(apply_fix(&env, &inv, "off-elsewhere", &writer).unwrap(), 7);
+    let backups = writer.backups.borrow();
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    let inv = scan(&env, &only(&["claude-code", "github-copilot-cli"]), None);
+    assert_eq!(state(&inv, "g", "github-copilot-cli"), Some(State::Off));
+}
+
+#[test]
+fn skills_count_as_yours_through_a_symlinked_home_or_inside_the_project() {
+    let home = Home::new();
+    home.skill("real-home/.agents/skills/inbox", "inbox", "Inbox");
+    home.link("home", &home.path("real-home"));
+    let env = Env::from_home(&home.path("home"));
+    let inv = scan(&env, &only(&["codex"]), None);
+    let inbox = skill(&inv, "inbox");
+    assert_eq!(inbox.source, Source::Yours);
+    assert!(inbox.path.starts_with("~/"), "{}", inbox.path);
+
+    let project = home.path("work/repo");
+    home.skill("work/repo/.agents/skills/build", "build", "Build");
+    let other = Home::new();
+    let inv = scan(&other.env(), &only(&["codex"]), Some(&project));
+    assert_eq!(skill(&inv, "build").source, Source::Yours);
+}
+
+#[test]
+fn only_dangling_links_count_as_broken() {
+    let home = Home::new();
+    let target = home.skill(".agents/skills/inbox", "inbox", "Inbox");
+    home.link(".grok/skills/inbox", target.parent().unwrap());
+    assert!(!dangling(&home.path(".grok/skills/inbox")));
+    home.link(".grok/skills/gone", &home.path(".agents/skills/gone"));
+    assert!(dangling(&home.path(".grok/skills/gone")));
+    // A plain folder is never removed as a link.
+    assert!(DiskWriter
+        .remove_link(&home.path(".agents/skills/inbox"))
+        .is_err());
+    assert!(home.path(".agents/skills/inbox").is_dir());
+}
+
+#[test]
+fn open_never_runs_a_non_text_file_it_reached_through_an_import() {
+    assert!(opens_as_text(Path::new("/p/CLAUDE.md")));
+    assert!(opens_as_text(Path::new("/p/rules.MDC")));
+    assert!(!opens_as_text(Path::new("/p/run.sh")));
+    assert!(!opens_as_text(Path::new("/p/setup.bat")));
+    assert!(!opens_as_text(Path::new("/p/no-extension")));
+}
+
+#[test]
+fn lists_join_with_localized_separators() {
+    let names: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(list_names(&names), "a, b and c");
+    assert_eq!(list_names(&names[..2]), "a and b");
 }

@@ -331,7 +331,7 @@
   "Not in any folder it reads": "No está en ninguna carpeta que lea",
   "Not loaded": "No cargado",
   "Nothing needs a look": "Nada necesita revisión",
-  "On": "Activada",
+  "On": "Activado",
   "Open SKILL.md": "Abrir SKILL.md",
   "Open file": "Abrir archivo",
   "Own switch": "Interruptor propio",
@@ -375,11 +375,14 @@
   "{count} broken": "{count} rotas",
   "{count} name only": "{count} solo el nombre",
   "{count} of {cap} characters": "{count} de {cap} caracteres",
-  "{count} of {total} load it": "{count} de {total} la cargan",
+  "{count} of {total} load it": "Cargado por {count} de {total}",
   "{count} off": "{count} desactivadas",
   "{count} on": "{count} activadas",
   "{count} rules files": "{count} archivos de reglas",
   "{count} things need a look": "{count} cosas necesitan revisión",
   "{size} · {lines} lines": "{size} · {lines} líneas",
-  "{skill} in {client}": "{skill} en {client}"
+  "{skill} in {client}": "{skill} en {client}",
+  "{client}: {state}": "{client}: {state}",
+  "Couldn't copy the path": "No se pudo copiar la ruta",
+  "That project folder is gone. Showing global only.": "Esa carpeta de proyecto ya no existe. Se muestra solo lo global."
 }

@@ -381,5 +381,8 @@
   "{count} rules files": "{count} 個規則檔案",
   "{count} things need a look": "有 {count} 項需要查看",
   "{size} · {lines} lines": "{size} · {lines} 行",
-  "{skill} in {client}": "{client} 中的 {skill}"
+  "{skill} in {client}": "{client} 中的 {skill}",
+  "{client}: {state}": "{client}：{state}",
+  "Couldn't copy the path": "無法複製路徑",
+  "That project folder is gone. Showing global only.": "該專案資料夾已不存在。僅顯示全域內容。"
 }

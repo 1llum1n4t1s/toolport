@@ -4,6 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { fixSkillIssue, openSkillPath, setSkillState, skillsInventory } from "@/lib/api";
 import { applySkillState, skillsFixture } from "@/test/skills-fixture";
+import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
+import { toastError } from "@/lib/toast";
+import { SKILLS_REFRESH_EVENT } from "@/lib/shortcuts";
 import { SkillsView } from "./SkillsView";
 
 vi.mock("@/lib/api", () => ({
@@ -13,6 +16,7 @@ vi.mock("@/lib/api", () => ({
   openSkillPath: vi.fn(),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+vi.mock("@/lib/toast", () => ({ toastError: vi.fn() }));
 
 beforeEach(() => {
   localStorage.clear();
@@ -125,6 +129,105 @@ describe("SkillsView", () => {
     expect(fixSkillIssue).toHaveBeenCalledWith("broken-links", null);
     await waitFor(() =>
       expect(screen.queryByText("1 link to a missing folder")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("keeps the switch and rescans when a client refuses the write", async () => {
+    vi.mocked(setSkillState).mockRejectedValueOnce(
+      new Error("permissions isn't in a shape"),
+    );
+    renderView();
+    const list = await screen.findByRole("region", { name: "Skills" });
+    await userEvent.click(within(list).getByRole("button", { name: /screenshot/ }));
+    const details = screen.getByRole("complementary", { name: "Skill details" });
+    const loadsBefore = vi.mocked(skillsInventory).mock.calls.length;
+    await userEvent.click(
+      within(details).getByRole("switch", { name: "Load screenshot in OpenCode" }),
+    );
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(
+      within(details).getByRole("switch", { name: "Load screenshot in OpenCode" }),
+    ).toBeChecked();
+    await waitFor(() =>
+      expect(vi.mocked(skillsInventory).mock.calls.length).toBeGreaterThan(loadsBefore),
+    );
+  });
+
+  it("keeps the confirm open when a fix fails", async () => {
+    vi.mocked(fixSkillIssue).mockRejectedValueOnce(new Error("disk full"));
+    renderView();
+    await userEvent.click(await screen.findByRole("tab", { name: /Needs a look/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Remove link" }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Remove link" }));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("moves between tabs with the arrow keys and clears an agent filter", async () => {
+    renderView();
+    const list = await screen.findByRole("region", { name: "Skills" });
+    await userEvent.click(
+      within(list).getByRole("button", { name: "Show only what Codex loads" }),
+    );
+    const skillsTab = screen.getByRole("tab", { name: /Skills/ });
+    skillsTab.focus();
+    await userEvent.keyboard("{ArrowRight}");
+    const rulesTab = screen.getByRole("tab", { name: /Rules/ });
+    expect(rulesTab).toHaveAttribute("aria-selected", "true");
+    expect(rulesTab).toHaveFocus();
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", rulesTab.id);
+    await userEvent.keyboard("{ArrowLeft}");
+    const again = await screen.findByRole("region", { name: "Skills" });
+    // The Codex filter from before is gone, so skills Codex doesn't load are back.
+    expect(within(again).getByRole("button", { name: /pdf/ })).toBeInTheDocument();
+  });
+
+  it("drops a write result that returns after the user picked another project", async () => {
+    let resolveWrite: (value: ReturnType<typeof skillsFixture>) => void = () => {};
+    vi.mocked(setSkillState).mockImplementationOnce(
+      () => new Promise((resolve) => (resolveWrite = resolve)),
+    );
+    vi.mocked(openFolderDialog).mockResolvedValueOnce("/work/repo");
+    renderView();
+    const list = await screen.findByRole("region", { name: "Skills" });
+    await userEvent.click(within(list).getByRole("button", { name: /screenshot/ }));
+    const details = screen.getByRole("complementary", { name: "Skill details" });
+    await userEvent.click(
+      within(details).getByRole("switch", { name: "Load screenshot in OpenCode" }),
+    );
+    vi.mocked(skillsInventory).mockResolvedValue({
+      ...skillsFixture(),
+      project: "/work/repo",
+    });
+    await userEvent.click(screen.getByRole("button", { name: /Global only/ }));
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: /Add a project folder/ }),
+    );
+    await screen.findByRole("button", { name: /Global \+ repo/ });
+    expect(localStorage.getItem("toolport-skills-project")).toBe("/work/repo");
+    // The old global write lands late; the project view must not be replaced by it.
+    resolveWrite(applySkillState(skillsFixture(), "opencode", "x", "off"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Global \+ repo/ })).toBeInTheDocument(),
+    );
+    expect(
+      within(screen.getByRole("complementary", { name: "Skill details" })).getByRole(
+        "switch",
+        {
+          name: "Load screenshot in OpenCode",
+        },
+      ),
+    ).toBeChecked();
+  });
+
+  it("rescans when the app's Refresh shortcut fires", async () => {
+    renderView();
+    await screen.findByRole("region", { name: "Skills" });
+    const before = vi.mocked(skillsInventory).mock.calls.length;
+    window.dispatchEvent(new Event(SKILLS_REFRESH_EVENT));
+    await waitFor(() =>
+      expect(vi.mocked(skillsInventory).mock.calls.length).toBe(before + 1),
     );
   });
 });

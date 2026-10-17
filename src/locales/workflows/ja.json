@@ -381,5 +381,8 @@
   "{count} rules files": "ルールファイル{count}件",
   "{count} things need a look": "確認が必要な項目が{count}件あります",
   "{size} · {lines} lines": "{size} · {lines} 行",
-  "{skill} in {client}": "{client} の {skill}"
+  "{skill} in {client}": "{client} の {skill}",
+  "{client}: {state}": "{client}: {state}",
+  "Couldn't copy the path": "パスをコピーできませんでした",
+  "That project folder is gone. Showing global only.": "そのプロジェクトフォルダーはなくなりました。グローバルのみ表示します。"
 }

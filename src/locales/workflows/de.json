@@ -375,11 +375,14 @@
   "{count} broken": "{count} defekt",
   "{count} name only": "{count} nur Name",
   "{count} of {cap} characters": "{count} von {cap} Zeichen",
-  "{count} of {total} load it": "{count} von {total} laden ihn",
+  "{count} of {total} load it": "Geladen von {count} von {total}",
   "{count} off": "{count} aus",
   "{count} on": "{count} an",
   "{count} rules files": "{count} Regeldateien",
   "{count} things need a look": "{count} Punkte sollten geprüft werden",
   "{size} · {lines} lines": "{size} · {lines} Zeilen",
-  "{skill} in {client}": "{skill} in {client}"
+  "{skill} in {client}": "{skill} in {client}",
+  "{client}: {state}": "{client}: {state}",
+  "Couldn't copy the path": "Pfad konnte nicht kopiert werden",
+  "That project folder is gone. Showing global only.": "Dieser Projektordner existiert nicht mehr. Es wird nur Globales angezeigt."
 }
