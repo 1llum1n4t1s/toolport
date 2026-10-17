@@ -673,6 +673,13 @@ pub struct Issue {
     /// Display names for `skills`, without repeats.
     pub skill_names: Vec<String>,
     pub fix_label: Option<String>,
+    /// Stable for as long as the issue covers the same skills and clients, so a dismissal
+    /// lasts until something about the problem changes.
+    #[serde(default)]
+    pub fingerprint: String,
+    /// The user has said this one is fine.
+    #[serde(default)]
+    pub dismissed: bool,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1723,6 +1730,8 @@ fn issue(
         skills,
         skill_names: Vec::new(),
         fix_label,
+        fingerprint: String::new(),
+        dismissed: false,
     }
 }
 
@@ -1768,16 +1777,26 @@ fn find_issues(
                     &values,
                 )
             },
-            if names.len() == 1 {
-                trf(
-                    "{skills} is off in at least one client but still on in {clients}.",
-                    &values,
-                )
-            } else {
-                trf(
-                    "{skills} are off in at least one client but still on in {clients}.",
-                    &values,
-                )
+            {
+                let found = if names.len() == 1 {
+                    trf(
+                        "{skills} is off in at least one client but still on in {clients}.",
+                        &values,
+                    )
+                } else {
+                    trf(
+                        "{skills} are off in at least one client but still on in {clients}.",
+                        &values,
+                    )
+                };
+                if fixable {
+                    found
+                } else {
+                    format!(
+                        "{found} {}",
+                        tr("Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.")
+                    )
+                }
             },
             still.into_iter().collect(),
             leaks.iter().map(|(s, _, _)| s.key.clone()).collect(),
@@ -2068,6 +2087,19 @@ fn find_issues(
             }
         }
         found.skill_names = names;
+        let mut parts: Vec<&str> = found
+            .skills
+            .iter()
+            .chain(&found.agents)
+            .map(String::as_str)
+            .collect();
+        parts.sort_unstable();
+        // Issues about config entries or folders name them only in the text.
+        if found.skills.is_empty() {
+            parts.push(&found.detail);
+        }
+        let digest = crate::registry::sha256_hex(&parts.join("\n"));
+        found.fingerprint = format!("{}:{}", found.id, &digest[..16]);
     }
     issues
 }
@@ -2090,6 +2122,8 @@ pub trait Writer {
     fn backup(&self, client: &str, path: &Path) -> Result<(), String>;
     fn write(&self, path: &Path, contents: &str) -> Result<(), String>;
     fn remove_link(&self, path: &Path) -> Result<(), String>;
+    /// Move a skill folder to the system trash, where the user can restore it.
+    fn trash(&self, path: &Path) -> Result<(), String>;
 }
 
 pub struct DiskWriter;
@@ -2115,6 +2149,9 @@ impl Writer for DiskWriter {
                 }
             })
             .map_err(|e| e.to_string())
+    }
+    fn trash(&self, path: &Path) -> Result<(), String> {
+        trash::delete(path).map_err(|e| e.to_string())
     }
 }
 
@@ -2292,6 +2329,9 @@ impl Writer for BackupOnce<'_> {
     fn remove_link(&self, path: &Path) -> Result<(), String> {
         self.inner.remove_link(path)
     }
+    fn trash(&self, path: &Path) -> Result<(), String> {
+        self.inner.trash(path)
+    }
 }
 
 /// True only when `path` is a symlink whose target is missing. An unreadable target or an
@@ -2302,6 +2342,77 @@ fn dangling(path: &Path) -> bool {
 }
 
 /// Run every fix the issue offers. Returns how many changes were made.
+/// What removing a skill did.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Removed {
+    /// The folder moved to the trash, or None when only links to it were removed.
+    pub trashed: Option<String>,
+    /// Links to the skill that were removed.
+    pub links: usize,
+    pub inventory: Inventory,
+}
+
+/// Whether Toolport offers to remove a skill: only folders the user owns.
+pub fn removable(skill: &Skill) -> bool {
+    skill.editable
+        && matches!(
+            skill.source,
+            Source::Yours | Source::Library | Source::Parked
+        )
+}
+
+/// Remove a skill everywhere: links to it are deleted, and its folder goes to the trash when it
+/// sits in a skills folder. A folder reached only through links (a repo, say) is left alone.
+/// Returns the trashed folder and the number of links removed.
+pub fn remove_skill_files(
+    env: &Env,
+    inventory: &Inventory,
+    key: &str,
+    writer: &dyn Writer,
+) -> Result<(Option<PathBuf>, usize), String> {
+    let skill = inventory
+        .skills
+        .iter()
+        .find(|s| s.key == key)
+        .ok_or_else(|| tr("That skill is already gone. Refresh to see the latest."))?;
+    if !removable(skill) {
+        return Err(tr(
+            "Toolport only removes your own skills, not ones from a package, an account or a client.",
+        ));
+    }
+    let real = Path::new(&skill.key)
+        .parent()
+        .and_then(|folder| canon(folder).ok())
+        .ok_or_else(|| tr("That skill is already gone. Refresh to see the latest."))?;
+    // Never the home folder or anything above it, whatever the scan said.
+    if env.home.starts_with(&real) || env.home_real.starts_with(&real) {
+        return Err(tr("Toolport only removes skill folders."));
+    }
+    let mut links = Vec::new();
+    let mut in_place = false;
+    for shown in &skill.links {
+        let path = expand(env, shown);
+        if canon(&path).is_ok_and(|p| p == real) {
+            if is_link(&path) {
+                links.push(path);
+            } else {
+                in_place = true;
+            }
+        }
+    }
+    for link in &links {
+        writer.remove_link(link)?;
+    }
+    let trashed = if in_place {
+        writer.trash(&real)?;
+        Some(real)
+    } else {
+        None
+    };
+    Ok((trashed, links.len()))
+}
+
 pub fn apply_fix(
     env: &Env,
     inventory: &Inventory,
@@ -2519,6 +2630,8 @@ fn opencode_toggle(
         return Ok("permission");
     }
     let obj = root.as_object_mut().ok_or_else(|| wrong_shape(""))?;
+    // A v1 key read alongside the array still counts when deciding what wins.
+    let v1 = obj.get("permission").cloned();
     let rules = obj
         .entry("permissions")
         .or_insert_with(|| serde_json::json!([]));
@@ -2530,10 +2643,11 @@ fn opencode_toggle(
             && r.get("resource").and_then(|x| x.as_str()) == Some(name))
     });
     // A wildcard rule can still deny it; an explicit allow after it wins.
-    let still_denied = rules_deny(
-        &opencode_rules(&serde_json::json!({"permissions": arr.clone()})),
-        name,
-    );
+    let mut remaining = serde_json::json!({ "permissions": arr.clone() });
+    if let Some(v1) = v1 {
+        remaining["permission"] = v1;
+    }
+    let still_denied = rules_deny(&opencode_rules(&remaining), name);
     if off {
         arr.push(serde_json::json!({"action": "skill", "resource": name, "effect": "deny"}));
     } else if still_denied {
@@ -2707,7 +2821,62 @@ fn present_clients() -> impl Fn(&str) -> bool {
 pub fn inventory(project: Option<&str>) -> Result<Inventory, String> {
     let env = Env::current().ok_or_else(|| tr("Couldn't find your home folder"))?;
     let project = project.map(PathBuf::from).filter(|p| p.is_dir());
-    Ok(scan(&env, &present_clients(), project.as_deref()))
+    let mut inv = scan(&env, &present_clients(), project.as_deref());
+    let dismissed = read_dismissed();
+    for issue in &mut inv.issues {
+        issue.dismissed = dismissed.contains(&issue.fingerprint);
+    }
+    Ok(inv)
+}
+
+/// Toolport's own settings file for this page, in its data folder.
+fn settings_file(name: &str) -> Option<PathBuf> {
+    crate::registry::conduit_dir().map(|dir| dir.join(name))
+}
+
+const DISMISSED_FILE: &str = "skills-dismissed.json";
+/// Oldest dismissals drop off past this, so the file stays small.
+const DISMISSED_KEEP: usize = 200;
+
+fn read_dismissed() -> Vec<String> {
+    settings_file(DISMISSED_FILE)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| serde_json::from_value(value["dismissed"].clone()).ok())
+        .unwrap_or_default()
+}
+
+/// Hide an issue until it changes (`dismissed`), or show it again.
+pub fn dismiss_issue(
+    fingerprint: &str,
+    dismissed: bool,
+    project: Option<&str>,
+) -> Result<Inventory, String> {
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let path =
+        settings_file(DISMISSED_FILE).ok_or_else(|| tr("Couldn't find Toolport's data folder"))?;
+    let mut list = read_dismissed();
+    list.retain(|f| f != fingerprint);
+    if dismissed {
+        list.push(fingerprint.to_string());
+    }
+    let skip = list.len().saturating_sub(DISMISSED_KEEP);
+    let list: Vec<String> = list.into_iter().skip(skip).collect();
+    crate::registry::atomic_write(&path, &serde_json::json!({ "dismissed": list }).to_string())?;
+    inventory(project)
+}
+
+/// Move a skill to the trash and remove the links that reach it.
+pub fn remove_skill(key: &str, project: Option<&str>) -> Result<Removed, String> {
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Env::current().ok_or_else(|| tr("Couldn't find your home folder"))?;
+    let inv = inventory(project)?;
+    let (trashed, links) = remove_skill_files(&env, &inv, key, &DiskWriter)?;
+    Ok(Removed {
+        trashed: trashed.map(|path| env.display(&path)),
+        links,
+        inventory: inventory(project)?,
+    })
 }
 
 /// Toolport's own skill writes run one at a time, so two quick toggles of the same file can't
@@ -2745,8 +2914,8 @@ fn opens_as_text(path: &Path) -> bool {
     })
 }
 
-/// Open an inventory file in its default app, or its folder when `reveal` is set.
-pub fn open_path(path: &str, reveal: bool, project: Option<&str>) -> Result<(), String> {
+/// A validated inventory path, and whether to show its folder instead of opening it.
+fn open_target(path: &str, reveal: bool, project: Option<&str>) -> Result<PathBuf, String> {
     let inv = inventory(project)?;
     let env = Env::current().ok_or_else(|| tr("Couldn't find your home folder"))?;
     let target = expand(&env, path);
@@ -2756,12 +2925,200 @@ pub fn open_path(path: &str, reveal: bool, project: Option<&str>) -> Result<(), 
     // The default app for a script is often the shell. A rules file can @import any path, so
     // only text files are opened; anything else is shown in its folder instead.
     let reveal = reveal || (target.is_file() && !opens_as_text(&target));
-    let target = if reveal && target.is_file() {
+    Ok(if reveal && target.is_file() {
         target.parent().map(Path::to_path_buf).unwrap_or(target)
     } else {
         target
-    };
+    })
+}
+
+/// Open an inventory file in the app the user picked for these files (else its default app),
+/// or its folder when `reveal` is set.
+pub fn open_path(path: &str, reveal: bool, project: Option<&str>) -> Result<(), String> {
+    let target = open_target(path, reveal, project)?;
+    if target.is_file() {
+        if let Some(app) = chosen_app().filter(|id| {
+            open_apps(&target.to_string_lossy())
+                .iter()
+                .any(|app| &app.id == id)
+        }) {
+            return apps::launch(&app, &target);
+        }
+    }
     crate::diagnostics_controller::open_in_default_app(&target)
+}
+
+/// Open an inventory file in `app` and use that app for these files from now on.
+pub fn open_path_with(path: &str, app: &str, project: Option<&str>) -> Result<(), String> {
+    let target = open_target(path, false, project)?;
+    if !target.is_file()
+        || !open_apps(&target.to_string_lossy())
+            .iter()
+            .any(|a| a.id == app)
+    {
+        return Err(tr("That app can't open this file."));
+    }
+    if let Some(file) = settings_file(OPEN_WITH_FILE) {
+        let _ =
+            crate::registry::atomic_write(&file, &serde_json::json!({ "app": app }).to_string());
+    }
+    apps::launch(app, &target)
+}
+
+/// An app that can open skill and rules files.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenApp {
+    pub id: String,
+    pub name: String,
+    /// The system's default app for this kind of file.
+    pub default: bool,
+    /// The app Open uses, picked by the user.
+    pub chosen: bool,
+}
+
+const OPEN_WITH_FILE: &str = "skills-open-with.json";
+
+fn chosen_app() -> Option<String> {
+    let text = std::fs::read_to_string(settings_file(OPEN_WITH_FILE)?).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value["app"].as_str().map(str::to_string)
+}
+
+/// Apps that can open a file like `path` (only its name is used), default first.
+pub fn open_apps(path: &str) -> Vec<OpenApp> {
+    if !opens_as_text(Path::new(path)) {
+        return Vec::new();
+    }
+    let chosen = chosen_app();
+    let mut found = apps::for_file(Path::new(path));
+    found.sort_by_key(|(_, name, default)| (!default, name.to_lowercase()));
+    found
+        .into_iter()
+        .map(|(id, name, default)| OpenApp {
+            chosen: chosen.as_deref() == Some(id.as_str()),
+            id,
+            name,
+            default,
+        })
+        .collect()
+}
+
+#[cfg(all(target_os = "linux", any(feature = "desktop", feature = "gtk-desktop")))]
+mod apps {
+    #[cfg(not(feature = "gtk-desktop"))]
+    use ::gio as giolib;
+    use giolib::prelude::*;
+    #[cfg(feature = "gtk-desktop")]
+    use gtk::gio as giolib;
+    use std::path::Path;
+
+    /// The file's type from its name alone. The two gio versions spell "no data" differently.
+    fn kind(path: &Path) -> giolib::glib::GString {
+        #[cfg(feature = "gtk-desktop")]
+        let (kind, _) = giolib::content_type_guess(Some(path), None);
+        #[cfg(not(feature = "gtk-desktop"))]
+        let (kind, _) = giolib::content_type_guess(Some(path), &[]);
+        kind
+    }
+
+    fn all(path: &Path) -> Vec<giolib::AppInfo> {
+        let kind = kind(path);
+        let mut apps = giolib::AppInfo::all_for_type(&kind);
+        // Markdown editors often only declare text/plain.
+        apps.extend(giolib::AppInfo::all_for_type("text/plain"));
+        let mut seen = std::collections::BTreeSet::new();
+        apps.retain(|app| app.id().is_some_and(|id| seen.insert(id.to_string())));
+        apps
+    }
+
+    /// (desktop id, name, is the default) for each app that opens this kind of file.
+    pub fn for_file(path: &Path) -> Vec<(String, String, bool)> {
+        let kind = kind(path);
+        let default = giolib::AppInfo::default_for_type(&kind, false).and_then(|app| app.id());
+        all(path)
+            .into_iter()
+            .filter_map(|app| {
+                let id = app.id()?.to_string();
+                let is_default = default.as_deref() == Some(id.as_str());
+                Some((id, app.display_name().to_string(), is_default))
+            })
+            .collect()
+    }
+
+    pub fn launch(id: &str, path: &Path) -> Result<(), String> {
+        let app = all(path)
+            .into_iter()
+            .find(|app| app.id().as_deref() == Some(id))
+            .ok_or_else(|| crate::i18n::tr("That app can't open this file."))?;
+        let context = giolib::AppLaunchContext::new();
+        // An AppImage's bundled libraries must not leak into the editor it starts.
+        if std::env::var_os("APPDIR").is_some() {
+            for (name, _) in std::env::vars_os() {
+                if crate::hostenv::is_bundled_env_name(&name.to_string_lossy()) {
+                    context.unsetenv(&name);
+                }
+            }
+        }
+        app.launch(&[giolib::File::for_path(path)], Some(&context))
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod apps {
+    use std::path::Path;
+
+    pub fn for_file(_: &Path) -> Vec<(String, String, bool)> {
+        vec![(
+            "text-editor".into(),
+            crate::i18n::tr("Default text editor"),
+            false,
+        )]
+    }
+
+    pub fn launch(_: &str, path: &Path) -> Result<(), String> {
+        std::process::Command::new("open")
+            .arg("-t")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(windows)]
+mod apps {
+    use std::path::Path;
+
+    pub fn for_file(_: &Path) -> Vec<(String, String, bool)> {
+        vec![("notepad".into(), "Notepad".into(), false)]
+    }
+
+    pub fn launch(_: &str, path: &Path) -> Result<(), String> {
+        std::process::Command::new("notepad.exe")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(not(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", any(feature = "desktop", feature = "gtk-desktop"))
+)))]
+mod apps {
+    use std::path::Path;
+
+    pub fn for_file(_: &Path) -> Vec<(String, String, bool)> {
+        Vec::new()
+    }
+
+    pub fn launch(_: &str, _: &Path) -> Result<(), String> {
+        Err(crate::i18n::tr("That app can't open this file."))
+    }
 }
 
 #[cfg(all(test, unix))]

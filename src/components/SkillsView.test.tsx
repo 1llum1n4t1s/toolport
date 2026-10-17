@@ -2,7 +2,16 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { fixSkillIssue, openSkillPath, setSkillState, skillsInventory } from "@/lib/api";
+import {
+  dismissSkillIssue,
+  fixSkillIssue,
+  openSkillPath,
+  openSkillPathWith,
+  removeSkill,
+  setSkillState,
+  skillOpenApps,
+  skillsInventory,
+} from "@/lib/api";
 import { applySkillState, skillsFixture } from "@/test/skills-fixture";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { toastError } from "@/lib/toast";
@@ -14,6 +23,10 @@ vi.mock("@/lib/api", () => ({
   setSkillState: vi.fn(),
   fixSkillIssue: vi.fn(),
   openSkillPath: vi.fn(),
+  openSkillPathWith: vi.fn(),
+  skillOpenApps: vi.fn(),
+  removeSkill: vi.fn(),
+  dismissSkillIssue: vi.fn(),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@/lib/toast", () => ({ toastError: vi.fn() }));
@@ -29,6 +42,28 @@ beforeEach(() => {
     return { ...inv, issues: inv.issues.filter((i) => i.id !== issue) };
   });
   vi.mocked(openSkillPath).mockResolvedValue(undefined);
+  vi.mocked(openSkillPathWith).mockResolvedValue(undefined);
+  vi.mocked(skillOpenApps).mockResolvedValue([
+    { id: "obsidian.desktop", name: "Obsidian", default: true, chosen: false },
+    { id: "dev.zed.Zed.desktop", name: "Zed", default: false, chosen: false },
+  ]);
+  vi.mocked(removeSkill).mockImplementation(async (key) => {
+    const inv = skillsFixture();
+    return {
+      trashed: "~/.agents/skills/triage",
+      links: 1,
+      inventory: { ...inv, skills: inv.skills.filter((s) => s.key !== key) },
+    };
+  });
+  vi.mocked(dismissSkillIssue).mockImplementation(async (fingerprint, dismissed) => {
+    const inv = skillsFixture();
+    return {
+      ...inv,
+      issues: inv.issues.map((i) =>
+        i.fingerprint === fingerprint ? { ...i, dismissed } : i,
+      ),
+    };
+  });
 });
 
 function renderView() {
@@ -48,6 +83,11 @@ describe("SkillsView", () => {
       within(row).getByRole("img", { name: "Claude Code: Off" }),
     ).toBeInTheDocument();
     expect(within(row).getByRole("img", { name: "Cursor: On" })).toBeInTheDocument();
+    // Only your own skills start open; other groups are one click away.
+    expect(within(list).queryByRole("button", { name: /pdf/ })).not.toBeInTheDocument();
+    await userEvent.click(
+      within(list).getByRole("button", { name: /claude\.ai account/ }),
+    );
     const pdf = within(list).getByRole("button", { name: /pdf/ });
     expect(
       within(pdf).getByRole("img", { name: "Grok: Another copy wins" }),
@@ -179,6 +219,9 @@ describe("SkillsView", () => {
     expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", rulesTab.id);
     await userEvent.keyboard("{ArrowLeft}");
     const again = await screen.findByRole("region", { name: "Skills" });
+    await userEvent.click(
+      within(again).getByRole("button", { name: /claude\.ai account/ }),
+    );
     // The Codex filter from before is gone, so skills Codex doesn't load are back.
     expect(within(again).getByRole("button", { name: /pdf/ })).toBeInTheDocument();
   });
@@ -241,6 +284,88 @@ describe("SkillsView", () => {
       true,
       null,
     );
+  });
+
+  it("opens a file with the app picked from the Open menu", async () => {
+    renderView();
+    const details = await screen.findByRole("complementary", { name: "Skill details" });
+    await userEvent.click(within(details).getByRole("button", { name: "Open with" }));
+    expect(
+      await screen.findByRole("menuitemradio", { name: "Obsidian (default)" }),
+    ).toBeChecked();
+    await userEvent.click(screen.getByRole("menuitemradio", { name: "Zed" }));
+    expect(openSkillPathWith).toHaveBeenCalledWith(
+      "/home/you/.agents/skills/release-notes/SKILL.md",
+      "dev.zed.Zed.desktop",
+      null,
+    );
+  });
+
+  it("removes one of your skills after a confirm, and offers nothing for others", async () => {
+    renderView();
+    const list = await screen.findByRole("region", { name: "Skills" });
+    await userEvent.click(within(list).getByRole("button", { name: /triage/ }));
+    const details = screen.getByRole("complementary", { name: "Skill details" });
+    await userEvent.click(within(details).getByRole("button", { name: "Remove triage" }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    expect(removeSkill).toHaveBeenCalledWith(
+      "/home/you/.agents/skills/triage/SKILL.md",
+      null,
+    );
+    await waitFor(() =>
+      expect(
+        within(list).queryByRole("button", { name: /triage/ }),
+      ).not.toBeInTheDocument(),
+    );
+    await userEvent.click(
+      within(list).getByRole("button", { name: /claude\.ai account/ }),
+    );
+    await userEvent.click(within(list).getByRole("button", { name: /pdf/ }));
+    expect(
+      within(screen.getByRole("complementary", { name: "Skill details" })).queryByRole(
+        "button",
+        { name: "Remove pdf" },
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("dismisses an item until it changes and can bring it back", async () => {
+    renderView();
+    await userEvent.click(await screen.findByRole("tab", { name: /Needs a look/ }));
+    const card = screen
+      .getByText("Grok reads your rules file but not what it imports")
+      .closest("article") as HTMLElement;
+    await userEvent.click(within(card).getByRole("button", { name: "Dismiss" }));
+    expect(dismissSkillIssue).toHaveBeenCalledWith("rules-imports:00000003", true, null);
+    const tab = screen.getByRole("tab", { name: /Needs a look/ });
+    await waitFor(() => expect(tab).toHaveTextContent("2"));
+    await userEvent.click(screen.getByRole("button", { name: /Dismissed/ }));
+    const back = screen
+      .getByText("Grok reads your rules file but not what it imports")
+      .closest("article") as HTMLElement;
+    await userEvent.click(within(back).getByRole("button", { name: "Show again" }));
+    expect(dismissSkillIssue).toHaveBeenLastCalledWith(
+      "rules-imports:00000003",
+      false,
+      null,
+    );
+  });
+
+  it("jumps from a skill chip on Needs a look to that skill", async () => {
+    renderView();
+    await userEvent.click(await screen.findByRole("tab", { name: /Needs a look/ }));
+    await userEvent.click(screen.getByRole("button", { name: "screenshot" }));
+    expect(screen.getByRole("tab", { name: /Skills/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(
+      within(screen.getByRole("complementary", { name: "Skill details" })).getByRole(
+        "heading",
+        { name: "screenshot" },
+      ),
+    ).toBeInTheDocument();
   });
 
   it("rescans when the app's Refresh shortcut fires", async () => {

@@ -27,6 +27,7 @@ import {
   ScrollText,
   Search,
   Sparkles,
+  Trash2,
   Unlink,
   User,
 } from "lucide-react";
@@ -39,6 +40,9 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -47,7 +51,16 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { fixSkillIssue, openSkillPath, setSkillState, skillsInventory } from "@/lib/api";
+import {
+  dismissSkillIssue,
+  fixSkillIssue,
+  openSkillPath,
+  openSkillPathWith,
+  removeSkill,
+  setSkillState,
+  skillOpenApps,
+  skillsInventory,
+} from "@/lib/api";
 import { SKILLS_REFRESH_EVENT } from "@/lib/shortcuts";
 import { translate, useI18n } from "@/lib/i18n";
 import { toastError } from "@/lib/toast";
@@ -57,6 +70,7 @@ import type {
   SkillEntry,
   SkillIssue,
   SkillLoadState,
+  SkillOpenApp,
   SkillSource,
   SkillsInventory,
   SkillWanted,
@@ -311,24 +325,73 @@ function FileActions({
   path,
   openLabel,
   project,
+  children,
 }: {
   target: string;
   path: string;
   openLabel: string;
   project: string | null;
+  children?: ReactNode;
 }) {
   const { t } = useI18n();
-  const run = (reveal: boolean) =>
-    openSkillPath(target, reveal, project).catch((error) =>
-      toastError(t("Couldn't open {path}", { path }), {
-        description: errorText(error),
-      }),
-    );
+  const [apps, setApps] = useState<SkillOpenApp[] | null>(null);
+  const failed = (error: unknown) =>
+    toastError(t("Couldn't open {path}", { path }), {
+      description: errorText(error),
+    });
+  const run = (reveal: boolean) => openSkillPath(target, reveal, project).catch(failed);
+  const chosen = apps?.find((app) => app.chosen) ?? apps?.find((app) => app.default);
   return (
     <div className="flex flex-wrap gap-2">
-      <Button variant="outline" size="sm" onClick={() => void run(false)}>
-        <FilePen /> {openLabel}
-      </Button>
+      <div className="flex">
+        <Button
+          variant="outline"
+          size="sm"
+          className="rounded-r-none"
+          onClick={() => void run(false)}
+        >
+          <FilePen /> {openLabel}
+        </Button>
+        <DropdownMenu
+          onOpenChange={(open) => {
+            if (open) void skillOpenApps(target).then(setApps, () => setApps([]));
+          }}
+        >
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="outline"
+              size="icon-sm"
+              className="rounded-l-none border-l-0"
+              aria-label={t("Open with")}
+            >
+              <ChevronDown />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="min-w-48">
+            <DropdownMenuLabel>{t("Open with")}</DropdownMenuLabel>
+            {apps === null ? null : apps.length === 0 ? (
+              <DropdownMenuItem disabled>{t("No other apps found")}</DropdownMenuItem>
+            ) : (
+              <DropdownMenuRadioGroup
+                value={chosen?.id ?? ""}
+                onValueChange={(app) => {
+                  setApps(
+                    (prev) =>
+                      prev?.map((each) => ({ ...each, chosen: each.id === app })) ?? prev,
+                  );
+                  void openSkillPathWith(target, app, project).catch(failed);
+                }}
+              >
+                {apps.map((app) => (
+                  <DropdownMenuRadioItem key={app.id} value={app.id}>
+                    {app.default ? t("{app} (default)", { app: app.name }) : app.name}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
       <Button variant="outline" size="sm" onClick={() => void run(true)}>
         <FolderOpen /> {t("Reveal")}
       </Button>
@@ -353,7 +416,16 @@ function FileActions({
         </TooltipTrigger>
         <TooltipContent>{t("Copy path")}</TooltipContent>
       </Tooltip>
+      {children}
     </div>
+  );
+}
+
+/** Only folders the user owns can be removed; packages, accounts and clients keep theirs. */
+function isRemovable(skill: SkillEntry) {
+  return (
+    skill.editable &&
+    (skill.source === "yours" || skill.source === "library" || skill.source === "parked")
   );
 }
 
@@ -477,12 +549,14 @@ function SkillDetail({
   project,
   busy,
   onChange,
+  onRemove,
 }: {
   skill: SkillEntry;
   agents: SkillAgent[];
   project: string | null;
   busy: boolean;
   onChange: (agent: SkillAgent, wanted: SkillWanted) => void;
+  onRemove: () => Promise<void>;
 }) {
   const { t } = useI18n();
   const source = useSourceLabels()(skill.source);
@@ -520,7 +594,30 @@ function SkillDetail({
           path={skill.path}
           openLabel={t("Open SKILL.md")}
           project={project}
-        />
+        >
+          {isRemovable(skill) && (
+            <ConfirmDialog
+              trigger={
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  disabled={busy}
+                  aria-label={t("Remove {skill}", { skill: skill.name })}
+                  title={t("Remove {skill}", { skill: skill.name })}
+                >
+                  <Trash2 />
+                </Button>
+              }
+              title={t("Remove {skill}?", { skill: skill.name })}
+              description={t(
+                "Its folder goes to the trash and links to it are removed, so no client loads it. You can restore the folder from the trash.",
+              )}
+              confirmLabel={t("Remove")}
+              destructive
+              onConfirm={onRemove}
+            />
+          )}
+        </FileActions>
       </div>
 
       {skill.source !== "broken" && (
@@ -766,11 +863,15 @@ function IssueCard({
   agents,
   busy,
   onFix,
+  onDismiss,
+  onSkill,
 }: {
   issue: SkillIssue;
   agents: SkillAgent[];
   busy: boolean;
   onFix: () => Promise<void>;
+  onDismiss: () => void;
+  onSkill: (name: string) => void;
 }) {
   const { t } = useI18n();
   const named = issue.agents
@@ -785,7 +886,12 @@ function IssueCard({
       <Info className="size-4 text-info" />
     );
   return (
-    <article className="flex gap-3 rounded-xl border bg-card p-4">
+    <article
+      className={cn(
+        "flex gap-3 rounded-xl border bg-card p-4",
+        issue.dismissed && "opacity-70",
+      )}
+    >
       <span
         className={cn(
           "flex size-8 shrink-0 items-center justify-center rounded-lg",
@@ -801,7 +907,10 @@ function IssueCard({
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <h3 className="min-w-0 flex-1 text-sm font-semibold">{issue.title}</h3>
-          {issue.fixLabel && (
+          <Button variant="ghost" size="sm" disabled={busy} onClick={onDismiss}>
+            {issue.dismissed ? t("Show again") : t("Dismiss")}
+          </Button>
+          {issue.fixLabel && !issue.dismissed && (
             <ConfirmDialog
               trigger={
                 <Button size="sm" disabled={busy}>
@@ -830,13 +939,16 @@ function IssueCard({
               </span>
             ))}
             {issue.skillNames.slice(0, 12).map((name) => (
-              <span
+              <button
+                type="button"
                 key={name}
-                className="flex h-6 items-center gap-1 rounded-md bg-muted px-2 text-xs"
+                title={t("Show {skill}", { skill: name })}
+                onClick={() => onSkill(name)}
+                className="flex h-6 items-center gap-1 rounded-md bg-muted px-2 text-xs hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
               >
                 <Sparkles className="size-3 text-muted-foreground" />
                 {name}
-              </span>
+              </button>
             ))}
             {issue.skillNames.length > 12 && (
               <span className="text-xs text-muted-foreground">
@@ -936,7 +1048,16 @@ export function SkillsView() {
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [selectedRule, setSelectedRule] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(
-    () => new Set(["built-in", "parked"]),
+    // Open on your own skills; the rest are a click away.
+    () =>
+      new Set([
+        "account",
+        "package",
+        "built-in",
+        "library",
+        "parked",
+        "issues:dismissed",
+      ]),
   );
 
   // Latest request wins, so a slow scan of an old project can't overwrite a newer one.
@@ -1106,6 +1227,65 @@ export function SkillsView() {
     }
   }
 
+  async function dismiss(issue: SkillIssue) {
+    setBusy(true);
+    const forProject = project;
+    try {
+      applyWrite(
+        await dismissSkillIssue(issue.fingerprint, !issue.dismissed, forProject),
+        forProject,
+      );
+    } catch (e) {
+      toastError(t("Couldn't change this"), { description: errorText(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(target: SkillEntry) {
+    setBusy(true);
+    const forProject = project;
+    try {
+      const removed = await removeSkill(target.key, forProject);
+      applyWrite(removed.inventory, forProject);
+      toast.success(
+        removed.trashed
+          ? t("Moved {skill} to the trash", { skill: target.name })
+          : t("Removed the links to {skill}. Its folder stays where it is.", {
+              skill: target.name,
+            }),
+      );
+    } catch (e) {
+      toastError(t("Couldn't remove {skill}", { skill: target.name }), {
+        description: errorText(e),
+      });
+      void load();
+      throw e;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Jump from a Needs a look chip to that skill on the Skills tab. */
+  function showSkill(issue: SkillIssue, name: string) {
+    const found = inv?.skills.find(
+      (s) => s.name === name && issue.skills.includes(s.key),
+    );
+    if (!found) return;
+    setQuery("");
+    setFocus(null);
+    setSelectedSkill(found.key);
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      next.delete(found.source);
+      return next;
+    });
+    setTab("skills");
+  }
+
+  const activeIssues = inv?.issues.filter((i) => !i.dismissed) ?? [];
+  const dismissedIssues = inv?.issues.filter((i) => i.dismissed) ?? [];
+
   // Tabs follow the APG pattern: one tab stop, arrows and Home/End move between tabs.
   const tabRefs = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
   function selectTab(next: Tab) {
@@ -1136,7 +1316,7 @@ export function SkillsView() {
       false,
     ],
     ["rules", t("Rules"), inv?.rules.length ?? 0, false],
-    ["issues", t("Needs a look"), inv?.issues.length ?? 0, (inv?.issues.length ?? 0) > 0],
+    ["issues", t("Needs a look"), activeIssues.length, activeIssues.length > 0],
   ];
 
   const toolbar = (
@@ -1280,19 +1460,19 @@ export function SkillsView() {
   }
 
   const banner =
-    inv.issues.length > 0 && tab !== "issues" ? (
+    activeIssues.length > 0 && tab !== "issues" ? (
       <div className="mb-4 flex items-center gap-3 rounded-xl border border-l-4 border-l-warning bg-card px-4 py-3">
         <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-warning/14">
           <AlertTriangle className="size-4 text-warning" />
         </span>
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-semibold">
-            {inv.issues.length === 1
+            {activeIssues.length === 1
               ? t("1 thing needs a look")
-              : t("{count} things need a look", { count: inv.issues.length })}
+              : t("{count} things need a look", { count: activeIssues.length })}
           </span>
           <span className="block truncate text-sm text-muted-foreground">
-            {inv.issues[0].title}
+            {activeIssues[0].title}
           </span>
         </span>
         <Button variant="outline" size="sm" onClick={() => selectTab("issues")}>
@@ -1407,6 +1587,7 @@ export function SkillsView() {
               project={project}
               busy={busy}
               onChange={(agent, wanted) => void change(agent, skill, wanted)}
+              onRemove={() => remove(skill)}
             />
           ) : (
             <p className="py-10 text-center text-sm text-muted-foreground">
@@ -1514,22 +1695,54 @@ export function SkillsView() {
     body = (
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
         <section aria-label={t("Needs a look")} className="flex min-w-0 flex-col gap-3">
-          {inv.issues.length === 0 ? (
+          {activeIssues.length === 0 ? (
             <EmptyState
               icon={<Sparkles />}
               title={t("Nothing needs a look")}
               description={t("Every skill and rules file loads the way it's set.")}
             />
           ) : (
-            inv.issues.map((issue) => (
+            activeIssues.map((issue) => (
               <IssueCard
                 key={issue.id}
                 issue={issue}
                 agents={inv.agents}
                 busy={busy}
                 onFix={() => fix(issue)}
+                onDismiss={() => void dismiss(issue)}
+                onSkill={(name) => showSkill(issue, name)}
               />
             ))
+          )}
+          {dismissedIssues.length > 0 && (
+            <>
+              <GroupHeader
+                open={!collapsed.has("issues:dismissed")}
+                onToggle={() =>
+                  setCollapsed((prev) => {
+                    const next = new Set(prev);
+                    if (!next.delete("issues:dismissed")) next.add("issues:dismissed");
+                    return next;
+                  })
+                }
+                icon={<Ban className="size-4" />}
+                label={t("Dismissed")}
+                count={dismissedIssues.length}
+                note={t("Back if anything about them changes")}
+              />
+              {!collapsed.has("issues:dismissed") &&
+                dismissedIssues.map((issue) => (
+                  <IssueCard
+                    key={issue.id}
+                    issue={issue}
+                    agents={inv.agents}
+                    busy={busy}
+                    onFix={() => fix(issue)}
+                    onDismiss={() => void dismiss(issue)}
+                    onSkill={(name) => showSkill(issue, name)}
+                  />
+                ))}
+            </>
           )}
         </section>
         <aside aria-label={t("By agent")} className="min-w-0 lg:border-l lg:pl-6">

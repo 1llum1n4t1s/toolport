@@ -1131,5 +1131,12 @@
   "{value1} arrived from another machine": "{value1} 從另一臺機器同步而來",
   "{value1} could not sync": "{value1} 無法同步",
   "{value1} · {value2} · config version {value3}": "{value1} · {value2} · 設定版本 {value3}",
-  "{value1}. Last successful sync: {last}.": "{value1}。上次成功同步：{last}。"
+  "{value1}. Last successful sync: {last}.": "{value1}。上次成功同步：{last}。",
+  "Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "這些用戶端會載入其資料夾中的所有技能，且沒有開關。刪除你在哪裡都不需要的技能，如果沒問題就忽略這一項。",
+  "That skill is already gone. Refresh to see the latest.": "該技能已經不存在。重新整理以查看最新狀態。",
+  "Toolport only removes your own skills, not ones from a package, an account or a client.": "Toolport 只刪除你自己的技能，不會刪除來自套件、帳戶或用戶端的技能。",
+  "Toolport only removes skill folders.": "Toolport 只刪除技能資料夾。",
+  "Couldn't find Toolport's data folder": "找不到 Toolport 的資料夾",
+  "That app can't open this file.": "該應用程式無法開啟此檔案。",
+  "Default text editor": "預設文字編輯器"
 }

@@ -20,10 +20,14 @@ const SOURCE_ORDER: [Source; 7] = [
     Source::Broken,
 ];
 const ISSUE_SKILL_LIMIT: usize = 12;
+/// The collapsed-group key for dismissed Needs a look items.
+const DISMISSED_KEY: &str = "issues:dismissed";
 /// Width of one agent's status column, shared by the header logos and the row dots.
 const COLUMN: i32 = 28;
 const SIZE_COLUMN: i32 = 64;
-const DETAIL_WIDTH: i32 = 400;
+const DETAIL_WIDTH: i32 = 380;
+/// Below this page width the detail pane moves under the list, as the React view does.
+const NARROW: &str = "max-width: 980px";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
@@ -59,6 +63,8 @@ struct Pane {
     detail: gtk::Box,
     detail_scroll: gtk::ScrolledWindow,
     rows: Rc<RefCell<Vec<RowKind>>>,
+    layout: gtk::Box,
+    separator: gtk::Separator,
 }
 
 #[derive(Clone)]
@@ -400,7 +406,31 @@ fn save_project(project: Option<&str>) {
     }
 }
 
+fn stack_when_narrow(
+    narrow: &adw::Breakpoint,
+    layout: &gtk::Box,
+    separator: &gtk::Separator,
+    side: &gtk::ScrolledWindow,
+) {
+    narrow.add_setter(
+        layout,
+        "orientation",
+        Some(&gtk::Orientation::Vertical.to_value()),
+    );
+    narrow.add_setter(
+        separator,
+        "orientation",
+        Some(&gtk::Orientation::Horizontal.to_value()),
+    );
+    narrow.add_setter(side, "width-request", Some(&(-1).to_value()));
+}
+
 impl Pane {
+    /// In a narrow window, stack the detail pane under the list instead of beside it.
+    fn stack_when_narrow(&self, narrow: &adw::Breakpoint) {
+        stack_when_narrow(narrow, &self.layout, &self.separator, &self.detail_scroll);
+    }
+
     /// The list column (banner, column header, rows, legend) beside a fixed-width detail pane.
     fn new(list_name: &str, detail_name: &str) -> (Self, gtk::Box) {
         let layout = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -428,7 +458,8 @@ impl Pane {
         column.append(&scroll);
         column.append(&legend());
         layout.append(&column);
-        layout.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        let separator = gtk::Separator::new(gtk::Orientation::Vertical);
+        layout.append(&separator);
         let detail = gtk::Box::new(gtk::Orientation::Vertical, 12);
         detail.set_margin_start(20);
         detail.set_margin_end(20);
@@ -438,6 +469,7 @@ impl Pane {
         let detail_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .width_request(DETAIL_WIDTH)
+            .vexpand(true)
             .child(&detail)
             .build();
         layout.append(&detail_scroll);
@@ -450,6 +482,8 @@ impl Pane {
                 detail,
                 detail_scroll,
                 rows: Rc::default(),
+                layout: layout.clone(),
+                separator,
             },
             layout,
         )
@@ -458,8 +492,7 @@ impl Pane {
 
 impl SkillsPage {
     pub(super) fn new(app: &adw::Application) -> Self {
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        root.add_css_class("toolport-content");
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let header = adw::HeaderBar::new();
         header.add_css_class("toolport-header");
         header.set_show_back_button(true);
@@ -471,7 +504,7 @@ impl SkillsPage {
             l10n::bind_label(&widget, "Skills and rules");
             widget
         }));
-        root.append(&header);
+        content.append(&header);
 
         let top = gtk::Box::new(gtk::Orientation::Vertical, 10);
         top.set_margin_top(14);
@@ -523,8 +556,10 @@ impl SkillsPage {
         }
         bar.append(&tab_box);
 
+        // Room for "Global only" before a long project name is shortened in the middle.
         let project_label = gtk::Label::builder()
             .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .width_chars(11)
             .max_width_chars(28)
             .build();
         let project_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -591,11 +626,13 @@ impl SkillsPage {
             .build();
         feedback.set_visible(false);
         top.append(&feedback);
-        root.append(&top);
+        content.append(&top);
 
+        // Size to the visible tab only, so a wide tab can't push the window past its tile.
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .transition_duration(120)
+            .hhomogeneous(false)
             .vexpand(true)
             .build();
         let (skills, skills_layout) = Pane::new(
@@ -619,24 +656,52 @@ impl SkillsPage {
             &gtk::ScrolledWindow::builder()
                 .hscrollbar_policy(gtk::PolicyType::Never)
                 .hexpand(true)
+                .vexpand(true)
                 .child(&issues_list)
                 .build(),
         );
-        issues_layout.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        let issues_separator = gtk::Separator::new(gtk::Orientation::Vertical);
+        issues_layout.append(&issues_separator);
         let issues_side = gtk::Box::new(gtk::Orientation::Vertical, 10);
         issues_side.set_margin_start(20);
         issues_side.set_margin_end(20);
         issues_side.set_margin_top(18);
         issues_side.set_margin_bottom(20);
-        issues_layout.append(
-            &gtk::ScrolledWindow::builder()
-                .hscrollbar_policy(gtk::PolicyType::Never)
-                .width_request(DETAIL_WIDTH)
-                .child(&issues_side)
-                .build(),
-        );
+        let issues_side_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .width_request(DETAIL_WIDTH)
+            .vexpand(true)
+            .child(&issues_side)
+            .build();
+        issues_layout.append(&issues_side_scroll);
         stack.add_named(&issues_layout, Some("issues"));
-        root.append(&stack);
+        content.append(&stack);
+
+        // A tiled or half-width window gets the stacked layout instead of a clipped one.
+        let narrow = adw::Breakpoint::new(
+            adw::BreakpointCondition::parse(NARROW)
+                .expect("the Skills page breakpoint is a static valid condition"),
+        );
+        skills.stack_when_narrow(&narrow);
+        rules.stack_when_narrow(&narrow);
+        stack_when_narrow(
+            &narrow,
+            &issues_layout,
+            &issues_separator,
+            &issues_side_scroll,
+        );
+        narrow.add_setter(&search, "width-request", Some(&150.to_value()));
+        let adaptive = adw::BreakpointBin::builder()
+            .child(&content)
+            .width_request(360)
+            .height_request(300)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        adaptive.add_breakpoint(narrow);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        root.add_css_class("toolport-content");
+        root.append(&adaptive);
 
         let page = Self {
             root,
@@ -661,10 +726,20 @@ impl SkillsPage {
             focus: Rc::default(),
             selected_skill: Rc::default(),
             selected_rule: Rc::default(),
-            collapsed: Rc::new(RefCell::new(HashSet::from([
-                source_key(Source::BuiltIn),
-                source_key(Source::Parked),
-            ]))),
+            // Open on your own skills; the rest are a click away.
+            collapsed: Rc::new(RefCell::new(
+                [
+                    Source::Account,
+                    Source::Package,
+                    Source::BuiltIn,
+                    Source::Library,
+                    Source::Parked,
+                ]
+                .into_iter()
+                .map(source_key)
+                .chain([DISMISSED_KEY.to_string()])
+                .collect(),
+            )),
             rebuilding: Rc::default(),
             controls: Rc::default(),
             last_control: Rc::default(),
@@ -738,6 +813,7 @@ impl SkillsPage {
         }
         let page = self.clone();
         let rows = pane.rows.clone();
+        let detail_scroll = pane.detail_scroll.clone();
         pane.list.connect_row_selected(move |_, row| {
             if page.rebuilding.get() {
                 return;
@@ -746,10 +822,14 @@ impl SkillsPage {
                 .and_then(|row| usize::try_from(row.index()).ok())
                 .and_then(|i| rows.borrow().get(i).cloned());
             if let Some(RowKind::Item(key)) = kind {
-                if skills {
-                    page.selected_skill.replace(Some(key));
+                let selected = if skills {
+                    &page.selected_skill
                 } else {
-                    page.selected_rule.replace(Some(key));
+                    &page.selected_rule
+                };
+                // Another item opens at its top; a redraw of the same one keeps its place.
+                if selected.replace(Some(key.clone())).as_ref() != Some(&key) {
+                    detail_scroll.vadjustment().set_value(0.0);
                 }
                 page.render_details();
             }
@@ -901,6 +981,14 @@ impl SkillsPage {
         success: String,
         work: impl FnOnce(Option<String>) -> Result<Inventory, String> + Send + 'static,
     ) {
+        self.mutate_reporting(move |project| work(project).map(|inv| (inv, success)));
+    }
+
+    /// `mutate` for a write whose message depends on what it did.
+    fn mutate_reporting(
+        &self,
+        work: impl FnOnce(Option<String>) -> Result<(Inventory, String), String> + Send + 'static,
+    ) {
         if self.busy.replace(true) {
             // Snap the control that fired back to what is saved, after this signal returns.
             self.show_feedback(
@@ -924,7 +1012,7 @@ impl SkillsPage {
                 // A rescan or project change came in during the write: run it now, after the
                 // write, and keep this write's message.
                 match &result {
-                    Ok(Ok(_)) => page.show_feedback(&success, false),
+                    Ok(Ok((_, success))) => page.show_feedback(success, false),
                     Ok(Err(error)) => page.show_feedback(error, true),
                     Err(_) => page.show_feedback(&crate::i18n::tr("Couldn't fix this"), true),
                 }
@@ -935,7 +1023,7 @@ impl SkillsPage {
                 return;
             }
             match result {
-                Ok(Ok(inv)) => {
+                Ok(Ok((inv, success))) => {
                     page.inventory.replace(Some(inv));
                     page.show_feedback(&success, false);
                     page.render();
@@ -964,7 +1052,7 @@ impl SkillsPage {
                 .filter(|s| s.source != Source::Broken)
                 .count(),
             inv.rules.len(),
-            inv.issues.len(),
+            inv.issues.iter().filter(|i| !i.dismissed).count(),
         ];
         for ((tab, _, label), count) in self.tabs.iter().zip(counts) {
             label.set_label(&count.to_string());
@@ -992,11 +1080,11 @@ impl SkillsPage {
         match self.tab.get() {
             Tab::Skills => {
                 let visible = self.visible_skills(inv, &needle);
-                self.fill_skill_detail(inv, self.current_skill(inv, &visible));
+                self.fill_skill_detail(inv, self.current_skill(&visible));
             }
             Tab::Rules => {
                 let visible = self.visible_rules(inv, &needle);
-                self.fill_rule_detail(inv, self.current_rule(inv, &visible));
+                self.fill_rule_detail(inv, self.current_rule(&visible));
             }
             Tab::Issues => {}
         }
@@ -1030,29 +1118,26 @@ impl SkillsPage {
             .collect()
     }
 
-    fn current_skill<'a>(&self, inv: &'a Inventory, visible: &[&'a Skill]) -> Option<&'a Skill> {
+    fn current_skill<'a>(&self, visible: &[&'a Skill]) -> Option<&'a Skill> {
         let selected = self.selected_skill.borrow();
         selected
             .as_ref()
-            .and_then(|key| inv.skills.iter().find(|s| &s.key == key))
+            .and_then(|key| visible.iter().find(|s| &s.key == key).copied())
             .or_else(|| visible.first().copied())
     }
 
-    fn current_rule<'a>(
-        &self,
-        inv: &'a Inventory,
-        visible: &[&'a RuleFile],
-    ) -> Option<&'a RuleFile> {
+    fn current_rule<'a>(&self, visible: &[&'a RuleFile]) -> Option<&'a RuleFile> {
         let selected = self.selected_rule.borrow();
         selected
             .as_ref()
-            .and_then(|key| inv.rules.iter().find(|r| &r.key == key))
+            .and_then(|key| visible.iter().find(|r| &r.key == key).copied())
             .or_else(|| visible.first().copied())
     }
 
     fn render_banner(&self, pane: &Pane, inv: &Inventory) {
         clear_box(&pane.banner);
-        let Some(first) = inv.issues.first() else {
+        let active: Vec<&Issue> = inv.issues.iter().filter(|i| !i.dismissed).collect();
+        let Some(first) = active.first() else {
             return;
         };
         let card = gtk::Box::new(gtk::Orientation::Horizontal, 12);
@@ -1062,12 +1147,12 @@ impl SkillsPage {
         copy.set_hexpand(true);
         copy.set_valign(gtk::Align::Center);
         copy.append(&one_line(
-            &if inv.issues.len() == 1 {
+            &if active.len() == 1 {
                 crate::i18n::tr("1 thing needs a look")
             } else {
                 crate::i18n::trf(
                     "{count} things need a look",
-                    &[("count", &inv.issues.len().to_string())],
+                    &[("count", &active.len().to_string())],
                 )
             },
             &["heading"],
@@ -1193,7 +1278,7 @@ impl SkillsPage {
         let agents = skill_agents(inv);
         self.render_head(pane, &agents, &crate::i18n::tr("Skill"), true);
         let visible = self.visible_skills(inv, needle);
-        let current = self.current_skill(inv, &visible).map(|s| s.key.clone());
+        let current = self.current_skill(&visible).map(|s| s.key.clone());
 
         let scroll = pane.scroll.vadjustment().value();
         self.rebuilding.set(true);
@@ -1249,7 +1334,7 @@ impl SkillsPage {
         pane.list.select_row(selected_row.as_ref());
         self.rebuilding.set(false);
         restore_scroll(&pane.scroll, scroll);
-        self.fill_skill_detail(inv, self.current_skill(inv, &visible));
+        self.fill_skill_detail(inv, self.current_skill(&visible));
     }
 
     fn skill_row(&self, skill: &Skill, agents: &[&Agent]) -> gtk::ListBoxRow {
@@ -1312,39 +1397,88 @@ impl SkillsPage {
     }
 
     /// `target` is the absolute key the backend allows; `path` is what the user sees and copies.
+    /// Open uses the app picked from its menu, else the system default.
     fn file_actions(&self, target: &str, path: &str, open_label: &'static str) -> gtk::Box {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let open = l10n::button(open_label);
-        let reveal = l10n::button("Reveal");
-        let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
-        copy.set_tooltip_text(Some(&crate::i18n::tr("Copy path")));
-        l10n::bind_tooltip(&copy, "Copy path");
-        for (button, reveal_folder) in [(&open, false), (&reveal, true)] {
+        let apps = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        apps.set_margin_top(4);
+        apps.set_margin_bottom(4);
+        let popover = gtk::Popover::builder().child(&apps).build();
+        let open = adw::SplitButton::builder()
+            .child(&l10n::label(open_label))
+            .popover(&popover)
+            .build();
+        open.set_dropdown_tooltip(&crate::i18n::tr("Open with"));
+        {
             let page = self.clone();
             let target = target.to_string();
             let shown = path.to_string();
-            button.connect_clicked(move |_| {
-                let project = page.project.borrow().clone();
-                let target = target.clone();
-                let shown = shown.clone();
-                let page = page.clone();
-                gtk::glib::spawn_future_local(async move {
-                    let result = gtk::gio::spawn_blocking(move || {
-                        crate::skills::open_path(&target, reveal_folder, project.as_deref())
-                    })
-                    .await;
-                    if let Ok(Err(error)) = result {
-                        page.show_feedback(
-                            &crate::i18n::trf(
-                                "Couldn't open {path}: {error}",
-                                &[("path", &shown), ("error", &error)],
-                            ),
-                            true,
-                        );
-                    }
-                });
+            open.connect_clicked(move |_| page.open_file(&target, &shown, None, false));
+        }
+        {
+            // Listed when the menu opens, so a newly installed editor shows up.
+            let page = self.clone();
+            let target = target.to_string();
+            let shown = path.to_string();
+            let popover_ref = popover.clone();
+            popover.connect_show(move |_| {
+                clear_box(&apps);
+                let title = section(&crate::i18n::tr("Open with"));
+                title.set_margin_start(10);
+                title.set_margin_bottom(4);
+                apps.append(&title);
+                let found = crate::skills::open_apps(&target);
+                if found.is_empty() {
+                    let none = muted(&crate::i18n::tr("No other apps found"));
+                    none.set_margin_start(10);
+                    none.set_margin_end(10);
+                    apps.append(&none);
+                }
+                let current = found
+                    .iter()
+                    .find(|app| app.chosen)
+                    .or_else(|| found.iter().find(|app| app.default))
+                    .map(|app| app.id.clone());
+                for app in found {
+                    let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                    let check = gtk::Image::from_icon_name("object-select-symbolic");
+                    check.set_opacity(if current.as_deref() == Some(app.id.as_str()) {
+                        1.0
+                    } else {
+                        0.0
+                    });
+                    line.append(&check);
+                    line.append(&gtk::Label::new(Some(&if app.default {
+                        crate::i18n::trf("{app} (default)", &[("app", &app.name)])
+                    } else {
+                        app.name.clone()
+                    })));
+                    let button = gtk::Button::builder()
+                        .child(&line)
+                        .css_classes(["flat"])
+                        .build();
+                    let page = page.clone();
+                    let target = target.clone();
+                    let shown = shown.clone();
+                    let popover = popover_ref.clone();
+                    button.connect_clicked(move |_| {
+                        popover.popdown();
+                        page.open_file(&target, &shown, Some(app.id.clone()), false);
+                    });
+                    apps.append(&button);
+                }
             });
         }
+        let reveal = l10n::button("Reveal");
+        {
+            let page = self.clone();
+            let target = target.to_string();
+            let shown = path.to_string();
+            reveal.connect_clicked(move |_| page.open_file(&target, &shown, None, true));
+        }
+        let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
+        copy.set_tooltip_text(Some(&crate::i18n::tr("Copy path")));
+        l10n::bind_tooltip(&copy, "Copy path");
         {
             let path = path.to_string();
             let page = self.clone();
@@ -1357,6 +1491,80 @@ impl SkillsPage {
         row.append(&reveal);
         row.append(&copy);
         row
+    }
+
+    /// Open a file (in `app` when given, which also becomes the app Open uses) or its folder.
+    fn open_file(&self, target: &str, shown: &str, app: Option<String>, reveal: bool) {
+        let project = self.project.borrow().clone();
+        let target = target.to_string();
+        let shown = shown.to_string();
+        let page = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(move || match app {
+                Some(app) => crate::skills::open_path_with(&target, &app, project.as_deref()),
+                None => crate::skills::open_path(&target, reveal, project.as_deref()),
+            })
+            .await;
+            if let Ok(Err(error)) = result {
+                page.show_feedback(
+                    &crate::i18n::trf(
+                        "Couldn't open {path}: {error}",
+                        &[("path", &shown), ("error", &error)],
+                    ),
+                    true,
+                );
+            }
+        });
+    }
+
+    /// Ask, then move a skill to the trash and remove the links that reach it.
+    fn confirm_remove(&self, skill: &Skill) {
+        let Some(parent) = self.app.active_window() else {
+            return;
+        };
+        let heading = crate::i18n::trf("Remove {skill}?", &[("skill", &skill.name)]);
+        #[allow(deprecated)]
+        let dialog = adw::MessageDialog::new(
+            Some(&parent),
+            Some(&heading),
+            Some(&crate::i18n::tr(
+                "Its folder goes to the trash and links to it are removed, so no client loads it. You can restore the folder from the trash.",
+            )),
+        );
+        l10n::bind_dialog_body(
+            &dialog,
+            "Its folder goes to the trash and links to it are removed, so no client loads it. You can restore the folder from the trash.",
+        );
+        dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
+        l10n::bind_dialog_response(&dialog, "cancel", "Cancel");
+        dialog.add_response("remove", &crate::i18n::tr("Remove"));
+        l10n::bind_dialog_response(&dialog, "remove", "Remove");
+        dialog.set_close_response("cancel");
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+        let page = self.clone();
+        let key = skill.key.clone();
+        let name = skill.name.clone();
+        dialog.connect_response(None, move |dialog, response| {
+            if response == "remove" {
+                let key = key.clone();
+                let name = name.clone();
+                page.mutate_reporting(move |project| {
+                    let removed = crate::skills::remove_skill(&key, project.as_deref())?;
+                    let message = if removed.trashed.is_some() {
+                        crate::i18n::trf("Moved {skill} to the trash", &[("skill", &name)])
+                    } else {
+                        crate::i18n::trf(
+                            "Removed the links to {skill}. Its folder stays where it is.",
+                            &[("skill", &name)],
+                        )
+                    };
+                    Ok((removed.inventory, message))
+                });
+            }
+            dialog.close();
+        });
+        dialog.present();
     }
 
     fn detail_header(&self, icon: &str, name: &str, badges: &[gtk::Widget]) -> gtk::Box {
@@ -1409,8 +1617,19 @@ impl SkillsPage {
         }
         pane.detail
             .append(&self.detail_header("starred-symbolic", &skill.name, &badges));
-        pane.detail
-            .append(&self.file_actions(&skill.key, &skill.path, "Open SKILL.md"));
+        let actions = self.file_actions(&skill.key, &skill.path, "Open SKILL.md");
+        if crate::skills::removable(skill) {
+            let remove = gtk::Button::from_icon_name("user-trash-symbolic");
+            let label = crate::i18n::trf("Remove {skill}", &[("skill", &skill.name)]);
+            remove.set_tooltip_text(Some(&label));
+            remove.update_property(&[gtk::accessible::Property::Label(&label)]);
+            remove.set_sensitive(!self.busy.get());
+            let page = self.clone();
+            let skill = skill.clone();
+            remove.connect_clicked(move |_| page.confirm_remove(&skill));
+            actions.append(&remove);
+        }
+        pane.detail.append(&actions);
 
         if skill.source != Source::Broken {
             pane.detail
@@ -1730,7 +1949,7 @@ impl SkillsPage {
         let agents: Vec<&Agent> = inv.agents.iter().collect();
         self.render_head(pane, &agents, &crate::i18n::tr("Rules file"), false);
         let visible = self.visible_rules(inv, needle);
-        let current = self.current_rule(inv, &visible).map(|r| r.key.clone());
+        let current = self.current_rule(&visible).map(|r| r.key.clone());
 
         let scroll = pane.scroll.vadjustment().value();
         self.rebuilding.set(true);
@@ -1797,7 +2016,7 @@ impl SkillsPage {
         pane.list.select_row(selected_row.as_ref());
         self.rebuilding.set(false);
         restore_scroll(&pane.scroll, scroll);
-        self.fill_rule_detail(inv, self.current_rule(inv, &visible));
+        self.fill_rule_detail(inv, self.current_rule(&visible));
     }
 
     fn rule_row(&self, rule: &RuleFile, agents: &[&Agent]) -> gtk::ListBoxRow {
@@ -2000,7 +2219,9 @@ impl SkillsPage {
 
     fn render_issues(&self, inv: &Inventory) {
         clear_box(&self.issues_list);
-        if inv.issues.is_empty() {
+        let (dismissed, active): (Vec<&Issue>, Vec<&Issue>) =
+            inv.issues.iter().partition(|i| i.dismissed);
+        if active.is_empty() {
             let empty = gtk::Box::new(gtk::Orientation::Vertical, 6);
             empty.set_margin_top(40);
             empty.set_halign(gtk::Align::Center);
@@ -2012,8 +2233,54 @@ impl SkillsPage {
             )));
             self.issues_list.append(&empty);
         }
-        for issue in &inv.issues {
+        for issue in active {
             self.issues_list.append(&self.issue_card(inv, issue));
+        }
+        if !dismissed.is_empty() {
+            let open = !self.collapsed.borrow().contains(DISMISSED_KEY);
+            let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            content.add_css_class("toolport-skill-group");
+            let chevron = gtk::Image::from_icon_name(if open {
+                "pan-down-symbolic"
+            } else {
+                "pan-end-symbolic"
+            });
+            chevron.add_css_class("toolport-muted");
+            content.append(&chevron);
+            let title = gtk::Label::new(Some(&crate::i18n::tr("Dismissed")));
+            title.add_css_class("heading");
+            content.append(&title);
+            let pill = gtk::Label::new(Some(&dismissed.len().to_string()));
+            pill.add_css_class("toolport-skill-count");
+            pill.add_css_class("caption");
+            content.append(&pill);
+            content.append(&one_line(
+                &crate::i18n::tr("Back if anything about them changes"),
+                &["toolport-muted", "caption"],
+            ));
+            let toggle = gtk::Button::builder()
+                .child(&content)
+                .css_classes(["flat"])
+                .build();
+            toggle.update_state(&[gtk::accessible::State::Expanded(Some(open))]);
+            let page = self.clone();
+            toggle.connect_clicked(move |_| {
+                {
+                    let mut collapsed = page.collapsed.borrow_mut();
+                    if !collapsed.remove(DISMISSED_KEY) {
+                        collapsed.insert(DISMISSED_KEY.to_string());
+                    }
+                }
+                page.render();
+            });
+            self.issues_list.append(&toggle);
+            if open {
+                for issue in dismissed {
+                    let card = self.issue_card(inv, issue);
+                    card.set_opacity(0.7);
+                    self.issues_list.append(&card);
+                }
+            }
         }
         clear_box(&self.issues_side);
         self.issues_side
@@ -2046,7 +2313,27 @@ impl SkillsPage {
         let title = heading(&issue.title);
         title.set_hexpand(true);
         top.append(&title);
-        if let Some(label) = &issue.fix_label {
+        let dismiss = if issue.dismissed {
+            l10n::button("Show again")
+        } else {
+            l10n::button("Dismiss")
+        };
+        dismiss.add_css_class("flat");
+        dismiss.set_valign(gtk::Align::Start);
+        dismiss.set_sensitive(!self.busy.get());
+        {
+            let page = self.clone();
+            let fingerprint = issue.fingerprint.clone();
+            let hide = !issue.dismissed;
+            dismiss.connect_clicked(move |_| {
+                let fingerprint = fingerprint.clone();
+                page.mutate(String::new(), move |project| {
+                    crate::skills::dismiss_issue(&fingerprint, hide, project.as_deref())
+                });
+            });
+        }
+        top.append(&dismiss);
+        if let Some(label) = issue.fix_label.as_ref().filter(|_| !issue.dismissed) {
             let button = gtk::Button::with_label(label);
             button.add_css_class("suggested-action");
             button.set_valign(gtk::Align::Start);
@@ -2060,6 +2347,24 @@ impl SkillsPage {
         }
         copy.append(&top);
         copy.append(&muted(&issue.detail));
+        let logos = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        for agent in issue
+            .agents
+            .iter()
+            .filter_map(|id| inv.agents.iter().find(|a| &a.id == id))
+        {
+            let chip = gtk::CenterBox::new();
+            chip.add_css_class("toolport-skill-chip");
+            chip.add_css_class("logo");
+            chip.set_size_request(24, 24);
+            chip.set_tooltip_text(Some(&agent.name));
+            chip.update_property(&[gtk::accessible::Property::Label(&agent.name)]);
+            chip.set_center_widget(Some(&logo(&agent.id, 14)));
+            logos.append(&chip);
+        }
+        if logos.first_child().is_some() {
+            copy.append(&logos);
+        }
         let chips = gtk::FlowBox::builder()
             .selection_mode(gtk::SelectionMode::None)
             .column_spacing(6)
@@ -2067,27 +2372,26 @@ impl SkillsPage {
             .max_children_per_line(40)
             .homogeneous(false)
             .build();
-        for agent in issue
-            .agents
-            .iter()
-            .filter_map(|id| inv.agents.iter().find(|a| &a.id == id))
-        {
-            let chip = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-            chip.add_css_class("toolport-skill-chip");
-            chip.set_tooltip_text(Some(&agent.name));
-            chip.append(&logo(&agent.id, 14));
-            chips.insert(&chip, -1);
-        }
         for name in issue.skill_names.iter().take(ISSUE_SKILL_LIMIT) {
-            let chip = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-            chip.add_css_class("toolport-skill-chip");
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 4);
             let star = gtk::Image::from_icon_name("starred-symbolic");
             star.set_pixel_size(12);
             star.add_css_class("toolport-muted");
-            chip.append(&star);
+            line.append(&star);
             let label = gtk::Label::new(Some(name));
             label.add_css_class("caption");
-            chip.append(&label);
+            line.append(&label);
+            // A chip opens that skill on the Skills tab, where it can be switched or removed.
+            let chip = gtk::Button::builder()
+                .child(&line)
+                .halign(gtk::Align::Start)
+                .css_classes(["flat", "toolport-skill-chip"])
+                .tooltip_text(crate::i18n::trf("Show {skill}", &[("skill", name)]))
+                .build();
+            let page = self.clone();
+            let keys = issue.skills.clone();
+            let name = name.clone();
+            chip.connect_clicked(move |_| page.show_skill(&keys, &name));
             chips.insert(&chip, -1);
         }
         if issue.skill_names.len() > ISSUE_SKILL_LIMIT {
@@ -2106,6 +2410,24 @@ impl SkillsPage {
         }
         card.append(&copy);
         card
+    }
+
+    /// Jump from a Needs a look chip to that skill on the Skills tab.
+    fn show_skill(&self, keys: &[String], name: &str) {
+        let found = self.inventory.borrow().as_ref().and_then(|inv| {
+            inv.skills
+                .iter()
+                .find(|s| s.name == name && keys.contains(&s.key))
+                .map(|s| (s.key.clone(), s.source))
+        });
+        let Some((key, source)) = found else {
+            return;
+        };
+        self.search.set_text("");
+        self.collapsed.borrow_mut().remove(&source_key(source));
+        self.selected_skill.replace(Some(key));
+        self.skills.detail_scroll.vadjustment().set_value(0.0);
+        self.select_tab(Tab::Skills);
     }
 
     fn confirm_fix(&self, id: &str, title: &str, label: &str) {

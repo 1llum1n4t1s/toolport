@@ -13,8 +13,9 @@ Entries before the rename below shipped under the project's former name, Conduit
   and more. See each skill's state in every agent, how each agent reaches your rules
   files, and turn a skill on or off through the agent's own setting. A Needs a look
   tab finds skills still on elsewhere, broken links, duplicate names, cut-off
-  descriptions and rules files an agent never reads, with confirmed fixes. Available
-  in the app and the Linux GTK app. See
+  descriptions and rules files an agent never reads, with confirmed fixes, and
+  items you're fine with can be dismissed. Open a file in the app you pick, and move
+  a skill you own to the trash. Available in the app and the Linux GTK app. See
   [Skills and rules](https://github.com/btsouth/toolport/blob/main/docs/skills-and-rules.md).
 
 ## [2.1.0] - 2026-10-15
