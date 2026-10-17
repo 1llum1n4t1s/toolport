@@ -1774,6 +1774,13 @@ pub fn unmigrated_legacy_profile_store(profile: &str, pins: bool) -> bool {
     if v2.exists() {
         return false;
     }
+    let prefix = if pins { "tool-pins-" } else { "quarantine-" };
+    // The trust stores call this on every read, several times per gateway start. With no
+    // legacy file at all the answer is already no, so skip the locked registry load that
+    // otherwise serializes every gateway starting at once (one timed out on Windows).
+    if !legacy_store_files_may_exist(&dir, prefix) {
+        return false;
+    }
     let mut slugs = BTreeSet::from([legacy_profile_store_slug(profile)]);
     // Live callers use stable ids, while pre-v2 files were usually named from the
     // profile's display name. Read the registry without invoking migration again so
@@ -1789,7 +1796,6 @@ pub fn unmigrated_legacy_profile_store(profile: &str, pins: bool) -> bool {
             // If the registry itself cannot be read, we cannot prove which legacy
             // name belongs to this id. Any leftover store is therefore evidence of
             // an incomplete migration, and the trust read must fail closed.
-            let prefix = if pins { "tool-pins-" } else { "quarantine-" };
             return std::fs::read_dir(&dir).is_ok_and(|entries| {
                 entries.flatten().any(|entry| {
                     entry.file_name().to_str().is_some_and(|name| {
@@ -1805,13 +1811,27 @@ pub fn unmigrated_legacy_profile_store(profile: &str, pins: bool) -> bool {
     slugs
         .into_iter()
         .filter(|slug| !slug.is_empty())
-        .any(|slug| {
-            dir.join(format!(
-                "{}{slug}.json",
-                if pins { "tool-pins-" } else { "quarantine-" }
-            ))
-            .exists()
+        .any(|slug| dir.join(format!("{prefix}{slug}.json")).exists())
+}
+
+/// Whether `dir` holds any `{prefix}*.json` other than a stable-id v2 store, the only
+/// names a legacy store can have. An unreadable directory counts as maybe.
+fn legacy_store_files_may_exist(dir: &Path, prefix: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return true;
+    };
+    entries.flatten().any(|entry| {
+        entry.file_name().to_str().is_some_and(|name| {
+            name.strip_prefix(prefix)
+                .and_then(|rest| rest.strip_suffix(".json"))
+                .is_some_and(|stem| {
+                    // A slug can itself start with "v2-", so only a 64-hex key is ruled out.
+                    !stem.strip_prefix("v2-").is_some_and(|key| {
+                        key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit())
+                    })
+                })
         })
+    })
 }
 
 /// The lossy filename mapping used before profile stores were keyed by stable ids.
@@ -8497,6 +8517,40 @@ pub(crate) mod tests {
         let v2 = dir.join(format!("tool-pins-v2-{}.json", profile_store_key(&billing)));
         std::fs::write(&v2, "{}").unwrap();
         assert!(!unmigrated_legacy_profile_store(&billing, true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trust_reads_skip_the_registry_lock_without_legacy_stores() {
+        let _lock = data_dir_test_lock();
+        let dir = std::env::temp_dir().join(format!(
+            "toolport-legacy-skip-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _override = DataDirOverride::set(&dir);
+        let other = format!("tool-pins-v2-{}.json", profile_store_key("other"));
+        std::fs::write(dir.join(&other), "{}").unwrap();
+        // Another gateway holding the registry lock must not stall a trust read.
+        let held = lock_at(&dir.join("registry.json")).unwrap();
+        let started = std::time::Instant::now();
+        assert!(!unmigrated_legacy_profile_store("work", true));
+        assert!(!unmigrated_legacy_profile_store("work", false));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        drop(held);
+
+        assert!(!legacy_store_files_may_exist(&dir, "tool-pins-"));
+        for legacy in ["tool-pins-work.json", "tool-pins-v2-team.json"] {
+            std::fs::write(dir.join(legacy), "{}").unwrap();
+            assert!(legacy_store_files_may_exist(&dir, "tool-pins-"), "{legacy}");
+            assert!(!legacy_store_files_may_exist(&dir, "quarantine-"));
+            std::fs::remove_file(dir.join(legacy)).unwrap();
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
