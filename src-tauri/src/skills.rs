@@ -2728,10 +2728,11 @@ fn opens_as_text(path: &Path) -> bool {
 /// Open an inventory file in its default app, or its folder when `reveal` is set.
 pub fn open_path(path: &str, reveal: bool, project: Option<&str>) -> Result<(), String> {
     let inv = inventory(project)?;
-    if !allowed_path(&inv, path) {
+    let env = Env::current().ok_or_else(|| tr("Couldn't find your home folder"))?;
+    let target = expand(&env, path);
+    if !allowed_path(&inv, &target.to_string_lossy()) {
         return Err(tr("Toolport only opens skill and rules files it found."));
     }
-    let target = PathBuf::from(path);
     // The default app for a script is often the shell. A rules file can @import any path, so
     // only text files are opened; anything else is shown in its folder instead.
     let reveal = reveal || (target.is_file() && !opens_as_text(&target));

@@ -663,24 +663,24 @@ impl SkillsPage {
         card
     }
 
-    fn file_actions(&self, path: &str, folder: &str, open_label: &'static str) -> gtk::Box {
+    /// `target` is the absolute key the backend allows; `path` is what the user sees and copies.
+    fn file_actions(&self, target: &str, path: &str, open_label: &'static str) -> gtk::Box {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let open = l10n::button(open_label);
         let reveal = l10n::button("Reveal");
         let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
         copy.set_tooltip_text(Some(&crate::i18n::tr("Copy path")));
         l10n::bind_tooltip(&copy, "Copy path");
-        for (button, target, reveal_folder) in [
-            (&open, path.to_string(), false),
-            (&reveal, folder.to_string(), true),
-        ] {
+        for (button, reveal_folder) in [(&open, false), (&reveal, true)] {
             let page = self.clone();
+            let target = target.to_string();
+            let shown = path.to_string();
             button.connect_clicked(move |_| {
                 let project = page.project.borrow().clone();
                 let target = target.clone();
+                let shown = shown.clone();
                 let page = page.clone();
                 gtk::glib::spawn_future_local(async move {
-                    let shown = target.clone();
                     let result = gtk::gio::spawn_blocking(move || {
                         crate::skills::open_path(&target, reveal_folder, project.as_deref())
                     })
@@ -766,7 +766,7 @@ impl SkillsPage {
                 &[("paths", &others.join(", "))],
             )));
         }
-        detail.append(&self.file_actions(&skill.path, &skill.folder, "Open SKILL.md"));
+        detail.append(&self.file_actions(&skill.key, &skill.path, "Open SKILL.md"));
 
         let agents = gtk::Box::new(gtk::Orientation::Vertical, 0);
         agents.add_css_class("toolport-project-files");
@@ -989,11 +989,7 @@ impl SkillsPage {
         }
         let detail = gtk::Box::new(gtk::Orientation::Vertical, 8);
         detail.set_margin_top(8);
-        let folder = std::path::Path::new(&rule.path)
-            .parent()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        detail.append(&self.file_actions(&rule.path, &folder, "Open file"));
+        detail.append(&self.file_actions(&rule.key, &rule.path, "Open file"));
         let agents = gtk::Box::new(gtk::Orientation::Vertical, 0);
         agents.add_css_class("toolport-project-files");
         for agent in &inv.agents {

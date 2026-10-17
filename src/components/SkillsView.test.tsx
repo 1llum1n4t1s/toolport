@@ -221,6 +221,22 @@ describe("SkillsView", () => {
     ).toBeChecked();
   });
 
+  it("opens and reveals files by their full path, not the ~ form it shows", async () => {
+    renderView();
+    const details = await screen.findByRole("complementary", { name: "Skill details" });
+    await userEvent.click(within(details).getByRole("button", { name: /Open SKILL\.md/ }));
+    expect(openSkillPath).toHaveBeenCalledWith(
+      "/home/you/.agents/skills/release-notes/SKILL.md",
+      false,
+      null,
+    );
+    await userEvent.click(screen.getByRole("tab", { name: /Rules/ }));
+    await userEvent.click(screen.getByRole("button", { name: /CLAUDE\.md/ }));
+    const rule = screen.getByRole("complementary", { name: "Rules file details" });
+    await userEvent.click(within(rule).getByRole("button", { name: /Reveal/ }));
+    expect(openSkillPath).toHaveBeenLastCalledWith("/home/you/.claude/CLAUDE.md", true, null);
+  });
+
   it("rescans when the app's Refresh shortcut fires", async () => {
     renderView();
     await screen.findByRole("region", { name: "Skills" });

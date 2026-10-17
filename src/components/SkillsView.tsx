@@ -305,30 +305,31 @@ function GroupHeader({
   );
 }
 
+/** `target` is the absolute key the backend allows; `path` is what the user sees and copies. */
 function FileActions({
+  target,
   path,
-  folder,
   openLabel,
   project,
 }: {
+  target: string;
   path: string;
-  folder: string;
   openLabel: string;
   project: string | null;
 }) {
   const { t } = useI18n();
-  const run = (target: string, reveal: boolean) =>
+  const run = (reveal: boolean) =>
     openSkillPath(target, reveal, project).catch((error) =>
-      toastError(t("Couldn't open {path}", { path: target }), {
+      toastError(t("Couldn't open {path}", { path }), {
         description: errorText(error),
       }),
     );
   return (
     <div className="flex flex-wrap gap-2">
-      <Button variant="outline" size="sm" onClick={() => void run(path, false)}>
+      <Button variant="outline" size="sm" onClick={() => void run(false)}>
         <FilePen /> {openLabel}
       </Button>
-      <Button variant="outline" size="sm" onClick={() => void run(folder, true)}>
+      <Button variant="outline" size="sm" onClick={() => void run(true)}>
         <FolderOpen /> {t("Reveal")}
       </Button>
       <Tooltip>
@@ -515,8 +516,8 @@ function SkillDetail({
       </div>
       <div className="mt-4">
         <FileActions
+          target={skill.key}
           path={skill.path}
-          folder={skill.folder}
           openLabel={t("Open SKILL.md")}
           project={project}
         />
@@ -657,7 +658,6 @@ function RuleDetail({
 }) {
   const { t } = useI18n();
   const loaded = agents.filter((a) => rule.agents[a.id]).length;
-  const folder = rule.path.replace(/[\\/][^\\/]*$/, "");
   return (
     <div>
       <div className="flex items-start gap-3">
@@ -675,8 +675,8 @@ function RuleDetail({
       </div>
       <div className="mt-4">
         <FileActions
+          target={rule.key}
           path={rule.path}
-          folder={folder}
           openLabel={t("Open file")}
           project={project}
         />
