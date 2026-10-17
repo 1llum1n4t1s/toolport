@@ -59,9 +59,19 @@ def installer_run(installer, args, label, expected=0):
     print(f"PASS: {label} (exit {result.returncode})", flush=True)
 
 
+STARTED = 0
+
+
 def start_gateway(gateway, args):
-    return subprocess.Popen([str(gateway), *args], stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    # Keep stderr: a gateway that exits before answering says why there.
+    global STARTED
+    STARTED += 1
+    log = LOGS / f"gateway-{STARTED}.stderr.log"
+    with log.open("wb") as stderr:
+        child = subprocess.Popen([str(gateway), *args], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=stderr)
+    child.stderr_log = log
+    return child
 
 
 def start_client(gateway):
@@ -72,7 +82,12 @@ def start_client(gateway):
     client.stdin.flush()
     lines = queue.Queue()
     threading.Thread(target=lambda: lines.put(client.stdout.readline()), daemon=True).start()
-    response = json.loads(lines.get(timeout=30))
+    line = lines.get(timeout=30)
+    if not line.strip():
+        time.sleep(0.5)
+        raise AssertionError(f"{gateway} exited before initialize (code {client.poll()}): "
+                             f"{client.stderr_log.read_text(errors='replace').strip()}")
+    response = json.loads(line)
     assert response.get("id") == 1 and "result" in response, response
     return client
 

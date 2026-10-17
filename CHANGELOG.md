@@ -17,6 +17,12 @@ Entries before the rename below shipped under the project's former name, Conduit
   in the app and the Linux GTK app. See
   [Skills and rules](https://github.com/btsouth/toolport/blob/main/docs/skills-and-rules.md).
 
+### Fixed
+
+- Several AI clients starting at once no longer leave one without tools. On a
+  fresh install a gateway could give up with "The registry is locked by another
+  Toolport process" while the others started.
+
 ## [2.1.0] - 2026-10-15
 
 Toolport now speaks nine languages. Like 2.0.0, this release is for manual

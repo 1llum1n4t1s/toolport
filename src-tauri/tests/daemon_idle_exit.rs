@@ -164,7 +164,10 @@ fn an_open_listen_stream_prevents_idle_exit() {
     let dir = scratch_dir();
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create data dir");
-    let mut child = spawn_daemon(&dir, 300);
+    // Long enough for a loaded runner to read the descriptor and open a session before
+    // the daemon gives up on an empty host; 300 ms lost that race on Windows CI.
+    const GRACE_MS: u64 = 3_000;
+    let mut child = spawn_daemon(&dir, GRACE_MS);
 
     let descriptor = wait_for_descriptor(&mut child, &dir);
     let endpoint = descriptor["endpoint"]
@@ -219,7 +222,7 @@ fn an_open_listen_stream_prevents_idle_exit() {
     // the lease holds it; the idle-exit test above covers the exit path. Waiting for
     // the exit here would mean waiting out the listen stream's 30s keepalive, which
     // is how long the daemon can take to notice the socket closed.
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(GRACE_MS + 1_500));
     assert!(
         child.0.try_wait().expect("daemon status").is_none(),
         "the daemon exited while a listen stream was open\n{}",

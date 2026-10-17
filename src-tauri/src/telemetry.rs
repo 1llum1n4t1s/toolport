@@ -39,7 +39,13 @@ impl AppendError {
         }
     }
 }
+#[cfg(not(any(test, feature = "test-support")))]
 const FLUSH_BUDGET: Duration = Duration::from_millis(500);
+// Unit tests share one writer across thousands of parallel tests, and a loaded CI runner
+// can take longer than 500 ms to drain it. Tests check what was read, not how fast.
+// Integration tests build the library with test-support instead of cfg(test).
+#[cfg(any(test, feature = "test-support"))]
+const FLUSH_BUDGET: Duration = Duration::from_secs(10);
 const SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
