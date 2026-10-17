@@ -5213,6 +5213,7 @@ mod tests {
             gateway_installed: false,
             entry_state: clients::GatewayEntryState::Absent,
             error: None,
+            claude_profile: None,
         }
     }
 

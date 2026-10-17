@@ -90,6 +90,74 @@ const registry: Registry = {
   clientScopes: { codex: "" },
 };
 const pagesTruth = new URLSearchParams(location.search).has("pages-truth");
+// Several Claude Code profiles plus a copy of the default, for the grouped Clients page.
+const claudeProfiles = new URLSearchParams(location.search).has("claude-profiles");
+const fixtureClient = (
+  id: string,
+  name: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> => ({
+  id,
+  name,
+  usesConnectors: false,
+  configPath: `/fixture/${id}.json`,
+  configExists: true,
+  appPresent: true,
+  servers: [],
+  pluginServers: [],
+  gatewayInstalled: false,
+  entryState: "absent",
+  error: null,
+  ...overrides,
+});
+const claudeProfileClients = [
+  fixtureClient("claude-code", "Claude Code", {
+    configPath: "/fixture/.claude.json",
+    gatewayInstalled: true,
+    entryState: "managed",
+    claudeProfile: {
+      command: "claude",
+      account: "me@work.example",
+      folder: "~/.claude.json",
+      lastUsedMs: Date.now() - 120_000,
+      sameAs: null,
+    },
+  }),
+  fixtureClient("claude-code@claude2", "Claude Code (claude2)", {
+    configPath: "/fixture/.claude2/.claude.json",
+    claudeProfile: {
+      command: "claude2",
+      account: "me@home.example",
+      folder: "~/.claude2",
+      lastUsedMs: Date.now() - 3 * 3_600_000,
+      sameAs: null,
+    },
+  }),
+  fixtureClient("claude-code@claude-api", "Claude Code (claude-api)", {
+    configPath: "/fixture/.claude-api/.claude.json",
+    claudeProfile: {
+      command: null,
+      account: null,
+      folder: "~/.claude-api",
+      lastUsedMs: Date.now() - 5 * 86_400_000,
+      sameAs: null,
+    },
+  }),
+  fixtureClient("claude-code@claude", "Claude Code (claude)", {
+    configPath: "/fixture/.claude/.claude.json",
+    claudeProfile: {
+      command: null,
+      account: "me@work.example",
+      folder: "~/.claude",
+      lastUsedMs: Date.now() - 60_000,
+      sameAs: "claude-code",
+    },
+  }),
+  fixtureClient("cursor", "Cursor", { gatewayInstalled: true, entryState: "managed" }),
+  fixtureClient("gemini-cli", "Gemini CLI"),
+  fixtureClient("opencode", "OpenCode"),
+  fixtureClient("zed", "Zed"),
+];
 if (pagesTruth) {
   registry.safetyLevel = "off";
   registry.team = {
@@ -793,7 +861,8 @@ mockIPC(
       case "detect_clients":
         return [
           ...fixtureLocations,
-          ...(args.inspectConfigs
+          ...(claudeProfiles ? claudeProfileClients : []),
+          ...(args.inspectConfigs && !claudeProfiles
             ? [
                 {
                   id: "claude-code@claude2",
