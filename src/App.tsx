@@ -77,6 +77,9 @@ const ClientDetail = lazy(() =>
 const ClientsView = lazy(() =>
   import("@/components/ClientsView").then((m) => ({ default: m.ClientsView })),
 );
+const SkillsView = lazy(() =>
+  import("@/components/SkillsView").then((m) => ({ default: m.SkillsView })),
+);
 const ActivityView = lazy(() =>
   import("@/components/ActivityView").then((m) => ({ default: m.ActivityView })),
 );
@@ -873,38 +876,42 @@ function App() {
                 <h1 className="truncate text-[22px] font-[650] tracking-tight">
                   {view === "activity"
                     ? t("Activity")
-                    : view === "catalog"
-                      ? translate("Browse catalog")
-                      : view === "teams"
-                        ? !registry?.team || isPersonalSync(registry)
-                          ? translate("Sync")
-                          : translate("Teams")
-                        : view === "settings"
-                          ? translate("Settings")
-                          : view === "clients"
-                            ? (selectedClient?.name ?? translate("Clients"))
-                            : translate("Servers")}
+                    : view === "skills"
+                      ? t("Skills and rules")
+                      : view === "catalog"
+                        ? translate("Browse catalog")
+                        : view === "teams"
+                          ? !registry?.team || isPersonalSync(registry)
+                            ? translate("Sync")
+                            : translate("Teams")
+                          : view === "settings"
+                            ? translate("Settings")
+                            : view === "clients"
+                              ? (selectedClient?.name ?? translate("Clients"))
+                              : translate("Servers")}
                 </h1>
                 <p className="truncate text-sm text-muted-foreground">
                   {view === "activity"
                     ? t("Tool calls routed through Toolport")
-                    : view === "catalog"
-                      ? translate("Add MCP servers from the registry")
-                      : view === "teams"
-                        ? !registry?.team || isPersonalSync(registry)
-                          ? translate("Your setup, on every machine")
-                          : translate("Share one MCP server set across your team")
-                        : view === "settings"
-                          ? translate("Global discovery and security policy")
-                          : view === "clients"
-                            ? selectedClient
-                              ? translate("MCP client")
-                              : translate("Manage Toolport in your installed AI tools")
-                            : loading || !registry
-                              ? translate("Loading…")
-                              : translate(
-                                  "One gateway in front of every MCP server you run",
-                                )}
+                    : view === "skills"
+                      ? t("What each agent loads besides tools, and where it lives")
+                      : view === "catalog"
+                        ? translate("Add MCP servers from the registry")
+                        : view === "teams"
+                          ? !registry?.team || isPersonalSync(registry)
+                            ? translate("Your setup, on every machine")
+                            : translate("Share one MCP server set across your team")
+                          : view === "settings"
+                            ? translate("Global discovery and security policy")
+                            : view === "clients"
+                              ? selectedClient
+                                ? translate("MCP client")
+                                : translate("Manage Toolport in your installed AI tools")
+                              : loading || !registry
+                                ? translate("Loading…")
+                                : translate(
+                                    "One gateway in front of every MCP server you run",
+                                  )}
                 </p>
               </div>
             </div>
@@ -1001,23 +1008,26 @@ function App() {
                   </DropdownMenu>
                 </>
               )}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-8"
-                aria-label={t("Refresh")}
-                title={
-                  isMac
-                    ? t("Reload servers, clients, and health (⌘R)")
-                    : t("Reload servers, clients, and health (CtrlR)")
-                }
-                onClick={() => load(true)}
-                disabled={loading}
-              >
-                <RefreshCw
-                  className={`size-4 ${String(loading || probing ? "animate-spin" : "")}`}
-                />
-              </Button>
+              {/* Skills has its own Scan again; this one reloads servers and clients. */}
+              {view !== "skills" && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8"
+                  aria-label={t("Refresh")}
+                  title={
+                    isMac
+                      ? t("Reload servers, clients, and health (⌘R)")
+                      : t("Reload servers, clients, and health (CtrlR)")
+                  }
+                  onClick={() => load(true)}
+                  disabled={loading}
+                >
+                  <RefreshCw
+                    className={`size-4 ${String(loading || probing ? "animate-spin" : "")}`}
+                  />
+                </Button>
+              )}
             </div>
           </header>
 
@@ -1079,6 +1089,8 @@ function App() {
                         onChanged={load}
                       />
                     )
+                  ) : view === "skills" ? (
+                    <SkillsView />
                   ) : view === "activity" ? (
                     <ActivityView
                       refreshKey={activityKey}
