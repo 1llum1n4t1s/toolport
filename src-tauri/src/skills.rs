@@ -2041,16 +2041,51 @@ fn openhands_is_skill(path: &Path) -> bool {
 }
 
 fn openhands_rule_sources(env: &Env) -> Vec<RuleSource> {
-    [
+    let mut names = BTreeSet::new();
+    let mut real_paths = BTreeSet::new();
+    let mut sources = Vec::new();
+    for path in [
         env.agents_skills(),
         env.home.join(".openhands/skills"),
         env.home.join(".openhands/microagents"),
-    ]
-    .into_iter()
-    .flat_map(|path| walk_openhands_root(&Root::flat(path, "OpenHands skills")))
-    .filter(|found| !openhands_is_skill(&found.link))
-    .map(|found| RuleSource::file(found.link, false))
-    .collect()
+    ] {
+        let mut found = walk_openhands_root(&Root::flat(path, "OpenHands skills"));
+        // SDK merges always-on, knowledge and AgentSkills groups in that order
+        // within each root, then advances to the next lower-priority root.
+        found.sort_by_key(|found| {
+            (
+                openhands_is_skill(&found.link),
+                found
+                    .link
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("skill.md")),
+            )
+        });
+        for found in found {
+            let name = front_matter(&read_text(&found.link).unwrap_or_default())
+                .0
+                .or_else(|| openhands_third_party_name(&found.link).map(str::to_string))
+                .unwrap_or_else(|| {
+                    found
+                        .link
+                        .strip_prefix(&found.root_path)
+                        .unwrap_or(&found.link)
+                        .with_extension("")
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                });
+            let Some(real) = found.real else { continue };
+            if !names.insert(name) || !real_paths.insert(real) {
+                continue;
+            }
+            // A higher-priority knowledge/AgentSkill also shadows a lower
+            // always-on file with the same name, even though it isn't a rule row.
+            if !openhands_is_skill(&found.link) {
+                sources.push(RuleSource::file(found.link, false));
+            }
+        }
+    }
+    sources
 }
 
 /// The SDK accepts current `extensions` metadata and its legacy `skills` and

@@ -2286,3 +2286,37 @@ fn openhands_project_search_stops_at_nearest_git_root_and_deduplicates_aliases()
     );
     assert_eq!(openhands_project_dirs(&home.root), vec![home.root.clone()]);
 }
+
+#[test]
+fn openhands_global_rules_follow_name_precedence_and_canonical_dedup() {
+    let home = Home::new();
+    let shared = home.write(".agents/skills/team.md", "Shared rules win.\n");
+    let explicit = home.write(
+        ".openhands/skills/renamed.md",
+        "---\nname: explicit\n---\nExplicit name wins.\n",
+    );
+    home.write(
+        ".openhands/microagents/team.md",
+        "Legacy team rules lose.\n",
+    );
+    home.write(
+        ".openhands/microagents/other.md",
+        "---\nname: explicit\n---\nDuplicate explicit name loses.\n",
+    );
+    home.write(
+        ".agents/skills/triggered.md",
+        "---\ntriggers: [review]\n---\nHigher-priority skill.\n",
+    );
+    home.write(
+        ".openhands/microagents/triggered.md",
+        "Lower-priority rule loses to skill.\n",
+    );
+    home.link(".openhands/microagents/alias.md", &shared);
+    let inv = scan(&home.env(), &only(&["openhands"]), None);
+    let paths: BTreeSet<_> = inv.rules.iter().map(|rule| rule.path.clone()).collect();
+    assert_eq!(
+        paths,
+        BTreeSet::from([home.env().display(&shared), home.env().display(&explicit)])
+    );
+    assert_eq!(state(&inv, "triggered", "openhands"), Some(State::On));
+}
