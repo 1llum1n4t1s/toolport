@@ -16,6 +16,7 @@ import { applySkillState, skillsFixture } from "@/test/skills-fixture";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { toastError } from "@/lib/toast";
 import { SKILLS_REFRESH_EVENT, SKILLS_SEARCH_EVENT } from "@/lib/shortcuts";
+import { shortAgentName } from "@/lib/agentNames";
 import { SkillsView } from "./SkillsView";
 
 vi.mock("@/lib/api", () => ({
@@ -136,13 +137,120 @@ describe("SkillsView", () => {
     const list = await screen.findByRole("region", { name: "Skills" });
     await userEvent.click(within(list).getByRole("button", { name: /triage/ }));
     const details = screen.getByRole("complementary", { name: "Skill details" });
-    const claude = within(details).getByRole("radiogroup", {
-      name: "triage in Claude Code",
+    // Name only is still loaded: the switch stays on and the chip says which way.
+    const claude = within(details).getByRole("switch", {
+      name: "Load triage in Claude Code",
     });
-    expect(within(claude).getByRole("radio", { name: "Name only" })).toBeChecked();
+    expect(claude).toBeChecked();
+    const claudeRow = claude.closest("li")!;
+    expect(within(claudeRow).getByText("Name only")).toBeInTheDocument();
+    await userEvent.click(
+      within(claudeRow).getByRole("button", { name: "More options for Claude Code" }),
+    );
+    const item = await screen.findByRole("menuitemcheckbox", {
+      name: "Load name and description only",
+    });
+    expect(item).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(item);
+    expect(setSkillState).toHaveBeenCalledWith(
+      "claude-code",
+      "/home/you/.agents/skills/triage/SKILL.md",
+      "on",
+      null,
+    );
+    // Cursor has no switch Toolport can write: a lock that says why, and no switch.
     expect(
       within(details).queryByRole("switch", { name: "Load triage in Cursor" }),
     ).not.toBeInTheDocument();
+    const lock = within(details).getByRole("img", {
+      name: /Cursor has no per-skill switch/,
+    });
+    const cursorRow = lock.closest("li")!;
+    expect(lock).toHaveAttribute("tabindex", "0");
+    expect(within(cursorRow).getByText("On")).toBeInTheDocument();
+    expect(
+      within(cursorRow).getByText(/No switch Toolport can write/),
+    ).toBeInTheDocument();
+    // Only Claude Code has the menu.
+    expect(
+      within(details).queryByRole("button", { name: "More options for Codex" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("turns Claude Code's name-only state on from its menu", async () => {
+    renderView();
+    const list = await screen.findByRole("region", { name: "Skills" });
+    await userEvent.click(within(list).getByRole("button", { name: /release-notes/ }));
+    const details = screen.getByRole("complementary", { name: "Skill details" });
+    const claudeRow = within(details)
+      .getByRole("switch", { name: "Load release-notes in Claude Code" })
+      .closest("li")!;
+    await userEvent.click(
+      within(claudeRow).getByRole("button", { name: "More options for Claude Code" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitemcheckbox", {
+        name: "Load name and description only",
+      }),
+    );
+    expect(setSkillState).toHaveBeenCalledWith(
+      "claude-code",
+      "/home/you/.agents/skills/release-notes/SKILL.md",
+      "name-only",
+      null,
+    );
+    expect(await within(claudeRow).findByText("Name only")).toBeInTheDocument();
+  });
+
+  it("leaves the control slot empty for an agent that doesn't load the skill", async () => {
+    renderView();
+    const list = await screen.findByRole("region", { name: "Skills" });
+    await userEvent.click(
+      within(list).getByRole("button", { name: /claude\.ai account/ }),
+    );
+    await userEvent.click(within(list).getByRole("button", { name: /pdf/ }));
+    const details = screen.getByRole("complementary", { name: "Skill details" });
+    const codexRow = within(details).getByText("Codex").closest("li")!;
+    expect(within(codexRow).getByText("Not loaded")).toBeInTheDocument();
+    expect(within(codexRow).queryByRole("switch")).not.toBeInTheDocument();
+    expect(within(codexRow).queryByRole("img")).not.toBeInTheDocument();
+  });
+
+  it("names the hovered column in the grid header and filters from the Agent menu", async () => {
+    renderView();
+    const list = await screen.findByRole("region", { name: "Skills" });
+    const row = within(list).getByRole("button", { name: /screenshot/ });
+    await userEvent.hover(within(row).getByRole("img", { name: "Codex: Off" }));
+    expect(
+      within(list).getByText((_, el) => el?.textContent === "Codex: Off in config.toml"),
+    ).toBeInTheDocument();
+    const codexHeader = within(list).getByRole("button", {
+      name: "Show only skills Codex finds",
+    });
+    await userEvent.unhover(within(row).getByRole("img", { name: "Codex: Off" }));
+    await userEvent.click(codexHeader);
+    // Filtering keeps the other columns at full strength.
+    expect(
+      within(list).getByRole("button", { name: "Show only skills Cursor finds" }),
+    ).not.toHaveClass("opacity-40");
+    await userEvent.click(screen.getByRole("button", { name: "Filter by agent" }));
+    await userEvent.click(
+      await screen.findByRole("menuitemradio", { name: "All agents" }),
+    );
+    expect(codexHeader).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(screen.getByRole("button", { name: "Filter by agent" }));
+    await userEvent.click(await screen.findByRole("menuitemradio", { name: "Codex" }));
+    expect(
+      within(list).getByRole("button", { name: "Show only skills Codex finds" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(within(list).queryByRole("button", { name: /pdf/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps a short agent name to 8 characters", () => {
+    expect(shortAgentName("Claude Code")).toBe("Claude");
+    expect(shortAgentName("Copilot CLI")).toBe("Copilot");
+    expect(shortAgentName("OpenCode")).toBe("OpenCode");
+    expect(shortAgentName("Antigravity")).toBe("Antigra…");
   });
 
   it("shows how each agent reaches a rules file, including skipped imports", async () => {
@@ -163,7 +271,12 @@ describe("SkillsView", () => {
   it("confirms before applying a fix", async () => {
     renderView();
     await userEvent.click(await screen.findByRole("tab", { name: /Needs a look/ }));
-    await userEvent.click(screen.getByRole("button", { name: "Remove link" }));
+    const fixButton = screen.getByRole("button", { name: "Remove link" });
+    // A fix repeats on every card, so it's a secondary action, after Dismiss, in the card's
+    // own actions group that moves under the details on a narrow card.
+    expect(fixButton).toHaveAttribute("data-variant", "outline");
+    expect(fixButton.closest("[data-slot=issue-actions]")).not.toBeNull();
+    await userEvent.click(fixButton);
     const dialog = await screen.findByRole("dialog");
     await userEvent.click(within(dialog).getByRole("button", { name: "Remove link" }));
     expect(fixSkillIssue).toHaveBeenCalledWith(
@@ -201,7 +314,12 @@ describe("SkillsView", () => {
     vi.mocked(fixSkillIssue).mockRejectedValueOnce(new Error("disk full"));
     renderView();
     await userEvent.click(await screen.findByRole("tab", { name: /Needs a look/ }));
-    await userEvent.click(screen.getByRole("button", { name: "Remove link" }));
+    const fixButton = screen.getByRole("button", { name: "Remove link" });
+    // A fix repeats on every card, so it's a secondary action, after Dismiss, in the card's
+    // own actions group that moves under the details on a narrow card.
+    expect(fixButton).toHaveAttribute("data-variant", "outline");
+    expect(fixButton.closest("[data-slot=issue-actions]")).not.toBeNull();
+    await userEvent.click(fixButton);
     const dialog = await screen.findByRole("dialog");
     await userEvent.click(within(dialog).getByRole("button", { name: "Remove link" }));
     await waitFor(() => expect(toastError).toHaveBeenCalled());

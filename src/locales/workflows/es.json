@@ -400,5 +400,11 @@
   "Dismissed": "Descartados",
   "Back if anything about them changes": "Vuelven si algo de ellos cambia",
   "Show only skills {client} finds": "Mostrar solo las skills que encuentra {client}",
-  "Only the links to it are removed, so no client loads it. Its folder at {path} stays where it is.": "Solo se quitan los enlaces a ella, así que ningún cliente la carga. Su carpeta en {path} se queda donde está."
+  "Only the links to it are removed, so no client loads it. Its folder at {path} stays where it is.": "Solo se quitan los enlaces a ella, así que ningún cliente la carga. Su carpeta en {path} se queda donde está.",
+  "More options for {client}": "Más opciones para {client}",
+  "Load name and description only": "Cargar solo el nombre y la descripción",
+  "No switch Toolport can write": "Sin interruptor que Toolport pueda escribir",
+  "Filter by agent": "Filtrar por agente",
+  "All agents": "Todos los agentes",
+  "{state} via {path}": "{state} por {path}"
 }

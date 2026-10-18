@@ -18,11 +18,13 @@ import {
   Copy,
   CornerDownRight,
   FilePen,
+  Filter,
   FolderOpen,
   GitBranch,
   Info,
   Library,
   Lock,
+  MoreHorizontal,
   RefreshCw,
   ScrollText,
   Search,
@@ -38,6 +40,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -75,6 +78,7 @@ import type {
   SkillsInventory,
   SkillWanted,
 } from "@/lib/types";
+import { shortAgentName } from "@/lib/agentNames";
 import { cn, fmtBytes, fmtTs } from "@/lib/utils";
 
 type Tab = "skills" | "rules" | "issues";
@@ -83,7 +87,7 @@ type Tab = "skills" | "rules" | "issues";
 const DESCRIPTION_CAP = 1536;
 const PROJECT_KEY = "toolport-skills-project";
 const TAB_ORDER: Tab[] = ["skills", "rules", "issues"];
-const COLUMN = 28;
+const COLUMN = 32;
 const SOURCE_ORDER: SkillSource[] = [
   "yours",
   "account",
@@ -162,13 +166,22 @@ function useStateLabel() {
   };
 }
 
+/** The agent a pointer or keyboard is on in the grid, and what the hovered dot says. */
+type ColumnHover = { agent: string; detail?: string } | null;
+
 /** One cell in the agent matrix. Shape and color both carry the state. */
 function StateDot({
   state,
   label,
+  width = COLUMN,
+  highlighted = false,
+  onHover,
 }: {
   state: SkillLoadState | undefined;
   label: string;
+  width?: number;
+  highlighted?: boolean;
+  onHover?: (on: boolean) => void;
 }) {
   const shape = (() => {
     switch (state) {
@@ -176,7 +189,7 @@ function StateDot({
         return <span className="block size-3 rounded-full bg-success" />;
       case "name-only":
         return (
-          <span className="block size-3 rounded-full border-2 border-owned bg-[linear-gradient(90deg,var(--color-owned)_50%,transparent_50%)]" />
+          <span className="block size-3 rounded-full border-2 border-partial bg-[linear-gradient(90deg,var(--color-partial)_50%,transparent_50%)]" />
         );
       case "off":
         return <Ban className="size-3.5 text-muted-foreground" />;
@@ -195,14 +208,51 @@ function StateDot({
   return (
     <span
       role="img"
-      aria-label={label}
-      title={label}
-      className="flex h-5 items-center justify-center"
-      style={{ width: COLUMN }}
+      aria-label={label || undefined}
+      title={label || undefined}
+      onMouseEnter={onHover && (() => onHover(true))}
+      onMouseLeave={onHover && (() => onHover(false))}
+      className={cn(
+        "flex min-h-5 shrink-0 items-center justify-center self-stretch transition-colors",
+        highlighted && "bg-primary/8",
+      )}
+      style={{ width }}
     >
       {shape}
     </span>
   );
+}
+
+/**
+ * What the grid header says about a hovered dot. `via` is a folder for On and a sentence
+ * for the other states ("Off in config.toml"), so only On gets "via".
+ */
+function dotDetail(at: SkillEntry["states"][string] | undefined, state: string): string {
+  if (!at) return state;
+  if (at.state === "on") return translate("{state} via {path}", { state, path: at.via });
+  if (at.state === "name-only") return `${state} · ${at.via}`;
+  return at.via;
+}
+
+/** Column width: room for short names when the list has it, logos only when it doesn't. */
+const WIDE_COLUMN = 56;
+const NARROW_COLUMN = 32;
+/** What a row keeps for the skill's name and description before columns widen. */
+const NAME_ROOM = 360;
+
+function useColumnWidth(count: number): [(node: HTMLElement | null) => void, number] {
+  const [width, setWidth] = useState(0);
+  const observer = useRef<ResizeObserver | null>(null);
+  const ref = useCallback((node: HTMLElement | null) => {
+    observer.current?.disconnect();
+    observer.current = null;
+    if (!node) return;
+    setWidth(node.clientWidth);
+    if (typeof ResizeObserver === "undefined") return;
+    observer.current = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
+    observer.current.observe(node);
+  }, []);
+  return [ref, width - count * WIDE_COLUMN >= NAME_ROOM ? WIDE_COLUMN : NARROW_COLUMN];
 }
 
 function Legend() {
@@ -219,8 +269,8 @@ function Legend() {
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t pt-3 text-meta text-muted-foreground">
       {items.map(([state, label]) => (
         <span key={label} className="flex items-center">
-          <span aria-hidden="true">
-            <StateDot state={state} label="" />
+          <span aria-hidden="true" className="flex">
+            <StateDot state={state} label="" width={28} />
           </span>
           {label}
         </span>
@@ -234,22 +284,38 @@ function AgentHeader({
   focus,
   onFocus,
   label,
+  column,
+  hover,
+  onHover,
   skills = false,
 }: {
   agents: SkillAgent[];
   focus: string | null;
   onFocus: (id: string | null) => void;
   label: string;
+  column: number;
+  hover: ColumnHover;
+  onHover: (hover: ColumnHover) => void;
   /** The Skills list keeps what an agent finds, switched off or not, so it can go back on. */
   skills?: boolean;
 }) {
   const { t } = useI18n();
+  const wide = column >= WIDE_COLUMN;
+  const hovered = hover ? agents.find((agent) => agent.id === hover.agent) : undefined;
   return (
     <div className="flex items-end justify-between gap-3 border-b px-2 pb-2">
-      <span className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
-        {label}
+      <span className="flex min-w-0 items-baseline gap-2 pb-1">
+        <span className="shrink-0 text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+          {label}
+        </span>
+        {hovered && (
+          <span className="truncate text-meta text-muted-foreground">
+            <span className="font-semibold text-foreground">{hovered.name}</span>
+            {hover?.detail && `: ${hover.detail}`}
+          </span>
+        )}
       </span>
-      <span className="flex">
+      <span className="flex shrink-0">
         {agents.map((agent) => (
           <Tooltip key={agent.id}>
             <TooltipTrigger asChild>
@@ -262,16 +328,32 @@ function AgentHeader({
                     : t("Show only what {client} loads", { client: agent.name })
                 }
                 onClick={() => onFocus(focus === agent.id ? null : agent.id)}
+                onMouseEnter={() => onHover({ agent: agent.id })}
+                onMouseLeave={() => onHover(null)}
+                onFocus={() => onHover({ agent: agent.id })}
+                onBlur={() => onHover(null)}
                 className={cn(
-                  "relative flex h-7 items-center justify-center rounded-md transition-colors hover:bg-accent/60 focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
-                  focus === agent.id && "bg-accent ring-1 ring-primary/60",
-                  focus && focus !== agent.id && "opacity-40",
+                  "relative flex flex-col items-center justify-center gap-1 rounded-md text-xs text-muted-foreground transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
+                  wide ? "py-1.5" : "h-8",
+                  hover?.agent === agent.id && "bg-primary/8 text-foreground",
+                  focus === agent.id &&
+                    "bg-primary/12 text-foreground ring-1 ring-primary/60",
                 )}
-                style={{ width: COLUMN }}
+                style={{ width: column }}
               >
-                <ClientLogo id={agent.id} name={agent.name} size={18} />
+                <ClientLogo id={agent.id} name={agent.name} size={20} />
+                {wide && (
+                  <span className="max-w-full truncate px-0.5 leading-none">
+                    {shortAgentName(agent.name)}
+                  </span>
+                )}
                 {!agent.verified && (
-                  <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-info" />
+                  <span
+                    className={cn(
+                      "absolute size-1.5 rounded-full bg-primary",
+                      wide ? "top-1 right-2" : "top-0.5 right-0.5",
+                    )}
+                  />
                 )}
               </button>
             </TooltipTrigger>
@@ -456,25 +538,97 @@ function PanelHeading({ children, aside }: { children: ReactNode; aside?: ReactN
   );
 }
 
-function StateControl({
+/** The status chip for one agent: the legend's word and color, never pressable. */
+function SkillStateChip({
+  state,
+  label,
+}: {
+  state: SkillLoadState | undefined;
+  /** Overrides the word, for rules ("Loaded"). */
+  label?: string;
+}) {
+  const stateLabel = useStateLabel();
+  const text = label ?? stateLabel(state);
+  switch (state) {
+    case "on":
+      return (
+        <Badge variant="success">
+          <span aria-hidden="true" className="size-2 rounded-full bg-current" />
+          {text}
+        </Badge>
+      );
+    case "name-only":
+      return (
+        <Badge variant="partial">
+          <span
+            aria-hidden="true"
+            className="size-2 rounded-full border-[1.5px] border-current bg-[linear-gradient(90deg,currentColor_50%,transparent_50%)]"
+          />
+          {text}
+        </Badge>
+      );
+    case "off":
+      return (
+        <Badge variant="off">
+          <Ban aria-hidden="true" />
+          {text}
+        </Badge>
+      );
+    case "shadowed":
+      return (
+        <Badge variant="warning">
+          <span
+            aria-hidden="true"
+            className="size-2 rounded-full border-[1.5px] border-current"
+          />
+          {text}
+        </Badge>
+      );
+    case "broken":
+      return (
+        <Badge variant="destructive">
+          <Unlink aria-hidden="true" />
+          {text}
+        </Badge>
+      );
+    default:
+      return <Badge variant="off">{text}</Badge>;
+  }
+}
+
+/** An agent's logo on a 28px tile, as in every Agents and By agent row. */
+function LogoTile({ agent }: { agent: SkillAgent }) {
+  return (
+    <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted">
+      <ClientLogo id={agent.id} name={agent.name} size={20} />
+    </span>
+  );
+}
+
+/**
+ * One row of a skill's Agents list: logo, where it loads from, the status chip and one
+ * 44px control slot. A switch when Toolport can write the agent's own setting, a lock when it
+ * can't, nothing when the agent doesn't load the skill. Claude Code's third state ("Name
+ * only") sits in a small menu beside its switch.
+ */
+function AgentStateRow({
   agent,
   skill,
   onChange,
 }: {
   agent: SkillAgent;
   skill: SkillEntry;
-  /** Resolves false when the write failed, so the control shows the saved state again. */
+  /** Resolves false when the write failed, so the row shows the saved state again. */
   onChange: (wanted: SkillWanted) => Promise<boolean>;
 }) {
   const { t } = useI18n();
-  const stateLabel = useStateLabel();
   // What was just picked, shown until the write's scan arrives (a new `skill`), so a second
-  // click or arrow press starts from it rather than from the state before the first.
+  // click starts from it rather than from the state before the first.
   const [picked, setPicked] = useState<{ skill: SkillEntry; wanted: SkillWanted } | null>(
     null,
   );
-  const saved = skill.states[agent.id]?.state;
-  const current = picked?.skill === skill ? picked.wanted : saved;
+  const saved = skill.states[agent.id];
+  const current = picked?.skill === skill ? picked.wanted : saved?.state;
   const pick = (wanted: SkillWanted) => {
     const choice = { skill, wanted };
     setPicked(choice);
@@ -482,94 +636,90 @@ function StateControl({
       if (!ok) setPicked((now) => (now === choice ? null : now));
     });
   };
-  if (!current)
-    return <span className="text-meta text-muted-foreground">{t("Not loaded")}</span>;
-  if (current === "broken") return <Badge variant="destructive">{t("Broken")}</Badge>;
-  if (current === "shadowed")
-    return <Badge variant="warning">{t("Another copy wins")}</Badge>;
-  const readOnlyReason = skill.states[agent.id]?.readOnlyReason;
-  if (readOnlyReason) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button type="button" className="rounded-md">
-            <Badge variant="outline">{t("Read only")}</Badge>
-          </button>
-        </TooltipTrigger>
-        <TooltipContent className="max-w-64">{readOnlyReason}</TooltipContent>
-      </Tooltip>
+  const switchable = current === "on" || current === "name-only" || current === "off";
+  const readOnlyReason = saved?.readOnlyReason;
+  const writable = agent.canToggle && !readOnlyReason;
+  const readOnly = switchable && !writable;
+  const lockReason = readOnlyReason ?? agent.switchNote;
+  let slot: ReactNode = null;
+  if (switchable && writable) {
+    slot = (
+      <Switch
+        checked={current !== "off"}
+        aria-label={t("Load {skill} in {client}", {
+          skill: skill.name,
+          client: agent.name,
+        })}
+        onCheckedChange={(checked) => pick(checked ? "on" : "off")}
+      />
     );
-  }
-  if (!agent.canToggle) {
-    return (
+  } else if (readOnly) {
+    slot = (
       <Tooltip>
         <TooltipTrigger asChild>
-          <span>
-            <Badge variant={current === "off" ? "outline" : "success"}>
-              {stateLabel(current)}
-            </Badge>
+          <span
+            role="img"
+            // Focusable so keyboard users get the tooltip; it's a fact, not a control.
+            // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
+            tabIndex={0}
+            aria-label={lockReason}
+            className="flex size-7 items-center justify-center rounded-md text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+          >
+            <Lock className="size-3" />
           </span>
         </TooltipTrigger>
-        <TooltipContent className="max-w-64">{agent.switchNote}</TooltipContent>
+        <TooltipContent className="max-w-64">{lockReason}</TooltipContent>
       </Tooltip>
     );
   }
-  if (agent.nameOnly) {
-    const options: [SkillWanted, string][] = [
-      ["on", t("On")],
-      ["name-only", t("Name only")],
-      ["off", t("Off")],
-    ];
-    // Radio group keyboard pattern: one tab stop, arrows move and select.
-    const onKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-      const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
-      if (step === undefined) return;
-      event.preventDefault();
-      const index = options.findIndex(([value]) => value === current);
-      const next = options[(index + step + options.length) % options.length][0];
-      pick(next);
-      event.currentTarget.parentElement
-        ?.querySelector<HTMLButtonElement>(`[data-value="${next}"]`)
-        ?.focus();
-    };
-    return (
-      <div
-        role="radiogroup"
-        aria-label={t("{skill} in {client}", { skill: skill.name, client: agent.name })}
-        className="flex rounded-md border p-0.5"
-      >
-        {options.map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            role="radio"
-            data-value={value}
-            aria-checked={current === value}
-            tabIndex={current === value ? 0 : -1}
-            onKeyDown={onKeyDown}
-            onClick={() => current !== value && pick(value)}
-            className={cn(
-              "rounded px-2 py-0.5 text-xs transition-colors focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50",
-              current === value
-                ? "bg-accent font-medium text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-    );
-  }
+  const where = saved?.via ?? t("Not in any folder it reads");
   return (
-    <Switch
-      checked={current !== "off"}
-      aria-label={t("Load {skill} in {client}", {
-        skill: skill.name,
-        client: agent.name,
-      })}
-      onCheckedChange={(checked) => pick(checked ? "on" : "off")}
-    />
+    <li className="flex items-center gap-3 px-4 py-3">
+      <LogoTile agent={agent} />
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2 text-sm font-semibold">
+          <span className="truncate">{agent.name}</span>
+          {!agent.verified && <Badge variant="off">{t("from docs")}</Badge>}
+        </span>
+        <span className="block text-meta break-words text-muted-foreground">
+          {readOnly ? `${where} · ${readOnlyReason ?? t("No switch Toolport can write")}` : where}
+        </span>
+      </span>
+      <SkillStateChip state={current} />
+      {switchable && writable && agent.nameOnly && (
+        <DropdownMenu>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={t("More options for {client}", { client: agent.name })}
+                >
+                  <MoreHorizontal />
+                </Button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent>
+              {t("More options for {client}", { client: agent.name })}
+            </TooltipContent>
+          </Tooltip>
+          <DropdownMenuContent align="end" className="w-72">
+            <DropdownMenuLabel>{agent.name}</DropdownMenuLabel>
+            <DropdownMenuCheckboxItem
+              checked={current === "name-only"}
+              onCheckedChange={(checked) => pick(checked ? "name-only" : "on")}
+            >
+              {t("Load name and description only")}
+            </DropdownMenuCheckboxItem>
+            <div className="px-2 pt-1 pb-1.5 text-meta text-muted-foreground">
+              {agent.switchNote}
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+      <span className="flex w-11 shrink-0 justify-end">{slot}</span>
+    </li>
   );
 }
 
@@ -605,16 +755,16 @@ function SkillDetail({
         <div className="min-w-0">
           <h2 className="truncate text-lg font-semibold">{skill.name}</h2>
           <div className="mt-1 flex flex-wrap gap-1.5">
-            <Badge variant={skill.source === "broken" ? "destructive" : "info"}>
+            <Badge variant={skill.source === "broken" ? "destructive" : "off"}>
               {source.icon} {source.label}
             </Badge>
             {skill.gitRepo && (
-              <Badge variant="secondary">
+              <Badge variant="off">
                 <GitBranch /> {t("git repo: {name}", { name: skill.gitRepo })}
               </Badge>
             )}
             {!skill.editable && skill.source !== "broken" && (
-              <Badge variant="outline">{t("Read only")}</Badge>
+              <Badge variant="off">{t("Read only")}</Badge>
             )}
           </div>
         </div>
@@ -725,38 +875,15 @@ function SkillDetail({
       >
         {t("Agents")}
       </PanelHeading>
-      <ul className="divide-y overflow-hidden rounded-lg border">
-        {agents.map((agent) => {
-          const state = skill.states[agent.id];
-          return (
-            <li key={agent.id} className="flex items-center gap-3 px-3 py-2.5">
-              <ClientLogo id={agent.id} name={agent.name} size={24} />
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5 text-sm font-medium">
-                  {agent.name}
-                  {!agent.verified && (
-                    <Badge variant="outline" className="h-4 px-1.5 text-xs">
-                      {t("from docs")}
-                    </Badge>
-                  )}
-                </span>
-                <span className="block text-meta break-words text-muted-foreground">
-                  {state?.via ?? t("Not in any folder it reads")}
-                </span>
-                {state?.readOnlyReason && (
-                  <span className="block text-meta break-words text-muted-foreground">
-                    {state.readOnlyReason}
-                  </span>
-                )}
-              </span>
-              <StateControl
-                agent={agent}
-                skill={skill}
-                onChange={(wanted) => onChange(agent, wanted)}
-              />
-            </li>
-          );
-        })}
+      <ul className="divide-y overflow-hidden rounded-xl border bg-card">
+        {agents.map((agent) => (
+          <AgentStateRow
+            key={agent.id}
+            agent={agent}
+            skill={skill}
+            onChange={(wanted) => onChange(agent, wanted)}
+          />
+        ))}
       </ul>
       {skill.preview && (
         <>
@@ -807,7 +934,7 @@ function RuleDetail({
         <div className="min-w-0">
           <h2 className="truncate text-lg font-semibold">{rule.name}</h2>
           <div className="mt-1 flex gap-1.5">
-            <Badge variant="secondary">
+            <Badge variant="off">
               {rule.scope === "project" ? t("Project") : t("Global")}
             </Badge>
           </div>
@@ -832,22 +959,19 @@ function RuleDetail({
       >
         {t("Agents")}
       </PanelHeading>
-      <ul className="divide-y overflow-hidden rounded-lg border">
+      <ul className="divide-y overflow-hidden rounded-xl border bg-card">
         {agents.map((agent) => {
           const chain = rule.agents[agent.id];
           return (
-            <li key={agent.id} className="flex gap-3 px-3 py-2.5">
-              <ClientLogo id={agent.id} name={agent.name} size={24} />
+            <li key={agent.id} className="flex items-start gap-3 px-4 py-3">
+              <LogoTile agent={agent} />
               <span className="min-w-0 flex-1">
                 <span className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium">{agent.name}</span>
-                  {chain ? (
-                    <Badge variant="success">{t("Loaded")}</Badge>
-                  ) : (
-                    <span className="text-meta text-muted-foreground">
-                      {t("Not loaded")}
-                    </span>
-                  )}
+                  <span className="truncate text-sm font-semibold">{agent.name}</span>
+                  <SkillStateChip
+                    state={chain ? "on" : undefined}
+                    label={chain ? t("Loaded") : t("Not loaded")}
+                  />
                 </span>
                 {chain ? (
                   <span className="mt-0.5 flex flex-col gap-0.5 text-meta text-muted-foreground">
@@ -924,7 +1048,15 @@ function IssueCard({
       <Info className="size-4 text-info" />
     );
   return (
-    <article className="flex gap-3 rounded-xl border bg-card p-4">
+    // The title keeps its width: below 560px of card the actions move under the chips.
+    <article
+      className={cn(
+        "@container flex gap-3 rounded-xl border bg-card p-4",
+        issue.level === "error"
+          ? "border-l-[3px] border-l-destructive"
+          : issue.level === "warn" && "border-l-[3px] border-l-warning",
+      )}
+    >
       <span
         className={cn(
           "flex size-8 shrink-0 items-center justify-center rounded-md",
@@ -937,27 +1069,13 @@ function IssueCard({
       >
         {icon}
       </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <h3 className="min-w-0 flex-1 text-sm font-semibold">{issue.title}</h3>
-          <Button variant="ghost" size="sm" onClick={onDismiss}>
-            {issue.dismissed ? t("Show again") : t("Dismiss")}
-          </Button>
-          {issue.fixLabel && !issue.dismissed && (
-            <ConfirmDialog
-              trigger={<Button size="sm">{issue.fixLabel}</Button>}
-              title={issue.fixLabel}
-              description={t(
-                "Toolport backs up any config file before it changes it, and never deletes a skill folder.",
-              )}
-              confirmLabel={issue.fixLabel}
-              onConfirm={onFix}
-            />
-          )}
-        </div>
-        <p className="mt-1 text-sm text-muted-foreground">{issue.detail}</p>
+      <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] content-start gap-x-3 @max-[560px]:grid-cols-1">
+        <h3 className="col-start-1 row-start-1 self-center text-sm font-semibold">
+          {issue.title}
+        </h3>
+        <p className="col-span-full mt-1 text-sm text-muted-foreground">{issue.detail}</p>
         {(named.length > 0 || issue.skillNames.length > 0) && (
-          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+          <div className="col-span-full mt-2.5 flex flex-wrap items-center gap-1.5">
             {named.map((agent) => (
               <span
                 key={agent.id}
@@ -986,6 +1104,29 @@ function IssueCard({
             )}
           </div>
         )}
+        <div
+          data-slot="issue-actions"
+          className="col-start-2 row-start-1 flex flex-wrap items-start gap-2 @max-[560px]:col-start-1 @max-[560px]:row-start-auto @max-[560px]:mt-3"
+        >
+          <Button variant="ghost" size="sm" onClick={onDismiss}>
+            {issue.dismissed ? t("Show again") : t("Dismiss")}
+          </Button>
+          {issue.fixLabel && !issue.dismissed && (
+            <ConfirmDialog
+              trigger={
+                <Button variant="outline" size="sm">
+                  {issue.fixLabel}
+                </Button>
+              }
+              title={issue.fixLabel}
+              description={t(
+                "Toolport backs up any config file before it changes it, and never deletes a skill folder.",
+              )}
+              confirmLabel={issue.fixLabel}
+              onConfirm={onFix}
+            />
+          )}
+        </div>
       </div>
     </article>
   );
@@ -996,7 +1137,7 @@ function AgentSummary({ inv }: { inv: SkillsInventory }) {
   return (
     <div>
       <PanelHeading>{t("By agent")}</PanelHeading>
-      <ul className="divide-y overflow-hidden rounded-lg border">
+      <ul className="divide-y overflow-hidden rounded-xl border bg-card">
         {inv.agents.map((agent) => {
           let on = 0;
           let nameOnly = 0;
@@ -1025,10 +1166,10 @@ function AgentSummary({ inv }: { inv: SkillsInventory }) {
                 : t("{count} rules files", { count: rules }),
           );
           return (
-            <li key={agent.id} className="flex items-center gap-3 px-3 py-2.5">
-              <ClientLogo id={agent.id} name={agent.name} size={24} />
+            <li key={agent.id} className="flex items-center gap-3 px-4 py-3">
+              <LogoTile agent={agent} />
               <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium">{agent.name}</span>
+                <span className="block truncate text-sm font-semibold">{agent.name}</span>
                 <span className="block text-meta text-muted-foreground">
                   {parts.join(" · ")}
                 </span>
@@ -1038,16 +1179,12 @@ function AgentSummary({ inv }: { inv: SkillsInventory }) {
                   {t("{count} broken", { count: broken })}
                 </Badge>
               ) : !agent.supportsSkills ? null : (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <Badge variant="outline">
-                        {agent.canToggle ? t("Own switch") : t("No switch")}
-                      </Badge>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-64">{agent.switchNote}</TooltipContent>
-                </Tooltip>
+                <span
+                  title={agent.switchNote}
+                  className="shrink-0 text-meta text-muted-foreground"
+                >
+                  {agent.canToggle ? t("Own switch") : t("No switch")}
+                </span>
               )}
             </li>
           );
@@ -1200,6 +1337,13 @@ export function SkillsView() {
     [inv],
   );
   const needle = query.trim().toLowerCase();
+  // The agents with a column on this tab, in the Agents list's order.
+  const columnAgents = useMemo(
+    () => (tab === "rules" ? (inv?.agents ?? []) : skillAgents),
+    [tab, inv, skillAgents],
+  );
+  const [gridRef, column] = useColumnWidth(columnAgents.length);
+  const [hover, setHover] = useState<ColumnHover>(null);
 
   const visibleSkills = useMemo(() => {
     if (!inv) return [];
@@ -1378,6 +1522,7 @@ export function SkillsView() {
   function selectTab(next: Tab) {
     // An agent filter from one tab can name an agent the other tab has no column for.
     setFocus(null);
+    setHover(null);
     setTab(next);
   }
   function onTabKey(event: ReactKeyboardEvent<HTMLButtonElement>) {
@@ -1406,6 +1551,7 @@ export function SkillsView() {
     ["issues", t("Needs a look"), activeIssues.length, activeIssues.length > 0],
   ];
 
+  const focusedAgent = columnAgents.find((agent) => agent.id === focus);
   const toolbar = (
     <div className="flex flex-wrap items-center gap-2">
       <DropdownMenu>
@@ -1435,6 +1581,41 @@ export function SkillsView() {
           )}
         </DropdownMenuContent>
       </DropdownMenu>
+      {tab !== "issues" && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="max-w-56"
+              aria-label={t("Filter by agent")}
+            >
+              {focusedAgent ? (
+                <ClientLogo id={focusedAgent.id} name={focusedAgent.name} size={16} />
+              ) : (
+                <Filter />
+              )}
+              <span className="truncate">{focusedAgent?.name ?? t("All agents")}</span>
+              <ChevronDown className="text-muted-foreground" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="max-h-96 w-56 overflow-y-auto">
+            <DropdownMenuLabel>{t("Filter by agent")}</DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={focus ?? ""}
+              onValueChange={(id) => setFocus(id || null)}
+            >
+              <DropdownMenuRadioItem value="">{t("All agents")}</DropdownMenuRadioItem>
+              {columnAgents.map((agent) => (
+                <DropdownMenuRadioItem key={agent.id} value={agent.id}>
+                  <ClientLogo id={agent.id} name={agent.name} size={16} />
+                  {agent.name}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
       {tab !== "issues" && (
         <div className="relative">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -1549,8 +1730,8 @@ export function SkillsView() {
 
   const banner =
     activeIssues.length > 0 && tab !== "issues" ? (
-      <div className="mb-4 flex items-center gap-3 rounded-xl border border-l-4 border-l-warning bg-card px-4 py-3">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-warning/14">
+      <div className="mb-4 flex items-center gap-3 rounded-xl border border-l-[3px] border-l-warning bg-card px-4 py-3">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-warning/12">
           <AlertTriangle className="size-4 text-warning" />
         </span>
         <span className="min-w-0 flex-1">
@@ -1577,13 +1758,16 @@ export function SkillsView() {
     })).filter((g) => g.items.length > 0);
     body = (
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
-        <section aria-label={t("Skills")} className="min-w-0">
+        <section ref={gridRef} aria-label={t("Skills")} className="min-w-0">
           {banner}
           <AgentHeader
             agents={skillAgents}
             focus={focus}
             onFocus={setFocus}
             label={t("Skill")}
+            column={column}
+            hover={hover}
+            onHover={setHover}
             skills
           />
           {groups.length === 0 ? (
@@ -1643,17 +1827,33 @@ export function SkillsView() {
                             {fmtBytes(s.sizeBytes)}
                           </span>
                         )}
-                        <span className="flex shrink-0">
-                          {skillAgents.map((agent) => (
-                            <StateDot
-                              key={agent.id}
-                              state={s.states[agent.id]?.state}
-                              label={t("{client}: {state}", {
-                                client: agent.name,
-                                state: stateLabel(s.states[agent.id]?.state),
-                              })}
-                            />
-                          ))}
+                        <span className="-my-2 flex shrink-0 self-stretch">
+                          {skillAgents.map((agent) => {
+                            const at = s.states[agent.id];
+                            const state = stateLabel(at?.state);
+                            return (
+                              <StateDot
+                                key={agent.id}
+                                state={at?.state}
+                                width={column}
+                                highlighted={hover?.agent === agent.id}
+                                onHover={(on) =>
+                                  setHover(
+                                    on
+                                      ? {
+                                          agent: agent.id,
+                                          detail: dotDetail(at, state),
+                                        }
+                                      : null,
+                                  )
+                                }
+                                label={t("{client}: {state}", {
+                                  client: agent.name,
+                                  state,
+                                })}
+                              />
+                            );
+                          })}
                         </span>
                       </button>
                     ))}
@@ -1691,13 +1891,16 @@ export function SkillsView() {
       .filter((g) => g.items.length > 0);
     body = (
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
-        <section aria-label={t("Rules")} className="min-w-0">
+        <section ref={gridRef} aria-label={t("Rules")} className="min-w-0">
           {banner}
           <AgentHeader
             agents={inv.agents}
             focus={focus}
             onFocus={setFocus}
             label={t("Rules file")}
+            column={column}
+            hover={hover}
+            onHover={setHover}
           />
           {scopes.length === 0 ? (
             <p className="py-10 text-center text-sm text-muted-foreground">
@@ -1747,17 +1950,27 @@ export function SkillsView() {
                           {r.path}
                         </span>
                       </span>
-                      <span className="flex shrink-0">
-                        {inv.agents.map((agent) => (
-                          <StateDot
-                            key={agent.id}
-                            state={r.agents[agent.id] ? "on" : undefined}
-                            label={t("{client}: {state}", {
-                              client: agent.name,
-                              state: r.agents[agent.id] ? t("Loaded") : t("Not loaded"),
-                            })}
-                          />
-                        ))}
+                      <span className="-my-2 flex shrink-0 self-stretch">
+                        {inv.agents.map((agent) => {
+                          const state = r.agents[agent.id]
+                            ? t("Loaded")
+                            : t("Not loaded");
+                          return (
+                            <StateDot
+                              key={agent.id}
+                              state={r.agents[agent.id] ? "on" : undefined}
+                              width={column}
+                              highlighted={hover?.agent === agent.id}
+                              onHover={(on) =>
+                                setHover(on ? { agent: agent.id, detail: state } : null)
+                              }
+                              label={t("{client}: {state}", {
+                                client: agent.name,
+                                state,
+                              })}
+                            />
+                          );
+                        })}
                       </span>
                     </button>
                   ))}

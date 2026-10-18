@@ -400,5 +400,11 @@
   "Dismissed": "已忽略",
   "Back if anything about them changes": "内容有变化时会重新出现",
   "Show only skills {client} finds": "只显示 {client} 找到的技能",
-  "Only the links to it are removed, so no client loads it. Its folder at {path} stays where it is.": "只会移除指向它的链接，因此没有客户端会加载它。它在 {path} 的文件夹保持原样。"
+  "Only the links to it are removed, so no client loads it. Its folder at {path} stays where it is.": "只会移除指向它的链接，因此没有客户端会加载它。它在 {path} 的文件夹保持原样。",
+  "More options for {client}": "{client} 的更多选项",
+  "Load name and description only": "仅加载名称和描述",
+  "No switch Toolport can write": "没有 Toolport 可写入的开关",
+  "Filter by agent": "按智能体筛选",
+  "All agents": "所有智能体",
+  "{state} via {path}": "{state}，来自 {path}"
 }
