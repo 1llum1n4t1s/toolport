@@ -1154,5 +1154,6 @@
   "Uses the disabled list under [skills] in Grok's config.toml.": "使用 Grok 的 config.toml 中 [skills] 下的 disabled 清單。",
   "Uses options.disabled_skills in Crush's crush.json.": "使用 Crush 的 crush.json 中的 options.disabled_skills。",
   "Uses skills.disabled in Qwen Code's settings.json.": "使用 Qwen Code 的 settings.json 中的 skills.disabled。",
-  "Uses skills.ignoredSkills in Oh My Pi's config.yml.": "使用 Oh My Pi 的 config.yml 中的 skills.ignoredSkills。"
+  "Uses skills.ignoredSkills in Oh My Pi's config.yml.": "使用 Oh My Pi 的 config.yml 中的 skills.ignoredSkills。",
+  "DeepSeek Harness skills": "DeepSeek Harness 技能"
 }

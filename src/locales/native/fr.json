@@ -1154,5 +1154,6 @@
   "Uses the disabled list under [skills] in Grok's config.toml.": "Utilise la liste disabled sous [skills] dans le config.toml de Grok.",
   "Uses options.disabled_skills in Crush's crush.json.": "Utilise options.disabled_skills dans le crush.json de Crush.",
   "Uses skills.disabled in Qwen Code's settings.json.": "Utilise skills.disabled dans le settings.json de Qwen Code.",
-  "Uses skills.ignoredSkills in Oh My Pi's config.yml.": "Utilise skills.ignoredSkills dans le config.yml d'Oh My Pi."
+  "Uses skills.ignoredSkills in Oh My Pi's config.yml.": "Utilise skills.ignoredSkills dans le config.yml d'Oh My Pi.",
+  "DeepSeek Harness skills": "Skills DeepSeek Harness"
 }

@@ -1154,5 +1154,6 @@
   "Uses the disabled list under [skills] in Grok's config.toml.": "Grok의 config.toml에서 [skills] 아래 disabled 목록을 사용합니다.",
   "Uses options.disabled_skills in Crush's crush.json.": "Crush의 crush.json에 있는 options.disabled_skills를 사용합니다.",
   "Uses skills.disabled in Qwen Code's settings.json.": "Qwen Code의 settings.json에 있는 skills.disabled를 사용합니다.",
-  "Uses skills.ignoredSkills in Oh My Pi's config.yml.": "Oh My Pi의 config.yml에 있는 skills.ignoredSkills를 사용합니다."
+  "Uses skills.ignoredSkills in Oh My Pi's config.yml.": "Oh My Pi의 config.yml에 있는 skills.ignoredSkills를 사용합니다.",
+  "DeepSeek Harness skills": "DeepSeek Harness 스킬"
 }

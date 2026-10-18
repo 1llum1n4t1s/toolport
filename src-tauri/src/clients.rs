@@ -23,6 +23,7 @@ mod disconnect;
 pub(crate) use disconnect::for_purge as disconnect_all_for_purge;
 pub use disconnect::{all as disconnect_all, ClientResult as DisconnectResult};
 mod discovery;
+mod dsh;
 mod locations;
 pub use discovery::DiscoveryCapabilities;
 pub(crate) use locations::folder_key as claude_profile_key;
@@ -179,6 +180,10 @@ enum Format {
     /// Each entry is a server object with fields like `name`, `command`,
     /// `args`, `env`, `type`, `url`, etc.
     YamlMcpServersList,
+    /// DeepSeek Harness Cordis patch file: a top-level YAML list of loader rows,
+    /// MCP servers being `@deepseek-ai/dsh-mcp-client` entries in `insert` rows.
+    /// Edited on the text so comments and `!!js` expressions survive; see `dsh`.
+    YamlDshPatch,
 }
 
 struct CombinedToolNameBudget {
@@ -656,6 +661,7 @@ fn resolve_client_config_path(
         "kiro" => home.join(".kiro").join("settings").join("mcp.json"),
         "auggie" => home.join(".augment").join("settings.json"),
         "kimi-code" => home.join(".kimi-code").join("mcp.json"),
+        "deepseek-harness" => home.join(".dsh").join("cordis.patch.yml"),
         "zcode" => home.join(".zcode").join("cli").join("config.json"),
         "command-code" => home.join(".commandcode").join("mcp.json"),
         "tabnine" => home.join(".tabnine").join("mcp_servers.json"),
@@ -1285,6 +1291,7 @@ fn resolve_client_config_path_linux(client_id: &str, home: &std::path::Path) -> 
         "kiro" => home.join(".kiro").join("settings").join("mcp.json"),
         "auggie" => home.join(".augment").join("settings.json"),
         "kimi-code" => home.join(".kimi-code").join("mcp.json"),
+        "deepseek-harness" => home.join(".dsh").join("cordis.patch.yml"),
         "zcode" => home.join(".zcode").join("cli").join("config.json"),
         "command-code" => home.join(".commandcode").join("mcp.json"),
         "tabnine" => home.join(".tabnine").join("mcp_servers.json"),
@@ -1400,6 +1407,8 @@ fn resolve_rules_target(
         "pi" => block(home.join(".pi").join("agent").join("AGENTS.md")),
         "omp" => block(home.join(".omp").join("agent").join("AGENTS.md")),
         "command-code" => block(home.join(".commandcode").join("AGENTS.md")),
+        // dsh loads `$DSH_HOME/AGENTS.md` first in its user-global chain.
+        "deepseek-harness" => block(home.join(".dsh").join("AGENTS.md")),
         "zed" => match platform {
             Platform::Windows => block(config.join("Zed").join("AGENTS.md")),
             Platform::MacOs | Platform::Linux => {
@@ -1485,6 +1494,11 @@ pub fn client_rules_target(
     if client_id == "gemini-cli" {
         if let Some(dir) = gemini_cli_home_from(client_path_env("GEMINI_CLI_HOME")) {
             return Some(gemini_cli_rules_target(&dir, scope));
+        }
+    }
+    if client_id == "deepseek-harness" {
+        if let Some(dir) = dsh_home_from(client_path_env("DSH_HOME")) {
+            return Some(rules_sentinel_block(dir.join("AGENTS.md"), scope));
         }
     }
     let home = home()?;
@@ -1748,6 +1762,22 @@ fn kimi_code_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .map(|root| root.join("mcp.json"))
         .or_else(|| client_config_path("kimi-code"))
+}
+
+/// DeepSeek Harness reads `$DSH_HOME/cordis.patch.yml` (default `~/.dsh`) over
+/// every profile. dsh expands a leading `~` in `DSH_HOME` and treats a blank
+/// value as unset; a relative value resolves against dsh's own working directory,
+/// which Toolport cannot know, so it falls back to the default like the other
+/// relocatable homes.
+fn dsh_path() -> Option<PathBuf> {
+    if let Some(dir) = dsh_home_from(client_path_env("DSH_HOME")) {
+        return Some(dir.join("cordis.patch.yml"));
+    }
+    client_config_path("deepseek-harness")
+}
+
+fn dsh_home_from(raw: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    absolute_env_dir(expand_leading_tilde(raw))
 }
 
 /// Goose keeps extensions (its MCP servers) in config.yaml. It resolves the dir
@@ -2407,6 +2437,19 @@ fn defs() -> Vec<ClientDef> {
             format: Format::JsonKimiMcpServers,
             uses_connectors: false,
             path: kimi_code_path,
+            plugin_scan: None,
+        },
+        ClientDef {
+            location: None,
+            id: "deepseek-harness",
+            discovery: discovery::capabilities("deepseek-harness"),
+            combined_tool_name_budget: None,
+            name: "DeepSeek Harness",
+            format: Format::YamlDshPatch,
+            uses_connectors: false,
+            // The home patch layer, `$DSH_HOME/cordis.patch.yml`, which dsh applies
+            // over every profile. Per-profile layers are left to the user.
+            path: dsh_path,
             plugin_scan: None,
         },
         ClientDef {
@@ -4159,6 +4202,7 @@ fn parse_client_content(format: Format, content: &str) -> Result<Vec<McpServer>,
         Format::YamlExtensions => parse_yaml_extensions(content),
         Format::YamlMcpServers => parse_hermes_yaml_servers(content),
         Format::YamlMcpServersList => parse_continue_yaml_servers(content),
+        Format::YamlDshPatch => dsh::servers(content),
     }
 }
 
@@ -6620,6 +6664,42 @@ fn write_continue_yaml_servers(path: &Path, servers: &[ServerEntry]) -> Result<(
     atomic_write_yaml_config(path, original.as_deref(), &root, "mcpServers")
 }
 
+/// Make the DeepSeek Harness patch file's servers exactly `servers`.
+fn write_dsh_servers(path: &Path, servers: &[ServerEntry]) -> Result<(), String> {
+    let original = mutation::exists(path)
+        .then(|| read_config_file(path))
+        .transpose()?;
+    let mut desired = serde_json::Map::new();
+    for server in servers {
+        desired.insert(server.name.clone(), dsh::config_of(server)?);
+    }
+    let out = dsh::sync(original.as_deref(), &desired)?;
+    if original.as_deref() != Some(out.as_str()) {
+        atomic_write(path, &out)?;
+    }
+    Ok(())
+}
+
+/// Add, replace or remove the gateway entry in the DeepSeek Harness patch file.
+fn edit_dsh_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(), String> {
+    let original = mutation::exists(path)
+        .then(|| read_config_file(path))
+        .transpose()?;
+    let current = dsh::normalized(original.as_deref().unwrap_or(""))?;
+    let mut desired = current[dsh::KEY].as_object().cloned().unwrap_or_default();
+    desired.retain(|name, config| {
+        !gateway_edit_matches(name, config.get("command").and_then(|value| value.as_str()))
+    });
+    if let Some(entry) = entry {
+        desired.insert(GATEWAY_ENTRY_NAME.into(), dsh::config_of(entry)?);
+    }
+    let out = dsh::sync(original.as_deref(), &desired)?;
+    if original.as_deref() != Some(out.as_str()) {
+        atomic_write(path, &out)?;
+    }
+    Ok(())
+}
+
 fn edit_continue_yaml_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(), String> {
     let (original, mut root) = read_existing_yaml_with_source(path)?;
 
@@ -6874,6 +6954,7 @@ fn write_format(
         Format::YamlExtensions => write_yaml_extensions(path, servers)?,
         Format::YamlMcpServers => write_hermes_yaml_servers(path, servers)?,
         Format::YamlMcpServersList => write_continue_yaml_servers(path, servers)?,
+        Format::YamlDshPatch => write_dsh_servers(path, servers)?,
     }
     Ok(())
 }
@@ -7531,6 +7612,7 @@ fn config_is_whole_app_state(client_id: &str) -> bool {
             | "kilo-code"
             | "amp"
             | "auggie"
+            | "deepseek-harness"
     )
 }
 
@@ -7592,6 +7674,7 @@ fn edit_format(
         Format::YamlExtensions => edit_yaml_gateway(path, entry)?,
         Format::YamlMcpServers => edit_hermes_yaml_gateway(path, entry)?,
         Format::YamlMcpServersList => edit_continue_yaml_gateway(path, entry)?,
+        Format::YamlDshPatch => edit_dsh_gateway(path, entry)?,
     }
     Ok(())
 }
@@ -8700,6 +8783,7 @@ fn isolated_client_env(root: &Path) -> Vec<EnvRestore> {
         "GROK_HOME",
         "QWEN_HOME",
         "KIMI_CODE_HOME",
+        "DSH_HOME",
     ]
     .into_iter()
     .map(|key| EnvRestore::set(key, Path::new("")))
@@ -12811,6 +12895,112 @@ command = "npx"
     }
 
     #[test]
+    fn deepseek_harness_is_registered_with_its_home_patch_layer() {
+        let def = find_def("deepseek-harness").unwrap();
+        assert_eq!(def.name, "DeepSeek Harness");
+        assert!(matches!(def.format, Format::YamlDshPatch));
+        assert!(!def.uses_connectors);
+        assert!(def.plugin_scan.is_none());
+        assert!(config_is_whole_app_state("deepseek-harness"));
+        // Observed: dsh re-lists tools after a list_changed notification.
+        assert_eq!(def.discovery.auto_mode, "lazy");
+        assert_eq!(def.discovery.native_tool_search, None);
+        assert_eq!(def.discovery.tools_list_changed, Some(true));
+    }
+
+    #[test]
+    fn deepseek_harness_follows_dsh_home_like_dsh_does() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("toolport-dsh-home-{}", std::process::id()));
+        let _restore = EnvRestore::set("DSH_HOME", &root);
+        assert_eq!(dsh_path(), Some(root.join("cordis.patch.yml")));
+        let rules = client_rules_target("deepseek-harness", crate::instructions::Scope::Team)
+            .expect("dsh rules");
+        assert_eq!(rules.path, root.join("AGENTS.md"));
+        drop(_restore);
+        let home = home().unwrap();
+        let _tilde = EnvRestore::set("DSH_HOME", Path::new("~/dsh-elsewhere"));
+        assert_eq!(dsh_path(), Some(home.join("dsh-elsewhere").join("cordis.patch.yml")));
+        drop(_tilde);
+        // Blank and relative values: dsh uses its default, or a cwd Toolport
+        // cannot see; both resolve to the default home layer.
+        for value in ["", "   ", "relative/dsh"] {
+            let _value = EnvRestore::set("DSH_HOME", Path::new(value));
+            assert_eq!(
+                dsh_path(),
+                Some(home.join(".dsh").join("cordis.patch.yml")),
+                "{value:?}"
+            );
+        }
+    }
+
+    const DSH_PATCH: &str = r#"# machine-wide dsh settings
+- id: llm-pi-ai
+  config:
+    providers:
+      my-gateway:
+        apiKeyEnv: GATEWAY_API_KEY
+- insert:
+    - id: memory-mcp-reference
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: reference_memory
+        transport: stdio
+        command: mcp-server-memory
+        cwd: !!js process.cwd()
+"#;
+
+    #[test]
+    fn deepseek_harness_connect_and_disconnect_round_trip_in_a_temp_home() {
+        let home = std::env::temp_dir().join(format!("toolport-dsh-home-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".dsh")).unwrap();
+        let _home = TestHome::set(&home);
+        let def = find_def("deepseek-harness").unwrap();
+        let path = resolved_definition_path(&def).unwrap();
+        assert_eq!(path, home.join(".dsh").join("cordis.patch.yml"));
+        let lenient = config_is_whole_app_state("deepseek-harness");
+
+        let missing = read_client(&def);
+        assert!(!missing.config_exists);
+        assert!(missing.error.is_none());
+        assert!(!missing.gateway_installed);
+
+        std::fs::write(&path, DSH_PATCH).unwrap();
+        let entry = gateway_entry(Some("Work"), "deepseek-harness").unwrap();
+        edit_format(def.format, &path, Some(&entry), lenient).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.starts_with(DSH_PATCH), "{content}");
+        let connected = read_client(&def);
+        assert!(connected.error.is_none(), "{:?}", connected.error);
+        assert!(connected.gateway_installed);
+        let gateway = connected
+            .servers
+            .iter()
+            .find(|s| s.name == GATEWAY_ENTRY_NAME)
+            .unwrap();
+        assert_eq!(gateway.transport, "stdio");
+        assert_eq!(gateway.command, entry.command);
+        assert_eq!(gateway.args, entry.args);
+        assert!(gateway.env_keys.iter().any(|k| k == crate::brand::CLIENT_ID));
+        let normalized = dsh::normalized(&content).unwrap();
+        let env = &normalized[dsh::KEY][GATEWAY_ENTRY_NAME]["env"];
+        assert_eq!(env[crate::brand::CLIENT_ID], "deepseek-harness");
+        assert_eq!(env[crate::brand::PROFILE], "Work");
+
+        edit_format(def.format, &path, None, lenient).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content.trim_end(), DSH_PATCH.trim_end());
+        let disconnected = read_client(&def);
+        assert!(!disconnected.gateway_installed);
+        let names: Vec<_> = disconnected.servers.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["reference_memory"]);
+
+        drop(_home);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn rewrite_json_key_preserving_keeps_unrelated_text() {
         let original = r#"// header
 {
@@ -14750,6 +14940,10 @@ rules:
             // `C:\Users\<username>\.augment\settings.json` on Windows.
             ("auggie", |home, _| {
                 home.join(".augment").join("settings.json")
+            }),
+            // dsh resolves `~/.dsh` from the OS home on every platform.
+            ("deepseek-harness", |home, _| {
+                home.join(".dsh").join("cordis.patch.yml")
             }),
         ];
 

@@ -31,6 +31,7 @@ below for you, so you never have to edit these by hand.
 | Kiro                    | `~/.kiro/settings/mcp.json`                                                                            | JSON (`mcpServers`)      |
 | Auggie CLI              | `~/.augment/settings.json`                                                                             | JSON (`mcpServers`)      |
 | Kimi Code               | `$KIMI_CODE_HOME/mcp.json` (default `~/.kimi-code/mcp.json`)                                           | JSON (`mcpServers`)      |
+| DeepSeek Harness        | `$DSH_HOME/cordis.patch.yml` (default `~/.dsh/cordis.patch.yml`)                                       | YAML (patch `insert` rows) |
 | ZCode                   | `~/.zcode/cli/config.json`                                                                             | JSON (`mcp.servers`)     |
 | Command Code            | `~/.commandcode/mcp.json`                                                                              | JSON (`mcpServers`)      |
 | Tabnine Agent           | `~/.tabnine/mcp_servers.json`                                                                          | JSON (`mcpServers`)      |
@@ -73,6 +74,25 @@ Auggie's shell, theme, tool permissions, and other settings, so Toolport
 rewrites only the `mcpServers` key and leaves comments and the rest of the file
 as they are. Project (`<workspace>/.augment/settings.json`) and managed
 settings files are left alone.
+
+### DeepSeek Harness setup
+
+DeepSeek Harness (`dsh`) reads MCP servers from Cordis patch files. Toolport
+manages the home layer, `$DSH_HOME/cordis.patch.yml` (default
+`~/.dsh/cordis.patch.yml`), which dsh applies over every profile, so the gateway
+is available in the Web UI and every other profile. Connect adds one `insert`
+row with a `@deepseek-ai/dsh-mcp-client` entry named `toolport`; Disconnect
+removes just that entry. Comments, `!!js` expressions, other plugins and your
+own servers stay as they are, and a server you turned off with a
+`disabled: true` row is left alone. Per-profile layers under
+`$DSH_HOME/profiles/<name>/` are not changed. Start a new dsh session after
+connecting; the running one keeps the tools it started with.
+
+dsh connects to stdio and Streamable HTTP servers, so an SSE server can't be
+moved into its config, and server names are limited to letters, digits, `-` and
+`_` (32 at most). If a patch file is written in a layout Toolport can't edit
+exactly, such as a single-line flow list, Toolport leaves it untouched and says
+so.
 
 ### ZCode setup
 

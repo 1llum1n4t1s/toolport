@@ -51,6 +51,10 @@ pub struct Env {
     pub qwen: PathBuf,
     pub kimi: PathBuf,
     pub pi: PathBuf,
+    /// DeepSeek Harness's home (`DSH_HOME`, default `~/.dsh`).
+    pub dsh: PathBuf,
+    /// The shared agent folder dsh reads (`DSH_AGENTS_HOME`, default `~/.agents`).
+    pub dsh_agents: PathBuf,
     /// Every Claude Code profile folder when there is more than one (`~/.claude`, `~/.claude2`,
     /// a `CLAUDE_CONFIG_DIR`). Empty means `claude` is the only one.
     pub claude_profiles: Vec<PathBuf>,
@@ -75,6 +79,8 @@ impl Env {
             qwen: home.join(".qwen"),
             kimi: home.join(".kimi-code"),
             pi: home.join(".pi").join("agent"),
+            dsh: home.join(".dsh"),
+            dsh_agents: home.join(".agents"),
             config,
             claude_profiles: Vec::new(),
         }
@@ -121,6 +127,22 @@ impl Env {
         }
         if let Some(dir) = abs("PI_CODING_AGENT_DIR") {
             env.pi = dir;
+        }
+        // dsh expands a leading `~` in both.
+        let tilde = |key: &str| {
+            let raw = std::env::var(key).ok()?;
+            let path = match raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+                Some(rest) => home.join(rest),
+                None if raw == "~" => home.clone(),
+                None => PathBuf::from(raw),
+            };
+            path.is_absolute().then_some(path)
+        };
+        if let Some(dir) = tilde("DSH_HOME") {
+            env.dsh = dir;
+        }
+        if let Some(dir) = tilde("DSH_AGENTS_HOME") {
+            env.dsh_agents = dir;
         }
         env.claude_profiles = claude_profile_dirs(&home, &env.claude);
         Some(env)
@@ -1273,6 +1295,24 @@ fn agent_defs() -> Vec<AgentDef> {
             |env| vec![RuleSource::file(env.home.join(".commandcode").join("AGENTS.md"), false)],
             AGENTS_MD,
         ),
+        // From dsh's skill-filesystem and agent-instructions packages: folder skills
+        // directly under each root (no nesting), user rules from both homes, and
+        // AGENTS.md and CLAUDE.md with their .local overlays in each project folder.
+        docs_agent(
+            "deepseek-harness",
+            "DeepSeek Harness",
+            |env| {
+                vec![
+                    Root::flat(env.dsh.join("skills"), msg("DeepSeek Harness skills")),
+                    Root::flat(env.dsh_agents.join("skills"), msg("shared ~/.agents/skills")),
+                ]
+            },
+            &[".dsh/skills", ".agents/skills"],
+            |env| sources(vec![env.dsh.join("AGENTS.md"), env.dsh_agents.join("AGENTS.md")], false),
+            &["AGENTS.md", "CLAUDE.md", "AGENTS.local.md", "CLAUDE.local.md"],
+        )
+        .switch(Switch::None(NO_SWITCH))
+        .project_walk(ProjectWalk::FLAT),
         docs_agent(
             "tabnine",
             "Tabnine",

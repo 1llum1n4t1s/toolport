@@ -108,9 +108,10 @@ establish a supported behavior, not a latency guarantee for every release.
 | Zed         | [Vendor MCP docs](https://zed.dev/docs/ai/mcp)                                                                                                            | Automatically reloads tools                                     |
 | Codex       | [Pinned catalog](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/codex-rs/codex-mcp/src/connection_manager/tool_catalog.rs) | Generic notification refresh not established; cached tools      |
 | Cursor      | Isolated CLI health traffic                                                                                                                               | Tools/resources/prompts listed; notification refresh unverified |
+| DeepSeek Harness | dsh 0.2.0-rc.2 Web startup against toolport-gateway 2.2.0, checked 2026-10-18 | `server/discover`, `subscriptions/listen`, re-lists tools after each notification |
 
-Refresh support does not establish native tool search. OpenCode, Gemini, Cline
-and Zed retain Auto Lazy and their conservative five-second cold Full budget.
+Refresh support does not establish native tool search. OpenCode, Gemini, Cline,
+Zed and DeepSeek Harness retain Auto Lazy and their conservative five-second cold Full budget.
 Authenticated tool selection, API schema conversion, GUI behavior, Windows/macOS
 client runtime behavior, reconnect timing and maximum tool counts still require
 client/version-specific acceptance. A replay pass is not a claim of reliability

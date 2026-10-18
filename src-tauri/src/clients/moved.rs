@@ -44,6 +44,11 @@ enum Raw {
     Yaml {
         text: String,
     },
+    /// One DeepSeek Harness entry mapping (`id`, `name`, `config`), verbatim, so
+    /// its comments and `!!js` expressions go back as they were.
+    Dsh {
+        text: String,
+    },
 }
 
 /// Where a format keeps its name -> definition server list.
@@ -57,6 +62,8 @@ enum Container {
     YamlMap(&'static str),
     /// Continue's list of server objects, each carrying its own `name`.
     YamlList(&'static str),
+    /// DeepSeek Harness patch rows; see `dsh`.
+    Dsh,
 }
 
 fn container(format: Format) -> Container {
@@ -80,6 +87,7 @@ fn container(format: Format) -> Container {
         Format::YamlExtensions => Container::YamlMap("extensions"),
         Format::YamlMcpServers => Container::YamlMap("mcp_servers"),
         Format::YamlMcpServersList => Container::YamlList("mcpServers"),
+        Format::YamlDshPatch => Container::Dsh,
     }
 }
 
@@ -91,6 +99,7 @@ pub(super) fn server_container(format: Format, root: &serde_json::Value) -> serd
         }
         Container::Toml => root["mcp_servers"].clone(),
         Container::YamlMap(key) | Container::YamlList(key) => root[key].clone(),
+        Container::Dsh => root[dsh::KEY].clone(),
     }
 }
 
@@ -171,6 +180,11 @@ pub(super) fn definition(
             let doc: serde_yaml::Value =
                 serde_yaml::from_str(&text).map_err(|_| "Could not read imported settings")?;
             serde_json::to_value(doc).map_err(|_| "Could not read imported settings")?
+        }
+        Raw::Dsh { text } => {
+            let doc: serde_yaml::Value =
+                serde_yaml::from_str(&text).map_err(|_| "Could not read imported settings")?;
+            dsh::to_json(&doc["config"])
         }
     };
     Ok(Some(value))
@@ -286,7 +300,34 @@ pub(super) fn remove_selected(format: Format, path: &Path, names: &[String]) -> 
             }
             atomic_write_yaml_config(path, original.as_deref(), &root, key)
         }
+        Container::Dsh => {
+            let original = read_config_file(path)?;
+            let mut desired = dsh_servers(&original)?;
+            for name in names {
+                desired.remove(name);
+            }
+            write_dsh(path, &original, &desired)
+        }
     }
+}
+
+fn dsh_servers(text: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    Ok(dsh::normalized(text)?[dsh::KEY]
+        .as_object()
+        .cloned()
+        .unwrap_or_default())
+}
+
+fn write_dsh(
+    path: &Path,
+    original: &str,
+    desired: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let out = dsh::sync(Some(original), desired)?;
+    if out != original {
+        atomic_write(path, &out)?;
+    }
+    Ok(())
 }
 
 /// Add only an identity env key to an existing owned entry. Preserve raw fields.
@@ -384,6 +425,23 @@ pub(super) fn backfill_identity(
                     );
             }
             atomic_write_yaml_config(path, original.as_deref(), &root, container_key)
+        }
+        Container::Dsh => {
+            let original = read_config_file(path)?;
+            let mut desired = dsh_servers(&original)?;
+            let env = desired
+                .get_mut(name)
+                .ok_or("Missing owned gateway")?
+                .as_object_mut()
+                .ok_or("Invalid gateway entry")?
+                .entry("env")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .ok_or("Invalid gateway environment")?;
+            for key in &keys {
+                env.insert((*key).into(), serde_json::json!(id));
+            }
+            write_dsh(path, &original, &desired)
         }
     }
 }
@@ -564,6 +622,17 @@ fn extract(container: Container, text: &str) -> Result<Vec<Moved>, String> {
                 }
             }
         }
+        Container::Dsh => {
+            for (name, raw, config) in dsh::raw_entries(text)? {
+                let command = config.get("command").and_then(|value| value.as_str());
+                if !gateway_identity_matches(&name, &name, command) {
+                    out.push(Moved {
+                        name,
+                        raw: Raw::Dsh { text: raw },
+                    });
+                }
+            }
+        }
         Container::YamlList(key) => {
             let root = parse_existing_yaml_content(text)?;
             for definition in root
@@ -718,6 +787,32 @@ fn insert_missing(
             }
             let backup = backup()?;
             atomic_write_yaml_config(path, original.as_deref(), &root, key)?;
+            Ok((names, backup))
+        }
+        Container::Dsh => {
+            let original = if mutation::exists(path) {
+                Some(read_config_file(path)?)
+            } else {
+                None
+            };
+            let present = dsh_servers(original.as_deref().unwrap_or(""))?;
+            let mut texts = Vec::new();
+            for entry in entries {
+                let Raw::Dsh { text } = &entry.raw else {
+                    continue;
+                };
+                if !has_name(present.keys().map(String::as_str), &entry.name)
+                    && !names.contains(&entry.name)
+                {
+                    texts.push(text.clone());
+                    names.push(entry.name.clone());
+                }
+            }
+            if names.is_empty() {
+                return Ok((names, None));
+            }
+            let backup = backup()?;
+            atomic_write(path, &dsh::append_raw(original.as_deref(), &texts)?)?;
             Ok((names, backup))
         }
     }
