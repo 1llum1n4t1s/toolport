@@ -1164,5 +1164,7 @@
   "OpenClaw workspace": "OpenClaw 工作区",
   "OpenClaw skills": "OpenClaw 技能",
   "OpenClaw extra folder": "OpenClaw 额外文件夹",
-  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "使用 OpenClaw 的 openclaw.json 中的 skills.entries（enabled: false）。"
+  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "使用 OpenClaw 的 openclaw.json 中的 skills.entries（enabled: false）。",
+  "OpenHands skills": "OpenHands 技能",
+  "OpenHands can only turn off skills it installed itself, not skills in your folders.": "OpenHands 只能关闭它自己安装的技能，不能关闭你文件夹中的技能。"
 }

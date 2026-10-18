@@ -930,6 +930,7 @@ mod tests {
             (Format::JsonAmpMcpServers, r#"{"amp.mcpServers":{"native":{"command":"native"}},"theme":"dark"}"#),
             (Format::JsonZCodeMcp, r#"{"mcp":{"servers":{"native":{"command":"native"}}},"theme":"dark"}"#),
             (Format::JsonOpenClawMcp, "{\n  // gateway\n  gateway: { port: 18789 },\n  mcp: { servers: { native: { command: 'native', args: [] } } },\n}\n"),
+            (Format::JsonOpenHandsMcpServers, "{\n  \"mcpServers\": {\n    \"native\": {\"command\": \"native\", \"args\": [], \"enabled\": true}\n  }\n}\n"),
             (Format::JsonServers, "{ // user's comment\r\n \"servers\": {\"native\":{\"command\":\"native\",},},\r\n \"theme\": \"dark\",\r\n}"),
             (Format::JsonMcp, r#"{"mcp":{"native":{"command":"native","type":"stdio"}},"theme":"dark"}"#),
             (Format::JsonOpenCodeMcp, "{ // comment\n \"mcp\": {\"native\":{\"type\":\"local\",\"command\":[\"native\"],\"enabled\":true,},},\n}"),

@@ -36,6 +36,7 @@ const MONOCHROME = new Set([
   "kimi-code",
   "lm-studio",
   "opencode",
+  "openhands",
   "pi",
   "roo-code",
 ]);
@@ -73,6 +74,7 @@ const CLIENT_LOGO: Record<string, string> = {
   reasonix: "reasonix",
   codewhale: "codewhale",
   openclaw: "openclaw",
+  openhands: "openhands",
   junie: "junie",
   "kilo-code": "kilo-code",
   "github-copilot-cli": "github-copilot-cli",

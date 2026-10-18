@@ -1439,6 +1439,28 @@ fn agent_defs() -> Vec<AgentDef> {
             &[],
         )
         .switch(Switch::OpenclawEntries),
+        // OpenHands SDK skills/skill.py: `.agents/skills`, then `.openhands/skills`
+        // and the legacy `.openhands/microagents`, in the work dir and its git root,
+        // ahead of the same three folders in the home; the first name wins. A plain
+        // Markdown file without triggers in the legacy folder is always-on context,
+        // which is where team rules go.
+        docs_agent(
+            "openhands",
+            "OpenHands",
+            |env| {
+                let oh = env.home.join(".openhands");
+                vec![
+                    Root::deep(env.agents_skills(), msg("shared ~/.agents/skills")),
+                    Root::deep(oh.join("skills"), msg("OpenHands skills")),
+                    Root::deep(oh.join("microagents"), msg("OpenHands skills")),
+                ]
+            },
+            &[".agents/skills", ".openhands/skills", ".openhands/microagents"],
+            |env| sources(md_files(&env.home.join(".openhands").join("microagents")), false),
+            AGENTS_MD,
+        )
+        .project_walk(ProjectWalk::DEEP.first())
+        .checked(msg("OpenHands can only turn off skills it installed itself, not skills in your folders.")),
         docs_agent(
             "tabnine",
             "Tabnine",

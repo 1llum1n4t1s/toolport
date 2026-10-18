@@ -1164,5 +1164,7 @@
   "OpenClaw workspace": "Espace de travail OpenClaw",
   "OpenClaw skills": "Skills OpenClaw",
   "OpenClaw extra folder": "Dossier supplémentaire OpenClaw",
-  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "Utilise skills.entries dans le fichier openclaw.json d'OpenClaw (enabled: false)."
+  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "Utilise skills.entries dans le fichier openclaw.json d'OpenClaw (enabled: false).",
+  "OpenHands skills": "Skills OpenHands",
+  "OpenHands can only turn off skills it installed itself, not skills in your folders.": "OpenHands ne peut désactiver que les skills qu'il a installés lui-même, pas ceux de vos dossiers."
 }

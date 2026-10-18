@@ -41,6 +41,7 @@ mod restore;
 pub(crate) use restore::after_capture_conflict as record_config_capture_conflict;
 pub(crate) use restore::after_rollback as record_config_rollback;
 pub(crate) mod openclaw;
+mod openhands;
 #[cfg(test)]
 mod round3_tests;
 #[cfg(test)]
@@ -197,6 +198,9 @@ enum Format {
     /// OpenClaw's JSON5 gateway config, servers under the nested `mcp.servers`
     /// map with an explicit `transport`; see `openclaw`.
     JsonOpenClawMcp,
+    /// The OpenHands CLI's strict JSON `mcp.json`, fastmcp's `mcpServers` map
+    /// with an explicit `transport` for remote servers; see `openhands`.
+    JsonOpenHandsMcpServers,
 }
 
 struct CombinedToolNameBudget {
@@ -685,6 +689,7 @@ fn resolve_client_config_path(
         "zcode" => home.join(".zcode").join("cli").join("config.json"),
         // OpenClaw resolves `~/.openclaw` from the user's home on every platform.
         "openclaw" => home.join(".openclaw").join("openclaw.json"),
+        "openhands" => home.join(".openhands").join("mcp.json"),
         "command-code" => home.join(".commandcode").join("mcp.json"),
         "tabnine" => home.join(".tabnine").join("mcp_servers.json"),
         "lm-studio" => home.join(".lmstudio").join("mcp.json"),
@@ -1320,6 +1325,7 @@ fn resolve_client_config_path_linux(client_id: &str, home: &std::path::Path) -> 
         "zcode" => home.join(".zcode").join("cli").join("config.json"),
         // OpenClaw resolves `~/.openclaw` from the user's home on every platform.
         "openclaw" => home.join(".openclaw").join("openclaw.json"),
+        "openhands" => home.join(".openhands").join("mcp.json"),
         "command-code" => home.join(".commandcode").join("mcp.json"),
         "tabnine" => home.join(".tabnine").join("mcp_servers.json"),
         "lm-studio" => home.join(".lmstudio").join("mcp.json"),
@@ -1437,6 +1443,10 @@ fn resolve_rules_target(
         // dsh loads `$DSH_HOME/AGENTS.md` first in its user-global chain.
         "deepseek-harness" => block(home.join(".dsh").join("AGENTS.md")),
         "openclaw" => block(home.join(".openclaw").join("workspace").join("AGENTS.md")),
+        // OpenHands has no global AGENTS.md; a plain Markdown file in a user skills
+        // folder loads as always-on context. The legacy microagents folder keeps it
+        // off the Skills page.
+        "openhands" => owned(home.join(".openhands").join("microagents")),
         // Codewhale reads only the first global instruction file it finds, as a
         // fallback for projects without their own, so the block goes into that
         // one; a new file would hide the user's.
@@ -1907,6 +1917,20 @@ fn openclaw_path() -> Option<PathBuf> {
     openclaw_dirs()
         .filter(|dirs| !dirs.relative)
         .map(|dirs| dirs.config)
+}
+
+/// The OpenHands CLI's `mcp.json` in `OPENHANDS_PERSISTENCE_DIR`, else
+/// `~/.openhands`. OpenHands uses the variable as written, so a relative (or
+/// blank) one depends on its working directory and leaves the client unresolved.
+fn openhands_path() -> Option<PathBuf> {
+    openhands_dir().map(|dir| dir.join("mcp.json"))
+}
+
+fn openhands_dir() -> Option<PathBuf> {
+    match client_path_env("OPENHANDS_PERSISTENCE_DIR") {
+        Some(raw) => absolute_env_dir(Some(raw)),
+        None => Some(home()?.join(".openhands")),
+    }
 }
 
 /// A file in Codewhale's state home: `$CODEWHALE_HOME`, else `~/.codewhale`,
@@ -2631,6 +2655,19 @@ fn defs() -> Vec<ClientDef> {
             uses_connectors: false,
             // The gateway config every OpenClaw agent and the CLI read.
             path: openclaw_path,
+            plugin_scan: None,
+        },
+        ClientDef {
+            location: None,
+            id: "openhands",
+            discovery: discovery::capabilities("openhands"),
+            combined_tool_name_budget: None,
+            name: "OpenHands",
+            format: Format::JsonOpenHandsMcpServers,
+            uses_connectors: false,
+            // The OpenHands CLI's user MCP config. The web app keeps its servers
+            // in its own settings store.
+            path: openhands_path,
             plugin_scan: None,
         },
         ClientDef {
@@ -3948,6 +3985,8 @@ fn install_override(id: &str) -> Option<PathBuf> {
         "zcode" => Some(home()?.join(".zcode")),
         // The state dir OpenClaw creates on its first run.
         "openclaw" => Some(openclaw_dirs()?.state),
+        // The persistence dir the OpenHands CLI creates on its first run.
+        "openhands" => openhands_dir(),
         _ => None,
     }
 }
@@ -4363,6 +4402,9 @@ pub(crate) fn validate_client_import(
         Some("openclaw") => {
             openclaw::validate_import(Path::new(&client.config_path), names, migration)?
         }
+        Some("openhands") => {
+            openhands::validate_import(Path::new(&client.config_path), names, migration)?
+        }
         _ => {}
     }
     Ok(())
@@ -4382,6 +4424,7 @@ fn parse_client_content(format: Format, content: &str) -> Result<Vec<McpServer>,
         Format::JsonAuggieMcpServers => parse_json(content, "mcpServers"),
         Format::JsonZCodeMcp => zcode::parse(content),
         Format::JsonOpenClawMcp => openclaw::parse(content),
+        Format::JsonOpenHandsMcpServers => openhands::parse(content),
         Format::JsonServers => parse_json(content, "servers"),
         Format::JsonMcp => parse_json(content, "mcp"),
         Format::JsonOpenCodeMcp => parse_opencode_json(content),
@@ -7148,6 +7191,7 @@ fn write_format(
         Format::JsonAuggieMcpServers => write_auggie_json(path, servers)?,
         Format::JsonZCodeMcp => zcode::write_servers(path, servers)?,
         Format::JsonOpenClawMcp => openclaw::write_servers(path, servers)?,
+        Format::JsonOpenHandsMcpServers => openhands::write_servers(path, servers)?,
         Format::JsonServers => write_json(path, "servers", servers, lenient)?,
         Format::JsonMcp => write_crush_json(path, servers)?,
         Format::JsonOpenCodeMcp => write_opencode_json(path, servers)?,
@@ -7873,6 +7917,7 @@ fn edit_format(
         Format::JsonAuggieMcpServers => edit_auggie_json_gateway(path, entry)?,
         Format::JsonZCodeMcp => zcode::edit_gateway(path, entry)?,
         Format::JsonOpenClawMcp => openclaw::edit_gateway(path, entry)?,
+        Format::JsonOpenHandsMcpServers => openhands::edit_gateway(path, entry)?,
         Format::JsonServers => edit_json_gateway(path, "servers", entry, lenient)?,
         Format::JsonMcp => edit_crush_gateway(path, entry)?,
         Format::JsonOpenCodeMcp => edit_opencode_gateway(path, entry)?,
@@ -9024,7 +9069,11 @@ fn isolated_client_env(root: &Path) -> Vec<EnvRestore> {
     .map(|key| EnvRestore::set(key, Path::new("")))
     .collect();
     env.extend(
-        ["CODEWHALE_MCP_CONFIG", "DEEPSEEK_MCP_CONFIG"]
+        [
+            "CODEWHALE_MCP_CONFIG",
+            "DEEPSEEK_MCP_CONFIG",
+            "OPENHANDS_PERSISTENCE_DIR",
+        ]
             .into_iter()
             .map(EnvRestore::unset),
     );
@@ -13512,6 +13561,105 @@ command = "mcp-server-memory"   # keep this note
         let root = parse_json_value(&content).unwrap();
         let env = &root["mcp"]["servers"][GATEWAY_ENTRY_NAME]["env"];
         assert_eq!(env[crate::brand::CLIENT_ID], "openclaw");
+        assert_eq!(env[crate::brand::PROFILE], "Work");
+
+        edit_format(def.format, &path, None, lenient).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
+        let disconnected = read_client(&def);
+        assert!(!disconnected.gateway_installed);
+        let names: Vec<_> = disconnected
+            .servers
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, ["git"]);
+
+        drop(_clear);
+        drop(_home);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn openhands_is_registered_with_its_cli_mcp_json() {
+        let def = find_def("openhands").unwrap();
+        assert_eq!(def.name, "OpenHands");
+        assert!(matches!(def.format, Format::JsonOpenHandsMcpServers));
+        assert!(!def.uses_connectors);
+        assert!(def.plugin_scan.is_none());
+        assert!(!config_is_whole_app_state("openhands"));
+        // Every MCP tool goes into the agent's list and nothing re-lists.
+        assert_eq!(def.discovery.auto_mode, "lazy");
+        assert_eq!(def.discovery.native_tool_search, Some(false));
+        assert_eq!(def.discovery.tools_list_changed, Some(false));
+    }
+
+    #[test]
+    fn openhands_follows_its_persistence_dir() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home =
+            std::env::temp_dir().join(format!("toolport-openhands-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let _home = TestHome::set(&home);
+        let _clear = isolated_client_env(&home);
+        assert_eq!(
+            openhands_path(),
+            Some(home.join(".openhands").join("mcp.json"))
+        );
+        assert_eq!(install_override("openhands"), Some(home.join(".openhands")));
+        assert_eq!(
+            client_rules_target("openhands", crate::instructions::Scope::Team)
+                .unwrap()
+                .path,
+            home.join(".openhands")
+                .join("microagents")
+                .join("toolport-team-rules.md")
+        );
+        let dir = home.join("state");
+        let _dir = EnvRestore::set("OPENHANDS_PERSISTENCE_DIR", &dir);
+        assert_eq!(openhands_path(), Some(dir.join("mcp.json")));
+        // OpenHands neither expands `~` nor trims, and a relative or blank dir
+        // depends on its working directory.
+        for raw in ["", "state", "~/state", " /abs"] {
+            let _raw = EnvRestore::set("OPENHANDS_PERSISTENCE_DIR", Path::new(raw));
+            assert_eq!(openhands_path(), None, "{raw:?}");
+        }
+        drop(_dir);
+        drop(_clear);
+        drop(_home);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn openhands_connect_and_disconnect_round_trip_in_a_temp_home() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home =
+            std::env::temp_dir().join(format!("toolport-openhands-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".openhands")).unwrap();
+        let _home = TestHome::set(&home);
+        let _clear = isolated_client_env(&home);
+        let def = find_def("openhands").unwrap();
+        let path = resolved_definition_path(&def).unwrap();
+        assert_eq!(path, home.join(".openhands").join("mcp.json"));
+        let lenient = config_is_whole_app_state("openhands");
+
+        let missing = read_client(&def);
+        assert!(!missing.config_exists);
+        assert!(missing.error.is_none());
+        assert!(!missing.gateway_installed);
+
+        let config = "{\n  \"mcpServers\": {\n    \"git\": {\n      \"command\": \"uvx\",\n      \"args\": [\"mcp-server-git\"]\n    },\n    \"off\": {\"command\": \"x\", \"enabled\": false}\n  }\n}\n";
+        std::fs::write(&path, config).unwrap();
+        let entry = gateway_entry(Some("Work"), "openhands").unwrap();
+        edit_format(def.format, &path, Some(&entry), lenient).unwrap();
+        let connected = read_client(&def);
+        assert!(connected.error.is_none(), "{:?}", connected.error);
+        assert!(connected.gateway_installed);
+        let root: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let env = &root["mcpServers"][GATEWAY_ENTRY_NAME]["env"];
+        assert_eq!(env[crate::brand::CLIENT_ID], "openhands");
         assert_eq!(env[crate::brand::PROFILE], "Work");
 
         edit_format(def.format, &path, None, lenient).unwrap();
