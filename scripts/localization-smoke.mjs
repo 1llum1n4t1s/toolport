@@ -32,6 +32,7 @@ const server = await createServer({
   server: {
     host: "127.0.0.1",
     port: 0,
+    strictPort: false,
     open: false,
     hmr: false,
     fs: { allow: [root, realpathSync(path.join(root, "node_modules"))] },
