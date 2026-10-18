@@ -407,10 +407,10 @@ mod tests {
         let page = super::super::page_body(14);
         let column = FormColumn::new(&page);
         column.allocate(1200, 400, -1, None);
-        assert_eq!(page.width(), 808);
-        assert_eq!(page.allocation().x(), 0);
+        assert_eq!(page.width() + page.margin_start() + page.margin_end(), 808);
+        assert_eq!(page.allocation().x(), page.margin_start());
         column.allocate(650, 400, -1, None);
-        assert_eq!(page.width(), 650);
+        assert_eq!(page.width() + page.margin_start() + page.margin_end(), 650);
         header.set_title("Catalog");
         header.set_subtitle("Add MCP servers from the registry");
         let back = header.set_back("Servers", "Back to servers");
