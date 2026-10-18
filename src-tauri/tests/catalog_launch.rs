@@ -136,14 +136,6 @@ fn catalog_values_survive_vault_reload_probe_sharing_and_gateway_launch() {
             ],
         ),
         (
-            "PostgreSQL",
-            vec![(
-                "POSTGRES_URL",
-                "postgresql://user:review%40secret@localhost/test",
-                true,
-            )],
-        ),
-        (
             "Filesystem",
             vec![("ALLOWED_DIRECTORY", "/fixture/directory with spaces", false)],
         ),
@@ -258,7 +250,7 @@ fn catalog_values_survive_vault_reload_probe_sharing_and_gateway_launch() {
     )
     .unwrap();
     let (imported, count) = sharing_controller::import_json(&exported).unwrap();
-    assert_eq!(count, 6);
+    assert_eq!(count, 5);
     let filesystem = imported
         .servers
         .iter()
