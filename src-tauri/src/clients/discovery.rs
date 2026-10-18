@@ -94,6 +94,18 @@ pub(super) fn capabilities(id: &str) -> DiscoveryCapabilities {
             auto_full_max_tools: None,
             evidence: "docs/client-conformance.md (source and notification evidence)",
         },
+        // dsh 0.2.0-rc.2 against toolport-gateway 2.2.0 (2026-10-18): it probes
+        // `server/discover`, subscribes with `subscriptions/listen`, and lists
+        // tools again after every `notifications/tools/list_changed`.
+        "deepseek-harness" => DiscoveryCapabilities {
+            auto_mode: "lazy",
+            native_tool_search: None,
+            tools_list_changed: Some(true),
+            cold_full_list_wait_ms: 5_000,
+            max_tools: None,
+            auto_full_max_tools: None,
+            evidence: "docs/client-conformance.md (captured startup and refresh)",
+        },
         "anthropic-api" => DiscoveryCapabilities {
             auto_mode: "full",
             native_tool_search: Some(true),

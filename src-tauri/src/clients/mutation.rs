@@ -143,6 +143,7 @@ pub(super) fn value(format: Format, text: Option<&str>) -> Result<Value, String>
         Format::YamlExtensions | Format::YamlMcpServers | Format::YamlMcpServersList => {
             serde_json::to_value(parse_existing_yaml_content(text)?).map_err(|e| e.to_string())
         }
+        Format::YamlDshPatch => super::dsh::normalized(text),
         _ => parse_json_value(text),
     }
 }
@@ -232,6 +233,7 @@ fn run_inner<T>(
                 | Format::YamlExtensions
                 | Format::YamlMcpServers
                 | Format::YamlMcpServersList
+                | Format::YamlDshPatch
         )
         && !matches!(
             client_id.split('@').next().unwrap_or(client_id),

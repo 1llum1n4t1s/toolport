@@ -6,6 +6,17 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ## [Unreleased]
 
+### Added
+
+- DeepSeek Harness (`dsh`) as a supported client. Connect adds the gateway to
+  dsh's home patch layer, `~/.dsh/cordis.patch.yml` (or under `DSH_HOME`), so it
+  is available in every dsh profile. Toolport edits only its own entry, so
+  comments, `!!js` expressions, other plugins and your own servers stay as they
+  are. The Skills page shows dsh's skills from `~/.dsh/skills` and
+  `~/.agents/skills` and its `AGENTS.md` rules, and team rules go to
+  `~/.dsh/AGENTS.md`. See
+  [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#deepseek-harness-setup).
+
 ## [2.2.0] - 2026-10-18
 
 Toolport now shows the skills and rules files each of your AI agents loads. Like

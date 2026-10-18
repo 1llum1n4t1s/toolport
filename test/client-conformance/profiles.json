@@ -466,6 +466,30 @@
       "observedSessionKind": null
     },
     {
+      "id": "deepseek-harness",
+      "evidence": "captured web startup",
+      "initialize": {
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {},
+          "clientInfo": {
+            "name": "dsh-mcp-client",
+            "version": "0.0.1"
+          }
+        },
+        "jsonrpc": "2.0",
+        "id": 0
+      },
+      "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
+      "listChanged": {
+        "supported": true,
+        "detail": "dsh 0.2.0-rc.2 re-lists tools after notifications/tools/list_changed (subscriptions/listen against toolport-gateway 2.2.0)"
+      },
+      "source": "https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md",
+      "observedSessionKind": "Web profile startup, not model session; initialize is dsh's fallback after a server without server/discover"
+    },
+    {
       "id": "zcode",
       "evidence": "documentation only",
       "initialize": null,

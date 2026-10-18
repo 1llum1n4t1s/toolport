@@ -1556,6 +1556,46 @@ fn auggie_command_code_and_tabnine_have_columns() {
 }
 
 #[test]
+fn deepseek_harness_reads_both_homes_flat_and_both_user_rules() {
+    let home = Home::new();
+    home.skill(".dsh/skills/own", "own", "Own");
+    home.skill(".agents/skills/shared", "shared", "Shared");
+    // dsh deliberately skips nested SKILL.md files and the bundled .system folder.
+    home.skill(".dsh/skills/group/nested", "nested", "Nested");
+    home.skill(".dsh/skills/.system/bundled", "bundled", "Bundled");
+    home.write(".dsh/AGENTS.md", "# dsh\n");
+    home.write(".agents/AGENTS.md", "# shared\n");
+    let inv = scan(&home.env(), &only(&["deepseek-harness"]), None);
+    assert_eq!(state(&inv, "own", "deepseek-harness"), Some(State::On));
+    assert_eq!(state(&inv, "shared", "deepseek-harness"), Some(State::On));
+    assert!(!inv
+        .skills
+        .iter()
+        .any(|s| s.name == "nested" || s.name == "bundled"));
+    for path in ["~/.dsh/AGENTS.md", "~/.agents/AGENTS.md"] {
+        let rule = inv.rules.iter().find(|r| r.path == path).expect(path);
+        assert!(rule.agents.contains_key("deepseek-harness"), "{path}");
+    }
+
+    // A project skill beats a personal one with the same name, as in dsh.
+    let project = home.path("work/app");
+    home.skill(".dsh/skills/style", "style", "Personal");
+    home.skill("work/app/.dsh/skills/style", "style", "Project");
+    let inv = scan(&home.env(), &only(&["deepseek-harness"]), Some(&project));
+    let winner = inv
+        .skills
+        .iter()
+        .find(|s| {
+            s.name == "style"
+                && s.states
+                    .get("deepseek-harness")
+                    .is_some_and(|st| st.state == State::On)
+        })
+        .map(|s| s.description.clone());
+    assert_eq!(winner.as_deref(), Some("Project"));
+}
+
+#[test]
 fn grok_edits_keep_the_skills_table_and_refuse_a_list_they_cannot_read() {
     let home = Home::new();
     let writer = TestWriter::default();
