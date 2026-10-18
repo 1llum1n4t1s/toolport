@@ -189,6 +189,18 @@ pub(super) fn normalized_server(name: &str, definition: &Value) -> Result<Value,
     for key in inactive {
         value.remove(*key);
     }
+    // These belong to other client schemas. nanobot ignores unknown keys;
+    // the shared credential importer must not turn them into live credentials.
+    for key in [
+        "environment",
+        "envs",
+        "http_headers",
+        "bearerTokenEnvVar",
+        "bearer_token_env_var",
+        "env_http_headers",
+    ] {
+        value.remove(key);
+    }
     value.insert("type".into(), Value::String(kind.into()));
     Ok(Value::Object(value))
 }

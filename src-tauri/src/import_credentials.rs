@@ -735,7 +735,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("config.json");
         for (kind, remote) in [("sse", true), ("streamableHttp", true), ("stdio", false)] {
-            let raw = json!({"type":kind,"command":"node","args":["old.js"],"url":"https://example.invalid/mcp","env":{"Authorization":"stdio-secret","STDIO_ONLY":"ignored"},"headers":{"Authorization":"remote-secret","REMOTE_ONLY":"ignored"}});
+            let raw = json!({"type":kind,"command":"node","args":["old.js"],"url":"https://example.invalid/mcp","env":{"Authorization":"stdio-secret","STDIO_ONLY":"ignored"},"headers":{"Authorization":"remote-secret","REMOTE_ONLY":"ignored"},"environment":{"UNKNOWN_ONLY":"ignored"},"bearerTokenEnvVar":"UNKNOWN_TOKEN"});
             std::fs::write(
                 &path,
                 json!({"tools":{"mcpServers":{"native":raw}}}).to_string(),
@@ -772,6 +772,11 @@ mod tests {
             server.url = remote.then(|| "https://example.invalid/mcp".into());
             server.env.clear();
             let import = Import::prepare(server, Some(&definition)).unwrap();
+            assert!(!import
+                .entry
+                .env
+                .iter()
+                .any(|env| matches!(env.key.as_str(), "UNKNOWN_ONLY" | "UNKNOWN_TOKEN")));
             let actual = import
                 .values
                 .iter()
