@@ -897,7 +897,6 @@
   "Uses {profile_name}": "Utilise {profile_name}",
   "Value": "Valeur",
   "Verification did not start because {value0}. Older calls will never count as proof.": "La vérification n'a pas démarré car {value0}. Les appels plus anciens ne compteront jamais comme preuve.",
-  "Wait for the last change to finish.": "Attendez la fin de la dernière modification.",
   "Waiting for a new Toolport call. If {value0} was already open, restart it first.": "En attente d'un nouvel appel Toolport. Si {value0} était déjà ouvert, redémarrez-le d'abord.",
   "Waiting for invitation approval.": "En attente de l'approbation de l'invitation.",
   "Waiting for the current definition. One more review is needed.": "En attente de la définition actuelle. Un examen supplémentaire est nécessaire.",
@@ -1128,11 +1127,14 @@
   "{value1} could not sync": "{value1} n'a pas pu être synchronisé",
   "{value1} · {value2} · config version {value3}": "{value1} · {value2} · version de configuration {value3}",
   "{value1}. Last successful sync: {last}.": "{value1}. Dernière synchronisation réussie : {last}.",
-  "Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "Ces clients chargent chaque skill de leurs dossiers et n’ont pas d’interrupteur. Supprimez un skill dont vous ne voulez nulle part, ou ignorez ceci si cela vous convient.",
   "That skill is already gone. Refresh to see the latest.": "Ce skill a déjà disparu. Actualisez pour voir l’état actuel.",
   "Toolport only removes your own skills, not ones from a package, an account or a client.": "Toolport ne supprime que vos propres skills, pas ceux d’un paquet, d’un compte ou d’un client.",
   "Toolport only removes skill folders.": "Toolport ne supprime que des dossiers de skills.",
   "Couldn't find Toolport's data folder": "Dossier de données de Toolport introuvable",
   "That app can't open this file.": "Cette app ne peut pas ouvrir ce fichier.",
-  "Default text editor": "Éditeur de texte par défaut"
+  "Default text editor": "Éditeur de texte par défaut",
+  "{skills} is off in at least one client but still on in {clients}. Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "{skills} est désactivée dans au moins un client, mais encore activée dans {clients}. Ces clients chargent chaque skill de leurs dossiers et n’ont pas d’interrupteur. Supprimez un skill dont vous ne voulez nulle part, ou ignorez ceci si cela vous convient.",
+  "{skills} are off in at least one client but still on in {clients}. Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "{skills} sont désactivées dans au moins un client, mais encore activées dans {clients}. Ces clients chargent chaque skill de leurs dossiers et n’ont pas d’interrupteur. Supprimez un skill dont vous ne voulez nulle part, ou ignorez ceci si cela vous convient.",
+  "Toolport can't remove {skill} here, because a linked folder leads to {path}. Remove it where it lives.": "Toolport ne peut pas supprimer {skill} ici, car un dossier lié mène à {path}. Supprimez-la là où elle se trouve.",
+  "That problem changed since you looked. Check it again, then fix it.": "Le problème a changé depuis que vous l'avez consulté. Vérifiez-le à nouveau, puis corrigez-le."
 }

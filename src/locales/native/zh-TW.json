@@ -897,7 +897,6 @@
   "Uses {profile_name}": "使用{profile_name}",
   "Value": "值",
   "Verification did not start because {value0}. Older calls will never count as proof.": "驗證尚未開始：{value0}。較舊的呼叫絕不會計作驗證依據。",
-  "Wait for the last change to finish.": "請等待上一次變更完成。",
   "Waiting for a new Toolport call. If {value0} was already open, restart it first.": "正在等待新的 Toolport 呼叫。如果 {value0} 已經開啟，請先將其重啟。",
   "Waiting for invitation approval.": "等待邀請核准。",
   "Waiting for the current definition. One more review is needed.": "等待當前的定義。還需要進行一項審查。",
@@ -1128,11 +1127,14 @@
   "{value1} could not sync": "{value1} 無法同步",
   "{value1} · {value2} · config version {value3}": "{value1} · {value2} · 設定版本 {value3}",
   "{value1}. Last successful sync: {last}.": "{value1}。上次成功同步：{last}。",
-  "Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "這些用戶端會載入其資料夾中的所有技能，且沒有開關。刪除你在哪裡都不需要的技能，如果沒問題就忽略這一項。",
   "That skill is already gone. Refresh to see the latest.": "該技能已經不存在。重新整理以查看最新狀態。",
   "Toolport only removes your own skills, not ones from a package, an account or a client.": "Toolport 只刪除你自己的技能，不會刪除來自套件、帳戶或用戶端的技能。",
   "Toolport only removes skill folders.": "Toolport 只刪除技能資料夾。",
   "Couldn't find Toolport's data folder": "找不到 Toolport 的資料夾",
   "That app can't open this file.": "該應用程式無法開啟此檔案。",
-  "Default text editor": "預設文字編輯器"
+  "Default text editor": "預設文字編輯器",
+  "{skills} is off in at least one client but still on in {clients}. Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "{skills} 至少在一個用戶端中已關閉，但在 {clients} 中仍處於開啟狀態。這些用戶端會載入其資料夾中的所有技能，且沒有開關。刪除你在哪裡都不需要的技能，如果沒問題就忽略這一項。",
+  "{skills} are off in at least one client but still on in {clients}. Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "{skills} 至少在一個用戶端中已關閉，但在 {clients} 中仍處於開啟狀態。這些用戶端會載入其資料夾中的所有技能，且沒有開關。刪除你在哪裡都不需要的技能，如果沒問題就忽略這一項。",
+  "Toolport can't remove {skill} here, because a linked folder leads to {path}. Remove it where it lives.": "由於一個連結的資料夾指向 {path}，Toolport 無法在這裡移除 {skill}。請在它所在的位置移除。",
+  "That problem changed since you looked. Check it again, then fix it.": "你查看之後這個問題已經變更。請重新檢查，然後再修正。"
 }

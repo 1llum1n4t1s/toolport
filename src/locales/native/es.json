@@ -897,7 +897,6 @@
   "Uses {profile_name}": "Usa {profile_name}",
   "Value": "Valor",
   "Verification did not start because {value0}. Older calls will never count as proof.": "La verificación no comenzó porque {value0}. Las llamadas más antiguas nunca contarán como prueba.",
-  "Wait for the last change to finish.": "Espere a que termine el último cambio.",
   "Waiting for a new Toolport call. If {value0} was already open, restart it first.": "Esperando una nueva llamada Toolport. Si {value0} ya estaba abierto, reinícielo primero.",
   "Waiting for invitation approval.": "Esperando la aprobación de la invitación.",
   "Waiting for the current definition. One more review is needed.": "A la espera de la definición actual. Se necesita una revisión más.",
@@ -1128,11 +1127,14 @@
   "{value1} could not sync": "{value1} no se pudo sincronizar",
   "{value1} · {value2} · config version {value3}": "{value1} · {value2} · versión de configuración {value3}",
   "{value1}. Last successful sync: {last}.": "{value1}. Última sincronización exitosa: {last}.",
-  "Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "Esos clientes cargan cada skill de sus carpetas y no tienen interruptor. Quite el skill que no quiera en ningún lado, o descarte esto si está bien así.",
   "That skill is already gone. Refresh to see the latest.": "Ese skill ya no existe. Actualice para ver lo más reciente.",
   "Toolport only removes your own skills, not ones from a package, an account or a client.": "Toolport solo quita sus propios skills, no los de un paquete, una cuenta o un cliente.",
   "Toolport only removes skill folders.": "Toolport solo quita carpetas de skills.",
   "Couldn't find Toolport's data folder": "No se encontró la carpeta de datos de Toolport",
   "That app can't open this file.": "Esa app no puede abrir este archivo.",
-  "Default text editor": "Editor de texto predeterminado"
+  "Default text editor": "Editor de texto predeterminado",
+  "{skills} is off in at least one client but still on in {clients}. Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "{skills} está desactivada en al menos un cliente, pero sigue activa en {clients}. Esos clientes cargan cada skill de sus carpetas y no tienen interruptor. Quite el skill que no quiera en ningún lado, o descarte esto si está bien así.",
+  "{skills} are off in at least one client but still on in {clients}. Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "{skills} están desactivadas en al menos un cliente, pero siguen activas en {clients}. Esos clientes cargan cada skill de sus carpetas y no tienen interruptor. Quite el skill que no quiera en ningún lado, o descarte esto si está bien así.",
+  "Toolport can't remove {skill} here, because a linked folder leads to {path}. Remove it where it lives.": "Toolport no puede quitar {skill} aquí, porque una carpeta enlazada lleva a {path}. Quítala donde está.",
+  "That problem changed since you looked. Check it again, then fix it.": "El problema cambió desde que lo revisaste. Revísalo de nuevo y luego corrígelo."
 }

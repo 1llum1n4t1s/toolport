@@ -897,7 +897,6 @@
   "Uses {profile_name}": "{profile_name} を使用",
   "Value": "値",
   "Verification did not start because {value0}. Older calls will never count as proof.": "{value0}のため検証が開始されませんでした。それより古い呼び出しは証拠としてカウントされません。",
-  "Wait for the last change to finish.": "前の変更が終わるまでお待ちください。",
   "Waiting for a new Toolport call. If {value0} was already open, restart it first.": "Toolportへの新しい呼び出しを待っています。{value0} がすでに開いている場合は、最初に再起動してください。",
   "Waiting for invitation approval.": "招待の承認を待っています。",
   "Waiting for the current definition. One more review is needed.": "現在の定義を待っています。もう 1 つ見直しが必要です。",
@@ -1128,11 +1127,14 @@
   "{value1} could not sync": "{value1} を同期できませんでした",
   "{value1} · {value2} · config version {value3}": "{value1} · {value2} · 設定バージョン {value3}",
   "{value1}. Last successful sync: {last}.": "{value1}。最後に成功した同期: {last}。",
-  "Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "これらのクライアントはフォルダー内のすべてのスキルを読み込み、スイッチがありません。どこでも使わないスキルは削除するか、問題なければこの項目を閉じてください。",
   "That skill is already gone. Refresh to see the latest.": "そのスキルはすでにありません。更新して最新の状態を確認してください。",
   "Toolport only removes your own skills, not ones from a package, an account or a client.": "Toolport が削除するのは自分のスキルだけで、パッケージ、アカウント、クライアントのスキルは削除しません。",
   "Toolport only removes skill folders.": "Toolport が削除するのはスキルフォルダーだけです。",
   "Couldn't find Toolport's data folder": "Toolport のデータフォルダーが見つかりません",
   "That app can't open this file.": "そのアプリではこのファイルを開けません。",
-  "Default text editor": "既定のテキストエディター"
+  "Default text editor": "既定のテキストエディター",
+  "{skills} is off in at least one client but still on in {clients}. Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "{skills} は少なくとも1つのクライアントでオフですが、{clients} ではまだオンです。これらのクライアントはフォルダー内のすべてのスキルを読み込み、スイッチがありません。どこでも使わないスキルは削除するか、問題なければこの項目を閉じてください。",
+  "{skills} are off in at least one client but still on in {clients}. Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "{skills} は少なくとも1つのクライアントでオフですが、{clients} ではまだオンです。これらのクライアントはフォルダー内のすべてのスキルを読み込み、スイッチがありません。どこでも使わないスキルは削除するか、問題なければこの項目を閉じてください。",
+  "Toolport can't remove {skill} here, because a linked folder leads to {path}. Remove it where it lives.": "リンクされたフォルダーが {path} につながっているため、Toolport はここで {skill} を削除できません。実際の場所で削除してください。",
+  "That problem changed since you looked. Check it again, then fix it.": "確認した後にこの問題が変わりました。もう一度確認してから修正してください。"
 }

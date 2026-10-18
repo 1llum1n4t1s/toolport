@@ -860,6 +860,8 @@ export interface SkillAgent {
   verified: boolean;
   /** True when Toolport can write this client's own per-skill switch. */
   canToggle: boolean;
+  /** The switch also has a "name only" setting (Claude Code's skillOverrides). */
+  nameOnly: boolean;
   switchNote: string;
   roots: SkillAgentRoot[];
   rulesNote: string | null;
@@ -869,6 +871,10 @@ export interface SkillAgent {
 export interface SkillAgentState {
   state: SkillLoadState;
   via: string;
+  /** The name this client's own setting uses, when it differs (Claude plugin skills). */
+  switchName?: string;
+  /** Off through a rule covering many skills, not a choice about this one. */
+  byPattern?: boolean;
 }
 
 export interface SkillEntry {
@@ -881,6 +887,10 @@ export interface SkillEntry {
   source: SkillSource;
   sourceNote: string;
   editable: boolean;
+  /** Toolport can remove it: the user's own, not reached through a linked folder. */
+  removable: boolean;
+  /** Remove moves the folder to the trash, not only the links to it. */
+  trashOnRemove: boolean;
   sizeBytes: number;
   lines: number;
   modifiedSecs: number | null;

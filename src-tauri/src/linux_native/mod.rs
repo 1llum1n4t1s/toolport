@@ -502,6 +502,31 @@ fn build_window(
         io::while_mapped(&settings_page.root, 15, move || settings.refresh_quietly());
         activity_page.attach(&window);
     }
+    {
+        // Ctrl+F searches the Skills page when it is open, and the servers list elsewhere;
+        // Ctrl+R scans skills again, as in the React app.
+        let find = gtk::gio::SimpleAction::new("find", None);
+        let (stack_ref, skills, app_ref) = (stack.clone(), skills_page.clone(), app.clone());
+        find.connect_activate(move |_, _| {
+            if stack_ref.visible_child_name().as_deref() == Some("skills") {
+                skills.focus_search();
+            } else {
+                app_ref.activate_action("search-servers", None);
+            }
+        });
+        app.add_action(&find);
+        app.set_accels_for_action("app.search-servers", &[]);
+        app.set_accels_for_action("app.find", &["<Primary>f"]);
+        let rescan = gtk::gio::SimpleAction::new("rescan-skills", None);
+        let (stack_ref, skills) = (stack.clone(), skills_page.clone());
+        rescan.connect_activate(move |_, _| {
+            if stack_ref.visible_child_name().as_deref() == Some("skills") {
+                skills.refresh();
+            }
+        });
+        app.add_action(&rescan);
+        app.set_accels_for_action("app.rescan-skills", &["<Primary>r"]);
+    }
     split.set_sidebar(Some(&adw::NavigationPage::new(&sidebar, "Navigation")));
     let content_with_notice = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let removed = &startup.removed;

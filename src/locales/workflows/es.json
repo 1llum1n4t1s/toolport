@@ -398,5 +398,7 @@
   "Removed the links to {skill}. Its folder stays where it is.": "Se quitaron los enlaces a {skill}. Su carpeta sigue donde está.",
   "Couldn't remove {skill}": "No se pudo quitar {skill}",
   "Dismissed": "Descartados",
-  "Back if anything about them changes": "Vuelven si algo de ellos cambia"
+  "Back if anything about them changes": "Vuelven si algo de ellos cambia",
+  "Show only skills {client} finds": "Mostrar solo las skills que encuentra {client}",
+  "Only the links to it are removed, so no client loads it. Its folder at {path} stays where it is.": "Solo se quitan los enlaces a ella, así que ningún cliente la carga. Su carpeta en {path} se queda donde está."
 }

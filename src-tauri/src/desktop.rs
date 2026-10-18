@@ -2258,10 +2258,11 @@ async fn set_skill_state(
 #[tauri::command]
 async fn fix_skill_issue(
     issue: String,
+    fingerprint: String,
     project: Option<String>,
 ) -> Result<crate::skills::Inventory, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        crate::skills::fix_issue(&issue, project.as_deref())
+        crate::skills::fix_issue(&issue, &fingerprint, project.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?

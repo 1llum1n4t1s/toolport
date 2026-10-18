@@ -11,9 +11,9 @@ Open it from **Skills** in the sidebar. It has three tabs.
   own folders, your claude.ai account, a system package, a client's built-in set, a
   client's own library, or parked. Only your own skills start expanded. Each row
   shows its state in every agent: on, name only, off, another copy wins, broken or
-  not loaded. Click an agent's icon to show only what that agent loads. Pick a skill
-  to see its description, its file, the paths that reach it and its state in each
-  agent.
+  not loaded. Click an agent's icon to show only the skills that agent finds. Pick a
+  skill to see its description, its file, the paths that reach it and its state in
+  each agent.
 - **Rules** lists the rules files each agent reads, and how it gets there: the file
   it opens, any symlinks, and the `@import` lines it follows or skips.
 - **Needs a look** lists problems Toolport found, with a fix where one is safe.
@@ -21,7 +21,19 @@ Open it from **Skills** in the sidebar. It has three tabs.
 By default the page shows your global setup. Use **Add a project folder** to also
 include the skills and rules files a project adds.
 
-In a narrow or tiled window, the details move under the list.
+In a narrow or tiled window, the details move under the list. **Ctrl+F** searches
+the page and **Ctrl+R** scans again.
+
+## Several Claude Code profiles
+
+With more than one Claude Code profile, such as `~/.claude` and a `~/.claude2` you
+start through `CLAUDE_CONFIG_DIR`, each profile gets its own column: **Claude Code
+(claude)**, **Claude Code (claude2)** and so on. Each one shows that profile's
+skills, plugins and `CLAUDE.md`, and turning a skill on or off writes that profile's
+own `settings.json`. A `~/.claude*` folder counts as a profile when it holds Claude
+Code's `.claude.json` or `settings.json`, so backups and other tools' folders don't
+appear. Two profile folders with the same name in different places are named by
+their full path. With one profile, the page shows a single **Claude Code** column.
 
 ## Opening and removing files
 
@@ -33,8 +45,13 @@ The trash button removes a skill you own, from your folders, a client's library 
 the parked folder. Its folder goes to the trash, where you can restore it, and the
 links that reach it are deleted, so no agent loads it. A skill that only reaches
 your skills folders through a link, such as one kept in a repo, loses the link and
-its folder stays where it is. Skills from a package, your claude.ai account or a
-client's built-in set can't be removed here.
+its folder stays where it is. The confirmation says which of the two will happen.
+
+Toolport doesn't offer to remove a skill it found inside a linked folder, such as
+`~/.claude/skills/work` pointing at `~/work`, because the rest of that folder isn't
+skills. Skills from a package, your claude.ai account or a client's built-in set
+can't be removed here either. A link to a missing folder offers **Reveal** to show
+where the link sits.
 
 ## Turning a skill on or off
 
@@ -89,9 +106,12 @@ which copy wins in each agent and marks the other as **another copy wins**.
 ## What "Needs a look" checks
 
 - Skills you turned off in one agent that still load in others. **Turn off where
-  possible** applies the same choice in every agent with its own switch.
+  possible** applies the same choice in every agent with its own switch. Only a
+  setting for that one skill counts: a rule that turns off every skill in an agent,
+  such as OpenCode's `"skill": "deny"`, isn't spread to the others.
 - Links in a skills folder that point at a missing folder. Agents skip these
-  without saying so. **Remove link** deletes the dangling link, not a skill.
+  without saying so. **Remove link** deletes the dangling link, not a skill. A link
+  into a drive or share that isn't mounted right now is left alone.
 - Codex config entries that turn off a skill that is no longer there.
   **Remove entry** cleans them out of `config.toml`.
 - Skill names with more than one copy.
@@ -101,7 +121,9 @@ which copy wins in each agent and marks the other as **another copy wins**.
 - Agents that read your rules file but skip its `@import` lines.
 - Agents that get no global rules file.
 
-Every fix asks for confirmation first. **Dismiss** hides an item you're fine with.
-It comes back if the skills or agents it covers change, and **Show again** in the
+Every fix asks for confirmation first, and does nothing if the item changed after
+you looked, so check it again. **Dismiss** hides an item you're fine with.
+It comes back if the skills, agents or folders it covers change (not when you switch
+languages), and **Show again** in the
 Dismissed section brings it back sooner. Click a skill's name in an item to open it
 on the Skills tab.

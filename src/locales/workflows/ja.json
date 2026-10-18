@@ -398,5 +398,7 @@
   "Removed the links to {skill}. Its folder stays where it is.": "{skill} へのリンクを削除しました。フォルダーはそのままです。",
   "Couldn't remove {skill}": "{skill} を削除できませんでした",
   "Dismissed": "非表示",
-  "Back if anything about them changes": "内容が変わると再表示されます"
+  "Back if anything about them changes": "内容が変わると再表示されます",
+  "Show only skills {client} finds": "{client} が見つけるスキルだけを表示",
+  "Only the links to it are removed, so no client loads it. Its folder at {path} stays where it is.": "リンクだけを削除するので、どのクライアントも読み込まなくなります。{path} のフォルダーはそのまま残ります。"
 }
