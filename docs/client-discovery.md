@@ -17,6 +17,12 @@ server in the client's scope has finished starting. If the catalog grows past th
 limit, the next list answers Lazy and clients are told the list changed. An
 explicit per-client or global mode, or `TOOLPORT_DISCOVERY`, always wins.
 
+Multi-step tasks can move that crossover. On 2026-10-18 (Claude Code 2.1.286,
+Sonnet 5.5, REA with 207 tools and REA plus 11 servers with 375, two crackme tasks,
+10 runs per cell) Lazy used 37% and 46% more input per task than Claude Code's own
+tool search with equal success. Each Lazy run also loaded REA's skill and made two
+to five searches. See [the benchmarks](../BENCHMARK.md#rea-reverse-engineer-anything-2026-10-18).
+
 Codex 0.162.1 shows no tools at all from a server that lists more than 2,048.
 When a Full list for Codex would pass that limit, Toolport answers with the Lazy
 search tools instead, so Codex keeps a working search.
@@ -57,7 +63,7 @@ not new file-based adapters.
 | `amp`                | Unknown                  | Unknown             | Lazy | 5 s              | [Client adapter notes](clients.md); search and notification behavior unverified                                                                                                                                                                                                          |
 | `windsurf`           | Unknown                  | Unknown             | Lazy | 5 s              | [Client adapter notes](clients.md); search and notification behavior unverified                                                                                                                                                                                                          |
 | `devin-cli`          | Unknown                  | Unknown             | Lazy | 5 s              | [Client adapter notes](clients.md); search and notification behavior unverified                                                                                                                                                                                                          |
-| `opencode`           | Unknown                  | Yes                 | Lazy | 5 s              | [Client conformance source evidence](client-conformance.md#verified-notification-evidence), checked 2026-10-09                                                                                                                                                                           |
+| `opencode`           | 2.x: Code Mode catalog   | Yes                 | Lazy | 5 s              | [Client conformance source evidence](client-conformance.md#verified-notification-evidence), checked 2026-10-09; 2.x deferral measured in [the REA benchmark](../BENCHMARK.md#rea-reverse-engineer-anything-2026-10-18)                                                                   |
 | `kilo-code`          | Unknown                  | Unknown             | Lazy | 5 s              | [Client adapter notes](clients.md); search and notification behavior unverified                                                                                                                                                                                                          |
 | `grok`               | Unknown                  | Unknown             | Lazy | 5 s              | [Client adapter notes](clients.md); search and notification behavior unverified                                                                                                                                                                                                          |
 | `codex`              | Yes                      | No (source checked) | Full | 8 s              | [Codex config reference](https://developers.openai.com/codex/config-reference); [notification handler at 2351d9e1](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/codex-rs/rmcp-client/src/logging_client_handler.rs#L78-L80) only logs tool-list changes |
