@@ -277,5 +277,8 @@
   "Your setup, on every machine": "Sua configuração, em cada máquina",
   "Toolport is now available in {language}.": "O Toolport agora está disponível em {language}.",
   "Switch to {language}": "Mudar para {language}",
-  "Keep English": "Manter inglês"
+  "Keep English": "Manter inglês",
+  "Skills and rules each agent loads, and where they live": "As habilidades e regras que cada agente carrega e onde ficam",
+  "Back to servers": "Voltar aos servidores",
+  "Add a config folder for a client Toolport did not find on its own": "Adicionar uma pasta de configuração de um cliente que o Toolport não encontrou automaticamente"
 }

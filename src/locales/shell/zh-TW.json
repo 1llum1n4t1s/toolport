@@ -277,5 +277,8 @@
   "Your setup, on every machine": "您在每臺機器上的設定",
   "Toolport is now available in {language}.": "Toolport 現已提供{language}介面。",
   "Switch to {language}": "切換為{language}",
-  "Keep English": "保留英文"
+  "Keep English": "保留英文",
+  "Skills and rules each agent loads, and where they live": "每個智慧體載入的技能與規則，以及它們的儲存位置",
+  "Back to servers": "返回伺服器",
+  "Add a config folder for a client Toolport did not find on its own": "為 Toolport 未自動找到的用戶端新增設定資料夾"
 }

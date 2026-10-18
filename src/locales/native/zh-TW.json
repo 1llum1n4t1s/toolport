@@ -1169,5 +1169,11 @@
   "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "此處的 OpenHands 技能為唯讀。請在 OpenHands 中啟用或停用已安裝的技能。",
   "nanobot skills": "nanobot 技能",
   "Uses agents.defaults.disabledSkills in nanobot's config.json.": "使用 nanobot 的 config.json 中的 agents.defaults.disabledSkills。",
-  "From a nanobot package": "來自 nanobot 套件"
+  "From a nanobot package": "來自 nanobot 套件",
+  "Add server (Ctrl+N)": "新增伺服器 (Ctrl+N)",
+  "Clear": "清除",
+  "Quit Toolport (Ctrl+Q)": "結束 Toolport (Ctrl+Q)",
+  "Refresh catalog": "重新整理目錄",
+  "Refresh sync status": "重新整理同步狀態",
+  "{value0} tokens saved": "已節省 {value0} 個 token"
 }

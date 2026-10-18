@@ -1169,5 +1169,11 @@
   "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "여기서 OpenHands 스킬은 읽기 전용입니다. 설치된 스킬은 OpenHands에서 켜거나 끄세요.",
   "nanobot skills": "nanobot 스킬",
   "Uses agents.defaults.disabledSkills in nanobot's config.json.": "nanobot의 config.json에서 agents.defaults.disabledSkills를 사용합니다.",
-  "From a nanobot package": "nanobot 패키지에서 제공"
+  "From a nanobot package": "nanobot 패키지에서 제공",
+  "Add server (Ctrl+N)": "서버 추가 (Ctrl+N)",
+  "Clear": "지우기",
+  "Quit Toolport (Ctrl+Q)": "Toolport 종료 (Ctrl+Q)",
+  "Refresh catalog": "카탈로그 새로고침",
+  "Refresh sync status": "동기화 상태 새로고침",
+  "{value0} tokens saved": "토큰 {value0}개 절약"
 }

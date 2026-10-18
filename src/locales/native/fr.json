@@ -1169,5 +1169,11 @@
   "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "Les skills OpenHands sont en lecture seule ici. Utilisez OpenHands pour activer ou désactiver les skills installées.",
   "nanobot skills": "Skills nanobot",
   "Uses agents.defaults.disabledSkills in nanobot's config.json.": "Utilise agents.defaults.disabledSkills dans le config.json de nanobot.",
-  "From a nanobot package": "D’un paquet nanobot"
+  "From a nanobot package": "D’un paquet nanobot",
+  "Add server (Ctrl+N)": "Ajouter un serveur (Ctrl+N)",
+  "Clear": "Effacer",
+  "Quit Toolport (Ctrl+Q)": "Quitter Toolport (Ctrl+Q)",
+  "Refresh catalog": "Actualiser le catalogue",
+  "Refresh sync status": "Actualiser l’état de synchronisation",
+  "{value0} tokens saved": "{value0} tokens économisés"
 }

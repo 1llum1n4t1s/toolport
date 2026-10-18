@@ -1318,9 +1318,8 @@ fn build_sidebar(
     )
 }
 
-/// Sidebar telemetry is read off the UI thread, once now and then each minute.
-/// Weak widgets let the timer stop with the window and keep async reads from
-/// holding the sidebar alive after it closes.
+/// Read sidebar telemetry off the UI thread on mapping, then each visible minute.
+/// Weak widgets keep async reads from holding the sidebar alive after it closes.
 fn install_sidebar_footer(root: &gtk::Box, nav: &gtk::Box, page: &ServerPage) {
     let savings = gtk::Button::builder()
         .visible(false)
@@ -1371,15 +1370,7 @@ fn install_sidebar_footer(root: &gtk::Box, nav: &gtk::Box, page: &ServerPage) {
             });
         }
     };
-    refresh();
-    let weak = root.downgrade();
-    gtk::glib::timeout_add_seconds_local(60, move || {
-        if weak.upgrade().is_none() {
-            return gtk::glib::ControlFlow::Break;
-        }
-        refresh();
-        gtk::glib::ControlFlow::Continue
-    });
+    io::while_mapped(root, 60, refresh);
 
     let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     footer.add_css_class("toolport-sidebar-footer");
@@ -2622,7 +2613,12 @@ impl ClientPage {
             .connect_clicked(move |_| page_for_import.preview_imports());
         let import_action = gtk::gio::SimpleAction::new("import-from-clients", None);
         let page = client_page.clone();
-        import_action.connect_activate(move |_, _| page.preview_imports());
+        import_action.connect_activate(move |_, _| {
+            // Start first so navigation's client refresh cannot occupy the scan
+            // guard and swallow this import. Both happen before the worker runs.
+            page.preview_imports();
+            page.app.activate_action("show-clients", None);
+        });
         app.add_action(&import_action);
         client_page
     }
@@ -12627,6 +12623,73 @@ mod tests {
             "window close must quit despite the background hold"
         );
         timeout.remove();
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox with no client configs"]
+    fn servers_import_shows_empty_and_failed_feedback_on_clients() {
+        use super::*;
+        let data = crate::registry::DataDirTestEnv::new("gtk-servers-import");
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let (servers, server_page, _) = build_content(&app, crate::approval_broker::start_native());
+        let clients = ClientPage::new(&app, server_page);
+        let stack = gtk::Stack::new();
+        stack.add_named(&servers, Some("servers"));
+        stack.add_named(&clients.root, Some("clients"));
+        let show_clients = gtk::gio::SimpleAction::new("show-clients", None);
+        let target = stack.clone();
+        let page = clients.clone();
+        show_clients.connect_activate(move |_, _| {
+            target.set_visible_child_name("clients");
+            // Match show_native_page, including its competing refresh.
+            page.refresh();
+        });
+        app.add_action(&show_clients);
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .content(&stack)
+            .build();
+        window.present();
+        gtk::glib::MainContext::default().block_on(async {
+            for failed in [false, true] {
+                if failed {
+                    std::fs::write(data.dir.join("registry.json"), "invalid registry").unwrap();
+                }
+                stack.set_visible_child_name("servers");
+                app.activate_action("import-from-clients", None);
+                assert_eq!(stack.visible_child_name().as_deref(), Some("clients"));
+                assert!(clients.feedback.is_visible());
+                assert_eq!(
+                    clients.feedback.text(),
+                    "Looking for servers in client configurations…"
+                );
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while clients.scanning.get() && std::time::Instant::now() < deadline {
+                    gtk::glib::timeout_future(std::time::Duration::from_millis(10)).await;
+                }
+                assert!(!clients.scanning.get(), "import scan must finish");
+                assert!(clients.feedback.is_mapped());
+                if failed {
+                    assert!(clients
+                        .feedback
+                        .text()
+                        .starts_with("Could not inspect client configurations:"));
+                    assert!(clients.feedback.has_css_class("error"));
+                } else {
+                    assert_eq!(
+                        clients.feedback.text(),
+                        "No new client-configured servers are available to import."
+                    );
+                    assert!(clients.feedback.has_css_class("success"));
+                }
+            }
+        });
+        clients.cancel_feedback_timer();
+        window.destroy();
     }
 
     #[test]
