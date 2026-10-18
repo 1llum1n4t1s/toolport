@@ -76,7 +76,8 @@ fn container(format: Format) -> Container {
         | Format::JsonDroidMcpServers
         | Format::JsonQwenMcpServers
         | Format::JsonKimiMcpServers
-        | Format::JsonAuggieMcpServers => json("mcpServers"),
+        | Format::JsonAuggieMcpServers
+        | Format::JsonOpenHandsMcpServers => json("mcpServers"),
         Format::JsonAmpMcpServers => json("amp.mcpServers"),
         Format::JsonZCodeMcp | Format::JsonOpenClawMcp => Container::Json {
             key: "mcp",

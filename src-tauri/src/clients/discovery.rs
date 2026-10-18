@@ -145,8 +145,13 @@ pub(super) fn capabilities(id: &str) -> DiscoveryCapabilities {
             auto_full_max_tools: None,
             evidence: "docs/client-conformance.md (captured startup)",
         },
+        // OpenHands CLI 1.16.0 (SDK 1.21.0) against toolport-gateway 2.2.0
+        // (2026-10-18): it speaks 2026-07-28 through `server/discover`, lists tools
+        // once and opens no `subscriptions/listen`. Every MCP tool goes into the
+        // agent's tool list; the SDK has no tool search and no list_changed handler
+        // in the versions the CLI pins.
         // nanobot-ai 0.3.5 lists MCP tools at startup without a list_changed handler.
-        "nanobot" => DiscoveryCapabilities {
+        "openhands" | "nanobot" => DiscoveryCapabilities {
             auto_mode: "lazy",
             native_tool_search: Some(false),
             tools_list_changed: Some(false),
@@ -362,6 +367,7 @@ mod tests {
             "lm-studio",
             "jan",
             "anythingllm",
+            "openhands",
             "nanobot",
             "unknown",
         ] {

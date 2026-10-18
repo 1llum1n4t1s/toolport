@@ -45,6 +45,13 @@ Entries before the rename below shipped under the project's former name, Conduit
   in `~/.nanobot/config.json`. Workspace skills have native toggles in both
   shells, and team rules follow the configured workspace's `AGENTS.md`.
   See [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#nanobot-setup).
+- OpenHands as a supported client. Connect adds the gateway to the OpenHands
+  CLI's `mcp.json` (`~/.openhands` or `OPENHANDS_PERSISTENCE_DIR`) and leaves
+  servers turned off with `enabled: false` alone. The Skills page shows the
+  skills from `~/.agents/skills`, `~/.openhands/skills` and
+  `~/.openhands/microagents`, and team rules go to an always-on file in
+  `~/.openhands/microagents`. See
+  [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#openhands-setup).
 
 ## [2.2.0] - 2026-10-18
 

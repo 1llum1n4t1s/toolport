@@ -34,6 +34,15 @@ licensed under the MIT License.
 
 Copyright (c) 2026 OpenClaw Foundation
 
+## OpenHands
+
+The OpenHands client icon is adapted from
+[`src/assets/branding/openhands-logo.svg`](https://github.com/OpenHands/OpenHands/blob/main/src/assets/branding/openhands-logo.svg)
+in OpenHands, licensed under the MIT License. The monochrome adaptation changes
+white paths to black and removes the fixed dimensions.
+
+Copyright © 2025 OpenHands contributors
+
 ## MIT License text
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
