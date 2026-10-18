@@ -196,7 +196,9 @@ impl Env {
             env.reasonix_portable = true;
         }
         env.reasonix_state =
-            crate::clients::reasonix_paths::state_root(&home, &env.reasonix, &trimmed);
+            crate::clients::reasonix_paths::state_root(&home, &env.reasonix, &|key| {
+                std::env::var(key).ok()
+            });
         let codewhale_home = trimmed("CODEWHALE_HOME").and_then(expand);
         let explicit_home = codewhale_home.is_some();
         if let Some(dir) = codewhale_home {
