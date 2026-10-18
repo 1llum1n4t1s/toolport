@@ -53,10 +53,17 @@ fn transport_inference_matches_nanobot() {
     }
 }
 #[test]
-fn connect_disconnect_preserves_unrelated_text_and_returns_original_bytes() {
+fn production_connect_disconnect_preserves_unrelated_text_and_returns_original_bytes() {
+    let _lock = crate::registry::data_dir_test_lock();
     let dir = Dir::new();
+    let _data = crate::registry::DataDirOverride::set(dir.0.join("data"));
     let path = dir.file(CONFIG);
-    edit_gateway(&path, Some(&gateway())).unwrap();
+    // Production Connect stages the writer in a strict JSON mutation and captures
+    // provenance; Disconnect applies that snapshot before its fallback writer.
+    mutation::run(CLIENT, &path, Format::JsonNanobotMcp, || {
+        edit_gateway(&path, Some(&gateway()))
+    })
+    .unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("\"agents\": {\"defaults\": {\"model\": \"mine\"}}"));
     let root: Value = serde_json::from_str(&text).unwrap();
@@ -65,7 +72,12 @@ fn connect_disconnect_preserves_unrelated_text_and_returns_original_bytes() {
     assert_eq!(gw["env"]["TOOLPORT_CLIENT_ID"], "nanobot");
     assert!(gw.get("enabled").is_none());
     assert_eq!(parse(&text).unwrap().len(), 2);
-    edit_gateway(&path, None).unwrap();
+    mutation::run(CLIENT, &path, Format::JsonNanobotMcp, || {
+        mutation::disconnecting();
+        assert!(restore::apply(CLIENT, Format::JsonNanobotMcp, &path)?);
+        Ok(())
+    })
+    .unwrap();
     assert_eq!(std::fs::read_to_string(path).unwrap(), CONFIG);
 }
 #[test]
