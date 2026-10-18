@@ -11,6 +11,7 @@
 //! or their shipped code (Cursor agent, Gemini CLI, OpenCode). Rows marked `verified: false` come
 //! from published docs and are labelled that way in the UI.
 
+mod codewhale_metadata;
 mod nanobot_metadata;
 mod nanobot_plugins;
 
@@ -1409,8 +1410,8 @@ fn agent_defs() -> Vec<AgentDef> {
         .switch(Switch::ReasonixConfig)
         .project_walk(ProjectWalk::FLAT.first()),
         // Codewhale crates/tui/src/skills and project_context.rs: folders are walked
-        // deep, project roots first. Its global instructions are one fallback file,
-        // the first that exists, used when a project has none of its own.
+        // deep, project roots first. The first existing global instruction file
+        // is prepended to project instructions, which take precedence.
         docs_agent(
             "codewhale",
             "Codewhale",
@@ -3131,8 +3132,20 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
         let mut by_name: HashMap<String, String> = HashMap::new();
         let mut reached: Vec<(String, Found, String)> = Vec::new();
         let mut seen_real: BTreeSet<String> = BTreeSet::new();
+        let mut codewhale_identities = HashMap::new();
         for f in found {
             let key = f.real.as_ref().unwrap_or(&f.link).display().to_string();
+            if def.switch == Switch::CodewhaleState {
+                if let Some(real) = &f.real {
+                    let Some(name) =
+                        read_text(real).and_then(|text| codewhale_metadata::name(&text))
+                    else {
+                        // Native discovery does not load files without a valid name.
+                        continue;
+                    };
+                    codewhale_identities.insert(key.clone(), codewhale_skill_identity(&name));
+                }
+            }
             let record = skills
                 .entry(key.clone())
                 .or_insert_with(|| new_skill(&f, env, project));
@@ -3211,6 +3224,12 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             if def.switch == Switch::NanobotConfig {
                 return nanobot_skill_name(f).unwrap_or(name);
             }
+            if def.switch == Switch::CodewhaleState {
+                return codewhale_identities
+                    .get(key)
+                    .map(|(name, _)| name.clone())
+                    .unwrap_or(name);
+            }
             f.root_label
                 .ends_with("plugin")
                 .then(|| plugin_of(&f.root_path).map(|p| format!("{p}:{name}")))
@@ -3264,8 +3283,11 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             let nanobot_name = (def.switch == Switch::NanobotConfig)
                 .then(|| nanobot_skill_name(f))
                 .flatten();
-            let switch_name = nanobot_name
+            let codewhale_identity = codewhale_identities.get(key);
+            let codewhale_name = codewhale_identity.as_ref().map(|(name, _)| name.clone());
+            let switch_name = codewhale_name
                 .clone()
+                .or_else(|| nanobot_name.clone())
                 .or_else(|| {
                     (def.switch == Switch::OpenclawEntries)
                         .then(|| real.as_deref().and_then(openclaw_skill_key))
@@ -3275,7 +3297,18 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             let named = |set: &BTreeSet<String>| {
                 set.contains(&switch_name) || plugin_name.as_ref().is_some_and(|p| set.contains(p))
             };
-            let (switched_off, by_pattern) = if disabled.rules.is_empty() {
+            let (switched_off, by_pattern) = if def.switch == Switch::CodewhaleState {
+                (
+                    codewhale_skill_off(
+                        &disabled.off,
+                        &switch_name,
+                        codewhale_identity
+                            .as_ref()
+                            .and_then(|(_, legacy)| legacy.as_deref()),
+                    ),
+                    false,
+                )
+            } else if disabled.rules.is_empty() {
                 (named(&disabled.off), false)
             } else {
                 match last_rule(&disabled.rules, &name) {
@@ -3326,7 +3359,9 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                         by_pattern: state == State::Off && by_pattern && !path_off,
                         state,
                         via,
-                        switch_name: nanobot_name.or_else(|| plugin_name.clone()),
+                        switch_name: codewhale_name
+                            .or(nanobot_name)
+                            .or_else(|| plugin_name.clone()),
                     },
                 );
             }
@@ -4376,7 +4411,17 @@ pub fn set_state(
                 Ok("skills")
             })
         }
-        Switch::GrokConfig | Switch::ReasonixConfig | Switch::CodewhaleState => {
+        Switch::CodewhaleState => edit_codewhale_skills_state(
+            agent,
+            &env.codewhale.join("skills_state.toml"),
+            writer,
+            skill.states[agent]
+                .switch_name
+                .as_deref()
+                .ok_or_else(|| wrong_shape("skill identity"))?,
+            off,
+        ),
+        Switch::GrokConfig | Switch::ReasonixConfig => {
             let (path, key) =
                 toml_list_switch(def.switch, env).ok_or_else(|| wrong_shape("skills"))?;
             edit_toml_skills_list(agent, &path, key, writer, &skill.name, off)
@@ -4945,10 +4990,135 @@ fn edit_codex(
     writer.write(path, &next)
 }
 
+const CODEWHALE_HISTORY: &str = "!codewhale-skill-state:1:history:";
+const CODEWHALE_ENABLED: &str = "!codewhale-skill-state:1:enabled:";
+
+/// Codewhale v0.10.1 keeps ASCII slugs and gives Unicode segments a stable
+/// SHA-256 suffix. Its old lossy slug remains an inherited activation veto.
+/// Input is the native name before display folding: trim each segment, lowercase
+/// ASCII only, then hash those UTF-8 bytes without Unicode/whitespace normalization.
+fn codewhale_skill_identity(name: &str) -> (String, Option<String>) {
+    fn legacy_segment(name: &str) -> String {
+        let mut out = String::new();
+        let mut pending_dash = false;
+        for ch in name.trim().chars() {
+            if ch.is_ascii_alphanumeric() {
+                if pending_dash && !out.is_empty() && out.len() < 64 {
+                    out.push('-');
+                }
+                pending_dash = false;
+                if out.len() < 64 {
+                    out.push(ch.to_ascii_lowercase());
+                }
+            } else {
+                pending_dash = true;
+            }
+            if out.len() >= 64 {
+                break;
+            }
+        }
+        let out = out.trim_end_matches('-');
+        if out.is_empty() {
+            "skill".into()
+        } else {
+            out.into()
+        }
+    }
+    fn current_segment(name: &str) -> String {
+        let name = name.trim();
+        let legacy = legacy_segment(name);
+        if name.is_ascii() {
+            return legacy;
+        }
+        let digest = crate::registry::sha256_hex(&name.to_ascii_lowercase());
+        let prefix = legacy[..legacy.len().min(31)].trim_end_matches('-');
+        format!("{prefix}-{}", &digest[..32])
+    }
+    fn qualified(name: &str, segment: fn(&str) -> String) -> String {
+        if let Some((plugin, skill)) = name.trim().split_once(':') {
+            if !plugin.is_empty() && !skill.is_empty() && !skill.contains(':') {
+                return format!("{}:{}", segment(plugin), segment(skill));
+            }
+        }
+        segment(name)
+    }
+    let current = qualified(name, current_segment);
+    let legacy = qualified(name, legacy_segment);
+    let legacy = (legacy != current).then_some(legacy);
+    (current, legacy)
+}
+
+fn codewhale_skill_off(disabled: &BTreeSet<String>, name: &str, legacy: Option<&str>) -> bool {
+    disabled.contains(name)
+        || (!disabled.contains(&format!("{CODEWHALE_ENABLED}{name}"))
+            && (disabled.contains(&format!("{CODEWHALE_HISTORY}{name}"))
+                || legacy.is_some_and(|legacy| {
+                    disabled.contains(legacy)
+                        || disabled.contains(&format!("{CODEWHALE_HISTORY}{legacy}"))
+                })))
+}
+
+/// Match Codewhale's native writer: retain historical vetoes and write an exact
+/// enable for On. Other names and markers survive each change.
+fn edit_codewhale_skills_state(
+    agent: &str,
+    path: &Path,
+    writer: &dyn Writer,
+    name: &str,
+    off: bool,
+) -> Result<(), String> {
+    let text = read_existing(path)?;
+    let mut doc: toml_edit::DocumentMut =
+        text.parse().map_err(|e| not_valid(path, &format!("{e}")))?;
+    let list = doc
+        .entry("disabled")
+        .or_insert_with(|| toml_edit::value(toml_edit::Array::new()))
+        .as_array_mut()
+        .ok_or_else(|| wrong_shape("disabled"))?;
+    let mut names: BTreeSet<String> = list
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| wrong_shape("disabled"))
+        })
+        .collect::<Result<_, _>>()?;
+    let histories: Vec<_> = names
+        .iter()
+        .filter(|name| !name.is_empty() && !name.starts_with("!codewhale-skill-state:"))
+        .map(|name| format!("{CODEWHALE_HISTORY}{name}"))
+        .collect();
+    names.extend(histories);
+    let exact = format!("{CODEWHALE_ENABLED}{name}");
+    if off {
+        names.insert(name.into());
+        names.insert(format!("{CODEWHALE_HISTORY}{name}"));
+        names.remove(&exact);
+    } else {
+        names.remove(name);
+        names.insert(exact);
+    }
+    list.retain(|value| value.as_str().is_some_and(|name| names.contains(name)));
+    for name in names {
+        if !list.iter().any(|value| value.as_str() == Some(&name)) {
+            list.push(name);
+        }
+    }
+    list.fmt();
+    let next = doc.to_string();
+    if next == text {
+        return Ok(());
+    }
+    if path.exists() {
+        writer.backup(agent, path)?;
+    }
+    writer.write(path, &next)
+}
+
 /// Add or remove `name` in the TOML list at `key`, either top-level or one table deep
-/// (Grok's `skills.disabled`, Reasonix's `skills.disabled_skills`, Codewhale's top-level
-/// `disabled`), keeping the rest of the file, Codewhale's reserved
-/// `!codewhale-skill-state:` entries included, as written.
+/// (Grok's `skills.disabled`, Reasonix's `skills.disabled_skills`), keeping the
+/// rest of the file as written.
 fn edit_toml_skills_list(
     agent: &str,
     path: &Path,

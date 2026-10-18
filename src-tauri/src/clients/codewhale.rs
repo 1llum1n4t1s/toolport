@@ -143,6 +143,71 @@ pub(super) fn servers(text: &str) -> Result<Vec<McpServer>, String> {
         .collect())
 }
 
+/// Refuse imports whose native behavior the shared importer cannot retain.
+pub(super) fn validate_import(
+    path: &std::path::Path,
+    names: &[String],
+    migration: bool,
+) -> Result<(), String> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(path).map_err(|_| {
+        "Could not read the Codewhale MCP config; client config unchanged.".to_string()
+    })?;
+    let root = root(&text)?;
+    let servers = entries(&root, key_of(&root)?)?;
+    for name in names {
+        let definition = servers.get(name).ok_or_else(|| {
+            format!("Codewhale server '{name}' changed since detection; refresh the client list and retry.")
+        })?;
+        if !definition.is_object() {
+            return Err(format!(
+                "Malformed Codewhale server '{name}': expected an object."
+            ));
+        }
+        let nonempty = |value: &Json| match value {
+            Json::Null => false,
+            Json::Array(list) => !list.is_empty(),
+            Json::Object(map) => !map.is_empty(),
+            Json::String(text) => !text.is_empty(),
+            Json::Bool(value) => *value,
+            _ => true,
+        };
+        let unsupported = [
+            "enabled_tools",
+            "disabled_tools",
+            "cwd",
+            "connect_timeout",
+            "execute_timeout",
+            "read_timeout",
+            "required",
+            "env_headers",
+            "env_http_headers",
+            "allow_private_network",
+            "scopes",
+            "oauth",
+            "oauth_resource",
+        ]
+        .into_iter()
+        .find(|field| definition.get(*field).is_some_and(nonempty));
+        let unsupported = unsupported.or_else(|| {
+            root.get("timeouts")
+                .filter(|value| nonempty(value))
+                .map(|_| "timeouts")
+        });
+        if let Some(field) = unsupported {
+            return Err(format!(
+                "Cannot import Codewhale server '{name}': Toolport can't keep its '{field}' setting. Keep this server in Codewhale, or set up the same behavior in Toolport by hand first."
+            ));
+        }
+        if migration && off(definition) {
+            return Err(format!("Cannot move turned-off Codewhale server '{name}': keep it in Codewhale or turn it on first."));
+        }
+    }
+    Ok(())
+}
+
 /// A Toolport server as a Codewhale entry: `command`/`args`/`env`/`cwd`, or a
 /// `url` with `headers`, Streamable HTTP unless `transport` says `sse`.
 pub(super) fn config_of(entry: &ServerEntry) -> Result<Json, String> {

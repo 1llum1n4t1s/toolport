@@ -132,14 +132,17 @@ the only one. Connect adds a `toolport` server under the key the file already
 uses, `servers` or `mcpServers`, since Codewhale refuses a file with both;
 Disconnect removes it. Servers you turned off with `disabled` or
 `enabled: false` are left alone. Run `/mcp reload` in a running session, or
-start a new one.
+start a new one. Import and migration refuse native tool filters, working
+directories, timeouts and other settings Toolport cannot retain; keep those
+servers in Codewhale or configure equivalent behavior in Toolport first.
 
 Codewhale keeps MCP tools in its deferred catalog behind `tool_search`, so
 Toolport's Auto mode lists the full catalog. It doesn't pick up catalog changes
 during a session; `/mcp reload` picks them up. Codewhale reads one global
 instructions file, the first of `~/.codewhale/AGENTS.md`, `~/.agents/AGENTS.md`,
-`~/.deepseek/AGENTS.md` and the matching `instructions.md`, and only in projects
-without their own. Team rules go into the one it already reads, or
+`~/.deepseek/AGENTS.md` and the matching `instructions.md`. It prepends these
+instructions to project context, with the project's own instructions taking
+precedence. Team rules go into the one it already reads, or
 `~/.codewhale/AGENTS.md` when there is none.
 
 ### OpenClaw setup
