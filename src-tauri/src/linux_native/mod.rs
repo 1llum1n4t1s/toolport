@@ -1309,7 +1309,7 @@ fn build_sidebar(
         .build();
     root.append(&nav_scroll);
     install_star_prompt(&root);
-    install_sidebar_footer(&root, app, &server_page);
+    install_sidebar_footer(&root, &server_page);
 
     (
         root,
@@ -1321,18 +1321,33 @@ fn build_sidebar(
 /// Sidebar telemetry is read off the UI thread, once now and then each minute.
 /// Weak widgets let the timer stop with the window and keep async reads from
 /// holding the sidebar alive after it closes.
-fn install_sidebar_footer(root: &gtk::Box, app: &adw::Application, page: &ServerPage) {
+fn install_sidebar_footer(root: &gtk::Box, page: &ServerPage) {
     let savings = gtk::Button::builder()
         .visible(false)
         .css_classes(["flat", "toolport-sidebar-savings"])
         .action_name("app.show-activity")
         .build();
     l10n::bind_tooltip(&savings, "cl100k_base tokenizer; one full catalog baseline per client session minus every catalog and search response. Sessionless HTTP and unverifiable history excluded; not model usage or billing. Click for the breakdown.");
+    let savings_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let savings_icon = gtk::Image::builder()
+        .icon_name("weather-storm-symbolic")
+        .pixel_size(16)
+        .build();
+    savings_icon.add_css_class("success");
+    savings_row.append(&savings_icon);
+    let savings_label = gtk::Label::builder()
+        .xalign(0.0)
+        .css_classes(["toolport-muted"])
+        .build();
+    savings_row.append(&savings_label);
+    savings.set_child(Some(&savings_row));
     root.append(&savings);
     let refresh = {
         let savings = savings.downgrade();
+        let label = savings_label.downgrade();
         move || {
             let savings = savings.clone();
+            let label = label.clone();
             gtk::glib::spawn_future_local(async move {
                 let result = gtk::gio::spawn_blocking(crate::savings::try_summary).await;
                 let Some(button) = savings.upgrade() else {
@@ -1343,7 +1358,10 @@ fn install_sidebar_footer(root: &gtk::Box, app: &adw::Application, page: &Server
                         let loads = summary["tokenizedLoads"].as_u64().unwrap_or(0);
                         let tokens = summary["tokensSaved"].as_i64().unwrap_or(0);
                         let text = format_saved_tokens(tokens);
-                        l10n::bind_button_with(&button, move || {
+                        let Some(label) = label.upgrade() else {
+                            return;
+                        };
+                        l10n::bind_label_with(&label, move || {
                             crate::i18n::trf("{value0} tokens saved", &[("value0", &text)])
                         });
                         button.set_visible(loads > 0);
@@ -1440,7 +1458,6 @@ fn install_sidebar_footer(root: &gtk::Box, app: &adw::Application, page: &Server
     help.set_popover(Some(&popover));
     footer.append(&help);
     root.append(&footer);
-    let _ = app;
 }
 
 /// The one-off "star the repo" ask, shown once ever, only to someone actually
