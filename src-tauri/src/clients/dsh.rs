@@ -73,6 +73,8 @@ struct Server {
     config: Yaml,
     /// A later row in this file targets the entry's id.
     overridden: bool,
+    /// Moving this entry to the gateway would lose its group's activation context.
+    in_group: bool,
     /// Index of the row and the entry within it.
     at: (usize, usize),
 }
@@ -298,18 +300,6 @@ fn root_list(text: &str) -> Result<Vec<Yaml>, String> {
 
 fn parse(text: &str) -> Result<Doc<'_>, String> {
     let list = root_list(text)?;
-    // The home layer cannot resolve group targets from profile/base layers or
-    // their activation context. Do not turn skipped or disabled inserts into
-    // apparently active root servers, or mutate a partially understood file.
-    if list.iter().any(|row| {
-        row.get("id")
-            .is_some_and(|id| matches!(id, Yaml::Tagged(_)) || js_truthy(Some(id)))
-            && js_truthy(row.get("insert"))
-    }) {
-        return Err(format!(
-            "This DeepSeek Harness patch contains a group insert; Toolport cannot resolve its target across profile layers. Edit it by hand, {UNTOUCHED}."
-        ));
-    }
     let all = lines(text);
     let first = all.iter().find(|(_, line)| has_content(line));
     let mut doc = Doc {
@@ -399,55 +389,143 @@ fn ids(value: &Yaml, out: &mut BTreeSet<String>) {
 impl Doc<'_> {
     /// MCP servers after applying the file's rows in order.
     fn servers(&self) -> Vec<Server> {
-        let mut out: Vec<Server> = Vec::new();
+        struct Node {
+            value: Yaml,
+            parent: Option<usize>,
+            at: Option<(usize, usize)>,
+            live: bool,
+            overridden: bool,
+        }
+        fn insert(
+            value: &Yaml,
+            parent: Option<usize>,
+            at: Option<(usize, usize)>,
+            indexed: bool,
+            nodes: &mut Vec<Node>,
+            by_id: &mut HashMap<String, usize>,
+        ) {
+            let index = nodes.len();
+            nodes.push(Node {
+                value: value.clone(),
+                parent,
+                at,
+                live: true,
+                overridden: false,
+            });
+            if let Some(id) = str_of(value, "id").filter(|_| indexed) {
+                by_id.insert(id.to_string(), index);
+            }
+            // Keep the tree even before a later row enables a group. The loader
+            // indexes children only when buildMap visits an inserted group.
+            for child in value
+                .get("config")
+                .and_then(Yaml::as_sequence)
+                .into_iter()
+                .flatten()
+            {
+                insert(
+                    child,
+                    Some(index),
+                    None,
+                    indexed && js_truthy(value.get("group")),
+                    nodes,
+                    by_id,
+                );
+            }
+        }
+        fn started(nodes: &[Node], index: usize) -> bool {
+            let node = &nodes[index];
+            node.live
+                && !js_truthy(node.value.get("disabled"))
+                && node
+                    .parent
+                    .is_none_or(|p| js_truthy(nodes[p].value.get("group")) && started(nodes, p))
+        }
+        let mut nodes: Vec<Node> = Vec::new();
         let mut by_id: HashMap<String, usize> = HashMap::new();
         for (r, row) in self.rows.iter().enumerate() {
             if let Some(list) = row.value.get("insert").and_then(Yaml::as_sequence) {
-                for (e, entry) in list.iter().enumerate() {
-                    let id = str_of(entry, "id").map(str::to_string);
-                    if let Some(id) = &id {
-                        by_id.remove(id);
-                    }
-                    if !is_mcp_entry(entry) {
+                let parent = if row
+                    .value
+                    .get("id")
+                    .is_some_and(|id| matches!(id, Yaml::Tagged(_)) || js_truthy(Some(id)))
+                {
+                    let Some(&target) = str_of(&row.value, "id").and_then(|id| by_id.get(id))
+                    else {
+                        // Profile-dependent inserts are left in place, never invented as root servers.
+                        continue;
+                    };
+                    if !js_truthy(nodes[target].value.get("group")) {
                         continue;
                     }
-                    if let Some(id) = &id {
-                        by_id.insert(id.clone(), out.len());
+                    if !nodes[target]
+                        .value
+                        .get("config")
+                        .is_some_and(Yaml::is_sequence)
+                    {
+                        nodes[target].value["config"] = Yaml::Sequence(Vec::new());
                     }
-                    out.push(Server {
-                        name: String::new(),
-                        id,
-                        own_disabled: entry.get("disabled").cloned(),
-                        disabled: entry.get("disabled").cloned(),
-                        config: entry["config"].clone(),
-                        overridden: false,
-                        at: (r, e),
-                    });
+                    Some(target)
+                } else {
+                    None
+                };
+                for (e, entry) in list.iter().enumerate() {
+                    insert(entry, parent, Some((r, e)), true, &mut nodes, &mut by_id);
                 }
                 continue;
             }
             let Some(&i) = str_of(&row.value, "id").and_then(|id| by_id.get(id)) else {
                 continue;
             };
-            if str_of(&row.value, "name").is_some_and(|name| name != PLUGIN) {
+            if str_of(&row.value, "name")
+                .is_some_and(|name| Some(name) != str_of(&nodes[i].value, "name"))
+            {
                 continue;
             }
-            let server = &mut out[i];
-            server.overridden = true;
+            nodes[i].overridden = true;
             for (key, value) in row.value.as_mapping().into_iter().flatten() {
-                match key.as_str() {
-                    Some("disabled") => server.disabled = Some(value.clone()),
-                    Some("config") => server.config = value.clone(),
-                    _ => {}
+                if key.as_str().is_some_and(|key| key != "id" && key != "name") {
+                    if let Some(map) = nodes[i].value.as_mapping_mut() {
+                        map.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+            if row.value.get("config").is_some() {
+                // Replacing a group config disconnects its old children from the tree.
+                for node in &mut nodes {
+                    if node.parent == Some(i) {
+                        node.live = false;
+                    }
+                }
+                let children = nodes[i]
+                    .value
+                    .get("config")
+                    .and_then(Yaml::as_sequence)
+                    .cloned()
+                    .unwrap_or_default();
+                for child in children {
+                    // applyEntryPatches does not rebuild its id map for overrides.
+                    insert(&child, Some(i), None, false, &mut nodes, &mut by_id);
                 }
             }
         }
-        for server in &mut out {
-            server.name = str_of(&server.config, "serverName")
-                .unwrap_or_default()
-                .to_string();
-        }
-        out
+        nodes
+            .iter()
+            .enumerate()
+            .filter(|(i, node)| is_mcp_entry(&node.value) && started(&nodes, *i))
+            .map(|(_, node)| Server {
+                name: str_of(&node.value["config"], "serverName")
+                    .unwrap_or_default()
+                    .to_string(),
+                id: str_of(&node.value, "id").map(str::to_string),
+                own_disabled: node.value.get("disabled").cloned(),
+                disabled: node.value.get("disabled").cloned(),
+                config: node.value["config"].clone(),
+                overridden: node.overridden || node.at.is_none(),
+                in_group: node.parent.is_some(),
+                at: node.at.unwrap_or((usize::MAX, usize::MAX)),
+            })
+            .collect()
     }
 
     /// Servers dsh will start.
@@ -690,7 +768,7 @@ pub(super) fn raw_entries(text: &str) -> Result<Vec<(String, String, Json)>, Str
     // Only servers dsh starts; a disabled entry stays where it is. One a later
     // row changes is not moved, since Toolport doesn't edit it.
     for server in doc.active() {
-        if server.overridden {
+        if server.overridden || server.in_group {
             continue;
         }
         let (r, e) = server.at;
@@ -904,7 +982,7 @@ pub(super) fn sync(
         ));
     }
     let locked = |name: &str| {
-        format!("A later row in the DeepSeek Harness patch file changes '{name}'; edit it by hand, {UNTOUCHED}.")
+        format!("DeepSeek Harness stores '{name}' inside a nested entry or changes it in a later row; edit that server by hand, {UNTOUCHED}.")
     };
     let mut taken = doc.ids();
     let fresh = |name: &str, taken: &mut BTreeSet<String>| {
@@ -933,6 +1011,9 @@ pub(super) fn sync(
                     entry_text(&id, server.own_disabled.as_ref(), want)?,
                 );
             }
+            None if server.in_group => return Err(format!(
+                "Moving '{}' out of its DeepSeek Harness group would lose its activation context; keep that server in the client, {UNTOUCHED}.", server.name
+            )),
             None => {
                 drop.insert(server.at);
             }
