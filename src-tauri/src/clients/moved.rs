@@ -89,7 +89,7 @@ fn container(format: Format) -> Container {
         Format::YamlExtensions => Container::YamlMap("extensions"),
         Format::YamlMcpServers => Container::YamlMap("mcp_servers"),
         Format::YamlMcpServersList => Container::YamlList("mcpServers"),
-        Format::YamlDshPatch | Format::TomlReasonixPlugins => {
+        Format::YamlDshPatch | Format::TomlReasonixPlugins | Format::JsonCodewhaleServers => {
             Container::Synced(synced::Synced::of(format).expect("synced format"))
         }
     }

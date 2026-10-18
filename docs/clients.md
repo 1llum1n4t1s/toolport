@@ -33,6 +33,7 @@ below for you, so you never have to edit these by hand.
 | Kimi Code               | `$KIMI_CODE_HOME/mcp.json` (default `~/.kimi-code/mcp.json`)                                           | JSON (`mcpServers`)      |
 | DeepSeek Harness        | `$DSH_HOME/cordis.patch.yml` (default `~/.dsh/cordis.patch.yml`)                                       | YAML (patch rows)        |
 | Reasonix                | `$REASONIX_HOME/config.toml` (default `~/.reasonix/config.toml`)                                       | TOML (`[[plugins]]`)     |
+| Codewhale               | `~/.codewhale/mcp.json` (or `CODEWHALE_MCP_CONFIG`, `mcp_config_path`)                                 | JSON (`servers`)         |
 | ZCode                   | `~/.zcode/cli/config.json`                                                                             | JSON (`mcp.servers`)     |
 | Command Code            | `~/.commandcode/mcp.json`                                                                              | JSON (`mcpServers`)      |
 | Tabnine Agent           | `~/.tabnine/mcp_servers.json`                                                                          | JSON (`mcpServers`)      |
@@ -112,6 +113,24 @@ Reasonix keeps an MCP server's tools behind its own capability search, so
 Toolport's Auto mode lists the full catalog. It does not pick up catalog
 changes during a session, so a server you add in Toolport appears in the next
 session. A plugin list written inline (`plugins = [{ ... }]`) is left untouched.
+
+### Codewhale setup
+
+Codewhale reads MCP servers from `~/.codewhale/mcp.json`. Toolport finds the
+same file Codewhale does: `CODEWHALE_MCP_CONFIG` (or the older
+`DEEPSEEK_MCP_CONFIG`), then `mcp_config_path` in its `config.toml`, then
+`$CODEWHALE_HOME/mcp.json`, and the legacy `~/.deepseek/mcp.json` when that is
+the only one. Connect adds a `toolport` server under the key the file already
+uses, `servers` or `mcpServers`, since Codewhale refuses a file with both;
+Disconnect removes it. Servers you turned off with `disabled` or
+`enabled: false` are left alone. Run `/mcp reload` in a running session, or
+start a new one.
+
+Codewhale keeps MCP tools in its deferred catalog behind `tool_search`, so
+Toolport's Auto mode lists the full catalog. It doesn't pick up catalog changes
+during a session; `/mcp reload` picks them up. Its global `~/.codewhale/AGENTS.md`
+is a fallback Codewhale reads only in projects without their own instructions,
+and team rules go there.
 
 ### ZCode setup
 

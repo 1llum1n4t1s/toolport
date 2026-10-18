@@ -1158,5 +1158,7 @@
   "DeepSeek Harness skills": "DeepSeek Harness 技能",
   "Reasonix skills": "Reasonix 技能",
   "Reasonix extra folder": "Reasonix 額外資料夾",
-  "Uses disabled_skills under [skills] in Reasonix's config.toml.": "使用 Reasonix 的 config.toml 中 [skills] 下的 disabled_skills。"
+  "Uses disabled_skills under [skills] in Reasonix's config.toml.": "使用 Reasonix 的 config.toml 中 [skills] 下的 disabled_skills。",
+  "Codewhale skills": "Codewhale 技能",
+  "Uses the disabled list in Codewhale's skills_state.toml.": "使用 Codewhale 的 skills_state.toml 中的 disabled 清單。"
 }

@@ -1158,5 +1158,7 @@
   "DeepSeek Harness skills": "DeepSeek Harness 스킬",
   "Reasonix skills": "Reasonix 스킬",
   "Reasonix extra folder": "Reasonix 추가 폴더",
-  "Uses disabled_skills under [skills] in Reasonix's config.toml.": "Reasonix의 config.toml에서 [skills] 아래 disabled_skills를 사용합니다."
+  "Uses disabled_skills under [skills] in Reasonix's config.toml.": "Reasonix의 config.toml에서 [skills] 아래 disabled_skills를 사용합니다.",
+  "Codewhale skills": "Codewhale 스킬",
+  "Uses the disabled list in Codewhale's skills_state.toml.": "Codewhale의 skills_state.toml에 있는 disabled 목록을 사용합니다."
 }

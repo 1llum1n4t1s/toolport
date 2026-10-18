@@ -143,9 +143,11 @@ pub(super) fn value(format: Format, text: Option<&str>) -> Result<Value, String>
         Format::YamlExtensions | Format::YamlMcpServers | Format::YamlMcpServersList => {
             serde_json::to_value(parse_existing_yaml_content(text)?).map_err(|e| e.to_string())
         }
-        Format::YamlDshPatch | Format::TomlReasonixPlugins => super::synced::Synced::of(format)
-            .expect("synced format")
-            .normalized(text),
+        Format::YamlDshPatch | Format::TomlReasonixPlugins | Format::JsonCodewhaleServers => {
+            super::synced::Synced::of(format)
+                .expect("synced format")
+                .normalized(text)
+        }
         _ => parse_json_value(text),
     }
 }
