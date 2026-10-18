@@ -298,6 +298,17 @@ fn root_list(text: &str) -> Result<Vec<Yaml>, String> {
 
 fn parse(text: &str) -> Result<Doc<'_>, String> {
     let list = root_list(text)?;
+    // The home layer cannot resolve group targets from profile/base layers or
+    // their activation context. Do not turn skipped or disabled inserts into
+    // apparently active root servers, or mutate a partially understood file.
+    if list
+        .iter()
+        .any(|row| js_truthy(row.get("id")) && js_truthy(row.get("insert")))
+    {
+        return Err(format!(
+            "This DeepSeek Harness patch contains a group insert; Toolport cannot resolve its target across profile layers. Edit it by hand, {UNTOUCHED}."
+        ));
+    }
     let all = lines(text);
     let first = all.iter().find(|(_, line)| has_content(line));
     let mut doc = Doc {

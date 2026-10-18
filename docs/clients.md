@@ -97,7 +97,9 @@ dsh connects to stdio and Streamable HTTP servers, so an SSE server can't be
 moved into its config, and server names are limited to letters, digits, `-` and
 `_` (32 at most). If a patch file is written in a layout Toolport can't edit
 exactly, such as a single-line flow list, Toolport leaves it untouched and says
-so.
+so. Group-targeted `insert` rows are also refused: their target and activation
+can depend on profile layers that Toolport does not inspect. Those files are
+not offered for server import or edited.
 
 ### Reasonix setup
 

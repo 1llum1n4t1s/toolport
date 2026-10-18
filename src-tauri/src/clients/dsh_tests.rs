@@ -151,13 +151,6 @@ fn a_changed_server_keeps_its_id_and_its_place() {
         .find(|s| s.name == "toolport")
         .unwrap();
     assert_eq!(gateway.args, ["--stdio", "--profile", "Work"]);
-
-    // An entry inside a group's insert row stays in the group.
-    let group = "- id: tools\n  insert:\n    - id: mcp-a\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: a\n        transport: stdio\n        command: a\n";
-    let mut want = desired(group);
-    want["a"]["command"] = "b".into();
-    let out = sync(Some(group), &want, &BTreeMap::new()).unwrap();
-    assert_eq!(out, group.replace("command: a", "command: b"));
 }
 
 #[test]
@@ -414,4 +407,15 @@ fn a_disabled_server_counts_as_other_settings() {
     let rows = normalized(&text).unwrap()["rows"].to_string();
     assert!(rows.contains("http://localhost:3000/mcp"), "{rows}");
     assert!(!rows.contains("mcp-server-memory"), "{rows}");
+}
+
+#[test]
+fn group_inserts_are_unresolved_in_the_home_layer() {
+    for target in ["missing", "ordinary", "disabled-group"] {
+        let text = format!("- insert:\n    - id: ordinary\n      name: other\n    - id: disabled-group\n      group: true\n      disabled: true\n      config: []\n- id: {target}\n  insert:\n    - id: orphan\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: ghost\n        transport: stdio\n        command: /ghost/server\n");
+        assert!(servers(&text).unwrap_err().contains("group insert"));
+        assert!(normalized(&text).is_err());
+        assert!(raw_entries(&text).is_err());
+        assert!(sync(Some(&text), &Default::default(), &Default::default()).is_err());
+    }
 }

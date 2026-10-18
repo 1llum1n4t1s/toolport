@@ -11,6 +11,8 @@ Entries before the rename below shipped under the project's former name, Conduit
 - OpenClaw Connect edits the active legacy config instead of creating a file
   that hides it. Skills honor the OS personal home, later extra-directory
   precedence and installed source-origin keys.
+- Refuse DeepSeek Harness group-targeted inserts whose profile context cannot
+  be resolved, instead of offering their servers as active imports.
 
 ### Added
 
