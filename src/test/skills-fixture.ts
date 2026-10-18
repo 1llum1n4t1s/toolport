@@ -188,6 +188,8 @@ export function skillsFixture(): SkillsInventory {
         skills: ["/home/you/.agents/skills/screenshot/SKILL.md"],
         skillNames: ["screenshot"],
         fixLabel: "Turn off where possible",
+        fingerprint: "off-elsewhere:00000001",
+        dismissed: false,
       },
       {
         id: "broken-links",
@@ -199,6 +201,8 @@ export function skillsFixture(): SkillsInventory {
         skills: ["/home/you/.grok/skills/computer-use"],
         skillNames: ["computer-use"],
         fixLabel: "Remove link",
+        fingerprint: "broken-links:00000002",
+        dismissed: false,
       },
       {
         id: "rules-imports",
@@ -210,6 +214,8 @@ export function skillsFixture(): SkillsInventory {
         skills: [],
         skillNames: [],
         fixLabel: null,
+        fingerprint: "rules-imports:00000003",
+        dismissed: false,
       },
     ],
   };

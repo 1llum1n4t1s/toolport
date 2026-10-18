@@ -651,7 +651,37 @@ mockIPC(
         return skills;
       }
       case "open_skill_path":
+      case "open_skill_path_with":
         return null;
+      case "skill_open_apps":
+        return [
+          {
+            id: "org.gnome.TextEditor.desktop",
+            name: "Text Editor",
+            default: true,
+            chosen: false,
+          },
+          { id: "dev.zed.Zed.desktop", name: "Zed", default: false, chosen: false },
+        ];
+      case "remove_skill": {
+        const { key } = args as { key: string };
+        const gone = skills.skills.find((s) => s.key === key);
+        skills = { ...skills, skills: skills.skills.filter((s) => s.key !== key) };
+        return { trashed: gone ? gone.folder : null, links: 0, inventory: skills };
+      }
+      case "dismiss_skill_issue": {
+        const { fingerprint, dismissed } = args as {
+          fingerprint: string;
+          dismissed: boolean;
+        };
+        skills = {
+          ...skills,
+          issues: skills.issues.map((i) =>
+            i.fingerprint === fingerprint ? { ...i, dismissed } : i,
+          ),
+        };
+        return skills;
+      }
       case "team_review": {
         const team = registry.team as NonNullable<Registry["team"]> & {
           memberReview: { pending: Record<string, unknown> };

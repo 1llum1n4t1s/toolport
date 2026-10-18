@@ -903,6 +903,28 @@ export interface SkillIssue {
   /** Display names for `skills`, without repeats. */
   skillNames: string[];
   fixLabel: string | null;
+  /** Stays the same while the issue covers the same skills and clients. */
+  fingerprint: string;
+  /** The user said this one is fine; it returns when something about it changes. */
+  dismissed: boolean;
+}
+
+/** An app that can open skill and rules files. */
+export interface SkillOpenApp {
+  id: string;
+  name: string;
+  /** The system's default app for this kind of file. */
+  default: boolean;
+  /** The app Open uses, picked by the user. */
+  chosen: boolean;
+}
+
+/** What removing a skill did. */
+export interface RemovedSkill {
+  /** The folder moved to the trash, or null when only links to it were removed. */
+  trashed: string | null;
+  links: number;
+  inventory: SkillsInventory;
 }
 
 export interface SkillsInventory {
