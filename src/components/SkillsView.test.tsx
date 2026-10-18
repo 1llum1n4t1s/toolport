@@ -336,6 +336,21 @@ describe("SkillsView", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("scans again when a dismiss fails, so an earlier queued change still shows", async () => {
+    vi.mocked(dismissSkillIssue).mockRejectedValueOnce(new Error("disk full"));
+    renderView();
+    await userEvent.click(await screen.findByRole("tab", { name: /Needs a look/ }));
+    const card = screen
+      .getByText("Grok reads your rules file but not what it imports")
+      .closest("article") as HTMLElement;
+    const loadsBefore = vi.mocked(skillsInventory).mock.calls.length;
+    await userEvent.click(within(card).getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(vi.mocked(skillsInventory).mock.calls.length).toBeGreaterThan(loadsBefore),
+    );
+  });
+
   it("dismisses an item until it changes and can bring it back", async () => {
     renderView();
     await userEvent.click(await screen.findByRole("tab", { name: /Needs a look/ }));

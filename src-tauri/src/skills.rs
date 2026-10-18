@@ -1754,9 +1754,9 @@ fn imports(text: &str, base: &Path, home: &Path) -> Vec<PathBuf> {
             let Some(target) = word.strip_prefix('@') else {
                 continue;
             };
-            // Sentence punctuation after the path isn't part of it.
-            let target = target.trim_end_matches([',', ';', ':', ')', ']', '"', '\'', '!', '?']);
-            let target = target.strip_suffix('.').unwrap_or(target);
+            // Sentence punctuation after the path isn't part of it, in any order (`@a.md).`).
+            let target =
+                target.trim_end_matches([',', ';', ':', ')', ']', '"', '\'', '!', '?', '.']);
             if target.is_empty() {
                 continue;
             }

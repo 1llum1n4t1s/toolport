@@ -1339,7 +1339,8 @@ fn imports_inside_a_sentence_count_but_code_does_not() {
     let text = "See @README.md and @docs/style.md, then ask @someone.\n\
                 Run `@not/this.md` first.\n\
                 ```\n@also/not.md\n```\n\
-                @~/rules/a.md\n";
+                @~/rules/a.md\n\
+                Also (see @notes.md).\n";
     assert_eq!(
         imports(text, base, home),
         vec![
@@ -1347,6 +1348,7 @@ fn imports_inside_a_sentence_count_but_code_does_not() {
             PathBuf::from("/p/docs/style.md"),
             PathBuf::from("/p/someone"),
             PathBuf::from("/h/rules/a.md"),
+            PathBuf::from("/p/notes.md"),
         ]
     );
 }

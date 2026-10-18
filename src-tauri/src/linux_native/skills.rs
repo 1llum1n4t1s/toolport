@@ -125,6 +125,19 @@ pub(super) struct SkillsPage {
     refocus_widget: Rc<RefCell<Option<gtk::Widget>>>,
 }
 
+/// The folder a skill's file sits in, as shown. The file may be a link to one with another
+/// name, so this drops the last part of the path whatever it is called. A broken link has no
+/// file; the link is the folder.
+fn own_folder(skill: &Skill) -> &str {
+    if skill.source == Source::Broken {
+        return &skill.path;
+    }
+    skill
+        .path
+        .rfind(['/', '\\'])
+        .map_or(skill.path.as_str(), |at| &skill.path[..at])
+}
+
 fn muted(text: &str) -> gtk::Label {
     gtk::Label::builder()
         .label(text)
@@ -1743,11 +1756,7 @@ impl SkillsPage {
         let heading = crate::i18n::trf("Remove {skill}?", &[("skill", &skill.name)]);
         // Say what will happen: a folder in a skills folder goes to the trash; one that lives
         // elsewhere (a repo) only loses the links to it.
-        let folder = skill
-            .path
-            .strip_suffix("SKILL.md")
-            .map(|p| p.trim_end_matches(['/', '\\']))
-            .unwrap_or(&skill.path);
+        let folder = own_folder(skill);
         let body = if skill.trash_on_remove {
             crate::i18n::tr(
                 "Its folder goes to the trash and links to it are removed, so no client loads it. You can restore the folder from the trash.",
@@ -1931,11 +1940,7 @@ impl SkillsPage {
         };
         field(&crate::i18n::tr("Path"), path_value(&skill.path).upcast());
         // `links` holds folders, the skill's own among them; only the other ways in are news.
-        let own_folder = skill
-            .path
-            .strip_suffix("SKILL.md")
-            .map(|p| p.trim_end_matches(['/', '\\']))
-            .unwrap_or(&skill.path);
+        let own_folder = own_folder(skill);
         let others: Vec<&str> = skill
             .links
             .iter()

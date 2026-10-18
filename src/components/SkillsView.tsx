@@ -581,7 +581,7 @@ function SkillDetail({
   }).length;
   const ratio = Math.min(1, skill.descriptionChars / DESCRIPTION_CAP);
   // `links` holds folders, the skill's own among them; only the other ways in are news.
-  const ownFolder = skill.path.replace(/[\\/]SKILL\.md$/, "");
+  const ownFolder = folderOf(skill);
   const otherLinks = skill.links.filter((l) => l !== skill.path && l !== ownFolder);
   return (
     <div>
@@ -759,6 +759,15 @@ function SkillDetail({
 }
 
 /** Why an agent doesn't load this rules file: the files it reads instead. */
+/**
+ * The folder a skill's file sits in, as shown. The file may be a link to one with another
+ * name, so this drops the last part of the path whatever it is called. A broken link has no
+ * file; the link is the folder.
+ */
+function folderOf(skill: SkillEntry): string {
+  return skill.source === "broken" ? skill.path : skill.path.replace(/[\\/][^\\/]+$/, "");
+}
+
 function otherRulesNote(agent: SkillAgent, rule: RuleFileEntry): string {
   const others = agent.ruleLocations.filter((path) => path !== rule.path);
   return others.length > 0
@@ -1314,6 +1323,8 @@ export function SkillsView() {
       applyWrite(value, forProject);
     } catch (e) {
       toastError(t("Couldn't change this"), { description: errorText(e) });
+      // An earlier queued change may have left its result for this write to show.
+      void load();
     }
   }
 
