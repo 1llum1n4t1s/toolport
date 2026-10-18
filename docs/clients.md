@@ -133,8 +133,11 @@ The Skills page includes nested directory and single-file Markdown skills,
 with `[skills] max_depth` (default 3, capped at 5). Nested skills need a
 description; flat files under `.claude/skills` need skill frontmatter. Skill
 toggles use `[skills] disabled_skills` only when Toolport can verify the exact
-identifier: an ASCII filename and simple, flat ASCII frontmatter scalars.
-Quoted whitespace and numeric spelling are preserved as Reasonix resolves them.
+identifier: an ASCII filename and printable ASCII frontmatter with LF or CRLF
+line endings, no tabs or other controls, and at most one literal `name:` field.
+That name must be a bare, unquoted value containing only letters, digits, dots,
+underscores or hyphens. Numeric spelling is preserved. Quoted names, repeated
+names and empty name fields are read-only.
 Unicode names, complex YAML and other uncertain identifiers stay visible with
 a read-only reason; use Reasonix to switch those skills. Other skills and
 clients remain independently switchable.

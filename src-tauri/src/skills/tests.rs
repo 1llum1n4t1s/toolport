@@ -3644,45 +3644,16 @@ fn reasonix_switches_by_its_resolved_identity_without_renaming_other_clients() {
             record.states["reasonix"].switch_name.as_deref(),
             Some(expected)
         );
-        if !file.is_ascii() || !declared.is_ascii() {
-            assert!(record.states["reasonix"].read_only_reason.is_some());
-            assert!(set_state(
-                &env,
-                &inv,
-                "reasonix",
-                &record.key,
-                Wanted::Off,
-                &TestWriter::default()
-            )
-            .is_err());
-            continue;
-        }
-        set_state(
+        assert!(record.states["reasonix"].read_only_reason.is_some());
+        assert!(set_state(
             &env,
             &inv,
             "reasonix",
             &record.key,
             Wanted::Off,
-            &TestWriter::default(),
+            &TestWriter::default()
         )
-        .unwrap();
-        let config = read_toml(&home.path(".reasonix/config.toml")).unwrap();
-        assert!(config["skills"]["disabled_skills"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v.as_str() == Some(expected)));
-        let after = scan(&env, &only(&["reasonix"]), None);
-        assert_eq!(
-            after
-                .skills
-                .iter()
-                .find(|s| s.key == record.key)
-                .unwrap()
-                .states["reasonix"]
-                .state,
-            State::Off
-        );
+        .is_err());
     }
     home.skill(".claude/skills/shared", "レビュー", "Shared review");
     let env = home.env();
@@ -3770,9 +3741,9 @@ fn reasonix_deduplicates_but_keeps_unicode_switches_read_only() {
 #[test]
 fn reasonix_scalar_spelling_matches_upstream_when_toggled() {
     for (header, expected) in [
-        ("name: ' inspect '\n", "inspect"),
+        ("name: inspect\n", "inspect"),
         ("name: 123\n", "123"),
-        ("NAME: Inspect\n", "Inspect"),
+        ("name: Inspect\n", "Inspect"),
         ("name: 00123\n", "00123"),
     ] {
         let home = Home::new();
@@ -3864,5 +3835,87 @@ fn reasonix_switch_certification_uses_upstream_name_table() {
                 assert!(!home.path(".reasonix/config.toml").exists(), "{case}");
             }
         }
+    }
+}
+
+#[test]
+fn reasonix_malformed_frontmatter_never_certifies_a_switch() {
+    let cases: serde_json::Value =
+        serde_json::from_str(include_str!("reasonix-refused-name-cases.json")).unwrap();
+    for case in cases.as_array().unwrap() {
+        let home = Home::new();
+        let text = case["text"].as_str().map(str::to_owned).unwrap_or_else(|| {
+            format!(
+                "---\n{}description: Review\n---\nReview\n",
+                case["header"].as_str().unwrap()
+            )
+        });
+        home.write(".reasonix/skills/review.md", &text);
+        for initial in [None, Some("[skills]\ndisabled_skills = ['review']\n")] {
+            if let Some(initial) = initial {
+                home.write(".reasonix/config.toml", initial);
+            }
+            let before = std::fs::read(home.path(".reasonix/config.toml")).ok();
+            let env = home.env();
+            let inv = scan(&env, &only(&["reasonix"]), None);
+            let record = inv.skills.first().unwrap();
+            assert!(
+                record.states["reasonix"].read_only_reason.is_some(),
+                "{case}"
+            );
+            for wanted in [Wanted::Off, Wanted::On] {
+                assert!(
+                    set_state(
+                        &env,
+                        &inv,
+                        "reasonix",
+                        &record.key,
+                        wanted,
+                        &TestWriter::default()
+                    )
+                    .unwrap_err()
+                    .contains("cannot verify"),
+                    "{case}"
+                );
+                assert_eq!(
+                    std::fs::read(home.path(".reasonix/config.toml")).ok(),
+                    before,
+                    "{case}"
+                );
+                let after = scan(&env, &only(&["reasonix"]), None);
+                assert!(after.skills.first().unwrap().states["reasonix"]
+                    .read_only_reason
+                    .is_some());
+            }
+        }
+    }
+}
+
+#[test]
+fn reasonix_certification_rejects_header_controls_before_trimming() {
+    let home = Home::new();
+    let path = home.path(".reasonix/skills/review.md");
+    let found = Found {
+        link: path.clone(),
+        real: Some(path),
+        root_label: "test",
+        root_path: home.path(".reasonix/skills"),
+    };
+    for byte in (0..=31).chain([127]).filter(|byte| *byte != b'\n') {
+        home.write(
+            ".reasonix/skills/review.md",
+            &format!(
+                "---\nname: inspect\ndescription: Rev{}iew\n---\nReview\n",
+                char::from(byte)
+            ),
+        );
+        assert_eq!(reasonix_proven_skill_name(&found), None, "byte {byte:#x}");
+    }
+    for newline in ["\n", "\r\n"] {
+        home.write(".reasonix/skills/review.md", &format!("---{newline}name: inspect{newline}description: Review{newline}---{newline}Body\x0c"));
+        assert_eq!(
+            reasonix_proven_skill_name(&found).as_deref(),
+            Some("inspect")
+        );
     }
 }

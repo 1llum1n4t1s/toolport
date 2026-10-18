@@ -9,8 +9,8 @@ Entries before the rename below shipped under the project's former name, Conduit
 ### Fixed
 
 - Keep uncertain Reasonix skill identifiers read-only in both apps instead of
-  writing an ineffective disable key. Verify simple ASCII scalar names,
-  including trimmed whitespace and original numeric spelling.
+  writing an ineffective disable key. Verify only printable ASCII headers with
+  one bare name or no name, rejecting controls, quotes and repeated names.
 
 - OpenClaw Connect edits the active legacy config instead of creating a file
   that hides it. Skills honor the OS personal home, later extra-directory

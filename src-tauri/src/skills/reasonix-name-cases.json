@@ -11,14 +11,14 @@
     "header": "name: ' inspect '\n",
     "expected": "inspect",
     "key": "inspect",
-    "safe": true
+    "safe": false
   },
   {
     "stem": "review",
     "header": "name: \" inspect \"\n",
     "expected": "inspect",
     "key": "inspect",
-    "safe": true
+    "safe": false
   },
   {
     "stem": "review",
@@ -32,7 +32,7 @@
     "header": "NAME: Inspect\n",
     "expected": "Inspect",
     "key": "Inspect",
-    "safe": true
+    "safe": false
   },
   {
     "stem": "review",
@@ -88,7 +88,7 @@
     "header": "name: review changes\n",
     "expected": "review",
     "key": "review",
-    "safe": true
+    "safe": false
   },
   {
     "stem": "review",
@@ -156,8 +156,8 @@
   {
     "stem": "review",
     "header": "name: inspect\nother: - x\n",
-    "expected": "review",
-    "key": "review",
+    "expected": "inspect",
+    "key": "inspect",
     "safe": false
   },
   {
@@ -165,14 +165,14 @@
     "header": "name: inspect\nname:\n",
     "expected": "inspect",
     "key": "inspect",
-    "safe": true
+    "safe": false
   },
   {
     "stem": "review",
     "header": "name: inspect\nName: second\n",
     "expected": "second",
     "key": "second",
-    "safe": true
+    "safe": false
   },
   {
     "stem": "review",
@@ -193,7 +193,7 @@
     "header": "name: .nan\n",
     "expected": "review",
     "key": "review",
-    "safe": false
+    "safe": true
   },
   {
     "stem": "review",
@@ -212,8 +212,8 @@
   {
     "stem": "review",
     "header": "name:inspect\n",
-    "expected": "review",
-    "key": "review",
+    "expected": "inspect",
+    "key": "inspect",
     "safe": false
   },
   {

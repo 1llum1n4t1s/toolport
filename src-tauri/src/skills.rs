@@ -2754,10 +2754,8 @@ fn reasonix_skill_stem(found: &Found) -> &str {
     }
 }
 
-// Only certify a deliberately small YAML subset. In this subset yaml.v3 keeps
-// scalar spelling (including numeric forms), trims it, and lowercases ASCII keys.
-// Complex YAML and Unicode remain visible but cannot use our approximate identity
-// for writes. This also avoids Go/Rust Unicode version and Windows case differences.
+// An allowlist shared by the YAML parser and Reasonix's malformed-YAML fallback.
+// Reject controls before inspecting fields, and never unquote or clean up a name.
 fn reasonix_proven_skill_name(found: &Found) -> Option<String> {
     let stem = reasonix_skill_stem(found);
     if !reasonix_ascii_skill_name(stem) {
@@ -2766,72 +2764,68 @@ fn reasonix_proven_skill_name(found: &Found) -> Option<String> {
     let text = std::fs::read_to_string(&found.link)
         .ok()?
         .replace("\r\n", "\n");
-    let mut lines = text.lines();
+    // split, rather than lines, keeps bare CR visible to the byte allowlist.
+    let mut lines = text.split('\n');
     let first = lines.next()?;
-    if !first.is_ascii() {
+    let printable = |line: &str| line.bytes().all(|byte| (0x20..=0x7e).contains(&byte));
+    if !printable(first) {
         return None;
     }
-    if first.trim() != "---" {
+    if first.trim_matches(' ') != "---" {
         return Some(stem.to_string());
     }
-    let mut declared = "";
+    let mut declared: Option<&str> = None;
     for line in lines {
-        if !line.is_ascii() {
+        if !printable(line) {
             return None;
         }
-        if line.trim() == "---" {
-            return Some(if reasonix_ascii_skill_name(declared) {
-                declared.to_string()
-            } else {
-                stem.to_string()
-            });
+        if line.trim_matches(' ') == "---" {
+            return Some(
+                declared
+                    .filter(|name| reasonix_ascii_skill_name(name))
+                    .unwrap_or(stem)
+                    .to_string(),
+            );
         }
         if line.is_empty() {
             continue;
         }
-        // No nested leaves, aliases, tags, flow values, escapes or block scalars.
-        // These can change LegacyFlat()["name"] independently of a top-level name.
-        if line.starts_with(char::is_whitespace) {
+        if line.starts_with(' ') {
             return None;
         }
         let (key, value) = line.split_once(':')?;
         if key.is_empty()
             || !key
                 .bytes()
-                .all(|b| b.is_ascii_alphabetic() || b"_-".contains(&b))
+                .all(|byte| byte.is_ascii_alphabetic() || b"_-".contains(&byte))
         {
             return None;
         }
-        // YAML requires separation after a mapping colon. `name:inspect`
-        // is a scalar document, not a field named name.
-        if !value.is_empty() && !value.starts_with([' ', '\t']) {
+        if !value.is_empty() && !value.starts_with(' ') {
             return None;
         }
-        let value = value.trim();
-        let quoted = value.starts_with('\'') || value.starts_with('"');
-        let value = if value.len() >= 2
-            && ((value.starts_with('\'') && value.ends_with('\''))
-                || (value.starts_with('"') && value.ends_with('"')))
+        let value = value.trim_matches(' ');
+        if key.eq_ignore_ascii_case("name") {
+            // Exactly one literal name field, with a bare, nonempty identifier.
+            if key != "name"
+                || declared.is_some()
+                || value.is_empty()
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+            {
+                return None;
+            }
+            declared = Some(value);
+        } else if (!value.is_empty() && !value.as_bytes()[0].is_ascii_alphanumeric())
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b" .,_/-".contains(&byte))
         {
-            &value[1..value.len() - 1]
-        } else {
-            value
-        };
-        if !quoted && !value.is_empty() && !value.as_bytes()[0].is_ascii_alphanumeric() {
             return None;
-        }
-        if !value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b" .,_/-".contains(&b))
-        {
-            return None;
-        }
-        if key.eq_ignore_ascii_case("name") && !value.trim().is_empty() {
-            declared = value.trim();
         }
     }
-    // An unclosed fence is body text in Reasonix.
-    Some(stem.to_string())
+    None
 }
 
 fn reasonix_ascii_switch_config(env: &Env) -> bool {
