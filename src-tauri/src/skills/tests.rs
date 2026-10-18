@@ -1638,6 +1638,14 @@ fn reasonix_reads_its_folders_in_order_and_switches_through_disabled_skills() {
         let rule = inv.rules.iter().find(|r| r.path == path).expect(path);
         assert!(rule.agents.contains_key("reasonix"), "{path}");
     }
+    // Project rule files follow `@` imports too.
+    home.write("work/app/REASONIX.md", "@notes.md\n");
+    home.write("work/app/notes.md", "# notes\n");
+    let project = home.path("work/app");
+    let inv = scan(&env, &only(&["reasonix"]), Some(&project));
+    let notes = inv.rules.iter().find(|r| r.name == "notes.md").unwrap();
+    assert!(notes.agents["reasonix"].iter().any(|c| c.kind == "import"));
+    let inv = scan(&env, &only(&["reasonix"]), None);
 
     let writer = TestWriter::default();
     let key = skill(&inv, "own").key.clone();

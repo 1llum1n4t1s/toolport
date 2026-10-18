@@ -2743,7 +2743,7 @@ fn scan_rules(instances: &[Instance], project: Option<&Path>) -> Vec<RuleFile> {
                     project.join(rel),
                     matches!(
                         def.id,
-                        "claude-code" | "gemini-cli" | "qwen-code" | "goose" | "amp"
+                        "claude-code" | "gemini-cli" | "qwen-code" | "goose" | "amp" | "reasonix"
                     ),
                 );
                 let source = RuleSource {
