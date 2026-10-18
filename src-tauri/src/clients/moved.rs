@@ -44,9 +44,11 @@ enum Raw {
     Yaml {
         text: String,
     },
-    /// One DeepSeek Harness entry mapping (`id`, `name`, `config`), verbatim, so
-    /// its comments and `!!js` expressions go back as they were.
-    Dsh {
+    /// One server of a synced format, verbatim: a DeepSeek Harness entry mapping
+    /// or a one-table Reasonix document, so its comments and expressions go back
+    /// as they were. Records from builds before Reasonix call it `dsh`.
+    #[serde(alias = "dsh")]
+    Native {
         text: String,
     },
 }
@@ -62,8 +64,8 @@ enum Container {
     YamlMap(&'static str),
     /// Continue's list of server objects, each carrying its own `name`.
     YamlList(&'static str),
-    /// DeepSeek Harness patch rows; see `dsh`.
-    Dsh,
+    /// A format edited through its normalized view; see `synced`.
+    Synced(synced::Synced),
 }
 
 fn container(format: Format) -> Container {
@@ -87,7 +89,9 @@ fn container(format: Format) -> Container {
         Format::YamlExtensions => Container::YamlMap("extensions"),
         Format::YamlMcpServers => Container::YamlMap("mcp_servers"),
         Format::YamlMcpServersList => Container::YamlList("mcpServers"),
-        Format::YamlDshPatch => Container::Dsh,
+        Format::YamlDshPatch | Format::TomlReasonixPlugins => {
+            Container::Synced(synced::Synced::of(format).expect("synced format"))
+        }
     }
 }
 
@@ -99,7 +103,7 @@ pub(super) fn server_container(format: Format, root: &serde_json::Value) -> serd
         }
         Container::Toml => root["mcp_servers"].clone(),
         Container::YamlMap(key) | Container::YamlList(key) => root[key].clone(),
-        Container::Dsh => root[dsh::KEY].clone(),
+        Container::Synced(_) => root[synced::KEY].clone(),
     }
 }
 
@@ -181,7 +185,10 @@ pub(super) fn definition(
                 serde_yaml::from_str(&text).map_err(|_| "Could not read imported settings")?;
             serde_json::to_value(doc).map_err(|_| "Could not read imported settings")?
         }
-        Raw::Dsh { text } => dsh::definition(&text)?,
+        Raw::Native { text } => match container(format) {
+            Container::Synced(kind) => kind.definition(&text)?,
+            _ => return Err("Could not read imported settings".into()),
+        },
     };
     Ok(Some(value))
 }
@@ -296,30 +303,24 @@ pub(super) fn remove_selected(format: Format, path: &Path, names: &[String]) -> 
             }
             atomic_write_yaml_config(path, original.as_deref(), &root, key)
         }
-        Container::Dsh => {
+        Container::Synced(kind) => {
             let original = read_config_file(path)?;
-            let mut desired = dsh_servers(&original)?;
+            let mut desired = kind.servers_map(&original)?;
             for name in names {
                 desired.remove(name);
             }
-            write_dsh(path, &original, &desired)
+            write_synced(kind, path, &original, &desired)
         }
     }
 }
 
-fn dsh_servers(text: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    Ok(dsh::normalized(text)?[dsh::KEY]
-        .as_object()
-        .cloned()
-        .unwrap_or_default())
-}
-
-fn write_dsh(
+fn write_synced(
+    kind: synced::Synced,
     path: &Path,
     original: &str,
     desired: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
-    let out = dsh::sync(Some(original), desired, &Default::default())?;
+    let out = kind.sync(Some(original), desired, &Default::default())?;
     if out != original {
         atomic_write(path, &out)?;
     }
@@ -422,9 +423,9 @@ pub(super) fn backfill_identity(
             }
             atomic_write_yaml_config(path, original.as_deref(), &root, container_key)
         }
-        Container::Dsh => {
+        Container::Synced(kind) => {
             let original = read_config_file(path)?;
-            let mut desired = dsh_servers(&original)?;
+            let mut desired = kind.servers_map(&original)?;
             let env = desired
                 .get_mut(name)
                 .ok_or("Missing owned gateway")?
@@ -437,7 +438,7 @@ pub(super) fn backfill_identity(
             for key in &keys {
                 env.insert((*key).into(), serde_json::json!(id));
             }
-            write_dsh(path, &original, &desired)
+            write_synced(kind, path, &original, &desired)
         }
     }
 }
@@ -468,8 +469,8 @@ pub(super) fn toml_entry(
         .cloned())
 }
 
-/// Recorded raw DeepSeek Harness entries for `path`, by server name.
-pub(super) fn dsh_entries(
+/// Recorded native entries (synced formats) for `path`, by server name.
+pub(super) fn native_entries(
     client_id: &str,
     path: &Path,
 ) -> Result<std::collections::BTreeMap<String, String>, String> {
@@ -483,7 +484,7 @@ pub(super) fn dsh_entries(
         .entries
         .into_iter()
         .filter_map(|entry| match entry.raw {
-            Raw::Dsh { text } => Some((entry.name, text)),
+            Raw::Native { text } => Some((entry.name, text)),
             _ => None,
         })
         .collect())
@@ -639,13 +640,13 @@ fn extract(container: Container, text: &str) -> Result<Vec<Moved>, String> {
                 }
             }
         }
-        Container::Dsh => {
-            for (name, raw, config) in dsh::raw_entries(text)? {
+        Container::Synced(kind) => {
+            for (name, raw, config) in kind.raw_entries(text)? {
                 let command = config.get("command").and_then(|value| value.as_str());
                 if !gateway_identity_matches(&name, &name, command) {
                     out.push(Moved {
                         name,
-                        raw: Raw::Dsh { text: raw },
+                        raw: Raw::Native { text: raw },
                     });
                 }
             }
@@ -806,16 +807,16 @@ fn insert_missing(
             atomic_write_yaml_config(path, original.as_deref(), &root, key)?;
             Ok((names, backup))
         }
-        Container::Dsh => {
+        Container::Synced(kind) => {
             let original = if mutation::exists(path) {
                 Some(read_config_file(path)?)
             } else {
                 None
             };
-            let present = dsh_servers(original.as_deref().unwrap_or(""))?;
+            let present = kind.servers_map(original.as_deref().unwrap_or(""))?;
             let mut texts = Vec::new();
             for entry in entries {
-                let Raw::Dsh { text } = &entry.raw else {
+                let Raw::Native { text } = &entry.raw else {
                     continue;
                 };
                 if !has_name(present.keys().map(String::as_str), &entry.name)
@@ -829,7 +830,7 @@ fn insert_missing(
                 return Ok((names, None));
             }
             let backup = backup()?;
-            atomic_write(path, &dsh::append_raw(original.as_deref(), &texts)?)?;
+            atomic_write(path, &kind.append_raw(original.as_deref(), &texts)?)?;
             Ok((names, backup))
         }
     }

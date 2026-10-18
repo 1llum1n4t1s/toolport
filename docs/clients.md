@@ -32,6 +32,7 @@ below for you, so you never have to edit these by hand.
 | Auggie CLI              | `~/.augment/settings.json`                                                                             | JSON (`mcpServers`)      |
 | Kimi Code               | `$KIMI_CODE_HOME/mcp.json` (default `~/.kimi-code/mcp.json`)                                           | JSON (`mcpServers`)      |
 | DeepSeek Harness        | `$DSH_HOME/cordis.patch.yml` (default `~/.dsh/cordis.patch.yml`)                                       | YAML (patch rows)        |
+| Reasonix                | `$REASONIX_HOME/config.toml` (default `~/.reasonix/config.toml`)                                       | TOML (`[[plugins]]`)     |
 | ZCode                   | `~/.zcode/cli/config.json`                                                                             | JSON (`mcp.servers`)     |
 | Command Code            | `~/.commandcode/mcp.json`                                                                              | JSON (`mcpServers`)      |
 | Tabnine Agent           | `~/.tabnine/mcp_servers.json`                                                                          | JSON (`mcpServers`)      |
@@ -93,6 +94,24 @@ moved into its config, and server names are limited to letters, digits, `-` and
 `_` (32 at most). If a patch file is written in a layout Toolport can't edit
 exactly, such as a single-line flow list, Toolport leaves it untouched and says
 so.
+
+### Reasonix setup
+
+Reasonix keeps MCP servers as `[[plugins]]` tables in its global config,
+`config.toml` in the Reasonix home: `~/.reasonix` on macOS and Linux,
+`%APPDATA%\reasonix` on Windows, or `REASONIX_HOME`. The CLI and Reasonix
+Studio share it. Connect adds one `[[plugins]]` table named `toolport`;
+Disconnect removes just that table. Comments, other settings and your own
+servers stay as they are, and a changed server is edited in place. Project
+`reasonix.toml` and `.mcp.json` files are not changed. Start a new Reasonix
+session after connecting. Reasonix also loads the user servers in Claude Code's
+`~/.claude.json`; once Reasonix is connected, its own `toolport` table takes
+the place of Claude Code's, so its calls show up as Reasonix in Activity.
+
+Reasonix keeps an MCP server's tools behind its own capability search, so
+Toolport's Auto mode lists the full catalog. It does not pick up catalog
+changes during a session, so a server you add in Toolport appears in the next
+session. A plugin list written inline (`plugins = [{ ... }]`) is left untouched.
 
 ### ZCode setup
 

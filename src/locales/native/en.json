@@ -1155,5 +1155,8 @@
   "Uses options.disabled_skills in Crush's crush.json.": "Uses options.disabled_skills in Crush's crush.json.",
   "Uses skills.disabled in Qwen Code's settings.json.": "Uses skills.disabled in Qwen Code's settings.json.",
   "Uses skills.ignoredSkills in Oh My Pi's config.yml.": "Uses skills.ignoredSkills in Oh My Pi's config.yml.",
-  "DeepSeek Harness skills": "DeepSeek Harness skills"
+  "DeepSeek Harness skills": "DeepSeek Harness skills",
+  "Reasonix skills": "Reasonix skills",
+  "Reasonix extra folder": "Reasonix extra folder",
+  "Uses disabled_skills under [skills] in Reasonix's config.toml.": "Uses disabled_skills under [skills] in Reasonix's config.toml."
 }

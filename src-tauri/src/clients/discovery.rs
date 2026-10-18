@@ -106,6 +106,20 @@ pub(super) fn capabilities(id: &str) -> DiscoveryCapabilities {
             auto_full_max_tools: None,
             evidence: "docs/client-conformance.md (captured startup and refresh)",
         },
+        // Reasonix 2.44.0: an MCP server's tools are deferred behind its own
+        // use_capability search unless `load = "always"` (config/mcp_load.go).
+        // Against toolport-gateway 2.2.0 (2026-10-18) it speaks 2026-07-28 through
+        // `server/discover` and never opens `subscriptions/listen`, so the gateway
+        // has no channel for list_changed and the catalog stays as first listed.
+        "reasonix" => DiscoveryCapabilities {
+            auto_mode: "full",
+            native_tool_search: Some(true),
+            tools_list_changed: Some(false),
+            cold_full_list_wait_ms: 5_000,
+            max_tools: None,
+            auto_full_max_tools: None,
+            evidence: "docs/client-conformance.md (captured startup)",
+        },
         "anthropic-api" => DiscoveryCapabilities {
             auto_mode: "full",
             native_tool_search: Some(true),
@@ -295,6 +309,7 @@ mod tests {
         for (id, budget) in [
             ("codex", 8_000),
             ("cursor", 5_000),
+            ("reasonix", 5_000),
             ("anthropic-api", 5_000),
             ("openai-api", 5_000),
         ] {

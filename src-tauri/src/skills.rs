@@ -55,6 +55,13 @@ pub struct Env {
     pub dsh: PathBuf,
     /// The shared agent folder dsh reads (`DSH_AGENTS_HOME`, default `~/.agents`).
     pub dsh_agents: PathBuf,
+    /// Reasonix's home (`REASONIX_HOME`, default `~/.reasonix`, `%APPDATA%\reasonix` on
+    /// Windows).
+    pub reasonix: PathBuf,
+    /// `REASONIX_HOME` is set, so Reasonix skips the folders under the OS home.
+    pub reasonix_portable: bool,
+    /// Where Reasonix reads its global REASONIX.md (`REASONIX_STATE_HOME`, else its home).
+    pub reasonix_state: PathBuf,
     /// Every Claude Code profile folder when there is more than one (`~/.claude`, `~/.claude2`,
     /// a `CLAUDE_CONFIG_DIR`). Empty means `claude` is the only one.
     pub claude_profiles: Vec<PathBuf>,
@@ -81,6 +88,9 @@ impl Env {
             pi: home.join(".pi").join("agent"),
             dsh: home.join(".dsh"),
             dsh_agents: home.join(".agents"),
+            reasonix: home.join(".reasonix"),
+            reasonix_portable: false,
+            reasonix_state: home.join(".reasonix"),
             config,
             claude_profiles: Vec::new(),
         }
@@ -145,6 +155,31 @@ impl Env {
         if let Some(dir) = tilde("DSH_AGENTS_HOME") {
             env.dsh_agents = dir;
         }
+        // Reasonix uses os.UserConfigDir on Windows, and trims and expands `~` in both.
+        #[cfg(windows)]
+        if let Some(dir) = dirs::config_dir() {
+            env.reasonix = dir.join("reasonix");
+        }
+        let trimmed = |key: &str| {
+            let raw = std::env::var(key).ok()?;
+            let raw = raw.trim();
+            (!raw.is_empty()).then(|| raw.to_string())
+        };
+        let expand = |raw: String| {
+            let path = match raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+                Some(rest) => home.join(rest.trim_start_matches(['/', '\\'])),
+                None if raw == "~" => home.clone(),
+                None => PathBuf::from(raw),
+            };
+            path.is_absolute().then_some(path)
+        };
+        if let Some(dir) = trimmed("REASONIX_HOME").and_then(expand) {
+            env.reasonix = dir;
+            env.reasonix_portable = true;
+        }
+        env.reasonix_state = trimmed("REASONIX_STATE_HOME")
+            .and_then(expand)
+            .unwrap_or_else(|| env.reasonix.clone());
         env.claude_profiles = claude_profile_dirs(&home, &env.claude);
         Some(env)
     }
@@ -331,6 +366,8 @@ enum Switch {
     GeminiSettings,
     /// `[skills] disabled` in Grok's config.toml.
     GrokConfig,
+    /// `[skills] disabled_skills` in Reasonix's config.toml.
+    ReasonixConfig,
     /// `options.disabled_skills` in Crush's crush.json.
     CrushConfig,
     /// `skills.disabled` in Qwen Code's settings.json.
@@ -1315,6 +1352,31 @@ fn agent_defs() -> Vec<AgentDef> {
         .switch(Switch::None(NO_SWITCH))
         // Project roots rank first in dsh-skill-filesystem (100, 200).
         .project_walk(ProjectWalk::FLAT.first()),
+        // Reasonix docs/SKILLS.md and internal/state/instruction: project skills win, then
+        // `[skills] paths`, then the global folders; every REASONIX.md, AGENTS.md and
+        // CLAUDE.md in its home loads, with `@` imports.
+        docs_agent(
+            "reasonix",
+            "Reasonix",
+            reasonix_skill_roots,
+            &[".reasonix/skills", ".agents/skills", ".agent/skills", ".claude/skills"],
+            |env| {
+                sources(
+                    named_or(&env.reasonix_state, &["REASONIX.md", "AGENTS.md", "CLAUDE.md"], "AGENTS.md"),
+                    true,
+                )
+            },
+            &[
+                "REASONIX.md",
+                "AGENTS.md",
+                "CLAUDE.md",
+                "REASONIX.local.md",
+                "AGENTS.local.md",
+                "CLAUDE.local.md",
+            ],
+        )
+        .switch(Switch::ReasonixConfig)
+        .project_walk(ProjectWalk::FLAT.first()),
         docs_agent(
             "tabnine",
             "Tabnine",
@@ -1819,6 +1881,75 @@ fn hermes_config_path(env: &Env) -> PathBuf {
 fn grok_config_path(env: &Env) -> PathBuf {
     env.grok.join("config.toml")
 }
+fn reasonix_config_path(env: &Env) -> PathBuf {
+    env.reasonix.join("config.toml")
+}
+
+/// The TOML list under `[skills]` a client keeps its turned-off skill names in.
+fn toml_list_switch(switch: Switch, env: &Env) -> Option<(PathBuf, &'static str)> {
+    match switch {
+        Switch::GrokConfig => Some((grok_config_path(env), "disabled")),
+        Switch::ReasonixConfig => Some((reasonix_config_path(env), "disabled_skills")),
+        _ => None,
+    }
+}
+
+/// Reasonix's personal skill folders in the order a name clash is decided: `[skills] paths`,
+/// then its home, then the shared folders under the OS home (skipped when `REASONIX_HOME` is
+/// set). `[skills] excluded_paths` drops a folder.
+fn reasonix_skill_roots(env: &Env) -> Vec<Root> {
+    let config = read_toml(&reasonix_config_path(env));
+    let paths = |key: &str| -> Vec<PathBuf> {
+        config
+            .as_ref()
+            .and_then(|v| v.get("skills"))
+            .and_then(|s| s.get(key))
+            .and_then(|l| l.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+            .filter_map(|raw| {
+                let path = match raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+                    Some(rest) => env.home.join(rest),
+                    None if raw == "~" => env.home.clone(),
+                    // A relative folder is relative to where Reasonix runs.
+                    None => PathBuf::from(raw),
+                };
+                path.is_absolute().then_some(path)
+            })
+            .collect()
+    };
+    let mut roots: Vec<Root> = paths("paths")
+        .into_iter()
+        .map(|dir| Root::flat(dir, msg("Reasonix extra folder")))
+        .collect();
+    roots.push(Root::flat(
+        env.reasonix.join("skills"),
+        msg("Reasonix skills"),
+    ));
+    if !env.reasonix_portable {
+        roots.push(Root::flat(
+            env.home.join(".reasonix").join("skills"),
+            msg("Reasonix skills"),
+        ));
+        roots.push(Root::flat(
+            env.agents_skills(),
+            msg("shared ~/.agents/skills"),
+        ));
+        roots.push(Root::flat(
+            env.home.join(".agent").join("skills"),
+            msg("Shared skills folder"),
+        ));
+        roots.push(Root::flat(
+            env.claude_compat.join("skills"),
+            msg("Claude Code folder"),
+        ));
+    }
+    let excluded = paths("excluded_paths");
+    let mut seen = BTreeSet::new();
+    roots.retain(|root| !excluded.contains(&root.path) && seen.insert(root.path.clone()));
+    roots
+}
 fn crush_config_path(env: &Env) -> PathBuf {
     env.config.join("crush").join("crush.json")
 }
@@ -1939,11 +2070,12 @@ fn read_disabled(switch: Switch, env: &Env) -> Disabled {
                 }
             }
         }
-        Switch::GrokConfig => {
-            if let Some(list) = read_toml(&grok_config_path(env))
+        Switch::GrokConfig | Switch::ReasonixConfig => {
+            let (path, key) = toml_list_switch(switch, env).expect("a TOML list switch");
+            if let Some(list) = read_toml(&path)
                 .as_ref()
                 .and_then(|v| v.get("skills"))
-                .and_then(|s| s.get("disabled"))
+                .and_then(|s| s.get(key))
                 .and_then(|l| l.as_array())
             {
                 d.off = list
@@ -2459,6 +2591,9 @@ fn switch_note(switch: Switch) -> String {
         Switch::HermesConfig => tr("Uses skills.disabled in Hermes's config.yaml."),
         Switch::GeminiSettings => tr("Uses skills.disabled in Gemini CLI's settings.json."),
         Switch::GrokConfig => tr("Uses the disabled list under [skills] in Grok's config.toml."),
+        Switch::ReasonixConfig => {
+            tr("Uses disabled_skills under [skills] in Reasonix's config.toml.")
+        }
         Switch::CrushConfig => tr("Uses options.disabled_skills in Crush's crush.json."),
         Switch::QwenSettings => tr("Uses skills.disabled in Qwen Code's settings.json."),
         Switch::OmpConfig => tr("Uses skills.ignoredSkills in Oh My Pi's config.yml."),
@@ -2474,7 +2609,7 @@ fn switch_place(switch: Switch) -> &'static str {
         Switch::OpencodePermissions => "opencode.json",
         Switch::HermesConfig => "config.yaml",
         Switch::GeminiSettings | Switch::QwenSettings => "settings.json",
-        Switch::GrokConfig => "config.toml",
+        Switch::GrokConfig | Switch::ReasonixConfig => "config.toml",
         Switch::CrushConfig => "crush.json",
         Switch::OmpConfig => "config.yml",
         Switch::None(_) => "settings",
@@ -3394,7 +3529,11 @@ pub fn set_state(
                 Ok(keys[0])
             })
         }
-        Switch::GrokConfig => edit_grok(agent, &grok_config_path(env), writer, &skill.name, off),
+        Switch::GrokConfig | Switch::ReasonixConfig => {
+            let (path, key) =
+                toml_list_switch(def.switch, env).ok_or_else(|| wrong_shape("skills"))?;
+            edit_toml_skills_list(agent, &path, key, writer, &skill.name, off)
+        }
         Switch::OpencodePermissions => {
             let path = opencode_config_path(env);
             edit_json(agent, &path, writer, |root| {
@@ -3948,11 +4087,12 @@ fn edit_codex(
     writer.write(path, &next)
 }
 
-/// Add or remove `name` in the `disabled` list under `[skills]` in Grok's config.toml, keeping
-/// the rest of the file as written.
-fn edit_grok(
+/// Add or remove `name` in the `key` list under `[skills]` in a config.toml (Grok's
+/// `disabled`, Reasonix's `disabled_skills`), keeping the rest of the file as written.
+fn edit_toml_skills_list(
     agent: &str,
     path: &Path,
+    key: &str,
     writer: &dyn Writer,
     name: &str,
     off: bool,
@@ -3965,13 +4105,13 @@ fn edit_grok(
         .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
         .as_table_like_mut()
         .ok_or_else(|| wrong_shape("skills"))?;
-    if skills.get("disabled").is_none() {
-        skills.insert("disabled", toml_edit::value(toml_edit::Array::new()));
+    if skills.get(key).is_none() {
+        skills.insert(key, toml_edit::value(toml_edit::Array::new()));
     }
     let list = skills
-        .get_mut("disabled")
+        .get_mut(key)
         .and_then(|d| d.as_array_mut())
-        .ok_or_else(|| wrong_shape("skills.disabled"))?;
+        .ok_or_else(|| wrong_shape(&format!("skills.{key}")))?;
     list.retain(|v| v.as_str() != Some(name));
     if off {
         list.push(name);

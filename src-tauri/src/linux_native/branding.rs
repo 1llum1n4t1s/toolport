@@ -75,6 +75,7 @@ pub(super) fn client_logo(id: &str) -> gtk::Image {
         "deepseek-harness" => Some(include_bytes!(
             "../../icons/client-logos/deepseek-harness.png"
         )),
+        "reasonix" => Some(include_bytes!("../../icons/client-logos/reasonix.png")),
         "junie" => Some(include_bytes!("../../icons/client-logos/junie.png")),
         "kilo-code" => Some(include_bytes!("../../icons/client-logos/kilo-code.png")),
         "github-copilot-cli" => Some(include_bytes!(

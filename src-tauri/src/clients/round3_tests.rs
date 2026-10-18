@@ -160,6 +160,7 @@ fn round3_reserved_duplicates_removed_in_all_formats_and_foreign_slots_preserved
         (Format::YamlExtensions, "extensions:\n  toolport: {type: stdio, cmd: toolport-gateway, enabled: true}\n  conduit: {type: stdio, cmd: conduit-gateway, enabled: true}\n  foreign: {type: stdio, cmd: toolport-gateway, enabled: true}\n"),
         (Format::YamlMcpServers, "mcp_servers:\n  toolport: {command: toolport-gateway}\n  conduit: {command: conduit-gateway}\n  foreign: {command: toolport-gateway}\n"),
         (Format::YamlMcpServersList, "mcpServers:\n  - {name: toolport, command: toolport-gateway}\n  - {name: conduit, command: conduit-gateway}\n  - {name: foreign, command: toolport-gateway}\n"),
+        (Format::TomlReasonixPlugins, "[[plugins]]\nname = 'toolport'\ncommand = 'toolport-gateway'\n[[plugins]]\nname = 'conduit'\ncommand = 'conduit-gateway'\n[[plugins]]\nname = 'foreign'\ncommand = 'toolport-gateway'\n"),
         (Format::YamlDshPatch, "- insert:\n    - id: mcp-toolport\n      name: '@deepseek-ai/dsh-mcp-client'\n      config: {serverName: toolport, transport: stdio, command: toolport-gateway}\n    - id: mcp-conduit\n      name: '@deepseek-ai/dsh-mcp-client'\n      config: {serverName: conduit, transport: stdio, command: conduit-gateway}\n    - id: mcp-foreign\n      name: '@deepseek-ai/dsh-mcp-client'\n      config: {serverName: foreign, transport: stdio, command: toolport-gateway}\n"),
     ].into_iter().enumerate() {
         let path = data.dir.join(format!("format-{index}/config/native.json"));
