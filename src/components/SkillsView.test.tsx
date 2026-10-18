@@ -15,7 +15,7 @@ import {
 import { applySkillState, skillsFixture } from "@/test/skills-fixture";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { toastError } from "@/lib/toast";
-import { SKILLS_REFRESH_EVENT } from "@/lib/shortcuts";
+import { SKILLS_REFRESH_EVENT, SKILLS_SEARCH_EVENT } from "@/lib/shortcuts";
 import { SkillsView } from "./SkillsView";
 
 vi.mock("@/lib/api", () => ({
@@ -106,7 +106,7 @@ describe("SkillsView", () => {
     renderView();
     const list = await screen.findByRole("region", { name: "Skills" });
     await userEvent.click(
-      within(list).getByRole("button", { name: "Show only what Codex loads" }),
+      within(list).getByRole("button", { name: "Show only skills Codex finds" }),
     );
     expect(within(list).queryByRole("button", { name: /pdf/ })).not.toBeInTheDocument();
     expect(within(list).getByRole("button", { name: /triage/ })).toBeInTheDocument();
@@ -166,7 +166,11 @@ describe("SkillsView", () => {
     await userEvent.click(screen.getByRole("button", { name: "Remove link" }));
     const dialog = await screen.findByRole("dialog");
     await userEvent.click(within(dialog).getByRole("button", { name: "Remove link" }));
-    expect(fixSkillIssue).toHaveBeenCalledWith("broken-links", null);
+    expect(fixSkillIssue).toHaveBeenCalledWith(
+      "broken-links",
+      "broken-links:00000002",
+      null,
+    );
     await waitFor(() =>
       expect(screen.queryByText("1 link to a missing folder")).not.toBeInTheDocument(),
     );
@@ -208,7 +212,7 @@ describe("SkillsView", () => {
     renderView();
     const list = await screen.findByRole("region", { name: "Skills" });
     await userEvent.click(
-      within(list).getByRole("button", { name: "Show only what Codex loads" }),
+      within(list).getByRole("button", { name: "Show only skills Codex finds" }),
     );
     const skillsTab = screen.getByRole("tab", { name: /Skills/ });
     skillsTab.focus();
@@ -250,7 +254,9 @@ describe("SkillsView", () => {
     await screen.findByRole("button", { name: /Global \+ repo/ });
     expect(localStorage.getItem("toolport-skills-project")).toBe("/work/repo");
     // The old global write lands late; the project view must not be replaced by it.
-    resolveWrite(applySkillState(skillsFixture(), "opencode", "x", "off"));
+    // A real change to the skill on screen, so the test fails if the stale result is shown.
+    const screenshot = skillsFixture().skills.find((s) => s.name === "screenshot")!;
+    resolveWrite(applySkillState(skillsFixture(), "opencode", screenshot.key, "off"));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /Global \+ repo/ })).toBeInTheDocument(),
     );
@@ -330,6 +336,21 @@ describe("SkillsView", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("scans again when a dismiss fails, so an earlier queued change still shows", async () => {
+    vi.mocked(dismissSkillIssue).mockRejectedValueOnce(new Error("disk full"));
+    renderView();
+    await userEvent.click(await screen.findByRole("tab", { name: /Needs a look/ }));
+    const card = screen
+      .getByText("Grok reads your rules file but not what it imports")
+      .closest("article") as HTMLElement;
+    const loadsBefore = vi.mocked(skillsInventory).mock.calls.length;
+    await userEvent.click(within(card).getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(vi.mocked(skillsInventory).mock.calls.length).toBeGreaterThan(loadsBefore),
+    );
+  });
+
   it("dismisses an item until it changes and can bring it back", async () => {
     renderView();
     await userEvent.click(await screen.findByRole("tab", { name: /Needs a look/ }));
@@ -366,6 +387,99 @@ describe("SkillsView", () => {
         { name: "screenshot" },
       ),
     ).toBeInTheDocument();
+  });
+
+  it("queues a second change made while the first is saving, and keeps focus", async () => {
+    const pending: ((inv: ReturnType<typeof skillsFixture>) => void)[] = [];
+    vi.mocked(setSkillState).mockClear();
+    vi.mocked(setSkillState).mockImplementation(
+      () => new Promise((resolve) => pending.push(resolve)),
+    );
+    renderView();
+    const list = await screen.findByRole("region", { name: "Skills" });
+    await userEvent.click(within(list).getByRole("button", { name: /screenshot/ }));
+    const details = screen.getByRole("complementary", { name: "Skill details" });
+    const toggle = within(details).getByRole("switch", {
+      name: "Load screenshot in OpenCode",
+    });
+    await userEvent.click(toggle);
+    // Still usable while saving, showing the new state, and focus stays on it.
+    expect(toggle).toBeEnabled();
+    expect(toggle).not.toBeChecked();
+    expect(toggle).toHaveFocus();
+    await userEvent.click(toggle);
+    expect(toggle).toBeChecked();
+    // The second write waits for the first.
+    expect(setSkillState).toHaveBeenCalledTimes(1);
+    const key = "/home/you/.agents/skills/screenshot/SKILL.md";
+    pending[0](applySkillState(skillsFixture(), "opencode", key, "off"));
+    await waitFor(() => expect(setSkillState).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(setSkillState).mock.calls.map((c) => c[2])).toEqual(["off", "on"]);
+    pending[1](skillsFixture());
+    await waitFor(() =>
+      expect(
+        within(details).getByRole("switch", { name: "Load screenshot in OpenCode" }),
+      ).toBeChecked(),
+    );
+  });
+
+  it("lists only the other ways into a skill under Reached by", async () => {
+    const inv = skillsFixture();
+    const notes = inv.skills.find((s) => s.name === "release-notes")!;
+    notes.links = ["~/.agents/skills/release-notes", "~/.claude/skills/release-notes"];
+    vi.mocked(skillsInventory).mockResolvedValue(inv);
+    renderView();
+    const details = await screen.findByRole("complementary", { name: "Skill details" });
+    expect(within(details).getByText("Reached by")).toBeInTheDocument();
+    expect(
+      within(details).getByText("~/.claude/skills/release-notes"),
+    ).toBeInTheDocument();
+    expect(within(details).queryByText("~/.agents/skills/release-notes")).toBeNull();
+  });
+
+  it("says when removing a skill only removes the links to it", async () => {
+    const inv = skillsFixture();
+    const notes = inv.skills.find((s) => s.name === "release-notes")!;
+    notes.trashOnRemove = false;
+    vi.mocked(skillsInventory).mockResolvedValue(inv);
+    renderView();
+    const details = await screen.findByRole("complementary", { name: "Skill details" });
+    await userEvent.click(
+      within(details).getByRole("button", { name: "Remove release-notes" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText(
+        "Only the links to it are removed, so no client loads it. Its folder at ~/.agents/skills/release-notes stays where it is.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("offers Reveal but not Open for a link to a missing folder", async () => {
+    renderView();
+    const list = await screen.findByRole("region", { name: "Skills" });
+    await userEvent.click(within(list).getByRole("button", { name: /computer-use/ }));
+    const details = screen.getByRole("complementary", { name: "Skill details" });
+    expect(within(details).queryByRole("button", { name: /Open SKILL\.md/ })).toBeNull();
+    expect(within(details).getByRole("button", { name: /Reveal/ })).toBeInTheDocument();
+  });
+
+  it("says so when a rescan fails with the page already on screen", async () => {
+    renderView();
+    await screen.findByRole("region", { name: "Skills" });
+    vi.mocked(skillsInventory).mockRejectedValueOnce(new Error("disk gone"));
+    window.dispatchEvent(new Event(SKILLS_REFRESH_EVENT));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(screen.getByRole("region", { name: "Skills" })).toBeInTheDocument();
+  });
+
+  it("focuses its own search when the app's Find shortcut fires", async () => {
+    renderView();
+    await userEvent.click(await screen.findByRole("tab", { name: /Needs a look/ }));
+    window.dispatchEvent(new Event(SKILLS_SEARCH_EVENT));
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Search skills" })).toHaveFocus(),
+    );
   });
 
   it("rescans when the app's Refresh shortcut fires", async () => {

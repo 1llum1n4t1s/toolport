@@ -995,6 +995,171 @@ fn removing_a_linked_skill_keeps_the_folder_it_points_at() {
 }
 
 #[test]
+fn removing_a_skill_inside_a_linked_folder_touches_nothing() {
+    let home = Home::new();
+    // A skills folder entry that links to a projects folder with skills further down.
+    let real = home.skill("work/project-a", "project-a", "A repo");
+    home.write("work/project-a/src/main.rs", "fn main() {}\n");
+    home.link(".claude/skills/work", &home.path("work"));
+    let env = home.env();
+    let inv = scan(&env, &all, None);
+    let key = skill(&inv, "project-a").key.clone();
+    let writer = TestWriter::default();
+
+    let error = remove_skill_files(&env, &inv, &key, &writer).unwrap_err();
+
+    assert!(error.contains("linked folder"), "{error}");
+    assert!(writer.trashed.borrow().is_empty());
+    assert!(real.is_file());
+    assert!(is_link(&home.path(".claude/skills/work")));
+}
+
+#[test]
+fn a_skills_folder_that_is_itself_a_link_still_counts_as_in_place() {
+    let home = Home::new();
+    let real = home.skill("dotfiles/skills/notes", "notes", "Notes");
+    home.link(".agents/skills", &home.path("dotfiles/skills"));
+    let env = home.env();
+    let inv = scan(&env, &all, None);
+    let key = skill(&inv, "notes").key.clone();
+    let writer = TestWriter::default();
+
+    let (trashed, _) = remove_skill_files(&env, &inv, &key, &writer).unwrap();
+
+    assert_eq!(trashed.as_deref(), real.parent());
+}
+
+#[test]
+fn each_claude_code_profile_gets_its_own_column_and_settings() {
+    let home = Home::new();
+    home.skill(".claude/skills/work-notes", "work-notes", "Work");
+    home.write(".claude2/settings.json", "{}\n");
+    home.skill(".claude2/skills/home-notes", "home-notes", "Home");
+    home.write(".claude2/CLAUDE.md", "# Personal\n");
+    // Not profiles: a backup, and another tool's folder with no Claude Code files.
+    home.write(".claude-backup/settings.json", "{}\n");
+    home.skill(".claude-router/skills/x", "x", "X");
+    let mut env = home.env();
+    env.claude_profiles = claude_profile_dirs(&home.root, &env.claude);
+    assert_eq!(
+        env.claude_profiles,
+        vec![home.path(".claude"), home.path(".claude2")]
+    );
+
+    let inv = scan(&env, &only(&["claude-code", "cursor"]), None);
+    let names: Vec<(&str, &str)> = inv
+        .agents
+        .iter()
+        .map(|a| (a.id.as_str(), a.name.as_str()))
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            ("claude-code", "Claude Code (claude)"),
+            ("claude-code@claude2", "Claude Code (claude2)"),
+            ("cursor", "Cursor"),
+        ]
+    );
+    assert!(inv.agents.iter().filter(|a| a.name_only).count() == 2);
+    let home_notes = skill(&inv, "home-notes");
+    assert_eq!(
+        home_notes.states.keys().collect::<Vec<_>>(),
+        vec!["claude-code@claude2"]
+    );
+    // Cursor reads only ~/.claude, never the other profiles.
+    assert!(skill(&inv, "work-notes").states.contains_key("cursor"));
+    let personal = inv
+        .rules
+        .iter()
+        .find(|r| r.path == "~/.claude2/CLAUDE.md")
+        .unwrap();
+    assert_eq!(
+        personal.agents.keys().collect::<Vec<_>>(),
+        vec!["claude-code@claude2"]
+    );
+
+    let key = home_notes.key.clone();
+    set_state(
+        &env,
+        &inv,
+        "claude-code@claude2",
+        &key,
+        Wanted::Off,
+        &TestWriter::default(),
+    )
+    .unwrap();
+    assert!(home.read(".claude2/settings.json").contains("home-notes"));
+    assert!(!home.path(".claude/settings.json").exists());
+    let after = scan(&env, &only(&["claude-code", "cursor"]), None);
+    assert_eq!(
+        state(&after, "home-notes", "claude-code@claude2"),
+        Some(State::Off)
+    );
+}
+
+#[test]
+fn profiles_whose_folders_share_a_name_get_different_columns() {
+    let home = Home::new();
+    home.write(".claude/settings.json", "{}\n");
+    home.write(".claude2/settings.json", "{}\n");
+    home.write("data/.claude2/settings.json", "{}\n");
+    let mut env = home.env();
+    env.claude = home.path("data/.claude2");
+    env.claude_profiles = claude_profile_dirs(&home.root, &env.claude);
+    assert_eq!(env.claude_profiles.len(), 3);
+
+    let inv = scan(&env, &only(&["claude-code"]), None);
+    let names: Vec<&str> = inv.agents.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "Claude Code (claude)",
+            "Claude Code (~/data/.claude2)",
+            "Claude Code (~/.claude2)",
+        ]
+    );
+    let ids: BTreeSet<&str> = inv.agents.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(ids.len(), 3);
+    // Ids name a backup folder, so they hold no path separators.
+    assert!(
+        ids.iter().all(|id| !id.contains(['/', '\\', '~'])),
+        "{ids:?}"
+    );
+}
+
+#[test]
+fn one_claude_code_profile_keeps_the_plain_column() {
+    let home = Home::new();
+    home.skill(".claude/skills/notes", "notes", "Notes");
+    let mut env = home.env();
+    env.claude_profiles = claude_profile_dirs(&home.root, &env.claude);
+    assert!(env.claude_profiles.is_empty());
+    let inv = scan(&env, &only(&["claude-code"]), None);
+    assert_eq!(inv.agents[0].id, "claude-code");
+    assert_eq!(inv.agents[0].name, "Claude Code");
+}
+
+#[test]
+fn a_blanket_opencode_deny_is_not_a_choice_to_spread() {
+    let home = Home::new();
+    home.skill(".agents/skills/inbox", "inbox", "Inbox");
+    home.skill(".agents/skills/notes", "notes", "Notes");
+    home.link(".claude/skills/inbox", &home.path(".agents/skills/inbox"));
+    home.link(".claude/skills/notes", &home.path(".agents/skills/notes"));
+    home.write(
+        ".config/opencode/opencode.json",
+        r#"{"permission": {"skill": {"*": "deny", "notes": "deny"}}}"#,
+    );
+    let inv = scan(&home.env(), &only(&["claude-code", "opencode"]), None);
+    assert_eq!(state(&inv, "inbox", "opencode"), Some(State::Off));
+    assert!(skill(&inv, "inbox").states["opencode"].by_pattern);
+    assert!(!skill(&inv, "notes").states["opencode"].by_pattern);
+    // Only the skill turned off by name is offered for turning off elsewhere.
+    let issue = inv.issues.iter().find(|i| i.id == "off-elsewhere").unwrap();
+    assert_eq!(issue.skill_names, vec!["notes".to_string()]);
+}
+
+#[test]
 fn only_your_own_skills_can_be_removed() {
     let home = Home::new();
     home.skill(".codex/skills/.system/imagegen", "imagegen", "Images");
@@ -1034,6 +1199,158 @@ fn issue_fingerprints_change_only_when_the_problem_does() {
     home.skill(".claude/skills/docx", "docx", "Three");
     home.skill(".agents/skills/docx", "docx", "Four");
     assert_ne!(print(&first), print(&scan(&env, &all, None)));
+}
+
+#[test]
+fn folder_issue_fingerprints_follow_the_folders_not_the_wording() {
+    let home = Home::new();
+    let synced = ".claude/skills/synced";
+    home.skill(&format!("{synced}/a/one"), "one", "One");
+    home.skill(&format!("{synced}/b/two"), "two", "Two");
+    let env = home.env();
+    let print = |inv: &Inventory| {
+        inv.issues
+            .iter()
+            .find(|i| i.id == "stale-sync")
+            .map(|i| i.fingerprint.clone())
+            .unwrap()
+    };
+    let first = scan(&env, &all, None);
+    let stale = first.issues.iter().find(|i| i.id == "stale-sync").unwrap();
+    assert_eq!(stale.subject, vec!["~/.claude/skills/synced/a".to_string()]);
+    assert_eq!(print(&first), print(&scan(&env, &all, None)));
+    home.skill(&format!("{synced}/c/three"), "three", "Three");
+    assert_ne!(print(&first), print(&scan(&env, &all, None)));
+}
+
+#[test]
+fn a_clash_lists_only_the_copies_that_meet_in_one_client() {
+    let home = Home::new();
+    home.skill(".claude/skills/pdf", "pdf", "Mine");
+    home.skill(".claude/skills/team/pdf", "pdf", "Team");
+    // Hermes has its own lone pdf; it isn't part of Claude Code's clash, even though Hermes
+    // has a clash of its own on another name.
+    home.skill(".hermes/skills/productivity/pdf", "pdf", "Hermes");
+    home.skill(".hermes/skills/a/notes", "notes", "One");
+    home.skill(".hermes/skills/b/notes", "notes", "Two");
+    let inv = scan(&home.env(), &only(&["claude-code", "hermes"]), None);
+    let clash = inv.issues.iter().find(|i| i.id == "clashes").unwrap();
+    assert_eq!(
+        clash.agents,
+        vec!["claude-code".to_string(), "hermes".to_string()]
+    );
+    assert_eq!(clash.skills.len(), 4, "{:?}", clash.skills);
+    assert!(!clash.skills.iter().any(|k| k.contains("productivity/pdf")));
+}
+
+#[test]
+fn a_parked_skill_can_be_removed() {
+    let home = Home::new();
+    let real = home.skill(".agents/disabled-skills/old", "old", "Parked");
+    let env = home.env();
+    let inv = scan(&env, &all, None);
+    let parked = skill(&inv, "old");
+    assert!(parked.removable && parked.trash_on_remove);
+    let writer = TestWriter::default();
+
+    let (trashed, links) = remove_skill_files(&env, &inv, &parked.key, &writer).unwrap();
+
+    assert_eq!(trashed.as_deref(), real.parent());
+    assert_eq!(links, 0);
+}
+
+#[test]
+fn a_skill_in_place_is_removable_even_when_a_linked_folder_also_reaches_it() {
+    let home = Home::new();
+    let real = home.skill(".agents/skills/foo", "foo", "Foo");
+    // Codex walks its folder deeply, so this link reaches foo a second way.
+    home.link(".codex/skills/shared", &home.path(".agents/skills"));
+    let env = home.env();
+    let inv = scan(&env, &all, None);
+    let key = skill(&inv, "foo").key.clone();
+    let writer = TestWriter::default();
+
+    let (trashed, links) = remove_skill_files(&env, &inv, &key, &writer).unwrap();
+
+    assert_eq!(trashed.as_deref(), real.parent());
+    assert_eq!(links, 0);
+    // The linked folder leads to other things too, so it stays.
+    assert!(is_link(&home.path(".codex/skills/shared")));
+}
+
+#[test]
+fn a_fix_waits_for_the_problem_the_user_saw() {
+    let home = Home::new();
+    home.link(".agents/skills/gone", &home.path("Projects/old/skill"));
+    let inv = scan(&home.env(), &all, None);
+    let seen = inv
+        .issues
+        .iter()
+        .find(|i| i.id == "broken-links")
+        .unwrap()
+        .fingerprint
+        .clone();
+    assert_eq!(still_as_seen(&inv, "broken-links", &seen), Ok(()));
+    // A second broken link turned up before the fix ran.
+    home.link(
+        ".agents/skills/gone-too",
+        &home.path("Projects/older/skill"),
+    );
+    let newer = scan(&home.env(), &all, None);
+    let error = still_as_seen(&newer, "broken-links", &seen).unwrap_err();
+    assert!(error.contains("changed"), "{error}");
+    assert!(still_as_seen(&newer, "clashes", "clashes:0").is_err());
+}
+
+#[test]
+fn a_link_into_an_unmounted_drive_is_not_offered_for_removal() {
+    let home = Home::new();
+    home.link(
+        ".agents/skills/nas-skill",
+        Path::new("/toolport-test-unmounted/skills/nas-skill"),
+    );
+    home.link(".agents/skills/gone", &home.path("Projects/old/skill"));
+    let env = home.env();
+    let inv = scan(&env, &all, None);
+    assert_eq!(state(&inv, "nas-skill", "codex"), Some(State::Broken));
+    let issue = inv.issues.iter().find(|i| i.id == "broken-links").unwrap();
+    assert_eq!(issue.skill_names, vec!["gone".to_string()]);
+    assert_eq!(
+        apply_fix(&env, &inv, "broken-links", &TestWriter::default()),
+        Ok(1)
+    );
+    assert!(is_link(&home.path(".agents/skills/nas-skill")));
+    // Open and Reveal on a broken link show the folder it sits in.
+    assert!(dangling(&home.path(".agents/skills/nas-skill")));
+}
+
+#[test]
+fn a_skill_on_a_second_drive_is_yours_not_a_package() {
+    assert!(system_path(Path::new("/usr/share/skills/x/SKILL.md")));
+    assert!(system_path(Path::new("/opt/tool/skills/x/SKILL.md")));
+    assert!(!system_path(Path::new("/data/skills/x/SKILL.md")));
+    assert!(!system_path(Path::new("/mnt/work/skills/x/SKILL.md")));
+}
+
+#[test]
+fn imports_inside_a_sentence_count_but_code_does_not() {
+    let base = Path::new("/p");
+    let home = Path::new("/h");
+    let text = "See @README.md and @docs/style.md, then ask @someone.\n\
+                Run `@not/this.md` first.\n\
+                ```\n@also/not.md\n```\n\
+                @~/rules/a.md\n\
+                Also (see @notes.md).\n";
+    assert_eq!(
+        imports(text, base, home),
+        vec![
+            PathBuf::from("/p/README.md"),
+            PathBuf::from("/p/docs/style.md"),
+            PathBuf::from("/p/someone"),
+            PathBuf::from("/h/rules/a.md"),
+            PathBuf::from("/p/notes.md"),
+        ]
+    );
 }
 
 #[test]

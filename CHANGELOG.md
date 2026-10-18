@@ -15,7 +15,8 @@ Entries before the rename below shipped under the project's former name, Conduit
   tab finds skills still on elsewhere, broken links, duplicate names, cut-off
   descriptions and rules files an agent never reads, with confirmed fixes, and
   items you're fine with can be dismissed. Open a file in the app you pick, and move
-  a skill you own to the trash. Available in the app and the Linux GTK app. See
+  a skill you own to the trash. Several Claude Code profiles each get their own
+  column. Available in the app and the Linux GTK app. See
   [Skills and rules](https://github.com/btsouth/toolport/blob/main/docs/skills-and-rules.md).
 
 ### Changed

@@ -1165,9 +1165,10 @@ export function setSkillState(
 /** Apply the automatic fix for one "Needs a look" item. Returns a fresh scan. */
 export function fixSkillIssue(
   issue: string,
+  fingerprint: string,
   project: string | null,
 ): Promise<SkillsInventory> {
-  return invoke<SkillsInventory>("fix_skill_issue", { issue, project });
+  return invoke<SkillsInventory>("fix_skill_issue", { issue, fingerprint, project });
 }
 
 /** Open a skill or rules file, or reveal its folder. Only inventory paths are accepted. */

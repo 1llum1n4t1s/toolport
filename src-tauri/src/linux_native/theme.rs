@@ -1155,6 +1155,8 @@ button.toolport-skill-tab:checked {{
 }}
 .toolport-skill-tile.warning {{ background-color: alpha(@warning_color, 0.14); color: @warning_color; }}
 .toolport-skill-tile.error {{ background-color: alpha(@toolport_error, 0.12); color: @toolport_error; }}
+/* React's info violet; libadwaita's named palette has the same hue. */
+.toolport-skill-tile.info {{ background-color: alpha(@purple_2, 0.14); color: @purple_2; }}
 .toolport-skill-head {{
   border-bottom: 1px solid alpha(@toolport_fg, 0.12);
   padding: 0 8px 6px 8px;

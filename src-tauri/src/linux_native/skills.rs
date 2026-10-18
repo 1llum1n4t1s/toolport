@@ -5,7 +5,7 @@
 use super::{branding, i18n as l10n};
 use crate::skills::{Agent, Inventory, Issue, RuleFile, Skill, Source, State, Wanted};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -65,11 +65,20 @@ struct Pane {
     rows: Rc<RefCell<Vec<RowKind>>>,
     layout: gtk::Box,
     separator: gtk::Separator,
+    /// Source strings for the two panes' accessible names, read again on a language change.
+    names: (&'static str, &'static str),
 }
+
+/// A write to run off the main thread, bound to the project that was open when it was asked
+/// for. It returns the fresh scan and the message to show.
+type Write = Box<dyn FnOnce() -> Result<(Inventory, String), String> + Send>;
 
 #[derive(Clone)]
 pub(super) struct SkillsPage {
     pub(super) root: gtk::Box,
+    /// `loading`, `error`, `empty` or `content`.
+    screens: gtk::Stack,
+    failed_body: gtk::Label,
     app: adw::Application,
     stack: gtk::Stack,
     tabs: Rc<Vec<(Tab, gtk::ToggleButton, gtk::Label)>>,
@@ -79,6 +88,8 @@ pub(super) struct SkillsPage {
     issues_side: gtk::Box,
     search: gtk::SearchEntry,
     feedback: gtk::Label,
+    /// Hides a success message after a few seconds; errors stay until the next action.
+    feedback_timer: Rc<RefCell<Option<gtk::glib::SourceId>>>,
     project_label: gtk::Label,
     project_path: gtk::Label,
     refresh_button: gtk::Button,
@@ -86,6 +97,11 @@ pub(super) struct SkillsPage {
     project: Rc<RefCell<Option<String>>>,
     generation: Rc<Cell<u64>>,
     busy: Rc<Cell<bool>>,
+    /// Writes asked for while one runs. They follow in order, so a quick second click is kept
+    /// and no control has to be greyed out (which would take keyboard focus away).
+    queued: Rc<RefCell<VecDeque<Write>>>,
+    /// The first error from a run of queued writes, shown once the last one finishes.
+    queued_error: Rc<RefCell<Option<String>>>,
     /// A refresh asked for while a write runs; it starts when the write ends so it never reads
     /// the file halfway through a change.
     refresh_pending: Rc<Cell<bool>>,
@@ -100,6 +116,26 @@ pub(super) struct SkillsPage {
     /// The detail pane's state controls by agent, to give focus back after a write redraws them.
     controls: Rc<RefCell<HashMap<String, gtk::Widget>>>,
     last_control: Rc<RefCell<Option<String>>>,
+    /// The On / Name only / Off button that last had keyboard focus (`agent#value`), so a
+    /// redraw puts focus back where the arrow keys left it, not on the saved state.
+    focused_choice: Rc<RefCell<Option<String>>>,
+    /// The control a click is about to redraw (a group header, a column filter), so the redrawn
+    /// copy gets keyboard focus back.
+    refocus: Rc<RefCell<Option<String>>>,
+    refocus_widget: Rc<RefCell<Option<gtk::Widget>>>,
+}
+
+/// The folder a skill's file sits in, as shown. The file may be a link to one with another
+/// name, so this drops the last part of the path whatever it is called. A broken link has no
+/// file; the link is the folder.
+fn own_folder(skill: &Skill) -> &str {
+    if skill.source == Source::Broken {
+        return &skill.path;
+    }
+    skill
+        .path
+        .rfind(['/', '\\'])
+        .map_or(skill.path.as_str(), |at| &skill.path[..at])
 }
 
 fn muted(text: &str) -> gtk::Label {
@@ -313,12 +349,20 @@ fn state_label(state: Option<State>) -> String {
 
 /// One cell of the agent matrix. Shape and color both carry the state, as in the React view.
 fn state_dot(state: Option<State>, tooltip: &str) -> gtk::CenterBox {
-    let cell = gtk::CenterBox::new();
+    // Named like the React view's role="img" dots; the legend's dots sit beside their own label.
+    let cell = gtk::CenterBox::builder()
+        .accessible_role(if tooltip.is_empty() {
+            gtk::AccessibleRole::Presentation
+        } else {
+            gtk::AccessibleRole::Img
+        })
+        .build();
     cell.set_size_request(COLUMN, 20);
     cell.set_valign(gtk::Align::Center);
     cell.set_hexpand(false);
     if !tooltip.is_empty() {
         cell.set_tooltip_text(Some(tooltip));
+        cell.update_property(&[gtk::accessible::Property::Label(tooltip)]);
     }
     let shape: gtk::Widget = if state == Some(State::Off) {
         let image = gtk::Image::from_icon_name("action-unavailable-symbolic");
@@ -432,7 +476,7 @@ impl Pane {
     }
 
     /// The list column (banner, column header, rows, legend) beside a fixed-width detail pane.
-    fn new(list_name: &str, detail_name: &str) -> (Self, gtk::Box) {
+    fn new(list_name: &'static str, detail_name: &'static str) -> (Self, gtk::Box) {
         let layout = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
         column.set_hexpand(true);
@@ -449,7 +493,9 @@ impl Pane {
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(["toolport-skill-list"])
             .build();
-        list.update_property(&[gtk::accessible::Property::Label(list_name)]);
+        list.update_property(&[gtk::accessible::Property::Label(&crate::i18n::lookup(
+            list_name,
+        ))]);
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
@@ -465,7 +511,9 @@ impl Pane {
         detail.set_margin_end(20);
         detail.set_margin_top(18);
         detail.set_margin_bottom(20);
-        detail.update_property(&[gtk::accessible::Property::Label(detail_name)]);
+        detail.update_property(&[gtk::accessible::Property::Label(&crate::i18n::lookup(
+            detail_name,
+        ))]);
         let detail_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .width_request(DETAIL_WIDTH)
@@ -484,6 +532,7 @@ impl Pane {
                 rows: Rc::default(),
                 layout: layout.clone(),
                 separator,
+                names: (list_name, detail_name),
             },
             layout,
         )
@@ -622,9 +671,11 @@ impl SkillsPage {
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
-            .css_classes(["toolport-feedback"])
+            .css_classes(["toolport-feedback", "idle"])
+            .accessible_role(gtk::AccessibleRole::Status)
             .build();
-        feedback.set_visible(false);
+        // Always in place, empty when there is nothing to say, so the rows below never move
+        // under the pointer when a message comes or goes.
         top.append(&feedback);
         content.append(&top);
 
@@ -635,14 +686,9 @@ impl SkillsPage {
             .hhomogeneous(false)
             .vexpand(true)
             .build();
-        let (skills, skills_layout) = Pane::new(
-            &crate::i18n::tr("Skills"),
-            &crate::i18n::tr("Skill details"),
-        );
-        let (rules, rules_layout) = Pane::new(
-            &crate::i18n::tr("Rules"),
-            &crate::i18n::tr("Rules file details"),
-        );
+        use crate::i18n::msg;
+        let (skills, skills_layout) = Pane::new(msg("Skills"), msg("Skill details"));
+        let (rules, rules_layout) = Pane::new(msg("Rules"), msg("Rules file details"));
         stack.add_named(&skills_layout, Some("skills"));
         stack.add_named(&rules_layout, Some("rules"));
 
@@ -699,12 +745,57 @@ impl SkillsPage {
             .vexpand(true)
             .build();
         adaptive.add_breakpoint(narrow);
+        // The first scan, a scan that failed with nothing to show, and no agents at all each get
+        // a whole-page screen, as in the React view.
+        let screens = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .vexpand(true)
+            .build();
+        let loading = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        loading.set_valign(gtk::Align::Center);
+        let spinner = gtk::Spinner::builder().spinning(true).build();
+        spinner.set_size_request(32, 32);
+        spinner.update_property(&[gtk::accessible::Property::Label(&crate::i18n::tr(
+            "Loading…",
+        ))]);
+        loading.append(&spinner);
+        screens.add_named(&loading, Some("loading"));
+        let failed = super::state_card(
+            "dialog-warning-symbolic",
+            "Couldn't read skills and rules",
+            "",
+            true,
+        );
+        failed.set_valign(gtk::Align::Center);
+        let failed_body = failed
+            .last_child()
+            .and_downcast::<gtk::Label>()
+            .expect("state card body label");
+        let try_again = l10n::button("Try again");
+        try_again.set_halign(gtk::Align::Center);
+        failed.append(&try_again);
+        screens.add_named(&failed, Some("error"));
+        let empty = super::state_card(
+            "system-search-symbolic",
+            "No agents found",
+            "Install an AI coding agent such as Claude Code, Codex or Cursor, then scan again.",
+            false,
+        );
+        empty.set_valign(gtk::Align::Center);
+        let scan_again = l10n::button("Scan again");
+        scan_again.set_halign(gtk::Align::Center);
+        empty.append(&scan_again);
+        screens.add_named(&empty, Some("empty"));
+        screens.add_named(&adaptive, Some("content"));
+        screens.set_visible_child_name("loading");
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("toolport-content");
-        root.append(&adaptive);
+        root.append(&screens);
 
         let page = Self {
             root,
+            screens,
+            failed_body,
             app: app.clone(),
             stack,
             tabs: Rc::new(tabs),
@@ -714,6 +805,7 @@ impl SkillsPage {
             issues_side,
             search,
             feedback,
+            feedback_timer: Rc::default(),
             project_label,
             project_path,
             refresh_button,
@@ -721,6 +813,10 @@ impl SkillsPage {
             project: Rc::new(RefCell::new(load_project())),
             generation: Rc::default(),
             busy: Rc::default(),
+            refocus: Rc::default(),
+            refocus_widget: Rc::default(),
+            queued: Rc::default(),
+            queued_error: Rc::default(),
             refresh_pending: Rc::default(),
             tab: Rc::new(Cell::new(Tab::Skills)),
             focus: Rc::default(),
@@ -743,6 +839,7 @@ impl SkillsPage {
             rebuilding: Rc::default(),
             controls: Rc::default(),
             last_control: Rc::default(),
+            focused_choice: Rc::default(),
         };
         for (tab, button, _) in page.tabs.iter() {
             let page_ref = page.clone();
@@ -788,8 +885,53 @@ impl SkillsPage {
             let page_ref = page.clone();
             page.root.connect_map(move |_| page_ref.refresh());
         }
+        {
+            let page_ref = page.clone();
+            l10n::on_language_change(&page.root, move || page_ref.retranslate());
+        }
+        for button in [&try_again, &scan_again] {
+            let page_ref = page.clone();
+            button.connect_clicked(move |_| page_ref.refresh());
+        }
         page.render_project();
         page
+    }
+
+    /// Text set from code rather than bound to one source string, after a language change.
+    /// Issue titles, notes and states come from the scan, so a visible page scans again.
+    fn retranslate(&self) {
+        for pane in [&self.skills, &self.rules] {
+            pane.list
+                .update_property(&[gtk::accessible::Property::Label(&crate::i18n::lookup(
+                    pane.names.0,
+                ))]);
+            pane.detail
+                .update_property(&[gtk::accessible::Property::Label(&crate::i18n::lookup(
+                    pane.names.1,
+                ))]);
+        }
+        self.set_search_placeholder();
+        self.render_project();
+        if self.root.is_mapped() {
+            self.refresh();
+        }
+    }
+
+    /// Ctrl+F: the search box, on the Skills tab when Needs a look (which has none) is open.
+    pub(super) fn focus_search(&self) {
+        if self.tab.get() == Tab::Issues {
+            self.select_tab(Tab::Skills);
+        }
+        self.search.grab_focus();
+    }
+
+    fn set_search_placeholder(&self) {
+        self.search
+            .set_placeholder_text(Some(&if self.tab.get() == Tab::Rules {
+                crate::i18n::tr("Search rules")
+            } else {
+                crate::i18n::tr("Search skills")
+            }));
     }
 
     fn connect_list(&self, pane: &Pane, skills: bool) {
@@ -804,10 +946,10 @@ impl SkillsPage {
                     {
                         let mut collapsed = page.collapsed.borrow_mut();
                         if !collapsed.remove(&key) {
-                            collapsed.insert(key);
+                            collapsed.insert(key.clone());
                         }
                     }
-                    page.render();
+                    page.render_keeping_focus(format!("group:{key}"));
                 }
             });
         }
@@ -822,6 +964,9 @@ impl SkillsPage {
                 .and_then(|row| usize::try_from(row.index()).ok())
                 .and_then(|i| rows.borrow().get(i).cloned());
             if let Some(RowKind::Item(key)) = kind {
+                // A click in the list keeps focus there, whatever a write left to restore.
+                page.last_control.replace(None);
+                page.focused_choice.replace(None);
                 let selected = if skills {
                     &page.selected_skill
                 } else {
@@ -839,6 +984,8 @@ impl SkillsPage {
     fn select_tab(&self, tab: Tab) {
         // An agent filter from one tab can name an agent the other tab has no column for.
         self.focus.replace(None);
+        self.last_control.replace(None);
+        self.focused_choice.replace(None);
         self.tab.set(tab);
         self.stack.set_visible_child_name(tab.name());
         for (each, button, _) in self.tabs.iter() {
@@ -847,12 +994,7 @@ impl SkillsPage {
             }
         }
         self.search.set_visible(tab != Tab::Issues);
-        self.search
-            .set_placeholder_text(Some(&if tab == Tab::Rules {
-                crate::i18n::tr("Search rules")
-            } else {
-                crate::i18n::tr("Search skills")
-            }));
+        self.set_search_placeholder();
         self.render();
     }
 
@@ -896,16 +1038,22 @@ impl SkillsPage {
                 return;
             }
             page.refresh_button.set_sensitive(true);
-            match result {
+            let error = match result {
                 Ok(Ok(inv)) => {
                     // A fresh scan supersedes an old error or note.
                     page.show_feedback("", false);
                     page.accept(inv, asked.is_some());
+                    return;
                 }
-                Ok(Err(error)) => page.show_feedback(&error, true),
-                Err(_) => {
-                    page.show_feedback(&crate::i18n::tr("Couldn't read skills and rules"), true)
-                }
+                Ok(Err(error)) => error,
+                Err(_) => crate::i18n::tr("Couldn't read skills and rules"),
+            };
+            if page.inventory.borrow().is_some() {
+                // Keep what is on screen and say the rescan failed.
+                page.show_feedback(&error, true);
+            } else {
+                page.failed_body.set_text(&error);
+                page.screens.set_visible_child_name("error");
             }
         });
     }
@@ -930,6 +1078,7 @@ impl SkillsPage {
         let generation = self.generation.get().wrapping_add(1);
         self.generation.set(generation);
         let project = self.project.borrow().clone();
+        let asked = project.is_some();
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
             let result =
@@ -938,20 +1087,38 @@ impl SkillsPage {
             if generation != page.generation.get() {
                 return;
             }
-            if let Ok(Ok(inv)) = result {
-                page.inventory.replace(Some(inv));
+            match result {
+                // Also notices a project folder that went away during the write.
+                Ok(Ok(inv)) => page.accept(inv, asked),
+                _ => page.render(),
             }
-            page.render();
         });
     }
 
     fn show_feedback(&self, message: &str, error: bool) {
+        if let Some(timer) = self.feedback_timer.borrow_mut().take() {
+            timer.remove();
+        }
         self.feedback.set_label(message);
-        self.feedback.set_visible(!message.is_empty());
+        if message.is_empty() {
+            self.feedback.add_css_class("idle");
+        } else {
+            self.feedback.remove_css_class("idle");
+        }
         if error {
             self.feedback.add_css_class("error");
         } else {
             self.feedback.remove_css_class("error");
+        }
+        if !error && !message.is_empty() {
+            let feedback = self.feedback.clone();
+            let feedback_timer = self.feedback_timer.clone();
+            let timer = gtk::glib::timeout_add_seconds_local_once(5, move || {
+                feedback_timer.borrow_mut().take();
+                feedback.set_label("");
+                feedback.add_css_class("idle");
+            });
+            *self.feedback_timer.borrow_mut() = Some(timer);
         }
     }
 
@@ -989,33 +1156,46 @@ impl SkillsPage {
         &self,
         work: impl FnOnce(Option<String>) -> Result<(Inventory, String), String> + Send + 'static,
     ) {
+        // The project now, not when the write gets its turn: a project picked meanwhile must
+        // not receive a change clicked in the one before.
+        let project = self.project.borrow().clone();
+        let work: Write = Box::new(move || work(project));
         if self.busy.replace(true) {
-            // Snap the control that fired back to what is saved, after this signal returns.
-            self.show_feedback(
-                &crate::i18n::tr("Wait for the last change to finish."),
-                false,
-            );
-            let page = self.clone();
-            gtk::glib::idle_add_local_once(move || page.render());
+            self.queued.borrow_mut().push_back(work);
             return;
         }
+        self.run_write(work);
+    }
+
+    fn run_write(&self, work: Write) {
         // Supersede any scan in flight; its result would predate this write.
         let generation = self.generation.get().wrapping_add(1);
         self.generation.set(generation);
-        let project = self.project.borrow().clone();
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
-            let result = gtk::gio::spawn_blocking(move || work(project)).await;
+            let result = gtk::gio::spawn_blocking(work)
+                .await
+                .unwrap_or_else(|_| Err(crate::i18n::tr("Couldn't fix this")));
+            if let Err(error) = &result {
+                page.queued_error.borrow_mut().get_or_insert(error.clone());
+            }
+            let next = page.queued.borrow_mut().pop_front();
+            if let Some(next) = next {
+                // Redraw only after the last one, so the controls keep what was clicked.
+                page.run_write(next);
+                return;
+            }
             page.busy.set(false);
             page.refresh_button.set_sensitive(true);
+            let error = page.queued_error.borrow_mut().take();
+            match (&result, &error) {
+                (_, Some(error)) => page.show_feedback(error, true),
+                (Ok((_, success)), None) => page.show_feedback(success, false),
+                (Err(_), None) => {}
+            }
             if page.refresh_pending.replace(false) {
                 // A rescan or project change came in during the write: run it now, after the
                 // write, and keep this write's message.
-                match &result {
-                    Ok(Ok((_, success))) => page.show_feedback(success, false),
-                    Ok(Err(error)) => page.show_feedback(error, true),
-                    Err(_) => page.show_feedback(&crate::i18n::tr("Couldn't fix this"), true),
-                }
                 page.rescan_keeping_feedback();
                 return;
             }
@@ -1023,20 +1203,12 @@ impl SkillsPage {
                 return;
             }
             match result {
-                Ok(Ok((inv, success))) => {
+                Ok((inv, _)) if error.is_none() => {
                     page.inventory.replace(Some(inv));
-                    page.show_feedback(&success, false);
                     page.render();
                 }
-                Ok(Err(error)) => {
-                    page.show_feedback(&error, true);
-                    // Part of a write may have landed; show what is on disk now.
-                    page.rescan_keeping_feedback();
-                }
-                Err(_) => {
-                    page.show_feedback(&crate::i18n::tr("Couldn't fix this"), true);
-                    page.rescan_keeping_feedback();
-                }
+                // Part of a write may have landed; show what is on disk now.
+                _ => page.rescan_keeping_feedback(),
             }
         });
     }
@@ -1046,6 +1218,11 @@ impl SkillsPage {
         let Some(inv) = inventory.as_ref() else {
             return;
         };
+        if inv.agents.is_empty() {
+            self.screens.set_visible_child_name("empty");
+            return;
+        }
+        self.screens.set_visible_child_name("content");
         let counts = [
             inv.skills
                 .iter()
@@ -1067,6 +1244,28 @@ impl SkillsPage {
             Tab::Skills => self.render_skills(inv, &needle),
             Tab::Rules => self.render_rules(inv, &needle),
             Tab::Issues => self.render_issues(inv),
+        }
+        if self.refocus.borrow_mut().take().is_some() {
+            if let Some(widget) = self.refocus_widget.borrow_mut().take() {
+                // After layout, so the new widget can take focus.
+                gtk::glib::idle_add_local_once(move || {
+                    widget.grab_focus();
+                });
+            }
+        }
+    }
+
+    /// Redraw after a click on the control `key`, then give focus to its redrawn copy.
+    fn render_keeping_focus(&self, key: String) {
+        self.refocus.replace(Some(key));
+        self.refocus_widget.replace(None);
+        self.render();
+    }
+
+    /// Note `widget` as the redrawn copy of the control `key`, if focus should go back to it.
+    fn offer_focus(&self, key: &str, widget: &impl IsA<gtk::Widget>) {
+        if self.refocus.borrow().as_deref() == Some(key) {
+            self.refocus_widget.replace(Some(widget.clone().upcast()));
         }
     }
 
@@ -1206,10 +1405,16 @@ impl SkillsPage {
                     )
                 })
                 .build();
-            button.update_property(&[gtk::accessible::Property::Label(&crate::i18n::trf(
-                "Show only what {client} loads",
-                &[("client", &agent.name)],
-            ))]);
+            // On Skills the filter keeps what the agent finds, switched off or not, so it can be
+            // switched back on; on Rules it keeps what the agent reads.
+            let values = [("client", agent.name.as_str())];
+            button.update_property(&[gtk::accessible::Property::Label(&if size_column {
+                crate::i18n::trf("Show only skills {client} finds", &values)
+            } else {
+                crate::i18n::trf("Show only what {client} loads", &values)
+            })]);
+            let pressed = focus.as_deref() == Some(agent.id.as_str());
+            button.update_state(&[gtk::accessible::State::Pressed(tristate(pressed))]);
             match &focus {
                 Some(id) if *id == agent.id => button.add_css_class("selected"),
                 Some(_) => button.set_opacity(0.4),
@@ -1224,8 +1429,9 @@ impl SkillsPage {
                     Some(id.clone())
                 };
                 page.focus.replace(next);
-                page.render();
+                page.render_keeping_focus(format!("column:{id}"));
             });
+            self.offer_focus(&format!("column:{}", agent.id), &button);
             pane.head.append(&button);
         }
     }
@@ -1269,6 +1475,7 @@ impl SkillsPage {
             .css_classes(["toolport-skill-group-row"])
             .build();
         row.update_state(&[gtk::accessible::State::Expanded(Some(open))]);
+        self.offer_focus(&format!("group:{key}"), &row);
         row
     }
 
@@ -1278,7 +1485,21 @@ impl SkillsPage {
         let agents = skill_agents(inv);
         self.render_head(pane, &agents, &crate::i18n::tr("Skill"), true);
         let visible = self.visible_skills(inv, needle);
-        let current = self.current_skill(&visible).map(|s| s.key.clone());
+        // With nothing picked, the first row shown: groups in page order, collapsed ones skipped.
+        let open = |source: Source| {
+            !self.collapsed.borrow().contains(&source_key(source)) || !needle.is_empty()
+        };
+        let shown_first = SOURCE_ORDER
+            .iter()
+            .filter(|source| open(**source))
+            .find_map(|source| visible.iter().find(|s| s.source == *source).copied());
+        let current_skill = self
+            .selected_skill
+            .borrow()
+            .as_ref()
+            .and_then(|key| visible.iter().find(|s| &s.key == key).copied())
+            .or(shown_first);
+        let current = current_skill.map(|s| s.key.clone());
 
         let scroll = pane.scroll.vadjustment().value();
         self.rebuilding.set(true);
@@ -1292,7 +1513,7 @@ impl SkillsPage {
             }
             let key = source_key(source);
             // A search opens every group so no match hides in a collapsed one.
-            let open = !self.collapsed.borrow().contains(&key) || !needle.is_empty();
+            let open = open(source);
             pane.list.append(&self.group_row(
                 key.clone(),
                 source_icon(source),
@@ -1334,7 +1555,7 @@ impl SkillsPage {
         pane.list.select_row(selected_row.as_ref());
         self.rebuilding.set(false);
         restore_scroll(&pane.scroll, scroll);
-        self.fill_skill_detail(inv, self.current_skill(&visible));
+        self.fill_skill_detail(inv, current_skill);
     }
 
     fn skill_row(&self, skill: &Skill, agents: &[&Agent]) -> gtk::ListBoxRow {
@@ -1398,7 +1619,13 @@ impl SkillsPage {
 
     /// `target` is the absolute key the backend allows; `path` is what the user sees and copies.
     /// Open uses the app picked from its menu, else the system default.
-    fn file_actions(&self, target: &str, path: &str, open_label: &'static str) -> gtk::Box {
+    fn file_actions(
+        &self,
+        target: &str,
+        path: &str,
+        open_label: &'static str,
+        can_open: bool,
+    ) -> gtk::Box {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let apps = gtk::Box::new(gtk::Orientation::Vertical, 2);
         apps.set_margin_top(4);
@@ -1420,8 +1647,9 @@ impl SkillsPage {
             let page = self.clone();
             let target = target.to_string();
             let shown = path.to_string();
-            let popover_ref = popover.clone();
-            popover.connect_show(move |_| {
+            // The handler gets the popover as its argument: holding a strong copy here would keep
+            // every redrawn detail pane's menu alive.
+            popover.connect_show(move |popover| {
                 clear_box(&apps);
                 let title = section(&crate::i18n::tr("Open with"));
                 title.set_margin_start(10);
@@ -1456,13 +1684,19 @@ impl SkillsPage {
                     let button = gtk::Button::builder()
                         .child(&line)
                         .css_classes(["flat"])
+                        .accessible_role(gtk::AccessibleRole::MenuItemRadio)
                         .build();
+                    button.update_state(&[gtk::accessible::State::Checked(tristate(
+                        current.as_deref() == Some(app.id.as_str()),
+                    ))]);
                     let page = page.clone();
                     let target = target.clone();
                     let shown = shown.clone();
-                    let popover = popover_ref.clone();
+                    let popover = popover.downgrade();
                     button.connect_clicked(move |_| {
-                        popover.popdown();
+                        if let Some(popover) = popover.upgrade() {
+                            popover.popdown();
+                        }
                         page.open_file(&target, &shown, Some(app.id.clone()), false);
                     });
                     apps.append(&button);
@@ -1487,7 +1721,9 @@ impl SkillsPage {
                 page.show_feedback(&crate::i18n::tr("Path copied"), false);
             });
         }
-        row.append(&open);
+        if can_open {
+            row.append(&open);
+        }
         row.append(&reveal);
         row.append(&copy);
         row
@@ -1523,18 +1759,21 @@ impl SkillsPage {
             return;
         };
         let heading = crate::i18n::trf("Remove {skill}?", &[("skill", &skill.name)]);
-        #[allow(deprecated)]
-        let dialog = adw::MessageDialog::new(
-            Some(&parent),
-            Some(&heading),
-            Some(&crate::i18n::tr(
+        // Say what will happen: a folder in a skills folder goes to the trash; one that lives
+        // elsewhere (a repo) only loses the links to it.
+        let folder = own_folder(skill);
+        let body = if skill.trash_on_remove {
+            crate::i18n::tr(
                 "Its folder goes to the trash and links to it are removed, so no client loads it. You can restore the folder from the trash.",
-            )),
-        );
-        l10n::bind_dialog_body(
-            &dialog,
-            "Its folder goes to the trash and links to it are removed, so no client loads it. You can restore the folder from the trash.",
-        );
+            )
+        } else {
+            crate::i18n::trf(
+                "Only the links to it are removed, so no client loads it. Its folder at {path} stays where it is.",
+                &[("path", folder)],
+            )
+        };
+        #[allow(deprecated)]
+        let dialog = adw::MessageDialog::new(Some(&parent), Some(&heading), Some(&body));
         dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
         l10n::bind_dialog_response(&dialog, "cancel", "Cancel");
         dialog.add_response("remove", &crate::i18n::tr("Remove"));
@@ -1550,7 +1789,10 @@ impl SkillsPage {
                 let key = key.clone();
                 let name = name.clone();
                 page.mutate_reporting(move |project| {
-                    let removed = crate::skills::remove_skill(&key, project.as_deref())?;
+                    let removed =
+                        crate::skills::remove_skill(&key, project.as_deref()).map_err(titled(
+                            crate::i18n::trf("Couldn't remove {skill}", &[("skill", &name)]),
+                        ))?;
                     let message = if removed.trashed.is_some() {
                         crate::i18n::trf("Moved {skill} to the trash", &[("skill", &name)])
                     } else {
@@ -1596,10 +1838,11 @@ impl SkillsPage {
             pane.detail.append(&empty);
             return;
         };
+        let broken = skill.source == Source::Broken;
         let mut badges: Vec<gtk::Widget> = vec![icon_badge(
             source_icon(skill.source),
             &source_label(skill.source),
-            "review",
+            if broken { "error" } else { "review" },
         )
         .upcast()];
         if let Some(repo) = &skill.git_repo {
@@ -1612,13 +1855,14 @@ impl SkillsPage {
                 .upcast(),
             );
         }
-        if !skill.editable {
+        if !skill.editable && !broken {
             badges.push(badge(&crate::i18n::tr("Read only"), "").upcast());
         }
         pane.detail
             .append(&self.detail_header("starred-symbolic", &skill.name, &badges));
-        let actions = self.file_actions(&skill.key, &skill.path, "Open SKILL.md");
-        if crate::skills::removable(skill) {
+        // A link to a missing folder has nothing to open, only a place to reveal.
+        let actions = self.file_actions(&skill.key, &skill.path, "Open SKILL.md", !broken);
+        if skill.removable {
             let remove = gtk::Button::from_icon_name("user-trash-symbolic");
             let label = crate::i18n::trf("Remove {skill}", &[("skill", &skill.name)]);
             remove.set_tooltip_text(Some(&label));
@@ -1668,8 +1912,8 @@ impl SkillsPage {
             let used = muted(&crate::i18n::trf(
                 "{count} of {cap} characters",
                 &[
-                    ("count", &skill.description_chars.to_string()),
-                    ("cap", &cap.to_string()),
+                    ("count", &crate::i18n::group_digits(skill.description_chars)),
+                    ("cap", &crate::i18n::group_digits(cap)),
                 ],
             ));
             used.add_css_class("caption");
@@ -1700,11 +1944,13 @@ impl SkillsPage {
             row += 1;
         };
         field(&crate::i18n::tr("Path"), path_value(&skill.path).upcast());
+        // `links` holds folders, the skill's own among them; only the other ways in are news.
+        let own_folder = own_folder(skill);
         let others: Vec<&str> = skill
             .links
             .iter()
             .map(String::as_str)
-            .filter(|l| *l != skill.path)
+            .filter(|l| *l != skill.path && *l != own_folder)
             .collect();
         if !others.is_empty() {
             field(
@@ -1726,7 +1972,7 @@ impl SkillsPage {
                         "{size} · {lines} lines",
                         &[
                             ("size", &fmt_bytes(skill.size_bytes)),
-                            ("lines", &skill.lines.to_string()),
+                            ("lines", &crate::i18n::group_digits(skill.lines)),
                         ],
                     )
                 })
@@ -1771,7 +2017,16 @@ impl SkillsPage {
         restore_scroll(&pane.detail_scroll, scroll);
         // A write redraws the pane; put focus back on the control the user just used.
         if let Some(agent) = self.last_control.borrow_mut().take() {
-            if let Some(control) = self.controls.borrow().get(&agent) {
+            let choice = self
+                .focused_choice
+                .borrow()
+                .clone()
+                .filter(|key| key.starts_with(&format!("{agent}#")));
+            let controls = self.controls.borrow();
+            if let Some(control) = choice
+                .and_then(|key| controls.get(&key))
+                .or_else(|| controls.get(&agent))
+            {
                 control.grab_focus();
             }
         }
@@ -1867,12 +2122,17 @@ impl SkillsPage {
                 page.last_control.replace(Some(agent_id.clone()));
                 let agent_id = agent_id.clone();
                 let key = key.clone();
+                let failed = titled(crate::i18n::trf(
+                    "Couldn't change {skill} in {client}",
+                    &[("skill", &skill_name), ("client", &agent_name)],
+                ));
                 page.mutate(success, move |project| {
                     crate::skills::set_skill_state(&agent_id, &key, wanted, project.as_deref())
+                        .map_err(failed)
                 });
             }
         };
-        if agent.id == "claude-code" {
+        if agent.name_only {
             // On / Name only / Off as one segmented control, like the React radio group.
             let group = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             group.add_css_class("linked");
@@ -1910,10 +2170,20 @@ impl SkillsPage {
                         .borrow_mut()
                         .insert(agent.id.clone(), button.clone().upcast());
                 }
+                let slot = format!("{}#{}", agent.id, state_label(Some(state)));
+                self.controls
+                    .borrow_mut()
+                    .insert(slot.clone(), button.clone().upcast());
+                let watch = gtk::EventControllerFocus::new();
+                let focused = self.focused_choice.clone();
+                watch.connect_enter(move |_| {
+                    focused.replace(Some(slot.clone()));
+                });
+                button.add_controller(watch);
                 let set = set.clone();
-                let busy = self.busy.clone();
+                // Clicking back to the saved state still writes: an earlier click may be queued.
                 button.connect_toggled(move |button| {
-                    if button.is_active() && state != current && !busy.get() {
+                    if button.is_active() {
                         set(wanted);
                     }
                 });
@@ -1921,22 +2191,20 @@ impl SkillsPage {
             }
             return group.upcast();
         }
+        let name = crate::i18n::trf(
+            "Load {skill} in {client}",
+            &[("skill", &skill.name), ("client", &agent.name)],
+        );
         let switch = gtk::Switch::builder()
             .active(current != State::Off)
             .valign(gtk::Align::Center)
-            .tooltip_text(crate::i18n::trf(
-                "Load {skill} in {client}",
-                &[("skill", &skill.name), ("client", &agent.name)],
-            ))
+            .tooltip_text(&name)
             .build();
+        switch.update_property(&[gtk::accessible::Property::Label(&name)]);
         self.controls
             .borrow_mut()
             .insert(agent.id.clone(), switch.clone().upcast());
-        let busy = self.busy.clone();
         switch.connect_state_set(move |_, active| {
-            if busy.get() {
-                return gtk::glib::Propagation::Stop;
-            }
             set(if active { Wanted::On } else { Wanted::Off });
             gtk::glib::Propagation::Proceed
         });
@@ -2087,7 +2355,7 @@ impl SkillsPage {
             &[scope.upcast()],
         ));
         pane.detail
-            .append(&self.file_actions(&rule.key, &rule.path, "Open file"));
+            .append(&self.file_actions(&rule.key, &rule.path, "Open file", true));
         pane.detail.append(&section(&crate::i18n::tr("File")));
         let fields = gtk::Grid::builder()
             .column_spacing(16)
@@ -2271,8 +2539,9 @@ impl SkillsPage {
                         collapsed.insert(DISMISSED_KEY.to_string());
                     }
                 }
-                page.render();
+                page.render_keeping_focus(DISMISSED_KEY.to_string());
             });
+            self.offer_focus(DISMISSED_KEY, &toggle);
             self.issues_list.append(&toggle);
             if open {
                 for issue in dismissed {
@@ -2312,6 +2581,9 @@ impl SkillsPage {
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         let title = heading(&issue.title);
         title.set_hexpand(true);
+        // A wrapping label asks for a short line by default; ask for one line and wrap only
+        // when the row is too narrow.
+        title.set_natural_wrap_mode(gtk::NaturalWrapMode::None);
         top.append(&title);
         let dismiss = if issue.dismissed {
             l10n::button("Show again")
@@ -2327,11 +2599,21 @@ impl SkillsPage {
             let hide = !issue.dismissed;
             dismiss.connect_clicked(move |_| {
                 let fingerprint = fingerprint.clone();
+                // A dismissed card folds into the Dismissed section; one brought back returns to
+                // the list with its Dismiss button focused.
+                page.refocus.replace(Some(if hide {
+                    DISMISSED_KEY.to_string()
+                } else {
+                    format!("issue:{fingerprint}")
+                }));
+                let failed = titled(crate::i18n::tr("Couldn't change this"));
                 page.mutate(String::new(), move |project| {
                     crate::skills::dismiss_issue(&fingerprint, hide, project.as_deref())
+                        .map_err(failed)
                 });
             });
         }
+        self.offer_focus(&format!("issue:{}", issue.fingerprint), &dismiss);
         top.append(&dismiss);
         if let Some(label) = issue.fix_label.as_ref().filter(|_| !issue.dismissed) {
             let button = gtk::Button::with_label(label);
@@ -2340,9 +2622,10 @@ impl SkillsPage {
             button.set_sensitive(!self.busy.get());
             let page = self.clone();
             let id = issue.id.clone();
+            let fingerprint = issue.fingerprint.clone();
             let title = issue.title.clone();
             let label = label.clone();
-            button.connect_clicked(move |_| page.confirm_fix(&id, &title, &label));
+            button.connect_clicked(move |_| page.confirm_fix(&id, &fingerprint, &title, &label));
             top.append(&button);
         }
         copy.append(&top);
@@ -2430,7 +2713,7 @@ impl SkillsPage {
         self.select_tab(Tab::Skills);
     }
 
-    fn confirm_fix(&self, id: &str, title: &str, label: &str) {
+    fn confirm_fix(&self, id: &str, fingerprint: &str, title: &str, label: &str) {
         let Some(parent) = self.app.active_window() else {
             return;
         };
@@ -2454,18 +2737,34 @@ impl SkillsPage {
         dialog.set_response_appearance("fix", adw::ResponseAppearance::Suggested);
         let page = self.clone();
         let id = id.to_string();
+        let fingerprint = fingerprint.to_string();
         let success = crate::i18n::trf("Fixed: {title}", &[("title", title)]);
         dialog.connect_response(None, move |dialog, response| {
             if response == "fix" {
                 let id = id.clone();
+                let fingerprint = fingerprint.clone();
+                let failed = titled(crate::i18n::tr("Couldn't fix this"));
                 page.mutate(success.clone(), move |project| {
-                    crate::skills::fix_issue(&id, project.as_deref())
+                    crate::skills::fix_issue(&id, &fingerprint, project.as_deref()).map_err(failed)
                 });
             }
             dialog.close();
         });
         dialog.present();
     }
+}
+
+fn tristate(on: bool) -> gtk::AccessibleTristate {
+    if on {
+        gtk::AccessibleTristate::True
+    } else {
+        gtk::AccessibleTristate::False
+    }
+}
+
+/// An error under a line saying what failed, as the React view's toast shows them.
+fn titled(title: String) -> impl FnOnce(String) -> String + Send + 'static {
+    move |error| format!("{title}\n{error}")
 }
 
 /// Put a scroller back where it was once the rebuilt content has been measured.

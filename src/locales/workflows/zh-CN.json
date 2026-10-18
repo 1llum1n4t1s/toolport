@@ -398,5 +398,7 @@
   "Removed the links to {skill}. Its folder stays where it is.": "已删除指向 {skill} 的链接。其文件夹保持原位。",
   "Couldn't remove {skill}": "无法删除 {skill}",
   "Dismissed": "已忽略",
-  "Back if anything about them changes": "内容有变化时会重新出现"
+  "Back if anything about them changes": "内容有变化时会重新出现",
+  "Show only skills {client} finds": "只显示 {client} 找到的技能",
+  "Only the links to it are removed, so no client loads it. Its folder at {path} stays where it is.": "只会移除指向它的链接，因此没有客户端会加载它。它在 {path} 的文件夹保持原样。"
 }

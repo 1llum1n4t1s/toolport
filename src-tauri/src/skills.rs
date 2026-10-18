@@ -44,6 +44,9 @@ pub struct Env {
     pub grok: PathBuf,
     pub hermes: PathBuf,
     pub opencode: PathBuf,
+    /// Every Claude Code profile folder when there is more than one (`~/.claude`, `~/.claude2`,
+    /// a `CLAUDE_CONFIG_DIR`). Empty means `claude` is the only one.
+    pub claude_profiles: Vec<PathBuf>,
 }
 
 impl Env {
@@ -61,6 +64,7 @@ impl Env {
             hermes: home.join(".hermes"),
             opencode: config.join("opencode"),
             config,
+            claude_profiles: Vec::new(),
         }
     }
 
@@ -95,6 +99,7 @@ impl Env {
         if let Some(dir) = abs("HERMES_HOME") {
             env.hermes = dir;
         }
+        env.claude_profiles = claude_profile_dirs(&home, &env.claude);
         Some(env)
     }
 
@@ -118,6 +123,141 @@ impl Env {
             }
         }
         path.display().to_string()
+    }
+}
+
+/// Claude Code profile folders on this machine, when there are several: the default `~/.claude`,
+/// `CLAUDE_CONFIG_DIR`, and `~/.claude2`-style siblings, the same names the Clients page lists.
+/// A sibling counts only when it holds Claude Code's own files, so `~/.claude-backup` or another
+/// tool's `~/.claude-something` folder doesn't become a column.
+fn claude_profile_dirs(home: &Path, configured: &Path) -> Vec<PathBuf> {
+    let default = home.join(".claude");
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let push = |dir: PathBuf, dirs: &mut Vec<PathBuf>| {
+        let same = |d: &PathBuf| d == &dir || canon(d).ok() == canon(&dir).ok();
+        if dir.is_dir() && !dirs.iter().any(same) {
+            dirs.push(dir);
+        }
+    };
+    push(default.clone(), &mut dirs);
+    push(configured.to_path_buf(), &mut dirs);
+    let mut siblings: Vec<PathBuf> = std::fs::read_dir(home)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n != ".claude" && crate::clients::claude_profile_name(n))
+                && e.file_type().is_ok_and(|t| t.is_dir())
+        })
+        .map(|e| e.path())
+        .filter(|dir| dir.join(".claude.json").is_file() || dir.join("settings.json").is_file())
+        .collect();
+    siblings.sort();
+    for dir in siblings {
+        push(dir, &mut dirs);
+    }
+    if dirs.len() < 2 {
+        return Vec::new();
+    }
+    dirs
+}
+
+/// One column on the page: a client, or one Claude Code profile of several.
+struct Instance {
+    def: AgentDef,
+    id: String,
+    name: String,
+    /// The environment this column reads, with `claude` set to its profile folder.
+    env: Env,
+}
+
+fn profile_folder(dir: &Path) -> Option<&str> {
+    dir.file_name().and_then(|n| n.to_str())
+}
+
+/// Whether another profile's folder has the same name (`CLAUDE_CONFIG_DIR=/data/.claude2`
+/// next to `~/.claude2`), so the name alone can't tell them apart.
+fn profile_name_shared(env: &Env, dir: &Path) -> bool {
+    let default = env.home.join(".claude");
+    profile_folder(dir).is_none()
+        || env
+            .claude_profiles
+            .iter()
+            .chain(std::iter::once(&default))
+            .any(|other| other != dir && profile_folder(other) == profile_folder(dir))
+}
+
+/// A profile's short name: its folder name, or its whole path when that name is shared.
+fn profile_label(env: &Env, dir: &Path) -> String {
+    match profile_folder(dir) {
+        Some(folder) if !profile_name_shared(env, dir) => folder.trim_start_matches('.').into(),
+        _ => env.display(dir),
+    }
+}
+
+/// The columns for these clients. Several Claude Code profiles each get their own, keyed
+/// `claude-code` for `~/.claude` and `claude-code@<folder>` for the others, as on Clients.
+fn instances(env: &Env, present: &dyn Fn(&str) -> bool) -> Vec<Instance> {
+    let mut out = Vec::new();
+    for def in agent_defs() {
+        let is_claude = def.switch == Switch::ClaudeOverrides;
+        if !(present(def.id) || (is_claude && !env.claude_profiles.is_empty())) {
+            continue;
+        }
+        if !is_claude || env.claude_profiles.is_empty() {
+            out.push(Instance {
+                id: def.id.into(),
+                name: def.name.into(),
+                env: env.clone(),
+                def,
+            });
+            continue;
+        }
+        for dir in &env.claude_profiles {
+            let id = claude_id(env, dir);
+            let mut profile_env = env.clone();
+            profile_env.claude = dir.clone();
+            profile_env.claude_profiles = Vec::new();
+            out.push(Instance {
+                id,
+                name: format!("{} ({})", def.name, profile_label(env, dir)),
+                env: profile_env,
+                def: agent_defs()
+                    .into_iter()
+                    .find(|d| d.id == def.id)
+                    .expect("claude-code is defined"),
+            });
+        }
+    }
+    out
+}
+
+/// The column id for a Claude Code profile folder.
+fn claude_id(env: &Env, dir: &Path) -> String {
+    if env.claude_profiles.is_empty() || dir == env.home.join(".claude") {
+        "claude-code".into()
+    } else {
+        // The same ids as on Clients, safe in a backup folder name.
+        match profile_folder(dir) {
+            Some(folder) if !profile_name_shared(env, dir) => {
+                format!("claude-code@{}", crate::clients::claude_profile_key(folder))
+            }
+            _ => {
+                let digest = crate::registry::sha256_hex(&dir.display().to_string());
+                format!("claude-code@{}", &digest[..16])
+            }
+        }
+    }
+}
+
+/// Every Claude Code profile folder this environment reads.
+fn claude_dirs(env: &Env) -> Vec<PathBuf> {
+    if env.claude_profiles.is_empty() {
+        vec![env.claude.clone()]
+    } else {
+        env.claude_profiles.clone()
     }
 }
 
@@ -562,6 +702,9 @@ pub struct Agent {
     pub verified: bool,
     /// True when Toolport can write the client's own per-skill switch.
     pub can_toggle: bool,
+    /// The switch also has a "name only" setting (Claude Code's skillOverrides).
+    #[serde(default)]
+    pub name_only: bool,
     pub switch_note: String,
     pub roots: Vec<AgentRoot>,
     pub rules_note: Option<String>,
@@ -621,6 +764,12 @@ pub struct Skill {
     pub git_repo: Option<String>,
     /// Every path that reaches this skill (links and the real folder).
     pub links: Vec<String>,
+    /// Toolport can remove it: the user's own, and not reached through a linked folder.
+    #[serde(default)]
+    pub removable: bool,
+    /// Remove would move the folder to the trash, not only delete links to it.
+    #[serde(default)]
+    pub trash_on_remove: bool,
     /// Effective state per client id. Clients that don't load it are absent.
     pub states: BTreeMap<String, SkillState>,
     pub preview: String,
@@ -635,6 +784,10 @@ pub struct SkillState {
     /// (Claude Code plugin skills are `plugin:skill`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switch_name: Option<String>,
+    /// Off through a rule that covers many skills (OpenCode's `"skill": "deny"` or `team-*`),
+    /// not a choice about this one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_pattern: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -680,6 +833,10 @@ pub struct Issue {
     /// The user has said this one is fine.
     #[serde(default)]
     pub dismissed: bool,
+    /// What an issue about config entries or folders covers, for its fingerprint. The text
+    /// can't be used: it changes with the language.
+    #[serde(skip)]
+    subject: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -792,11 +949,37 @@ fn is_link(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
 }
 
+/// Folder entries one skills folder may read before the walk stops, so a link to a huge tree
+/// (a home folder, a network share) can't stall the page.
+const MAX_ENTRIES: usize = 20_000;
+
 fn walk_root(root: &Root) -> Vec<Found> {
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
-    walk_dir(root, &root.path, 0, &mut seen, &mut out);
+    let mut budget = MAX_ENTRIES;
+    walk_dir(root, &root.path, 0, &mut seen, &mut budget, &mut out);
     out
+}
+
+/// Several clients read the same folders (`~/.claude/skills`, `~/.agents/skills`), so each one
+/// is walked once per scan and reused with the reading client's label.
+#[derive(Default)]
+struct WalkCache(HashMap<(PathBuf, bool), Vec<Found>>);
+
+impl WalkCache {
+    fn walk(&mut self, root: &Root) -> Vec<Found> {
+        self.0
+            .entry((root.path.clone(), root.recursive))
+            .or_insert_with(|| walk_root(root))
+            .iter()
+            .map(|f| Found {
+                link: f.link.clone(),
+                real: f.real.clone(),
+                root_label: root.label,
+                root_path: root.path.clone(),
+            })
+            .collect()
+    }
 }
 
 fn walk_dir(
@@ -804,6 +987,7 @@ fn walk_dir(
     dir: &Path,
     depth: usize,
     seen: &mut BTreeSet<PathBuf>,
+    budget: &mut usize,
     out: &mut Vec<Found>,
 ) {
     let Ok(real_dir) = canon(dir) else {
@@ -815,8 +999,11 @@ fn walk_dir(
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
+    // Sorted before the budget cuts in, so a huge folder always shows the same skills.
     let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
     entries.sort();
+    entries.truncate(*budget);
+    *budget -= entries.len();
     for path in entries {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if name.starts_with('.') || matches!(name, "node_modules" | "__pycache__") {
@@ -845,7 +1032,7 @@ fn walk_dir(
                 root_path: root.path.clone(),
             });
         } else if root.recursive && depth + 1 < MAX_DEPTH {
-            walk_dir(root, &path, depth + 1, seen, out);
+            walk_dir(root, &path, depth + 1, seen, budget, out);
         }
     }
 }
@@ -1024,11 +1211,15 @@ fn opencode_rules(config: &serde_json::Value) -> Vec<(String, bool)> {
 
 /// Whether the last rule matching `name` denies it.
 fn rules_deny(rules: &[(String, bool)], name: &str) -> bool {
+    last_rule(rules, name).is_some_and(|(_, deny)| *deny)
+}
+
+/// The rule that decides `name`: the last one matching it.
+fn last_rule<'a>(rules: &'a [(String, bool)], name: &str) -> Option<&'a (String, bool)> {
     rules
         .iter()
         .rev()
         .find(|(pattern, _)| glob_match(pattern, name))
-        .is_some_and(|(_, deny)| *deny)
 }
 
 /// `*` matches any run of characters, `?` one character.
@@ -1113,6 +1304,34 @@ fn git_repo(dir: &Path, home: &Path) -> Option<String> {
     None
 }
 
+/// Where system packages and installers put files. A skill on a second drive (`/data`, `D:\`)
+/// is still the user's own.
+fn system_path(real: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        ["ProgramFiles", "ProgramFiles(x86)", "ProgramData"]
+            .iter()
+            .filter_map(std::env::var_os)
+            .any(|dir| real.starts_with(dir))
+    }
+    #[cfg(not(windows))]
+    {
+        [
+            "/usr",
+            "/opt",
+            "/nix",
+            "/snap",
+            "/var/lib/flatpak",
+            "/etc",
+            "/Applications",
+            "/Library",
+            "/System",
+        ]
+        .iter()
+        .any(|dir| real.starts_with(dir))
+    }
+}
+
 fn classify(real: &Path, env: &Env, project: Option<&Path>) -> (Source, String) {
     let under = |base: &Path| {
         canon(base).map(|b| real.starts_with(&b)).unwrap_or(false) || real.starts_with(base)
@@ -1123,14 +1342,24 @@ fn classify(real: &Path, env: &Env, project: Option<&Path>) -> (Source, String) 
     }
     let inside =
         |base: &Path| real.starts_with(base) || canon(base).is_ok_and(|b| real.starts_with(b));
-    if !inside(&env.home) && !project.is_some_and(inside) {
+    if !inside(&env.home) && !project.is_some_and(inside) && system_path(real) {
         return (
             Source::Package,
             tr("Installed by a system package; updates replace edits"),
         );
     }
-    if under(&env.claude.join("skills").join("synced")) || text.contains("/skills/synced/") {
+    if claude_dirs(env)
+        .iter()
+        .any(|dir| under(&dir.join("skills").join("synced")))
+        || text.contains("/skills/synced/")
+    {
         return (Source::Account, tr("Synced from your claude.ai account"));
+    }
+    if claude_dirs(env)
+        .iter()
+        .any(|dir| under(&dir.join("plugins").join("cache")))
+    {
+        return (Source::BuiltIn, tr("From a Claude Code plugin"));
     }
     let builtin = [
         (
@@ -1140,10 +1369,6 @@ fn classify(real: &Path, env: &Env, project: Option<&Path>) -> (Source, String) 
         (
             env.codex.join("plugins").join("cache"),
             msg("From a Codex plugin"),
-        ),
-        (
-            env.claude.join("plugins").join("cache"),
-            msg("From a Claude Code plugin"),
         ),
         (
             env.home.join(".cursor").join("skills-cursor"),
@@ -1172,14 +1397,16 @@ fn classify(real: &Path, env: &Env, project: Option<&Path>) -> (Source, String) 
 
 /// Build the inventory for the given clients (`present` is called with each client id).
 pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -> Inventory {
-    let defs: Vec<AgentDef> = agent_defs().into_iter().filter(|d| present(d.id)).collect();
+    let instances = instances(env, present);
+    let mut walks = WalkCache::default();
 
     let mut agents = Vec::new();
     // skill key -> record
     let mut skills: BTreeMap<String, Skill> = BTreeMap::new();
     let mut stale_codex: Vec<String> = Vec::new();
 
-    for def in &defs {
+    for inst in &instances {
+        let (def, env) = (&inst.def, &inst.env);
         let mut roots = (def.roots)(env);
         // Project folders keep their documented order and come after the agent's own folders:
         // Claude Code ranks personal skills above project ones when names collide.
@@ -1191,9 +1418,10 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             );
         }
         agents.push(Agent {
-            id: def.id.into(),
-            name: def.name.into(),
+            id: inst.id.clone(),
+            name: inst.name.clone(),
             supports_skills: true,
+            name_only: def.switch == Switch::ClaudeOverrides,
             verified: def.verified,
             can_toggle: !matches!(def.switch, Switch::None(_)),
             switch_note: switch_note(def.switch),
@@ -1217,7 +1445,7 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             stale_codex = disabled.stale_paths.clone();
         }
 
-        let found: Vec<Found> = roots.iter().flat_map(walk_root).collect();
+        let found: Vec<Found> = roots.iter().flat_map(|r| walks.walk(r)).collect();
         // name -> winning key, for name-based dedup.
         let mut by_name: HashMap<String, String> = HashMap::new();
         let mut reached: Vec<(String, Found, String)> = Vec::new();
@@ -1308,10 +1536,13 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             let named = |set: &BTreeSet<String>| {
                 set.contains(&name) || plugin_name.as_ref().is_some_and(|p| set.contains(p))
             };
-            let switched_off = if disabled.rules.is_empty() {
-                named(&disabled.off)
+            let (switched_off, by_pattern) = if disabled.rules.is_empty() {
+                (named(&disabled.off), false)
             } else {
-                rules_deny(&disabled.rules, &name)
+                match last_rule(&disabled.rules, &name) {
+                    Some((pattern, deny)) => (*deny, pattern.contains(['*', '?'])),
+                    None => (false, false),
+                }
             };
             let (state, via) = if broken {
                 (
@@ -1326,7 +1557,7 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                     State::Shadowed,
                     trf(
                         r#"Another "{name}" wins in {client}"#,
-                        &[("name", &name), ("client", def.name)],
+                        &[("name", &name), ("client", &inst.name)],
                     ),
                 )
             } else if path_off || switched_off {
@@ -1341,8 +1572,9 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             };
             if let Some(record) = skills.get_mut(key) {
                 record.states.insert(
-                    def.id.into(),
+                    inst.id.clone(),
                     SkillState {
+                        by_pattern: state == State::Off && by_pattern && !path_off,
                         state,
                         via,
                         switch_name: plugin_name.clone(),
@@ -1358,6 +1590,7 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 id: (*id).into(),
                 name: (*name).into(),
                 supports_skills: false,
+                name_only: false,
                 verified: true,
                 can_toggle: false,
                 switch_note: tr("This client has no file-based skills."),
@@ -1371,14 +1604,24 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
     // Parked skills nobody loads.
     for f in walk_root(&Root::flat(env.parked(), "parked")) {
         let key = f.real.as_ref().unwrap_or(&f.link).display().to_string();
-        skills
+        let record = skills
             .entry(key)
             .or_insert_with(|| new_skill(&f, env, project));
+        let shown = env.display(f.link.parent().unwrap_or(&f.link));
+        if !record.links.contains(&shown) {
+            record.links.push(shown);
+        }
     }
 
-    let rules = scan_rules(env, &defs, project);
+    let rules = scan_rules(&instances, project);
     let mut skills: Vec<Skill> = skills.into_values().collect();
     skills.sort_by(|a, b| a.source.cmp(&b.source).then_with(|| a.name.cmp(&b.name)));
+    for skill in skills.iter_mut().filter(|s| removable(s)) {
+        if let Ok((_, in_place, _)) = removal_plan(env, &agents, skill) {
+            skill.removable = true;
+            skill.trash_on_remove = in_place;
+        }
+    }
     let issues = find_issues(env, &agents, &skills, &rules, &stale_codex);
     Inventory {
         agents,
@@ -1455,6 +1698,8 @@ fn new_skill(f: &Found, env: &Env, project: Option<&Path>) -> Skill {
                 modified_secs: None,
                 git_repo: None,
                 links: Vec::new(),
+                removable: false,
+                trash_on_remove: false,
                 states: BTreeMap::new(),
                 preview: String::new(),
             }
@@ -1478,6 +1723,8 @@ fn new_skill(f: &Found, env: &Env, project: Option<&Path>) -> Skill {
                 lines: file.lines,
                 modified_secs: file.modified,
                 links: Vec::new(),
+                removable: false,
+                trash_on_remove: false,
                 states: BTreeMap::new(),
                 preview: file.preview,
             }
@@ -1487,41 +1734,51 @@ fn new_skill(f: &Found, env: &Env, project: Option<&Path>) -> Skill {
 
 // --- rules ---------------------------------------------------------------------------------
 
-/// `@path` import targets on their own line, resolved against the importing file's folder.
+/// `@path` imports, resolved against the importing file's folder. Like Claude Code, an import
+/// can sit anywhere in a line ("See @README.md"), and nothing in a code block or `code span`
+/// counts. Words that aren't files (an `@mention`) drop out where callers check `is_file`.
 fn imports(text: &str, base: &Path, home: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut fenced = false;
     for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with("```") {
+        if line.trim_start().starts_with("```") {
             fenced = !fenced;
             continue;
         }
         if fenced {
             continue;
         }
-        let Some(target) = line.strip_prefix('@') else {
-            continue;
-        };
-        let target = target.split_whitespace().next().unwrap_or("");
-        if target.is_empty() {
-            continue;
+        // Drop `code spans`: every other piece between backticks.
+        let prose: String = line.split('`').step_by(2).collect::<Vec<_>>().join(" ");
+        for word in prose.split_whitespace() {
+            let Some(target) = word.strip_prefix('@') else {
+                continue;
+            };
+            // Sentence punctuation after the path isn't part of it, in any order (`@a.md).`).
+            let target =
+                target.trim_end_matches([',', ';', ':', ')', ']', '"', '\'', '!', '?', '.']);
+            if target.is_empty() {
+                continue;
+            }
+            let path = if let Some(rest) = target.strip_prefix("~/") {
+                home.join(rest)
+            } else if Path::new(target).is_absolute() {
+                PathBuf::from(target)
+            } else {
+                base.join(target)
+            };
+            if !out.contains(&path) {
+                out.push(path);
+            }
         }
-        let path = if let Some(rest) = target.strip_prefix("~/") {
-            home.join(rest)
-        } else if Path::new(target).is_absolute() {
-            PathBuf::from(target)
-        } else {
-            base.join(target)
-        };
-        out.push(path);
     }
     out
 }
 
-fn scan_rules(env: &Env, defs: &[AgentDef], project: Option<&Path>) -> Vec<RuleFile> {
+fn scan_rules(instances: &[Instance], project: Option<&Path>) -> Vec<RuleFile> {
     let mut files: BTreeMap<String, RuleFile> = BTreeMap::new();
-    for def in defs {
+    for inst in instances {
+        let (def, env) = (&inst.def, &inst.env);
         let mut sources: Vec<(RuleSource, &'static str)> = (def.rules)(env)
             .into_iter()
             .map(|s| (s, "global"))
@@ -1547,9 +1804,16 @@ fn scan_rules(env: &Env, defs: &[AgentDef], project: Option<&Path>) -> Vec<RuleF
                     chain.push(step("link", env.display(&real)));
                 }
             }
-            add_rule(&mut files, env, &source.path, scope, def.id, chain.clone());
+            add_rule(
+                &mut files,
+                env,
+                &source.path,
+                scope,
+                &inst.id,
+                chain.clone(),
+            );
             if source.imports {
-                follow_imports(&mut files, env, &source.path, scope, def.id, &chain, 0);
+                follow_imports(&mut files, env, &source.path, scope, &inst.id, &chain, 0);
             } else if let Some(text) =
                 read_text(&canon(&source.path).unwrap_or(source.path.clone()))
             {
@@ -1562,7 +1826,7 @@ fn scan_rules(env: &Env, defs: &[AgentDef], project: Option<&Path>) -> Vec<RuleF
                 .filter(|p| p.is_file())
                 .collect();
                 if let Some(file) = files.get_mut(&rule_key(&source.path)) {
-                    if let Some(c) = file.agents.get_mut(def.id) {
+                    if let Some(c) = file.agents.get_mut(inst.id.as_str()) {
                         c.extend(
                             skipped
                                 .iter()
@@ -1693,10 +1957,12 @@ fn list_names(names: &[String]) -> String {
 fn off_elsewhere(skills: &[Skill]) -> Vec<(&Skill, Vec<String>, Vec<String>)> {
     let mut out = Vec::new();
     for skill in skills {
+        // Only a choice about this skill counts. A rule that turns off every skill in one client
+        // isn't a reason to turn them all off everywhere else.
         let off: Vec<String> = skill
             .states
             .iter()
-            .filter(|(_, s)| s.state == State::Off)
+            .filter(|(_, s)| s.state == State::Off && !s.by_pattern)
             .map(|(id, _)| id.clone())
             .collect();
         let on: Vec<String> = skill
@@ -1732,6 +1998,7 @@ fn issue(
         fix_label,
         fingerprint: String::new(),
         dismissed: false,
+        subject: Vec::new(),
     }
 }
 
@@ -1777,26 +2044,23 @@ fn find_issues(
                     &values,
                 )
             },
-            {
-                let found = if names.len() == 1 {
-                    trf(
-                        "{skills} is off in at least one client but still on in {clients}.",
-                        &values,
-                    )
-                } else {
-                    trf(
-                        "{skills} are off in at least one client but still on in {clients}.",
-                        &values,
-                    )
-                };
-                if fixable {
-                    found
-                } else {
-                    format!(
-                        "{found} {}",
-                        tr("Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.")
-                    )
-                }
+            match (names.len() == 1, fixable) {
+                (true, true) => trf(
+                    "{skills} is off in at least one client but still on in {clients}.",
+                    &values,
+                ),
+                (false, true) => trf(
+                    "{skills} are off in at least one client but still on in {clients}.",
+                    &values,
+                ),
+                (true, false) => trf(
+                    "{skills} is off in at least one client but still on in {clients}. Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.",
+                    &values,
+                ),
+                (false, false) => trf(
+                    "{skills} are off in at least one client but still on in {clients}. Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.",
+                    &values,
+                ),
             },
             still.into_iter().collect(),
             leaks.iter().map(|(s, _, _)| s.key.clone()).collect(),
@@ -1804,9 +2068,11 @@ fn find_issues(
         ));
     }
 
+    // A link into a drive that isn't mounted right now still shows as broken on the skill,
+    // but isn't offered for removal.
     let broken: Vec<&Skill> = skills
         .iter()
-        .filter(|s| s.source == Source::Broken)
+        .filter(|s| s.source == Source::Broken && !maybe_unmounted(env, Path::new(&s.key)))
         .collect();
     if !broken.is_empty() {
         let who: BTreeSet<String> = broken
@@ -1867,6 +2133,15 @@ fn find_issues(
                     .map(|(id, _)| id.clone())
             })
             .collect();
+        // name -> the clients where copies of it meet.
+        let mut clash_clients: HashMap<&str, BTreeSet<&str>> = HashMap::new();
+        for s in &shadowed {
+            for (id, st) in &s.states {
+                if st.state == State::Shadowed {
+                    clash_clients.entry(&s.name).or_default().insert(id);
+                }
+            }
+        }
         let count = names.len().to_string();
         let (skills_text, clients) = (list_names(&names), agent_names(agents, &who));
         let values = [
@@ -1887,10 +2162,17 @@ fn find_issues(
             } else {
                 trf("{clients} find two different files named {skills} and use only one. Remove the copy you don't use so it's clear which one runs.", &values)
             },
-            who.into_iter().collect(),
+            who.iter().cloned().collect(),
+            // Only the copies that meet in one client; another client's lone copy of the same
+            // name isn't part of it.
             skills
                 .iter()
-                .filter(|s| names.contains(&s.name) && s.source != Source::Broken)
+                .filter(|s| {
+                    s.source != Source::Broken
+                        && clash_clients
+                            .get(s.name.as_str())
+                            .is_some_and(|ids| s.states.keys().any(|id| ids.contains(id.as_str())))
+                })
                 .map(|s| s.key.clone())
                 .collect(),
             None,
@@ -1917,13 +2199,29 @@ fn find_issues(
             Vec::new(),
             Some(tr("Remove entry")),
         ));
+        if let Some(found) = issues.last_mut() {
+            found.subject = stale_codex.to_vec();
+        }
     }
 
+    let claude_ids: BTreeSet<&str> = agents
+        .iter()
+        .filter(|a| a.name_only)
+        .map(|a| a.id.as_str())
+        .collect();
     let long: Vec<&Skill> = skills
         .iter()
-        .filter(|s| s.description_chars > DESCRIPTION_CAP && s.states.contains_key("claude-code"))
+        .filter(|s| {
+            s.description_chars > DESCRIPTION_CAP
+                && s.states.keys().any(|id| claude_ids.contains(id.as_str()))
+        })
         .collect();
     if !long.is_empty() {
+        let cut_in: Vec<String> = claude_ids
+            .iter()
+            .filter(|id| long.iter().any(|s| s.states.contains_key(**id)))
+            .map(|id| id.to_string())
+            .collect();
         let count = long.len().to_string();
         let cap = DESCRIPTION_CAP.to_string();
         let names = list_names(&long.iter().map(|s| s.name.clone()).collect::<Vec<_>>());
@@ -1942,34 +2240,47 @@ fn find_issues(
             } else {
                 trf("Claude Code keeps the first {cap} characters of a description. {skills} are longer.", &values)
             },
-            vec!["claude-code".into()],
+            cut_in,
             long.iter().map(|s| s.key.clone()).collect(),
             None,
         ));
     }
 
     // claude.ai sync keeps one folder per account; older ones linger after account changes.
-    let synced = env.claude.join("skills").join("synced");
-    let mut buckets: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&synced)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .map(|e| {
-            (
-                e.metadata()
-                    .and_then(|m| m.modified())
-                    .unwrap_or(std::time::UNIX_EPOCH),
-                e.path(),
-            )
-        })
-        .collect();
-    if buckets.len() > 1 {
-        buckets.sort();
-        let old: Vec<String> = buckets[..buckets.len() - 1]
-            .iter()
-            .map(|(_, p)| env.display(p))
-            .collect();
+    // Each Claude Code profile has its own.
+    let mut old: Vec<String> = Vec::new();
+    let mut stale_in: Vec<String> = Vec::new();
+    for dir in claude_dirs(env) {
+        let id = claude_id(env, &dir);
+        if !agents.iter().any(|a| a.id == id) {
+            continue;
+        }
+        let mut buckets: Vec<(std::time::SystemTime, PathBuf)> =
+            std::fs::read_dir(dir.join("skills").join("synced"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|e| e.path().is_dir())
+                .map(|e| {
+                    (
+                        e.metadata()
+                            .and_then(|m| m.modified())
+                            .unwrap_or(std::time::UNIX_EPOCH),
+                        e.path(),
+                    )
+                })
+                .collect();
+        if buckets.len() > 1 {
+            buckets.sort();
+            old.extend(
+                buckets[..buckets.len() - 1]
+                    .iter()
+                    .map(|(_, p)| env.display(p)),
+            );
+            stale_in.push(id);
+        }
+    }
+    if !old.is_empty() {
         let folders = list_names(&old);
         let values = [("folders", folders.as_str())];
         issues.push(issue(
@@ -1981,10 +2292,13 @@ fn find_issues(
             } else {
                 trf("{folders} are left from earlier syncs. Clients that read Claude's folder load them too.", &values)
             },
-            vec!["claude-code".into()],
+            stale_in,
             Vec::new(),
             None,
         ));
+        if let Some(found) = issues.last_mut() {
+            found.subject = old.clone();
+        }
     }
 
     let packaged: Vec<&Skill> = skills
@@ -2091,13 +2405,10 @@ fn find_issues(
             .skills
             .iter()
             .chain(&found.agents)
+            .chain(&found.subject)
             .map(String::as_str)
             .collect();
         parts.sort_unstable();
-        // Issues about config entries or folders name them only in the text.
-        if found.skills.is_empty() {
-            parts.push(&found.detail);
-        }
         let digest = crate::registry::sha256_hex(&parts.join("\n"));
         found.fingerprint = format!("{}:{}", found.id, &digest[..16]);
     }
@@ -2164,10 +2475,11 @@ pub fn set_state(
     wanted: Wanted,
     writer: &dyn Writer,
 ) -> Result<(), String> {
-    let def = agent_defs()
+    let inst = instances(env, &|_| true)
         .into_iter()
-        .find(|d| d.id == agent)
+        .find(|i| i.id == agent)
         .ok_or_else(|| tr("Unknown client"))?;
+    let (def, env) = (&inst.def, &inst.env);
     let skill = inventory
         .skills
         .iter()
@@ -2176,7 +2488,7 @@ pub fn set_state(
     if !skill.states.contains_key(agent) {
         return Err(trf(
             "{client} doesn't load {skill}.",
-            &[("client", def.name), ("skill", &skill.name)],
+            &[("client", &inst.name), ("skill", &skill.name)],
         ));
     }
     if wanted == Wanted::NameOnly && def.switch != Switch::ClaudeOverrides {
@@ -2334,6 +2646,21 @@ impl Writer for BackupOnce<'_> {
     }
 }
 
+/// A dangling link whose target's folder is gone too, outside home: most likely a drive or
+/// network share that isn't mounted, not a deleted skill.
+fn maybe_unmounted(env: &Env, link: &Path) -> bool {
+    let Ok(target) = std::fs::read_link(link) else {
+        return false;
+    };
+    let target = if target.is_absolute() {
+        target
+    } else {
+        link.parent().unwrap_or(Path::new("/")).join(target)
+    };
+    let inside = |base: &Path| target.starts_with(base);
+    !inside(&env.home) && !inside(&env.home_real) && !target.parent().is_some_and(Path::exists)
+}
+
 /// True only when `path` is a symlink whose target is missing. An unreadable target or an
 /// unmounted volume is not proof the link is broken.
 fn dangling(path: &Path) -> bool {
@@ -2381,6 +2708,27 @@ pub fn remove_skill_files(
             "Toolport only removes your own skills, not ones from a package, an account or a client.",
         ));
     }
+    let (real, in_place, links) = removal_plan(env, &inventory.agents, skill)?;
+    // The folder first: if the trash refuses, nothing has changed yet.
+    let trashed = if in_place {
+        writer.trash(&real)?;
+        Some(real)
+    } else {
+        None
+    };
+    for link in &links {
+        writer.remove_link(link)?;
+    }
+    Ok((trashed, links.len()))
+}
+
+/// What removing `skill` would do: its real folder, whether that folder goes to the trash (it
+/// sits in a skills folder), and the links to delete. Errors when removal isn't safe.
+fn removal_plan(
+    env: &Env,
+    agents: &[Agent],
+    skill: &Skill,
+) -> Result<(PathBuf, bool, Vec<PathBuf>), String> {
     let real = Path::new(&skill.key)
         .parent()
         .and_then(|folder| canon(folder).ok())
@@ -2389,28 +2737,65 @@ pub fn remove_skill_files(
     if env.home.starts_with(&real) || env.home_real.starts_with(&real) {
         return Err(tr("Toolport only removes skill folders."));
     }
+    // The parked folder holds skills too, though no client reads it.
+    let roots: Vec<PathBuf> = agents
+        .iter()
+        .flat_map(|a| &a.roots)
+        .map(|r| expand(env, &r.path))
+        .chain(std::iter::once(env.parked()))
+        .collect();
     let mut links = Vec::new();
     let mut in_place = false;
+    let mut through_linked_folder = None;
     for shown in &skill.links {
         let path = expand(env, shown);
-        if canon(&path).is_ok_and(|p| p == real) {
-            if is_link(&path) {
-                links.push(path);
-            } else {
-                in_place = true;
-            }
+        if !canon(&path).is_ok_and(|p| p == real) {
+            continue;
+        }
+        if is_link(&path) {
+            links.push(path);
+        } else if in_skills_folder(&roots, &path) {
+            in_place = true;
+        } else {
+            // A linked folder inside a skills folder leads here (`skills/work` -> `~/work`).
+            // Its other contents aren't skills, so that link is never removed.
+            through_linked_folder.get_or_insert(shown);
         }
     }
-    for link in &links {
-        writer.remove_link(link)?;
+    // Reached only through a linked folder: the skill lives elsewhere, so leave it alone.
+    if let (false, Some(shown)) = (in_place, through_linked_folder) {
+        return Err(trf(
+            "Toolport can't remove {skill} here, because a linked folder leads to {path}. Remove it where it lives.",
+            &[("skill", &skill.name), ("path", shown)],
+        ));
     }
-    let trashed = if in_place {
-        writer.trash(&real)?;
-        Some(real)
-    } else {
-        None
+    if !in_place && links.is_empty() {
+        return Err(tr("That skill is already gone. Refresh to see the latest."));
+    }
+    Ok((real, in_place, links))
+}
+
+/// True when `path` sits in one of the scanned skills folders with no link between that folder
+/// and it. A skills folder that is itself a link (moved to a dotfiles repo, say) still counts.
+fn in_skills_folder(roots: &[PathBuf], path: &Path) -> bool {
+    let Some(root) = roots
+        .iter()
+        .filter(|r| path.starts_with(r) && path != r.as_path())
+        .max_by_key(|r| r.components().count())
+    else {
+        return false;
     };
-    Ok((trashed, links.len()))
+    let mut dir = path.parent();
+    while let Some(d) = dir {
+        if d == root {
+            return true;
+        }
+        if is_link(d) {
+            return false;
+        }
+        dir = d.parent();
+    }
+    false
 }
 
 pub fn apply_fix(
@@ -2456,8 +2841,9 @@ pub fn apply_fix(
             let mut done = 0;
             for key in &issue.skills {
                 let path = Path::new(key);
-                // Re-check at apply time: only remove a link that still dangles.
-                if dangling(path) {
+                // Re-check at apply time: only remove a link that still dangles, and never one
+                // into a drive or share that may just not be mounted right now.
+                if dangling(path) && !maybe_unmounted(env, path) {
                     writer.remove_link(path)?;
                     done += 1;
                 }
@@ -2896,12 +3282,31 @@ pub fn set_skill_state(
     inventory(project)
 }
 
-pub fn fix_issue(issue_id: &str, project: Option<&str>) -> Result<Inventory, String> {
+/// Fix the item the user confirmed. `fingerprint` is the one they saw: when the item changed
+/// since (an earlier queued change turned off one more skill, say), nothing is done.
+pub fn fix_issue(
+    issue_id: &str,
+    fingerprint: &str,
+    project: Option<&str>,
+) -> Result<Inventory, String> {
     let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let env = Env::current().ok_or_else(|| tr("Couldn't find your home folder"))?;
     let inv = inventory(project)?;
+    still_as_seen(&inv, issue_id, fingerprint)?;
     apply_fix(&env, &inv, issue_id, &DiskWriter)?;
     inventory(project)
+}
+
+fn still_as_seen(inv: &Inventory, issue_id: &str, fingerprint: &str) -> Result<(), String> {
+    match inv.issues.iter().find(|i| i.id == issue_id) {
+        None => Err(tr(
+            "That problem is already gone. Refresh to see the latest.",
+        )),
+        Some(issue) if issue.fingerprint != fingerprint => Err(tr(
+            "That problem changed since you looked. Check it again, then fix it.",
+        )),
+        Some(_) => Ok(()),
+    }
 }
 
 /// Files Toolport hands to the default app. Anything else is revealed, never opened.
@@ -2921,6 +3326,10 @@ fn open_target(path: &str, reveal: bool, project: Option<&str>) -> Result<PathBu
     let target = expand(&env, path);
     if !allowed_path(&inv, &target.to_string_lossy()) {
         return Err(tr("Toolport only opens skill and rules files it found."));
+    }
+    // A link to a missing folder has nothing to open: show the folder the link is in.
+    if dangling(&target) {
+        return Ok(target.parent().map(Path::to_path_buf).unwrap_or(target));
     }
     // The default app for a script is often the shell. A rules file can @import any path, so
     // only text files are opened; anything else is shown in its folder instead.

@@ -25,6 +25,7 @@ pub use disconnect::{all as disconnect_all, ClientResult as DisconnectResult};
 mod discovery;
 mod locations;
 pub use discovery::DiscoveryCapabilities;
+pub(crate) use locations::folder_key as claude_profile_key;
 #[cfg(feature = "test-support")]
 pub use locations::measure_scan as measure_client_location_scan;
 pub use locations::{
@@ -874,7 +875,7 @@ fn try_claude_code_config_paths() -> Result<Vec<PathBuf>, String> {
 
 /// Name-first, shallow discovery. Symlink directories are excluded so automatic
 /// discovery never follows a profile outside home. Config contents are not read.
-fn claude_profile_name(name: &str) -> bool {
+pub(crate) fn claude_profile_name(name: &str) -> bool {
     if name == ".claude" {
         return true;
     }
