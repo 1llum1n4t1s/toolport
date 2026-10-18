@@ -64,7 +64,7 @@ pub struct Env {
     pub reasonix: PathBuf,
     /// `REASONIX_HOME` is set, so Reasonix skips the folders under the OS home.
     pub reasonix_portable: bool,
-    /// Where Reasonix reads its global REASONIX.md (`REASONIX_STATE_HOME`, else its home).
+    /// Where Reasonix reads global rules (`REASONIX_STATE_HOME`, `[storage].state`, else home).
     pub reasonix_state: PathBuf,
     /// Codewhale's state home (`CODEWHALE_HOME`, default `~/.codewhale`), which holds
     /// `skills_state.toml`. Its skill folders and instructions stay under the OS home.
@@ -101,7 +101,11 @@ impl Env {
             dsh_agents: home.join(".agents"),
             reasonix: home.join(".reasonix"),
             reasonix_portable: false,
-            reasonix_state: home.join(".reasonix"),
+            reasonix_state: crate::clients::reasonix_paths::state_root(
+                home,
+                &home.join(".reasonix"),
+                &|_| None,
+            ),
             codewhale: home.join(".codewhale"),
             codewhale_config: codewhale_config(home, &home.join(".codewhale"), false),
             openclaw: crate::clients::openclaw::dirs(home, &|_| None),
@@ -191,9 +195,8 @@ impl Env {
             env.reasonix = dir;
             env.reasonix_portable = true;
         }
-        env.reasonix_state = trimmed("REASONIX_STATE_HOME")
-            .and_then(expand)
-            .unwrap_or_else(|| env.reasonix.clone());
+        env.reasonix_state =
+            crate::clients::reasonix_paths::state_root(&home, &env.reasonix, &trimmed);
         let codewhale_home = trimmed("CODEWHALE_HOME").and_then(expand);
         let explicit_home = codewhale_home.is_some();
         if let Some(dir) = codewhale_home {
@@ -410,6 +413,9 @@ enum Switch {
 struct Root {
     path: PathBuf,
     recursive: bool,
+    /// Reasonix also reads flat Markdown skills, with a configurable depth.
+    reasonix_depth: Option<usize>,
+    reasonix_marker: bool,
     /// Whether the client loads a skill folder that is a link (Continue skips them).
     dir_links: bool,
     /// Whether the client loads a SKILL.md that is itself a link (Codex skips them).
@@ -424,6 +430,8 @@ impl Root {
         Root {
             path,
             recursive: false,
+            reasonix_depth: None,
+            reasonix_marker: false,
             dir_links: true,
             file_links: true,
             all_names: false,
@@ -2191,8 +2199,9 @@ fn walk_root(root: &Root) -> Vec<Found> {
 
 /// Several clients read the same folders (`~/.claude/skills`, `~/.agents/skills`), so each one
 /// is walked once per scan and reused with the reading client's label.
+type WalkKey = (PathBuf, bool, bool, bool, bool, Option<usize>, bool);
 #[derive(Default)]
-struct WalkCache(HashMap<(PathBuf, bool, bool, bool, bool), Vec<Found>>);
+struct WalkCache(HashMap<WalkKey, Vec<Found>>);
 
 impl WalkCache {
     fn walk(&mut self, root: &Root) -> Vec<Found> {
@@ -2203,6 +2212,8 @@ impl WalkCache {
                 root.dir_links,
                 root.file_links,
                 root.all_names,
+                root.reasonix_depth,
+                root.reasonix_marker,
             ))
             .or_insert_with(|| walk_root(root))
             .iter()
@@ -2257,6 +2268,27 @@ fn walk_dir(
             }
             continue;
         }
+        if root.reasonix_depth.is_some()
+            && path.is_file()
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
+            let text = read_text(&path).unwrap_or_default();
+            let (_, description) = front_matter(&text);
+            if (depth == 0 || description.is_some())
+                && (!root.reasonix_marker || reasonix_skill_marker(&text))
+            {
+                out.push(Found {
+                    real: canon(&path).ok(),
+                    link: path,
+                    root_label: root.label,
+                    root_path: root.path.clone(),
+                });
+            }
+            continue;
+        }
         if !path.is_dir() || (!root.dir_links && is_link(&path)) {
             continue;
         }
@@ -2268,13 +2300,19 @@ fn walk_dir(
             continue;
         }
         if skill_md.is_file() {
+            if root.reasonix_depth.is_some()
+                && depth > 0
+                && read_text(&skill_md).is_none_or(|text| front_matter(&text).1.is_none())
+            {
+                continue;
+            }
             out.push(Found {
                 real: canon(&skill_md).ok(),
                 link: skill_md,
                 root_label: root.label,
                 root_path: root.path.clone(),
             });
-        } else if root.recursive && depth + 1 < MAX_DEPTH {
+        } else if root.recursive && depth + 1 < root.reasonix_depth.unwrap_or(MAX_DEPTH) {
             walk_dir(root, &path, depth + 1, seen, budget, out, allowed);
         }
     }
@@ -2643,7 +2681,62 @@ fn reasonix_skill_roots(env: &Env) -> Vec<Root> {
     let excluded = paths("excluded_paths");
     let mut seen = BTreeSet::new();
     roots.retain(|root| !excluded.contains(&root.path) && seen.insert(root.path.clone()));
+    for root in &mut roots {
+        root.recursive = true;
+        root.reasonix_depth = Some(reasonix_skill_depth(env));
+        root.reasonix_marker = root.label == msg("Claude Code folder");
+    }
     roots
+}
+
+fn reasonix_skill_depth(env: &Env) -> usize {
+    read_toml(&reasonix_config_path(env))
+        .and_then(|c| c.get("skills")?.get("max_depth")?.as_integer())
+        .map(|depth| {
+            if depth == 0 {
+                3
+            } else {
+                depth.clamp(1, 5) as usize
+            }
+        })
+        .unwrap_or(3)
+}
+
+fn reasonix_skill_marker(text: &str) -> bool {
+    const KEYS: &[&str] = &[
+        "description",
+        "name",
+        "runas",
+        "context",
+        "agent",
+        "allowed-tools",
+        "model",
+        "effort",
+        "read-only",
+        "triggers",
+        "negative-triggers",
+        "auto-use",
+        "cost",
+        "color",
+        "invocation",
+        "requires",
+        "profiles",
+        "disable-model-invocation",
+        "user-invocable",
+        "argument-hint",
+        "paths",
+    ];
+    let text = text.trim_start_matches('\u{feff}').replace("\r\n", "\n");
+    let Some(rest) = text.strip_prefix("---\n") else {
+        return false;
+    };
+    let Some((header, _)) = rest.split_once("\n---") else {
+        return false;
+    };
+    header
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .any(|(key, _)| KEYS.contains(&key.trim().to_ascii_lowercase().as_str()))
 }
 fn crush_config_path(env: &Env) -> PathBuf {
     env.config.join("crush").join("crush.json")
@@ -3079,7 +3172,9 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                     .filter(|rel| !only_own || rel.starts_with(".codewhale/"))
                     .map(move |rel| Root {
                         path: project.join(rel),
-                        recursive: walk.deep,
+                        recursive: walk.deep || def.id == "reasonix",
+                        reasonix_depth: (def.id == "reasonix").then(|| reasonix_skill_depth(env)),
+                        reasonix_marker: def.id == "reasonix" && rel.starts_with(".claude/"),
                         dir_links: walk.dir_links,
                         file_links: walk.file_links,
                         all_names: false,
@@ -3208,6 +3303,24 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                         .with_extension("")
                         .to_string_lossy()
                         .replace('\\', "/");
+                }
+            }
+            let reasonix_flat = def.id == "reasonix"
+                && (f.link.file_name().is_some_and(|name| name != "SKILL.md")
+                    || f.link.parent() == Some(f.root_path.as_path()));
+            if reasonix_flat {
+                // Folder edit/remove actions would affect neighboring flat skills.
+                record.editable = false;
+                if front_matter(&read_text(&f.link).unwrap_or_default())
+                    .0
+                    .is_none()
+                {
+                    record.name = f
+                        .link
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
                 }
             }
             let link_display = env.display(f.link.parent().unwrap_or(&f.link));

@@ -19,6 +19,10 @@ Entries before the rename below shipped under the project's former name, Conduit
   and exact enables, including whitespace-sensitive Unicode identities and
   inherited legacy vetoes.
   Setup docs clarify how global and project instructions combine.
+- Match Reasonix state relocation and nested or single-file skill discovery.
+  Refuse duplicate plugin names before import or edits, preserve CRLF and mixed
+  line endings, and restore moved plugins beside their surviving neighbors
+  with their comments after unrelated config edits.
 
 - nanobot imports now accept the defaults nanobot saves. Incomplete server
   entries no longer hide working servers, and GTK keeps Connect available on
@@ -42,7 +46,7 @@ Entries before the rename below shipped under the project's former name, Conduit
   from its home, `~/.agents/skills`, `~/.agent/skills`, `~/.claude/skills` and
   `[skills] paths`, and turns them off through `[skills] disabled_skills`. Its
   `REASONIX.md`, `AGENTS.md` and `CLAUDE.md` rules show too, and team rules go
-  to `AGENTS.md` in its home. See
+  to `AGENTS.md` in its state root. See
   [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#reasonix-setup).
 - Codewhale as a supported client. Connect adds the gateway to the `mcp.json`
   Codewhale reads (`~/.codewhale/mcp.json`, the legacy `~/.deepseek/mcp.json`,

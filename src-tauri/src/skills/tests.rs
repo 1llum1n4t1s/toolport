@@ -3544,3 +3544,80 @@ fn codewhale_native_history_veto_and_exact_enable_round_trip() {
         );
     }
 }
+
+#[test]
+fn reasonix_discovers_bounded_nested_and_flat_skills_and_switches_them() {
+    let home = Home::new();
+    home.write(
+        ".reasonix/skills/flat.md",
+        "---\ndescription: Flat\n---\nDo it\n",
+    );
+    home.skill(".reasonix/skills/a/b/c", "third", "Depth three");
+    home.skill(".reasonix/skills/a/b/d/e", "fourth", "Depth four");
+    home.write(".reasonix/skills/a/no-description.md", "No description\n");
+    home.write(".claude/skills/readme.md", "# ordinary docs\n");
+    home.write(
+        ".claude/skills/marked.md",
+        "---\nuser-invocable: false\n---\nMarked\n",
+    );
+    home.write(
+        "work/app/.reasonix/skills/pack/project.md",
+        "---\ndescription: Project flat\n---\nDo it\n",
+    );
+    home.skill(
+        "work/app/.reasonix/skills/pack/nested",
+        "project-nested",
+        "Project nested",
+    );
+    let project = home.path("work/app");
+    let env = home.env();
+    let inv = scan(&env, &only(&["reasonix"]), Some(&project));
+    for name in ["flat", "third", "marked", "project", "project-nested"] {
+        assert_eq!(state(&inv, name, "reasonix"), Some(State::On), "{name}");
+    }
+    for name in ["fourth", "no-description", "readme"] {
+        assert!(state(&inv, name, "reasonix").is_none(), "{name}");
+    }
+    assert!(!skill(&inv, "flat").editable);
+    assert!(!skill(&inv, "flat").removable);
+    let key = skill(&inv, "flat").key.clone();
+    set_state(
+        &env,
+        &inv,
+        "reasonix",
+        &key,
+        Wanted::Off,
+        &TestWriter::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        state(&scan(&env, &only(&["reasonix"]), None), "flat", "reasonix"),
+        Some(State::Off)
+    );
+    home.write(".reasonix/config.toml", "[skills]\nmax_depth = 4\n");
+    assert_eq!(
+        state(
+            &scan(&env, &only(&["reasonix"]), None),
+            "fourth",
+            "reasonix"
+        ),
+        Some(State::On)
+    );
+    home.write(".reasonix/config.toml", "[skills]\nmax_depth = 1\n");
+    assert!(state(&scan(&env, &only(&["reasonix"]), None), "third", "reasonix").is_none());
+}
+
+#[test]
+fn reasonix_inventory_reads_rules_from_configured_state() {
+    let home = Home::new();
+    home.write(
+        ".reasonix/config.toml",
+        "[storage]\nstate = '~/relocated'\n",
+    );
+    home.write("relocated/AGENTS.md", "# Actual rules\n");
+    let inv = scan(&home.env(), &only(&["reasonix"]), None);
+    assert!(inv
+        .rules
+        .iter()
+        .any(|r| r.path == "~/relocated/AGENTS.md" && r.agents.contains_key("reasonix")));
+}

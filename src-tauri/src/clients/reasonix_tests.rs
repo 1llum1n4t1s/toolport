@@ -138,38 +138,13 @@ fn recorded(text: &str) -> std::collections::BTreeMap<String, String> {
         .collect()
 }
 
-/// `CONFIG` with the demo table moved after the web one.
-const DEMO_LAST: &str = r#"# Reasonix configuration.
-config_version = 12   # schema marker for diagnostics
-default_model = "deepseek-flash"
-
-[ui]
-theme = "auto"   # auto|dark|light
-
-[skills]
-# disabled_skills = ["review"]   # hide noisy or unwanted skills
-
-# External MCP servers. type: "stdio" (default, a subprocess) | "http" | "sse".
-
-[[plugins]]
-name    = "web"
-type    = "http"
-url     = "https://example.test/mcp"
-headers = { Authorization = "Bearer ${WEB_TOKEN}" }
-
-[[plugins]]
-name    = "demo"
-command = "python3"   # keep this note
-args    = ["/opt/demo/server.py"]
-"#;
-
 #[test]
 fn tables_move_out_and_back_with_their_comments() {
     let raw = raw_entries(CONFIG).unwrap();
     assert_eq!(raw.len(), 2);
     assert!(raw[0].1.contains("# keep this note"), "{}", raw[0].1);
-    // The comment above the table stays in the file, so the record leaves it out.
-    assert!(!raw[0].1.contains("External MCP servers"), "{}", raw[0].1);
+    // Leading comments stay while connected and return to their table on restore.
+    assert!(raw[0].1.contains("External MCP servers"), "{}", raw[0].1);
     assert_eq!(definition(&raw[0].1).unwrap(), desired(CONFIG)["demo"]);
     let emptied = without(&without(CONFIG, "demo"), "web");
     assert_eq!(emptied.matches("# External MCP servers").count(), 1);
@@ -181,22 +156,21 @@ fn tables_move_out_and_back_with_their_comments() {
 fn a_server_put_back_uses_its_recorded_table() {
     let moved = without(CONFIG, "demo");
     let back = sync(Some(&moved), &desired(CONFIG), &recorded(CONFIG)).unwrap();
-    assert_eq!(back, DEMO_LAST);
+    assert_eq!(back, CONFIG);
     let appended = append_raw(Some(&moved), &texts(&raw_entries(CONFIG).unwrap())).unwrap();
-    assert_eq!(appended, DEMO_LAST);
+    assert_eq!(appended, CONFIG);
 }
 
 #[test]
 fn a_table_with_subtables_goes_back_in_one_piece() {
     let text = "default_model = \"x\"\n\n[[plugins]]\nname = \"a\"\ncommand = \"a\"\n\n[plugins.env]\nA = \"1\"\n\n[[plugins]]\nname = \"b\"\ncommand = \"b\"\n\n[plugins.env]\nB = \"2\"\n\n[skills]\ndisabled_skills = []\n";
-    let a_last = "default_model = \"x\"\n\n[[plugins]]\nname = \"b\"\ncommand = \"b\"\n\n[plugins.env]\nB = \"2\"\n\n[[plugins]]\nname = \"a\"\ncommand = \"a\"\n\n[plugins.env]\nA = \"1\"\n\n[skills]\ndisabled_skills = []\n";
     let raw = raw_entries(text).unwrap();
     let moved = without(text, "a");
     assert_eq!(
         sync(Some(&moved), &desired(text), &recorded(text)).unwrap(),
-        a_last
+        text
     );
-    assert_eq!(append_raw(Some(&moved), &texts(&raw[..1])).unwrap(), a_last);
+    assert_eq!(append_raw(Some(&moved), &texts(&raw[..1])).unwrap(), text);
     // The last plugin goes back exactly where it was.
     let moved = without(text, "b");
     assert_eq!(append_raw(Some(&moved), &texts(&raw[1..])).unwrap(), text);
@@ -204,7 +178,10 @@ fn a_table_with_subtables_goes_back_in_one_piece() {
     let empty = "[skills]\ndisabled_skills = []\n";
     let into = append_raw(Some(empty), &texts(&raw)).unwrap();
     assert_eq!(desired(&into), desired(text));
-    assert!(into.starts_with(empty), "{into}");
+    assert_eq!(
+        normalized(&into).unwrap()["rest"],
+        normalized(empty).unwrap()["rest"]
+    );
     assert_eq!(into.parse::<DocumentMut>().unwrap().to_string(), into);
 }
 
@@ -229,21 +206,37 @@ fn a_put_back_table_next_to_a_new_one_stays_after_the_settings() {
 }
 
 #[test]
-fn a_shadowed_table_moves_with_the_one_reasonix_uses() {
-    let text = format!("{CONFIG}\n[[plugins]]\nname = \"demo\"\ncommand = \"other\"\n");
-    let raw = raw_entries(&text).unwrap();
-    assert_eq!(raw.len(), 2);
-    assert!(raw[0].1.contains("command = \"other\""), "{}", raw[0].1);
-    assert_eq!(raw[0].2, desired(&text)["demo"]);
-    let emptied = without(&without(&text, "demo"), "web");
-    let back = append_raw(Some(&emptied), &texts(&raw)).unwrap();
-    assert!(back.contains("command = \"other\""), "{back}");
-    assert_eq!(desired(&back), desired(&text));
-    let moved = without(&text, "demo");
-    let synced = sync(Some(&moved), &desired(&text), &recorded(&text)).unwrap();
-    assert_eq!(synced.matches("name = \"demo\"").count(), 1, "{synced}");
-    assert!(synced.contains("command = \"other\""), "{synced}");
-    assert_eq!(desired(&synced), desired(&text));
+fn duplicate_names_are_refused_before_import_or_mutation() {
+    let text = "[[plugins]]\nname = 'dup'\ncommand = '/first/server'\ndisabled_tools = ['a']\n[[plugins]]\nname = 'dup'\ncommand = '/last/server'\ndisabled_tools = ['b']\n";
+    assert!(servers(text).unwrap_err().contains("duplicate"));
+    assert!(raw_entries(text).is_err());
+    assert!(sync(Some(text), &Default::default(), &Default::default()).is_err());
+    assert!(append_raw(Some(text), &[]).is_err());
+}
+
+#[test]
+fn raw_restore_keeps_neighbors_comments_and_unrelated_edits() {
+    let text = "[ui]\ntheme = 'dark'\n\n# server A\n[[plugins]]\nname = 'a'\ncommand = 'a'\n\n# skill policy\n[skills]\ndisabled_skills = []\n";
+    let raw = raw_entries(text).unwrap();
+    let moved = without(text, "a").replace("'dark'", "'light'");
+    let restored = append_raw(Some(&moved), &texts(&raw)).unwrap();
+    assert_eq!(restored, text.replace("'dark'", "'light'"));
+}
+
+#[test]
+fn connect_and_fallback_disconnect_keep_crlf_and_mixed_endings() {
+    for text in [
+        "[ui]\r\ntheme = 'dark'\r\n",
+        "[ui]\r\ntheme = 'dark'\r\n\n[skills]\ndisabled_skills = []\n",
+    ] {
+        let connected = with(text, &stdio("toolport"));
+        assert!(connected.starts_with(text), "{connected:?}");
+        let edited = connected.replace("'dark'", "'light'");
+        assert_eq!(
+            without(&edited, "toolport"),
+            text.replace("'dark'", "'light'")
+        );
+    }
 }
 
 #[test]
@@ -273,4 +266,36 @@ fn remote_servers_use_type_url_and_headers() {
         assert_eq!(config["headers"]["Authorization"], "Bearer x");
         assert!(config.get("env").is_none());
     }
+}
+
+#[test]
+fn removing_a_plugin_does_not_take_its_neighbors_line_endings() {
+    let text = "[[plugins]]\r\nname = 'a'\r\ncommand = 'same'\r\n\n[[plugins]]\nname = 'b'\ncommand = 'same'\n";
+    let out = without(text, "a");
+    assert!(
+        out.ends_with("[[plugins]]\nname = 'b'\ncommand = 'same'\n"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn crlf_raw_restore_retains_comments_and_section_order() {
+    let text = "[ui]\r\ntheme = 'dark'\r\n\r\n# server A\r\n[[plugins]]\r\nname = 'a'\r\ncommand = 'a'\r\n\r\n[skills]\r\ndisabled_skills = []\r\n";
+    let raw = raw_entries(text).unwrap();
+    let moved = without(text, "a").replace("'dark'", "'light'");
+    assert_eq!(
+        append_raw(Some(&moved), &texts(&raw)).unwrap(),
+        text.replace("'dark'", "'light'")
+    );
+}
+
+#[test]
+fn mixed_ending_raw_plugin_restores_its_own_newlines() {
+    let text = "[ui]\r\ntheme = 'dark'\r\n\n[[plugins]]\nname = 'a'\ncommand = 'a'\n\r\n[skills]\r\ndisabled_skills = []\r\n";
+    let raw = raw_entries(text).unwrap();
+    let moved = without(text, "a").replace("'dark'", "'light'");
+    assert_eq!(
+        append_raw(Some(&moved), &texts(&raw)).unwrap(),
+        text.replace("'dark'", "'light'")
+    );
 }
