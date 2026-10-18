@@ -1168,5 +1168,6 @@
   "OpenHands skills": "OpenHands のスキル",
   "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "ここでは OpenHands のスキルは読み取り専用です。インストール済みスキルの有効・無効は OpenHands で切り替えてください。",
   "nanobot skills": "nanobot のスキル",
-  "Uses agents.defaults.disabledSkills in nanobot's config.json.": "nanobot の config.json にある agents.defaults.disabledSkills を使います。"
+  "Uses agents.defaults.disabledSkills in nanobot's config.json.": "nanobot の config.json にある agents.defaults.disabledSkills を使います。",
+  "From a nanobot package": "nanobot パッケージ由来"
 }

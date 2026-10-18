@@ -11,6 +11,8 @@
 //! or their shipped code (Cursor agent, Gemini CLI, OpenCode). Rows marked `verified: false` come
 //! from published docs and are labelled that way in the UI.
 
+mod nanobot_plugins;
+
 use crate::i18n::{msg, tr, trf};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -3059,7 +3061,7 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
         } else {
             Vec::new()
         };
-        let found: Vec<Found> = roots
+        let mut found: Vec<Found> = roots
             .iter()
             .flat_map(|root| {
                 if def.id == "openclaw" {
@@ -3074,6 +3076,9 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 }
             })
             .collect();
+        if def.switch == Switch::NanobotConfig {
+            found.extend(nanobot_plugins::discover(&env.home));
+        }
         // name -> winning key, for name-based dedup.
         let mut by_name: HashMap<String, String> = HashMap::new();
         let mut reached: Vec<(String, Found, String)> = Vec::new();
@@ -3083,6 +3088,11 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             let record = skills
                 .entry(key.clone())
                 .or_insert_with(|| new_skill(&f, env, project));
+            if f.root_label == nanobot_plugins::LABEL {
+                record.source = Source::BuiltIn;
+                record.source_note = tr("From a nanobot package");
+                record.editable = false;
+            }
             // Legacy OpenHands Markdown files are individual skills, not removable
             // folders. Keep folder-based edit/remove actions away from their siblings.
             if def.id == "openhands"

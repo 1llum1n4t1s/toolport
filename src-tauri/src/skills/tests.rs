@@ -2481,3 +2481,163 @@ fn nanobot_distinct_folders_with_the_same_frontmatter_name_load_and_toggle_separ
         serde_json::json!(["a"])
     );
 }
+
+fn nanobot_package(
+    home: &Home,
+    folder: &str,
+    identity: &str,
+    names: &[&str],
+    enabled: bool,
+) -> (PathBuf, PathBuf) {
+    home.write(".nanobot/config.json", "{}");
+    let rel = format!(".nanobot/workspace/plugins/{folder}");
+    home.write(&format!("{rel}/plugin.json"), &serde_json::json!({"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":identity}).to_string());
+    for name in names {
+        home.skill(&format!("{rel}/skills/{name}"), name, "Package skill");
+    }
+    let root = home.path(&rel);
+    let workspace = home.path(".nanobot/workspace");
+    let hash = crate::registry::sha256_hex(workspace.to_str().unwrap());
+    let marker_rel = format!(".nanobot/plugin-data/{}/{identity}/enabled", &hash[..12]);
+    if enabled {
+        home.write(&marker_rel, &nanobot_plugins::activation(&root).unwrap());
+    }
+    (root, home.path(&marker_rel))
+}
+
+#[test]
+fn nanobot_enabled_packages_follow_precedence_plain_toggles_and_protection() {
+    let home = Home::new();
+    let (first, first_marker) =
+        nanobot_package(&home, "a-first", "first", &["same", "package-only"], true);
+    let (second, _) = nanobot_package(&home, "b-second", "second", &["same"], true);
+    let workspace = home.skill(".nanobot/workspace/skills/same", "same", "Workspace wins");
+    let before = std::fs::read(&first_marker).unwrap();
+    let env = home.env();
+    let inv = scan(&env, &only(&["nanobot"]), None);
+    let state_at = |inv: &Inventory, path: &Path| {
+        inv.skills
+            .iter()
+            .find(|s| s.key == path.display().to_string())
+            .unwrap()
+            .states["nanobot"]
+            .state
+    };
+    assert_eq!(state_at(&inv, &workspace), State::On);
+    assert_eq!(
+        state_at(&inv, &first.join("skills/same/SKILL.md")),
+        State::Shadowed
+    );
+    assert_eq!(
+        state_at(&inv, &second.join("skills/same/SKILL.md")),
+        State::Shadowed
+    );
+    let package = skill(&inv, "package-only");
+    assert_eq!(package.source, Source::BuiltIn);
+    assert!(!package.editable && !package.removable && !removable(package));
+    let key = package.key.clone();
+    let writer = TestWriter::default();
+    assert!(remove_skill_files(&env, &inv, &key, &writer).is_err());
+    set_state(&env, &inv, "nanobot", &key, Wanted::Off, &writer).unwrap();
+    let after = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(state(&after, "package-only", "nanobot"), Some(State::Off));
+    let root: serde_json::Value = serde_json::from_str(&home.read(".nanobot/config.json")).unwrap();
+    assert_eq!(
+        root["agents"]["defaults"]["disabledSkills"],
+        serde_json::json!(["package-only"])
+    );
+    assert_eq!(std::fs::read(&first_marker).unwrap(), before);
+    std::fs::remove_file(workspace).unwrap();
+    let next = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(
+        state_at(&next, &first.join("skills/same/SKILL.md")),
+        State::On
+    );
+    assert_eq!(
+        state_at(&next, &second.join("skills/same/SKILL.md")),
+        State::Shadowed
+    );
+}
+
+#[test]
+fn nanobot_package_activation_rejects_stale_disabled_and_duplicate_identities_without_writes() {
+    let home = Home::new();
+    let (stale, stale_marker) = nanobot_package(&home, "stale", "stale", &["stale-skill"], true);
+    let stale_bytes = std::fs::read(&stale_marker).unwrap();
+    std::fs::write(stale.join(".hidden-change"), "changed").unwrap();
+    nanobot_package(&home, "disabled", "disabled", &["disabled-skill"], false);
+    let (_, duplicate_marker) =
+        nanobot_package(&home, "duplicate-a", "duplicate", &["dupe-a"], true);
+    nanobot_package(&home, "duplicate-b", "duplicate", &["dupe-b"], false);
+    let duplicate_bytes = std::fs::read(&duplicate_marker).unwrap();
+    let (legacy, legacy_marker) =
+        nanobot_package(&home, "legacy", "legacy", &["legacy-skill"], true);
+    std::fs::write(&legacy_marker, legacy.to_str().unwrap()).unwrap();
+    let inv = scan(&home.env(), &only(&["nanobot"]), None);
+    assert_eq!(inv.skills.len(), 1);
+    assert_eq!(state(&inv, "legacy-skill", "nanobot"), Some(State::On));
+    assert_eq!(std::fs::read(stale_marker).unwrap(), stale_bytes);
+    assert_eq!(std::fs::read(duplicate_marker).unwrap(), duplicate_bytes);
+    assert_eq!(
+        std::fs::read_to_string(legacy_marker).unwrap(),
+        legacy.to_str().unwrap()
+    );
+}
+
+#[test]
+fn nanobot_packages_reject_escaping_paths_invalid_metadata_and_wrong_activation_bytes() {
+    let home = Home::new();
+    let (root, marker) = nanobot_package(&home, "valid", "valid", &["valid-skill"], true);
+    let activation = std::fs::read_to_string(&marker).unwrap();
+    std::fs::write(&marker, format!("{activation}\n")).unwrap();
+    assert!(nanobot_plugins::discover(&home.root).is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        format!("{activation}\n")
+    );
+    let wrong_root = serde_json::json!({"fingerprint":nanobot_plugins::fingerprint(&root).unwrap(),"root":home.path("elsewhere")}).to_string();
+    std::fs::write(&marker, &wrong_root).unwrap();
+    assert!(nanobot_plugins::discover(&home.root).is_empty());
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), wrong_root);
+    home.skill(
+        ".nanobot/workspace/plugins/valid/skills/mismatch",
+        "other",
+        "Wrong identity",
+    );
+    home.skill(
+        ".nanobot/workspace/plugins/valid/skills/bad--name",
+        "bad--name",
+        "Invalid name",
+    );
+    let outside = home.skill("outside/escape", "escape", "Outside package");
+    home.link(
+        ".nanobot/workspace/plugins/valid/skills/escape",
+        outside.parent().unwrap(),
+    );
+    std::fs::write(&marker, nanobot_plugins::activation(&root).unwrap()).unwrap();
+    let inv = scan(&home.env(), &only(&["nanobot"]), None);
+    assert_eq!(inv.skills.len(), 1);
+    assert_eq!(state(&inv, "valid-skill", "nanobot"), Some(State::On));
+    std::fs::remove_dir_all(home.path(".nanobot/plugin-data")).unwrap();
+    let workspace = home.path(".nanobot/workspace");
+    let hash = crate::registry::sha256_hex(workspace.to_str().unwrap());
+    home.write(
+        &format!("outside-marker/{}/valid/enabled", &hash[..12]),
+        &nanobot_plugins::activation(&root).unwrap(),
+    );
+    home.link(".nanobot/plugin-data", &home.path("outside-marker"));
+    assert!(nanobot_plugins::discover(&home.root).is_empty());
+}
+
+#[test]
+fn nanobot_package_manifests_require_valid_schema_and_identity_even_when_activated() {
+    let home = Home::new();
+    let (root, marker) = nanobot_package(&home, "package", "valid", &["valid-skill"], true);
+    for manifest in ["[]".to_string(), "not JSON".to_string(), serde_json::json!({"$schema":"https://invalid.example/schema","name":"valid"}).to_string(), serde_json::json!({"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"bad..identity"}).to_string()] {
+        std::fs::write(root.join("plugin.json"), manifest).unwrap();
+        let activation = nanobot_plugins::activation(&root).unwrap();
+        std::fs::write(&marker, &activation).unwrap();
+        assert!(nanobot_plugins::discover(&home.root).is_empty());
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), activation);
+    }
+}

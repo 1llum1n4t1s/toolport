@@ -1168,5 +1168,6 @@
   "OpenHands skills": "OpenHands-Skills",
   "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "OpenHands-Skills sind hier schreibgeschützt. Aktivieren oder deaktivieren Sie installierte Skills in OpenHands.",
   "nanobot skills": "nanobot-Skills",
-  "Uses agents.defaults.disabledSkills in nanobot's config.json.": "Verwendet agents.defaults.disabledSkills in der config.json von nanobot."
+  "Uses agents.defaults.disabledSkills in nanobot's config.json.": "Verwendet agents.defaults.disabledSkills in der config.json von nanobot.",
+  "From a nanobot package": "Aus einem nanobot-Paket"
 }

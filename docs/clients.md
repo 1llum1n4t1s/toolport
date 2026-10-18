@@ -203,9 +203,10 @@ always-on context.
 Toolport supports [HKUDS/nanobot](https://github.com/HKUDS/nanobot), installed
 as `nanobot-ai`, through `~/.nanobot/config.json` on every platform. Connect
 adds the gateway under `tools.mcpServers`; Disconnect removes it and keeps the
-rest of the config. This is strict JSON. Configs using the accepted snake_case
-`tools.mcp_servers` spelling are left untouched; rename that key to nanobot's
-normal `mcpServers` spelling first. Instances launched with `--home` or
+rest of the config. This is strict JSON. MCP edits leave configs using the accepted
+snake_case `tools.mcp_servers` spelling untouched; rename that key to nanobot's
+normal `mcpServers` spelling before connecting or moving servers. Workspace rules
+and skill toggles work with either spelling and preserve the MCP map's text. Instances launched with `--home` or
 `--config` are not managed. The unrelated Obot nanobot is not this client.
 
 nanobot has no server off switch: `enabled: false` does not stop a server.
@@ -218,8 +219,13 @@ transport. Auto uses Lazy because nanobot registers every MCP tool and has no
 The Skills page reads one level of folders under `<workspace>/skills` and
 switches them through `agents.defaults.disabledSkills`. nanobot identifies
 skills by their folder names. A config using `disabled_skills` is read but
-must use the normal `disabledSkills` spelling before switching. Plugin and
-bundled skills are not inventoried. Team rules go to `<workspace>/AGENTS.md`;
+must use the normal `disabledSkills` spelling before switching. Enabled Agent
+Plugin package skills appear after workspace skills, with the first package
+folder winning name collisions. They use the same native toggle, and package
+content is protected from editing and removal. Activation must match the complete
+package fingerprint and canonical root; discovery never changes activation markers.
+Verification skips packages above 20,000 entries or 128 MiB of file content.
+Bundled skills are not inventoried. Team rules go to `<workspace>/AGENTS.md`;
 the Rules page also reads `SOUL.md` and `USER.md`. The workspace defaults to
 `~/.nanobot/workspace`, or follows an absolute or `~/` path in
 `agents.defaults.workspace`. Relative workspace settings remain unresolved.
