@@ -1450,16 +1450,17 @@ fn agent_defs() -> Vec<AgentDef> {
             |env| {
                 let oh = env.home.join(".openhands");
                 vec![
-                    Root::deep(env.agents_skills(), msg("shared ~/.agents/skills")),
-                    Root::deep(oh.join("skills"), msg("OpenHands skills")),
-                    Root::deep(oh.join("microagents"), msg("OpenHands skills")),
+                    Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")),
+                    Root::flat(oh.join("skills"), msg("OpenHands skills")),
+                    Root::flat(oh.join("microagents"), msg("OpenHands skills")),
+                    Root::flat(oh.join("skills/installed"), msg("OpenHands skills")),
                 ]
             },
             &[".agents/skills", ".openhands/skills", ".openhands/microagents"],
-            |env| sources(md_files(&env.home.join(".openhands").join("microagents")), false),
+            openhands_rule_sources,
             AGENTS_MD,
         )
-        .project_walk(ProjectWalk::DEEP.first())
+        .project_walk(ProjectWalk::FLAT.first())
         .checked(msg("OpenHands can only turn off skills it installed itself, not skills in your folders.")),
         docs_agent(
             "tabnine",
@@ -1838,6 +1839,161 @@ fn is_link(path: &Path) -> bool {
 /// Folder entries one skills folder may read before the walk stops, so a link to a huge tree
 /// (a home folder, a network share) can't stall the page.
 const MAX_ENTRIES: usize = 20_000;
+
+/// Released OpenHands SDK 1.21: immediate child AgentSkills (case-insensitive
+/// SKILL.md), plus ordinary Markdown recursively outside those skill directories.
+/// Keep Toolport's depth/entry limits and canonical cycle guard on this walk too.
+fn walk_openhands_root(root: &Root) -> Vec<Found> {
+    walk_openhands_root_budget(root, MAX_ENTRIES)
+}
+
+fn walk_openhands_root_budget(root: &Root, mut budget: usize) -> Vec<Found> {
+    fn visit(
+        root: &Root,
+        dir: &Path,
+        depth: usize,
+        seen: &mut BTreeSet<PathBuf>,
+        budget: &mut usize,
+        out: &mut Vec<Found>,
+    ) {
+        if depth >= MAX_DEPTH || *budget == 0 {
+            return;
+        }
+        let Ok(real) = canon(dir) else { return };
+        if !seen.insert(real) {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut paths: Vec<_> = entries
+            .take(*budget)
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        paths.sort();
+        *budget = budget.saturating_sub(paths.len());
+        // An AgentSkills directory excludes every other Markdown file below it.
+        if depth == 1 {
+            if let Some(path) = paths.iter().find(|path| {
+                path.is_file()
+                    && path
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("skill.md"))
+            }) {
+                out.push(Found {
+                    link: path.clone(),
+                    real: canon(path).ok(),
+                    root_label: root.label,
+                    root_path: root.path.clone(),
+                });
+                return;
+            }
+        }
+        for path in paths {
+            if path.is_dir() {
+                visit(root, &path, depth + 1, seen, budget, out);
+            } else if path.is_file()
+                && path.extension().is_some_and(|ext| ext == "md")
+                && !path.file_name().is_some_and(|name| {
+                    name == "README.md" || name.to_string_lossy().eq_ignore_ascii_case("skill.md")
+                })
+            {
+                out.push(Found {
+                    link: path.clone(),
+                    real: canon(&path).ok(),
+                    root_label: root.label,
+                    root_path: root.path.clone(),
+                });
+            }
+        }
+    }
+    let mut found = Vec::new();
+    visit(
+        root,
+        &root.path,
+        0,
+        &mut BTreeSet::new(),
+        &mut budget,
+        &mut found,
+    );
+    found
+}
+
+/// Ordinary files without triggers are always-on instructions, shown as rules.
+fn openhands_is_skill(path: &Path) -> bool {
+    if path
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("skill.md"))
+    {
+        return true;
+    }
+    let Some(text) = read_text(path) else {
+        return false;
+    };
+    let Some(rest) = text.trim_start_matches('\u{feff}').strip_prefix("---") else {
+        return false;
+    };
+    let Some(end) = rest.find("\n---") else {
+        return false;
+    };
+    let Ok(front) = serde_yaml::from_str::<serde_yaml::Value>(&rest[..end]) else {
+        return false;
+    };
+    front.get("inputs").is_some()
+        || front
+            .get("triggers")
+            .and_then(serde_yaml::Value::as_sequence)
+            .is_some_and(|values| !values.is_empty())
+}
+
+fn openhands_rule_sources(env: &Env) -> Vec<RuleSource> {
+    [
+        env.agents_skills(),
+        env.home.join(".openhands/skills"),
+        env.home.join(".openhands/microagents"),
+    ]
+    .into_iter()
+    .flat_map(|path| walk_openhands_root(&Root::flat(path, "OpenHands skills")))
+    .filter(|found| !openhands_is_skill(&found.link))
+    .map(|found| RuleSource::file(found.link, false))
+    .collect()
+}
+
+/// The SDK accepts current `extensions` metadata and its legacy `skills` and
+/// `plugins` aliases. Explicit current entries override the legacy records.
+fn openhands_disabled_paths(env: &Env) -> BTreeSet<PathBuf> {
+    let dir = env.home.join(".openhands/skills/installed");
+    let Some(metadata) = read_text(&dir.join(".installed.json"))
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    else {
+        return BTreeSet::new();
+    };
+    let mut entries = BTreeMap::new();
+    for key in ["plugins", "skills", "extensions"] {
+        if let Some(map) = metadata.get(key).and_then(serde_json::Value::as_object) {
+            entries.extend(
+                map.iter()
+                    .map(|(name, value)| (name.clone(), value.clone())),
+            );
+        }
+    }
+    entries
+        .into_iter()
+        .filter_map(|(name, value)| {
+            // Metadata names are single directory names, never paths outside this root.
+            if name.is_empty()
+                || name == "."
+                || name == ".."
+                || name.contains(['/', '\\'])
+                || value.get("enabled") != Some(&serde_json::Value::Bool(false))
+            {
+                return None;
+            }
+            canon(&dir.join(name)).ok()
+        })
+        .collect()
+}
 
 fn walk_root(root: &Root) -> Vec<Found> {
     let mut out = Vec::new();
@@ -2710,7 +2866,10 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 .collect(),
         });
 
-        let disabled = read_disabled(def.switch, env);
+        let mut disabled = read_disabled(def.switch, env);
+        if def.id == "openhands" {
+            disabled.off_paths.extend(openhands_disabled_paths(env));
+        }
         if def.switch == Switch::CodexConfig {
             stale_codex = disabled.stale_paths.clone();
         }
@@ -2725,6 +2884,11 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             .flat_map(|root| {
                 if def.id == "openclaw" {
                     walk_openclaw_root(env, root, &openclaw_trusted)
+                } else if def.id == "openhands" {
+                    walk_openhands_root(root)
+                        .into_iter()
+                        .filter(|found| openhands_is_skill(&found.link))
+                        .collect()
                 } else {
                     walks.walk(root)
                 }
@@ -2739,6 +2903,28 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             let record = skills
                 .entry(key.clone())
                 .or_insert_with(|| new_skill(&f, env, project));
+            // Legacy OpenHands Markdown files are individual skills, not removable
+            // folders. Keep folder-based edit/remove actions away from their siblings.
+            if def.id == "openhands"
+                && !f
+                    .link
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("skill.md"))
+            {
+                record.editable = false;
+                if front_matter(&read_text(&f.link).unwrap_or_default())
+                    .0
+                    .is_none()
+                {
+                    record.name = f
+                        .link
+                        .strip_prefix(&f.root_path)
+                        .unwrap_or(&f.link)
+                        .with_extension("")
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                }
+            }
             let link_display = env.display(f.link.parent().unwrap_or(&f.link));
             let link_display = if f.real.is_none() {
                 env.display(&f.link)
@@ -3089,6 +3275,16 @@ fn scan_rules(instances: &[Instance], project: Option<&Path>) -> Vec<RuleFile> {
             .map(|s| (s, "global"))
             .collect();
         if let Some(project) = project {
+            if def.id == "openhands" {
+                for rel in def.project_roots {
+                    sources.extend(
+                        walk_openhands_root(&Root::flat(project.join(rel), "project"))
+                            .into_iter()
+                            .filter(|found| !openhands_is_skill(&found.link))
+                            .map(|found| (RuleSource::file(found.link, false), "project")),
+                    );
+                }
+            }
             // Gemini CLI reads the same file names in a project as it does globally.
             let names: Vec<String> = if def.id == "gemini-cli" {
                 gemini_context_names(env)

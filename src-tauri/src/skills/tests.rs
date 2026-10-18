@@ -2070,3 +2070,121 @@ fn openclaw_relative_workspace_does_not_report_fallback_skills_or_rules() {
     assert!(inv.skills.is_empty());
     assert!(inv.rules.is_empty());
 }
+
+#[test]
+fn openhands_matches_released_skill_formats_and_keeps_plain_files_safe() {
+    let home = Home::new();
+    let direct = home.skill(".openhands/skills/direct", "direct", "Immediate AgentSkill");
+    std::fs::rename(&direct, direct.with_file_name("skill.md")).unwrap();
+    home.skill(
+        ".openhands/skills/group/nested",
+        "nested",
+        "Not an immediate child",
+    );
+    home.write(
+        ".openhands/skills/topic/review.md",
+        "---\ntriggers: [review]\n---\nReview changes.\n",
+    );
+    home.write(
+        ".openhands/skills/task.md",
+        "---\nname: task\ninputs: []\n---\nDo task.\n",
+    );
+    let rules = home.write(
+        ".openhands/microagents/toolport-team-rules.md",
+        "Always follow team rules.\n",
+    );
+    home.write(
+        ".openhands/skills/direct/details.md",
+        "---\nname: excluded\ntriggers: [details]\n---\nSupporting file.\n",
+    );
+    home.write(".openhands/skills/README.md", "Not a skill.\n");
+    let inv = scan(&home.env(), &only(&["openhands"]), None);
+    assert_eq!(state(&inv, "direct", "openhands"), Some(State::On));
+    assert_eq!(state(&inv, "topic/review", "openhands"), Some(State::On));
+    assert_eq!(state(&inv, "task", "openhands"), Some(State::On));
+    assert_eq!(inv.skills.len(), 3);
+    assert!(!skill(&inv, "topic/review").editable);
+    assert!(!skill(&inv, "topic/review").removable);
+    assert!(inv
+        .rules
+        .iter()
+        .any(|rule| rule.path == home.env().display(&rules)));
+    assert!(
+        !inv.agents
+            .iter()
+            .find(|agent| agent.id == "openhands")
+            .unwrap()
+            .can_toggle
+    );
+}
+
+#[test]
+fn openhands_installed_metadata_and_lower_priority_are_respected() {
+    let home = Home::new();
+    home.skill(
+        ".openhands/skills/installed/active-skill",
+        "active-skill",
+        "Installed",
+    );
+    home.skill(
+        ".openhands/skills/installed/disabled-skill",
+        "disabled-skill",
+        "Installed off",
+    );
+    let duplicate = home.skill(
+        ".openhands/skills/installed/duplicate",
+        "duplicate",
+        "Installed lower priority",
+    );
+    home.skill(".openhands/microagents/duplicate", "duplicate", "User wins");
+    home.write(
+        ".openhands/skills/installed/.installed.json",
+        r#"{
+        "skills":{"active-skill":{"enabled":false},"disabled-skill":{"enabled":false}},
+        "extensions":{"active-skill":{"enabled":true}}
+    }"#,
+    );
+    let inv = scan(&home.env(), &only(&["openhands"]), None);
+    assert_eq!(state(&inv, "active-skill", "openhands"), Some(State::On));
+    assert_eq!(state(&inv, "disabled-skill", "openhands"), Some(State::Off));
+    let installed = inv
+        .skills
+        .iter()
+        .find(|skill| skill.key == duplicate.display().to_string())
+        .unwrap();
+    assert_eq!(installed.states["openhands"].state, State::Shadowed);
+    assert!(!inv.agents[0].can_toggle);
+}
+
+#[test]
+fn openhands_markdown_walk_bounds_depth_and_follows_cycles_once() {
+    let home = Home::new();
+    let root = home.path(".openhands/skills");
+    home.write(
+        ".openhands/skills/topic/visible.md",
+        "---\ntriggers: [visible]\n---\nVisible.\n",
+    );
+    home.link(".openhands/skills/topic/cycle", &root);
+    let deep = format!(
+        ".openhands/skills/{}/hidden.md",
+        vec!["deep"; MAX_DEPTH + 1].join("/")
+    );
+    home.write(&deep, "---\ntriggers: [hidden]\n---\nToo deep.\n");
+    let found = walk_openhands_root(&Root::flat(root, "OpenHands skills"));
+    assert_eq!(found.len(), 1);
+    assert!(found[0].link.ends_with("visible.md"));
+}
+
+#[test]
+fn openhands_markdown_walk_respects_its_entry_budget() {
+    let home = Home::new();
+    for name in ["a", "b", "c"] {
+        home.write(
+            &format!(".openhands/skills/{name}.md"),
+            "---\ntriggers: [test]\n---\nTest.\n",
+        );
+    }
+    let root = Root::flat(home.path(".openhands/skills"), "OpenHands skills");
+    assert_eq!(walk_openhands_root_budget(&root, 2).len(), 2);
+    assert!(walk_openhands_root_budget(&root, 0).is_empty());
+}

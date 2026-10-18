@@ -216,7 +216,35 @@ fn refuses_files_it_cannot_edit_safely() {
         .contains("must be an object"));
     let error = parse(r#"{"mcpServers":{"a":{"command":"x"}},"mcpServers":{}}"#).unwrap_err();
     assert!(error.contains("duplicate"), "{error}");
-    let error = parse(r#"{"mcpServers":{"a":{"url":"https://a.test","transport":"ws"}}}"#)
-        .unwrap_err();
+    let error =
+        parse(r#"{"mcpServers":{"a":{"url":"https://a.test","transport":"ws"}}}"#).unwrap_err();
     assert!(error.contains("supported transport"), "{error}");
+}
+
+#[test]
+fn remote_type_is_ignored_and_url_paths_remain_case_sensitive() {
+    // FastMCP 4.1.1 RemoteMCPServer accepts `type` as an ignored extra, while
+    // infer_transport_type_from_url checks the original case-sensitive path.
+    let listed = parse(
+        r#"{"mcpServers":{
+        "type-extra":{"url":"https://a.test/mcp","type":"sse"},
+        "upper-path":{"url":"https://a.test/SSE"},
+        "lower-path":{"url":"https://a.test/sse"},
+        "explicit":{"url":"https://a.test/sse","transport":"http","type":"sse"}
+    }}"#,
+    )
+    .unwrap();
+    let kinds: Vec<_> = listed
+        .iter()
+        .map(|server| (server.name.as_str(), server.transport.as_str()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("explicit", "http"),
+            ("lower-path", "sse"),
+            ("type-extra", "http"),
+            ("upper-path", "http")
+        ]
+    );
 }

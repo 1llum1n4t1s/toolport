@@ -45,7 +45,9 @@ const GATEWAY_SETTINGS: &[&str] = &[
 fn root_from_content(content: &str) -> Result<Value, String> {
     let root = read_existing_json(content, false)?;
     if !root.is_object() {
-        return Err("The OpenHands MCP config root must be an object; leaving it untouched.".into());
+        return Err(
+            "The OpenHands MCP config root must be an object; leaving it untouched.".into(),
+        );
     }
     if !content.trim().is_empty() {
         let cst =
@@ -93,19 +95,20 @@ fn disabled(definition: &Value) -> bool {
 }
 
 /// The transport OpenHands uses for a server: a command means stdio, otherwise
-/// `transport` (or its `type` alias), or what fastmcp infers from the URL.
+/// `transport`, or what fastmcp infers from the case-sensitive URL path.
+/// Remote `type` is an ignored extra field in fastmcp 4.1.1.
 fn transport(definition: &Value) -> Option<&'static str> {
     let text = |key: &str| {
         definition
             .get(key)
             .and_then(Value::as_str)
-            .map(|value| value.trim().to_ascii_lowercase())
+            .map(str::to_string)
     };
     if text("command").is_some_and(|command| !command.is_empty()) {
         return Some("stdio");
     }
     let url = text("url").filter(|url| !url.is_empty())?;
-    match text("transport").or_else(|| text("type")).as_deref() {
+    match text("transport").as_deref() {
         None => Some(if sse_path(&url) { "sse" } else { "http" }),
         Some("sse") => Some("sse"),
         Some("http" | "streamable-http") => Some("http"),
