@@ -14,6 +14,9 @@ Entries before the rename below shipped under the project's former name, Conduit
 - Resolve DeepSeek Harness home-patch groups and their activation in file
   order. Keep skipped group inserts out of active imports while allowing
   unrelated gateway connections.
+- Codewhale server imports refuse tool filters and other native settings that
+  would be lost during migration. Skill toggles honor native history vetoes
+  and exact enables. Setup docs clarify how global and project instructions combine.
 
 - nanobot imports now accept the defaults nanobot saves. Incomplete server
   entries no longer hide working servers, and GTK keeps Connect available on

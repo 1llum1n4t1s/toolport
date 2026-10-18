@@ -172,3 +172,61 @@ fn files_codewhale_cannot_read_are_refused() {
         .unwrap_err()
         .contains("must be an object"));
 }
+
+#[test]
+fn import_audit_refuses_native_settings_the_shared_importer_drops() {
+    let path = std::env::temp_dir().join(format!(
+        "toolport-codewhale-import-audit-{}.json",
+        std::process::id()
+    ));
+    for (field, value) in [
+        ("cwd", serde_json::json!("/srv/work")),
+        ("connect_timeout", serde_json::json!(10)),
+        ("execute_timeout", serde_json::json!(40)),
+        ("read_timeout", serde_json::json!(30)),
+        ("required", serde_json::json!(true)),
+        ("env_headers", serde_json::json!({"X-Token":"TOKEN"})),
+        ("env_http_headers", serde_json::json!({"X-Token":"TOKEN"})),
+        ("allow_private_network", serde_json::json!(true)),
+        ("scopes", serde_json::json!(["read"])),
+        ("oauth", serde_json::json!({"client_id":"demo"})),
+        ("oauth_resource", serde_json::json!("https://example.test")),
+    ] {
+        let text =
+            serde_json::json!({"servers":{"demo":{"command":"fixture",field:value}}}).to_string();
+        std::fs::write(&path, &text).unwrap();
+        let error = validate_import(&path, &["demo".into()], true).unwrap_err();
+        assert!(error.contains(field), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+    std::fs::write(
+        &path,
+        r#"{"timeouts":{"connect_timeout":10},"servers":{"demo":{"command":"fixture"}}}"#,
+    )
+    .unwrap();
+    assert!(validate_import(&path, &["demo".into()], true)
+        .unwrap_err()
+        .contains("timeouts"));
+    std::fs::write(
+        &path,
+        r#"{"servers":{"demo":{"command":"fixture","enabled_tools":[],"disabled_tools":[]}}}"#,
+    )
+    .unwrap();
+    validate_import(&path, &["demo".into()], true).unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn global_instruction_docs_describe_native_project_precedence() {
+    let docs = include_str!("../../../docs/clients.md");
+    let section = docs
+        .split("### Codewhale setup")
+        .nth(1)
+        .unwrap()
+        .split("### OpenClaw setup")
+        .next()
+        .unwrap();
+    assert!(section.contains("It prepends these"));
+    assert!(section.contains("project's own instructions taking\nprecedence"));
+    assert!(!section.contains("only in projects\nwithout their own"));
+}

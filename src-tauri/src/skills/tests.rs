@@ -1716,12 +1716,15 @@ fn codewhale_reads_its_folders_and_switches_through_skills_state() {
     let key = skill(&inv, "shared").key.clone();
     set_state(&env, &inv, "codewhale", &key, Wanted::Off, &writer).unwrap();
     let text = home.read(".codewhale/skills_state.toml");
-    assert!(
-        text.contains(
-            "disabled = [\"claude\", \"!codewhale-skill-state:1:history:x\", \"shared\"]"
-        ),
-        "{text}"
-    );
+    for retained in [
+        "claude",
+        "!codewhale-skill-state:1:history:x",
+        "shared",
+        "!codewhale-skill-state:1:history:claude",
+        "!codewhale-skill-state:1:history:shared",
+    ] {
+        assert!(text.contains(retained), "{text}");
+    }
     let key = skill(&inv, "claude").key.clone();
     set_state(&env, &inv, "codewhale", &key, Wanted::On, &writer).unwrap();
     let after = scan(&env, &only(&["codewhale"]), None);
@@ -2986,4 +2989,47 @@ fn nanobot_hidden_folder_policy_is_part_of_the_shared_walk_cache_key() {
     let inv = scan(&home.env(), &only(&["claude-code", "nanobot"]), None);
     assert_eq!(state(&inv, ".hidden", "nanobot"), Some(State::On));
     assert_eq!(state(&inv, ".hidden", "claude-code"), None);
+}
+
+#[test]
+fn codewhale_native_history_veto_and_exact_enable_round_trip() {
+    let home = Home::new();
+    home.skill(".codewhale/skills/demo", "demo", "Demo");
+    let path = ".codewhale/skills_state.toml";
+    let writer = TestWriter::default();
+    for disabled in [
+        r#"["demo", "!codewhale-skill-state:1:history:demo"]"#,
+        r#"["!codewhale-skill-state:1:history:demo"]"#,
+    ] {
+        home.write(
+            path,
+            &format!("# native state\ndisabled = {disabled}\nother = true\n"),
+        );
+        let env = home.env();
+        let inv = scan(&env, &only(&["codewhale"]), None);
+        assert_eq!(state(&inv, "demo", "codewhale"), Some(State::Off));
+        let key = skill(&inv, "demo").key.clone();
+        set_state(&env, &inv, "codewhale", &key, Wanted::On, &writer).unwrap();
+        let text = home.read(path);
+        assert!(
+            text.contains("!codewhale-skill-state:1:enabled:demo"),
+            "{text}"
+        );
+        assert!(text.contains("!codewhale-skill-state:1:history:demo"));
+        assert!(text.contains("# native state") && text.contains("other = true"));
+        let inv = scan(&env, &only(&["codewhale"]), None);
+        assert_eq!(state(&inv, "demo", "codewhale"), Some(State::On));
+        set_state(&env, &inv, "codewhale", &key, Wanted::Off, &writer).unwrap();
+        assert!(!home
+            .read(path)
+            .contains("!codewhale-skill-state:1:enabled:demo"));
+        assert_eq!(
+            state(
+                &scan(&env, &only(&["codewhale"]), None),
+                "demo",
+                "codewhale"
+            ),
+            Some(State::Off)
+        );
+    }
 }

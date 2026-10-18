@@ -1409,8 +1409,8 @@ fn agent_defs() -> Vec<AgentDef> {
         .switch(Switch::ReasonixConfig)
         .project_walk(ProjectWalk::FLAT.first()),
         // Codewhale crates/tui/src/skills and project_context.rs: folders are walked
-        // deep, project roots first. Its global instructions are one fallback file,
-        // the first that exists, used when a project has none of its own.
+        // deep, project roots first. The first existing global instruction file
+        // is prepended to project instructions, which take precedence.
         docs_agent(
             "codewhale",
             "Codewhale",
@@ -3275,7 +3275,9 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             let named = |set: &BTreeSet<String>| {
                 set.contains(&switch_name) || plugin_name.as_ref().is_some_and(|p| set.contains(p))
             };
-            let (switched_off, by_pattern) = if disabled.rules.is_empty() {
+            let (switched_off, by_pattern) = if def.switch == Switch::CodewhaleState {
+                (codewhale_skill_off(&disabled.off, &switch_name), false)
+            } else if disabled.rules.is_empty() {
                 (named(&disabled.off), false)
             } else {
                 match last_rule(&disabled.rules, &name) {
@@ -4376,7 +4378,14 @@ pub fn set_state(
                 Ok("skills")
             })
         }
-        Switch::GrokConfig | Switch::ReasonixConfig | Switch::CodewhaleState => {
+        Switch::CodewhaleState => edit_codewhale_skills_state(
+            agent,
+            &env.codewhale.join("skills_state.toml"),
+            writer,
+            &skill.name,
+            off,
+        ),
+        Switch::GrokConfig | Switch::ReasonixConfig => {
             let (path, key) =
                 toml_list_switch(def.switch, env).ok_or_else(|| wrong_shape("skills"))?;
             edit_toml_skills_list(agent, &path, key, writer, &skill.name, off)
@@ -4945,10 +4954,76 @@ fn edit_codex(
     writer.write(path, &next)
 }
 
+const CODEWHALE_HISTORY: &str = "!codewhale-skill-state:1:history:";
+const CODEWHALE_ENABLED: &str = "!codewhale-skill-state:1:enabled:";
+
+fn codewhale_skill_off(disabled: &BTreeSet<String>, name: &str) -> bool {
+    disabled.contains(name)
+        || (!disabled.contains(&format!("{CODEWHALE_ENABLED}{name}"))
+            && disabled.contains(&format!("{CODEWHALE_HISTORY}{name}")))
+}
+
+/// Match Codewhale's native writer: retain historical vetoes and write an exact
+/// enable for On. Other names and markers survive each change.
+fn edit_codewhale_skills_state(
+    agent: &str,
+    path: &Path,
+    writer: &dyn Writer,
+    name: &str,
+    off: bool,
+) -> Result<(), String> {
+    let text = read_existing(path)?;
+    let mut doc: toml_edit::DocumentMut =
+        text.parse().map_err(|e| not_valid(path, &format!("{e}")))?;
+    let list = doc
+        .entry("disabled")
+        .or_insert_with(|| toml_edit::value(toml_edit::Array::new()))
+        .as_array_mut()
+        .ok_or_else(|| wrong_shape("disabled"))?;
+    let mut names: BTreeSet<String> = list
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| wrong_shape("disabled"))
+        })
+        .collect::<Result<_, _>>()?;
+    let histories: Vec<_> = names
+        .iter()
+        .filter(|name| !name.is_empty() && !name.starts_with("!codewhale-skill-state:"))
+        .map(|name| format!("{CODEWHALE_HISTORY}{name}"))
+        .collect();
+    names.extend(histories);
+    let exact = format!("{CODEWHALE_ENABLED}{name}");
+    if off {
+        names.insert(name.into());
+        names.insert(format!("{CODEWHALE_HISTORY}{name}"));
+        names.remove(&exact);
+    } else {
+        names.remove(name);
+        names.insert(exact);
+    }
+    list.retain(|value| value.as_str().is_some_and(|name| names.contains(name)));
+    for name in names {
+        if !list.iter().any(|value| value.as_str() == Some(&name)) {
+            list.push(name);
+        }
+    }
+    list.fmt();
+    let next = doc.to_string();
+    if next == text {
+        return Ok(());
+    }
+    if path.exists() {
+        writer.backup(agent, path)?;
+    }
+    writer.write(path, &next)
+}
+
 /// Add or remove `name` in the TOML list at `key`, either top-level or one table deep
-/// (Grok's `skills.disabled`, Reasonix's `skills.disabled_skills`, Codewhale's top-level
-/// `disabled`), keeping the rest of the file, Codewhale's reserved
-/// `!codewhale-skill-state:` entries included, as written.
+/// (Grok's `skills.disabled`, Reasonix's `skills.disabled_skills`), keeping the
+/// rest of the file as written.
 fn edit_toml_skills_list(
     agent: &str,
     path: &Path,

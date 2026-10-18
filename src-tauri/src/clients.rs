@@ -1454,9 +1454,9 @@ fn resolve_rules_target(
         // off the Skills page.
         "openhands" => owned(home.join(".openhands").join("microagents")),
         "nanobot" => block(home.join(".nanobot").join("workspace").join("AGENTS.md")),
-        // Codewhale reads only the first global instruction file it finds, as a
-        // fallback for projects without their own, so the block goes into that
-        // one; a new file would hide the user's.
+        // Codewhale prepends its first existing global instruction file to the
+        // project's context, whose instructions take precedence. Write that file;
+        // a new earlier file would hide the user's global instructions.
         "codewhale" => {
             let chain = [".codewhale", ".agents", ".deepseek"];
             let found = ["AGENTS.md", "instructions.md"]
@@ -4434,6 +4434,9 @@ pub(crate) fn validate_client_import(
     migration: bool,
 ) -> Result<(), String> {
     match client.id.split('@').next() {
+        Some("codewhale") => {
+            codewhale::validate_import(Path::new(&client.config_path), names, migration)?
+        }
         Some("zcode") => zcode::validate_import(Path::new(&client.config_path), names, migration)?,
         Some("openclaw") => {
             openclaw::validate_import(Path::new(&client.config_path), names, migration)?
@@ -11509,6 +11512,24 @@ bad = "not-a-table"
             error: None,
             claude_profile: None,
         }
+    }
+
+    #[test]
+    fn codewhale_import_refuses_tool_filters_without_touching_native_config() {
+        let path = temp_path("codewhale-tool-filters.json");
+        let mut client = detected("codewhale");
+        client.config_path = path.to_string_lossy().into_owned();
+        for field in ["enabled_tools", "disabled_tools"] {
+            let text = serde_json::json!({"servers":{"limited":{"command":"fixture",field:["read_file"]}}}).to_string();
+            std::fs::write(&path, &text).unwrap();
+            for migration in [false, true] {
+                let error =
+                    validate_client_import(&client, &["limited".into()], migration).unwrap_err();
+                assert!(error.contains(field), "{error}");
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+            }
+        }
+        std::fs::remove_file(path).unwrap();
     }
 
     fn gateway_server(name: &str, command: &str) -> McpServer {
