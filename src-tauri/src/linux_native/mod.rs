@@ -13204,6 +13204,42 @@ mod tests {
         };
         let decision = broker.park_for_test(view.clone());
         let (card, _) = approval_card(view, page);
+        if std::env::var_os("TOOLPORT_APPROVAL_VISUAL").is_some() {
+            card.set_margin_top(20);
+            card.set_margin_bottom(20);
+            card.set_margin_start(20);
+            card.set_margin_end(20);
+            let window = adw::ApplicationWindow::builder()
+                .application(&app)
+                .title("Toolport approval fixture")
+                .default_width(720)
+                .default_height(420)
+                .content(&card)
+                .build();
+            let theme = theme::ThemeController::new();
+            theme.attach(&window);
+            window.present();
+            let main_loop = gtk::glib::MainLoop::new(None, false);
+            let stop = main_loop.clone();
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(240), move || {
+                stop.quit()
+            });
+            let watch = broker.clone();
+            let done = main_loop.clone();
+            gtk::glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+                if watch.list().is_empty() {
+                    eprintln!(
+                        "approval decided: session allow {:?}",
+                        watch.session_allowed()
+                    );
+                    done.quit();
+                    return gtk::glib::ControlFlow::Break;
+                }
+                gtk::glib::ControlFlow::Continue
+            });
+            main_loop.run();
+            return;
+        }
         fn button(widget: &gtk::Widget, text: &str) -> Option<gtk::Button> {
             if let Some(button) = widget.downcast_ref::<gtk::Button>() {
                 let mut labels = Vec::new();
