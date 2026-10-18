@@ -6,18 +6,29 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-18
+
+Toolport now shows the skills and rules files each of your AI agents loads. Like
+2.0.0, this release is for manual installation: 1.24.x installs are not updated to
+it automatically yet. Download the package for your system from the
+[release assets](https://github.com/btsouth/toolport/releases/tag/v2.2.0), and read
+the [upgrade guide](https://github.com/btsouth/toolport/blob/main/docs/migration.md)
+if you are coming from 1.x.
+
 ### Added
 
 - A Skills page that shows the skills and rules files each installed agent loads,
   across Claude Code, Codex, Cursor, Copilot CLI, OpenCode, Grok, Hermes, Gemini CLI
   and more. See each skill's state in every agent, how each agent reaches your rules
-  files, and turn a skill on or off through the agent's own setting. A Needs a look
+  files, and turn a skill on or off through the agent's own setting in ten agents,
+  among them Grok, Crush, Qwen Code and Oh My Pi. A Needs a look
   tab finds skills still on elsewhere, broken links, duplicate names, cut-off
   descriptions and rules files an agent never reads, with confirmed fixes, and
   items you're fine with can be dismissed. Open a file in the app you pick, and move
   a skill you own to the trash. Several Claude Code profiles each get their own
   column. Available in the app and the Linux GTK app. See
   [Skills and rules](https://github.com/btsouth/toolport/blob/main/docs/skills-and-rules.md).
+  (#1215, #1218, #1219)
 
 ### Changed
 
@@ -29,12 +40,13 @@ Entries before the rename below shipped under the project's former name, Conduit
   last used. A copy of your main profile that only background tools read is
   listed behind a note. Available in the app and the Linux GTK app. See
   [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#several-claude-code-accounts).
+  (#1216)
 
 ### Fixed
 
 - Several AI clients starting at once no longer leave one without tools. On a
   fresh install a gateway could give up with "The registry is locked by another
-  Toolport process" while the others started.
+  Toolport process" while the others started. (#1214)
 
 ## [2.1.0] - 2026-10-15
 
