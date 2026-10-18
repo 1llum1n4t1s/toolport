@@ -270,7 +270,13 @@ fn state_chip(state: Option<State>, label: Option<&str>) -> gtk::Box {
             });
             chip.append(&dot);
         }
-        None => {}
+        None => {
+            let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            dot.set_valign(gtk::Align::Center);
+            dot.add_css_class("toolport-chip-dot");
+            dot.add_css_class("none");
+            chip.append(&dot);
+        }
     }
     let text = label.map_or_else(|| state_label(state), str::to_string);
     chip.append(&gtk::Label::new(Some(&text)));
@@ -1098,6 +1104,10 @@ impl SkillsPage {
     /// Text set from code rather than bound to one source string, after a language change.
     /// Issue titles, notes and states come from the scan, so a visible page scans again.
     fn retranslate(&self) {
+        let filter_label = crate::i18n::tr("Filter by agent");
+        self.agent_filter.set_tooltip_text(Some(&filter_label));
+        self.agent_filter
+            .update_property(&[gtk::accessible::Property::Label(&filter_label)]);
         for pane in [&self.skills, &self.rules] {
             pane.list
                 .update_property(&[gtk::accessible::Property::Label(&crate::i18n::lookup(

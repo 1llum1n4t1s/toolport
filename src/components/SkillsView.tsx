@@ -592,7 +592,12 @@ function SkillStateChip({
         </Badge>
       );
     default:
-      return <Badge variant="off">{text}</Badge>;
+      return (
+        <Badge variant="off">
+          <span aria-hidden="true" className="size-1 rounded-full bg-current" />
+          {text}
+        </Badge>
+      );
   }
 }
 
