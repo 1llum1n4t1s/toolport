@@ -40,7 +40,7 @@ pub(crate) fn home_dir(user_home: &Path) -> PathBuf {
 pub(crate) fn workspace(user_home: &Path) -> Option<PathBuf> {
     let config = home_dir(user_home).join("config.json");
     let root = match std::fs::read_to_string(config) {
-        Ok(text) => root_from_content(&text).ok()?,
+        Ok(text) => json_object_from_content(&text).ok()?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
         Err(_) => return None,
     };
@@ -71,10 +71,9 @@ pub(crate) fn workspace(user_home: &Path) -> Option<PathBuf> {
     path.is_absolute().then_some(path)
 }
 
-/// Parse a config and refuse what Toolport can't edit safely: a root that isn't
-/// an object, repeated keys and the snake_case server map. The mutation guard
-/// runs this before every write, Disconnect and restores included.
-pub(crate) fn root_from_content(content: &str) -> Result<Value, String> {
+/// Parse nanobot's strict JSON object, independently of what Toolport can edit.
+/// Read-only workspace lookup follows nanobot's last-key-wins JSON semantics.
+fn json_object_from_content(content: &str) -> Result<Value, String> {
     let root: Value = if content.trim().is_empty() {
         serde_json::json!({})
     } else {
@@ -85,6 +84,13 @@ pub(crate) fn root_from_content(content: &str) -> Result<Value, String> {
     if !root.is_object() {
         return Err("The nanobot config root must be an object; leaving it untouched.".into());
     }
+    Ok(root)
+}
+
+/// Skill edits change `agents`, so either spelling of the MCP map can remain.
+/// Repeated keys are still unsafe for any write.
+pub(crate) fn root_for_skill_edit(content: &str) -> Result<Value, String> {
+    let root = json_object_from_content(content)?;
     if !content.trim().is_empty() {
         let cst =
             jsonc_parser::cst::CstRootNode::parse(content, &jsonc_parser::ParseOptions::default())
@@ -93,6 +99,13 @@ pub(crate) fn root_from_content(content: &str) -> Result<Value, String> {
             zcode::duplicate_keys(&object, "", CLIENT)?;
         }
     }
+    Ok(root)
+}
+
+/// Guard all MCP writes, including Disconnect and restore, against repeated keys
+/// and the alternate map spelling that the MCP writer cannot safely rewrite.
+pub(crate) fn root_from_content(content: &str) -> Result<Value, String> {
+    let root = root_for_skill_edit(content)?;
     if root
         .get("tools")
         .and_then(|tools| tools.get("mcp_servers"))

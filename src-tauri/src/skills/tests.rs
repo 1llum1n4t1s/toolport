@@ -2364,7 +2364,8 @@ fn nanobot_uses_workspace_folder_names_rules_and_native_toggle() {
 #[test]
 fn nanobot_reads_snake_case_off_list_and_refuses_to_shadow_it() {
     let home = Home::new();
-    let original = r#"{"agents":{"defaults":{"disabled_skills":["orca"]}}}"#;
+    let original =
+        r#"{"tools":{"mcp_servers":{}},"agents":{"defaults":{"disabled_skills":["orca"]}}}"#;
     home.write(".nanobot/config.json", original);
     home.skill(".nanobot/workspace/skills/orca", "orca", "Orca");
     let env = home.env();
@@ -2388,7 +2389,12 @@ fn nanobot_skill_writes_refuse_non_json_or_duplicate_keys() {
     let home = Home::new();
     let path = home.path(".nanobot/config.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    for original in ["{agents:{defaults:{}}}", r#"{"agents":{},"agents":{}}"#] {
+    for original in [
+        "{agents:{defaults:{}}}",
+        "[]",
+        r#"{"agents":{},"agents":{}}"#,
+        r#"{"tools":{"mcp_servers":{},"mcp_servers":{}}}"#,
+    ] {
         std::fs::write(&path, original).unwrap();
         assert!(edit_json("nanobot", &path, &TestWriter::default(), |root| {
             toggle_list(
@@ -2402,4 +2408,76 @@ fn nanobot_skill_writes_refuse_non_json_or_duplicate_keys() {
         .is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
+}
+
+#[test]
+fn nanobot_skill_toggle_preserves_snake_case_mcp_text_and_workspace_rules() {
+    let home = Home::new();
+    let mcp = r#""tools" : { "mcp_servers" : { "native": { "command" : "node", "args" : [] } } }"#;
+    home.write(
+        ".nanobot/config.json",
+        &format!(
+            "{{\n  {mcp},\n  \"agents\": {{\"defaults\": {{\"workspace\": \"~/robot\"}}}}\n}}\n"
+        ),
+    );
+    home.skill("robot/skills/orca", "orca", "Orca");
+    let rules = home.write("robot/AGENTS.md", "Team rules.\n");
+    let env = home.env();
+    let inv = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(state(&inv, "orca", "nanobot"), Some(State::On));
+    assert!(inv
+        .rules
+        .iter()
+        .any(|rule| rule.path == env.display(&rules)));
+    let key = skill(&inv, "orca").key.clone();
+    let writer = TestWriter::default();
+    set_state(&env, &inv, "nanobot", &key, Wanted::Off, &writer).unwrap();
+    let text = home.read(".nanobot/config.json");
+    assert!(text.contains(mcp), "{text}");
+    let root: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        root["agents"]["defaults"]["disabledSkills"],
+        serde_json::json!(["orca"])
+    );
+    let after = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(state(&after, "orca", "nanobot"), Some(State::Off));
+    set_state(&env, &after, "nanobot", &key, Wanted::On, &writer).unwrap();
+    assert!(home.read(".nanobot/config.json").contains(mcp));
+}
+
+#[test]
+fn nanobot_distinct_folders_with_the_same_frontmatter_name_load_and_toggle_separately() {
+    let home = Home::new();
+    let a = home.skill(".nanobot/workspace/skills/a", "shared", "First");
+    let b = home.skill(".nanobot/workspace/skills/b", "shared", "Second");
+    let env = home.env();
+    let inv = scan(&env, &only(&["nanobot"]), None);
+    let state_at = |inv: &Inventory, path: &Path| {
+        inv.skills
+            .iter()
+            .find(|skill| skill.key == path.display().to_string())
+            .unwrap()
+            .states["nanobot"]
+            .state
+    };
+    assert_eq!(state_at(&inv, &a), State::On);
+    assert_eq!(state_at(&inv, &b), State::On);
+    let key = a.display().to_string();
+    set_state(
+        &env,
+        &inv,
+        "nanobot",
+        &key,
+        Wanted::Off,
+        &TestWriter::default(),
+    )
+    .unwrap();
+    let after = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(state_at(&after, &a), State::Off);
+    assert_eq!(state_at(&after, &b), State::On);
+    let root: serde_json::Value = serde_json::from_str(&home.read(".nanobot/config.json")).unwrap();
+    assert_eq!(
+        root["agents"]["defaults"]["disabledSkills"],
+        serde_json::json!(["a"])
+    );
 }

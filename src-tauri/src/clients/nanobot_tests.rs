@@ -222,3 +222,28 @@ fn explicit_transport_requires_its_active_address() {
         assert!(normalized_server("broken", &definition).is_err());
     }
 }
+
+#[test]
+fn workspace_and_rules_read_alias_maps_with_nanobots_last_key_wins() {
+    let _env = crate::clients::env_test_lock();
+    let dir = Dir::new();
+    let _home = TestHome::set(&dir.0);
+    let _clear = isolated_client_env(&dir.0);
+    let state = dir.0.join(".nanobot");
+    std::fs::create_dir_all(&state).unwrap();
+    for content in [
+        r#"{"tools":{"mcp_servers":{"native":{"command":"node"}}},"agents":{"defaults":{"workspace":"~/configured"}}}"#,
+        r#"{"agents":{"defaults":{"workspace":"~/first"}},"tools":{"mcp_servers":{}},"agents":{"defaults":{"workspace":"~/configured"}}}"#,
+    ] {
+        std::fs::write(state.join("config.json"), content).unwrap();
+        assert_eq!(workspace(&dir.0), Some(dir.0.join("configured")));
+        assert_eq!(
+            client_rules_target(CLIENT, crate::instructions::Scope::Team)
+                .unwrap()
+                .path,
+            dir.0.join("configured/AGENTS.md")
+        );
+        // The same configs remain guarded on the MCP write path.
+        assert!(root_from_content(content).is_err());
+    }
+}

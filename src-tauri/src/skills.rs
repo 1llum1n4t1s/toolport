@@ -1842,6 +1842,16 @@ struct Found {
     root_path: PathBuf,
 }
 
+/// nanobot addresses workspace skills by their folder, regardless of frontmatter.
+fn nanobot_skill_name(found: &Found) -> Option<String> {
+    found
+        .link
+        .parent()?
+        .file_name()?
+        .to_str()
+        .map(str::to_string)
+}
+
 fn is_link(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
 }
@@ -3124,6 +3134,9 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
         // Plugin skills are namespaced (`plugin:skill`), so they never collide with your own.
         let dedup_name = |key: &str, f: &Found| {
             let name = skills[key].name.clone();
+            if def.switch == Switch::NanobotConfig {
+                return nanobot_skill_name(f).unwrap_or(name);
+            }
             f.root_label
                 .ends_with("plugin")
                 .then(|| plugin_of(&f.root_path).map(|p| format!("{p}:{name}")))
@@ -3175,13 +3188,7 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 .flatten();
             // OpenClaw files a skill under its `skillKey` when it sets one.
             let nanobot_name = (def.switch == Switch::NanobotConfig)
-                .then(|| {
-                    f.link
-                        .parent()
-                        .and_then(Path::file_name)
-                        .and_then(|name| name.to_str())
-                        .map(str::to_string)
-                })
+                .then(|| nanobot_skill_name(f))
                 .flatten();
             let switch_name = nanobot_name
                 .clone()
@@ -4665,10 +4672,8 @@ fn edit_json(
     change: impl FnOnce(&mut serde_json::Value) -> Result<&'static str, String>,
 ) -> Result<(), String> {
     let original = read_existing(path)?;
-    if agent == "nanobot" && !original.trim().is_empty() {
-        crate::clients::nanobot::root_from_content(&original)?;
-        let root: serde_json::Value =
-            serde_json::from_str(&original).map_err(|e| not_valid(path, &e.to_string()))?;
+    let mut value: serde_json::Value = if agent == "nanobot" {
+        let root = crate::clients::nanobot::root_for_skill_edit(&original)?;
         if root
             .get("agents")
             .and_then(|v| v.get("defaults"))
@@ -4677,8 +4682,8 @@ fn edit_json(
         {
             return Err(wrong_shape("agents.defaults.disabled_skills"));
         }
-    }
-    let mut value: serde_json::Value = if original.trim().is_empty() {
+        root
+    } else if original.trim().is_empty() {
         serde_json::json!({})
     } else {
         json5::from_str(&original).map_err(|e| not_valid(path, &e.to_string()))?
