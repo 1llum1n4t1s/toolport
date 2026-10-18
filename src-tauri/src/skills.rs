@@ -1435,7 +1435,7 @@ fn agent_defs() -> Vec<AgentDef> {
             "OpenClaw",
             openclaw_skill_roots,
             &[],
-            |env| sources(vec![env.openclaw.workspace.join("AGENTS.md")], false),
+            |env| if env.openclaw.relative { Vec::new() } else { sources(vec![env.openclaw.workspace.join("AGENTS.md")], false) },
             &[],
         )
         .switch(Switch::OpenclawEntries),
@@ -1963,6 +1963,9 @@ fn toml_list_switch(switch: Switch, env: &Env) -> Option<(PathBuf, &'static str)
 /// dir), the managed `<state>/skills`, then `skills.load.extraDirs`.
 fn openclaw_skill_roots(env: &Env) -> Vec<Root> {
     let dirs = &env.openclaw;
+    if dirs.relative {
+        return Vec::new();
+    }
     let mut roots = vec![
         Root::deep(dirs.workspace.join("skills"), msg("OpenClaw workspace")),
         Root::deep(
@@ -1993,6 +1996,50 @@ fn openclaw_skill_roots(env: &Env) -> Vec<Root> {
         }
     }
     roots
+}
+
+/// OpenClaw 2026.10.4 confines workspace and extra roots unless an escaped
+/// directory is in skills.load.allowSymlinkTargets. Managed/personal directories
+/// permit folder links, but every SKILL.md must stay within its own skill folder.
+fn openclaw_skill_allowed(env: &Env, root: &Root, found: &Found, trusted: &[PathBuf]) -> bool {
+    let Some(real_file) = found.real.as_ref() else {
+        return false;
+    };
+    let Some(skill_dir) = found.link.parent().and_then(|path| canon(path).ok()) else {
+        return false;
+    };
+    if !real_file.starts_with(&skill_dir) {
+        return false;
+    }
+    let dirs = &env.openclaw;
+    if root.path == dirs.state.join("skills") || root.path == dirs.home.join(".agents/skills") {
+        return true;
+    }
+    if canon(&root.path).is_ok_and(|base| skill_dir.starts_with(base)) {
+        return true;
+    }
+    trusted.iter().any(|base| skill_dir.starts_with(base))
+}
+
+fn openclaw_trusted_skill_dirs(env: &Env) -> Vec<PathBuf> {
+    let dirs = &env.openclaw;
+    let config = read_json(&dirs.config);
+    let trusted = config
+        .as_ref()
+        .and_then(|value| value.get("skills")?.get("load")?.get("allowSymlinkTargets"));
+    string_list(trusted)
+        .iter()
+        .filter_map(|raw| {
+            let path = if raw == "~" {
+                dirs.home.clone()
+            } else if let Some(rest) = raw.strip_prefix("~/") {
+                dirs.home.join(rest)
+            } else {
+                PathBuf::from(raw)
+            };
+            path.is_absolute().then(|| canon(&path).ok()).flatten()
+        })
+        .collect()
 }
 
 /// `metadata.openclaw.skillKey` from a SKILL.md: the key OpenClaw uses for the
@@ -2613,7 +2660,24 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             stale_codex = disabled.stale_paths.clone();
         }
 
-        let found: Vec<Found> = roots.iter().flat_map(|r| walks.walk(r)).collect();
+        let openclaw_trusted = if def.id == "openclaw" {
+            openclaw_trusted_skill_dirs(env)
+        } else {
+            Vec::new()
+        };
+        let found: Vec<Found> = roots
+            .iter()
+            .flat_map(|root| {
+                walks
+                    .walk(root)
+                    .into_iter()
+                    .filter(|found| {
+                        def.id != "openclaw"
+                            || openclaw_skill_allowed(env, root, found, &openclaw_trusted)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         // name -> winning key, for name-based dedup.
         let mut by_name: HashMap<String, String> = HashMap::new();
         let mut reached: Vec<(String, Found, String)> = Vec::new();

@@ -1549,12 +1549,11 @@ pub fn client_rules_target(
     if client_id == "openclaw" {
         // The default agent's workspace AGENTS.md, loaded at the start of
         // every session.
-        if let Some(dirs) = openclaw_dirs() {
-            return Some(rules_sentinel_block(
-                dirs.workspace.join("AGENTS.md"),
-                scope,
-            ));
-        }
+        let dirs = openclaw_dirs().filter(|dirs| !dirs.relative)?;
+        return Some(rules_sentinel_block(
+            dirs.workspace.join("AGENTS.md"),
+            scope,
+        ));
     }
     if client_id == "reasonix" {
         // Its global REASONIX.md, AGENTS.md and CLAUDE.md live in the state root,
@@ -13446,6 +13445,19 @@ command = "mcp-server-memory"   # keep this note
         )
         .unwrap();
         assert_eq!(rules(), home.join("agent").join("AGENTS.md"));
+        for key in [
+            "OPENCLAW_HOME",
+            "OPENCLAW_STATE_DIR",
+            "OPENCLAW_CONFIG_PATH",
+            "OPENCLAW_WORKSPACE_DIR",
+        ] {
+            let _relative = EnvRestore::set(key, Path::new("relative"));
+            assert_eq!(openclaw_path(), None, "{key}");
+            assert!(
+                client_rules_target("openclaw", crate::instructions::Scope::Team).is_none(),
+                "{key}"
+            );
+        }
         let file = home.join("elsewhere.json");
         let _file = EnvRestore::set("OPENCLAW_CONFIG_PATH", &file);
         assert_eq!(openclaw_path(), Some(file));

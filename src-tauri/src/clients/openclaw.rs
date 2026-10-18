@@ -373,6 +373,7 @@ pub(crate) fn dirs(user_home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Di
         "OPENCLAW_HOME",
         "OPENCLAW_STATE_DIR",
         "OPENCLAW_CONFIG_PATH",
+        "OPENCLAW_WORKSPACE_DIR",
     ]
     .iter()
     .filter_map(|key| env(key))

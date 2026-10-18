@@ -2003,3 +2003,59 @@ fn clients_without_a_rules_file_yet_still_offer_where_one_goes() {
     assert!(missing.agents.contains(&"grok".to_string()));
     assert!(missing.agents.contains(&"pi".to_string()));
 }
+
+#[test]
+fn openclaw_symlink_boundaries_apply_before_skill_precedence() {
+    let home = Home::new();
+    let escaped = home.skill("outside/style", "style", "Escaped workspace skill");
+    let managed = home.skill(".openclaw/skills/style", "style", "Managed winner");
+    home.link(
+        ".openclaw/workspace/skills/style",
+        escaped.parent().unwrap(),
+    );
+    let personal = home.skill("other/personal", "personal", "Personal folder link");
+    home.link(".agents/skills/personal", personal.parent().unwrap());
+    let foreign = home.write(
+        "outside/file.md",
+        "---\nname: foreign\ndescription: External file\n---\n",
+    );
+    home.link(".openclaw/skills/foreign/SKILL.md", &foreign);
+    let inv = scan(&home.env(), &only(&["openclaw"]), None);
+    assert_eq!(skill(&inv, "style").key, managed.display().to_string());
+    assert_eq!(state(&inv, "style", "openclaw"), Some(State::On));
+    assert_eq!(state(&inv, "personal", "openclaw"), Some(State::On));
+    assert!(inv.skills.iter().all(|skill| skill.name != "foreign"));
+    home.write(
+        ".openclaw/openclaw.json",
+        "{ skills: { load: { allowSymlinkTargets: ['~/outside'] } } }\n",
+    );
+    let inv = scan(&home.env(), &only(&["openclaw"]), None);
+    let winner = inv
+        .skills
+        .iter()
+        .find(|skill| skill.name == "style" && skill.states["openclaw"].state == State::On)
+        .unwrap();
+    assert_eq!(winner.key, escaped.display().to_string());
+    assert!(inv.skills.iter().all(|skill| skill.name != "foreign"));
+}
+
+#[test]
+fn openclaw_relative_workspace_does_not_report_fallback_skills_or_rules() {
+    let home = Home::new();
+    home.skill(
+        ".openclaw/workspace/skills/demo",
+        "demo",
+        "Not the selected workspace",
+    );
+    home.write(
+        ".openclaw/workspace/AGENTS.md",
+        "Not the selected workspace\n",
+    );
+    let mut env = home.env();
+    env.openclaw = crate::clients::openclaw::dirs(&home.root, &|key| {
+        (key == "OPENCLAW_WORKSPACE_DIR").then(|| "relative".into())
+    });
+    let inv = scan(&env, &only(&["openclaw"]), None);
+    assert!(inv.skills.is_empty());
+    assert!(inv.rules.is_empty());
+}

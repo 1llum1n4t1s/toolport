@@ -158,6 +158,11 @@ changes. The Skills page shows the skills in the default agent's workspace
 (`~/.openclaw/workspace` unless `OPENCLAW_WORKSPACE_DIR` or
 `agents.defaults.workspace` moves it).
 
+Workspace and extra skill roots follow OpenClaw's symlink boundaries. Escaped
+skill folders are skipped unless their real targets are covered by
+`skills.load.allowSymlinkTargets`. Managed and personal roots accept folder
+links; a linked `SKILL.md` must still stay inside its own skill folder.
+
 ### ZCode setup
 
 Toolport manages ZCode's user config at `~/.zcode/cli/config.json` on all
