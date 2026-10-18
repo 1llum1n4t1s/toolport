@@ -1995,12 +1995,33 @@ fn openclaw_skill_roots(env: &Env) -> Vec<Root> {
     roots
 }
 
+/// `metadata.openclaw.skillKey` from a SKILL.md: the key OpenClaw uses for the
+/// skill under `skills.entries` instead of its name. `metadata` may be a YAML
+/// mapping or a JSON5 string, as OpenClaw reads both.
+fn openclaw_skill_key(skill_md: &Path) -> Option<String> {
+    let text = read_text(skill_md)?;
+    let rest = text.trim_start_matches('\u{feff}').strip_prefix("---")?;
+    let yaml = &rest[..rest.find("\n---")?];
+    let parsed: serde_yaml::Value = serde_yaml::from_str(yaml).ok()?;
+    let metadata: serde_json::Value = match parsed.get("metadata")? {
+        serde_yaml::Value::String(text) => json5::from_str(text).ok()?,
+        other => serde_json::to_value(other).ok()?,
+    };
+    let key = metadata.get("openclaw")?.get("skillKey")?.as_str()?.trim();
+    (!key.is_empty()).then(|| key.to_string())
+}
+
 /// Turn an OpenClaw skill off with `enabled: false` in its `skills.entries`
 /// entry, or back on by removing that, and the entry when nothing else is left.
-/// An `$include` there is refused: the change would hide the included file.
+/// An `$include` at the root or on the way to the entry is refused: a key
+/// written next to it would override the included file.
 fn openclaw_toggle(root: &mut serde_json::Value, name: &str, off: bool) -> Result<(), String> {
     let included = |v: Option<&serde_json::Value>| v.is_some_and(|v| v.get("$include").is_some());
-    if included(root.get("skills")) || included(root.pointer("/skills/entries")) {
+    if included(Some(&*root))
+        || included(root.get("skills"))
+        || included(root.pointer("/skills/entries"))
+        || included(root.get("skills").and_then(|s| s.get("entries")?.get(name)))
+    {
         return Err(wrong_shape("skills.entries"));
     }
     if !off
@@ -2680,8 +2701,13 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 .ends_with("plugin")
                 .then(|| plugin_of(&f.root_path).map(|p| format!("{p}:{name}")))
                 .flatten();
+            // OpenClaw files a skill under its `skillKey` when it sets one.
+            let switch_name = (def.switch == Switch::OpenclawEntries)
+                .then(|| real.as_deref().and_then(openclaw_skill_key))
+                .flatten()
+                .unwrap_or_else(|| name.clone());
             let named = |set: &BTreeSet<String>| {
-                set.contains(&name) || plugin_name.as_ref().is_some_and(|p| set.contains(p))
+                set.contains(&switch_name) || plugin_name.as_ref().is_some_and(|p| set.contains(p))
             };
             let (switched_off, by_pattern) = if disabled.rules.is_empty() {
                 (named(&disabled.off), false)
@@ -3747,7 +3773,8 @@ pub fn set_state(
         Switch::OpenclawEntries => {
             let path = env.openclaw.config.clone();
             edit_json(agent, &path, writer, |root| {
-                openclaw_toggle(root, &skill.name, off)?;
+                let key = openclaw_skill_key(Path::new(&skill.key));
+                openclaw_toggle(root, key.as_deref().unwrap_or(&skill.name), off)?;
                 Ok("skills")
             })
         }

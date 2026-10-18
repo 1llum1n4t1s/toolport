@@ -149,6 +149,25 @@ fn a_turned_off_gateway_stays_off_when_repaired() {
     let entry = &root["mcp"]["servers"]["toolport"];
     assert_eq!(entry["enabled"], false);
     assert_eq!(entry["command"], "/opt/toolport/toolport-gateway");
+    // A turned-off gateway still counts as connected, so Disconnect finds it.
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(parse(&text).unwrap()[0].name, "toolport");
+    edit_gateway(&path, None).unwrap();
+    assert!(parse(&std::fs::read_to_string(&path).unwrap())
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn a_repaired_gateway_keeps_the_openclaw_settings_it_was_given() {
+    let dir = Dir::new("settings");
+    let path = dir.file(r#"{"mcp":{"servers":{"toolport":{"command":"old/toolport-gateway","toolFilter":{"include":["a*"]},"requestTimeoutMs":90000}}}}"#);
+    edit_gateway(&path, Some(&gateway())).unwrap();
+    let root = parse_json_value(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let entry = &root["mcp"]["servers"]["toolport"];
+    assert_eq!(entry["command"], "/opt/toolport/toolport-gateway");
+    assert_eq!(entry["toolFilter"]["include"][0], "a*");
+    assert_eq!(entry["requestTimeoutMs"], 90000);
 }
 
 #[test]
@@ -161,6 +180,10 @@ fn imports_refuse_settings_toolport_would_drop() {
     let error = validate_import(&path, &["off".into()], true).unwrap_err();
     assert!(error.contains("turned-off"), "{error}");
     validate_import(&path, &["off".into()], false).unwrap();
+    let included =
+        dir.file(r#"{"mcp":{"servers":{"a":{"command":"a","env":{"$include":"./env.json5"}}}}}"#);
+    let error = validate_import(&included, &["a".into()], false).unwrap_err();
+    assert!(error.contains("$include"), "{error}");
 }
 
 #[test]
@@ -226,9 +249,10 @@ fn dirs_follow_openclaws_environment() {
         &set(vec![("OPENCLAW_CONFIG_PATH", "~/x/c.json".into())]),
     );
     assert_eq!(file.config, user.join("x/c.json"));
-    // A relative value is ignored rather than resolved against some cwd.
+    // OpenClaw resolves a relative value against its own cwd, so it's flagged.
     let relative = dirs(&user, &set(vec![("OPENCLAW_STATE_DIR", "sd".into())]));
-    assert_eq!(relative.state, user.join(".openclaw"));
+    assert!(relative.relative);
+    assert!(!plain.relative);
 
     // The workspace follows the config, and the env var wins over it.
     std::fs::write(

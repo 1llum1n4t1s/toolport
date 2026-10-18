@@ -1905,7 +1905,9 @@ fn openclaw_dirs() -> Option<openclaw::Dirs> {
 /// state dir (`OPENCLAW_STATE_DIR`, else `~/.openclaw` or the legacy
 /// `~/.clawdbot`), with `OPENCLAW_HOME` standing in for the home.
 fn openclaw_path() -> Option<PathBuf> {
-    openclaw_dirs().map(|dirs| dirs.config)
+    openclaw_dirs()
+        .filter(|dirs| !dirs.relative)
+        .map(|dirs| dirs.config)
 }
 
 /// A file in Codewhale's state home: `$CODEWHALE_HOME`, else `~/.codewhale`,
@@ -13456,6 +13458,8 @@ command = "mcp-server-memory"   # keep this note
 
     #[test]
     fn openclaw_connect_and_disconnect_round_trip_in_a_temp_home() {
+        // Data dir lock first, as the other tests take them.
+        let _data = crate::registry::DataDirTestEnv::new("openclaw-rt");
         let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home =
             std::env::temp_dir().join(format!("toolport-openclaw-rt-{}", std::process::id()));
@@ -13476,7 +13480,11 @@ command = "mcp-server-memory"   # keep this note
         let config = "{\n  // mine\n  gateway: { port: 18789 },\n  mcp: {\n    servers: {\n      git: { command: 'uvx', args: ['mcp-server-git'] },\n    },\n  },\n}\n";
         std::fs::write(&path, config).unwrap();
         let entry = gateway_entry(Some("Work"), "openclaw").unwrap();
-        edit_format(def.format, &path, Some(&entry), lenient).unwrap();
+        // Through the mutation guard, as Connect runs it: JSON5 is allowed.
+        mutation::run("openclaw", &path, def.format, || {
+            edit_format(def.format, &path, Some(&entry), lenient)
+        })
+        .unwrap();
         let connected = read_client(&def);
         assert!(connected.error.is_none(), "{:?}", connected.error);
         assert!(connected.gateway_installed);

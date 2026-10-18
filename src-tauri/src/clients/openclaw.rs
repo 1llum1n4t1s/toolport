@@ -33,7 +33,10 @@ const NOT_IMPORTED: &[&str] = &[
     "codex",
 ];
 
-fn root_from_content(content: &str) -> Result<Value, String> {
+/// Parse a config and refuse what Toolport can't edit safely: a root that isn't
+/// an object, repeated keys and `$include`. The mutation guard runs this before
+/// every write, Disconnect and restores included.
+pub(super) fn root_from_content(content: &str) -> Result<Value, String> {
     let root = read_existing_json(content, true)?;
     if !root.is_object() {
         return Err("The OpenClaw config root must be an object; leaving it untouched.".into());
@@ -148,10 +151,12 @@ fn normalized_server(name: &str, definition: &Value) -> Result<Value, String> {
     Ok(Value::Object(value))
 }
 
+/// The servers OpenClaw starts, plus a Toolport entry the user turned off, so
+/// it still counts as connected and Disconnect removes it.
 fn inventory(servers: &Map<String, Value>) -> Result<Vec<McpServer>, String> {
     let mut inventory = servers
         .iter()
-        .filter(|(_, definition)| !disabled(definition))
+        .filter(|(name, definition)| !disabled(definition) || is_gateway(name, definition))
         .map(|(name, definition)| {
             normalized_server(name, definition).map(|value| json_server(name, &value))
         })
@@ -164,8 +169,25 @@ pub(super) fn parse(content: &str) -> Result<Vec<McpServer>, String> {
     inventory(&server_map(&root_from_content(content)?)?)
 }
 
+fn is_gateway(name: &str, definition: &Value) -> bool {
+    gateway_edit_matches(name, definition.get("command").and_then(Value::as_str))
+}
+
+fn has_include(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => map.contains_key("$include") || map.values().any(has_include),
+        Value::Array(list) => list.iter().any(has_include),
+        _ => false,
+    }
+}
+
 fn importable(name: &str, definition: &Value, reject_disabled: bool) -> Result<(), String> {
     normalized_server(name, definition)?;
+    if has_include(definition) {
+        return Err(format!(
+            "Cannot import OpenClaw server '{name}': part of it comes from another file through $include. Keep this server in OpenClaw."
+        ));
+    }
     if let Some(field) = NOT_IMPORTED
         .iter()
         .find(|field| definition.get(**field).is_some())
@@ -176,7 +198,7 @@ fn importable(name: &str, definition: &Value, reject_disabled: bool) -> Result<(
     }
     if reject_disabled && disabled(definition) {
         return Err(format!(
-            "Cannot move turned-off OpenClaw server '{name}': this path can't keep it turned off. Keep it in OpenClaw or import it from the client import screen, where new servers start disabled."
+            "Cannot move turned-off OpenClaw server '{name}': this path can't keep it turned off. Turn it on in OpenClaw first, or keep it there."
         ));
     }
     Ok(())
@@ -227,13 +249,31 @@ pub(super) fn entry_value(entry: &ServerEntry) -> Result<Value, String> {
     Ok(value)
 }
 
-/// A gateway the user turned off stays off when Toolport repairs it.
+/// OpenClaw settings a user may add to the Toolport entry, kept when Toolport
+/// rewrites it.
+const GATEWAY_SETTINGS: &[&str] = &[
+    "connectionTimeoutMs",
+    "requestTimeoutMs",
+    "supportsParallelToolCalls",
+    "toolFilter",
+    "codex",
+];
+
+/// A gateway the user turned off stays off when Toolport repairs it, and keeps
+/// the OpenClaw settings they gave it.
 fn retain_gateway_state(servers: &Map<String, Value>, value: &mut Value) {
-    if servers.iter().any(|(name, definition)| {
-        gateway_edit_matches(name, definition.get("command").and_then(Value::as_str))
-            && disabled(definition)
-    }) {
-        value["enabled"] = Value::Bool(false);
+    for (name, definition) in servers {
+        if !is_gateway(name, definition) {
+            continue;
+        }
+        if disabled(definition) {
+            value["enabled"] = Value::Bool(false);
+        }
+        for key in GATEWAY_SETTINGS {
+            if let (Some(setting), Some(map)) = (definition.get(*key), value.as_object_mut()) {
+                map.entry(*key).or_insert_with(|| setting.clone());
+            }
+        }
     }
 }
 
@@ -278,7 +318,7 @@ pub(super) fn write_servers(path: &Path, entries: &[ServerEntry]) -> Result<(), 
         .filter(|(name, definition)| {
             disabled(definition)
                 && !entries.iter().any(|entry| &entry.name == *name)
-                && !gateway_edit_matches(name, definition.get("command").and_then(Value::as_str))
+                && !is_gateway(name, definition)
         })
         .map(|(name, definition)| (name.clone(), definition.clone()))
         .collect();
@@ -308,6 +348,9 @@ pub(crate) struct Dirs {
     /// Whether the state dir is the default one; OpenClaw reads personal
     /// `~/.agents/skills` only then.
     pub default_state: bool,
+    /// A path variable is relative. OpenClaw resolves it against its own
+    /// working directory, which Toolport can't know, so the config is unknown.
+    pub relative: bool,
 }
 
 /// `env` returns a variable trimmed, or `None` when it is unset or blank.
@@ -326,6 +369,14 @@ pub(crate) fn dirs(user_home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Di
             }
         }
     };
+    let relative = [
+        "OPENCLAW_HOME",
+        "OPENCLAW_STATE_DIR",
+        "OPENCLAW_CONFIG_PATH",
+    ]
+    .iter()
+    .filter_map(|key| env(key))
+    .any(|raw| expand_from(user_home, &raw).is_none());
     let home = env("OPENCLAW_HOME")
         .and_then(|raw| expand_from(user_home, &raw))
         .unwrap_or_else(|| user_home.to_path_buf());
@@ -371,6 +422,7 @@ pub(crate) fn dirs(user_home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Di
         config,
         workspace,
         default_state,
+        relative,
     }
 }
 

@@ -1811,6 +1811,32 @@ fn openclaw_reads_its_workspace_first_and_switches_through_skill_entries() {
     set_state(&home.env(), &inv, "openclaw", &deploy, Wanted::On, &writer).unwrap();
     assert!(!home.read(".openclaw/openclaw.json").contains("deploy"));
 
+    // A skill with a skillKey is filed under that key.
+    home.write(
+        ".openclaw/skills/keyed/SKILL.md",
+        "---\nname: keyed\ndescription: Keyed\nmetadata: { \"openclaw\": { \"skillKey\": \"keyed-tool\" } }\n---\n",
+    );
+    let inv = scan(&home.env(), &only(&["openclaw"]), None);
+    let keyed = skill(&inv, "keyed").key.clone();
+    set_state(&home.env(), &inv, "openclaw", &keyed, Wanted::Off, &writer).unwrap();
+    let text = home.read(".openclaw/openclaw.json");
+    assert!(
+        text.contains("keyed-tool") && !text.contains("\"keyed\""),
+        "{text}"
+    );
+    let inv = scan(&home.env(), &only(&["openclaw"]), None);
+    assert_eq!(state(&inv, "keyed", "openclaw"), Some(State::Off));
+
+    // A root $include is refused: a skills key next to it would override it.
+    home.write(".openclaw/openclaw.json", "{ $include: './base.json5' }\n");
+    let inv = scan(&home.env(), &only(&["openclaw"]), None);
+    assert!(set_state(&home.env(), &inv, "openclaw", &deploy, Wanted::Off, &writer).is_err());
+    assert_eq!(
+        home.read(".openclaw/openclaw.json"),
+        "{ $include: './base.json5' }\n"
+    );
+    home.write(".openclaw/openclaw.json", config);
+
     // A state dir of its own drops the personal ~/.agents/skills.
     let mut env = home.env();
     env.openclaw = crate::clients::openclaw::dirs(&home.path(""), &|key| {
