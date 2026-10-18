@@ -398,6 +398,12 @@ dialog-host > dialog.alert .response-area > button.destructive-action {{
 .toolport-page-subtitle {{ font-size: 13px; font-weight: 400; }}
 .toolport-page-back-divider {{ margin: 4px 0; background: @toolport_border; }}
 .toolport-page-actions button, .toolport-page-actions menubutton > button {{ min-height: 32px; padding-top: 0; padding-bottom: 0; }}
+.toolport-page-actions button.toolport-secondary-action,
+.toolport-page-actions menubutton.toolport-secondary-action > button {{ background: @toolport_sidebar; border: 1px solid @toolport_border; border-radius: 8px; }}
+.toolport-page-actions button.toolport-secondary-action:hover,
+.toolport-page-actions menubutton.toolport-secondary-action > button:hover {{ background: @toolport_card; }}
+.toolport-page-actions button.toolport-destructive {{ color: @toolport_error; background: alpha(@toolport_error, 0.12); border-color: transparent; }}
+.toolport-page-actions button.toolport-destructive:hover {{ background: alpha(@toolport_error, 0.20); }}
 .toolport-page-actions entry {{ min-height: 32px; padding-top: 0; padding-bottom: 0; }}
 .toolport-sidebar-brand {{ padding: 16px; }}
 .toolport-sidebar-footer {{ padding: 12px 16px; border-top: 1px solid @toolport_border; }}
