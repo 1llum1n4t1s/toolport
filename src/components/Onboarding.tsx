@@ -828,7 +828,7 @@ function Done({
           <ul className="flex flex-col gap-1.5">
             {broken.map((r) => (
               <li key={r.serverId} className="flex flex-col gap-0.5">
-                <span className="text-meta font-medium text-foreground/80">
+                <span className="text-meta font-medium text-foreground">
                   {nameFor(r.serverId)}
                 </span>
                 {r.error && (

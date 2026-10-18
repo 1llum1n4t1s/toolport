@@ -78,12 +78,14 @@
   --muted-foreground: #626b7a;
   --accent: #e8edf5;
   --accent-foreground: #20232b;
-  --destructive: oklch(0.55 0.21 27.325);
-  --success: #24774b;
-  --warning: #956016;
-  /* Info is neutral: notices that need no action use secondary text on a muted tint. */
+  --destructive: oklch(0.51 0.21 27.325);
+  --success: #1a7044;
+  --warning: #8c5705;
+  /* Info is neutral: notices that need no action use secondary text on a muted tint.
+     Status colors reach 4.5:1 on the page, cards and muted panels, with or without
+     their own 12% badge tint. */
   --info: var(--muted-foreground);
-  --owned: oklch(0.6 0.15 232.661);
+  --owned: oklch(0.475 0.15 232.661);
   --border: #dce1e8;
   --input: #dce1e8;
   --ring: #2862b9;
@@ -124,7 +126,7 @@
   --muted-foreground: #a1a9b8;
   --accent: #2c3442;
   --accent-foreground: #e8e9ec;
-  --destructive: oklch(0.704 0.191 22.216);
+  --destructive: oklch(0.799 0.191 22.216);
   --success: #7fd0a0;
   --warning: #f0c674;
   --info: var(--muted-foreground);

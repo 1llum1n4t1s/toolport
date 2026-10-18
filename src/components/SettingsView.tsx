@@ -159,7 +159,7 @@ function PinnedPrerequisites({
               key={`${p.serverId}:${p.tool}`}
               className="flex items-center gap-2 text-meta"
             >
-              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground/90">
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
                 {p.tool}
               </code>
               <span className="text-muted-foreground">{p.server}</span>
@@ -255,11 +255,11 @@ function FolderRouting({
         <ul className="mt-2 space-y-1">
           {mappings.map((m) => (
             <li key={m.path} className="flex items-center gap-2 text-meta">
-              <code className="truncate rounded bg-muted px-1.5 py-0.5 font-mono text-foreground/90">
+              <code className="truncate rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
                 {m.path}
               </code>
               <span className="shrink-0 text-muted-foreground">{translate("→")}</span>
-              <span className="shrink-0 text-foreground/90">{label(m.profile)}</span>
+              <span className="shrink-0 text-foreground">{label(m.profile)}</span>
               <button
                 onClick={() => save(mappings.filter((x) => x.path !== m.path))}
                 disabled={busy}
@@ -573,7 +573,7 @@ function ProfileToolScope({
                             onChange={() => toggleTool(serverId, tool, allTools)}
                             className="size-3.5"
                           />
-                          <code className="font-mono text-foreground/90">{tool}</code>
+                          <code className="font-mono text-foreground">{tool}</code>
                         </label>
                       ))}
                     </div>

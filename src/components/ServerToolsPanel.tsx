@@ -126,7 +126,7 @@ function ToolOverrideEditor({
         className="flex w-full items-center gap-2 px-3 py-2 text-meta text-muted-foreground"
       >
         <Pencil className="size-3.5 shrink-0" />
-        <span className="font-medium text-foreground/80">
+        <span className="font-medium text-muted-foreground">
           {t("Override how clients see this tool")}
         </span>
         {hasOverride && (

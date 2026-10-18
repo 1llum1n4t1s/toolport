@@ -426,7 +426,7 @@ function QuietDriftHistory({
           className="flex flex-1 items-center gap-2 text-left"
         >
           <History className="size-3.5 shrink-0" />
-          <span className="font-medium text-foreground/80">
+          <span className="font-medium text-muted-foreground">
             {tr("New & changed tools")}
           </span>
           <span className="rounded-full bg-muted px-1.5 py-0.5 font-medium">
@@ -1443,7 +1443,7 @@ function DiscoveryTraces({
       <div className="mb-6 rounded-lg border border-border/60 bg-muted/20 p-4 text-meta text-muted-foreground">
         <div className="mb-1 flex items-center gap-2">
           <Search className="size-4 shrink-0 text-owned" />
-          <span className="font-medium text-foreground/80">{tr("Discovery")}</span>
+          <span className="font-medium text-muted-foreground">{tr("Discovery")}</span>
         </div>
         {searches > 0
           ? tr(

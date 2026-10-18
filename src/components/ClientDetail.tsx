@@ -665,7 +665,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
               {scopeServers(currentScope).map((s) => (
                 <span
                   key={s.id}
-                  className="rounded-md border border-border/60 bg-muted/40 px-2 py-1 font-mono text-meta text-foreground/90"
+                  className="rounded-md border border-border/60 bg-muted/40 px-2 py-1 font-mono text-meta text-foreground"
                 >
                   {s.name}
                 </span>
@@ -972,7 +972,7 @@ function ServerMiniCard({
 }) {
   const { t } = useI18n();
   return (
-    <Card aria-disabled={imported} className={`gap-0 ${imported ? "opacity-70" : ""}`}>
+    <Card aria-disabled={imported} className={`gap-0 ${imported ? "bg-muted" : ""}`}>
       <CardContent className="flex flex-col gap-2 p-3">
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1.5">

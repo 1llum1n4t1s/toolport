@@ -309,7 +309,7 @@ export function PendingApprovals({
                     window is the only place they appear, and the model never sees them. */}
                 {piiRelease && (
                   <div className="mb-3">
-                    <div className="mb-1 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
+                    <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                       <Trans
                         message={msg("Would send to {value1}")}
                         values={{ value1: piiRelease.server }}
@@ -348,7 +348,7 @@ export function PendingApprovals({
                 )}
 
                 <div className="mb-3">
-                  <div className="mb-1 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
+                  <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     {urlElicitation
                       ? translate("Why this is needed")
                       : translate("Arguments")}
@@ -437,7 +437,7 @@ export function PendingApprovals({
                     <button
                       disabled={isBusy}
                       onClick={() => void decide(a.id, true, "session")}
-                      className="font-medium text-foreground/80 underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+                      className="font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
                     >
                       {translate("Allow for this session")}
                     </button>
@@ -445,7 +445,7 @@ export function PendingApprovals({
                     <button
                       disabled={isBusy}
                       onClick={() => void decide(a.id, true, "always")}
-                      className="font-medium text-foreground/80 underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+                      className="font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
                     >
                       {translate("Always allow this tool")}
                     </button>
