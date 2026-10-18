@@ -401,7 +401,17 @@ pub(crate) fn dirs(user_home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Di
     };
     let config = env("OPENCLAW_CONFIG_PATH")
         .and_then(expand)
-        .unwrap_or_else(|| state.join("openclaw.json"));
+        .unwrap_or_else(|| {
+            // The active config is independent of the selected state directory.
+            // Search every existing candidate before creating a canonical file.
+            env("OPENCLAW_STATE_DIR")
+                .and_then(expand)
+                .into_iter()
+                .chain([home.join(".openclaw"), home.join(".clawdbot")])
+                .flat_map(|dir| [dir.join("openclaw.json"), dir.join("clawdbot.json")])
+                .find(|path| path.exists())
+                .unwrap_or_else(|| state.join("openclaw.json"))
+        });
     let root = match std::fs::read_to_string(&config) {
         Ok(text) => parse_json_value(&text).ok(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(serde_json::json!({})),

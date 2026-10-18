@@ -6,6 +6,12 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenClaw Connect edits the active legacy config instead of creating a file
+  that hides it. Skills honor the OS personal home, later extra-directory
+  precedence and installed source-origin keys.
+
 ### Added
 
 - DeepSeek Harness (`dsh`) as a supported client. Connect adds the gateway to

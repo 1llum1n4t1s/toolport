@@ -2321,7 +2321,7 @@ fn openclaw_skill_roots(env: &Env) -> Vec<Root> {
     ];
     if dirs.default_state {
         roots.push(Root::deep(
-            dirs.home.join(".agents").join("skills"),
+            env.home.join(".agents").join("skills"),
             msg("shared ~/.agents/skills"),
         ));
     }
@@ -2332,7 +2332,9 @@ fn openclaw_skill_roots(env: &Env) -> Vec<Root> {
     let extra = read_json(&dirs.config)
         .as_ref()
         .and_then(|v| v.get("skills")?.get("load")?.get("extraDirs").cloned());
-    for dir in string_list(extra.as_ref()) {
+    // Native merging replaces earlier names within this tier. Our scan keeps
+    // the first name, so visit extra directories from last to first.
+    for dir in string_list(extra.as_ref()).into_iter().rev() {
         let dir = match dir.strip_prefix("~/") {
             Some(rest) => dirs.home.join(rest),
             None => PathBuf::from(dir),
@@ -2358,7 +2360,7 @@ fn openclaw_skill_allowed(env: &Env, root: &Root, found: &Found, trusted: &[Path
         return false;
     }
     let dirs = &env.openclaw;
-    if root.path == dirs.state.join("skills") || root.path == dirs.home.join(".agents/skills") {
+    if root.path == dirs.state.join("skills") || root.path == env.home.join(".agents/skills") {
         return true;
     }
     if canon(&root.path).is_ok_and(|base| skill_dir.starts_with(base)) {
@@ -2370,7 +2372,7 @@ fn openclaw_skill_allowed(env: &Env, root: &Root, found: &Found, trusted: &[Path
 fn walk_openclaw_root(env: &Env, root: &Root, trusted: &[PathBuf]) -> Vec<Found> {
     let dirs = &env.openclaw;
     let folder_links =
-        root.path == dirs.state.join("skills") || root.path == dirs.home.join(".agents/skills");
+        root.path == dirs.state.join("skills") || root.path == env.home.join(".agents/skills");
     let base = canon(&root.path).ok();
     let allowed = |path: &Path| {
         folder_links
@@ -2419,8 +2421,37 @@ fn openclaw_trusted_skill_dirs(env: &Env) -> Vec<PathBuf> {
 
 /// `metadata.openclaw.skillKey` from a SKILL.md: the key OpenClaw uses for the
 /// skill under `skills.entries` instead of its name. `metadata` may be a YAML
-/// mapping or a JSON5 string, as OpenClaw reads both.
+/// mapping or a JSON5 string, as OpenClaw reads both. Without an explicit key,
+/// a contained installation-origin slug wins over the display name.
 fn openclaw_skill_key(skill_md: &Path) -> Option<String> {
+    openclaw_manifest_skill_key(skill_md).or_else(|| {
+        let skill_dir = canon(skill_md.parent()?).ok()?;
+        let origin = skill_dir.join(".openclaw/source-origin.json");
+        let real = canon(&origin).ok()?;
+        if !real.starts_with(&skill_dir) {
+            return None;
+        }
+        let metadata = std::fs::metadata(&real).ok()?;
+        if !metadata.is_file() || metadata.len() > 16_384 {
+            return None;
+        }
+        use std::io::Read;
+        let mut text = String::new();
+        std::fs::File::open(&real)
+            .ok()?
+            .take(16_385)
+            .read_to_string(&mut text)
+            .ok()?;
+        if text.len() > 16_384 {
+            return None;
+        }
+        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let slug = value.get("slug")?.as_str()?.trim();
+        (!slug.is_empty()).then(|| slug.to_string())
+    })
+}
+
+fn openclaw_manifest_skill_key(skill_md: &Path) -> Option<String> {
     let text = read_text(skill_md)?;
     let rest = text.trim_start_matches('\u{feff}').strip_prefix("---")?;
     let yaml = &rest[..rest.find("\n---")?];

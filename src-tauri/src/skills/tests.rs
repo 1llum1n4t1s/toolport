@@ -2691,3 +2691,136 @@ fn nanobot_package_discovery_applies_pyyaml_string_metadata_semantics() {
         BTreeSet::from(["quoted", "tagged", "block", "alias", "merge"])
     );
 }
+
+#[test]
+fn openclaw_personal_skills_use_os_home_with_relocated_openclaw_home() {
+    let home = Home::new();
+    let personal = home.skill("library/personal", "personal", "OS home");
+    home.link(".agents/skills/personal", personal.parent().unwrap());
+    home.skill(
+        "relocated/.agents/skills/unrelated",
+        "unrelated",
+        "Wrong home",
+    );
+    let mut env = home.env();
+    env.openclaw = crate::clients::openclaw::dirs(&home.root, &|key| {
+        (key == "OPENCLAW_HOME").then(|| home.path("relocated").to_string_lossy().into_owned())
+    });
+    let inv = scan(&env, &only(&["openclaw"]), None);
+    assert_eq!(state(&inv, "personal", "openclaw"), Some(State::On));
+    assert!(!inv
+        .skills
+        .iter()
+        .any(|s| s.name == "unrelated" && s.states.contains_key("openclaw")));
+}
+
+#[test]
+fn openclaw_later_extra_directory_wins_and_toggles_its_key() {
+    let home = Home::new();
+    for (dir, key) in [("extra-a", "copy-a"), ("extra-b", "copy-b")] {
+        home.write(&format!("{dir}/demo/SKILL.md"), &format!("---\nname: demo\ndescription: {key}\nmetadata:\n  openclaw:\n    skillKey: {key}\n---\n"));
+    }
+    home.write(".openclaw/openclaw.json", &serde_json::json!({"skills":{"load":{"extraDirs":[home.path("extra-a"), home.path("extra-b")]}}}).to_string());
+    let env = home.env();
+    let inv = scan(&env, &only(&["openclaw"]), None);
+    let winner = inv
+        .skills
+        .iter()
+        .find(|s| s.name == "demo" && s.states["openclaw"].state == State::On)
+        .unwrap();
+    assert_eq!(winner.description, "copy-b");
+    set_state(
+        &env,
+        &inv,
+        "openclaw",
+        &winner.key,
+        Wanted::Off,
+        &TestWriter::default(),
+    )
+    .unwrap();
+    let config = read_json(&home.path(".openclaw/openclaw.json")).unwrap();
+    assert_eq!(config["skills"]["entries"]["copy-b"]["enabled"], false);
+    assert!(config["skills"]["entries"].get("copy-a").is_none());
+}
+
+#[test]
+fn openclaw_installed_skill_origin_key_controls_inventory_and_toggle() {
+    let home = Home::new();
+    home.skill(".openclaw/skills/installed", "Display Demo", "Installed");
+    home.write(
+        ".openclaw/skills/installed/.openclaw/source-origin.json",
+        r#"{"slug":" catalog-demo "}"#,
+    );
+    home.write(
+        ".openclaw/openclaw.json",
+        r#"{"skills":{"entries":{"catalog-demo":{"enabled":false}}}}"#,
+    );
+    let env = home.env();
+    let inv = scan(&env, &only(&["openclaw"]), None);
+    assert_eq!(state(&inv, "Display Demo", "openclaw"), Some(State::Off));
+    let key = skill(&inv, "Display Demo").key.clone();
+    set_state(
+        &env,
+        &inv,
+        "openclaw",
+        &key,
+        Wanted::On,
+        &TestWriter::default(),
+    )
+    .unwrap();
+    let inv = scan(&env, &only(&["openclaw"]), None);
+    set_state(
+        &env,
+        &inv,
+        "openclaw",
+        &key,
+        Wanted::Off,
+        &TestWriter::default(),
+    )
+    .unwrap();
+    let config = read_json(&home.path(".openclaw/openclaw.json")).unwrap();
+    assert_eq!(
+        config["skills"]["entries"]["catalog-demo"]["enabled"],
+        false
+    );
+    assert!(config["skills"]["entries"].get("Display Demo").is_none());
+}
+
+#[test]
+fn openclaw_origin_key_falls_back_safely_and_manifest_wins() {
+    let home = Home::new();
+    let file = home.skill(".openclaw/skills/demo", "Demo", "Demo");
+    let origin = ".openclaw/skills/demo/.openclaw/source-origin.json";
+    for content in [
+        r#"{"slug":""}"#,
+        r#"{"slug":42}"#,
+        "broken",
+        &" ".repeat(16_385),
+    ] {
+        home.write(origin, content);
+        assert_eq!(openclaw_skill_key(&file), None);
+    }
+    home.write(origin, r#"{"slug":"catalog-demo"}"#);
+    assert_eq!(openclaw_skill_key(&file).as_deref(), Some("catalog-demo"));
+    home.write(
+        ".openclaw/skills/demo/SKILL.md",
+        "---\nname: Demo\nmetadata: {openclaw: {skillKey: explicit}}\n---\n",
+    );
+    assert_eq!(openclaw_skill_key(&file).as_deref(), Some("explicit"));
+}
+
+#[cfg(unix)]
+#[test]
+fn openclaw_origin_metadata_rejects_directory_and_file_escapes() {
+    let home = Home::new();
+    let file = home.skill(".openclaw/skills/demo", "Demo", "Demo");
+    home.write("outside/source-origin.json", r#"{"slug":"escaped"}"#);
+    home.link(".openclaw/skills/demo/.openclaw", &home.path("outside"));
+    assert_eq!(openclaw_skill_key(&file), None);
+    std::fs::remove_file(home.path(".openclaw/skills/demo/.openclaw")).unwrap();
+    home.link(
+        ".openclaw/skills/demo/.openclaw/source-origin.json",
+        &home.path("outside/source-origin.json"),
+    );
+    assert_eq!(openclaw_skill_key(&file), None);
+}
