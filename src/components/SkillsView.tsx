@@ -1781,7 +1781,7 @@ export function SkillsView() {
       items: visibleSkills.filter((s) => s.source === source),
     })).filter((g) => g.items.length > 0);
     body = (
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
+      <div className="grid gap-6 @min-[981px]:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
         <section ref={gridRef} aria-label={t("Skills")} className="min-w-0">
           {banner}
           <AgentHeader
@@ -1891,7 +1891,7 @@ export function SkillsView() {
         </section>
         <aside
           aria-label={t("Skill details")}
-          className="min-w-0 lg:sticky lg:top-0 lg:max-h-[calc(100vh-9rem)] lg:self-start lg:overflow-y-auto lg:border-l lg:pl-6"
+          className="min-w-0 @min-[981px]:sticky @min-[981px]:top-0 @min-[981px]:max-h-[calc(100vh-9rem)] @min-[981px]:self-start @min-[981px]:overflow-y-auto @min-[981px]:border-l @min-[981px]:pl-6"
         >
           {skill ? (
             <SkillDetail
@@ -1914,7 +1914,7 @@ export function SkillsView() {
       .map((scope) => ({ scope, items: visibleRules.filter((r) => r.scope === scope) }))
       .filter((g) => g.items.length > 0);
     body = (
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
+      <div className="grid gap-6 @min-[981px]:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
         <section ref={gridRef} aria-label={t("Rules")} className="min-w-0">
           {banner}
           <AgentHeader
@@ -2004,7 +2004,7 @@ export function SkillsView() {
         </section>
         <aside
           aria-label={t("Rules file details")}
-          className="min-w-0 lg:sticky lg:top-0 lg:max-h-[calc(100vh-9rem)] lg:self-start lg:overflow-y-auto lg:border-l lg:pl-6"
+          className="min-w-0 @min-[981px]:sticky @min-[981px]:top-0 @min-[981px]:max-h-[calc(100vh-9rem)] @min-[981px]:self-start @min-[981px]:overflow-y-auto @min-[981px]:border-l @min-[981px]:pl-6"
         >
           {rule ? (
             <RuleDetail rule={rule} agents={inv.agents} project={project} />
@@ -2018,7 +2018,7 @@ export function SkillsView() {
     );
   } else {
     body = (
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
+      <div className="grid gap-6 @min-[981px]:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
         <section aria-label={t("Needs a look")} className="flex min-w-0 flex-col gap-3">
           {activeIssues.length === 0 ? (
             <EmptyState
@@ -2068,7 +2068,10 @@ export function SkillsView() {
             </>
           )}
         </section>
-        <aside aria-label={t("By agent")} className="min-w-0 lg:border-l lg:pl-6">
+        <aside
+          aria-label={t("By agent")}
+          className="min-w-0 @min-[981px]:border-l @min-[981px]:pl-6"
+        >
           <AgentSummary inv={inv} />
         </aside>
       </div>
@@ -2080,6 +2083,7 @@ export function SkillsView() {
       {header}
       <div
         role="tabpanel"
+        className="@container"
         id={`skills-panel-${tab}`}
         aria-labelledby={`skills-tab-${tab}`}
       >
