@@ -49,7 +49,7 @@ const agents: SkillAgent[] = [
     "~/.config/opencode/skills",
     "~/.agents/skills",
   ]),
-  agent("grok", "Grok", false, "Turn skills off with /skills inside Grok.", [
+  agent("grok", "Grok", true, "[skills] disabled in ~/.grok/config.toml", [
     "~/.grok/skills",
     "~/.agents/skills",
   ]),
