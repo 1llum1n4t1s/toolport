@@ -271,12 +271,11 @@ fn insert_entries(text: &str, row: Span, value: &Yaml) -> Option<Vec<Entry>> {
 /// Strip `by` leading columns from every line that has them.
 fn dedent(text: &str, by: usize) -> String {
     text.split_inclusive('\n')
-        .map(|line| {
-            if line.len() >= by && line[..by].bytes().all(|b| b == b' ') {
-                &line[by..]
-            } else {
-                line.trim_start_matches(' ')
-            }
+        // Checked as bytes: a shallower comment line can hold a multibyte
+        // character across column `by`.
+        .map(|line| match line.as_bytes().get(..by) {
+            Some(head) if head.iter().all(|&b| b == b' ') => &line[by..],
+            _ => line.trim_start_matches(' '),
         })
         .collect()
 }

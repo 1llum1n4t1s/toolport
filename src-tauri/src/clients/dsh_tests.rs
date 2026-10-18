@@ -293,6 +293,11 @@ fn odd_but_valid_files_still_edit_cleanly() {
     assert_eq!(out, "# end\n[]\n");
     assert!(normalized(&out).unwrap().get(KEY).is_none());
 
+    // A shallower comment with multibyte text inside an entry.
+    let note = "- insert:\n    - id: mcp-a\n# 记忆服务\n      name: '@deepseek-ai/dsh-mcp-client'\n      config: {serverName: a, transport: stdio, command: a}\n";
+    assert_eq!(servers(note).unwrap().len(), 1);
+    assert!(raw_entries(note).unwrap()[0].1.contains("# 记忆服务"));
+
     // A byte order mark stays and does not block edits.
     let bom = format!("\u{feff}{BUSY}");
     let out = without(&bom, "web");

@@ -1313,7 +1313,8 @@ fn agent_defs() -> Vec<AgentDef> {
             &["AGENTS.md", "CLAUDE.md", "AGENTS.local.md", "CLAUDE.local.md"],
         )
         .switch(Switch::None(NO_SWITCH))
-        .project_walk(ProjectWalk::FLAT),
+        // Project roots rank first in dsh-skill-filesystem (100, 200).
+        .project_walk(ProjectWalk::FLAT.first()),
         docs_agent(
             "tabnine",
             "Tabnine",
