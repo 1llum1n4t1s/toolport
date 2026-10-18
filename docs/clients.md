@@ -97,7 +97,12 @@ dsh connects to stdio and Streamable HTTP servers, so an SSE server can't be
 moved into its config, and server names are limited to letters, digits, `-` and
 `_` (32 at most). If a patch file is written in a layout Toolport can't edit
 exactly, such as a single-line flow list, Toolport leaves it untouched and says
-so.
+so. Groups created in the home patch are resolved in file order, including
+later group disables. Inserts targeting an uninspected profile layer stay
+untouched and are not offered as active servers. You can still connect the
+gateway. Locally targeted server inserts can be edited in place. Grouped
+servers stay in dsh when importing: moving them would lose their group's
+activation context.
 
 ### Reasonix setup
 

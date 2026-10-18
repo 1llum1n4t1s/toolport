@@ -151,13 +151,6 @@ fn a_changed_server_keeps_its_id_and_its_place() {
         .find(|s| s.name == "toolport")
         .unwrap();
     assert_eq!(gateway.args, ["--stdio", "--profile", "Work"]);
-
-    // An entry inside a group's insert row stays in the group.
-    let group = "- id: tools\n  insert:\n    - id: mcp-a\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: a\n        transport: stdio\n        command: a\n";
-    let mut want = desired(group);
-    want["a"]["command"] = "b".into();
-    let out = sync(Some(group), &want, &BTreeMap::new()).unwrap();
-    assert_eq!(out, group.replace("command: a", "command: b"));
 }
 
 #[test]
@@ -414,4 +407,80 @@ fn a_disabled_server_counts_as_other_settings() {
     let rows = normalized(&text).unwrap()["rows"].to_string();
     assert!(rows.contains("http://localhost:3000/mcp"), "{rows}");
     assert!(!rows.contains("mcp-server-memory"), "{rows}");
+}
+
+const LOCAL_GROUP: &str = "- insert:\n    - id: tools\n      group: true\n      config: []\n- id: tools\n  insert:\n    - id: local-server\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: local\n        transport: stdio\n        command: /local/server\n";
+
+#[test]
+fn locally_resolved_groups_can_connect_and_edit_their_server() {
+    assert_eq!(servers(LOCAL_GROUP).unwrap()[0].name, "local");
+    let connected = with(LOCAL_GROUP, &stdio("toolport"));
+    assert!(connected.starts_with(LOCAL_GROUP), "{connected}");
+    assert_eq!(
+        without(&connected, "toolport").trim_end(),
+        LOCAL_GROUP.trim_end()
+    );
+    let mut moved = desired(LOCAL_GROUP);
+    moved.remove("local");
+    assert!(sync(Some(LOCAL_GROUP), &moved, &Default::default())
+        .unwrap_err()
+        .contains("activation context"));
+    assert!(raw_entries(LOCAL_GROUP).unwrap().is_empty());
+    let mut want = desired(LOCAL_GROUP);
+    want["local"]["command"] = "/updated/server".into();
+    let edited = sync(Some(LOCAL_GROUP), &want, &Default::default()).unwrap();
+    assert!(edited.contains("- id: tools\n  insert:"));
+    assert_eq!(
+        servers(&edited).unwrap()[0].command.as_deref(),
+        Some("/updated/server")
+    );
+}
+
+#[test]
+fn skipped_and_disabled_group_entries_do_not_block_connect() {
+    for text in [
+        LOCAL_GROUP.replace("- id: tools\n  insert:", "- id: missing\n  insert:"),
+        LOCAL_GROUP.replace("group: true", "group: false"),
+        LOCAL_GROUP.replace("group: true", "group: true\n      disabled: true"),
+        format!("{LOCAL_GROUP}- id: tools\n  disabled: true\n"),
+        format!("{LOCAL_GROUP}- id: tools\n  config: []\n"),
+        LOCAL_GROUP.replace(
+            "- id: tools\n  insert:",
+            "- id: !!js process.env.GROUP_ID\n  insert:",
+        ),
+    ] {
+        assert!(servers(&text).unwrap().is_empty());
+        let connected = with(&text, &stdio("toolport"));
+        assert!(connected.starts_with(&text), "{connected}");
+        assert_eq!(without(&connected, "toolport").trim_end(), text.trim_end());
+    }
+    let unrelated = "- insert:\n    - id: tools\n      group: true\n      config: []\n- id: tools\n  insert: []\n- id: profile-group\n  insert:\n    - id: other\n      name: other-plugin\n";
+    assert!(with(unrelated, &stdio("toolport")).starts_with(unrelated));
+}
+
+#[test]
+fn group_context_is_kept_when_editing_unrelated_servers() {
+    // A server nested inside a group config has no independent line span.
+    let text = "- insert:\n    - id: tools\n      group: true\n      config:\n        - id: nested\n          name: '@deepseek-ai/dsh-mcp-client'\n          config: {serverName: nested, transport: stdio, command: nested}\n";
+    assert_eq!(servers(text).unwrap()[0].name, "nested");
+    assert!(with(text, &stdio("toolport")).starts_with(text));
+    let disabled = format!("{text}- id: tools\n  disabled: true\n");
+    assert!(servers(&disabled).unwrap().is_empty());
+}
+
+#[test]
+fn group_replacement_children_are_not_new_patch_targets() {
+    let child = "    - id: new-server\n      name: '@deepseek-ai/dsh-mcp-client'\n      config: {serverName: new, transport: stdio, command: /new/server}\n";
+    let replaced = format!("- insert:\n    - id: tools\n      group: true\n      config: []\n- id: tools\n  config:\n{child}- id: new-server\n  config: {{serverName: new, transport: stdio, command: /wrong/server}}\n");
+    assert_eq!(
+        servers(&replaced).unwrap()[0].command.as_deref(),
+        Some("/new/server")
+    );
+    assert!(with(&replaced, &stdio("toolport")).starts_with(&replaced));
+    for text in [
+        format!("- insert:\n    - id: tools\n      group: false\n      config:\n{}- id: tools\n  group: true\n", child.lines().map(|line| format!("    {line}\n")).collect::<String>()),
+        format!("- insert:\n    - id: tools\n      group: true\n      config: []\n- id: tools\n  group: false\n  config:\n{child}- id: tools\n  group: true\n"),
+    ] {
+        assert_eq!(servers(&text).unwrap()[0].command.as_deref(), Some("/new/server"));
+    }
 }

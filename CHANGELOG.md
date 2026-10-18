@@ -11,6 +11,9 @@ Entries before the rename below shipped under the project's former name, Conduit
 - OpenClaw Connect edits the active legacy config instead of creating a file
   that hides it. Skills honor the OS personal home, later extra-directory
   precedence and installed source-origin keys.
+- Resolve DeepSeek Harness home-patch groups and their activation in file
+  order. Keep skipped group inserts out of active imports while allowing
+  unrelated gateway connections.
 
 - nanobot imports now accept the defaults nanobot saves. Incomplete server
   entries no longer hide working servers, and GTK keeps Connect available on
