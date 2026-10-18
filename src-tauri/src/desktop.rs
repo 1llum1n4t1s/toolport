@@ -2282,6 +2282,55 @@ async fn open_skill_path(
     .map_err(|e| e.to_string())?
 }
 
+/// Open a skill or rules file in `app` and keep using that app for these files.
+#[tauri::command]
+async fn open_skill_path_with(
+    path: String,
+    app: String,
+    project: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::skills::open_path_with(&path, &app, project.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Apps that can open a file like `path`, for the Open button's menu.
+#[tauri::command]
+async fn skill_open_apps(path: String) -> Vec<crate::skills::OpenApp> {
+    tauri::async_runtime::spawn_blocking(move || crate::skills::open_apps(&path))
+        .await
+        .unwrap_or_default()
+}
+
+/// Move a skill to the trash and remove the links that reach it.
+#[tauri::command]
+async fn remove_skill(
+    key: String,
+    project: Option<String>,
+) -> Result<crate::skills::Removed, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::skills::remove_skill(&key, project.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Hide a "Needs a look" item until it changes, or show it again.
+#[tauri::command]
+async fn dismiss_skill_issue(
+    fingerprint: String,
+    dismissed: bool,
+    project: Option<String>,
+) -> Result<crate::skills::Inventory, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::skills::dismiss_issue(&fingerprint, dismissed, project.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn team_sync_status() -> crate::team_sync_status::SyncStatus {
     tauri::async_runtime::spawn_blocking(crate::team_sync_status::current)
@@ -4459,6 +4508,10 @@ pub fn run() {
             skills_inventory,
             set_skill_state,
             fix_skill_issue,
+            open_skill_path_with,
+            skill_open_apps,
+            remove_skill,
+            dismiss_skill_issue,
             open_skill_path,
             team_sync_status,
             team_disconnect,

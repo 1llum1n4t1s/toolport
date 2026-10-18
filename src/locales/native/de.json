@@ -1127,5 +1127,12 @@
   "{value1} arrived from another machine": "{value1} kam von einer anderen Maschine",
   "{value1} could not sync": "{value1} konnte nicht synchronisiert werden",
   "{value1} · {value2} · config version {value3}": "{value1} · {value2} · Konfigurationsversion {value3}",
-  "{value1}. Last successful sync: {last}.": "{value1}. Letzte erfolgreiche Synchronisierung: {last}."
+  "{value1}. Last successful sync: {last}.": "{value1}. Letzte erfolgreiche Synchronisierung: {last}.",
+  "Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "Diese Clients laden jeden Skill in ihren Ordnern und haben keinen Schalter. Entfernen Sie einen Skill, den Sie nirgends möchten, oder blenden Sie dies aus, wenn es so passt.",
+  "That skill is already gone. Refresh to see the latest.": "Dieser Skill ist bereits weg. Aktualisieren Sie, um den neuesten Stand zu sehen.",
+  "Toolport only removes your own skills, not ones from a package, an account or a client.": "Toolport entfernt nur Ihre eigenen Skills, keine aus einem Paket, einem Konto oder einem Client.",
+  "Toolport only removes skill folders.": "Toolport entfernt nur Skill-Ordner.",
+  "Couldn't find Toolport's data folder": "Der Datenordner von Toolport wurde nicht gefunden",
+  "That app can't open this file.": "Diese App kann die Datei nicht öffnen.",
+  "Default text editor": "Standard-Texteditor"
 }

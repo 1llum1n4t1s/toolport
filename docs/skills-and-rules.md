@@ -9,16 +9,32 @@ Open it from **Skills** in the sidebar. It has three tabs.
 
 - **Skills** lists every skill Toolport found, grouped by where it came from: your
   own folders, your claude.ai account, a system package, a client's built-in set, a
-  client's own library, or parked. Each row shows its state in every agent: on,
-  name only, off, another copy wins, broken or not loaded. Click an agent's icon to
-  show only what that agent loads. Pick a skill to see its description, its file,
-  the paths that reach it and its state in each agent.
+  client's own library, or parked. Only your own skills start expanded. Each row
+  shows its state in every agent: on, name only, off, another copy wins, broken or
+  not loaded. Click an agent's icon to show only what that agent loads. Pick a skill
+  to see its description, its file, the paths that reach it and its state in each
+  agent.
 - **Rules** lists the rules files each agent reads, and how it gets there: the file
   it opens, any symlinks, and the `@import` lines it follows or skips.
 - **Needs a look** lists problems Toolport found, with a fix where one is safe.
 
 By default the page shows your global setup. Use **Add a project folder** to also
 include the skills and rules files a project adds.
+
+In a narrow or tiled window, the details move under the list.
+
+## Opening and removing files
+
+**Open SKILL.md** and **Open file** use your system's default app for the file.
+The arrow beside them lists the other apps that open text files. Pick one and
+Toolport opens the file there and uses that app from then on.
+
+The trash button removes a skill you own, from your folders, a client's library or
+the parked folder. Its folder goes to the trash, where you can restore it, and the
+links that reach it are deleted, so no agent loads it. A skill that only reaches
+your skills folders through a link, such as one kept in a repo, loses the link and
+its folder stays where it is. Skills from a package, your claude.ai account or a
+client's built-in set can't be removed here.
 
 ## Turning a skill on or off
 
@@ -85,4 +101,7 @@ which copy wins in each agent and marks the other as **another copy wins**.
 - Agents that read your rules file but skip its `@import` lines.
 - Agents that get no global rules file.
 
-Every fix asks for confirmation first.
+Every fix asks for confirmation first. **Dismiss** hides an item you're fine with.
+It comes back if the skills or agents it covers change, and **Show again** in the
+Dismissed section brings it back sooner. Click a skill's name in an item to open it
+on the Skills tab.

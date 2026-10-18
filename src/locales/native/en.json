@@ -1127,5 +1127,12 @@
   "{value1} arrived from another machine": "{value1} arrived from another machine",
   "{value1} could not sync": "{value1} could not sync",
   "{value1} · {value2} · config version {value3}": "{value1} · {value2} · config version {value3}",
-  "{value1}. Last successful sync: {last}.": "{value1}. Last successful sync: {last}."
+  "{value1}. Last successful sync: {last}.": "{value1}. Last successful sync: {last}.",
+  "Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.",
+  "That skill is already gone. Refresh to see the latest.": "That skill is already gone. Refresh to see the latest.",
+  "Toolport only removes your own skills, not ones from a package, an account or a client.": "Toolport only removes your own skills, not ones from a package, an account or a client.",
+  "Toolport only removes skill folders.": "Toolport only removes skill folders.",
+  "Couldn't find Toolport's data folder": "Couldn't find Toolport's data folder",
+  "That app can't open this file.": "That app can't open this file.",
+  "Default text editor": "Default text editor"
 }

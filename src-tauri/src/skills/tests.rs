@@ -66,6 +66,7 @@ impl Drop for Home {
 #[derive(Default)]
 struct TestWriter {
     backups: RefCell<Vec<(String, PathBuf)>>,
+    trashed: RefCell<Vec<PathBuf>>,
 }
 
 impl Writer for TestWriter {
@@ -79,6 +80,10 @@ impl Writer for TestWriter {
     }
     fn remove_link(&self, path: &Path) -> Result<(), String> {
         std::fs::remove_file(path).map_err(|e| e.to_string())
+    }
+    fn trash(&self, path: &Path) -> Result<(), String> {
+        self.trashed.borrow_mut().push(path.into());
+        std::fs::remove_dir_all(path).map_err(|e| e.to_string())
     }
 }
 
@@ -682,6 +687,64 @@ fn opencode_wildcards_decide_state_and_writes_never_widen_a_blanket_rule() {
 }
 
 #[test]
+fn opencode_permission_shorthand_is_spelled_out_not_refused() {
+    // `"permission": "allow"` is what OpenCode writes for "allow everything".
+    let mut config = serde_json::json!({"permission": "allow", "mcp": {}});
+    opencode_toggle(&mut config, "orca-cli", true).unwrap();
+    assert_eq!(
+        config,
+        serde_json::json!({
+            "permission": {"*": "allow", "skill": {"orca-cli": "deny"}},
+            "mcp": {}
+        })
+    );
+    assert_eq!(
+        opencode_denied(&config),
+        BTreeSet::from(["orca-cli".to_string()])
+    );
+    // A blanket deny turns every skill off; turning one back on adds an explicit allow.
+    let mut deny_all = serde_json::json!({"permission": "deny"});
+    assert!(rules_deny(&opencode_rules(&deny_all), "inbox"));
+    opencode_toggle(&mut deny_all, "inbox", false).unwrap();
+    assert!(!rules_deny(&opencode_rules(&deny_all), "inbox"));
+    assert!(rules_deny(&opencode_rules(&deny_all), "other"));
+    // v2 all-actions rules reach skills only when they cover every resource.
+    let v2 = serde_json::json!({"permissions": [
+        {"action": "*", "resource": "*", "effect": "deny"},
+        {"action": "*", "resource": "inbox", "effect": "allow"}
+    ]});
+    assert!(rules_deny(&opencode_rules(&v2), "inbox"));
+}
+
+#[test]
+fn opencode_permission_shorthand_scans_and_toggles_end_to_end() {
+    let home = Home::new();
+    home.skill(".agents/skills/inbox", "inbox", "Inbox");
+    home.write(
+        ".config/opencode/opencode.json",
+        r#"{"permission": "allow", "mcp": {"toolport": {"type": "local"}}}"#,
+    );
+    let inv = scan(&home.env(), &only(&["opencode"]), None);
+    assert_eq!(state(&inv, "inbox", "opencode"), Some(State::On));
+    let key = skill(&inv, "inbox").key.clone();
+    set_state(
+        &home.env(),
+        &inv,
+        "opencode",
+        &key,
+        Wanted::Off,
+        &TestWriter::default(),
+    )
+    .unwrap();
+    let inv = scan(&home.env(), &only(&["opencode"]), None);
+    assert_eq!(state(&inv, "inbox", "opencode"), Some(State::Off));
+    let saved: serde_json::Value =
+        serde_json::from_str(&home.read(".config/opencode/opencode.json")).unwrap();
+    assert_eq!(saved["permission"]["*"], "allow");
+    assert_eq!(saved["mcp"]["toolport"]["type"], "local");
+}
+
+#[test]
 fn opencode_wildcard_deny_shows_skills_off() {
     let home = Home::new();
     home.skill(".agents/skills/inbox", "inbox", "Inbox");
@@ -884,4 +947,115 @@ fn lists_join_with_localized_separators() {
     let names: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
     assert_eq!(list_names(&names), "a, b and c");
     assert_eq!(list_names(&names[..2]), "a and b");
+}
+
+#[test]
+fn removing_a_skill_trashes_its_folder_and_every_link_to_it() {
+    let home = Home::new();
+    let real = home.skill(".agents/skills/orca-cli", "orca-cli", "Orca");
+    let folder = real.parent().unwrap().to_path_buf();
+    home.link(".claude/skills/orca-cli", &folder);
+    home.skill(".agents/skills/inbox", "inbox", "Inbox");
+    let env = home.env();
+    let inv = scan(&env, &all, None);
+    let key = skill(&inv, "orca-cli").key.clone();
+    let writer = TestWriter::default();
+
+    let (trashed, links) = remove_skill_files(&env, &inv, &key, &writer).unwrap();
+
+    assert_eq!(trashed.as_deref(), Some(folder.as_path()));
+    assert_eq!(links, 1);
+    assert_eq!(*writer.trashed.borrow(), vec![folder.clone()]);
+    assert!(!is_link(&home.path(".claude/skills/orca-cli")));
+    let after = scan(&env, &all, None);
+    assert!(after.skills.iter().all(|s| s.name != "orca-cli"));
+    // Nothing is left behind as a broken link, and other skills stay.
+    assert!(after.issues.iter().all(|i| i.id != "broken-links"));
+    assert!(after.skills.iter().any(|s| s.name == "inbox"));
+}
+
+#[test]
+fn removing_a_linked_skill_keeps_the_folder_it_points_at() {
+    let home = Home::new();
+    let real = home.skill("Projects/omabox/skill", "omabox", "Boxes");
+    let folder = real.parent().unwrap().to_path_buf();
+    home.link(".agents/skills/omabox", &folder);
+    let env = home.env();
+    let inv = scan(&env, &all, None);
+    let key = skill(&inv, "omabox").key.clone();
+    let writer = TestWriter::default();
+
+    let (trashed, links) = remove_skill_files(&env, &inv, &key, &writer).unwrap();
+
+    assert_eq!(trashed, None);
+    assert_eq!(links, 1);
+    assert!(writer.trashed.borrow().is_empty());
+    assert!(real.is_file(), "the repo's folder is untouched");
+    assert!(!is_link(&home.path(".agents/skills/omabox")));
+}
+
+#[test]
+fn only_your_own_skills_can_be_removed() {
+    let home = Home::new();
+    home.skill(".codex/skills/.system/imagegen", "imagegen", "Images");
+    home.skill(".claude/skills/synced/acct/notes", "notes", "Notes");
+    let env = home.env();
+    let inv = scan(&env, &all, None);
+    let writer = TestWriter::default();
+    for name in ["imagegen", "notes"] {
+        let found = skill(&inv, name);
+        assert!(!removable(found), "{name}");
+        assert!(remove_skill_files(&env, &inv, &found.key, &writer).is_err());
+    }
+    assert!(writer.trashed.borrow().is_empty());
+    assert!(home
+        .path(".codex/skills/.system/imagegen/SKILL.md")
+        .is_file());
+}
+
+#[test]
+fn issue_fingerprints_change_only_when_the_problem_does() {
+    let home = Home::new();
+    let real = home.skill(".agents/skills/pdf", "pdf", "One");
+    home.skill(".claude/skills/pdf", "pdf", "Two");
+    let _ = real;
+    let env = home.env();
+    let first = scan(&env, &all, None);
+    let again = scan(&env, &all, None);
+    let print = |inv: &Inventory| {
+        inv.issues
+            .iter()
+            .find(|i| i.id == "clashes")
+            .map(|i| i.fingerprint.clone())
+            .unwrap()
+    };
+    assert!(print(&first).starts_with("clashes:"));
+    assert_eq!(print(&first), print(&again));
+    home.skill(".claude/skills/docx", "docx", "Three");
+    home.skill(".agents/skills/docx", "docx", "Four");
+    assert_ne!(print(&first), print(&scan(&env, &all, None)));
+}
+
+#[test]
+fn opencode_v2_turn_on_counts_a_v1_blanket_deny_beside_it() {
+    let home = Home::new();
+    home.skill(".agents/skills/x", "x", "X");
+    home.write(
+        ".config/opencode/opencode.json",
+        r#"{"permission": "deny", "permissions": [{"action": "skill", "resource": "x", "effect": "deny"}]}"#,
+    );
+    let env = home.env();
+    let inv = scan(&env, &all, None);
+    let key = skill(&inv, "x").key.clone();
+    set_state(
+        &env,
+        &inv,
+        "opencode",
+        &key,
+        Wanted::On,
+        &TestWriter::default(),
+    )
+    .unwrap();
+    let after = scan(&env, &all, None);
+    assert_eq!(state(&after, "x", "opencode"), Some(State::On));
 }

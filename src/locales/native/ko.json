@@ -1127,5 +1127,12 @@
   "{value1} arrived from another machine": "{value1} 다른 기계에서 도착함",
   "{value1} could not sync": "{value1} 동기화할 수 없습니다",
   "{value1} · {value2} · config version {value3}": "{value1} · {value2} · 구성 버전 {value3}",
-  "{value1}. Last successful sync: {last}.": "{value1}. 마지막으로 성공한 동기화: {last}."
+  "{value1}. Last successful sync: {last}.": "{value1}. 마지막으로 성공한 동기화: {last}.",
+  "Those clients load every skill in their folders and have no switch. Remove a skill you don't want anywhere, or dismiss this if it's fine.": "이 클라이언트들은 폴더에 있는 모든 스킬을 불러오며 스위치가 없습니다. 어디에서도 쓰지 않을 스킬은 제거하고, 괜찮다면 이 항목을 닫으세요.",
+  "That skill is already gone. Refresh to see the latest.": "이 스킬은 이미 없습니다. 새로 고쳐 최신 상태를 확인하세요.",
+  "Toolport only removes your own skills, not ones from a package, an account or a client.": "Toolport는 직접 만든 스킬만 제거하며 패키지, 계정, 클라이언트의 스킬은 제거하지 않습니다.",
+  "Toolport only removes skill folders.": "Toolport는 스킬 폴더만 제거합니다.",
+  "Couldn't find Toolport's data folder": "Toolport 데이터 폴더를 찾을 수 없습니다",
+  "That app can't open this file.": "이 앱으로는 이 파일을 열 수 없습니다.",
+  "Default text editor": "기본 텍스트 편집기"
 }
