@@ -291,6 +291,11 @@ fn workspace_selection_matches_the_default_agents_list() {
     let env_path = env_dir.to_str().unwrap();
     for (root, raw_env, expected) in [
         (
+            serde_json::json!({"agents":{"defaults":{"workspace":"~//configured"}}}),
+            Some(env_path),
+            Some(home.join("configured")),
+        ),
+        (
             serde_json::json!({"agents":{"defaults":{"workspace":"~/configured"}}}),
             Some(env_path),
             Some(home.join("configured")),
@@ -347,4 +352,21 @@ fn workspace_selection_matches_the_default_agents_list() {
             "{root} {raw_env:?}"
         );
     }
+}
+
+#[test]
+fn automatic_legacy_state_does_not_move_the_default_workspace() {
+    let fixture = Dir::new("legacy-workspace");
+    let home = &fixture.0;
+    let legacy = home.join(".clawdbot");
+    let root = serde_json::json!({});
+    assert_eq!(
+        default_workspace(home, &legacy, Some(&root), &|_| None),
+        Some(home.join(".openclaw/workspace"))
+    );
+    let state = |key: &str| (key == "OPENCLAW_STATE_DIR").then(|| legacy.display().to_string());
+    assert_eq!(
+        default_workspace(home, &legacy, Some(&root), &state),
+        Some(legacy.join("workspace"))
+    );
 }

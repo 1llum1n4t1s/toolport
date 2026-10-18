@@ -516,7 +516,7 @@ fn expand_workspace(home: &Path, raw: &str) -> Option<PathBuf> {
     let path = if raw == "~" {
         home.to_path_buf()
     } else if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
-        home.join(rest)
+        home.join(rest.trim_start_matches(['/', '\\']))
     } else {
         PathBuf::from(raw)
     };
@@ -547,7 +547,11 @@ fn workspace_path(
         let path = PathBuf::from(raw);
         return path.is_absolute().then_some(path);
     }
-    Some(state.join("workspace"))
+    Some(if env("OPENCLAW_STATE_DIR").is_some() {
+        state.join("workspace")
+    } else {
+        home.join(".openclaw/workspace")
+    })
 }
 
 #[cfg(test)]
