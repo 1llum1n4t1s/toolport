@@ -62,6 +62,11 @@ pub struct Env {
     pub reasonix_portable: bool,
     /// Where Reasonix reads its global REASONIX.md (`REASONIX_STATE_HOME`, else its home).
     pub reasonix_state: PathBuf,
+    /// Codewhale's state home (`CODEWHALE_HOME`, default `~/.codewhale`), which holds
+    /// `skills_state.toml`. Its skill folders and instructions stay under the OS home.
+    pub codewhale: PathBuf,
+    /// Codewhale's config.toml (`CODEWHALE_CONFIG_PATH`, else in its state home).
+    pub codewhale_config: PathBuf,
     /// Every Claude Code profile folder when there is more than one (`~/.claude`, `~/.claude2`,
     /// a `CLAUDE_CONFIG_DIR`). Empty means `claude` is the only one.
     pub claude_profiles: Vec<PathBuf>,
@@ -91,6 +96,8 @@ impl Env {
             reasonix: home.join(".reasonix"),
             reasonix_portable: false,
             reasonix_state: home.join(".reasonix"),
+            codewhale: home.join(".codewhale"),
+            codewhale_config: codewhale_config(home, &home.join(".codewhale"), false),
             config,
             claude_profiles: Vec::new(),
         }
@@ -180,6 +187,15 @@ impl Env {
         env.reasonix_state = trimmed("REASONIX_STATE_HOME")
             .and_then(expand)
             .unwrap_or_else(|| env.reasonix.clone());
+        let codewhale_home = trimmed("CODEWHALE_HOME").and_then(expand);
+        let explicit_home = codewhale_home.is_some();
+        if let Some(dir) = codewhale_home {
+            env.codewhale = dir;
+        }
+        env.codewhale_config = trimmed("CODEWHALE_CONFIG_PATH")
+            .or_else(|| trimmed("DEEPSEEK_CONFIG_PATH"))
+            .and_then(expand)
+            .unwrap_or_else(|| codewhale_config(&home, &env.codewhale, explicit_home));
         env.claude_profiles = claude_profile_dirs(&home, &env.claude);
         Some(env)
     }
@@ -368,6 +384,8 @@ enum Switch {
     GrokConfig,
     /// `[skills] disabled_skills` in Reasonix's config.toml.
     ReasonixConfig,
+    /// `disabled` in Codewhale's skills_state.toml.
+    CodewhaleState,
     /// `options.disabled_skills` in Crush's crush.json.
     CrushConfig,
     /// `skills.disabled` in Qwen Code's settings.json.
@@ -1377,6 +1395,32 @@ fn agent_defs() -> Vec<AgentDef> {
         )
         .switch(Switch::ReasonixConfig)
         .project_walk(ProjectWalk::FLAT.first()),
+        // Codewhale crates/tui/src/skills and project_context.rs: folders are walked
+        // deep, project roots first. Its global instructions are one fallback file,
+        // the first that exists, used when a project has none of its own.
+        docs_agent(
+            "codewhale",
+            "Codewhale",
+            codewhale_skill_roots,
+            &[".codewhale/skills", ".agents/skills", ".claude/skills", ".opencode/skills", ".cursor/skills"],
+            |env| {
+                let home = &env.home;
+                first_of(
+                    vec![
+                        home.join(".codewhale").join("AGENTS.md"),
+                        home.join(".agents").join("AGENTS.md"),
+                        home.join(".deepseek").join("AGENTS.md"),
+                        home.join(".codewhale").join("instructions.md"),
+                        home.join(".agents").join("instructions.md"),
+                        home.join(".deepseek").join("instructions.md"),
+                    ],
+                    false,
+                )
+            },
+            &["AGENTS.md", ".agents/AGENTS.md", ".codewhale/instructions.md", ".deepseek/instructions.md"],
+        )
+        .switch(Switch::CodewhaleState)
+        .project_walk(ProjectWalk::DEEP.first()),
         docs_agent(
             "tabnine",
             "Tabnine",
@@ -1885,13 +1929,63 @@ fn reasonix_config_path(env: &Env) -> PathBuf {
     env.reasonix.join("config.toml")
 }
 
-/// The TOML list under `[skills]` a client keeps its turned-off skill names in.
+/// The TOML list a client keeps its turned-off skill names in, as a dotted key
+/// (`skills.disabled` is `disabled` under `[skills]`).
 fn toml_list_switch(switch: Switch, env: &Env) -> Option<(PathBuf, &'static str)> {
     match switch {
-        Switch::GrokConfig => Some((grok_config_path(env), "disabled")),
-        Switch::ReasonixConfig => Some((reasonix_config_path(env), "disabled_skills")),
+        Switch::GrokConfig => Some((grok_config_path(env), "skills.disabled")),
+        Switch::ReasonixConfig => Some((reasonix_config_path(env), "skills.disabled_skills")),
+        Switch::CodewhaleState => Some((env.codewhale.join("skills_state.toml"), "disabled")),
         _ => None,
     }
+}
+
+/// Codewhale's config.toml in its home, or the legacy `~/.deepseek/config.toml`
+/// when the home is the default and has no config of its own.
+fn codewhale_config(home: &Path, codewhale: &Path, explicit_home: bool) -> PathBuf {
+    let primary = codewhale.join("config.toml");
+    let legacy = home.join(".deepseek").join("config.toml");
+    if !explicit_home && !primary.exists() && legacy.exists() {
+        legacy
+    } else {
+        primary
+    }
+}
+
+/// `[skills] scan_codewhale_only`: Codewhale skips other tools' skill folders,
+/// personal and project ones alike.
+fn codewhale_only(env: &Env) -> bool {
+    read_toml(&env.codewhale_config)
+        .as_ref()
+        .and_then(|v| v.get("skills"))
+        .and_then(|s| s.get("scan_codewhale_only"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Codewhale's personal skill folders in its order: its own, `~/.agents`, `~/.claude`, then
+/// the legacy `~/.deepseek`. `[skills] scan_codewhale_only` keeps only its own two.
+fn codewhale_skill_roots(env: &Env) -> Vec<Root> {
+    let only_own = codewhale_only(env);
+    let mut roots = vec![Root::deep(
+        env.home.join(".codewhale").join("skills"),
+        msg("Codewhale skills"),
+    )];
+    if !only_own {
+        roots.push(Root::deep(
+            env.agents_skills(),
+            msg("shared ~/.agents/skills"),
+        ));
+        roots.push(Root::deep(
+            env.claude_compat.join("skills"),
+            msg("Claude Code folder"),
+        ));
+    }
+    roots.push(Root::deep(
+        env.home.join(".deepseek").join("skills"),
+        msg("Codewhale skills"),
+    ));
+    roots
 }
 
 /// Reasonix's personal skill folders in the order a name clash is decided: `[skills] paths`,
@@ -2070,12 +2164,13 @@ fn read_disabled(switch: Switch, env: &Env) -> Disabled {
                 }
             }
         }
-        Switch::GrokConfig | Switch::ReasonixConfig => {
+        Switch::GrokConfig | Switch::ReasonixConfig | Switch::CodewhaleState => {
             let (path, key) = toml_list_switch(switch, env).expect("a TOML list switch");
-            if let Some(list) = read_toml(&path)
-                .as_ref()
-                .and_then(|v| v.get("skills"))
-                .and_then(|s| s.get(key))
+            let doc = read_toml(&path);
+            if let Some(list) = key
+                .split('.')
+                .try_fold(doc.as_ref(), |v, part| v.map(|v| v.get(part)))
+                .flatten()
                 .and_then(|l| l.as_array())
             {
                 d.off = list
@@ -2342,13 +2437,18 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
         // marked `first` rank the project above.
         if let Some(project) = project {
             let walk = def.project_walk;
-            let project_roots = def.project_roots.iter().map(|rel| Root {
-                path: project.join(rel),
-                recursive: walk.deep,
-                dir_links: walk.dir_links,
-                file_links: walk.file_links,
-                label: "project",
-            });
+            let only_own = def.id == "codewhale" && codewhale_only(env);
+            let project_roots = def
+                .project_roots
+                .iter()
+                .filter(|rel| !only_own || rel.starts_with(".codewhale/"))
+                .map(|rel| Root {
+                    path: project.join(rel),
+                    recursive: walk.deep,
+                    dir_links: walk.dir_links,
+                    file_links: walk.file_links,
+                    label: "project",
+                });
             if walk.first {
                 roots.splice(0..0, project_roots);
             } else {
@@ -2594,6 +2694,7 @@ fn switch_note(switch: Switch) -> String {
         Switch::ReasonixConfig => {
             tr("Uses disabled_skills under [skills] in Reasonix's config.toml.")
         }
+        Switch::CodewhaleState => tr("Uses the disabled list in Codewhale's skills_state.toml."),
         Switch::CrushConfig => tr("Uses options.disabled_skills in Crush's crush.json."),
         Switch::QwenSettings => tr("Uses skills.disabled in Qwen Code's settings.json."),
         Switch::OmpConfig => tr("Uses skills.ignoredSkills in Oh My Pi's config.yml."),
@@ -2610,6 +2711,7 @@ fn switch_place(switch: Switch) -> &'static str {
         Switch::HermesConfig => "config.yaml",
         Switch::GeminiSettings | Switch::QwenSettings => "settings.json",
         Switch::GrokConfig | Switch::ReasonixConfig => "config.toml",
+        Switch::CodewhaleState => "skills_state.toml",
         Switch::CrushConfig => "crush.json",
         Switch::OmpConfig => "config.yml",
         Switch::None(_) => "settings",
@@ -3529,7 +3631,7 @@ pub fn set_state(
                 Ok(keys[0])
             })
         }
-        Switch::GrokConfig | Switch::ReasonixConfig => {
+        Switch::GrokConfig | Switch::ReasonixConfig | Switch::CodewhaleState => {
             let (path, key) =
                 toml_list_switch(def.switch, env).ok_or_else(|| wrong_shape("skills"))?;
             edit_toml_skills_list(agent, &path, key, writer, &skill.name, off)
@@ -4087,8 +4189,10 @@ fn edit_codex(
     writer.write(path, &next)
 }
 
-/// Add or remove `name` in the `key` list under `[skills]` in a config.toml (Grok's
-/// `disabled`, Reasonix's `disabled_skills`), keeping the rest of the file as written.
+/// Add or remove `name` in the TOML list at `key`, either top-level or one table deep
+/// (Grok's `skills.disabled`, Reasonix's `skills.disabled_skills`, Codewhale's top-level
+/// `disabled`), keeping the rest of the file, Codewhale's reserved
+/// `!codewhale-skill-state:` entries included, as written.
 fn edit_toml_skills_list(
     agent: &str,
     path: &Path,
@@ -4100,18 +4204,24 @@ fn edit_toml_skills_list(
     let text = read_existing(path)?;
     let mut doc: toml_edit::DocumentMut =
         text.parse().map_err(|e| not_valid(path, &format!("{e}")))?;
-    let skills = doc
-        .entry("skills")
-        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
-        .as_table_like_mut()
-        .ok_or_else(|| wrong_shape("skills"))?;
-    if skills.get(key).is_none() {
-        skills.insert(key, toml_edit::value(toml_edit::Array::new()));
+    let (table, last) = match key.rsplit_once('.') {
+        Some((table, last)) => {
+            let table = doc
+                .entry(table)
+                .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+                .as_table_like_mut()
+                .ok_or_else(|| wrong_shape(table))?;
+            (table, last)
+        }
+        None => (doc.as_table_mut() as &mut dyn toml_edit::TableLike, key),
+    };
+    if table.get(last).is_none() {
+        table.insert(last, toml_edit::value(toml_edit::Array::new()));
     }
-    let list = skills
-        .get_mut(key)
+    let list = table
+        .get_mut(last)
         .and_then(|d| d.as_array_mut())
-        .ok_or_else(|| wrong_shape(&format!("skills.{key}")))?;
+        .ok_or_else(|| wrong_shape(key))?;
     list.retain(|v| v.as_str() != Some(name));
     if off {
         list.push(name);

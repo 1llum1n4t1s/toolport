@@ -172,6 +172,7 @@ fn native_switches_turn_skills_off_per_client() {
         ".reasonix/config.toml",
         "[skills]\ndisabled_skills = [\"orca\"]\n",
     );
+    home.write(".codewhale/skills_state.toml", "disabled = [\"orca\"]\n");
     home.write(
         ".config/crush/crush.json",
         r#"{"options": {"disabled_skills": ["orca"]}}"#,
@@ -198,6 +199,7 @@ fn native_switches_turn_skills_off_per_client() {
         "qwen-code",
         "omp",
         "reasonix",
+        "codewhale",
     ] {
         assert_eq!(state(&inv, "orca", agent), Some(State::Off), "{agent}");
     }
@@ -1670,6 +1672,91 @@ fn reasonix_reads_its_folders_in_order_and_switches_through_disabled_skills() {
 }
 
 #[test]
+fn codewhale_reads_its_folders_and_switches_through_skills_state() {
+    let home = Home::new();
+    home.skill(".codewhale/skills/own", "own", "Own");
+    home.skill(".codewhale/skills/vendor/nested", "nested", "Nested");
+    home.skill(".agents/skills/shared", "shared", "Shared");
+    home.skill(".claude/skills/claude", "claude", "Claude");
+    home.skill(".deepseek/skills/legacy", "legacy", "Legacy");
+    // The owned folder wins a name clash over the shared ones.
+    home.skill(".agents/skills/own", "own", "Shared copy");
+    home.write(
+        ".codewhale/skills_state.toml",
+        "disabled = [\"claude\", \"!codewhale-skill-state:1:history:x\"]\n",
+    );
+    home.write(".agents/AGENTS.md", "# shared\n");
+    home.write(".codewhale/instructions.md", "# later\n");
+    let env = home.env();
+    let inv = scan(&env, &only(&["codewhale"]), None);
+    for name in ["nested", "shared", "legacy"] {
+        assert_eq!(state(&inv, name, "codewhale"), Some(State::On), "{name}");
+    }
+    assert_eq!(state(&inv, "claude", "codewhale"), Some(State::Off));
+    let own: Vec<_> = inv.skills.iter().filter(|s| s.name == "own").collect();
+    let winner = own
+        .iter()
+        .find(|s| s.states["codewhale"].state == State::On)
+        .expect("one copy loads");
+    assert_eq!(winner.description, "Own");
+    // Only the first global instruction file that exists loads.
+    let rule = inv
+        .rules
+        .iter()
+        .find(|r| r.path == "~/.agents/AGENTS.md")
+        .expect("global AGENTS.md");
+    assert!(rule.agents.contains_key("codewhale"));
+
+    let writer = TestWriter::default();
+    let key = skill(&inv, "shared").key.clone();
+    set_state(&env, &inv, "codewhale", &key, Wanted::Off, &writer).unwrap();
+    let text = home.read(".codewhale/skills_state.toml");
+    assert!(
+        text.contains(
+            "disabled = [\"claude\", \"!codewhale-skill-state:1:history:x\", \"shared\"]"
+        ),
+        "{text}"
+    );
+    let key = skill(&inv, "claude").key.clone();
+    set_state(&env, &inv, "codewhale", &key, Wanted::On, &writer).unwrap();
+    let after = scan(&env, &only(&["codewhale"]), None);
+    assert_eq!(state(&after, "shared", "codewhale"), Some(State::Off));
+    assert_eq!(state(&after, "claude", "codewhale"), Some(State::On));
+
+    // `[skills] scan_codewhale_only` drops the shared folders.
+    home.write(
+        ".codewhale/config.toml",
+        "[skills]\nscan_codewhale_only = true\n",
+    );
+    let project = home.path("work/app");
+    home.skill("work/app/.codewhale/skills/mine", "mine", "Mine");
+    home.skill("work/app/.claude/skills/theirs", "theirs", "Theirs");
+    let on = |inv: &Inventory, name: &str| {
+        inv.skills.iter().any(|s| {
+            s.name == name
+                && s.states
+                    .get("codewhale")
+                    .is_some_and(|st| st.state == State::On)
+        })
+    };
+    let inv = scan(&home.env(), &only(&["codewhale"]), Some(&project));
+    assert!(on(&inv, "mine") && !on(&inv, "theirs"));
+    assert!(!on(&inv, "shared") && !on(&inv, "claude"));
+
+    // The flag is read from the legacy config when Codewhale's home has none.
+    std::fs::rename(
+        home.path(".codewhale/config.toml"),
+        home.path(".deepseek/config.toml"),
+    )
+    .unwrap();
+    let inv = scan(&home.env(), &only(&["codewhale"]), Some(&project));
+    assert!(on(&inv, "mine") && !on(&inv, "theirs"));
+    home.write(".codewhale/config.toml", "");
+    let inv = scan(&home.env(), &only(&["codewhale"]), Some(&project));
+    assert!(on(&inv, "theirs") && on(&inv, "claude"));
+}
+
+#[test]
 fn grok_edits_keep_the_skills_table_and_refuse_a_list_they_cannot_read() {
     let home = Home::new();
     let writer = TestWriter::default();
@@ -1677,17 +1764,17 @@ fn grok_edits_keep_the_skills_table_and_refuse_a_list_they_cannot_read() {
         ".grok/config.toml",
         "[skills]\npaths = [\"~/more\"]\ndisabled = [\"old\"]\n",
     );
-    edit_toml_skills_list("grok", &path, "disabled", &writer, "new", true).unwrap();
+    edit_toml_skills_list("grok", &path, "skills.disabled", &writer, "new", true).unwrap();
     let text = home.read(".grok/config.toml");
     assert!(text.contains("paths = [\"~/more\"]"), "{text}");
     assert!(text.contains("disabled = [\"old\", \"new\"]"), "{text}");
-    edit_toml_skills_list("grok", &path, "disabled", &writer, "old", false).unwrap();
+    edit_toml_skills_list("grok", &path, "skills.disabled", &writer, "old", false).unwrap();
     assert!(home
         .read(".grok/config.toml")
         .contains("disabled = [\"new\"]"));
 
     let inline = home.write(".grok/inline.toml", "skills = { paths = [\"~/more\"] }\n");
-    edit_toml_skills_list("grok", &inline, "disabled", &writer, "x", true).unwrap();
+    edit_toml_skills_list("grok", &inline, "skills.disabled", &writer, "x", true).unwrap();
     let text = home.read(".grok/inline.toml");
     assert!(
         text.contains("paths") && text.contains("disabled = [\"x\"]"),
@@ -1695,7 +1782,7 @@ fn grok_edits_keep_the_skills_table_and_refuse_a_list_they_cannot_read() {
     );
 
     let odd = home.write(".grok/odd.toml", "[skills]\ndisabled = \"x\"\n");
-    assert!(edit_toml_skills_list("grok", &odd, "disabled", &writer, "y", true).is_err());
+    assert!(edit_toml_skills_list("grok", &odd, "skills.disabled", &writer, "y", true).is_err());
     assert_eq!(home.read(".grok/odd.toml"), "[skills]\ndisabled = \"x\"\n");
 }
 

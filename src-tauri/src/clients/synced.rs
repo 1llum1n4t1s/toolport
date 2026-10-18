@@ -1,8 +1,9 @@
 //! Client formats edited through a normalized view instead of a key in a map.
 //!
-//! DeepSeek Harness keeps servers as entries in YAML patch rows and Reasonix as
-//! `[[plugins]]` tables. Neither fits the shared `{key: {name: server}}` shape the
-//! move, restore and mutation code works on, so each exposes the same five
+//! DeepSeek Harness keeps servers as entries in YAML patch rows, Reasonix as
+//! `[[plugins]]` tables, and Codewhale under whichever of two keys its JSON
+//! uses. None fits the shared `{key: {name: server}}` shape the move, restore
+//! and mutation code works on, so each exposes the same five
 //! operations: a `{"mcpServers": {name: fields}, ...}` view of the file, a sync
 //! that makes the file's servers equal a desired map while keeping everything
 //! else, and raw per-server text for the move record so a server goes back
@@ -12,12 +13,13 @@ use std::collections::BTreeMap;
 
 use serde_json::Value as Json;
 
-use super::{dsh, reasonix, Format, McpServer, ServerEntry};
+use super::{codewhale, dsh, reasonix, Format, McpServer, ServerEntry};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Synced {
     Dsh,
     Reasonix,
+    Codewhale,
 }
 
 /// The server map inside every normalized view.
@@ -28,6 +30,7 @@ impl Synced {
         match format {
             Format::YamlDshPatch => Some(Synced::Dsh),
             Format::TomlReasonixPlugins => Some(Synced::Reasonix),
+            Format::JsonCodewhaleServers => Some(Synced::Codewhale),
             _ => None,
         }
     }
@@ -36,6 +39,7 @@ impl Synced {
         match self {
             Synced::Dsh => dsh::normalized(text),
             Synced::Reasonix => reasonix::normalized(text),
+            Synced::Codewhale => codewhale::normalized(text),
         }
     }
 
@@ -51,6 +55,7 @@ impl Synced {
         match self {
             Synced::Dsh => dsh::servers(text),
             Synced::Reasonix => reasonix::servers(text),
+            Synced::Codewhale => codewhale::servers(text),
         }
     }
 
@@ -58,6 +63,7 @@ impl Synced {
         match self {
             Synced::Dsh => dsh::config_of(entry),
             Synced::Reasonix => reasonix::config_of(entry),
+            Synced::Codewhale => codewhale::config_of(entry),
         }
     }
 
@@ -72,6 +78,7 @@ impl Synced {
         match self {
             Synced::Dsh => dsh::sync(text, desired, raw),
             Synced::Reasonix => reasonix::sync(text, desired, raw),
+            Synced::Codewhale => codewhale::sync(text, desired, raw),
         }
     }
 
@@ -80,6 +87,7 @@ impl Synced {
         match self {
             Synced::Dsh => dsh::raw_entries(text),
             Synced::Reasonix => reasonix::raw_entries(text),
+            Synced::Codewhale => codewhale::raw_entries(text),
         }
     }
 
@@ -88,6 +96,7 @@ impl Synced {
         match self {
             Synced::Dsh => dsh::definition(raw),
             Synced::Reasonix => reasonix::definition(raw),
+            Synced::Codewhale => codewhale::definition(raw),
         }
     }
 
@@ -99,6 +108,7 @@ impl Synced {
         match self {
             Synced::Dsh => dsh::append_raw(text, entries),
             Synced::Reasonix => reasonix::append_raw(text, entries),
+            Synced::Codewhale => codewhale::append_raw(text, entries),
         }
     }
 }

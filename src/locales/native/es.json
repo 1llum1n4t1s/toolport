@@ -1158,5 +1158,7 @@
   "DeepSeek Harness skills": "Skills de DeepSeek Harness",
   "Reasonix skills": "Skills de Reasonix",
   "Reasonix extra folder": "Carpeta adicional de Reasonix",
-  "Uses disabled_skills under [skills] in Reasonix's config.toml.": "Usa disabled_skills de [skills] en el config.toml de Reasonix."
+  "Uses disabled_skills under [skills] in Reasonix's config.toml.": "Usa disabled_skills de [skills] en el config.toml de Reasonix.",
+  "Codewhale skills": "Skills de Codewhale",
+  "Uses the disabled list in Codewhale's skills_state.toml.": "Usa la lista disabled del skills_state.toml de Codewhale."
 }

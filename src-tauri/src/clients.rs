@@ -22,6 +22,7 @@ pub use claude_profiles::ClaudeProfile;
 mod disconnect;
 pub(crate) use disconnect::for_purge as disconnect_all_for_purge;
 pub use disconnect::{all as disconnect_all, ClientResult as DisconnectResult};
+mod codewhale;
 mod discovery;
 mod dsh;
 mod locations;
@@ -189,6 +190,9 @@ enum Format {
     /// Reasonix's global `config.toml`: `[[plugins]]` tables named by `name`,
     /// edited with `toml_edit`; see `reasonix`.
     TomlReasonixPlugins,
+    /// Codewhale's strict JSON `mcp.json`, servers under `servers` or the
+    /// `mcpServers` alias (never both); see `codewhale`.
+    JsonCodewhaleServers,
 }
 
 struct CombinedToolNameBudget {
@@ -667,6 +671,8 @@ fn resolve_client_config_path(
         "auggie" => home.join(".augment").join("settings.json"),
         "kimi-code" => home.join(".kimi-code").join("mcp.json"),
         "deepseek-harness" => home.join(".dsh").join("cordis.patch.yml"),
+        // Codewhale resolves `~/.codewhale` from HOME/USERPROFILE on every platform.
+        "codewhale" => home.join(".codewhale").join("mcp.json"),
         // Reasonix uses os.UserConfigDir on Windows (%APPDATA%\reasonix).
         "reasonix" => match platform {
             Platform::Windows => config.join("reasonix").join("config.toml"),
@@ -1302,6 +1308,8 @@ fn resolve_client_config_path_linux(client_id: &str, home: &std::path::Path) -> 
         "auggie" => home.join(".augment").join("settings.json"),
         "kimi-code" => home.join(".kimi-code").join("mcp.json"),
         "deepseek-harness" => home.join(".dsh").join("cordis.patch.yml"),
+        // Codewhale resolves `~/.codewhale` from HOME/USERPROFILE on every platform.
+        "codewhale" => home.join(".codewhale").join("mcp.json"),
         "reasonix" => home.join(".reasonix").join("config.toml"),
         "zcode" => home.join(".zcode").join("cli").join("config.json"),
         "command-code" => home.join(".commandcode").join("mcp.json"),
@@ -1420,6 +1428,17 @@ fn resolve_rules_target(
         "command-code" => block(home.join(".commandcode").join("AGENTS.md")),
         // dsh loads `$DSH_HOME/AGENTS.md` first in its user-global chain.
         "deepseek-harness" => block(home.join(".dsh").join("AGENTS.md")),
+        // Codewhale reads only the first global instruction file it finds, as a
+        // fallback for projects without their own, so the block goes into that
+        // one; a new file would hide the user's.
+        "codewhale" => {
+            let chain = [".codewhale", ".agents", ".deepseek"];
+            let found = ["AGENTS.md", "instructions.md"]
+                .iter()
+                .flat_map(|file| chain.iter().map(move |dir| home.join(dir).join(file)))
+                .find(|path| path.is_file());
+            block(found.unwrap_or_else(|| home.join(".codewhale").join("AGENTS.md")))
+        }
         // Reasonix loads REASONIX.md, AGENTS.md and CLAUDE.md from its state
         // root, which is its home by default.
         "reasonix" => match platform {
@@ -1818,9 +1837,54 @@ fn reasonix_path() -> Option<PathBuf> {
 }
 
 fn reasonix_home_from(raw: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    trimmed_env_dir(raw)
+}
+
+/// A path setting that is trimmed and `~` expanded, kept only when absolute.
+fn trimmed_env_dir(raw: Option<std::ffi::OsString>) -> Option<PathBuf> {
     let raw = raw?;
     let trimmed = raw.to_str().map_or(raw.clone(), |text| text.trim().into());
     absolute_env_dir(expand_leading_tilde(Some(trimmed)))
+}
+
+/// Codewhale's `mcp.json`, resolved as Codewhale does: `CODEWHALE_MCP_CONFIG`
+/// (or the legacy `DEEPSEEK_MCP_CONFIG`), else `mcp_config_path` in its
+/// config.toml, else the file in its state home. The first override that is set
+/// wins even when blank, and the value is not trimmed, so a blank or relative
+/// one falls back to the default, as it does in Codewhale.
+fn codewhale_path() -> Option<PathBuf> {
+    let configured = ["CODEWHALE_MCP_CONFIG", "DEEPSEEK_MCP_CONFIG"]
+        .into_iter()
+        .find_map(client_path_env)
+        .map(Some)
+        .unwrap_or_else(|| {
+            let config = ["CODEWHALE_CONFIG_PATH", "DEEPSEEK_CONFIG_PATH"]
+                .into_iter()
+                .find_map(|key| trimmed_env_dir(client_path_env(key)))
+                .or_else(|| codewhale_state_path("config.toml"))?;
+            let text = std::fs::read_to_string(config).ok()?;
+            let value: toml::Value = toml::from_str(&text).ok()?;
+            value
+                .get("mcp_config_path")
+                .and_then(toml::Value::as_str)
+                .map(std::ffi::OsString::from)
+        });
+    absolute_env_dir(expand_leading_tilde(configured)).or_else(|| codewhale_state_path("mcp.json"))
+}
+
+/// A file in Codewhale's state home: `$CODEWHALE_HOME`, else `~/.codewhale`,
+/// or the legacy `~/.deepseek` when only that one has the file.
+fn codewhale_state_path(name: &str) -> Option<PathBuf> {
+    if let Some(dir) = trimmed_env_dir(client_path_env("CODEWHALE_HOME")) {
+        return Some(dir.join(name));
+    }
+    let home = home()?;
+    let primary = home.join(".codewhale").join(name);
+    let legacy = home.join(".deepseek").join(name);
+    if !primary.exists() && legacy.exists() {
+        return Some(legacy);
+    }
+    Some(primary)
 }
 
 /// Goose keeps extensions (its MCP servers) in config.yaml. It resolves the dir
@@ -2506,6 +2570,18 @@ fn defs() -> Vec<ClientDef> {
             // `<Reasonix home>/config.toml`, shared by the CLI and Reasonix Studio.
             // Project `reasonix.toml` and `.mcp.json` files are left alone.
             path: reasonix_path,
+            plugin_scan: None,
+        },
+        ClientDef {
+            location: None,
+            id: "codewhale",
+            discovery: discovery::capabilities("codewhale"),
+            combined_tool_name_budget: None,
+            name: "Codewhale",
+            format: Format::JsonCodewhaleServers,
+            uses_connectors: false,
+            // The user `mcp.json` the TUI, `exec` and `serve` all read.
+            path: codewhale_path,
             plugin_scan: None,
         },
         ClientDef {
@@ -4258,9 +4334,11 @@ fn parse_client_content(format: Format, content: &str) -> Result<Vec<McpServer>,
         Format::YamlExtensions => parse_yaml_extensions(content),
         Format::YamlMcpServers => parse_hermes_yaml_servers(content),
         Format::YamlMcpServersList => parse_continue_yaml_servers(content),
-        Format::YamlDshPatch | Format::TomlReasonixPlugins => synced::Synced::of(format)
-            .expect("synced format")
-            .servers(content),
+        Format::YamlDshPatch | Format::TomlReasonixPlugins | Format::JsonCodewhaleServers => {
+            synced::Synced::of(format)
+                .expect("synced format")
+                .servers(content)
+        }
     }
 }
 
@@ -7021,7 +7099,7 @@ fn write_format(
         Format::YamlExtensions => write_yaml_extensions(path, servers)?,
         Format::YamlMcpServers => write_hermes_yaml_servers(path, servers)?,
         Format::YamlMcpServersList => write_continue_yaml_servers(path, servers)?,
-        Format::YamlDshPatch | Format::TomlReasonixPlugins => {
+        Format::YamlDshPatch | Format::TomlReasonixPlugins | Format::JsonCodewhaleServers => {
             write_synced_servers(format, path, servers)?
         }
     }
@@ -7744,7 +7822,7 @@ fn edit_format(
         Format::YamlExtensions => edit_yaml_gateway(path, entry)?,
         Format::YamlMcpServers => edit_hermes_yaml_gateway(path, entry)?,
         Format::YamlMcpServersList => edit_continue_yaml_gateway(path, entry)?,
-        Format::YamlDshPatch | Format::TomlReasonixPlugins => {
+        Format::YamlDshPatch | Format::TomlReasonixPlugins | Format::JsonCodewhaleServers => {
             edit_synced_gateway(format, path, entry)?
         }
     }
@@ -8839,6 +8917,23 @@ impl EnvRestore {
             client_previous,
         }
     }
+
+    /// Leave `key` unset, for clients that tell an unset variable from a blank one.
+    pub(crate) fn unset(key: &'static str) -> Self {
+        let previous = if test_paths::is_client_path_key(key) {
+            None
+        } else {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Some(previous)
+        };
+        let client_previous = test_paths::set(key, None);
+        Self {
+            key,
+            previous,
+            client_previous,
+        }
+    }
 }
 
 /// Isolate every ambient client override and OS directory input. Hold env_test_lock.
@@ -8858,10 +8953,18 @@ fn isolated_client_env(root: &Path) -> Vec<EnvRestore> {
         "DSH_HOME",
         "REASONIX_HOME",
         "REASONIX_STATE_HOME",
+        "CODEWHALE_HOME",
+        "CODEWHALE_CONFIG_PATH",
+        "DEEPSEEK_CONFIG_PATH",
     ]
     .into_iter()
     .map(|key| EnvRestore::set(key, Path::new("")))
     .collect();
+    env.extend(
+        ["CODEWHALE_MCP_CONFIG", "DEEPSEEK_MCP_CONFIG"]
+            .into_iter()
+            .map(EnvRestore::unset),
+    );
     for (key, suffix) in [
         ("HOME", "home"),
         ("USERPROFILE", "home"),
@@ -13201,6 +13304,153 @@ command = "mcp-server-memory"   # keep this note
     }
 
     #[test]
+    fn codewhale_is_registered_with_its_mcp_json() {
+        let def = find_def("codewhale").unwrap();
+        assert_eq!(def.name, "Codewhale");
+        assert!(matches!(def.format, Format::JsonCodewhaleServers));
+        assert!(!def.uses_connectors);
+        assert!(def.plugin_scan.is_none());
+        // Codewhale defers MCP tools behind tool_search and never re-lists them.
+        assert_eq!(def.discovery.auto_mode, "full");
+        assert_eq!(def.discovery.native_tool_search, Some(true));
+        assert_eq!(def.discovery.tools_list_changed, Some(false));
+    }
+
+    #[test]
+    fn codewhale_rules_go_into_the_global_file_it_already_reads() {
+        let home = std::env::temp_dir().join(format!("toolport-cw-rules-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let path = |home: &Path| {
+            team_rules_target("codewhale", home, Platform::Linux)
+                .unwrap()
+                .path
+        };
+        assert_eq!(path(&home), home.join(".codewhale/AGENTS.md"));
+        std::fs::create_dir_all(home.join(".deepseek")).unwrap();
+        std::fs::write(home.join(".deepseek/instructions.md"), "# mine\n").unwrap();
+        assert_eq!(path(&home), home.join(".deepseek/instructions.md"));
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
+        std::fs::write(home.join(".agents/AGENTS.md"), "# shared\n").unwrap();
+        assert_eq!(path(&home), home.join(".agents/AGENTS.md"));
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn codewhale_resolves_its_mcp_json_like_codewhale_does() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home =
+            std::env::temp_dir().join(format!("toolport-codewhale-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let _home = TestHome::set(&home);
+        let _clear = isolated_client_env(&home);
+        assert_eq!(
+            codewhale_path(),
+            Some(home.join(".codewhale").join("mcp.json"))
+        );
+        // Only the legacy file: Codewhale reads it.
+        std::fs::create_dir_all(home.join(".deepseek")).unwrap();
+        std::fs::write(home.join(".deepseek").join("mcp.json"), "{}").unwrap();
+        assert_eq!(
+            codewhale_path(),
+            Some(home.join(".deepseek").join("mcp.json"))
+        );
+        std::fs::create_dir_all(home.join(".codewhale")).unwrap();
+        std::fs::write(home.join(".codewhale").join("mcp.json"), "{}").unwrap();
+        assert_eq!(
+            codewhale_path(),
+            Some(home.join(".codewhale").join("mcp.json"))
+        );
+        // `mcp_config_path` in config.toml, then the env overrides.
+        let custom = home.join("custom").join("mcp.json");
+        std::fs::write(
+            home.join(".codewhale").join("config.toml"),
+            "mcp_config_path = \"~/custom/mcp.json\"\n",
+        )
+        .unwrap();
+        assert_eq!(codewhale_path(), Some(custom.clone()));
+        let state = home.join("state");
+        let _state = EnvRestore::set("CODEWHALE_HOME", &state);
+        assert_eq!(codewhale_path(), Some(state.join("mcp.json")));
+        let _legacy_env = EnvRestore::set("DEEPSEEK_MCP_CONFIG", &custom);
+        assert_eq!(codewhale_path(), Some(custom.clone()));
+        let _env_path = EnvRestore::set("CODEWHALE_MCP_CONFIG", Path::new("relative.json"));
+        assert_eq!(codewhale_path(), Some(state.join("mcp.json")));
+        // A blank or padded override still wins over the legacy one and, being
+        // relative, falls back to the default.
+        for blank in ["", "  ", " /abs/mcp.json"] {
+            let _blank = EnvRestore::set("CODEWHALE_MCP_CONFIG", Path::new(blank));
+            assert_eq!(codewhale_path(), Some(state.join("mcp.json")), "{blank:?}");
+        }
+        drop(_env_path);
+        drop(_legacy_env);
+        drop(_state);
+        drop(_clear);
+        drop(_home);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    const CODEWHALE_CONFIG: &str = r#"{
+  "timeouts": {
+    "connect_timeout": 30
+  },
+  "servers": {
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git"]
+    }
+  }
+}
+"#;
+
+    #[test]
+    fn codewhale_connect_and_disconnect_round_trip_in_a_temp_home() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home =
+            std::env::temp_dir().join(format!("toolport-codewhale-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".codewhale")).unwrap();
+        let _home = TestHome::set(&home);
+        let _clear = isolated_client_env(&home);
+        let def = find_def("codewhale").unwrap();
+        let path = resolved_definition_path(&def).unwrap();
+        assert_eq!(path, home.join(".codewhale").join("mcp.json"));
+        let lenient = config_is_whole_app_state("codewhale");
+
+        let missing = read_client(&def);
+        assert!(!missing.config_exists);
+        assert!(missing.error.is_none());
+        assert!(!missing.gateway_installed);
+
+        std::fs::write(&path, CODEWHALE_CONFIG).unwrap();
+        let entry = gateway_entry(Some("Work"), "codewhale").unwrap();
+        edit_format(def.format, &path, Some(&entry), lenient).unwrap();
+        let connected = read_client(&def);
+        assert!(connected.error.is_none(), "{:?}", connected.error);
+        assert!(connected.gateway_installed);
+        let content = std::fs::read_to_string(&path).unwrap();
+        let normalized = codewhale::normalized(&content).unwrap();
+        let env = &normalized[codewhale::KEY][GATEWAY_ENTRY_NAME]["env"];
+        assert_eq!(env[crate::brand::CLIENT_ID], "codewhale");
+        assert_eq!(env[crate::brand::PROFILE], "Work");
+
+        edit_format(def.format, &path, None, lenient).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), CODEWHALE_CONFIG);
+        let disconnected = read_client(&def);
+        assert!(!disconnected.gateway_installed);
+        let names: Vec<_> = disconnected
+            .servers
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, ["git"]);
+
+        drop(_clear);
+        drop(_home);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn rewrite_json_key_preserving_keeps_unrelated_text() {
         let original = r#"// header
 {
@@ -15144,6 +15394,10 @@ rules:
             // dsh resolves `~/.dsh` from the OS home on every platform.
             ("deepseek-harness", |home, _| {
                 home.join(".dsh").join("cordis.patch.yml")
+            }),
+            // Codewhale resolves `~/.codewhale` from HOME/USERPROFILE everywhere.
+            ("codewhale", |home, _| {
+                home.join(".codewhale").join("mcp.json")
             }),
             // Reasonix uses os.UserConfigDir on Windows and `~/.reasonix` elsewhere.
             ("reasonix", |home, platform| match platform {

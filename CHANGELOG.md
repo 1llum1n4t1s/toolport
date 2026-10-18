@@ -25,6 +25,14 @@ Entries before the rename below shipped under the project's former name, Conduit
   `REASONIX.md`, `AGENTS.md` and `CLAUDE.md` rules show too, and team rules go
   to `AGENTS.md` in its home. See
   [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#reasonix-setup).
+- Codewhale as a supported client. Connect adds the gateway to the `mcp.json`
+  Codewhale reads (`~/.codewhale/mcp.json`, the legacy `~/.deepseek/mcp.json`,
+  or the file `CODEWHALE_MCP_CONFIG` or `mcp_config_path` names), under the key
+  the file already uses. The Skills page shows Codewhale's skills from
+  `~/.codewhale/skills`, `~/.agents/skills`, `~/.claude/skills` and
+  `~/.deepseek/skills`, turns them off through `skills_state.toml`, and shows its
+  global instructions file. See
+  [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#codewhale-setup).
 
 ## [2.2.0] - 2026-10-18
 

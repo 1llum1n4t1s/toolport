@@ -120,6 +120,18 @@ pub(super) fn capabilities(id: &str) -> DiscoveryCapabilities {
             auto_full_max_tools: None,
             evidence: "docs/client-conformance.md (captured startup)",
         },
+        // Codewhale 0.10.1 against toolport-gateway 2.2.0 (2026-10-18): MCP tools go
+        // into a deferred catalogue the model reaches through `tool_search`, and
+        // the client has no tools/list_changed handler (crates/tui/src/mcp.rs).
+        "codewhale" => DiscoveryCapabilities {
+            auto_mode: "full",
+            native_tool_search: Some(true),
+            tools_list_changed: Some(false),
+            cold_full_list_wait_ms: 5_000,
+            max_tools: None,
+            auto_full_max_tools: None,
+            evidence: "docs/client-conformance.md (captured startup)",
+        },
         "anthropic-api" => DiscoveryCapabilities {
             auto_mode: "full",
             native_tool_search: Some(true),
@@ -310,6 +322,7 @@ mod tests {
             ("codex", 8_000),
             ("cursor", 5_000),
             ("reasonix", 5_000),
+            ("codewhale", 5_000),
             ("anthropic-api", 5_000),
             ("openai-api", 5_000),
         ] {
