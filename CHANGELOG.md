@@ -45,6 +45,7 @@ Entries before the rename below shipped under the project's former name, Conduit
   in `~/.nanobot/config.json`. Workspace skills have native toggles in both
   shells, and team rules follow the configured workspace's `AGENTS.md`.
   See [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#nanobot-setup).
+
 ## [2.2.0] - 2026-10-18
 
 Toolport now shows the skills and rules files each of your AI agents loads. Like

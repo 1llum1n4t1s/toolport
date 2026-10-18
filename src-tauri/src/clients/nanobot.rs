@@ -62,7 +62,9 @@ pub(crate) fn workspace(user_home: &Path) -> Option<PathBuf> {
     let path = if raw == "~" {
         user_home.to_path_buf()
     } else if let Some(rest) = raw.strip_prefix("~/") {
-        user_home.join(rest)
+        // pathlib normalizes repeated separators before expanding `~`. Keep the
+        // suffix relative so `~//workspace` cannot replace the user's home.
+        user_home.join(rest.trim_start_matches('/'))
     } else {
         PathBuf::from(raw)
     };

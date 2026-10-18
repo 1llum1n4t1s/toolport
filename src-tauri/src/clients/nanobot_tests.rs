@@ -169,6 +169,9 @@ fn workspace_respects_custom_absolute_or_tilde_paths_and_refuses_invalid_config(
     let config = home.join(".nanobot/config.json");
     for (raw, expected) in [
         ("~/my-work", Some(home.join("my-work"))),
+        ("~//configured", Some(home.join("configured"))),
+        ("~///configured", Some(home.join("configured"))),
+        ("~//", Some(home.clone())),
         ("/srv/nanobot", Some(PathBuf::from("/srv/nanobot"))),
         ("relative", None),
     ] {
