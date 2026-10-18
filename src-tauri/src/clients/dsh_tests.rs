@@ -411,7 +411,12 @@ fn a_disabled_server_counts_as_other_settings() {
 
 #[test]
 fn group_inserts_are_unresolved_in_the_home_layer() {
-    for target in ["missing", "ordinary", "disabled-group"] {
+    for target in [
+        "missing",
+        "ordinary",
+        "disabled-group",
+        "!!js process.env.GROUP_ID",
+    ] {
         let text = format!("- insert:\n    - id: ordinary\n      name: other\n    - id: disabled-group\n      group: true\n      disabled: true\n      config: []\n- id: {target}\n  insert:\n    - id: orphan\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: ghost\n        transport: stdio\n        command: /ghost/server\n");
         assert!(servers(&text).unwrap_err().contains("group insert"));
         assert!(normalized(&text).is_err());

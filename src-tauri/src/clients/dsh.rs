@@ -301,10 +301,11 @@ fn parse(text: &str) -> Result<Doc<'_>, String> {
     // The home layer cannot resolve group targets from profile/base layers or
     // their activation context. Do not turn skipped or disabled inserts into
     // apparently active root servers, or mutate a partially understood file.
-    if list
-        .iter()
-        .any(|row| js_truthy(row.get("id")) && js_truthy(row.get("insert")))
-    {
+    if list.iter().any(|row| {
+        row.get("id")
+            .is_some_and(|id| matches!(id, Yaml::Tagged(_)) || js_truthy(Some(id)))
+            && js_truthy(row.get("insert"))
+    }) {
         return Err(format!(
             "This DeepSeek Harness patch contains a group insert; Toolport cannot resolve its target across profile layers. Edit it by hand, {UNTOUCHED}."
         ));
