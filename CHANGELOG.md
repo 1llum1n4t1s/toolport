@@ -6,18 +6,35 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-18
+
+Toolport now shows the skills and rules files each of your AI agents loads. Like
+2.0.0, this release is for manual installation: 1.24.x installs are not updated to
+it automatically yet. Download the package for your system from the
+[release assets](https://github.com/btsouth/toolport/releases/tag/v2.2.0), and read
+the [upgrade guide](https://github.com/btsouth/toolport/blob/main/docs/migration.md)
+if you are coming from 1.x.
+
 ### Added
 
 - A Skills page that shows the skills and rules files each installed agent loads,
   across Claude Code, Codex, Cursor, Copilot CLI, OpenCode, Grok, Hermes, Gemini CLI
   and more. See each skill's state in every agent, how each agent reaches your rules
-  files, and turn a skill on or off through the agent's own setting. A Needs a look
+  files, and turn a skill on or off through the agent's own setting in ten agents,
+  among them Grok, Crush, Qwen Code and Oh My Pi. A Needs a look
   tab finds skills still on elsewhere, broken links, duplicate names, cut-off
   descriptions and rules files an agent never reads, with confirmed fixes, and
   items you're fine with can be dismissed. Open a file in the app you pick, and move
   a skill you own to the trash. Several Claude Code profiles each get their own
   column. Available in the app and the Linux GTK app. See
   [Skills and rules](https://github.com/btsouth/toolport/blob/main/docs/skills-and-rules.md).
+  (#1213, #1215, #1218, #1219)
+- Auggie CLI and Tabnine Agent as supported clients. Toolport connects and imports
+  through their user settings files, `~/.augment/settings.json` and
+  `~/.tabnine/mcp_servers.json`, and leaves the rest of Auggie's settings alone. A
+  Tabnine remote server keeps its auth header when imported. See
+  [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md).
+  (#1211, #1212, #1217)
 
 ### Changed
 
@@ -29,12 +46,18 @@ Entries before the rename below shipped under the project's former name, Conduit
   last used. A copy of your main profile that only background tools read is
   listed behind a note. Available in the app and the Linux GTK app. See
   [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#several-claude-code-accounts).
+  (#1216)
 
 ### Fixed
 
 - Several AI clients starting at once no longer leave one without tools. On a
   fresh install a gateway could give up with "The registry is locked by another
-  Toolport process" while the others started.
+  Toolport process" while the others started. (#1214)
+- The Overview and Tools tabs in an expanded server row work from the keyboard.
+  They are one tab stop, the arrow keys and Home/End move between them, and screen
+  readers announce the content below as their panel. (#1209)
+- On Windows, a slow PowerShell no longer gets the shared gateway force-stopped
+  before an update installs. It is asked to exit cleanly, as on a fast PC. (#1206)
 
 ## [2.1.0] - 2026-10-15
 
