@@ -1155,5 +1155,8 @@
   "Uses options.disabled_skills in Crush's crush.json.": "Crush의 crush.json에 있는 options.disabled_skills를 사용합니다.",
   "Uses skills.disabled in Qwen Code's settings.json.": "Qwen Code의 settings.json에 있는 skills.disabled를 사용합니다.",
   "Uses skills.ignoredSkills in Oh My Pi's config.yml.": "Oh My Pi의 config.yml에 있는 skills.ignoredSkills를 사용합니다.",
-  "DeepSeek Harness skills": "DeepSeek Harness 스킬"
+  "DeepSeek Harness skills": "DeepSeek Harness 스킬",
+  "Reasonix skills": "Reasonix 스킬",
+  "Reasonix extra folder": "Reasonix 추가 폴더",
+  "Uses disabled_skills under [skills] in Reasonix's config.toml.": "Reasonix의 config.toml에서 [skills] 아래 disabled_skills를 사용합니다."
 }

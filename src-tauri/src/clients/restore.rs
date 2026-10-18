@@ -665,7 +665,8 @@ pub(super) fn apply(client_id: &str, format: Format, path: &Path) -> Result<bool
             }
             atomic_write(path, &doc.to_string())?;
         }
-        Format::YamlDshPatch => {
+        Format::YamlDshPatch | Format::TomlReasonixPlugins => {
+            let kind = super::synced::Synced::of(format).expect("synced format");
             let desired = latest
                 .get(key)
                 .and_then(Value::as_object)
@@ -676,14 +677,14 @@ pub(super) fn apply(client_id: &str, format: Format, path: &Path) -> Result<bool
             let mut raw: std::collections::BTreeMap<String, String> = record
                 .original
                 .as_deref()
-                .map(super::dsh::raw_entries)
+                .map(|text| kind.raw_entries(text))
                 .transpose()?
                 .unwrap_or_default()
                 .into_iter()
                 .map(|(name, text, _)| (name, text))
                 .collect();
-            raw.extend(moved::dsh_entries(client_id, path)?);
-            let output = super::dsh::sync(current.as_deref(), &desired, &raw)?;
+            raw.extend(moved::native_entries(client_id, path)?);
+            let output = kind.sync(current.as_deref(), &desired, &raw)?;
             if current.as_deref() != Some(output.as_str()) {
                 atomic_write(path, &output)?;
             }
@@ -932,6 +933,7 @@ mod tests {
             (Format::YamlExtensions, "# annotation\r\ntheme: dark\r\nextensions:\r\n  native:\r\n    enabled: true\r\n    type: stdio\r\n    cmd: native\r\n    args: []"),
             (Format::YamlMcpServers, "# annotation\r\ntheme: dark\r\nmcp_servers:\r\n  native:\r\n    command: native\r\n    args: []"),
             (Format::YamlMcpServersList, "# annotation\r\nname: Example\r\nversion: 1.0.0\r\nschema: v1\r\nmcpServers:\r\n  - name: native\r\n    command: native\r\n    args: []"),
+            (Format::TomlReasonixPlugins, "# annotation\r\ndefault_model = 'deepseek-flash'\r\n[[plugins]]\r\nname = 'native'\r\ncommand = 'native' # keep\r\nargs = [ ]"),
             (Format::YamlDshPatch, "# annotation\r\n- id: llm-pi-ai\r\n  config: {theme: dark}\r\n- insert:\r\n    - id: mcp-native\r\n      name: '@deepseek-ai/dsh-mcp-client'\r\n      config:\r\n        serverName: native\r\n        transport: stdio\r\n        command: native # keep\r\n        args: []"),
         ]
     }

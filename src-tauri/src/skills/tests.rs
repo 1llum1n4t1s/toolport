@@ -169,6 +169,10 @@ fn native_switches_turn_skills_off_per_client() {
     home.link(".hermes/skills/orca", real.parent().unwrap());
     home.write(".grok/config.toml", "[skills]\ndisabled = [\"orca\"]\n");
     home.write(
+        ".reasonix/config.toml",
+        "[skills]\ndisabled_skills = [\"orca\"]\n",
+    );
+    home.write(
         ".config/crush/crush.json",
         r#"{"options": {"disabled_skills": ["orca"]}}"#,
     );
@@ -193,6 +197,7 @@ fn native_switches_turn_skills_off_per_client() {
         "crush",
         "qwen-code",
         "omp",
+        "reasonix",
     ] {
         assert_eq!(state(&inv, "orca", agent), Some(State::Off), "{agent}");
     }
@@ -1596,6 +1601,75 @@ fn deepseek_harness_reads_both_homes_flat_and_both_user_rules() {
 }
 
 #[test]
+fn reasonix_reads_its_folders_in_order_and_switches_through_disabled_skills() {
+    let home = Home::new();
+    home.skill(".reasonix/skills/own", "own", "Own");
+    home.skill(".agents/skills/shared", "shared", "Shared");
+    home.skill(".claude/skills/claude", "claude", "Claude");
+    home.skill("more/extra", "extra", "Extra");
+    // `[skills] excluded_paths` drops a folder; Reasonix doesn't walk nested folders.
+    home.skill(".agent/skills/skipped", "skipped", "Skipped");
+    home.skill(".reasonix/skills/group/nested", "nested", "Nested");
+    // `[skills] paths` wins a name clash over the home folder.
+    home.skill(".reasonix/skills/extra", "extra", "Home copy");
+    home.write(
+        ".reasonix/config.toml",
+        "# mine\ndefault_model = \"deepseek-flash\"\n\n[skills]\npaths = [\"~/more\"]\nexcluded_paths = [\"~/.agent/skills\"]\ndisabled_skills = [\"claude\"]\n",
+    );
+    home.write(".reasonix/REASONIX.md", "# reasonix\n");
+    home.write(".reasonix/AGENTS.md", "# agents\n");
+    let env = home.env();
+    let inv = scan(&env, &only(&["reasonix"]), None);
+    for name in ["own", "shared"] {
+        assert_eq!(state(&inv, name, "reasonix"), Some(State::On), "{name}");
+    }
+    assert_eq!(state(&inv, "claude", "reasonix"), Some(State::Off));
+    assert!(!inv
+        .skills
+        .iter()
+        .any(|s| s.name == "skipped" || s.name == "nested"));
+    let extra: Vec<_> = inv.skills.iter().filter(|s| s.name == "extra").collect();
+    let winner = extra
+        .iter()
+        .find(|s| s.states["reasonix"].state == State::On)
+        .expect("one extra loads");
+    assert!(winner.path.contains("more"), "{}", winner.path);
+    for path in ["~/.reasonix/REASONIX.md", "~/.reasonix/AGENTS.md"] {
+        let rule = inv.rules.iter().find(|r| r.path == path).expect(path);
+        assert!(rule.agents.contains_key("reasonix"), "{path}");
+    }
+    // Project rule files follow `@` imports too.
+    home.write("work/app/REASONIX.md", "@notes.md\n");
+    home.write("work/app/notes.md", "# notes\n");
+    let project = home.path("work/app");
+    let inv = scan(&env, &only(&["reasonix"]), Some(&project));
+    let notes = inv.rules.iter().find(|r| r.name == "notes.md").unwrap();
+    assert!(notes.agents["reasonix"].iter().any(|c| c.kind == "import"));
+    let inv = scan(&env, &only(&["reasonix"]), None);
+
+    let writer = TestWriter::default();
+    let key = skill(&inv, "own").key.clone();
+    set_state(&env, &inv, "reasonix", &key, Wanted::Off, &writer).unwrap();
+    let text = home.read(".reasonix/config.toml");
+    assert!(text.starts_with("# mine\ndefault_model"), "{text}");
+    assert!(
+        text.contains("disabled_skills = [\"claude\", \"own\"]"),
+        "{text}"
+    );
+    let after = scan(&env, &only(&["reasonix"]), None);
+    assert_eq!(state(&after, "own", "reasonix"), Some(State::Off));
+
+    // With REASONIX_HOME set Reasonix reads only its own home.
+    let mut portable = env.clone();
+    portable.reasonix_portable = true;
+    let inv = scan(&portable, &only(&["reasonix"]), None);
+    assert!(inv
+        .skills
+        .iter()
+        .all(|s| s.name != "shared" && s.name != "claude"));
+}
+
+#[test]
 fn grok_edits_keep_the_skills_table_and_refuse_a_list_they_cannot_read() {
     let home = Home::new();
     let writer = TestWriter::default();
@@ -1603,17 +1677,17 @@ fn grok_edits_keep_the_skills_table_and_refuse_a_list_they_cannot_read() {
         ".grok/config.toml",
         "[skills]\npaths = [\"~/more\"]\ndisabled = [\"old\"]\n",
     );
-    edit_grok("grok", &path, &writer, "new", true).unwrap();
+    edit_toml_skills_list("grok", &path, "disabled", &writer, "new", true).unwrap();
     let text = home.read(".grok/config.toml");
     assert!(text.contains("paths = [\"~/more\"]"), "{text}");
     assert!(text.contains("disabled = [\"old\", \"new\"]"), "{text}");
-    edit_grok("grok", &path, &writer, "old", false).unwrap();
+    edit_toml_skills_list("grok", &path, "disabled", &writer, "old", false).unwrap();
     assert!(home
         .read(".grok/config.toml")
         .contains("disabled = [\"new\"]"));
 
     let inline = home.write(".grok/inline.toml", "skills = { paths = [\"~/more\"] }\n");
-    edit_grok("grok", &inline, &writer, "x", true).unwrap();
+    edit_toml_skills_list("grok", &inline, "disabled", &writer, "x", true).unwrap();
     let text = home.read(".grok/inline.toml");
     assert!(
         text.contains("paths") && text.contains("disabled = [\"x\"]"),
@@ -1621,7 +1695,7 @@ fn grok_edits_keep_the_skills_table_and_refuse_a_list_they_cannot_read() {
     );
 
     let odd = home.write(".grok/odd.toml", "[skills]\ndisabled = \"x\"\n");
-    assert!(edit_grok("grok", &odd, &writer, "y", true).is_err());
+    assert!(edit_toml_skills_list("grok", &odd, "disabled", &writer, "y", true).is_err());
     assert_eq!(home.read(".grok/odd.toml"), "[skills]\ndisabled = \"x\"\n");
 }
 

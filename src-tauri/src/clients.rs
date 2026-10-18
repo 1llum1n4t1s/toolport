@@ -25,6 +25,8 @@ pub use disconnect::{all as disconnect_all, ClientResult as DisconnectResult};
 mod discovery;
 mod dsh;
 mod locations;
+mod reasonix;
+mod synced;
 pub use discovery::DiscoveryCapabilities;
 pub(crate) use locations::folder_key as claude_profile_key;
 #[cfg(feature = "test-support")]
@@ -184,6 +186,9 @@ enum Format {
     /// MCP servers being `@deepseek-ai/dsh-mcp-client` entries in `insert` rows.
     /// Edited on the text so comments and `!!js` expressions survive; see `dsh`.
     YamlDshPatch,
+    /// Reasonix's global `config.toml`: `[[plugins]]` tables named by `name`,
+    /// edited with `toml_edit`; see `reasonix`.
+    TomlReasonixPlugins,
 }
 
 struct CombinedToolNameBudget {
@@ -662,6 +667,11 @@ fn resolve_client_config_path(
         "auggie" => home.join(".augment").join("settings.json"),
         "kimi-code" => home.join(".kimi-code").join("mcp.json"),
         "deepseek-harness" => home.join(".dsh").join("cordis.patch.yml"),
+        // Reasonix uses os.UserConfigDir on Windows (%APPDATA%\reasonix).
+        "reasonix" => match platform {
+            Platform::Windows => config.join("reasonix").join("config.toml"),
+            Platform::MacOs | Platform::Linux => home.join(".reasonix").join("config.toml"),
+        },
         "zcode" => home.join(".zcode").join("cli").join("config.json"),
         "command-code" => home.join(".commandcode").join("mcp.json"),
         "tabnine" => home.join(".tabnine").join("mcp_servers.json"),
@@ -1292,6 +1302,7 @@ fn resolve_client_config_path_linux(client_id: &str, home: &std::path::Path) -> 
         "auggie" => home.join(".augment").join("settings.json"),
         "kimi-code" => home.join(".kimi-code").join("mcp.json"),
         "deepseek-harness" => home.join(".dsh").join("cordis.patch.yml"),
+        "reasonix" => home.join(".reasonix").join("config.toml"),
         "zcode" => home.join(".zcode").join("cli").join("config.json"),
         "command-code" => home.join(".commandcode").join("mcp.json"),
         "tabnine" => home.join(".tabnine").join("mcp_servers.json"),
@@ -1409,6 +1420,12 @@ fn resolve_rules_target(
         "command-code" => block(home.join(".commandcode").join("AGENTS.md")),
         // dsh loads `$DSH_HOME/AGENTS.md` first in its user-global chain.
         "deepseek-harness" => block(home.join(".dsh").join("AGENTS.md")),
+        // Reasonix loads REASONIX.md, AGENTS.md and CLAUDE.md from its state
+        // root, which is its home by default.
+        "reasonix" => match platform {
+            Platform::Windows => block(config.join("reasonix").join("AGENTS.md")),
+            Platform::MacOs | Platform::Linux => block(home.join(".reasonix").join("AGENTS.md")),
+        },
         "zed" => match platform {
             Platform::Windows => block(config.join("Zed").join("AGENTS.md")),
             Platform::MacOs | Platform::Linux => {
@@ -1498,6 +1515,15 @@ pub fn client_rules_target(
     }
     if client_id == "deepseek-harness" {
         if let Some(dir) = dsh_home_from(client_path_env("DSH_HOME")) {
+            return Some(rules_sentinel_block(dir.join("AGENTS.md"), scope));
+        }
+    }
+    if client_id == "reasonix" {
+        // Its global REASONIX.md, AGENTS.md and CLAUDE.md live in the state root,
+        // which is the Reasonix home unless REASONIX_STATE_HOME moves it.
+        let dir = reasonix_home_from(client_path_env("REASONIX_STATE_HOME"))
+            .or_else(|| reasonix_home_from(client_path_env("REASONIX_HOME")));
+        if let Some(dir) = dir {
             return Some(rules_sentinel_block(dir.join("AGENTS.md"), scope));
         }
     }
@@ -1778,6 +1804,23 @@ fn dsh_path() -> Option<PathBuf> {
 
 fn dsh_home_from(raw: Option<std::ffi::OsString>) -> Option<PathBuf> {
     absolute_env_dir(expand_leading_tilde(raw))
+}
+
+/// Reasonix reads `config.toml` from `REASONIX_HOME` when set (trimmed, `~`
+/// expanded), else `~/.reasonix` (macOS, Linux) or `%APPDATA%\\reasonix`
+/// (Windows). A relative value resolves against Reasonix's own working
+/// directory, which Toolport cannot know, so it falls back to the default.
+fn reasonix_path() -> Option<PathBuf> {
+    if let Some(dir) = reasonix_home_from(client_path_env("REASONIX_HOME")) {
+        return Some(dir.join("config.toml"));
+    }
+    client_config_path("reasonix")
+}
+
+fn reasonix_home_from(raw: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let raw = raw?;
+    let trimmed = raw.to_str().map_or(raw.clone(), |text| text.trim().into());
+    absolute_env_dir(expand_leading_tilde(Some(trimmed)))
 }
 
 /// Goose keeps extensions (its MCP servers) in config.yaml. It resolves the dir
@@ -2450,6 +2493,19 @@ fn defs() -> Vec<ClientDef> {
             // The home patch layer, `$DSH_HOME/cordis.patch.yml`, which dsh applies
             // over every profile. Per-profile layers are left to the user.
             path: dsh_path,
+            plugin_scan: None,
+        },
+        ClientDef {
+            location: None,
+            id: "reasonix",
+            discovery: discovery::capabilities("reasonix"),
+            combined_tool_name_budget: None,
+            name: "Reasonix",
+            format: Format::TomlReasonixPlugins,
+            uses_connectors: false,
+            // `<Reasonix home>/config.toml`, shared by the CLI and Reasonix Studio.
+            // Project `reasonix.toml` and `.mcp.json` files are left alone.
+            path: reasonix_path,
             plugin_scan: None,
         },
         ClientDef {
@@ -4202,7 +4258,9 @@ fn parse_client_content(format: Format, content: &str) -> Result<Vec<McpServer>,
         Format::YamlExtensions => parse_yaml_extensions(content),
         Format::YamlMcpServers => parse_hermes_yaml_servers(content),
         Format::YamlMcpServersList => parse_continue_yaml_servers(content),
-        Format::YamlDshPatch => dsh::servers(content),
+        Format::YamlDshPatch | Format::TomlReasonixPlugins => synced::Synced::of(format)
+            .expect("synced format")
+            .servers(content),
     }
 }
 
@@ -6664,36 +6722,45 @@ fn write_continue_yaml_servers(path: &Path, servers: &[ServerEntry]) -> Result<(
     atomic_write_yaml_config(path, original.as_deref(), &root, "mcpServers")
 }
 
-/// Make the DeepSeek Harness patch file's servers exactly `servers`.
-fn write_dsh_servers(path: &Path, servers: &[ServerEntry]) -> Result<(), String> {
+/// Make a synced format's servers exactly `servers` (DeepSeek Harness, Reasonix).
+fn write_synced_servers(
+    format: Format,
+    path: &Path,
+    servers: &[ServerEntry],
+) -> Result<(), String> {
+    let kind = synced::Synced::of(format).ok_or("Not a synced client format")?;
     let original = mutation::exists(path)
         .then(|| read_config_file(path))
         .transpose()?;
     let mut desired = serde_json::Map::new();
     for server in servers {
-        desired.insert(server.name.clone(), dsh::config_of(server)?);
+        desired.insert(server.name.clone(), kind.config_of(server)?);
     }
-    let out = dsh::sync(original.as_deref(), &desired, &Default::default())?;
+    let out = kind.sync(original.as_deref(), &desired, &Default::default())?;
     if original.as_deref() != Some(out.as_str()) {
         atomic_write(path, &out)?;
     }
     Ok(())
 }
 
-/// Add, replace or remove the gateway entry in the DeepSeek Harness patch file.
-fn edit_dsh_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(), String> {
+/// Add, replace or remove the gateway entry in a synced format.
+fn edit_synced_gateway(
+    format: Format,
+    path: &Path,
+    entry: Option<&ServerEntry>,
+) -> Result<(), String> {
+    let kind = synced::Synced::of(format).ok_or("Not a synced client format")?;
     let original = mutation::exists(path)
         .then(|| read_config_file(path))
         .transpose()?;
-    let current = dsh::normalized(original.as_deref().unwrap_or(""))?;
-    let mut desired = current[dsh::KEY].as_object().cloned().unwrap_or_default();
+    let mut desired = kind.servers_map(original.as_deref().unwrap_or(""))?;
     desired.retain(|name, config| {
         !gateway_edit_matches(name, config.get("command").and_then(|value| value.as_str()))
     });
     if let Some(entry) = entry {
-        desired.insert(GATEWAY_ENTRY_NAME.into(), dsh::config_of(entry)?);
+        desired.insert(GATEWAY_ENTRY_NAME.into(), kind.config_of(entry)?);
     }
-    let out = dsh::sync(original.as_deref(), &desired, &Default::default())?;
+    let out = kind.sync(original.as_deref(), &desired, &Default::default())?;
     if original.as_deref() != Some(out.as_str()) {
         atomic_write(path, &out)?;
     }
@@ -6954,7 +7021,9 @@ fn write_format(
         Format::YamlExtensions => write_yaml_extensions(path, servers)?,
         Format::YamlMcpServers => write_hermes_yaml_servers(path, servers)?,
         Format::YamlMcpServersList => write_continue_yaml_servers(path, servers)?,
-        Format::YamlDshPatch => write_dsh_servers(path, servers)?,
+        Format::YamlDshPatch | Format::TomlReasonixPlugins => {
+            write_synced_servers(format, path, servers)?
+        }
     }
     Ok(())
 }
@@ -7613,6 +7682,7 @@ fn config_is_whole_app_state(client_id: &str) -> bool {
             | "amp"
             | "auggie"
             | "deepseek-harness"
+            | "reasonix"
     )
 }
 
@@ -7674,7 +7744,9 @@ fn edit_format(
         Format::YamlExtensions => edit_yaml_gateway(path, entry)?,
         Format::YamlMcpServers => edit_hermes_yaml_gateway(path, entry)?,
         Format::YamlMcpServersList => edit_continue_yaml_gateway(path, entry)?,
-        Format::YamlDshPatch => edit_dsh_gateway(path, entry)?,
+        Format::YamlDshPatch | Format::TomlReasonixPlugins => {
+            edit_synced_gateway(format, path, entry)?
+        }
     }
     Ok(())
 }
@@ -8784,6 +8856,8 @@ fn isolated_client_env(root: &Path) -> Vec<EnvRestore> {
         "QWEN_HOME",
         "KIMI_CODE_HOME",
         "DSH_HOME",
+        "REASONIX_HOME",
+        "REASONIX_STATE_HOME",
     ]
     .into_iter()
     .map(|key| EnvRestore::set(key, Path::new("")))
@@ -13012,6 +13086,121 @@ command = "npx"
     }
 
     #[test]
+    fn reasonix_is_registered_with_its_global_config() {
+        let def = find_def("reasonix").unwrap();
+        assert_eq!(def.name, "Reasonix");
+        assert!(matches!(def.format, Format::TomlReasonixPlugins));
+        assert!(!def.uses_connectors);
+        assert!(def.plugin_scan.is_none());
+        assert!(config_is_whole_app_state("reasonix"));
+        // Reasonix searches deferred MCP tools itself and keeps the first list.
+        assert_eq!(def.discovery.auto_mode, "full");
+        assert_eq!(def.discovery.native_tool_search, Some(true));
+        assert_eq!(def.discovery.tools_list_changed, Some(false));
+    }
+
+    #[test]
+    fn reasonix_follows_its_home_and_state_root() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root =
+            std::env::temp_dir().join(format!("toolport-reasonix-home-{}", std::process::id()));
+        let _restore = EnvRestore::set("REASONIX_HOME", &root);
+        assert_eq!(reasonix_path(), Some(root.join("config.toml")));
+        let rules =
+            client_rules_target("reasonix", crate::instructions::Scope::Team).expect("rules");
+        assert_eq!(rules.path, root.join("AGENTS.md"));
+        let state = root.join("state");
+        let _state = EnvRestore::set("REASONIX_STATE_HOME", &state);
+        let rules =
+            client_rules_target("reasonix", crate::instructions::Scope::Team).expect("rules");
+        assert_eq!(rules.path, state.join("AGENTS.md"));
+        assert_eq!(reasonix_path(), Some(root.join("config.toml")));
+        drop(_state);
+        drop(_restore);
+        let home = home().unwrap();
+        // Reasonix trims the value and expands a leading `~`.
+        let _tilde = EnvRestore::set("REASONIX_HOME", Path::new("  ~/rx-elsewhere "));
+        assert_eq!(
+            reasonix_path(),
+            Some(home.join("rx-elsewhere").join("config.toml"))
+        );
+        drop(_tilde);
+        for value in ["", "   ", "relative/rx"] {
+            let _value = EnvRestore::set("REASONIX_HOME", Path::new(value));
+            assert_eq!(reasonix_path(), client_config_path("reasonix"), "{value:?}");
+        }
+    }
+
+    const REASONIX_CONFIG: &str = r#"# Reasonix configuration.
+default_model = "deepseek-flash"
+
+[skills]
+disabled_skills = ["review"]
+
+[[plugins]]
+name    = "memory"
+command = "mcp-server-memory"   # keep this note
+"#;
+
+    #[test]
+    fn reasonix_connect_and_disconnect_round_trip_in_a_temp_home() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home =
+            std::env::temp_dir().join(format!("toolport-reasonix-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let dir = home.join(".reasonix");
+        std::fs::create_dir_all(&dir).unwrap();
+        let _home = TestHome::set(&home);
+        let _restore = EnvRestore::set("REASONIX_HOME", &dir);
+        let def = find_def("reasonix").unwrap();
+        let path = resolved_definition_path(&def).unwrap();
+        assert_eq!(path, dir.join("config.toml"));
+        let lenient = config_is_whole_app_state("reasonix");
+
+        let missing = read_client(&def);
+        assert!(!missing.config_exists);
+        assert!(missing.error.is_none());
+        assert!(!missing.gateway_installed);
+
+        std::fs::write(&path, REASONIX_CONFIG).unwrap();
+        let entry = gateway_entry(Some("Work"), "reasonix").unwrap();
+        edit_format(def.format, &path, Some(&entry), lenient).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.starts_with(REASONIX_CONFIG), "{content}");
+        let connected = read_client(&def);
+        assert!(connected.error.is_none(), "{:?}", connected.error);
+        assert!(connected.gateway_installed);
+        let gateway = connected
+            .servers
+            .iter()
+            .find(|s| s.name == GATEWAY_ENTRY_NAME)
+            .unwrap();
+        assert_eq!(gateway.transport, "stdio");
+        assert_eq!(gateway.command, entry.command);
+        assert_eq!(gateway.args, entry.args);
+        let normalized = reasonix::normalized(&content).unwrap();
+        let env = &normalized[reasonix::KEY][GATEWAY_ENTRY_NAME]["env"];
+        assert_eq!(env[crate::brand::CLIENT_ID], "reasonix");
+        assert_eq!(env[crate::brand::PROFILE], "Work");
+
+        edit_format(def.format, &path, None, lenient).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, REASONIX_CONFIG);
+        let disconnected = read_client(&def);
+        assert!(!disconnected.gateway_installed);
+        let names: Vec<_> = disconnected
+            .servers
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, ["memory"]);
+
+        drop(_restore);
+        drop(_home);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn rewrite_json_key_preserving_keeps_unrelated_text() {
         let original = r#"// header
 {
@@ -14955,6 +15144,13 @@ rules:
             // dsh resolves `~/.dsh` from the OS home on every platform.
             ("deepseek-harness", |home, _| {
                 home.join(".dsh").join("cordis.patch.yml")
+            }),
+            // Reasonix uses os.UserConfigDir on Windows and `~/.reasonix` elsewhere.
+            ("reasonix", |home, platform| match platform {
+                Platform::Windows => roaming_config_dir(home, platform)
+                    .join("reasonix")
+                    .join("config.toml"),
+                Platform::MacOs | Platform::Linux => home.join(".reasonix").join("config.toml"),
             }),
         ];
 

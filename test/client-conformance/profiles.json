@@ -490,6 +490,38 @@
       "observedSessionKind": "Web profile startup, not model session; initialize is dsh's fallback after a server without server/discover"
     },
     {
+      "id": "reasonix",
+      "evidence": "captured web startup",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "initialize",
+        "params": {
+          "capabilities": {
+            "elicitation": {
+              "form": {},
+              "url": {}
+            },
+            "roots": {
+              "listChanged": false
+            }
+          },
+          "clientInfo": {
+            "name": "reasonix",
+            "version": "dev"
+          },
+          "protocolVersion": "2025-11-25"
+        }
+      },
+      "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
+      "listChanged": {
+        "supported": false,
+        "detail": "Reasonix 2.44.0 uses server/discover with toolport-gateway 2.2.0 and opens no subscriptions/listen, so the gateway cannot deliver notifications/tools/list_changed"
+      },
+      "source": "https://github.com/esengine/DeepSeek-Reasonix/blob/studio/internal/ext/plugin/client_session.go",
+      "observedSessionKind": "Web startup, not model session; initialize is Reasonix's fallback after a server without server/discover"
+    },
+    {
       "id": "zcode",
       "evidence": "documentation only",
       "initialize": null,

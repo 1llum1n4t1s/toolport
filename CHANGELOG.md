@@ -16,6 +16,15 @@ Entries before the rename below shipped under the project's former name, Conduit
   `~/.agents/skills` and its `AGENTS.md` rules, and team rules go to
   `~/.dsh/AGENTS.md`. See
   [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#deepseek-harness-setup).
+- Reasonix as a supported client. Connect adds the gateway as a `[[plugins]]`
+  table in Reasonix's `config.toml` (`~/.reasonix`, `%APPDATA%\reasonix` on
+  Windows, or `REASONIX_HOME`), shared by the CLI and Reasonix Studio. Comments
+  and your own servers stay as they are. The Skills page shows Reasonix's skills
+  from its home, `~/.agents/skills`, `~/.agent/skills`, `~/.claude/skills` and
+  `[skills] paths`, and turns them off through `[skills] disabled_skills`. Its
+  `REASONIX.md`, `AGENTS.md` and `CLAUDE.md` rules show too, and team rules go
+  to `AGENTS.md` in its home. See
+  [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#reasonix-setup).
 
 ## [2.2.0] - 2026-10-18
 

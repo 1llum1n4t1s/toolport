@@ -1155,5 +1155,8 @@
   "Uses options.disabled_skills in Crush's crush.json.": "Crush の crush.json の options.disabled_skills を使います。",
   "Uses skills.disabled in Qwen Code's settings.json.": "Qwen Code の settings.json の skills.disabled を使います。",
   "Uses skills.ignoredSkills in Oh My Pi's config.yml.": "Oh My Pi の config.yml の skills.ignoredSkills を使います。",
-  "DeepSeek Harness skills": "DeepSeek Harness のスキル"
+  "DeepSeek Harness skills": "DeepSeek Harness のスキル",
+  "Reasonix skills": "Reasonix のスキル",
+  "Reasonix extra folder": "Reasonix の追加フォルダー",
+  "Uses disabled_skills under [skills] in Reasonix's config.toml.": "Reasonix の config.toml の [skills] にある disabled_skills を使います。"
 }

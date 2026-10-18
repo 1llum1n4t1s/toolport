@@ -70,6 +70,7 @@ const CLIENT_LOGO: Record<string, string> = {
   "qwen-code": "qwen-code",
   "kimi-code": "kimi-code",
   "deepseek-harness": "deepseek-harness",
+  reasonix: "reasonix",
   junie: "junie",
   "kilo-code": "kilo-code",
   "github-copilot-cli": "github-copilot-cli",
