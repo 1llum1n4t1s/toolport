@@ -2817,7 +2817,20 @@ fn openclaw_origin_metadata_rejects_directory_and_file_escapes() {
     home.write("outside/source-origin.json", r#"{"slug":"escaped"}"#);
     home.link(".openclaw/skills/demo/.openclaw", &home.path("outside"));
     assert_eq!(openclaw_skill_key(&file), None);
+    // An escaped metadata directory is still refused when its file links back in.
+    home.write(
+        ".openclaw/skills/demo/origin.json",
+        r#"{"slug":"back-inside"}"#,
+    );
+    std::fs::remove_file(home.path("outside/source-origin.json")).unwrap();
+    home.link(
+        "outside/source-origin.json",
+        &home.path(".openclaw/skills/demo/origin.json"),
+    );
+    assert_eq!(openclaw_skill_key(&file), None);
     std::fs::remove_file(home.path(".openclaw/skills/demo/.openclaw")).unwrap();
+    std::fs::remove_file(home.path("outside/source-origin.json")).unwrap();
+    home.write("outside/source-origin.json", r#"{"slug":"escaped"}"#);
     home.link(
         ".openclaw/skills/demo/.openclaw/source-origin.json",
         &home.path("outside/source-origin.json"),

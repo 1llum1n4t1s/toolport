@@ -2427,8 +2427,9 @@ fn openclaw_skill_key(skill_md: &Path) -> Option<String> {
     openclaw_manifest_skill_key(skill_md).or_else(|| {
         let skill_dir = canon(skill_md.parent()?).ok()?;
         let origin = skill_dir.join(".openclaw/source-origin.json");
+        let parent = canon(origin.parent()?).ok()?;
         let real = canon(&origin).ok()?;
-        if !real.starts_with(&skill_dir) {
+        if !parent.starts_with(&skill_dir) || !real.starts_with(&skill_dir) {
             return None;
         }
         let metadata = std::fs::metadata(&real).ok()?;
