@@ -1374,7 +1374,7 @@ list.toolport-skill-list > row.toolport-skill-group-row:hover {{ background: non
 .toolport-chip-dot {{ min-width: 8px; min-height: 8px; border-radius: 999px; background-color: currentColor; }}
 .toolport-chip-dot.name-only {{ background-image: linear-gradient(90deg, currentColor 50%, transparent 50%); background-color: transparent; border: 1px solid currentColor; }}
 .toolport-chip-dot.ring {{ background-color: transparent; border: 1px solid currentColor; }}
-.toolport-skill-lock:focus-visible {{ outline: 2px solid alpha(@toolport_accent, 0.50); outline-offset: 2px; }}
+.toolport-lock:focus-visible {{ outline: 2px solid alpha(@toolport_accent, 0.50); outline-offset: 2px; }}
 .toolport-skill-issue.warning {{ border-left: 3px solid @toolport_warning; }}
 .toolport-skill-issue.error {{ border-left: 3px solid @toolport_error; }}
 .toolport-skill-name {{ font-weight: 600; }}
@@ -1429,8 +1429,8 @@ list.toolport-skill-list > row.toolport-skill-group-row:hover {{ background: non
 }}
 .toolport-skill-agent:last-child {{ border-bottom: none; }}
 .toolport-skill-logo {{
-  min-width: 32px;
-  min-height: 32px;
+  min-width: 28px;
+  min-height: 28px;
   border-radius: 8px;
   background-color: alpha(@toolport_fg, 0.06);
 }}

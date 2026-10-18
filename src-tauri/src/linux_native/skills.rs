@@ -1847,19 +1847,7 @@ impl SkillsPage {
         for agent in agents {
             let saved = skill.states.get(&agent.id);
             let state = saved.map(|s| s.state);
-            let detail = saved.map_or_else(
-                || state_label(None),
-                |s| {
-                    if s.state == State::On {
-                        crate::i18n::trf(
-                            "{state} via {path}",
-                            &[("state", &state_label(state)), ("path", &s.via)],
-                        )
-                    } else {
-                        s.via.clone()
-                    }
-                },
-            );
+            let detail = dot_detail(saved);
             let dot = state_dot(
                 state,
                 &crate::i18n::trf(
@@ -3160,4 +3148,34 @@ fn agent_summary(inv: &Inventory, agent: &Agent) -> gtk::Box {
     status.set_valign(gtk::Align::Center);
     row.append(&status);
     row
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_column_names_match_the_react_labels() {
+        for (name, short) in [
+            ("Claude Code", "Claude"),
+            ("Copilot CLI", "Copilot"),
+            ("OpenCode", "OpenCode"),
+            ("LongAgentName", "LongAge…"),
+            ("代理智能体名称很长测试", "代理智能体名称…"),
+        ] {
+            assert_eq!(short_agent_name(name), short);
+        }
+    }
+
+    #[test]
+    fn dot_hint_keeps_non_path_explanations() {
+        let state = crate::skills::SkillState {
+            state: State::Off,
+            via: "Off in config.toml".into(),
+            switch_name: None,
+            read_only_reason: None,
+            by_pattern: false,
+        };
+        assert_eq!(dot_detail(Some(&state)), "Off in config.toml");
+    }
 }

@@ -682,10 +682,13 @@ function AgentStateRow({
           {!agent.verified && <Badge variant="off">{t("from docs")}</Badge>}
         </span>
         <span className="block text-meta break-words text-muted-foreground">
-          {readOnly
-            ? `${where} · ${readOnlyReason ?? t("No switch Toolport can write")}`
+          {readOnly && !readOnlyReason
+            ? `${where} · ${t("No switch Toolport can write")}`
             : where}
         </span>
+        {readOnlyReason && (
+          <span className="block text-meta text-muted-foreground">{readOnlyReason}</span>
+        )}
       </span>
       <SkillStateChip state={current} />
       {switchable && writable && agent.nameOnly && (

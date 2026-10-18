@@ -625,7 +625,9 @@ it("shows the reason for an uncertain identifier without offering its toggle", a
   expect(
     within(details).queryByRole("switch", { name: "Load screenshot in OpenCode" }),
   ).not.toBeInTheDocument();
-  const label = within(details).getByText("Read only");
+  const label = within(details).getByRole("img", {
+    name: "Identifier cannot be verified; use the client.",
+  });
   await userEvent.hover(label);
   expect(await screen.findByRole("tooltip")).toHaveTextContent(
     "Identifier cannot be verified; use the client.",
