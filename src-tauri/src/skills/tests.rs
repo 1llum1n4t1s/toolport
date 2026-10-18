@@ -2906,7 +2906,7 @@ fn nanobot_unreadable_subdirectory_preserves_package_discovery() {
     let (root, marker) = nanobot_package(&home, "valid", "valid", &["valid-skill"], true);
     let locked = root.join("locked");
     std::fs::create_dir(&locked).unwrap();
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0)).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o0)).unwrap();
     let unreadable = std::fs::read_dir(&locked).is_err();
     let fingerprint = nanobot_plugins::activation(&root);
     let count = fingerprint.as_ref().map(|activation| {
