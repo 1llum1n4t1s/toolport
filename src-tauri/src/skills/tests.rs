@@ -2020,14 +2020,25 @@ fn openclaw_symlink_boundaries_apply_before_skill_precedence() {
         "---\nname: foreign\ndescription: External file\n---\n",
     );
     home.link(".openclaw/skills/foreign/SKILL.md", &foreign);
+    let hidden = home.skill(
+        ".openclaw/workspace/skills/.hidden/leaf",
+        "hidden",
+        "Only reachable through an untrusted group",
+    );
+    home.link("group-outside/leaf", hidden.parent().unwrap());
+    home.link(
+        ".openclaw/workspace/skills/group",
+        &home.path("group-outside"),
+    );
     let inv = scan(&home.env(), &only(&["openclaw"]), None);
+    assert!(inv.skills.iter().all(|skill| skill.name != "hidden"));
     assert_eq!(skill(&inv, "style").key, managed.display().to_string());
     assert_eq!(state(&inv, "style", "openclaw"), Some(State::On));
     assert_eq!(state(&inv, "personal", "openclaw"), Some(State::On));
     assert!(inv.skills.iter().all(|skill| skill.name != "foreign"));
     home.write(
         ".openclaw/openclaw.json",
-        "{ skills: { load: { allowSymlinkTargets: ['~/outside'] } } }\n",
+        "{ skills: { load: { allowSymlinkTargets: [' ~/outside '] } } }\n",
     );
     let inv = scan(&home.env(), &only(&["openclaw"]), None);
     let winner = inv

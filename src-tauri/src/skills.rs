@@ -1821,7 +1821,7 @@ fn walk_root(root: &Root) -> Vec<Found> {
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
     let mut budget = MAX_ENTRIES;
-    walk_dir(root, &root.path, 0, &mut seen, &mut budget, &mut out);
+    walk_dir(root, &root.path, 0, &mut seen, &mut budget, &mut out, None);
     out
 }
 
@@ -1858,6 +1858,7 @@ fn walk_dir(
     seen: &mut BTreeSet<PathBuf>,
     budget: &mut usize,
     out: &mut Vec<Found>,
+    allowed: Option<&dyn Fn(&Path) -> bool>,
 ) {
     let Ok(real_dir) = canon(dir) else {
         return;
@@ -1892,6 +1893,9 @@ fn walk_dir(
         if !path.is_dir() || (!root.dir_links && is_link(&path)) {
             continue;
         }
+        if allowed.is_some_and(|allowed| !allowed(&path)) {
+            continue;
+        }
         let skill_md = path.join("SKILL.md");
         if !root.file_links && is_link(&skill_md) {
             continue;
@@ -1904,7 +1908,7 @@ fn walk_dir(
                 root_path: root.path.clone(),
             });
         } else if root.recursive && depth + 1 < MAX_DEPTH {
-            walk_dir(root, &path, depth + 1, seen, budget, out);
+            walk_dir(root, &path, depth + 1, seen, budget, out, allowed);
         }
     }
 }
@@ -2021,6 +2025,34 @@ fn openclaw_skill_allowed(env: &Env, root: &Root, found: &Found, trusted: &[Path
     trusted.iter().any(|base| skill_dir.starts_with(base))
 }
 
+fn walk_openclaw_root(env: &Env, root: &Root, trusted: &[PathBuf]) -> Vec<Found> {
+    let dirs = &env.openclaw;
+    let folder_links =
+        root.path == dirs.state.join("skills") || root.path == dirs.home.join(".agents/skills");
+    let base = canon(&root.path).ok();
+    let allowed = |path: &Path| {
+        folder_links
+            || canon(path).is_ok_and(|real| {
+                base.as_ref().is_some_and(|base| real.starts_with(base))
+                    || trusted.iter().any(|base| real.starts_with(base))
+            })
+    };
+    let mut out = Vec::new();
+    let mut budget = MAX_ENTRIES;
+    walk_dir(
+        root,
+        &root.path,
+        0,
+        &mut BTreeSet::new(),
+        &mut budget,
+        &mut out,
+        Some(&allowed),
+    );
+    out.into_iter()
+        .filter(|found| openclaw_skill_allowed(env, root, found, trusted))
+        .collect()
+}
+
 fn openclaw_trusted_skill_dirs(env: &Env) -> Vec<PathBuf> {
     let dirs = &env.openclaw;
     let config = read_json(&dirs.config);
@@ -2030,6 +2062,7 @@ fn openclaw_trusted_skill_dirs(env: &Env) -> Vec<PathBuf> {
     string_list(trusted)
         .iter()
         .filter_map(|raw| {
+            let raw = raw.trim();
             let path = if raw == "~" {
                 dirs.home.clone()
             } else if let Some(rest) = raw.strip_prefix("~/") {
@@ -2668,14 +2701,11 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
         let found: Vec<Found> = roots
             .iter()
             .flat_map(|root| {
-                walks
-                    .walk(root)
-                    .into_iter()
-                    .filter(|found| {
-                        def.id != "openclaw"
-                            || openclaw_skill_allowed(env, root, found, &openclaw_trusted)
-                    })
-                    .collect::<Vec<_>>()
+                if def.id == "openclaw" {
+                    walk_openclaw_root(env, root, &openclaw_trusted)
+                } else {
+                    walks.walk(root)
+                }
             })
             .collect();
         // name -> winning key, for name-based dedup.
