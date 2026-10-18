@@ -132,9 +132,12 @@ paths depend on Reasonix's launch directory and fall back to the home here.
 The Skills page includes nested directory and single-file Markdown skills,
 with `[skills] max_depth` (default 3, capped at 5). Nested skills need a
 description; flat files under `.claude/skills` need skill frontmatter. Skill
-toggles use `[skills] disabled_skills` with Reasonix's resolved skill identifier,
-including filename fallback for invalid or non-ASCII declarations over ASCII
-filenames.
+toggles use `[skills] disabled_skills` only when Toolport can verify the exact
+identifier: an ASCII filename and simple, flat ASCII frontmatter scalars.
+Quoted whitespace and numeric spelling are preserved as Reasonix resolves them.
+Unicode names, complex YAML and other uncertain identifiers stay visible with
+a read-only reason; use Reasonix to switch those skills. Other skills and
+clients remain independently switchable.
 
 ### Codewhale setup
 

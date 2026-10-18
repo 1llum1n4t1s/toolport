@@ -1,0 +1,240 @@
+[
+  {
+    "stem": "review",
+    "header": "name: inspect\n",
+    "expected": "inspect",
+    "key": "inspect",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: ' inspect '\n",
+    "expected": "inspect",
+    "key": "inspect",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: \" inspect \"\n",
+    "expected": "inspect",
+    "key": "inspect",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: >\n  inspect\n",
+    "expected": "inspect",
+    "key": "inspect",
+    "safe": false
+  },
+  {
+    "stem": "review",
+    "header": "NAME: Inspect\n",
+    "expected": "Inspect",
+    "key": "Inspect",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: Inspect\n",
+    "expected": "Inspect",
+    "key": "Inspect",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: 123\n",
+    "expected": "123",
+    "key": "123",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: 00123\n",
+    "expected": "00123",
+    "key": "00123",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: 0x10\n",
+    "expected": "0x10",
+    "key": "0x10",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: 1e3\n",
+    "expected": "1e3",
+    "key": "1e3",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: true\n",
+    "expected": "true",
+    "key": "true",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: null\n",
+    "expected": "null",
+    "key": "null",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: review changes\n",
+    "expected": "review",
+    "key": "review",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: レビュー\n",
+    "expected": "review",
+    "key": "review",
+    "safe": false
+  },
+  {
+    "stem": "café",
+    "header": "name: inspect\n",
+    "expected": "inspect",
+    "key": "inspect",
+    "safe": false
+  },
+  {
+    "stem": "café",
+    "header": "",
+    "expected": "café",
+    "key": "café",
+    "safe": false
+  },
+  {
+    "stem": "review",
+    "header": "name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+    "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+    "expected": "review",
+    "key": "review",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "outer:\n  name: nested\n",
+    "expected": "nested",
+    "key": "nested",
+    "safe": false
+  },
+  {
+    "stem": "review",
+    "header": "name: [inspect]\n",
+    "expected": "inspect",
+    "key": "inspect",
+    "safe": false
+  },
+  {
+    "stem": "review",
+    "header": "name: !!str inspect\n",
+    "expected": "inspect",
+    "key": "inspect",
+    "safe": false
+  },
+  {
+    "stem": "review",
+    "header": "'name': inspect\n",
+    "expected": "inspect",
+    "key": "inspect",
+    "safe": false
+  },
+  {
+    "stem": "review",
+    "header": "name: inspect\nother: - x\n",
+    "expected": "review",
+    "key": "review",
+    "safe": false
+  },
+  {
+    "stem": "review",
+    "header": "name: inspect\nname:\n",
+    "expected": "inspect",
+    "key": "inspect",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: inspect\nName: second\n",
+    "expected": "second",
+    "key": "second",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: 1.0\n",
+    "expected": "1.0",
+    "key": "1.0",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: 1_000\n",
+    "expected": "1_000",
+    "key": "1_000",
+    "safe": true
+  },
+  {
+    "stem": "review",
+    "header": "name: .nan\n",
+    "expected": "review",
+    "key": "review",
+    "safe": false
+  },
+  {
+    "stem": "review",
+    "header": "name: İ\n",
+    "expected": "review",
+    "key": "review",
+    "safe": false
+  },
+  {
+    "stem": "review",
+    "header": "name: K\n",
+    "expected": "review",
+    "key": "review",
+    "safe": false
+  },
+  {
+    "stem": "review",
+    "header": "name:inspect\n",
+    "expected": "review",
+    "key": "review",
+    "safe": false
+  },
+  {
+    "stem": "review",
+    "header": "name: 1e+3\n",
+    "expected": "review",
+    "key": "review",
+    "safe": false
+  },
+  {
+    "stem": "review",
+    "header": "name: '\\u0069nspect'\n",
+    "expected": "review",
+    "key": "review",
+    "safe": false
+  },
+  {
+    "stem": "review",
+    "header": "name:  inspect  \n",
+    "expected": "inspect",
+    "key": "inspect",
+    "safe": true
+  }
+]

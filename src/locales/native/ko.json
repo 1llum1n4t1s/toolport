@@ -1169,5 +1169,6 @@
   "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "여기서 OpenHands 스킬은 읽기 전용입니다. 설치된 스킬은 OpenHands에서 켜거나 끄세요.",
   "nanobot skills": "nanobot 스킬",
   "Uses agents.defaults.disabledSkills in nanobot's config.json.": "nanobot의 config.json에서 agents.defaults.disabledSkills를 사용합니다.",
-  "From a nanobot package": "nanobot 패키지에서 제공"
+  "From a nanobot package": "nanobot 패키지에서 제공",
+  "Toolport cannot verify this skill's Reasonix identifier. Use Reasonix to switch it on or off.": "Toolport에서 이 스킬의 Reasonix 식별자를 확인할 수 없습니다. Reasonix에서 켜거나 끄세요."
 }

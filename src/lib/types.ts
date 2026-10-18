@@ -873,6 +873,8 @@ export interface SkillAgentState {
   via: string;
   /** The name this client's own setting uses, when it differs (Claude plugin skills). */
   switchName?: string;
+  /** Reason this individual client/skill switch is read only. */
+  readOnlyReason?: string;
   /** Off through a rule covering many skills, not a choice about this one. */
   byPattern?: boolean;
 }

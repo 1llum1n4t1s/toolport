@@ -8,6 +8,10 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ### Fixed
 
+- Keep uncertain Reasonix skill identifiers read-only in both apps instead of
+  writing an ineffective disable key. Verify simple ASCII scalar names,
+  including trimmed whitespace and original numeric spelling.
+
 - OpenClaw Connect edits the active legacy config instead of creating a file
   that hides it. Skills honor the OS personal home, later extra-directory
   precedence and installed source-origin keys.
@@ -21,7 +25,7 @@ Entries before the rename below shipped under the project's former name, Conduit
   Setup docs clarify how global and project instructions combine.
 - Match Reasonix state relocation and nested or single-file skill discovery.
   Resolve duplicate plugin names with merged disabled-tool policies without
-  blocking unrelated connections. Use Reasonix's resolved skill identifiers for
+  blocking unrelated connections. Use verified Reasonix skill identifiers for
   toggles, preserve CRLF and mixed line endings, and restore moved plugins beside their surviving neighbors
   with their comments after unrelated config edits.
 

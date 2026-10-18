@@ -1169,5 +1169,6 @@
   "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "Les skills OpenHands sont en lecture seule ici. Utilisez OpenHands pour activer ou désactiver les skills installées.",
   "nanobot skills": "Skills nanobot",
   "Uses agents.defaults.disabledSkills in nanobot's config.json.": "Utilise agents.defaults.disabledSkills dans le config.json de nanobot.",
-  "From a nanobot package": "D’un paquet nanobot"
+  "From a nanobot package": "D’un paquet nanobot",
+  "Toolport cannot verify this skill's Reasonix identifier. Use Reasonix to switch it on or off.": "Toolport ne peut pas vérifier l’identifiant Reasonix de cette compétence. Activez-la ou désactivez-la dans Reasonix."
 }

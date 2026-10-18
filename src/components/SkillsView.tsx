@@ -487,6 +487,19 @@ function StateControl({
   if (current === "broken") return <Badge variant="destructive">{t("Broken")}</Badge>;
   if (current === "shadowed")
     return <Badge variant="warning">{t("Another copy wins")}</Badge>;
+  const readOnlyReason = skill.states[agent.id]?.readOnlyReason;
+  if (readOnlyReason) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button type="button" className="rounded-md">
+            <Badge variant="outline">{t("Read only")}</Badge>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-64">{readOnlyReason}</TooltipContent>
+      </Tooltip>
+    );
+  }
   if (!agent.canToggle) {
     return (
       <Tooltip>

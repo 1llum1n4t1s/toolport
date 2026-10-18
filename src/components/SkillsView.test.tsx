@@ -492,3 +492,25 @@ describe("SkillsView", () => {
     );
   });
 });
+
+// A read-only decision belongs to one skill/client, not to the whole client.
+it("shows the reason for an uncertain identifier without offering its toggle", async () => {
+  vi.mocked(setSkillState).mockClear();
+  const inv = skillsFixture();
+  const entry = inv.skills.find((s) => s.name === "screenshot")!;
+  entry.states.opencode.readOnlyReason = "Identifier cannot be verified; use the client.";
+  vi.mocked(skillsInventory).mockResolvedValue(inv);
+  renderView();
+  const list = await screen.findByRole("region", { name: "Skills" });
+  await userEvent.click(within(list).getByRole("button", { name: /screenshot/ }));
+  const details = screen.getByRole("complementary", { name: "Skill details" });
+  expect(
+    within(details).queryByRole("switch", { name: "Load screenshot in OpenCode" }),
+  ).not.toBeInTheDocument();
+  const label = within(details).getByText("Read only");
+  await userEvent.hover(label);
+  expect(await screen.findByRole("tooltip")).toHaveTextContent(
+    "Identifier cannot be verified; use the client.",
+  );
+  expect(setSkillState).not.toHaveBeenCalled();
+});

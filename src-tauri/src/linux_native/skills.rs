@@ -2078,6 +2078,15 @@ impl SkillsPage {
             }
             _ => {}
         }
+        if let Some(reason) = skill
+            .states
+            .get(&agent.id)
+            .and_then(|s| s.read_only_reason.as_deref())
+        {
+            let pill = badge(&crate::i18n::tr("Read only"), "disabled");
+            pill.set_tooltip_text(Some(reason));
+            return pill.upcast();
+        }
         if !agent.can_toggle {
             let pill = icon_badge(
                 if current == State::Off {
