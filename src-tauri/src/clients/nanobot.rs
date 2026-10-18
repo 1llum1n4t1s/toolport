@@ -231,6 +231,13 @@ fn inventory(servers: &Map<String, Value>) -> Result<Vec<McpServer>, String> {
                 "Malformed nanobot server '{name}': expected an object"
             ));
         }
+        if definition.get("type").is_some_and(|kind| {
+            !kind.is_null() && !matches!(kind.as_str(), Some("stdio" | "sse" | "streamableHttp"))
+        }) {
+            return Err(format!(
+                "Malformed nanobot server '{name}': unsupported transport type"
+            ));
+        }
         // nanobot skips incomplete entries while connecting the remaining servers.
         // Import still validates each requested entry and returns its hard error.
         if let Ok(value) = normalized_server(name, definition) {

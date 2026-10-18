@@ -272,7 +272,16 @@ fn imports_accept_nanobots_model_dump_defaults() {
 
 #[test]
 fn incomplete_entries_do_not_hide_usable_servers_but_cannot_be_imported() {
-    assert!(parse(r#"{"tools":{"mcpServers":{"invalid":null}}}"#).is_err());
+    for invalid in [
+        serde_json::json!(null),
+        serde_json::json!({"type":"unknown"}),
+        serde_json::json!({"type":false}),
+    ] {
+        assert!(parse(
+            &serde_json::json!({"tools":{"mcpServers":{"invalid":invalid}}}).to_string()
+        )
+        .is_err());
+    }
     for definition in [
         serde_json::json!({}),
         serde_json::json!({"command":"","url":""}),
