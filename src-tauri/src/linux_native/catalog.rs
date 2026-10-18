@@ -57,47 +57,28 @@ impl CatalogPage {
     pub(super) fn new(server_page: super::ServerPage) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("toolport-content");
-        let header = adw::HeaderBar::new();
-        header.add_css_class("toolport-header");
-        header.set_show_back_button(true);
-        header.set_title_widget(Some(&{
-            let widget = gtk::Label::builder()
-                .label(crate::i18n::tr("Catalog"))
-                .css_classes(["title"])
-                .build();
-            l10n::bind_label(&widget, "Catalog");
-            widget
-        }));
-        root.append(&header);
+        let header = super::page_header::PageHeader::new(
+            crate::i18n::msg("Catalog"),
+            crate::i18n::msg("Add MCP servers from the registry"),
+        );
+        let back = header.set_back(
+            crate::i18n::msg("Servers"),
+            crate::i18n::msg("Back to servers"),
+        );
+        let app = server_page.app.clone();
+        back.connect_clicked(move |_| {
+            app.activate_action("show-servers", None);
+        });
+        let refresh = super::header_icon_button("view-refresh-symbolic");
+        l10n::bind_tooltip(&refresh, "Refresh catalog");
+        header.add_action(&refresh);
+        root.append(&header.root);
 
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
             .build();
-        let page = gtk::Box::new(gtk::Orientation::Vertical, 14);
-        page.add_css_class("toolport-page");
-        page.set_margin_top(20);
-        page.set_margin_bottom(20);
-        page.set_margin_start(20);
-        page.set_margin_end(20);
-        page.append(&{
-            let widget = gtk::Label::builder()
-                .label(crate::i18n::tr("Add trusted MCP servers"))
-                .halign(gtk::Align::Start)
-                .css_classes(["title-2"])
-                .build();
-            l10n::bind_label(&widget, "Add trusted MCP servers");
-            widget
-        });
-        page.append(
-            &{ let widget = gtk::Label::builder()
-                .label(crate::i18n::tr("Browse Toolport's curated picks or search the official MCP Registry. Valid servers turn on. Missing credentials and setup inputs stay off."))
-                .halign(gtk::Align::Fill)
-                .xalign(0.0)
-                .wrap(true)
-                .css_classes(["toolport-muted"])
-                .build(); l10n::bind_label(&widget, "Browse Toolport's curated picks or search the official MCP Registry. Valid servers turn on. Missing credentials and setup inputs stay off."); widget },
-        );
+        let page = super::page_body(14);
         let search = {
             let widget = gtk::SearchEntry::builder()
                 .placeholder_text(crate::i18n::tr(
@@ -178,6 +159,8 @@ impl CatalogPage {
             #[cfg(test)]
             completed_suggestions: Default::default(),
         };
+        let page_for_refresh = catalog.clone();
+        refresh.connect_clicked(move |_| page_for_refresh.refresh());
         let page_for_activate = catalog.clone();
         catalog.search.connect_activate(move |entry| {
             page_for_activate.cancel_suggestion_timer();
@@ -919,7 +902,6 @@ mod tests {
             app: app.clone(),
             share_requests: Default::default(),
             server_count: gtk::Label::new(None),
-            enabled_count: gtk::Label::new(None),
             section_title: gtk::Label::new(None),
             posture: gtk::Label::new(None),
             search: gtk::SearchEntry::new(),

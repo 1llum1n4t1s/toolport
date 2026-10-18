@@ -109,6 +109,25 @@ afterEach(() => {
 });
 
 describe("AppSidebar accessibility", () => {
+  it("keeps Servers selected while browsing Catalog", () => {
+    render(
+      <TooltipProvider>
+        <AppSidebar
+          registry={null}
+          onRegistryChange={vi.fn()}
+          view="catalog"
+          onSelectView={vi.fn()}
+          onShortcuts={vi.fn()}
+          onReplayOnboarding={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+    expect(screen.getByRole("button", { name: "Servers" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
   it("promotes Clients into the primary navigation", () => {
     render(
       <TooltipProvider>
@@ -151,14 +170,7 @@ describe("AppSidebar accessibility", () => {
       within(nav)
         .getAllByRole("button")
         .map((b) => b.textContent),
-    ).toEqual([
-      "Servers",
-      "Clients",
-      "Skills",
-      "Activity",
-      "Settings",
-      "Sign in to sync",
-    ]);
+    ).toEqual(["Servers", "Clients", "Skills", "Activity", "Settings", "Sync"]);
     // Catalog, Playground, Agent rules, Agent activity and Team are not top-level.
     for (const name of [
       "Browse catalog",

@@ -1115,7 +1115,7 @@ export function SettingsView({
         : t("No old gateway processes found.");
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-8">
+    <div className="flex max-w-[760px] flex-col gap-8">
       <SectionHeading title={t(SETTINGS_PAGES.find((item) => item.id === page)!.label)}>
         {t(SETTINGS_PAGES.find((item) => item.id === page)!.description)}
       </SectionHeading>
@@ -2207,8 +2207,8 @@ export function SettingsView({
 function SectionHeading({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <h2 className="text-base font-semibold">{title}</h2>
-      <p className="text-sm text-muted-foreground">{children}</p>
+      <h2 className="text-[17px] font-semibold">{title}</h2>
+      <p className="text-meta text-muted-foreground">{children}</p>
     </div>
   );
 }

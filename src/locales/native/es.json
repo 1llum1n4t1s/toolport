@@ -1,4 +1,10 @@
 {
+  "Add server (Ctrl+N)": "Añadir servidor (Ctrl+N)",
+  "Clear": "Borrar",
+  "Quit Toolport (Ctrl+Q)": "Salir de Toolport (Ctrl+Q)",
+  "Refresh catalog": "Actualizar catálogo",
+  "Refresh sync status": "Actualizar estado de sincronización",
+  "{value0} tokens saved": "{value0} tokens ahorrados",
   "\nCold catalog": "\nCatálogo frío",
   "\nDispatch: {value0}": "\nDespacho: {value0}",
   "\nExcluded history: {value0} catalog records ({value1} with byte measurements). Session identity and repeat loads cannot be verified.": "\nHistorial excluido: {value0} registros de catálogo ({value1} con medidas de bytes). No se pueden verificar la identidad de la sesión y las cargas repetidas.",

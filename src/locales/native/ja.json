@@ -1,4 +1,10 @@
 {
+  "Add server (Ctrl+N)": "サーバーを追加 (Ctrl+N)",
+  "Clear": "消去",
+  "Quit Toolport (Ctrl+Q)": "Toolport を終了 (Ctrl+Q)",
+  "Refresh catalog": "カタログを更新",
+  "Refresh sync status": "同期状態を更新",
+  "{value0} tokens saved": "{value0} Token 削減",
   "\nCold catalog": "\nコールドカタログ",
   "\nDispatch: {value0}": "\nディスパッチ: {value0}",
   "\nExcluded history: {value0} catalog records ({value1} with byte measurements). Session identity and repeat loads cannot be verified.": "\n除外された履歴: {value0} カタログ レコード (バイト測定値を含む {value1})。セッション ID と反復ロードは検証できません。",

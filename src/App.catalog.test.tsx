@@ -86,8 +86,10 @@ describe("Servers header catalog entry point", () => {
     const browse = await screen.findByRole("button", { name: /Browse catalog/ });
     await userEvent.click(browse);
 
+    expect(await screen.findByRole("heading", { name: "Catalog" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Back to servers" }));
     expect(
-      await screen.findByRole("heading", { name: "Browse catalog" }),
+      await screen.findByRole("heading", { level: 1, name: "Servers" }),
     ).toBeInTheDocument();
   });
 });

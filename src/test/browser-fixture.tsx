@@ -6,6 +6,7 @@ const fixtureLocations: import("@/lib/types").DetectedClient[] = [];
 // Separate development entry. Never imported by the shipping application.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { useState } from "react";
+import { PageHeader } from "@/components/PageHeader";
 import { TeamsView } from "@/components/TeamsView";
 import { createRoot } from "react-dom/client";
 import { ClientLogo } from "@/components/ClientLogo";
@@ -1205,8 +1206,18 @@ if (new URLSearchParams(location.search).has("localization-controls")) {
   function ReviewFixture() {
     const [current, setCurrent] = useState(registry);
     return (
-      <main className="max-w-4xl mx-auto p-6">
-        <TeamsView registry={current} onRegistryChange={setCurrent} />
+      <main>
+        <PageHeader
+          title={personalFixture ? "Sync" : "Team"}
+          subtitle={
+            personalFixture
+              ? "Your setup, on every machine"
+              : "Share one MCP server set across your team"
+          }
+        />
+        <div className="p-6">
+          <TeamsView registry={current} onRegistryChange={setCurrent} />
+        </div>
       </main>
     );
   }

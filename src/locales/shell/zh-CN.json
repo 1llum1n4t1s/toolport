@@ -277,5 +277,8 @@
   "Your setup, on every machine": "您在每台机器上的设置",
   "Toolport is now available in {language}.": "Toolport 现已支持{language}。",
   "Switch to {language}": "切换到{language}",
-  "Keep English": "保留英语"
+  "Keep English": "保留英语",
+  "Skills and rules each agent loads, and where they live": "每个智能体加载的技能和规则，以及它们的存放位置",
+  "Back to servers": "返回服务器",
+  "Add a config folder for a client Toolport did not find on its own": "为 Toolport 未自动找到的客户端添加配置文件夹"
 }

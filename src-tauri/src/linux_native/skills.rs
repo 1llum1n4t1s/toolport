@@ -542,33 +542,16 @@ impl Pane {
 impl SkillsPage {
     pub(super) fn new(app: &adw::Application) -> Self {
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let header = adw::HeaderBar::new();
-        header.add_css_class("toolport-header");
-        header.set_show_back_button(true);
-        header.set_title_widget(Some(&{
-            let widget = gtk::Label::builder()
-                .label(crate::i18n::tr("Skills and rules"))
-                .css_classes(["title"])
-                .build();
-            l10n::bind_label(&widget, "Skills and rules");
-            widget
-        }));
-        content.append(&header);
+        let header = super::page_header::PageHeader::new(
+            crate::i18n::msg("Skills"),
+            crate::i18n::msg("Skills and rules each agent loads, and where they live"),
+        );
+        content.append(&header.root);
 
         let top = gtk::Box::new(gtk::Orientation::Vertical, 10);
         top.set_margin_top(14);
-        top.set_margin_start(20);
-        top.set_margin_end(20);
-        top.append(&{
-            let widget = muted(&crate::i18n::tr(
-                "What each agent loads besides tools, and where it lives",
-            ));
-            l10n::bind_label(
-                &widget,
-                "What each agent loads besides tools, and where it lives",
-            );
-            widget
-        });
+        top.set_margin_start(24);
+        top.set_margin_end(24);
 
         // Tabs on the left, project/search/refresh on the right, over one bottom rule.
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -674,8 +657,10 @@ impl SkillsPage {
             .css_classes(["toolport-feedback", "idle"])
             .accessible_role(gtk::AccessibleRole::Status)
             .build();
-        // Always in place, empty when there is nothing to say, so the rows below never move
-        // under the pointer when a message comes or goes.
+        feedback.set_visible(false);
+        feedback.connect_notify_local(Some("label"), |label, _| {
+            label.set_visible(!label.label().is_empty());
+        });
         top.append(&feedback);
         content.append(&top);
 

@@ -591,7 +591,7 @@ export function TeamsView({
   // the two apart, so answer the question here: not loaded yet is neither state.
   if (registry === null) {
     return (
-      <div className="mx-auto max-w-2xl">
+      <div className="max-w-[760px]">
         <div className="mb-5 flex items-center gap-2">
           <Users className="size-5 text-muted-foreground" />
           <h2 className="text-base font-semibold">{tr("Toolport Teams")}</h2>
@@ -615,10 +615,7 @@ export function TeamsView({
     );
   }
   return (
-    // The connected view is a single column of cards and stays narrow. The
-    // disconnected one runs two lanes side by side, which needs the extra width to
-    // keep the connect form's fields from turning into a column of stubs.
-    <div className={team ? "mx-auto max-w-2xl" : "mx-auto max-w-4xl"}>
+    <div className="max-w-[760px]">
       <div className="mb-5 flex items-center gap-2">
         <Users className="size-5 text-muted-foreground" />
         <h2 className="text-base font-semibold">{tr("Toolport Teams")}</h2>

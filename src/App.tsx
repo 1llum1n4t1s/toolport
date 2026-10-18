@@ -9,11 +9,11 @@ import { isPersonalSync } from "@/lib/personalSync";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
-  ArrowLeft,
   CircleCheck,
   KeyRound,
   MoreHorizontal,
   Download,
+  FolderPlus,
   Plus,
   RefreshCw,
   Search,
@@ -58,6 +58,8 @@ import { AccessUpgradeNotice } from "@/components/AccessUpgradeNotice";
 import { RemovedFeaturesNotice } from "@/components/RemovedFeaturesNotice";
 import { AppSidebar } from "@/components/AppSidebar";
 import { ClientLogo } from "@/components/ClientLogo";
+import { AddClientLocationDialog } from "@/components/AddClientLocationDialog";
+import { PageHeader, PageHeaderActionsSlot } from "@/components/PageHeader";
 import { PendingApprovals } from "@/components/PendingApprovals";
 import { TeamPairingDialog } from "@/components/TeamPairingDialog";
 import { QuarantineAlert } from "@/components/QuarantineAlert";
@@ -156,6 +158,8 @@ function App() {
   // only appears after a real failure.
   const [backendReachable, setBackendReachable] = useState(true);
   const [query, setQuery] = useState("");
+  const [headerActionsSlot, setHeaderActionsSlot] = useState<HTMLElement | null>(null);
+  const [addingLocation, setAddingLocation] = useState(false);
   // Keyboard shortcuts (SBS-143). The app had none, which for a developer tool means
   // every interaction is mouse-only.
   const searchRef = useRef<HTMLInputElement>(null);
@@ -819,6 +823,43 @@ function App() {
     }
   }
 
+  const syncTitle =
+    !registry?.team || isPersonalSync(registry) ? translate("Sync") : translate("Team");
+  const pageTitle =
+    view === "activity"
+      ? t("Activity")
+      : view === "skills"
+        ? t("Skills")
+        : view === "catalog"
+          ? translate("Catalog")
+          : view === "teams"
+            ? syncTitle
+            : view === "settings"
+              ? translate("Settings")
+              : view === "clients"
+                ? (selectedClient?.name ?? translate("Clients"))
+                : translate("Servers");
+  const pageSubtitle =
+    view === "activity"
+      ? t("Tool calls routed through Toolport")
+      : view === "skills"
+        ? t("Skills and rules each agent loads, and where they live")
+        : view === "catalog"
+          ? translate("Add MCP servers from the registry")
+          : view === "teams"
+            ? !registry?.team || isPersonalSync(registry)
+              ? translate("Your setup, on every machine")
+              : translate("Share one MCP server set across your team")
+            : view === "settings"
+              ? translate("Global discovery and security policy")
+              : view === "clients"
+                ? selectedClient
+                  ? translate("MCP client")
+                  : translate("Manage Toolport in your installed AI tools")
+                : loading || !registry
+                  ? translate("Loading…")
+                  : translate("One gateway in front of every MCP server you run");
+
   const serverRow = (server: ServerEntry) => (
     <RegistryServerRow
       key={server.id}
@@ -862,185 +903,175 @@ function App() {
             registry={registry}
             onRegistryChange={applyRegistryChange}
           />
-          <header className="app-header flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2 sm:px-6 sm:py-4">
-            <div className="flex min-w-0 flex-1 items-center gap-3">
-              {view === "clients" && selectedClient && (
-                <>
+          <PageHeader
+            title={pageTitle}
+            subtitle={pageSubtitle}
+            back={
+              view === "catalog"
+                ? {
+                    label: translate("Servers"),
+                    ariaLabel: translate("Back to servers"),
+                    onClick: () => selectView("servers"),
+                  }
+                : view === "clients" && selectedClient
+                  ? {
+                      label: t("Clients"),
+                      ariaLabel: t("Back to clients"),
+                      onClick: () => selectView("clients"),
+                    }
+                  : undefined
+            }
+            leading={
+              view === "clients" && selectedClient ? (
+                <ClientLogo id={selectedClient.id} name={selectedClient.name} size={32} />
+              ) : undefined
+            }
+            actionsSlotRef={setHeaderActionsSlot}
+            actions={
+              <>
+                {view === "servers" && (
+                  <>
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        ref={searchRef}
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        placeholder={translate("Search servers")}
+                        title={translate("Search servers (/ or {value1}F)", {
+                          value1: String(isMac ? "⌘" : "Ctrl"),
+                        })}
+                        className="h-8 w-32 pl-8 sm:w-44"
+                      />
+                    </div>
+                    <ServerDialog
+                      onSaved={setRegistry}
+                      existingNames={servers.map((s) => s.name)}
+                      trigger={
+                        <Button
+                          variant="outline"
+
+                          title={isMac ? t("Add server (⌘N)") : t("Add server (CtrlN)")}
+                        >
+                          <Plus className="size-4" /> {t("Add server")}{" "}
+                        </Button>
+                      }
+                    />
+                    <Button
+                      variant="outline"
+
+                      title={translate("Browse Toolport's curated server catalog")}
+                      onClick={() => selectView("catalog")}
+                    >
+                      <Store className="size-4" />
+                      {translate("Browse catalog")}
+                    </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={translate("More actions")}
+                          title={translate("Import and server actions")}
+                        >
+                          <MoreHorizontal className="size-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+
+                      <DropdownMenuContent align="end" className="w-38">
+                        <DropdownMenuItem onClick={handleImport}>
+                          <Download className="mr-2 size-4" />
+                          <span>{t("Import")}</span>
+                        </DropdownMenuItem>
+
+                        {servers.length > 0 && (
+                          <DropdownMenuItem
+                            onClick={() => {
+                              // "Disable all" only shows when every server is enabled,
+                              // so it turns off `servers.length`. Confirm when that's
+                              // more than a couple; "Enable all" and small sets go
+                              // straight through.
+                              const disabling = enabledCount >= servers.length;
+                              if (
+                                disabling &&
+                                servers.length > BULK_DISABLE_CONFIRM_MIN
+                              ) {
+                                setConfirmDisableAll(true);
+                              } else {
+                                void handleToggleAll();
+                              }
+                            }}
+                            // Gate on the flag handleToggleAll actually sets (togglingAll),
+                            // not just busyId, so it can't be re-fired mid-run. Disabled
+                            // while a search is active: it acts on ALL servers, so it must
+                            // not silently toggle ones hidden by the filter.
+                            disabled={
+                              togglingAll || busyId !== null || query.trim() !== ""
+                            }
+                            title={
+                              query.trim() !== ""
+                                ? t("Clear the search to enable or disable all servers")
+                                : undefined
+                            }
+                          >
+                            <ServerOff className="mr-2 size-4" />
+                            <span>
+                              {enabledCount < servers.length
+                                ? t("Enable all")
+                                : t("Disable all")}
+                            </span>
+                          </DropdownMenuItem>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </>
+                )}
+                {view === "clients" && !selectedClient && (
+                  <>
+                    <Button
+                      variant="outline"
+
+                      title={translate(
+                        "Add a config folder for a client Toolport did not find on its own",
+                      )}
+                      onClick={() => setAddingLocation(true)}
+                    >
+                      <FolderPlus className="size-4" />
+                      {translate("Add client location")}
+                    </Button>
+                    <Button
+                      variant="outline"
+
+                      title={translate("Review servers found in client configurations")}
+                      onClick={handleImport}
+                    >
+                      <Download className="size-4" />
+                      {t("Import")}
+                    </Button>
+                  </>
+                )}
+                {/* Skills has its own Scan again; this one reloads servers and clients. */}
+                {view !== "skills" && (
                   <Button
                     variant="ghost"
-                    size="sm"
-                    className="-ml-2 text-muted-foreground"
-                    onClick={() => selectView("clients")}
-                    aria-label={t("Back to clients")}
-                  >
-                    <ArrowLeft className="size-4" /> {t("Clients")}{" "}
-                  </Button>
-                  <div className="h-7 w-px bg-border" aria-hidden="true" />
-                  <ClientLogo
-                    id={selectedClient.id}
-                    name={selectedClient.name}
-                    size={32}
-                  />
-                </>
-              )}
-              <div className="min-w-0">
-                <h1 className="truncate text-[22px] font-[650] tracking-tight">
-                  {view === "activity"
-                    ? t("Activity")
-                    : view === "skills"
-                      ? t("Skills and rules")
-                      : view === "catalog"
-                        ? translate("Browse catalog")
-                        : view === "teams"
-                          ? !registry?.team || isPersonalSync(registry)
-                            ? translate("Sync")
-                            : translate("Teams")
-                          : view === "settings"
-                            ? translate("Settings")
-                            : view === "clients"
-                              ? (selectedClient?.name ?? translate("Clients"))
-                              : translate("Servers")}
-                </h1>
-                <p className="truncate text-sm text-muted-foreground">
-                  {view === "activity"
-                    ? t("Tool calls routed through Toolport")
-                    : view === "skills"
-                      ? t("What each agent loads besides tools, and where it lives")
-                      : view === "catalog"
-                        ? translate("Add MCP servers from the registry")
-                        : view === "teams"
-                          ? !registry?.team || isPersonalSync(registry)
-                            ? translate("Your setup, on every machine")
-                            : translate("Share one MCP server set across your team")
-                          : view === "settings"
-                            ? translate("Global discovery and security policy")
-                            : view === "clients"
-                              ? selectedClient
-                                ? translate("MCP client")
-                                : translate("Manage Toolport in your installed AI tools")
-                              : loading || !registry
-                                ? translate("Loading…")
-                                : translate(
-                                    "One gateway in front of every MCP server you run",
-                                  )}
-                </p>
-              </div>
-            </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              {view === "servers" && (
-                <>
-                  <div className="relative">
-                    <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                    <Input
-                      ref={searchRef}
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                      placeholder={translate("Search servers")}
-                      title={translate("Search servers (/ or {value1}F)", {
-                        value1: String(isMac ? "⌘" : "Ctrl"),
-                      })}
-                      className="h-9 w-32 pl-8 sm:w-44"
-                    />
-                  </div>
-                  <ServerDialog
-                    onSaved={setRegistry}
-                    existingNames={servers.map((s) => s.name)}
-                    trigger={
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        title={isMac ? t("Add server (⌘N)") : t("Add server (CtrlN)")}
-                      >
-                        <Plus className="size-4" /> {t("Add server")}{" "}
-                      </Button>
+                    size="icon"
+                    aria-label={t("Refresh")}
+                    title={
+                      isMac
+                        ? t("Reload servers, clients, and health (⌘R)")
+                        : t("Reload servers, clients, and health (CtrlR)")
                     }
-                  />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    title={translate("Browse Toolport's curated server catalog")}
-                    onClick={() => selectView("catalog")}
+                    onClick={() => load(true)}
+                    disabled={loading}
                   >
-                    <Store className="size-4" />
-                    {translate("Browse catalog")}
+                    <RefreshCw
+                      className={`size-4 ${String(loading || probing ? "animate-spin" : "")}`}
+                    />
                   </Button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={translate("More actions")}
-                        title={translate("Import and server actions")}
-                      >
-                        <MoreHorizontal className="size-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-
-                    <DropdownMenuContent align="end" className="w-38">
-                      <DropdownMenuItem onClick={handleImport}>
-                        <Download className="mr-2 size-4" />
-                        <span>{t("Import")}</span>
-                      </DropdownMenuItem>
-
-                      {servers.length > 0 && (
-                        <DropdownMenuItem
-                          onClick={() => {
-                            // "Disable all" only shows when every server is enabled,
-                            // so it turns off `servers.length`. Confirm when that's
-                            // more than a couple; "Enable all" and small sets go
-                            // straight through.
-                            const disabling = enabledCount >= servers.length;
-                            if (disabling && servers.length > BULK_DISABLE_CONFIRM_MIN) {
-                              setConfirmDisableAll(true);
-                            } else {
-                              void handleToggleAll();
-                            }
-                          }}
-                          // Gate on the flag handleToggleAll actually sets (togglingAll),
-                          // not just busyId, so it can't be re-fired mid-run. Disabled
-                          // while a search is active: it acts on ALL servers, so it must
-                          // not silently toggle ones hidden by the filter.
-                          disabled={togglingAll || busyId !== null || query.trim() !== ""}
-                          title={
-                            query.trim() !== ""
-                              ? t("Clear the search to enable or disable all servers")
-                              : undefined
-                          }
-                        >
-                          <ServerOff className="mr-2 size-4" />
-                          <span>
-                            {enabledCount < servers.length
-                              ? t("Enable all")
-                              : t("Disable all")}
-                          </span>
-                        </DropdownMenuItem>
-                      )}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </>
-              )}
-              {/* Skills has its own Scan again; this one reloads servers and clients. */}
-              {view !== "skills" && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-8"
-                  aria-label={t("Refresh")}
-                  title={
-                    isMac
-                      ? t("Reload servers, clients, and health (⌘R)")
-                      : t("Reload servers, clients, and health (CtrlR)")
-                  }
-                  onClick={() => load(true)}
-                  disabled={loading}
-                >
-                  <RefreshCw
-                    className={`size-4 ${String(loading || probing ? "animate-spin" : "")}`}
-                  />
-                </Button>
-              )}
-            </div>
-          </header>
+                )}
+              </>
+            }
+          />
 
           {!backendReachable && (
             <Callout
@@ -1068,119 +1099,129 @@ function App() {
             </Callout>
           )}
 
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="p-3 sm:p-6">
-              <ErrorBoundary
-                resetKey={`${view}:${selectedClient?.id ?? ""}`}
-                fallback={(err, retry) => <ViewCrash error={err} onRetry={retry} />}
-              >
-                <Suspense
-                  fallback={
-                    <div className="flex flex-col gap-2">
-                      {Array.from({ length: 6 }).map((_, i) => (
-                        <Skeleton key={i} className="h-11 w-full rounded-lg" />
-                      ))}
-                    </div>
-                  }
+          <PageHeaderActionsSlot value={headerActionsSlot}>
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="p-3 sm:p-6">
+                <ErrorBoundary
+                  resetKey={`${view}:${selectedClient?.id ?? ""}`}
+                  fallback={(err, retry) => <ViewCrash error={err} onRetry={retry} />}
                 >
-                  {view === "clients" ? (
-                    selectedClient ? (
-                      <ClientDetail
-                        client={selectedClient}
+                  <Suspense
+                    fallback={
+                      <div className="flex flex-col gap-2">
+                        {Array.from({ length: 6 }).map((_, i) => (
+                          <Skeleton key={i} className="h-11 w-full rounded-lg" />
+                        ))}
+                      </div>
+                    }
+                  >
+                    {view === "clients" ? (
+                      selectedClient ? (
+                        <ClientDetail
+                          client={selectedClient}
+                          registry={registry}
+                          onChanged={load}
+                          onRegistryChange={applyRegistryChange}
+                        />
+                      ) : (
+                        <ClientsView
+                          clients={clients}
+                          registry={registry}
+                          loading={loading}
+                          onSelectClient={selectClient}
+                          onChanged={load}
+                        />
+                      )
+                    ) : view === "skills" ? (
+                      <SkillsView />
+                    ) : view === "activity" ? (
+                      <ActivityView
+                        refreshKey={activityKey}
                         registry={registry}
-                        onChanged={load}
+                        onReviewQuarantine={() => {
+                          setSettingsPage("safety");
+                          setView("settings");
+                        }}
+                      />
+                    ) : view === "catalog" ? (
+                      <CatalogView registry={registry} onAdded={applyRegistryChange} />
+                    ) : view === "teams" ? (
+                      <TeamsView
+                        registry={registry}
+                        onRegistryChange={applyRegistryChange}
+                        health={health}
+                        onReprobe={() => void reprobeAfterMutation().catch(() => {})}
+                        onOpenServers={() => selectView("servers")}
+                      />
+                    ) : view === "settings" ? (
+                      <SettingsView
+                        page={settingsPage}
+                        pendingCount={pendingCount}
+                        registry={registry}
                         onRegistryChange={applyRegistryChange}
                       />
+                    ) : loading && registry === null ? (
+                      <div className="flex flex-col gap-2">
+                        {Array.from({ length: 6 }).map((_, i) => (
+                          <Skeleton key={i} className="h-11 w-full rounded-lg" />
+                        ))}
+                      </div>
+                    ) : error ? (
+                      <ErrorState message={error} />
+                    ) : servers.length === 0 ? (
+                      <EmptyState
+                        importable={importable}
+                        onImport={handleImport}
+                        onBrowseCatalog={() => selectView("catalog")}
+                      />
+                    ) : visible.length === 0 ? (
+                      <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-3 py-6 text-center">
+                        <p className="text-sm text-muted-foreground">
+                          {" "}
+                          {t('No servers match "{query}".', { query })}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setQuery("")}
+                          className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        >
+                          <X className="size-3.5" /> {t("Clear search")}{" "}
+                        </button>
+                      </div>
                     ) : (
-                      <ClientsView
-                        clients={clients}
-                        registry={registry}
-                        loading={loading}
-                        onSelectClient={selectClient}
-                        onChanged={load}
-                      />
-                    )
-                  ) : view === "skills" ? (
-                    <SkillsView />
-                  ) : view === "activity" ? (
-                    <ActivityView
-                      refreshKey={activityKey}
-                      registry={registry}
-                      onReviewQuarantine={() => {
-                        setSettingsPage("safety");
-                        setView("settings");
-                      }}
-                    />
-                  ) : view === "catalog" ? (
-                    <CatalogView registry={registry} onAdded={applyRegistryChange} />
-                  ) : view === "teams" ? (
-                    <TeamsView
-                      registry={registry}
-                      onRegistryChange={applyRegistryChange}
-                      health={health}
-                      onReprobe={() => void reprobeAfterMutation().catch(() => {})}
-                      onOpenServers={() => selectView("servers")}
-                    />
-                  ) : view === "settings" ? (
-                    <SettingsView
-                      page={settingsPage}
-                      pendingCount={pendingCount}
-                      registry={registry}
-                      onRegistryChange={applyRegistryChange}
-                    />
-                  ) : loading && registry === null ? (
-                    <div className="flex flex-col gap-2">
-                      {Array.from({ length: 6 }).map((_, i) => (
-                        <Skeleton key={i} className="h-11 w-full rounded-lg" />
-                      ))}
-                    </div>
-                  ) : error ? (
-                    <ErrorState message={error} />
-                  ) : servers.length === 0 ? (
-                    <EmptyState
-                      importable={importable}
-                      onImport={handleImport}
-                      onBrowseCatalog={() => selectView("catalog")}
-                    />
-                  ) : visible.length === 0 ? (
-                    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-3 py-6 text-center">
-                      <p className="text-sm text-muted-foreground">
-                        {" "}
-                        {t('No servers match "{query}".', { query })}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setQuery("")}
-                        className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                      >
-                        <X className="size-3.5" /> {t("Clear search")}{" "}
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col gap-5">
-                      <ServerPosture
-                        backendReachable={backendReachable}
-                        probing={probing}
-                        enabled={enabledCount}
-                        checked={checkedCount}
-                        connected={connectedCount}
-                        attention={attentionCount}
-                        disabled={servers.length - enabledCount}
-                      />
-                      {backendReachable && attentionCount > 0 && (
-                        <ServerNextAction
-                          authServers={authAttention}
-                          errorServers={errorAttention}
+                      <div className="flex flex-col gap-5">
+                        <ServerPosture
+                          backendReachable={backendReachable}
+                          probing={probing}
+                          enabled={enabledCount}
+                          checked={checkedCount}
+                          connected={connectedCount}
+                          attention={attentionCount}
+                          disabled={servers.length - enabledCount}
                         />
-                      )}
-                      <div className="toolport-list">{visible.map(serverRow)}</div>
-                    </div>
-                  )}
-                </Suspense>
-              </ErrorBoundary>
-            </div>
-          </ScrollArea>
+                        {backendReachable && attentionCount > 0 && (
+                          <ServerNextAction
+                            authServers={authAttention}
+                            errorServers={errorAttention}
+                          />
+                        )}
+                        <div className="toolport-list">{visible.map(serverRow)}</div>
+                      </div>
+                    )}
+                  </Suspense>
+                </ErrorBoundary>
+              </div>
+            </ScrollArea>
+          </PageHeaderActionsSlot>
         </main>
+        <AddClientLocationDialog
+          open={addingLocation}
+          onOpenChange={setAddingLocation}
+          onAdded={async (id) => {
+            await load();
+            selectClient(id);
+          }}
+        />
       </div>
       <ImportReviewDialog
         open={importPreview !== null}

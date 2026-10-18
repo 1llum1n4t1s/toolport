@@ -1,4 +1,10 @@
 {
+  "Add server (Ctrl+N)": "서버 추가 (Ctrl+N)",
+  "Clear": "지우기",
+  "Quit Toolport (Ctrl+Q)": "Toolport 종료 (Ctrl+Q)",
+  "Refresh catalog": "카탈로그 새로고침",
+  "Refresh sync status": "동기화 상태 새로고침",
+  "{value0} tokens saved": "{value0} Token 절감",
   "\nCold catalog": "\n콜드 카탈로그",
   "\nDispatch: {value0}": "\n디스패치: {value0}",
   "\nExcluded history: {value0} catalog records ({value1} with byte measurements). Session identity and repeat loads cannot be verified.": "\n제외된 기록: {value0} 카탈로그 레코드({value1} 바이트 측정 포함). 세션 ID 및 반복 로드를 확인할 수 없습니다.",

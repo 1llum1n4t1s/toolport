@@ -277,5 +277,8 @@
   "Your setup, on every machine": "Your setup, on every machine",
   "Toolport is now available in {language}.": "Toolport is now available in {language}.",
   "Switch to {language}": "Switch to {language}",
-  "Keep English": "Keep English"
+  "Keep English": "Keep English",
+  "Skills and rules each agent loads, and where they live": "Skills and rules each agent loads, and where they live",
+  "Back to servers": "Back to servers",
+  "Add a config folder for a client Toolport did not find on its own": "Add a config folder for a client Toolport did not find on its own"
 }
