@@ -4,52 +4,53 @@ Toolport auto-detects **30+ AI clients**, installs the gateway into each with on
 click, and can import a client's existing servers. It writes the config file shown
 below for you, so you never have to edit these by hand.
 
-| Client                  | Config file                                                                                            | Format                   |
-| ----------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------ |
-| Claude Desktop          | `<config>/Claude/claude_desktop_config.json`                                                           | JSON (`mcpServers`)      |
-| Claude Code             | `~/.claude.json`                                                                                       | JSON (`mcpServers`)      |
-| Cursor                  | `~/.cursor/mcp.json`                                                                                   | JSON (`mcpServers`)      |
-| Factory Droid           | `~/.factory/mcp.json`                                                                                  | JSON (`mcpServers`)      |
-| Crush                   | `$CRUSH_GLOBAL_CONFIG/crush.json`, or `$XDG_CONFIG_HOME/crush/crush.json` (`~/.config/...` by default) | JSON (`mcp`)             |
-| VS Code                 | `<config>/Code/User/mcp.json`                                                                          | JSON (`servers`)         |
-| Devin Desktop (Cascade) | `~/.codeium/windsurf/mcp_config.json`                                                                  | JSON (`mcpServers`)      |
-| Devin Local / CLI       | `%APPDATA%/devin/mcp_config.json` (Windows), `~/.config/devin/mcp_config.json` (macOS; Linux default)  | JSON (`mcpServers`)      |
-| OpenCode                | `~/.config/opencode/opencode.json`                                                                     | JSON (`mcp`)             |
-| Kilo Code               | `~/.config/kilo/kilo.jsonc`                                                                            | JSONC (`mcp`)            |
-| Codex                   | `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`)                                             | TOML (`mcp_servers`)     |
-| Copilot CLI             | `~/.copilot/mcp-config.json`                                                                           | JSON (`mcpServers`)      |
-| Grok Build              | `$GROK_HOME/config.toml` (default `~/.grok/config.toml`)                                               | TOML (`mcp_servers`)     |
-| Continue                | `~/.continue/config.yaml`                                                                              | YAML (`mcpServers`)      |
-| Antigravity             | `~/.gemini/config/mcp_config.json`                                                                     | JSON (`mcpServers`)      |
-| Gemini CLI              | `$GEMINI_CLI_HOME/.gemini/settings.json` (default `~/.gemini/settings.json`)                           | JSON (`mcpServers`)      |
-| Qwen Code               | `$QWEN_HOME/settings.json` (default `~/.qwen/settings.json`)                                           | JSON (`mcpServers`)      |
-| JetBrains Junie         | `~/.junie/mcp/mcp.json`                                                                                | JSON (`mcpServers`)      |
-| Cline                   | `<config>/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`             | JSON (`mcpServers`)      |
-| Roo Code                | `<config>/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json`               | JSON (`mcpServers`)      |
-| Warp                    | `~/.warp/.mcp.json`                                                                                    | JSON (`mcpServers`)      |
-| Amazon Q                | `~/.aws/amazonq/mcp.json`                                                                              | JSON (`mcpServers`)      |
-| Kiro                    | `~/.kiro/settings/mcp.json`                                                                            | JSON (`mcpServers`)      |
-| Auggie CLI              | `~/.augment/settings.json`                                                                             | JSON (`mcpServers`)      |
-| Kimi Code               | `$KIMI_CODE_HOME/mcp.json` (default `~/.kimi-code/mcp.json`)                                           | JSON (`mcpServers`)      |
-| DeepSeek Harness        | `$DSH_HOME/cordis.patch.yml` (default `~/.dsh/cordis.patch.yml`)                                       | YAML (patch rows)        |
-| Reasonix                | `$REASONIX_HOME/config.toml` (default `~/.reasonix/config.toml`)                                       | TOML (`[[plugins]]`)     |
-| Codewhale               | `~/.codewhale/mcp.json` (or `CODEWHALE_MCP_CONFIG`, `mcp_config_path`)                                 | JSON (`servers`)         |
-| OpenClaw                | `~/.openclaw/openclaw.json` (or `OPENCLAW_CONFIG_PATH`, `OPENCLAW_STATE_DIR`)                          | JSON5 (`mcp.servers`)    |
-| OpenHands               | `~/.openhands/mcp.json` (or `OPENHANDS_PERSISTENCE_DIR`)                                               | JSON (`mcpServers`)      |
-| ZCode                   | `~/.zcode/cli/config.json`                                                                             | JSON (`mcp.servers`)     |
-| Command Code            | `~/.commandcode/mcp.json`                                                                              | JSON (`mcpServers`)      |
-| Tabnine Agent           | `~/.tabnine/mcp_servers.json`                                                                          | JSON (`mcpServers`)      |
-| Zed                     | `~/.config/zed/settings.json`                                                                          | JSON (`context_servers`) |
-| LM Studio               | `~/.lmstudio/mcp.json`                                                                                 | JSON (`mcpServers`)      |
-| Jan                     | `<data>/Jan/data/mcp_config.json`                                                                      | JSON (`mcpServers`)      |
-| BoltAI                  | `~/.boltai/mcp.json`                                                                                   | JSON (`mcpServers`)      |
-| Pi                      | `~/.pi/agent/mcp.json`                                                                                 | JSON (`mcpServers`)      |
-| Oh My Pi                | `~/.omp/agent/mcp.json`                                                                                | JSON (`mcpServers`)      |
-| Goose                   | `~/.config/goose/config.yaml`                                                                          | YAML (`extensions`)      |
-| Hermes                  | `~/.hermes/config.yaml`                                                                                | YAML (`mcp_servers`)     |
-| AnythingLLM             | `<config>/anythingllm-desktop/storage/plugins/anythingllm_mcp_servers.json`                            | JSON (`mcpServers`)      |
-| Witsy                   | `<config>/Witsy/settings.json`                                                                         | JSON (`mcpServers`)      |
-| Amp                     | `~/.config/amp/settings.json`                                                                          | JSON (`amp.mcpServers`)  |
+| Client                  | Config file                                                                                            | Format                    |
+| ----------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------- |
+| Claude Desktop          | `<config>/Claude/claude_desktop_config.json`                                                           | JSON (`mcpServers`)       |
+| Claude Code             | `~/.claude.json`                                                                                       | JSON (`mcpServers`)       |
+| Cursor                  | `~/.cursor/mcp.json`                                                                                   | JSON (`mcpServers`)       |
+| Factory Droid           | `~/.factory/mcp.json`                                                                                  | JSON (`mcpServers`)       |
+| Crush                   | `$CRUSH_GLOBAL_CONFIG/crush.json`, or `$XDG_CONFIG_HOME/crush/crush.json` (`~/.config/...` by default) | JSON (`mcp`)              |
+| VS Code                 | `<config>/Code/User/mcp.json`                                                                          | JSON (`servers`)          |
+| Devin Desktop (Cascade) | `~/.codeium/windsurf/mcp_config.json`                                                                  | JSON (`mcpServers`)       |
+| Devin Local / CLI       | `%APPDATA%/devin/mcp_config.json` (Windows), `~/.config/devin/mcp_config.json` (macOS; Linux default)  | JSON (`mcpServers`)       |
+| OpenCode                | `~/.config/opencode/opencode.json`                                                                     | JSON (`mcp`)              |
+| Kilo Code               | `~/.config/kilo/kilo.jsonc`                                                                            | JSONC (`mcp`)             |
+| Codex                   | `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`)                                             | TOML (`mcp_servers`)      |
+| Copilot CLI             | `~/.copilot/mcp-config.json`                                                                           | JSON (`mcpServers`)       |
+| Grok Build              | `$GROK_HOME/config.toml` (default `~/.grok/config.toml`)                                               | TOML (`mcp_servers`)      |
+| Continue                | `~/.continue/config.yaml`                                                                              | YAML (`mcpServers`)       |
+| Antigravity             | `~/.gemini/config/mcp_config.json`                                                                     | JSON (`mcpServers`)       |
+| Gemini CLI              | `$GEMINI_CLI_HOME/.gemini/settings.json` (default `~/.gemini/settings.json`)                           | JSON (`mcpServers`)       |
+| Qwen Code               | `$QWEN_HOME/settings.json` (default `~/.qwen/settings.json`)                                           | JSON (`mcpServers`)       |
+| JetBrains Junie         | `~/.junie/mcp/mcp.json`                                                                                | JSON (`mcpServers`)       |
+| Cline                   | `<config>/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`             | JSON (`mcpServers`)       |
+| Roo Code                | `<config>/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json`               | JSON (`mcpServers`)       |
+| Warp                    | `~/.warp/.mcp.json`                                                                                    | JSON (`mcpServers`)       |
+| Amazon Q                | `~/.aws/amazonq/mcp.json`                                                                              | JSON (`mcpServers`)       |
+| Kiro                    | `~/.kiro/settings/mcp.json`                                                                            | JSON (`mcpServers`)       |
+| Auggie CLI              | `~/.augment/settings.json`                                                                             | JSON (`mcpServers`)       |
+| Kimi Code               | `$KIMI_CODE_HOME/mcp.json` (default `~/.kimi-code/mcp.json`)                                           | JSON (`mcpServers`)       |
+| DeepSeek Harness        | `$DSH_HOME/cordis.patch.yml` (default `~/.dsh/cordis.patch.yml`)                                       | YAML (patch rows)         |
+| Reasonix                | `$REASONIX_HOME/config.toml` (default `~/.reasonix/config.toml`)                                       | TOML (`[[plugins]]`)      |
+| Codewhale               | `~/.codewhale/mcp.json` (or `CODEWHALE_MCP_CONFIG`, `mcp_config_path`)                                 | JSON (`servers`)          |
+| OpenClaw                | `~/.openclaw/openclaw.json` (or `OPENCLAW_CONFIG_PATH`, `OPENCLAW_STATE_DIR`)                          | JSON5 (`mcp.servers`)     |
+| OpenHands               | `~/.openhands/mcp.json` (or `OPENHANDS_PERSISTENCE_DIR`)                                               | JSON (`mcpServers`)       |
+| nanobot (HKUDS)         | `~/.nanobot/config.json`                                                                               | JSON (`tools.mcpServers`) |
+| ZCode                   | `~/.zcode/cli/config.json`                                                                             | JSON (`mcp.servers`)      |
+| Command Code            | `~/.commandcode/mcp.json`                                                                              | JSON (`mcpServers`)       |
+| Tabnine Agent           | `~/.tabnine/mcp_servers.json`                                                                          | JSON (`mcpServers`)       |
+| Zed                     | `~/.config/zed/settings.json`                                                                          | JSON (`context_servers`)  |
+| LM Studio               | `~/.lmstudio/mcp.json`                                                                                 | JSON (`mcpServers`)       |
+| Jan                     | `<data>/Jan/data/mcp_config.json`                                                                      | JSON (`mcpServers`)       |
+| BoltAI                  | `~/.boltai/mcp.json`                                                                                   | JSON (`mcpServers`)       |
+| Pi                      | `~/.pi/agent/mcp.json`                                                                                 | JSON (`mcpServers`)       |
+| Oh My Pi                | `~/.omp/agent/mcp.json`                                                                                | JSON (`mcpServers`)       |
+| Goose                   | `~/.config/goose/config.yaml`                                                                          | YAML (`extensions`)       |
+| Hermes                  | `~/.hermes/config.yaml`                                                                                | YAML (`mcp_servers`)      |
+| AnythingLLM             | `<config>/anythingllm-desktop/storage/plugins/anythingllm_mcp_servers.json`                            | JSON (`mcpServers`)       |
+| Witsy                   | `<config>/Witsy/settings.json`                                                                         | JSON (`mcpServers`)       |
+| Amp                     | `~/.config/amp/settings.json`                                                                          | JSON (`amp.mcpServers`)   |
 
 `<config>` is your OS application-config dir (`%APPDATA%` on Windows, `~/Library/Application Support` on macOS, `~/.config` on Linux); `<data>` is the data dir (`~/.local/share` on Linux, the same as `<config>` elsewhere). Zed and Goose paths vary slightly by OS; Toolport resolves the right one automatically.
 
@@ -196,6 +197,38 @@ arbitrary nested folders. Toolport bounds recursive Markdown scans to six levels
 and 20,000 entries per root. OpenHands has no global `AGENTS.md`; team rules go to
 `~/.openhands/microagents/toolport-team-rules.md`, which OpenHands loads as
 always-on context.
+
+### nanobot setup
+
+Toolport supports [HKUDS/nanobot](https://github.com/HKUDS/nanobot), installed
+as `nanobot-ai`, through `~/.nanobot/config.json` on every platform. Connect
+adds the gateway under `tools.mcpServers`; Disconnect removes it and keeps the
+rest of the config. This is strict JSON. MCP edits leave configs using the accepted
+snake_case `tools.mcp_servers` spelling untouched; rename that key to nanobot's
+normal `mcpServers` spelling before connecting or moving servers. Workspace rules
+and skill toggles work with either spelling and preserve the MCP map's text. Instances launched with `--home` or
+`--config` are not managed. The unrelated Obot nanobot is not this client.
+
+nanobot has no server off switch: `enabled: false` does not stop a server.
+Import refuses settings Toolport cannot preserve, including `cwd`, `auth`,
+`toolTimeout` and a non-default `enabledTools` filter. Remote writes specify
+`type: "streamableHttp"` or `"sse"` so a URL ending in `/sse` keeps the intended
+transport. Auto uses Lazy because nanobot registers every MCP tool and has no
+`tools/list_changed` handler. Restart the session to load changes.
+
+The Skills page reads one level of folders under `<workspace>/skills` and
+switches them through `agents.defaults.disabledSkills`. nanobot identifies
+skills by their folder names. A config using `disabled_skills` is read but
+must use the normal `disabledSkills` spelling before switching. Enabled Agent
+Plugin package skills appear after workspace skills, with the first package
+folder winning name collisions. They use the same native toggle, and package
+content is protected from editing and removal. Activation must match the complete
+package fingerprint and canonical root; discovery never changes activation markers.
+Verification skips packages above 20,000 entries or 128 MiB of file content.
+Bundled skills are not inventoried. Team rules go to `<workspace>/AGENTS.md`;
+the Rules page also reads `SOUL.md` and `USER.md`. The workspace defaults to
+`~/.nanobot/workspace`, or follows an absolute or `~/` path in
+`agents.defaults.workspace`. Relative workspace settings remain unresolved.
 
 ### ZCode setup
 

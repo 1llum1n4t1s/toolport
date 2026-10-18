@@ -41,6 +41,10 @@ Entries before the rename below shipped under the project's former name, Conduit
   `skills.load.extraDirs`, turns them off through `skills.entries`, and team
   rules go to the workspace's `AGENTS.md`. See
   [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#openclaw-setup).
+- nanobot (HKUDS) as a supported client. Connect manages `tools.mcpServers`
+  in `~/.nanobot/config.json`. Workspace skills have native toggles in both
+  shells, and team rules follow the configured workspace's `AGENTS.md`.
+  See [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#nanobot-setup).
 - OpenHands as a supported client. Connect adds the gateway to the OpenHands
   CLI's `mcp.json` (`~/.openhands` or `OPENHANDS_PERSISTENCE_DIR`) and leaves
   servers turned off with `enabled: false` alone. The Skills page shows the

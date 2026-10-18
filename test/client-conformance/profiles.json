@@ -601,6 +601,36 @@
       "observedSessionKind": "openhands --headless startup; initialize is the fallback after a server without server/discover"
     },
     {
+      "id": "nanobot",
+      "evidence": "captured agent startup",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {},
+          "clientInfo": {
+            "name": "mcp",
+            "version": "0.1.0"
+          }
+        }
+      },
+      "initialMethods": [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+        "resources/list",
+        "prompts/list"
+      ],
+      "listChanged": {
+        "supported": false,
+        "detail": "nanobot-ai 0.3.5 lists tools once and registers every MCP tool; no tools/list_changed handler"
+      },
+      "source": "https://github.com/HKUDS/nanobot/blob/b702ac6/nanobot/agent/tools/mcp.py",
+      "observedSessionKind": "nanobot agent -m hi with isolated HOME"
+    },
+    {
       "id": "zcode",
       "evidence": "documentation only",
       "initialize": null,

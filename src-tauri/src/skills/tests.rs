@@ -2320,3 +2320,374 @@ fn openhands_global_rules_follow_name_precedence_and_canonical_dedup() {
     );
     assert_eq!(state(&inv, "triggered", "openhands"), Some(State::On));
 }
+
+#[test]
+fn nanobot_uses_workspace_folder_names_rules_and_native_toggle() {
+    let home = Home::new();
+    home.write(".nanobot/config.json", r#"{"agents":{"defaults":{"workspace":"~/robot","disabledSkills":["orca"]}},"tools":{"mcpServers":{"native":{"command":"node"}}}}"#);
+    home.skill("robot/skills/orca", "different-frontmatter-name", "Orca");
+    home.skill("robot/skills/nested/deeper", "hidden", "Not loaded");
+    home.write("robot/AGENTS.md", "Team rules");
+    home.write("robot/SOUL.md", "Personality");
+    home.skill(
+        ".agents/skills/unrelated",
+        "unrelated",
+        "Not loaded by nanobot",
+    );
+    let env = home.env();
+    let inv = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(
+        state(&inv, "different-frontmatter-name", "nanobot"),
+        Some(State::Off)
+    );
+    assert!(inv
+        .skills
+        .iter()
+        .all(|s| s.name != "hidden" && s.name != "unrelated"));
+    let key = skill(&inv, "different-frontmatter-name").key.clone();
+    let writer = TestWriter::default();
+    set_state(&env, &inv, "nanobot", &key, Wanted::On, &writer).unwrap();
+    let after = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(
+        state(&after, "different-frontmatter-name", "nanobot"),
+        Some(State::On)
+    );
+    set_state(&env, &after, "nanobot", &key, Wanted::Off, &writer).unwrap();
+    let root: serde_json::Value = serde_json::from_str(&home.read(".nanobot/config.json")).unwrap();
+    assert_eq!(
+        root["agents"]["defaults"]["disabledSkills"],
+        serde_json::json!(["orca"])
+    );
+    assert_eq!(root["tools"]["mcpServers"]["native"]["command"], "node");
+}
+
+#[test]
+fn nanobot_reads_snake_case_off_list_and_refuses_to_shadow_it() {
+    let home = Home::new();
+    let original =
+        r#"{"tools":{"mcp_servers":{}},"agents":{"defaults":{"disabled_skills":["orca"]}}}"#;
+    home.write(".nanobot/config.json", original);
+    home.skill(".nanobot/workspace/skills/orca", "orca", "Orca");
+    let env = home.env();
+    let inv = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(state(&inv, "orca", "nanobot"), Some(State::Off));
+    let key = skill(&inv, "orca").key.clone();
+    assert!(set_state(
+        &env,
+        &inv,
+        "nanobot",
+        &key,
+        Wanted::On,
+        &TestWriter::default()
+    )
+    .is_err());
+    assert_eq!(home.read(".nanobot/config.json"), original);
+}
+
+#[test]
+fn nanobot_skill_writes_refuse_non_json_or_duplicate_keys() {
+    let home = Home::new();
+    let path = home.path(".nanobot/config.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    for original in [
+        "{agents:{defaults:{}}}",
+        "[]",
+        r#"{"agents":{},"agents":{}}"#,
+        r#"{"tools":{"mcp_servers":{},"mcp_servers":{}}}"#,
+    ] {
+        std::fs::write(&path, original).unwrap();
+        assert!(edit_json("nanobot", &path, &TestWriter::default(), |root| {
+            toggle_list(
+                root,
+                &["agents", "defaults", "disabledSkills"],
+                "orca",
+                true,
+            )?;
+            Ok("agents")
+        })
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+}
+
+#[test]
+fn nanobot_skill_toggle_preserves_snake_case_mcp_text_and_workspace_rules() {
+    let home = Home::new();
+    let mcp = r#""tools" : { "mcp_servers" : { "native": { "command" : "node", "args" : [] } } }"#;
+    home.write(
+        ".nanobot/config.json",
+        &format!(
+            "{{\n  {mcp},\n  \"agents\": {{\"defaults\": {{\"workspace\": \"~/robot\"}}}}\n}}\n"
+        ),
+    );
+    home.skill("robot/skills/orca", "orca", "Orca");
+    let rules = home.write("robot/AGENTS.md", "Team rules.\n");
+    let env = home.env();
+    let inv = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(state(&inv, "orca", "nanobot"), Some(State::On));
+    assert!(inv
+        .rules
+        .iter()
+        .any(|rule| rule.path == env.display(&rules)));
+    let key = skill(&inv, "orca").key.clone();
+    let writer = TestWriter::default();
+    set_state(&env, &inv, "nanobot", &key, Wanted::Off, &writer).unwrap();
+    let text = home.read(".nanobot/config.json");
+    assert!(text.contains(mcp), "{text}");
+    let root: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        root["agents"]["defaults"]["disabledSkills"],
+        serde_json::json!(["orca"])
+    );
+    let after = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(state(&after, "orca", "nanobot"), Some(State::Off));
+    set_state(&env, &after, "nanobot", &key, Wanted::On, &writer).unwrap();
+    assert!(home.read(".nanobot/config.json").contains(mcp));
+}
+
+#[test]
+fn nanobot_distinct_folders_with_the_same_frontmatter_name_load_and_toggle_separately() {
+    let home = Home::new();
+    let a = home.skill(".nanobot/workspace/skills/a", "shared", "First");
+    let b = home.skill(".nanobot/workspace/skills/b", "shared", "Second");
+    let env = home.env();
+    let inv = scan(&env, &only(&["nanobot"]), None);
+    let state_at = |inv: &Inventory, path: &Path| {
+        inv.skills
+            .iter()
+            .find(|skill| skill.key == path.display().to_string())
+            .unwrap()
+            .states["nanobot"]
+            .state
+    };
+    assert_eq!(state_at(&inv, &a), State::On);
+    assert_eq!(state_at(&inv, &b), State::On);
+    let key = a.display().to_string();
+    set_state(
+        &env,
+        &inv,
+        "nanobot",
+        &key,
+        Wanted::Off,
+        &TestWriter::default(),
+    )
+    .unwrap();
+    let after = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(state_at(&after, &a), State::Off);
+    assert_eq!(state_at(&after, &b), State::On);
+    let root: serde_json::Value = serde_json::from_str(&home.read(".nanobot/config.json")).unwrap();
+    assert_eq!(
+        root["agents"]["defaults"]["disabledSkills"],
+        serde_json::json!(["a"])
+    );
+}
+
+fn nanobot_package(
+    home: &Home,
+    folder: &str,
+    identity: &str,
+    names: &[&str],
+    enabled: bool,
+) -> (PathBuf, PathBuf) {
+    home.write(".nanobot/config.json", "{}");
+    let rel = format!(".nanobot/workspace/plugins/{folder}");
+    home.write(&format!("{rel}/plugin.json"), &serde_json::json!({"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":identity}).to_string());
+    for name in names {
+        home.skill(&format!("{rel}/skills/{name}"), name, "Package skill");
+    }
+    let root = home.path(&rel);
+    let workspace = home.path(".nanobot/workspace");
+    let hash = crate::registry::sha256_hex(workspace.to_str().unwrap());
+    let marker_rel = format!(".nanobot/plugin-data/{}/{identity}/enabled", &hash[..12]);
+    if enabled {
+        home.write(&marker_rel, &nanobot_plugins::activation(&root).unwrap());
+    }
+    (root, home.path(&marker_rel))
+}
+
+#[test]
+fn nanobot_enabled_packages_follow_precedence_plain_toggles_and_protection() {
+    let home = Home::new();
+    let (first, first_marker) =
+        nanobot_package(&home, "a-first", "first", &["same", "package-only"], true);
+    let (second, _) = nanobot_package(&home, "b-second", "second", &["same"], true);
+    let workspace = home.skill(".nanobot/workspace/skills/same", "same", "Workspace wins");
+    let before = std::fs::read(&first_marker).unwrap();
+    let env = home.env();
+    let inv = scan(&env, &only(&["nanobot"]), None);
+    let state_at = |inv: &Inventory, path: &Path| {
+        inv.skills
+            .iter()
+            .find(|s| s.key == path.display().to_string())
+            .unwrap()
+            .states["nanobot"]
+            .state
+    };
+    assert_eq!(state_at(&inv, &workspace), State::On);
+    assert_eq!(
+        state_at(&inv, &first.join("skills/same/SKILL.md")),
+        State::Shadowed
+    );
+    assert_eq!(
+        state_at(&inv, &second.join("skills/same/SKILL.md")),
+        State::Shadowed
+    );
+    let package = skill(&inv, "package-only");
+    assert_eq!(package.source, Source::BuiltIn);
+    assert!(!package.editable && !package.removable && !removable(package));
+    let key = package.key.clone();
+    let writer = TestWriter::default();
+    assert!(remove_skill_files(&env, &inv, &key, &writer).is_err());
+    set_state(&env, &inv, "nanobot", &key, Wanted::Off, &writer).unwrap();
+    let after = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(state(&after, "package-only", "nanobot"), Some(State::Off));
+    let root: serde_json::Value = serde_json::from_str(&home.read(".nanobot/config.json")).unwrap();
+    assert_eq!(
+        root["agents"]["defaults"]["disabledSkills"],
+        serde_json::json!(["package-only"])
+    );
+    assert_eq!(std::fs::read(&first_marker).unwrap(), before);
+    std::fs::remove_file(workspace).unwrap();
+    let next = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(
+        state_at(&next, &first.join("skills/same/SKILL.md")),
+        State::On
+    );
+    assert_eq!(
+        state_at(&next, &second.join("skills/same/SKILL.md")),
+        State::Shadowed
+    );
+}
+
+#[test]
+fn nanobot_package_activation_rejects_stale_disabled_and_duplicate_identities_without_writes() {
+    let home = Home::new();
+    let (stale, stale_marker) = nanobot_package(&home, "stale", "stale", &["stale-skill"], true);
+    let stale_bytes = std::fs::read(&stale_marker).unwrap();
+    std::fs::write(stale.join(".hidden-change"), "changed").unwrap();
+    nanobot_package(&home, "disabled", "disabled", &["disabled-skill"], false);
+    let (_, duplicate_marker) =
+        nanobot_package(&home, "duplicate-a", "duplicate", &["dupe-a"], true);
+    nanobot_package(&home, "duplicate-b", "duplicate", &["dupe-b"], false);
+    let duplicate_bytes = std::fs::read(&duplicate_marker).unwrap();
+    let (legacy, legacy_marker) =
+        nanobot_package(&home, "legacy", "legacy", &["legacy-skill"], true);
+    std::fs::write(&legacy_marker, legacy.to_str().unwrap()).unwrap();
+    let inv = scan(&home.env(), &only(&["nanobot"]), None);
+    assert_eq!(inv.skills.len(), 1);
+    assert_eq!(state(&inv, "legacy-skill", "nanobot"), Some(State::On));
+    assert_eq!(std::fs::read(stale_marker).unwrap(), stale_bytes);
+    assert_eq!(std::fs::read(duplicate_marker).unwrap(), duplicate_bytes);
+    assert_eq!(
+        std::fs::read_to_string(legacy_marker).unwrap(),
+        legacy.to_str().unwrap()
+    );
+}
+
+#[test]
+fn nanobot_packages_reject_escaping_paths_invalid_metadata_and_wrong_activation_bytes() {
+    let home = Home::new();
+    let (root, marker) = nanobot_package(&home, "valid", "valid", &["valid-skill"], true);
+    let activation = std::fs::read_to_string(&marker).unwrap();
+    std::fs::write(&marker, format!("{activation}\n")).unwrap();
+    assert!(nanobot_plugins::discover(&home.root).is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        format!("{activation}\n")
+    );
+    let wrong_root = serde_json::json!({"fingerprint":nanobot_plugins::fingerprint(&root).unwrap(),"root":home.path("elsewhere")}).to_string();
+    std::fs::write(&marker, &wrong_root).unwrap();
+    assert!(nanobot_plugins::discover(&home.root).is_empty());
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), wrong_root);
+    home.skill(
+        ".nanobot/workspace/plugins/valid/skills/mismatch",
+        "other",
+        "Wrong identity",
+    );
+    home.skill(
+        ".nanobot/workspace/plugins/valid/skills/bad--name",
+        "bad--name",
+        "Invalid name",
+    );
+    let outside = home.skill("outside/escape", "escape", "Outside package");
+    home.link(
+        ".nanobot/workspace/plugins/valid/skills/escape",
+        outside.parent().unwrap(),
+    );
+    std::fs::write(&marker, nanobot_plugins::activation(&root).unwrap()).unwrap();
+    let inv = scan(&home.env(), &only(&["nanobot"]), None);
+    assert_eq!(inv.skills.len(), 1);
+    assert_eq!(state(&inv, "valid-skill", "nanobot"), Some(State::On));
+    std::fs::remove_dir_all(home.path(".nanobot/plugin-data")).unwrap();
+    let workspace = home.path(".nanobot/workspace");
+    let hash = crate::registry::sha256_hex(workspace.to_str().unwrap());
+    home.write(
+        &format!("outside-marker/{}/valid/enabled", &hash[..12]),
+        &nanobot_plugins::activation(&root).unwrap(),
+    );
+    home.link(".nanobot/plugin-data", &home.path("outside-marker"));
+    assert!(nanobot_plugins::discover(&home.root).is_empty());
+}
+
+#[test]
+fn nanobot_package_manifests_require_valid_schema_and_identity_even_when_activated() {
+    let home = Home::new();
+    let (root, marker) = nanobot_package(&home, "package", "valid", &["valid-skill"], true);
+    for manifest in ["[]".to_string(), "not JSON".to_string(), serde_json::json!({"$schema":"https://invalid.example/schema","name":"valid"}).to_string(), serde_json::json!({"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"bad..identity"}).to_string()] {
+        std::fs::write(root.join("plugin.json"), manifest).unwrap();
+        let activation = nanobot_plugins::activation(&root).unwrap();
+        std::fs::write(&marker, &activation).unwrap();
+        assert!(nanobot_plugins::discover(&home.root).is_empty());
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), activation);
+    }
+}
+
+#[test]
+fn nanobot_package_discovery_applies_pyyaml_string_metadata_semantics() {
+    let home = Home::new();
+    let (root, marker) = nanobot_package(
+        &home,
+        "typed",
+        "typed",
+        &[
+            "yes",
+            "bad-description",
+            "quoted",
+            "tagged",
+            "block",
+            "alias",
+            "merge",
+        ],
+        true,
+    );
+    for (name, metadata) in [
+        (
+            "bad-description",
+            "name: bad-description\ndescription: yes\n",
+        ),
+        ("quoted", "name: 'quoted'\ndescription: 'yes'\n"),
+        ("tagged", "name: !!str tagged\ndescription: !!str 012\n"),
+        ("block", "name: block\ndescription: |-\n  2026-10-18\n"),
+        (
+            "alias",
+            "text: &text 'yes'\nname: alias\ndescription: *text\n",
+        ),
+        (
+            "merge",
+            "base: &base {name: merge, description: 'yes'}\n<<: *base\n",
+        ),
+    ] {
+        std::fs::write(
+            root.join(format!("skills/{name}/SKILL.md")),
+            format!("---\n{metadata}---\nBody\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(marker, nanobot_plugins::activation(&root).unwrap()).unwrap();
+    let inv = scan(&home.env(), &only(&["nanobot"]), None);
+    let names: BTreeSet<_> = inv.skills.iter().map(|skill| skill.name.as_str()).collect();
+    assert_eq!(
+        names,
+        BTreeSet::from(["quoted", "tagged", "block", "alias", "merge"])
+    );
+}

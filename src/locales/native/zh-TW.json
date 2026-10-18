@@ -1166,5 +1166,8 @@
   "OpenClaw extra folder": "OpenClaw 額外資料夾",
   "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "使用 OpenClaw 的 openclaw.json 中的 skills.entries（enabled: false）。",
   "OpenHands skills": "OpenHands 技能",
-  "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "此處的 OpenHands 技能為唯讀。請在 OpenHands 中啟用或停用已安裝的技能。"
+  "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "此處的 OpenHands 技能為唯讀。請在 OpenHands 中啟用或停用已安裝的技能。",
+  "nanobot skills": "nanobot 技能",
+  "Uses agents.defaults.disabledSkills in nanobot's config.json.": "使用 nanobot 的 config.json 中的 agents.defaults.disabledSkills。",
+  "From a nanobot package": "來自 nanobot 套件"
 }

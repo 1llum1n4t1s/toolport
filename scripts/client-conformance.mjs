@@ -85,6 +85,7 @@ async function baseline(profile) {
   await withFixture(profile, false, async (_fixture, client) => {
     await client.initialize();
     const native = ["codex", "cursor"].includes(profile.id);
+    // nanobot registers every tool without refresh, so its Auto stays Lazy.
     // Claude Code's Auto lists a catalog this small in full. OpenClaw's Auto is
     // Full with refresh, so it gets the plain list and no helpers.
     const full = native || ["claude-code", "openclaw"].includes(profile.id);

@@ -80,6 +80,7 @@ pub(super) fn client_logo(id: &str) -> gtk::Image {
         "codewhale" => Some(include_bytes!("../../icons/client-logos/codewhale.png")),
         "openclaw" => Some(include_bytes!("../../icons/client-logos/openclaw.png")),
         "openhands" => Some(include_bytes!("../../icons/client-logos/openhands.png")),
+        "nanobot" => Some(include_bytes!("../../icons/client-logos/nanobot.png")),
         "junie" => Some(include_bytes!("../../icons/client-logos/junie.png")),
         "kilo-code" => Some(include_bytes!("../../icons/client-logos/kilo-code.png")),
         "github-copilot-cli" => Some(include_bytes!(

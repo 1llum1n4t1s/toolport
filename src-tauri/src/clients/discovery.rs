@@ -150,7 +150,8 @@ pub(super) fn capabilities(id: &str) -> DiscoveryCapabilities {
         // once and opens no `subscriptions/listen`. Every MCP tool goes into the
         // agent's tool list; the SDK has no tool search and no list_changed handler
         // in the versions the CLI pins.
-        "openhands" => DiscoveryCapabilities {
+        // nanobot-ai 0.3.5 lists MCP tools at startup without a list_changed handler.
+        "openhands" | "nanobot" => DiscoveryCapabilities {
             auto_mode: "lazy",
             native_tool_search: Some(false),
             tools_list_changed: Some(false),
@@ -367,6 +368,7 @@ mod tests {
             "jan",
             "anythingllm",
             "openhands",
+            "nanobot",
             "unknown",
         ] {
             assert_eq!(capabilities(id).auto_mode(), "lazy", "{id}");

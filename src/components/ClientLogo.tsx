@@ -75,6 +75,7 @@ const CLIENT_LOGO: Record<string, string> = {
   codewhale: "codewhale",
   openclaw: "openclaw",
   openhands: "openhands",
+  nanobot: "nanobot",
   junie: "junie",
   "kilo-code": "kilo-code",
   "github-copilot-cli": "github-copilot-cli",
