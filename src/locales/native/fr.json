@@ -1166,5 +1166,5 @@
   "OpenClaw extra folder": "Dossier supplémentaire OpenClaw",
   "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "Utilise skills.entries dans le fichier openclaw.json d'OpenClaw (enabled: false).",
   "OpenHands skills": "Skills OpenHands",
-  "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "Les compétences OpenHands sont en lecture seule ici. Utilisez OpenHands pour activer ou désactiver les compétences installées."
+  "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "Les skills OpenHands sont en lecture seule ici. Utilisez OpenHands pour activer ou désactiver les skills installées."
 }
