@@ -87,6 +87,8 @@ json5 = "0.4"
 # client configs (VS Code mcp.json, Zed settings, kilo.jsonc, …). Issue #555.
 jsonc-parser = { version = "0.33", features = ["cst"] }
 serde_yaml = "0.9"
+# Match Codewhale's native frontmatter flow-sequence reader.
+yaml-rust2 = { version = "=0.10.4", default-features = false }
 # Already used by serde_yaml; preserve YAML scalar style for nanobot metadata.
 unsafe-libyaml = "0.2"
 toml = "0.8"

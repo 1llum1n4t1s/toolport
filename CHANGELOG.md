@@ -16,7 +16,8 @@ Entries before the rename below shipped under the project's former name, Conduit
   unrelated gateway connections.
 - Codewhale server imports refuse tool filters and other native settings that
   would be lost during migration. Skill toggles honor native history vetoes
-  and exact enables, including Unicode identities and inherited legacy vetoes.
+  and exact enables, including whitespace-sensitive Unicode identities and
+  inherited legacy vetoes.
   Setup docs clarify how global and project instructions combine.
 
 - nanobot imports now accept the defaults nanobot saves. Incomplete server

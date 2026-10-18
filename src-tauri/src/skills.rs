@@ -11,6 +11,7 @@
 //! or their shipped code (Cursor agent, Gemini CLI, OpenCode). Rows marked `verified: false` come
 //! from published docs and are labelled that way in the UI.
 
+mod codewhale_metadata;
 mod nanobot_metadata;
 mod nanobot_plugins;
 
@@ -3131,8 +3132,20 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
         let mut by_name: HashMap<String, String> = HashMap::new();
         let mut reached: Vec<(String, Found, String)> = Vec::new();
         let mut seen_real: BTreeSet<String> = BTreeSet::new();
+        let mut codewhale_identities = HashMap::new();
         for f in found {
             let key = f.real.as_ref().unwrap_or(&f.link).display().to_string();
+            if def.switch == Switch::CodewhaleState {
+                if let Some(real) = &f.real {
+                    let Some(name) =
+                        read_text(real).and_then(|text| codewhale_metadata::name(&text))
+                    else {
+                        // Native discovery does not load files without a valid name.
+                        continue;
+                    };
+                    codewhale_identities.insert(key.clone(), codewhale_skill_identity(&name));
+                }
+            }
             let record = skills
                 .entry(key.clone())
                 .or_insert_with(|| new_skill(&f, env, project));
@@ -3212,7 +3225,10 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 return nanobot_skill_name(f).unwrap_or(name);
             }
             if def.switch == Switch::CodewhaleState {
-                return codewhale_skill_identity(&name).0;
+                return codewhale_identities
+                    .get(key)
+                    .map(|(name, _)| name.clone())
+                    .unwrap_or(name);
             }
             f.root_label
                 .ends_with("plugin")
@@ -3267,8 +3283,7 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             let nanobot_name = (def.switch == Switch::NanobotConfig)
                 .then(|| nanobot_skill_name(f))
                 .flatten();
-            let codewhale_identity =
-                (def.switch == Switch::CodewhaleState).then(|| codewhale_skill_identity(&name));
+            let codewhale_identity = codewhale_identities.get(key);
             let codewhale_name = codewhale_identity.as_ref().map(|(name, _)| name.clone());
             let switch_name = codewhale_name
                 .clone()
@@ -4400,7 +4415,10 @@ pub fn set_state(
             agent,
             &env.codewhale.join("skills_state.toml"),
             writer,
-            &codewhale_skill_identity(&skill.name).0,
+            skill.states[agent]
+                .switch_name
+                .as_deref()
+                .ok_or_else(|| wrong_shape("skill identity"))?,
             off,
         ),
         Switch::GrokConfig | Switch::ReasonixConfig => {
@@ -4977,6 +4995,8 @@ const CODEWHALE_ENABLED: &str = "!codewhale-skill-state:1:enabled:";
 
 /// Codewhale v0.10.1 keeps ASCII slugs and gives Unicode segments a stable
 /// SHA-256 suffix. Its old lossy slug remains an inherited activation veto.
+/// Input is the native name before display folding: trim each segment, lowercase
+/// ASCII only, then hash those UTF-8 bytes without Unicode/whitespace normalization.
 fn codewhale_skill_identity(name: &str) -> (String, Option<String>) {
     fn legacy_segment(name: &str) -> String {
         let mut out = String::new();

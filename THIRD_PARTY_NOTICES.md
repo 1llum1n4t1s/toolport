@@ -21,7 +21,7 @@ Copyright (c) 2015 konpa
 
 ## Codewhale
 
-The Codewhale client icon is adapted from
+The Codewhale client icon and native skill frontmatter reader are adapted from
 [Codewhale](https://github.com/codewhale-hq/Codewhale), licensed under the MIT License.
 
 Copyright (c) 2024-2025 DeepSeek-TUI Contributors
