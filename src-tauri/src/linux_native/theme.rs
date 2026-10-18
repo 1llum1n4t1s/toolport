@@ -1089,6 +1089,26 @@ button.toolport-catalog-action {{
   color: @toolport_muted;
 }}
 
+/* Clients page: one line per client, controls on the right. */
+.toolport-card.toolport-client-row {{ padding: 9px 4px; }}
+.toolport-client-row .toolport-client-logo {{ min-width: 28px; min-height: 28px; }}
+.toolport-card.toolport-client-profile {{ padding-left: 44px; }}
+.toolport-client-tile {{
+  border: 1px solid alpha(@toolport_fg, 0.10);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background-color: alpha(@toolport_surface, 0.22);
+}}
+.toolport-client-tile:hover {{ background-color: alpha(@toolport_accent, 0.05); }}
+button.toolport-client-group-toggle {{
+  padding: 0;
+  margin: 0;
+  min-height: 0;
+  background: none;
+  box-shadow: none;
+}}
+.toolport-client-row .toolport-badge.caption {{ padding: 1px 8px; }}
+
 /* Skills page: the React view's list-and-detail layout with one status column per agent. */
 .toolport-skill-tabbar {{
   border-bottom: 1px solid alpha(@toolport_fg, 0.12);

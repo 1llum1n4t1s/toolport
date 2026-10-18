@@ -18,6 +18,17 @@ Entries before the rename below shipped under the project's former name, Conduit
   a skill you own to the trash. Available in the app and the Linux GTK app. See
   [Skills and rules](https://github.com/btsouth/toolport/blob/main/docs/skills-and-rules.md).
 
+### Changed
+
+- The Clients page uses the window better. Each client is one line with its
+  controls on the right, clients ready to connect sit two to a row on wide
+  windows, and the page stops widening past a comfortable width. Several Claude
+  Code profiles now sit under one Claude Code entry, each named by the command
+  that starts it (`claude`, `claude2`) with its claude.ai account and when it was
+  last used. A copy of your main profile that only background tools read is
+  listed behind a note. Available in the app and the Linux GTK app. See
+  [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#several-claude-code-accounts).
+
 ### Fixed
 
 - Several AI clients starting at once no longer leave one without tools. On a

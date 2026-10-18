@@ -54,6 +54,21 @@ export interface DetectedClient {
   /** First-class ownership: managed by us, hand-customized, or absent (SOU-406). */
   entryState: GatewayEntryState;
   error: string | null;
+  /** Set on each Claude Code profile when this machine has several of them. */
+  claudeProfile?: ClaudeProfile;
+}
+
+/** What tells one Claude Code profile apart (src-tauri/src/clients/claude_profiles.rs). */
+export interface ClaudeProfile {
+  /** `claude`, or the launcher script or alias that sets CLAUDE_CONFIG_DIR to it. */
+  command: string | null;
+  /** The claude.ai account signed in to this profile. */
+  account: string | null;
+  /** The config folder in `~` form, or `~/.claude.json` for the default profile. */
+  folder: string;
+  lastUsedMs: number | null;
+  /** The profile this one copies: same account in `~/.claude`, read only through CLAUDE_CONFIG_DIR. */
+  sameAs: string | null;
 }
 
 export interface WriteOutcome {
