@@ -151,14 +151,7 @@ describe("AppSidebar accessibility", () => {
       within(nav)
         .getAllByRole("button")
         .map((b) => b.textContent),
-    ).toEqual([
-      "Servers",
-      "Clients",
-      "Skills",
-      "Activity",
-      "Settings",
-      "Sync",
-    ]);
+    ).toEqual(["Servers", "Clients", "Skills", "Activity", "Settings", "Sync"]);
     // Catalog, Playground, Agent rules, Agent activity and Team are not top-level.
     for (const name of [
       "Browse catalog",

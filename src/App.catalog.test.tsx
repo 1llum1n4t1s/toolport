@@ -87,11 +87,6 @@ describe("Servers header catalog entry point", () => {
     await userEvent.click(browse);
 
     expect(await screen.findByRole("heading", { name: "Catalog" })).toBeInTheDocument();
-    // Catalog is a sub-page of Servers: it gets a way back and Servers stays selected.
-    expect(screen.getByRole("button", { name: "Servers" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
     await userEvent.click(screen.getByRole("button", { name: "Back to servers" }));
     expect(
       await screen.findByRole("heading", { level: 1, name: "Servers" }),

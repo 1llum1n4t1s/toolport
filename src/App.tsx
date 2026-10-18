@@ -929,7 +929,7 @@ function App() {
             actionsSlotRef={setHeaderActionsSlot}
             actions={
               <>
-            {view === "servers" && (
+                {view === "servers" && (
                   <>
                     <div className="relative">
                       <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -950,7 +950,7 @@ function App() {
                       trigger={
                         <Button
                           variant="outline"
-                          
+
                           title={isMac ? t("Add server (⌘N)") : t("Add server (CtrlN)")}
                         >
                           <Plus className="size-4" /> {t("Add server")}{" "}
@@ -959,7 +959,7 @@ function App() {
                     />
                     <Button
                       variant="outline"
-                      
+
                       title={translate("Browse Toolport's curated server catalog")}
                       onClick={() => selectView("catalog")}
                     >
@@ -977,13 +977,13 @@ function App() {
                           <MoreHorizontal className="size-4" />
                         </Button>
                       </DropdownMenuTrigger>
-    
+
                       <DropdownMenuContent align="end" className="w-38">
                         <DropdownMenuItem onClick={handleImport}>
                           <Download className="mr-2 size-4" />
                           <span>{t("Import")}</span>
                         </DropdownMenuItem>
-    
+
                         {servers.length > 0 && (
                           <DropdownMenuItem
                             onClick={() => {
@@ -992,7 +992,10 @@ function App() {
                               // more than a couple; "Enable all" and small sets go
                               // straight through.
                               const disabling = enabledCount >= servers.length;
-                              if (disabling && servers.length > BULK_DISABLE_CONFIRM_MIN) {
+                              if (
+                                disabling &&
+                                servers.length > BULK_DISABLE_CONFIRM_MIN
+                              ) {
                                 setConfirmDisableAll(true);
                               } else {
                                 void handleToggleAll();
@@ -1002,7 +1005,9 @@ function App() {
                             // not just busyId, so it can't be re-fired mid-run. Disabled
                             // while a search is active: it acts on ALL servers, so it must
                             // not silently toggle ones hidden by the filter.
-                            disabled={togglingAll || busyId !== null || query.trim() !== ""}
+                            disabled={
+                              togglingAll || busyId !== null || query.trim() !== ""
+                            }
                             title={
                               query.trim() !== ""
                                 ? t("Clear the search to enable or disable all servers")
@@ -1025,7 +1030,7 @@ function App() {
                   <>
                     <Button
                       variant="outline"
-                      
+
                       title={translate(
                         "Add a config folder for a client Toolport did not find on its own",
                       )}
@@ -1036,7 +1041,7 @@ function App() {
                     </Button>
                     <Button
                       variant="outline"
-                      
+
                       title={translate("Review servers found in client configurations")}
                       onClick={handleImport}
                     >
@@ -1095,118 +1100,118 @@ function App() {
           )}
 
           <PageHeaderActionsSlot value={headerActionsSlot}>
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="p-3 sm:p-6">
-              <ErrorBoundary
-                resetKey={`${view}:${selectedClient?.id ?? ""}`}
-                fallback={(err, retry) => <ViewCrash error={err} onRetry={retry} />}
-              >
-                <Suspense
-                  fallback={
-                    <div className="flex flex-col gap-2">
-                      {Array.from({ length: 6 }).map((_, i) => (
-                        <Skeleton key={i} className="h-11 w-full rounded-lg" />
-                      ))}
-                    </div>
-                  }
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="p-3 sm:p-6">
+                <ErrorBoundary
+                  resetKey={`${view}:${selectedClient?.id ?? ""}`}
+                  fallback={(err, retry) => <ViewCrash error={err} onRetry={retry} />}
                 >
-                  {view === "clients" ? (
-                    selectedClient ? (
-                      <ClientDetail
-                        client={selectedClient}
+                  <Suspense
+                    fallback={
+                      <div className="flex flex-col gap-2">
+                        {Array.from({ length: 6 }).map((_, i) => (
+                          <Skeleton key={i} className="h-11 w-full rounded-lg" />
+                        ))}
+                      </div>
+                    }
+                  >
+                    {view === "clients" ? (
+                      selectedClient ? (
+                        <ClientDetail
+                          client={selectedClient}
+                          registry={registry}
+                          onChanged={load}
+                          onRegistryChange={applyRegistryChange}
+                        />
+                      ) : (
+                        <ClientsView
+                          clients={clients}
+                          registry={registry}
+                          loading={loading}
+                          onSelectClient={selectClient}
+                          onChanged={load}
+                        />
+                      )
+                    ) : view === "skills" ? (
+                      <SkillsView />
+                    ) : view === "activity" ? (
+                      <ActivityView
+                        refreshKey={activityKey}
                         registry={registry}
-                        onChanged={load}
+                        onReviewQuarantine={() => {
+                          setSettingsPage("safety");
+                          setView("settings");
+                        }}
+                      />
+                    ) : view === "catalog" ? (
+                      <CatalogView registry={registry} onAdded={applyRegistryChange} />
+                    ) : view === "teams" ? (
+                      <TeamsView
+                        registry={registry}
+                        onRegistryChange={applyRegistryChange}
+                        health={health}
+                        onReprobe={() => void reprobeAfterMutation().catch(() => {})}
+                        onOpenServers={() => selectView("servers")}
+                      />
+                    ) : view === "settings" ? (
+                      <SettingsView
+                        page={settingsPage}
+                        pendingCount={pendingCount}
+                        registry={registry}
                         onRegistryChange={applyRegistryChange}
                       />
+                    ) : loading && registry === null ? (
+                      <div className="flex flex-col gap-2">
+                        {Array.from({ length: 6 }).map((_, i) => (
+                          <Skeleton key={i} className="h-11 w-full rounded-lg" />
+                        ))}
+                      </div>
+                    ) : error ? (
+                      <ErrorState message={error} />
+                    ) : servers.length === 0 ? (
+                      <EmptyState
+                        importable={importable}
+                        onImport={handleImport}
+                        onBrowseCatalog={() => selectView("catalog")}
+                      />
+                    ) : visible.length === 0 ? (
+                      <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-3 py-6 text-center">
+                        <p className="text-sm text-muted-foreground">
+                          {" "}
+                          {t('No servers match "{query}".', { query })}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setQuery("")}
+                          className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        >
+                          <X className="size-3.5" /> {t("Clear search")}{" "}
+                        </button>
+                      </div>
                     ) : (
-                      <ClientsView
-                        clients={clients}
-                        registry={registry}
-                        loading={loading}
-                        onSelectClient={selectClient}
-                        onChanged={load}
-                      />
-                    )
-                  ) : view === "skills" ? (
-                    <SkillsView />
-                  ) : view === "activity" ? (
-                    <ActivityView
-                      refreshKey={activityKey}
-                      registry={registry}
-                      onReviewQuarantine={() => {
-                        setSettingsPage("safety");
-                        setView("settings");
-                      }}
-                    />
-                  ) : view === "catalog" ? (
-                    <CatalogView registry={registry} onAdded={applyRegistryChange} />
-                  ) : view === "teams" ? (
-                    <TeamsView
-                      registry={registry}
-                      onRegistryChange={applyRegistryChange}
-                      health={health}
-                      onReprobe={() => void reprobeAfterMutation().catch(() => {})}
-                      onOpenServers={() => selectView("servers")}
-                    />
-                  ) : view === "settings" ? (
-                    <SettingsView
-                      page={settingsPage}
-                      pendingCount={pendingCount}
-                      registry={registry}
-                      onRegistryChange={applyRegistryChange}
-                    />
-                  ) : loading && registry === null ? (
-                    <div className="flex flex-col gap-2">
-                      {Array.from({ length: 6 }).map((_, i) => (
-                        <Skeleton key={i} className="h-11 w-full rounded-lg" />
-                      ))}
-                    </div>
-                  ) : error ? (
-                    <ErrorState message={error} />
-                  ) : servers.length === 0 ? (
-                    <EmptyState
-                      importable={importable}
-                      onImport={handleImport}
-                      onBrowseCatalog={() => selectView("catalog")}
-                    />
-                  ) : visible.length === 0 ? (
-                    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-3 py-6 text-center">
-                      <p className="text-sm text-muted-foreground">
-                        {" "}
-                        {t('No servers match "{query}".', { query })}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setQuery("")}
-                        className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                      >
-                        <X className="size-3.5" /> {t("Clear search")}{" "}
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col gap-5">
-                      <ServerPosture
-                        backendReachable={backendReachable}
-                        probing={probing}
-                        enabled={enabledCount}
-                        checked={checkedCount}
-                        connected={connectedCount}
-                        attention={attentionCount}
-                        disabled={servers.length - enabledCount}
-                      />
-                      {backendReachable && attentionCount > 0 && (
-                        <ServerNextAction
-                          authServers={authAttention}
-                          errorServers={errorAttention}
+                      <div className="flex flex-col gap-5">
+                        <ServerPosture
+                          backendReachable={backendReachable}
+                          probing={probing}
+                          enabled={enabledCount}
+                          checked={checkedCount}
+                          connected={connectedCount}
+                          attention={attentionCount}
+                          disabled={servers.length - enabledCount}
                         />
-                      )}
-                      <div className="toolport-list">{visible.map(serverRow)}</div>
-                    </div>
-                  )}
-                </Suspense>
-              </ErrorBoundary>
-            </div>
-          </ScrollArea>
+                        {backendReachable && attentionCount > 0 && (
+                          <ServerNextAction
+                            authServers={authAttention}
+                            errorServers={errorAttention}
+                          />
+                        )}
+                        <div className="toolport-list">{visible.map(serverRow)}</div>
+                      </div>
+                    )}
+                  </Suspense>
+                </ErrorBoundary>
+              </div>
+            </ScrollArea>
           </PageHeaderActionsSlot>
         </main>
         <AddClientLocationDialog

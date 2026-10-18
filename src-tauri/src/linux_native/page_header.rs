@@ -45,6 +45,17 @@ mod imp {
     }
 
     impl WidgetImpl for HeaderWrap {
+        fn snapshot(&self, snapshot: &gtk::Snapshot) {
+            for child in [self.title.borrow().clone(), self.actions.borrow().clone()]
+                .into_iter()
+                .flatten()
+            {
+                if child.should_layout() {
+                    self.obj().snapshot_child(&child, snapshot);
+                }
+            }
+        }
+
         fn request_mode(&self) -> gtk::SizeRequestMode {
             gtk::SizeRequestMode::HeightForWidth
         }
@@ -310,7 +321,35 @@ impl PageHeader {
 
 #[cfg(test)]
 mod tests {
-    use super::fits_one_row;
+    use super::*;
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn header_preserves_actions_and_wraps_at_narrow_width() {
+        adw::init().expect("isolated GTK desktop");
+        let header = PageHeader::new("Clients", "Manage Toolport in your installed AI tools");
+        let add = super::super::header_button("list-add-symbolic", "Add client location");
+        let import = super::super::header_button("document-open-symbolic", "Import");
+        header.add_action(&add);
+        header.add_action(&import);
+        assert_eq!(header.title.label(), "Clients");
+        assert_eq!(
+            header.subtitle.label(),
+            "Manage Toolport in your installed AI tools"
+        );
+        assert_eq!(header.actions.first_child(), Some(add.clone().upcast()));
+        assert_eq!(add.next_sibling(), Some(import.upcast()));
+        let bar = header.root.child().unwrap();
+        let wrap = bar.first_child().unwrap().next_sibling().unwrap();
+        let (_, wide, _, _) = wrap.measure(gtk::Orientation::Vertical, 1100);
+        let (_, narrow, _, _) = wrap.measure(gtk::Orientation::Vertical, 420);
+        assert!(narrow > wide, "actions should wrap below the title");
+        header.set_title("Catalog");
+        header.set_subtitle("Add MCP servers from the registry");
+        let back = header.set_back("Servers", "Back to servers");
+        assert_eq!(header.title.label(), "Catalog");
+        assert_eq!(back.tooltip_text().as_deref(), Some("Back to servers"));
+    }
 
     #[test]
     fn actions_share_the_title_line_only_when_both_fit_at_natural_width() {

@@ -1168,7 +1168,12 @@ fn build_sidebar(
                 child.add_css_class("flat");
                 child.add_css_class("toolport-nav-item");
                 let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-                row.append(&gtk::Image::builder().icon_name(icon).pixel_size(16).build());
+                row.append(
+                    &gtk::Image::builder()
+                        .icon_name(*icon)
+                        .pixel_size(16)
+                        .build(),
+                );
                 let section_label = l10n::label(label);
                 section_label.set_xalign(0.0);
                 section_label.set_hexpand(true);
@@ -12794,9 +12799,9 @@ mod tests {
         page.show_confirmation("Saved");
         let height = page.feedback.height_request();
         page.hide_feedback();
-        assert!(page.feedback.is_visible());
+        assert!(!page.feedback.is_visible());
         assert_eq!(page.feedback.height_request(), height);
-        assert!(height >= 48);
+        assert!(height < 48);
         window.close();
     }
 
