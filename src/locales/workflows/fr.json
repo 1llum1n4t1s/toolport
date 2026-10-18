@@ -403,7 +403,7 @@
   "Only the links to it are removed, so no client loads it. Its folder at {path} stays where it is.": "Seuls les liens vers elle sont supprimés, donc aucun client ne la charge. Son dossier {path} reste où il est.",
   "More options for {client}": "Plus d'options pour {client}",
   "Load name and description only": "Charger seulement le nom et la description",
-  "No switch Toolport can write": "Aucun interrupteur que Toolport peut écrire",
+  "No switch Toolport can write": "Aucun interrupteur modifiable par Toolport",
   "Filter by agent": "Filtrer par agent",
   "All agents": "Tous les agents",
   "{state} via {path}": "{state} via {path}"

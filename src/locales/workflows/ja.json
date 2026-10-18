@@ -403,7 +403,7 @@
   "Only the links to it are removed, so no client loads it. Its folder at {path} stays where it is.": "リンクだけを削除するので、どのクライアントも読み込まなくなります。{path} のフォルダーはそのまま残ります。",
   "More options for {client}": "{client} のその他のオプション",
   "Load name and description only": "名前と説明だけを読み込む",
-  "No switch Toolport can write": "Toolport が書き込めるスイッチがありません",
+  "No switch Toolport can write": "Toolport で変更できるスイッチはありません",
   "Filter by agent": "エージェントで絞り込む",
   "All agents": "すべてのエージェント",
   "{state} via {path}": "{path} 経由で{state}"
