@@ -273,8 +273,7 @@ export function PersonalSyncView({
     }
   }
   return (
-    <div className="mx-auto max-w-2xl space-y-4">
-      <h2 className="text-[22px] font-[650] tracking-tight">{t("Sync")}</h2>
+    <div className="max-w-[760px] space-y-4">
       {!team && (
         <p className="text-sm text-muted-foreground">
           {t(

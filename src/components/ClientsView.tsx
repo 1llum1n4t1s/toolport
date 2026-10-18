@@ -1,5 +1,4 @@
 import { msg, Trans, translate, useI18n } from "@/lib/i18n";
-import { AddClientLocationDialog } from "@/components/AddClientLocationDialog";
 import { Button } from "@/components/ui/button";
 import { trustedClientName, clientIdentityTooltip } from "@/lib/clientIdentity";
 import { getClientSessions } from "@/lib/api";
@@ -405,7 +404,6 @@ export function ClientsView({
   onChanged?: () => Promise<void>;
 }) {
   const { t, locale } = useI18n();
-  const [addingLocation, setAddingLocation] = useState(false);
   const [showMissing, setShowMissing] = useState(false);
   const [showRecent, setShowRecent] = useState(false);
   const [sessions, setSessions] = useState<ClientActivity[]>([]);
@@ -468,25 +466,6 @@ export function ClientsView({
 
   return (
     <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-5">
-      {onChanged && (
-        <>
-          <Button
-            variant="outline"
-            className="self-start"
-            onClick={() => setAddingLocation(true)}
-          >
-            {translate("Add client location")}
-          </Button>
-          <AddClientLocationDialog
-            open={addingLocation}
-            onOpenChange={setAddingLocation}
-            onAdded={async (id) => {
-              await onChanged();
-              onSelectClient(id);
-            }}
-          />
-        </>
-      )}
       {sessionError && (
         <p role="status" className="text-meta text-muted-foreground">
           {translate("Client session history could not be read.")}

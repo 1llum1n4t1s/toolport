@@ -157,7 +157,7 @@ describe("AppSidebar accessibility", () => {
       "Skills",
       "Activity",
       "Settings",
-      "Sign in to sync",
+      "Sync",
     ]);
     // Catalog, Playground, Agent rules, Agent activity and Team are not top-level.
     for (const name of [

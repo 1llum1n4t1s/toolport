@@ -6,7 +6,9 @@ import { listen } from "@tauri-apps/api/event";
 import {
   Shield,
   KeyRound,
-  Globe,
+  House,
+  LifeBuoy,
+  Network,
   Wrench,
   ArrowUpCircle,
   ClipboardList,
@@ -621,7 +623,7 @@ export function AppSidebar({
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         <nav aria-label={t("Views")} className="flex flex-col gap-0.5 px-3 pt-2">
-          {navItem(Layers, msg("Servers"), view === "servers", () =>
+          {navItem(Layers, msg("Servers"), view === "servers" || view === "catalog", () =>
             onSelectView("servers"),
           )}
           {navItem(MonitorCog, msg("Clients"), view === "clients", () =>
@@ -646,7 +648,7 @@ export function AppSidebar({
               {SETTINGS_PAGES.map((item, index) => (
                 <div key={item.id} className="relative">
                   {navItem(
-                    [Settings, Wrench, Shield, KeyRound, Globe, CircleHelp][index],
+                    [House, Wrench, Shield, KeyRound, Network, LifeBuoy][index],
                     item.label,
                     settingsPage === item.id,
                     () => onSettingsPageChange?.(item.id),
@@ -665,11 +667,7 @@ export function AppSidebar({
           )}
           {navItem(
             Users,
-            paired
-              ? isPersonalSync(registry)
-                ? msg("Sync")
-                : msg("Team")
-              : msg("Sign in to sync"),
+            paired && !isPersonalSync(registry) ? msg("Team") : msg("Sync"),
             view === "teams",
             () => onSelectView("teams"),
             registry?.servers.filter((s) => s.teamEnableReview === true && !s.enabled)

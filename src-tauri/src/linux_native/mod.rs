@@ -7582,31 +7582,29 @@ fn build_content(
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.add_css_class("toolport-content");
 
-    let header = adw::HeaderBar::new();
-    header.add_css_class("toolport-header");
-    header.set_show_back_button(true);
-    header.set_title_widget(Some(&{
-        let widget = gtk::Label::builder()
-            .label(crate::i18n::tr("Servers"))
-            .css_classes(["title"])
+    let header = page_header::PageHeader::new(
+        crate::i18n::msg("Servers"),
+        crate::i18n::msg("One gateway in front of every MCP server you run"),
+    );
+    let search = {
+        let widget = gtk::SearchEntry::builder()
+            .placeholder_text(crate::i18n::tr("Search servers"))
+            .width_request(176)
+            .valign(gtk::Align::Center)
+            .css_classes(["toolport-search"])
             .build();
-        l10n::bind_label(&widget, "Servers");
+        l10n::bind_placeholder(&widget, "Search servers");
         widget
-    }));
-    let add_server = gtk::Button::builder()
-        .icon_name("list-add-symbolic")
-        .tooltip_text(crate::i18n::tr("Add server"))
-        .css_classes(["flat", "toolport-header-add"])
-        .build();
-    header.pack_end(&add_server);
+    };
+    header.add_action(&search);
+    let add_server = header_button("list-add-symbolic", crate::i18n::msg("Add server"));
+    l10n::bind_tooltip(&add_server, "Add server (Ctrl+N)");
+    header.add_action(&add_server);
     // Catalog left the sidebar in 2.0, so an install that already has servers
     // never sees the onboarding catalog link. Keep it reachable from the Servers
     // header for both fresh and existing setups.
-    let browse_catalog = l10n::button("Browse catalog");
-    browse_catalog.set_tooltip_text(Some(&crate::i18n::tr(
-        "Browse Toolport's curated server catalog",
-    )));
-    browse_catalog.add_css_class("toolport-secondary-action");
+    let browse_catalog = header_button("system-software-install-symbolic", crate::i18n::msg("Browse catalog"));
+    l10n::bind_tooltip(&browse_catalog, "Browse Toolport's curated server catalog");
     {
         let app = app.clone();
         browse_catalog.connect_clicked(move |_| {
@@ -7615,173 +7613,76 @@ fn build_content(
             }
         });
     }
-    header.pack_end(&browse_catalog);
-    let menu_popover = gtk::Popover::new();
-    menu_popover.add_css_class("toolport-main-menu");
-    menu_popover.set_has_arrow(false);
-    let menu_content = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    let menu_action = |label: &'static str, action: &str, shortcut: Option<&str>| {
-        let content = gtk::Box::new(gtk::Orientation::Horizontal, 18);
-        content.append(&{
-            let widget = gtk::Label::builder()
-                .label(label)
-                .halign(gtk::Align::Start)
-                .hexpand(true)
-                .build();
-            l10n::bind_label(&widget, label);
-            widget
-        });
-        if let Some(shortcut) = shortcut {
-            content.append(
-                &gtk::Label::builder()
-                    .label(shortcut)
-                    .css_classes(["toolport-menu-shortcut"])
-                    .build(),
-            );
-        }
-        let button = gtk::Button::builder()
-            .child(&content)
-            .css_classes(["flat", "toolport-main-menu-item"])
-            .build();
-        button.set_action_name(Some(action));
-        button
-    };
-    for (label, action) in [
-        (crate::i18n::msg("Import setup…"), "app.import-setup"),
-        (crate::i18n::msg("Import pasted setup…"), "app.paste-setup"),
-        (crate::i18n::msg("Export setup…"), "app.export-setup"),
-        (crate::i18n::msg("Share setup…"), "app.share-setup"),
-    ] {
-        menu_content.append(&menu_action(label, action, None));
-    }
-    menu_content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    menu_content.append(&menu_action(
-        crate::i18n::msg("Run setup assistant…"),
-        "app.show-onboarding",
-        None,
-    ));
-    menu_content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    let quit = menu_action(
-        crate::i18n::msg("Quit Toolport"),
-        "app.quit",
-        Some("Ctrl+Q"),
-    );
-    quit.add_css_class("toolport-main-menu-quit");
-    menu_content.append(&quit);
-    menu_popover.set_child(Some(&menu_content));
-    let menu_button = gtk::MenuButton::builder()
-        .icon_name("open-menu-symbolic")
-        .tooltip_text(crate::i18n::tr("Import, export and setup"))
-        .build();
-    menu_button.set_popover(Some(&menu_popover));
-    header.pack_end(&menu_button);
-    let check_servers = gtk::Button::builder()
-        .icon_name("view-refresh-symbolic")
-        .tooltip_text(crate::i18n::tr("Check servers again (Ctrl+R)"))
-        .build();
-    header.pack_end(&check_servers);
-    root.append(&header);
-
-    let scroller = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vexpand(true)
-        .build();
-    let page = gtk::Box::new(gtk::Orientation::Vertical, 14);
-    page.add_css_class("toolport-page");
-    page.set_margin_top(20);
-    page.set_margin_bottom(20);
-    page.set_margin_start(20);
-    page.set_margin_end(20);
-
-    let intro = {
-        let widget = gtk::Label::builder()
-            .label(crate::i18n::tr("One local gateway for every AI client"))
-            .halign(gtk::Align::Fill)
-            .xalign(0.0)
-            .wrap(true)
-            .css_classes(["title-2"])
-            .build();
-        l10n::bind_label(&widget, "One local gateway for every AI client");
-        widget
-    };
-    page.append(&intro);
-
-    let description = {
-        let widget = gtk::Label::builder()
-            .label(crate::i18n::tr("Your MCP servers, available everywhere."))
-            .halign(gtk::Align::Fill)
-            .wrap(true)
-            .xalign(0.0)
-            .css_classes(["toolport-muted"])
-            .build();
-        l10n::bind_label(&widget, "Your MCP servers, available everywhere.");
-        widget
-    };
-    page.append(&description);
-
-    let feedback = gtk::Label::builder()
-        .halign(gtk::Align::Fill)
-        .xalign(0.0)
-        .wrap(true)
-        .height_request(48)
-        .css_classes(["toolport-feedback", "idle"])
-        .build();
-    page.append(&feedback);
-
-    let approval_page = ApprovalPage::new(app, broker);
-
-    let summary = gtk::Grid::new();
-    summary.add_css_class("toolport-summary");
-    summary.set_column_spacing(10);
-    summary.set_column_homogeneous(true);
-    let mut values = Vec::new();
-    for (column, (value, label)) in [("0", crate::i18n::msg("Servers")), ("0", "Enabled")]
-        .into_iter()
-        .enumerate()
-    {
-        let (item, value) = summary_item(value, label);
-        item.set_size_request(0, -1);
-        item.set_hexpand(true);
-        values.push(value);
-        summary.attach(&item, column as i32, 0, 1, 1);
-    }
-    page.append(&summary);
-    let short = adw::Breakpoint::new(
-        adw::BreakpointCondition::parse("max-height: 450px")
-            .expect("static short-window condition"),
-    );
-    short.add_setter(&intro, "visible", Some(&false.to_value()));
-    short.add_setter(&description, "visible", Some(&false.to_value()));
-    short.add_setter(&summary, "visible", Some(&false.to_value()));
+    header.add_action(&browse_catalog);
+    // One overflow menu: Import plus the bulk on/off actions. Setup import,
+    // export, share and quit live in the sidebar's Help menu.
     let profile_actions = gtk::MenuButton::builder()
-        .icon_name("view-more-symbolic")
-        .tooltip_text(crate::i18n::tr("Enable or disable all servers"))
+        .icon_name("view-more-horizontal-symbolic")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
         .build();
-    profile_actions.add_css_class("flat");
+    l10n::bind_tooltip(&profile_actions, "Import and server actions");
     let profile_popover = toolport_menu_popover();
     let profile_action_list = gtk::Box::new(gtk::Orientation::Vertical, 4);
     profile_action_list.set_margin_top(6);
     profile_action_list.set_margin_bottom(6);
     profile_action_list.set_margin_start(6);
     profile_action_list.set_margin_end(6);
+    let import_clients = toolport_menu_source_button(crate::i18n::msg("Import"));
+    import_clients.set_action_name(Some("app.import-from-clients"));
+    import_clients.set_tooltip_text(Some(&crate::i18n::tr(
+        "Review servers found in client configurations",
+    )));
+    profile_action_list.append(&import_clients);
     let enable_all = toolport_menu_source_button(crate::i18n::msg("Enable all reviewed servers"));
     profile_action_list.append(&enable_all);
     let disable_all = toolport_menu_source_button(crate::i18n::msg("Disable all servers"));
     profile_action_list.append(&disable_all);
     profile_popover.set_child(Some(&profile_action_list));
     profile_actions.set_popover(Some(&profile_popover));
-    header.pack_end(&profile_actions);
+    header.add_action(&profile_actions);
+    let check_servers = header_icon_button("view-refresh-symbolic");
+    l10n::bind_tooltip(&check_servers, "Check servers again (Ctrl+R)");
+    header.add_action(&check_servers);
+    root.append(&header.root);
 
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .build();
+    let page = page_body(14);
+
+    // Only on screen while it has something to say; nothing reserves its space.
+    let feedback = gtk::Label::builder()
+        .halign(gtk::Align::Fill)
+        .xalign(0.0)
+        .wrap(true)
+        .visible(false)
+        .css_classes(["toolport-feedback", "idle"])
+        .build();
+    page.append(&feedback);
+
+    let approval_page = ApprovalPage::new(app, broker);
+
+    // Group header: section label plus the count of servers in the group.
+    let section_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let section_title = {
         let widget = gtk::Label::builder()
             .label(crate::i18n::tr("Servers"))
             .halign(gtk::Align::Start)
-            .css_classes(["heading"])
+            .css_classes(["toolport-section-label"])
             .build();
         l10n::bind_label(&widget, "Servers");
         widget
     };
-    page.append(&section_title);
+    section_header.append(&section_title);
+    let server_count = gtk::Label::builder()
+        .visible(false)
+        .valign(gtk::Align::Center)
+        .css_classes(["toolport-badge"])
+        .build();
+    section_header.append(&server_count);
+    page.append(&section_header);
 
     let posture = gtk::Label::builder()
         .halign(gtk::Align::Fill)
@@ -7792,36 +7693,17 @@ fn build_content(
         .build();
     page.append(&posture);
 
-    let search = {
-        let widget = gtk::SearchEntry::builder()
-            .placeholder_text(crate::i18n::tr("Search servers"))
-            .hexpand(true)
-            .css_classes(["toolport-search"])
-            .build();
-        l10n::bind_placeholder(&widget, "Search servers");
-        widget
-    };
-    page.append(&search);
-
     let list = gtk::Box::new(gtk::Orientation::Vertical, 12);
     page.append(&list);
 
     scroller.set_child(Some(&page));
-    let adaptive = adw::BreakpointBin::builder()
-        .child(&scroller)
-        .width_request(200)
-        .height_request(200)
-        .vexpand(true)
-        .build();
-    adaptive.add_breakpoint(short);
-    root.append(&adaptive);
+    root.append(&scroller);
     let server_page = (
         root,
         ServerPage {
             app: app.clone(),
             share_requests: Default::default(),
-            server_count: values.remove(0),
-            enabled_count: values.remove(0),
+            server_count,
             section_title,
             posture,
             search: search.clone(),

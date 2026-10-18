@@ -45,7 +45,9 @@ import {
 import { toastError } from "@/lib/toast";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { PageHeaderActions } from "@/components/PageHeader";
 import {
   clearActivityLogs,
   exportAuditToPath,
@@ -2336,36 +2338,34 @@ export function ActivityView({
             {tr("latest {count}", { count: entries.length })}
           </span>
         </button>
-        <button
-          onClick={() => void exportLog()}
-          title={tr("Export the full activity log to a file (CSV or JSON)")}
-          className="flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-        >
-          <Trans
-            message="{value1} Export"
-            values={{ value1: <Download className="size-3.5" aria-hidden="true" /> }}
+        <PageHeaderActions>
+          <Button
+            variant="outline"
+            onClick={() => void exportLog()}
+            title={tr("Export the full activity log to a file (CSV or JSON)")}
+          >
+            <Download className="size-4" aria-hidden="true" />
+            {tr("Export")}
+          </Button>
+          <ConfirmDialog
+            trigger={
+              <Button
+                variant="destructive"
+                title={tr("Delete all retained activity kept on this device")}
+              >
+                <Trash2 className="size-4" aria-hidden="true" />
+                {tr("Clear")}
+              </Button>
+            }
+            title={tr("Clear retained activity?")}
+            description={tr(
+              "Permanently deletes everything Toolport keeps on this device: the audit log, discovery search traces, live-inspection captures, and the savings tally (including its running total). Nothing is sent anywhere; each log starts fresh on the next event. This can't be undone.",
+            )}
+            confirmLabel={tr("Clear activity")}
+            destructive
+            onConfirm={clearActivity}
           />
-        </button>
-        <ConfirmDialog
-          trigger={
-            <button
-              title={tr("Delete all retained activity kept on this device")}
-              className="flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-            >
-              <Trans
-                message="{value1} Clear"
-                values={{ value1: <Trash2 className="size-3.5" aria-hidden="true" /> }}
-              />
-            </button>
-          }
-          title={tr("Clear retained activity?")}
-          description={tr(
-            "Permanently deletes everything Toolport keeps on this device: the audit log, discovery search traces, live-inspection captures, and the savings tally (including its running total). Nothing is sent anywhere; each log starts fresh on the next event. This can't be undone.",
-          )}
-          confirmLabel={tr("Clear activity")}
-          destructive
-          onConfirm={clearActivity}
-        />
+        </PageHeaderActions>
       </div>
 
       <p className="mb-2 text-meta text-muted-foreground">
