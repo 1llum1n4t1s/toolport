@@ -20,8 +20,9 @@ Entries before the rename below shipped under the project's former name, Conduit
   inherited legacy vetoes.
   Setup docs clarify how global and project instructions combine.
 - Match Reasonix state relocation and nested or single-file skill discovery.
-  Refuse duplicate plugin names before import or edits, preserve CRLF and mixed
-  line endings, and restore moved plugins beside their surviving neighbors
+  Resolve duplicate plugin names with merged disabled-tool policies without
+  blocking unrelated connections. Use Reasonix's resolved skill identifiers for
+  toggles, preserve CRLF and mixed line endings, and restore moved plugins beside their surviving neighbors
   with their comments after unrelated config edits.
 
 - nanobot imports now accept the defaults nanobot saves. Incomplete server

@@ -206,12 +206,34 @@ fn a_put_back_table_next_to_a_new_one_stays_after_the_settings() {
 }
 
 #[test]
-fn duplicate_names_are_refused_before_import_or_mutation() {
-    let text = "[[plugins]]\nname = 'dup'\ncommand = '/first/server'\ndisabled_tools = ['a']\n[[plugins]]\nname = 'dup'\ncommand = '/last/server'\ndisabled_tools = ['b']\n";
-    assert!(servers(text).unwrap_err().contains("duplicate"));
-    assert!(raw_entries(text).is_err());
-    assert!(sync(Some(text), &Default::default(), &Default::default()).is_err());
-    assert!(append_raw(Some(text), &[]).is_err());
+fn duplicates_use_last_command_and_merge_policy_without_blocking_connect() {
+    let text = "[[plugins]]\nname = 'dup'\ncommand = '/first/server'\ndisabled_tools = ['a', 'b']\n[[plugins]]\nname = 'dup'\ncommand = '/last/server'\ndisabled_tools = ['b', 'c']\n";
+    assert_eq!(
+        servers(text).unwrap()[0].command.as_deref(),
+        Some("/last/server")
+    );
+    assert_eq!(
+        desired(text)["dup"]["disabled_tools"],
+        serde_json::json!(["a", "b", "c"])
+    );
+    let connected = with(text, &stdio("toolport"));
+    assert!(connected.starts_with(text), "{connected}");
+    assert_eq!(without(&connected, "toolport"), text);
+    let raw = raw_entries(text).unwrap();
+    assert_eq!(raw[0].1.matches("[[plugins]]").count(), 2);
+    assert_eq!(raw[0].2, desired(text)["dup"]);
+    assert_eq!(definition(&raw[0].1).unwrap(), raw[0].2);
+    // Only editing or moving the duplicated name needs manual resolution.
+    let mut want = desired(text);
+    want.remove("dup");
+    assert!(sync(Some(text), &want, &Default::default())
+        .unwrap_err()
+        .contains("duplicate"));
+    let mut want = desired(text);
+    want["dup"]["command"] = "changed".into();
+    assert!(sync(Some(text), &want, &Default::default()).is_err());
+    let identical = "[[plugins]]\nname = 'same'\ncommand = 'same'\n[[plugins]]\nname = 'same'\ncommand = 'same'\n";
+    assert!(with(identical, &stdio("toolport")).starts_with(identical));
 }
 
 #[test]

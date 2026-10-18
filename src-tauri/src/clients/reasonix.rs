@@ -85,13 +85,29 @@ fn servers_map(doc: &DocumentMut) -> Result<serde_json::Map<String, Json>, Strin
     let mut out = serde_json::Map::new();
     for table in plugins(doc)?.into_iter().flat_map(ArrayOfTables::iter) {
         if let Some(name) = name_of(table) {
-            // Reasonix uses the last table and merges disabled-tool policies.
-            // Refuse ambiguous names rather than risk changing that policy.
-            if out.insert(name.to_string(), config_json(table)).is_some() {
-                return Err(format!(
-                    "Reasonix has duplicate plugins named '{name}'; remove the duplicate by hand, {UNTOUCHED}."
-                ));
+            let mut config = config_json(table);
+            if let Some(previous) = out.get(name) {
+                // The last command wins, but earlier disabled-tool policies survive.
+                let mut disabled = previous
+                    .get("disabled_tools")
+                    .and_then(Json::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                for tool in config
+                    .get("disabled_tools")
+                    .and_then(Json::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if !disabled.contains(tool) {
+                        disabled.push(tool.clone());
+                    }
+                }
+                if !disabled.is_empty() {
+                    config["disabled_tools"] = Json::Array(disabled);
+                }
             }
+            out.insert(name.to_string(), config);
         }
     }
     Ok(out)
@@ -289,8 +305,27 @@ pub(super) fn sync(
     let mut doc = document(text)?;
     let before_rest = rest(text)?;
     plugins(&doc)?;
-    if servers_map(&doc)? == *desired {
+    let current = servers_map(&doc)?;
+    if current == *desired {
         return Ok(text.to_string());
+    }
+    let mut names = std::collections::BTreeSet::new();
+    let mut duplicates = std::collections::BTreeSet::new();
+    for table in plugins(&doc)?.into_iter().flat_map(ArrayOfTables::iter) {
+        if let Some(name) = name_of(table) {
+            if !names.insert(name.to_string()) {
+                duplicates.insert(name.to_string());
+            }
+        }
+    }
+    // Preserve every duplicate table for unrelated edits, including Connect.
+    // Moving or replacing that name needs its merged policy and raw layout.
+    for name in &duplicates {
+        if desired.get(name) != current.get(name) {
+            return Err(format!(
+                "Reasonix has duplicate plugins named '{name}'; resolve that name before moving or replacing it, {UNTOUCHED}."
+            ));
+        }
     }
     if !matches!(doc.get("plugins"), Some(Item::ArrayOfTables(_))) {
         doc.remove("plugins");
@@ -308,7 +343,7 @@ pub(super) fn sync(
         match desired.get(&name) {
             Some(want) => {
                 seen.insert(name.clone());
-                if config_json(table) != *want {
+                if !duplicates.contains(&name) && config_json(table) != *want {
                     fill(table, want)?;
                 }
             }
@@ -442,7 +477,7 @@ fn table_at(table: &mut Table, position: usize) -> Option<&mut Table> {
 /// Older records without anchors still append safely.
 pub(super) fn raw_entries(text: &str) -> Result<Vec<(String, String, Json)>, String> {
     let doc = document(text)?;
-    servers_map(&doc)?;
+    let effective = servers_map(&doc)?;
     let mut grouped: Vec<(String, Vec<Table>, Json)> = Vec::new();
     for table in plugins(&doc)?.into_iter().flat_map(ArrayOfTables::iter) {
         let Some(name) = name_of(table) else {
@@ -452,7 +487,7 @@ pub(super) fn raw_entries(text: &str) -> Result<Vec<(String, String, Json)>, Str
         match grouped.iter_mut().find(|(seen, _, _)| seen == name) {
             Some((_, tables, _)) => tables.push(table),
             None => {
-                let config = config_json(&table);
+                let config = effective[name].clone();
                 grouped.push((name.to_string(), vec![table], config));
             }
         }
@@ -484,15 +519,22 @@ fn recorded_tables(raw: &str) -> Result<Vec<Table>, String> {
         .flat_map(ArrayOfTables::iter)
         .cloned()
         .collect();
-    if tables.is_empty() || name_of(&tables[0]).is_none() {
+    if tables.is_empty()
+        || name_of(&tables[0]).is_none()
+        || tables
+            .iter()
+            .any(|table| name_of(table) != name_of(&tables[0]))
+    {
         return Err("Could not read imported settings".into());
     }
     Ok(tables)
 }
 
-/// The fields of a recorded document's first table.
+/// The effective fields of a recorded name, including merged disabled tools.
 pub(super) fn definition(raw: &str) -> Result<Json, String> {
-    recorded_tables(raw).map(|tables| config_json(&tables[0]))
+    let tables = recorded_tables(raw)?;
+    let doc = document(recorded_body(raw))?;
+    Ok(servers_map(&doc)?[name_of(&tables[0]).expect("validated name")].clone())
 }
 
 // Metadata stays inside the native raw record, never in the client's config.
@@ -839,7 +881,7 @@ pub(super) fn append_raw(text: Option<&str>, entries: &[String]) -> Result<Strin
         if desired.contains_key(&name) {
             continue;
         }
-        desired.insert(name, config_json(&tables[0]));
+        desired.insert(name, definition(raw)?);
         let anchor = recorded_anchor(raw);
         for table in tables {
             push_recorded(&mut doc, table, anchor.as_ref());

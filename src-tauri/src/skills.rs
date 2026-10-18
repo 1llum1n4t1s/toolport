@@ -2704,6 +2704,90 @@ fn reasonix_skill_depth(env: &Env) -> usize {
         .unwrap_or(3)
 }
 
+// Reasonix resolves a declaration against the filename before indexing or toggling.
+fn reasonix_valid_skill_name(name: &str) -> bool {
+    use unicode_normalization::UnicodeNormalization;
+    static VALID: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static IGNORABLE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let name: String = name.nfc().collect();
+    name.chars().count() <= 64
+        && VALID
+            .get_or_init(|| {
+                regex::Regex::new(r"^[\p{L}\p{N}][\p{L}\p{N}\p{M}._-]*$")
+                    .expect("valid skill pattern")
+            })
+            .is_match(&name)
+        && !IGNORABLE
+            .get_or_init(|| {
+                regex::Regex::new(r"\p{Default_Ignorable_Code_Point}")
+                    .expect("valid Unicode property")
+            })
+            .is_match(&name)
+}
+
+fn reasonix_ascii_skill_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    (1..=64).contains(&name.len())
+        && bytes.next().is_some_and(|b| b.is_ascii_alphanumeric())
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
+fn reasonix_skill_stem(found: &Found) -> &str {
+    if found.link.file_name().is_some_and(|n| n == "SKILL.md")
+        && found.link.parent() != Some(found.root_path.as_path())
+    {
+        found
+            .link
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+    } else {
+        found
+            .link
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+    }
+}
+
+fn reasonix_skill_name(found: &Found) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let stem = reasonix_skill_stem(found);
+    let text = read_text(&found.link)
+        .unwrap_or_default()
+        .replace("\r\n", "\n");
+    let declared = text
+        .trim_start_matches('\u{feff}')
+        .strip_prefix("---\n")
+        .and_then(|s| s.split_once("\n---").map(|(header, _)| header))
+        .and_then(|header| serde_yaml::from_str::<serde_yaml::Value>(header).ok())
+        .and_then(|fm| fm.get("name").and_then(|v| v.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    let name = if reasonix_valid_skill_name(&declared)
+        && (reasonix_ascii_skill_name(&declared) || !reasonix_ascii_skill_name(stem))
+    {
+        declared.as_str()
+    } else {
+        stem
+    };
+    name.nfc().collect()
+}
+
+fn reasonix_skill_name_key(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let name = name.trim();
+    if !reasonix_valid_skill_name(name) {
+        return String::new();
+    }
+    let name: String = name.nfc().collect();
+    if cfg!(windows) {
+        name.to_lowercase()
+    } else {
+        name
+    }
+}
+
 fn reasonix_skill_marker(text: &str) -> bool {
     const KEYS: &[&str] = &[
         "description",
@@ -2900,7 +2984,16 @@ fn read_disabled(switch: Switch, env: &Env) -> Disabled {
             {
                 d.off = list
                     .iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .filter_map(|x| {
+                        x.as_str().map(|name| {
+                            if switch == Switch::ReasonixConfig {
+                                reasonix_skill_name_key(name)
+                            } else {
+                                name.to_string()
+                            }
+                        })
+                    })
+                    .filter(|name| switch != Switch::ReasonixConfig || !name.is_empty())
                     .collect();
             }
         }
@@ -3249,6 +3342,11 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
         let mut seen_real: BTreeSet<String> = BTreeSet::new();
         let mut codewhale_identities = HashMap::new();
         for f in found {
+            if def.switch == Switch::ReasonixConfig
+                && !reasonix_valid_skill_name(reasonix_skill_stem(&f))
+            {
+                continue;
+            }
             let key = f.real.as_ref().unwrap_or(&f.link).display().to_string();
             if def.switch == Switch::CodewhaleState {
                 if let Some(real) = &f.real {
@@ -3363,6 +3461,9 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                     .map(|(name, _)| name.clone())
                     .unwrap_or(name);
             }
+            if def.switch == Switch::ReasonixConfig {
+                return reasonix_skill_name_key(&reasonix_skill_name(f));
+            }
             f.root_label
                 .ends_with("plugin")
                 .then(|| plugin_of(&f.root_path).map(|p| format!("{p}:{name}")))
@@ -3418,8 +3519,11 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 .flatten();
             let codewhale_identity = codewhale_identities.get(key);
             let codewhale_name = codewhale_identity.as_ref().map(|(name, _)| name.clone());
-            let switch_name = codewhale_name
+            let reasonix_name =
+                (def.switch == Switch::ReasonixConfig).then(|| reasonix_skill_name(f));
+            let switch_name = reasonix_name
                 .clone()
+                .or_else(|| codewhale_name.clone())
                 .or_else(|| nanobot_name.clone())
                 .or_else(|| {
                     (def.switch == Switch::OpenclawEntries)
@@ -3428,6 +3532,11 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 })
                 .unwrap_or_else(|| name.clone());
             let named = |set: &BTreeSet<String>| {
+                let switch_name = if def.switch == Switch::ReasonixConfig {
+                    reasonix_skill_name_key(&switch_name)
+                } else {
+                    switch_name.clone()
+                };
                 set.contains(&switch_name) || plugin_name.as_ref().is_some_and(|p| set.contains(p))
             };
             let (switched_off, by_pattern) = if def.switch == Switch::CodewhaleState {
@@ -3492,7 +3601,7 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                         by_pattern: state == State::Off && by_pattern && !path_off,
                         state,
                         via,
-                        switch_name: codewhale_name
+                        switch_name: reasonix_name.or(codewhale_name)
                             .or(nanobot_name)
                             .or_else(|| plugin_name.clone()),
                     },
@@ -4557,7 +4666,15 @@ pub fn set_state(
         Switch::GrokConfig | Switch::ReasonixConfig => {
             let (path, key) =
                 toml_list_switch(def.switch, env).ok_or_else(|| wrong_shape("skills"))?;
-            edit_toml_skills_list(agent, &path, key, writer, &skill.name, off)
+            let name = if def.switch == Switch::ReasonixConfig {
+                skill.states[agent]
+                    .switch_name
+                    .as_deref()
+                    .unwrap_or(&skill.name)
+            } else {
+                &skill.name
+            };
+            edit_toml_skills_list(agent, &path, key, writer, name, off)
         }
         Switch::OpencodePermissions => {
             let path = opencode_config_path(env);
@@ -5281,7 +5398,14 @@ fn edit_toml_skills_list(
         .get_mut(last)
         .and_then(|d| d.as_array_mut())
         .ok_or_else(|| wrong_shape(key))?;
-    list.retain(|v| v.as_str() != Some(name));
+    list.retain(|v| {
+        if agent == "reasonix" {
+            v.as_str()
+                .is_none_or(|value| reasonix_skill_name_key(value) != reasonix_skill_name_key(name))
+        } else {
+            v.as_str() != Some(name)
+        }
+    });
     if off {
         list.push(name);
     }
