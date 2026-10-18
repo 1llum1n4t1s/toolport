@@ -2880,10 +2880,10 @@ fn nanobot_lists_and_toggles_hidden_workspace_folders() {
 fn nanobot_package_frontmatter_matches_newlines_closers_and_python_strip() {
     let home = Home::new();
     let (root, marker) = nanobot_package(&home, "valid", "valid", &["valid-skill"], true);
-    let skill = root.join("skills/valid-skill/SKILL.md");
+    let skill_path = root.join("skills/valid-skill/SKILL.md");
     for newline in ["\n", "\r\n", "\r"] {
         for closer in ["--- # end", "----", "---more"] {
-            std::fs::write(&skill, format!("---{newline}name: valid-skill{newline}description: ordinary{newline}{closer}{newline}body")).unwrap();
+            std::fs::write(&skill_path, format!("---{newline}name: valid-skill{newline}description: ordinary{newline}{closer}{newline}body")).unwrap();
             std::fs::write(&marker, nanobot_plugins::activation(&root).unwrap()).unwrap();
             assert_eq!(
                 nanobot_plugins::discover(&home.root).len(),
@@ -2896,7 +2896,7 @@ fn nanobot_package_frontmatter_matches_newlines_closers_and_python_strip() {
     }
     for description in [r#""\x1c""#, r#""\x1d\x1e\x1f""#] {
         std::fs::write(
-            &skill,
+            &skill_path,
             format!("---\nname: valid-skill\ndescription: {description}\n---\n"),
         )
         .unwrap();
