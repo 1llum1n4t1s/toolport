@@ -1,4 +1,10 @@
 {
+  "Add server (Ctrl+N)": "サーバーを追加 (Ctrl+N)",
+  "Clear": "消去",
+  "Quit Toolport (Ctrl+Q)": "Toolport を終了 (Ctrl+Q)",
+  "Refresh catalog": "カタログを更新",
+  "Refresh sync status": "同期状態を更新",
+  "{value0} tokens saved": "{value0} Token 削減",
   "\nCold catalog": "\nコールドカタログ",
   "\nDispatch: {value0}": "\nディスパッチ: {value0}",
   "\nExcluded history: {value0} catalog records ({value1} with byte measurements). Session identity and repeat loads cannot be verified.": "\n除外された履歴: {value0} カタログ レコード (バイト測定値を含む {value1})。セッション ID と反復ロードは検証できません。",
@@ -1169,11 +1175,5 @@
   "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "ここでは OpenHands のスキルは読み取り専用です。インストール済みスキルの有効・無効は OpenHands で切り替えてください。",
   "nanobot skills": "nanobot のスキル",
   "Uses agents.defaults.disabledSkills in nanobot's config.json.": "nanobot の config.json にある agents.defaults.disabledSkills を使います。",
-  "From a nanobot package": "nanobot パッケージ由来",
-  "Add server (Ctrl+N)": "サーバーを追加 (Ctrl+N)",
-  "Clear": "消去",
-  "Quit Toolport (Ctrl+Q)": "Toolport を終了 (Ctrl+Q)",
-  "Refresh catalog": "カタログを更新",
-  "Refresh sync status": "同期状態を更新",
-  "{value0} tokens saved": "{value0} Token 削減"
+  "From a nanobot package": "nanobot パッケージ由来"
 }

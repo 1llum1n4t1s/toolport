@@ -1,4 +1,10 @@
 {
+  "Add server (Ctrl+N)": "添加服务器 (Ctrl+N)",
+  "Clear": "清除",
+  "Quit Toolport (Ctrl+Q)": "退出 Toolport (Ctrl+Q)",
+  "Refresh catalog": "刷新目录",
+  "Refresh sync status": "刷新同步状态",
+  "{value0} tokens saved": "已节省 {value0} 个 Token",
   "\nCold catalog": "\n冷目录",
   "\nDispatch: {value0}": "\n调度：{value0}",
   "\nExcluded history: {value0} catalog records ({value1} with byte measurements). Session identity and repeat loads cannot be verified.": "\n已排除的历史记录：{value0} 条目录记录（其中 {value1} 条有字节测量数据）。无法验证会话身份和重复加载情况。",
@@ -1169,11 +1175,5 @@
   "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "此处的 OpenHands 技能为只读。请在 OpenHands 中启用或停用已安装的技能。",
   "nanobot skills": "nanobot 技能",
   "Uses agents.defaults.disabledSkills in nanobot's config.json.": "使用 nanobot 的 config.json 中的 agents.defaults.disabledSkills。",
-  "From a nanobot package": "来自 nanobot 软件包",
-  "Add server (Ctrl+N)": "添加服务器 (Ctrl+N)",
-  "Clear": "清除",
-  "Quit Toolport (Ctrl+Q)": "退出 Toolport (Ctrl+Q)",
-  "Refresh catalog": "刷新目录",
-  "Refresh sync status": "刷新同步状态",
-  "{value0} tokens saved": "已节省 {value0} 个 Token"
+  "From a nanobot package": "来自 nanobot 软件包"
 }

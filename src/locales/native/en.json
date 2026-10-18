@@ -1,4 +1,10 @@
 {
+  "Add server (Ctrl+N)": "Add server (Ctrl+N)",
+  "Clear": "Clear",
+  "Quit Toolport (Ctrl+Q)": "Quit Toolport (Ctrl+Q)",
+  "Refresh catalog": "Refresh catalog",
+  "Refresh sync status": "Refresh sync status",
+  "{value0} tokens saved": "{value0} tokens saved",
   "\nCold catalog": "\nCold catalog",
   "\nDispatch: {value0}": "\nDispatch: {value0}",
   "\nExcluded history: {value0} catalog records ({value1} with byte measurements). Session identity and repeat loads cannot be verified.": "\nExcluded history: {value0} catalog records ({value1} with byte measurements). Session identity and repeat loads cannot be verified.",
@@ -1169,11 +1175,5 @@
   "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.",
   "nanobot skills": "nanobot skills",
   "Uses agents.defaults.disabledSkills in nanobot's config.json.": "Uses agents.defaults.disabledSkills in nanobot's config.json.",
-  "From a nanobot package": "From a nanobot package",
-  "Add server (Ctrl+N)": "Add server (Ctrl+N)",
-  "Clear": "Clear",
-  "Quit Toolport (Ctrl+Q)": "Quit Toolport (Ctrl+Q)",
-  "Refresh catalog": "Refresh catalog",
-  "Refresh sync status": "Refresh sync status",
-  "{value0} tokens saved": "{value0} tokens saved"
+  "From a nanobot package": "From a nanobot package"
 }
