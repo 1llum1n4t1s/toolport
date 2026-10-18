@@ -167,6 +167,19 @@ fn native_switches_turn_skills_off_per_client() {
     );
     home.write(".hermes/config.yaml", "skills:\n  disabled:\n    - orca\n");
     home.link(".hermes/skills/orca", real.parent().unwrap());
+    home.write(".grok/config.toml", "[skills]\ndisabled = [\"orca\"]\n");
+    home.write(
+        ".config/crush/crush.json",
+        r#"{"options": {"disabled_skills": ["orca"]}}"#,
+    );
+    home.write(
+        ".qwen/settings.json",
+        r#"{"skills": {"disabled": ["orca"]}}"#,
+    );
+    home.write(
+        ".omp/agent/config.yml",
+        "skills:\n  ignoredSkills: [orca]\n",
+    );
 
     let inv = scan(&home.env(), &all, None);
     for agent in [
@@ -176,6 +189,10 @@ fn native_switches_turn_skills_off_per_client() {
         "gemini-cli",
         "opencode",
         "hermes",
+        "grok",
+        "crush",
+        "qwen-code",
+        "omp",
     ] {
         assert_eq!(state(&inv, "orca", agent), Some(State::Off), "{agent}");
     }
@@ -314,6 +331,8 @@ fn set_state_writes_each_clients_own_setting() {
         ".hermes/config.yaml",
         "# Hermes\nskills:\n  creation_nudge_interval: 0\nmodel: x\n",
     );
+    home.write(".grok/config.toml", "# mine\nmodel = \"grok-5\"\n");
+    home.write(".omp/agent/config.yml", "# Oh My Pi\ntheme: dark\n");
     let env = home.env();
     let writer = TestWriter::default();
     let inv = scan(&env, &all, None);
@@ -325,6 +344,10 @@ fn set_state_writes_each_clients_own_setting() {
         "gemini-cli",
         "opencode",
         "hermes",
+        "grok",
+        "crush",
+        "qwen-code",
+        "omp",
     ] {
         set_state(&env, &inv, agent, &key, Wanted::Off, &writer).unwrap();
     }
@@ -336,6 +359,10 @@ fn set_state_writes_each_clients_own_setting() {
         "gemini-cli",
         "opencode",
         "hermes",
+        "grok",
+        "crush",
+        "qwen-code",
+        "omp",
     ] {
         assert_eq!(state(&after, "orca", agent), Some(State::Off), "{agent}");
     }
@@ -352,6 +379,17 @@ fn set_state_writes_each_clients_own_setting() {
         ),
         "{hermes}"
     );
+    let grok = home.read(".grok/config.toml");
+    assert!(
+        grok.starts_with("# mine\nmodel = \"grok-5\"\n") && grok.contains("disabled = [\"orca\"]"),
+        "{grok}"
+    );
+    assert!(home
+        .read(".omp/agent/config.yml")
+        .starts_with("# Oh My Pi\ntheme: dark\nskills:\n  ignoredSkills: [\"orca\"]"));
+    assert!(home
+        .read(".config/crush/crush.json")
+        .contains("disabled_skills"));
     // Codex gets the path it loads the skill through.
     assert!(home.read(".codex/config.toml").contains(
         &home
@@ -368,6 +406,10 @@ fn set_state_writes_each_clients_own_setting() {
         "gemini-cli",
         "opencode",
         "hermes",
+        "grok",
+        "crush",
+        "qwen-code",
+        "omp",
     ] {
         set_state(&env, &after, agent, &key, Wanted::On, &writer).unwrap();
     }
@@ -379,14 +421,21 @@ fn set_state_writes_each_clients_own_setting() {
         "gemini-cli",
         "opencode",
         "hermes",
+        "grok",
+        "crush",
+        "qwen-code",
+        "omp",
     ] {
         assert_eq!(state(&back, "orca", agent), Some(State::On), "{agent}");
     }
     assert!(!home.read(".codex/config.toml").contains("orca"));
+    assert!(!home.read(".grok/config.toml").contains("orca"));
+    assert!(!home.read(".omp/agent/config.yml").contains("orca"));
     // Existing files were backed up before each first change; new files were not.
     let backups = writer.backups.borrow();
     assert!(backups.iter().any(|(c, _)| c == "claude-code"));
     assert!(backups.iter().any(|(c, _)| c == "hermes"));
+    assert!(backups.iter().any(|(c, _)| c == "grok"));
 }
 
 #[test]
@@ -421,19 +470,32 @@ fn opencode_v1_permission_map_is_read_and_written_in_place() {
     assert!(opencode_denied(&v2).is_empty());
 }
 
+fn set_yaml_skills_list_disabled(text: &str, names: &[String]) -> Result<String, String> {
+    set_yaml_skills_list(text, "disabled", names)
+}
+
+#[test]
+fn yaml_list_edits_touch_only_their_own_key() {
+    let names = vec!["a".to_string()];
+    assert_eq!(
+        set_yaml_skills_list("skills:\n  disabled: [x]\n", "ignoredSkills", &names).unwrap(),
+        "skills:\n  ignoredSkills: [\"a\"]\n  disabled: [x]\n"
+    );
+}
+
 #[test]
 fn yaml_disabled_list_edits_keep_other_lines() {
     let names = vec!["a".to_string(), "b".to_string()];
     assert_eq!(
-        set_yaml_skills_disabled("", &names).unwrap(),
+        set_yaml_skills_list_disabled("", &names).unwrap(),
         "skills:\n  disabled: [\"a\", \"b\"]\n"
     );
     assert_eq!(
-        set_yaml_skills_disabled("model: x\n", &names).unwrap(),
+        set_yaml_skills_list_disabled("model: x\n", &names).unwrap(),
         "model: x\nskills:\n  disabled: [\"a\", \"b\"]\n"
     );
     assert_eq!(
-        set_yaml_skills_disabled(
+        set_yaml_skills_list_disabled(
             "skills:\n    disabled:\n    - old\n    - older\n    other: 1\nnext: 2\n",
             &names
         )
@@ -441,7 +503,7 @@ fn yaml_disabled_list_edits_keep_other_lines() {
         "skills:\n    disabled: [\"a\", \"b\"]\n    other: 1\nnext: 2\n"
     );
     assert_eq!(
-        set_yaml_skills_disabled("skills:\n  disabled: [x]\n", &[]).unwrap(),
+        set_yaml_skills_list_disabled("skills:\n  disabled: [x]\n", &[]).unwrap(),
         "skills:\n  disabled: []\n"
     );
 }
@@ -777,11 +839,11 @@ fn hermes_edits_keep_comments_and_refuse_what_they_cannot_read() {
     let names = vec!["a".to_string()];
     // A comment after the key is still the same key, not a reason to add a second one.
     assert_eq!(
-        set_yaml_skills_disabled("skills: # mine\n  other: 1\n", &names).unwrap(),
+        set_yaml_skills_list_disabled("skills: # mine\n  other: 1\n", &names).unwrap(),
         "skills: # mine\n  disabled: [\"a\"]\n  other: 1\n"
     );
     // A flow mapping on the key's line is refused.
-    assert!(set_yaml_skills_disabled("skills: {disabled: [b]}\n", &names).is_err());
+    assert!(set_yaml_skills_list_disabled("skills: {disabled: [b]}\n", &names).is_err());
 
     // A config serde_yaml can't parse keeps its list: the toggle fails instead.
     let home = Home::new();
@@ -1227,7 +1289,7 @@ fn folder_issue_fingerprints_follow_the_folders_not_the_wording() {
 fn a_clash_lists_only_the_copies_that_meet_in_one_client() {
     let home = Home::new();
     home.skill(".claude/skills/pdf", "pdf", "Mine");
-    home.skill(".claude/skills/team/pdf", "pdf", "Team");
+    home.skill(".claude/skills/synced/team/pdf", "pdf", "Team");
     // Hermes has its own lone pdf; it isn't part of Claude Code's clash, even though Hermes
     // has a clash of its own on another name.
     home.skill(".hermes/skills/productivity/pdf", "pdf", "Hermes");
@@ -1375,4 +1437,275 @@ fn opencode_v2_turn_on_counts_a_v1_blanket_deny_beside_it() {
     .unwrap();
     let after = scan(&env, &all, None);
     assert_eq!(state(&after, "x", "opencode"), Some(State::On));
+}
+
+#[test]
+fn each_client_walks_its_folders_the_way_it_really_does() {
+    let home = Home::new();
+    // Claude Code reads one level, plus claude.ai's synced buckets.
+    home.skill(".claude/skills/group/nested", "nested", "Nested");
+    home.skill(".claude/skills/synced/bucket/account", "account", "Account");
+    // Codex goes deep but skips a SKILL.md that is a link.
+    home.skill(".codex/skills/group/deep", "deep", "Deep");
+    let elsewhere = home.skill("store/filelink", "filelink", "File link");
+    std::fs::create_dir_all(home.path(".codex/skills/filelink")).unwrap();
+    home.link(".codex/skills/filelink/SKILL.md", &elsewhere);
+    // Continue skips a skill folder that is a link.
+    let shared = home.skill("store/dirlink", "dirlink", "Dir link");
+    home.link(".continue/skills/dirlink", shared.parent().unwrap());
+    home.skill(".continue/skills/own", "own", "Own");
+
+    let inv = scan(&home.env(), &all, None);
+    assert_eq!(state(&inv, "nested", "claude-code"), None);
+    assert_eq!(state(&inv, "account", "claude-code"), Some(State::On));
+    assert_eq!(state(&inv, "deep", "codex"), Some(State::On));
+    assert_eq!(state(&inv, "filelink", "codex"), None);
+    // Cursor reads Codex's folder and follows the link.
+    assert_eq!(state(&inv, "filelink", "cursor"), Some(State::On));
+    // Nobody else reads that folder, so the linked skill isn't listed at all.
+    assert!(!inv.skills.iter().any(|s| s.name == "dirlink"));
+    assert_eq!(state(&inv, "own", "continue"), Some(State::On));
+}
+
+#[test]
+fn rules_files_match_what_each_client_reads() {
+    let home = Home::new();
+    home.write(".claude/CLAUDE.md", "# Claude\n");
+    // OpenCode 2 has no CLAUDE.md fallback.
+    home.write(".config/opencode/.keep", "");
+    // Pi: the first name in its chain wins.
+    home.write(".pi/agent/AGENTS.md", "# Pi\n");
+    home.write(".pi/agent/CLAUDE.md", "# skipped\n");
+    // Gemini CLI follows context.fileName.
+    home.write(
+        ".gemini/settings.json",
+        r#"{"context": {"fileName": ["AGENTS.md", "GEMINI.md"]}}"#,
+    );
+    home.write(".gemini/AGENTS.md", "# Gemini\n");
+    // Antigravity loads a rules file only with trigger: always_on.
+    home.write(
+        ".gemini/config/rules/always.md",
+        "---\ntrigger: always_on\n---\nYes\n",
+    );
+    home.write(
+        ".gemini/config/rules/manual.md",
+        "---\ntrigger: manual\n---\nNo\n",
+    );
+    // Copilot's instructions folder.
+    home.write(".copilot/instructions/style.instructions.md", "Style\n");
+    home.write(
+        ".copilot/instructions/notes.md",
+        "Not an instructions file\n",
+    );
+    // Grok adds up its own files and the Cursor ones.
+    home.write(".grok/rules/extra.md", "Extra\n");
+    home.write(".cursor/AGENTS.md", "Cursor\n");
+
+    let inv = scan(&home.env(), &all, None);
+    let readers = |path: &str| -> Vec<String> {
+        inv.rules
+            .iter()
+            .find(|r| r.path == path)
+            .map(|r| r.agents.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    assert!(!readers("~/.claude/CLAUDE.md").contains(&"opencode".to_string()));
+    assert!(readers("~/.claude/CLAUDE.md").contains(&"grok".to_string()));
+    assert_eq!(readers("~/.pi/agent/AGENTS.md"), vec!["pi".to_string()]);
+    assert!(readers("~/.pi/agent/CLAUDE.md").is_empty());
+    assert!(readers("~/.gemini/AGENTS.md").contains(&"gemini-cli".to_string()));
+    assert!(readers("~/.gemini/config/rules/always.md").contains(&"antigravity".to_string()));
+    assert!(readers("~/.gemini/config/rules/manual.md").is_empty());
+    assert!(readers("~/.copilot/instructions/style.instructions.md")
+        .contains(&"github-copilot-cli".to_string()));
+    assert!(readers("~/.copilot/instructions/notes.md").is_empty());
+    assert!(readers("~/.grok/rules/extra.md").contains(&"grok".to_string()));
+    assert!(readers("~/.cursor/AGENTS.md").contains(&"grok".to_string()));
+}
+
+#[test]
+fn hermes_reads_the_extra_folders_its_config_lists() {
+    let home = Home::new();
+    home.skill(".agents/skills/shared", "shared", "Shared");
+    let env = home.env();
+    assert_eq!(state(&scan(&env, &all, None), "shared", "hermes"), None);
+    home.write(
+        ".hermes/config.yaml",
+        "skills:\n  external_dirs:\n    - ~/.agents/skills\n",
+    );
+    assert_eq!(
+        state(&scan(&env, &all, None), "shared", "hermes"),
+        Some(State::On)
+    );
+}
+
+#[test]
+fn auggie_command_code_and_tabnine_have_columns() {
+    let home = Home::new();
+    home.skill(".augment/skills/a", "a", "A");
+    home.skill(".commandcode/skills/c", "c", "C");
+    home.skill(".tabnine/agent/skills/t", "t", "T");
+    let inv = scan(
+        &home.env(),
+        &only(&["auggie", "command-code", "tabnine"]),
+        None,
+    );
+    assert_eq!(state(&inv, "a", "auggie"), Some(State::On));
+    assert_eq!(state(&inv, "c", "command-code"), Some(State::On));
+    assert_eq!(state(&inv, "t", "tabnine"), Some(State::On));
+}
+
+#[test]
+fn grok_edits_keep_the_skills_table_and_refuse_a_list_they_cannot_read() {
+    let home = Home::new();
+    let writer = TestWriter::default();
+    let path = home.write(
+        ".grok/config.toml",
+        "[skills]\npaths = [\"~/more\"]\ndisabled = [\"old\"]\n",
+    );
+    edit_grok("grok", &path, &writer, "new", true).unwrap();
+    let text = home.read(".grok/config.toml");
+    assert!(text.contains("paths = [\"~/more\"]"), "{text}");
+    assert!(text.contains("disabled = [\"old\", \"new\"]"), "{text}");
+    edit_grok("grok", &path, &writer, "old", false).unwrap();
+    assert!(home
+        .read(".grok/config.toml")
+        .contains("disabled = [\"new\"]"));
+
+    let inline = home.write(".grok/inline.toml", "skills = { paths = [\"~/more\"] }\n");
+    edit_grok("grok", &inline, &writer, "x", true).unwrap();
+    let text = home.read(".grok/inline.toml");
+    assert!(
+        text.contains("paths") && text.contains("disabled = [\"x\"]"),
+        "{text}"
+    );
+
+    let odd = home.write(".grok/odd.toml", "[skills]\ndisabled = \"x\"\n");
+    assert!(edit_grok("grok", &odd, &writer, "y", true).is_err());
+    assert_eq!(home.read(".grok/odd.toml"), "[skills]\ndisabled = \"x\"\n");
+}
+
+#[test]
+fn project_folders_are_walked_the_way_each_client_walks_them() {
+    let home = Home::new();
+    let project = home.path("work/app");
+    home.skill("work/app/.claude/skills/group/nested", "nested", "Nested");
+    let elsewhere = home.skill("store/linked", "linked", "Linked");
+    std::fs::create_dir_all(project.join(".agents/skills/linked")).unwrap();
+    home.link("work/app/.agents/skills/linked/SKILL.md", &elsewhere);
+    // The same name personally and in the project: Gemini CLI lets the project win.
+    home.skill(".gemini/skills/style", "style", "Personal");
+    home.skill("work/app/.gemini/skills/style", "style", "Project");
+    let inv = scan(&home.env(), &all, Some(&project));
+
+    assert_eq!(state(&inv, "nested", "claude-code"), None);
+    assert_eq!(state(&inv, "nested", "cursor"), Some(State::On));
+    assert_eq!(state(&inv, "linked", "codex"), None);
+    let winner = |agent: &str| {
+        inv.skills
+            .iter()
+            .find(|s| {
+                s.name == "style" && s.states.get(agent).is_some_and(|st| st.state == State::On)
+            })
+            .map(|s| s.description.clone())
+    };
+    assert_eq!(winner("gemini-cli").as_deref(), Some("Project"));
+}
+
+#[test]
+fn a_rules_folder_that_links_back_on_itself_is_read_once() {
+    let home = Home::new();
+    home.write(".continue/rules/style.md", "Style\n");
+    home.link(".continue/rules/again", &home.path(".continue/rules"));
+    home.link(".continue/rules/home", &home.root);
+    let inv = scan(&home.env(), &only(&["continue"]), None);
+    let continue_rules: Vec<&str> = inv
+        .rules
+        .iter()
+        .filter(|r| r.agents.contains_key("continue"))
+        .map(|r| r.path.as_str())
+        .collect();
+    assert_eq!(continue_rules, vec!["~/.continue/rules/style.md"]);
+}
+
+#[test]
+fn imports_resolve_next_to_the_link_or_its_target_per_client() {
+    let home = Home::new();
+    home.write(".agents/AGENTS.md", "@x.md\n");
+    home.write(".agents/x.md", "Next to the target\n");
+    home.write(".qwen/x.md", "Next to the link\n");
+    home.link(".qwen/QWEN.md", &home.path(".agents/AGENTS.md"));
+    home.link(".claude/CLAUDE.md", &home.path(".agents/AGENTS.md"));
+    let inv = scan(&home.env(), &only(&["claude-code", "qwen-code"]), None);
+    let readers = |path: &str| -> Vec<String> {
+        inv.rules
+            .iter()
+            .find(|r| r.path == path)
+            .map(|r| r.agents.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    assert_eq!(readers("~/.agents/x.md"), vec!["claude-code".to_string()]);
+    assert_eq!(readers("~/.qwen/x.md"), vec!["qwen-code".to_string()]);
+}
+
+#[test]
+fn goose_skips_a_hints_file_that_links_outside_its_folder() {
+    let home = Home::new();
+    home.write("store/rules.md", "Shared\n");
+    home.link(".config/goose/AGENTS.md", &home.path("store/rules.md"));
+    home.write(".config/goose/.goosehints", "Own\n");
+    let inv = scan(&home.env(), &only(&["goose"]), None);
+    assert!(inv
+        .rules
+        .iter()
+        .any(|r| r.path == "~/.config/goose/.goosehints"));
+    assert!(!inv
+        .rules
+        .iter()
+        .any(|r| r.agents.contains_key("goose") && r.path.contains("store/rules.md")));
+}
+
+#[test]
+fn gemini_reads_its_configured_file_names_in_a_project_too() {
+    let home = Home::new();
+    let project = home.path("work/app");
+    home.write(
+        ".gemini/settings.json",
+        r#"{"context": {"fileName": "AGENTS.md"}}"#,
+    );
+    home.write("work/app/AGENTS.md", "Project\n");
+    home.write("work/app/GEMINI.md", "Not read\n");
+    let inv = scan(&home.env(), &only(&["gemini-cli"]), Some(&project));
+    let gemini = |name: &str| {
+        inv.rules
+            .iter()
+            .any(|r| r.name == name && r.agents.contains_key("gemini-cli"))
+    };
+    assert!(gemini("AGENTS.md"));
+    assert!(!gemini("GEMINI.md"));
+}
+
+#[test]
+fn clients_without_a_rules_file_yet_still_offer_where_one_goes() {
+    let home = Home::new();
+    // Another client has rules, so the ones without stand out.
+    home.write(".codex/AGENTS.md", "# Codex\n");
+    let inv = scan(
+        &home.env(),
+        &only(&["codex", "grok", "pi", "antigravity"]),
+        None,
+    );
+    let locations = |id: &str| {
+        inv.agents
+            .iter()
+            .find(|a| a.id == id)
+            .map(|a| a.rule_locations.clone())
+            .unwrap_or_default()
+    };
+    assert!(locations("grok").contains(&"~/.grok/AGENTS.md".to_string()));
+    assert!(locations("pi").contains(&"~/.pi/agent/AGENTS.md".to_string()));
+    assert!(locations("antigravity").contains(&"~/.gemini/config/AGENTS.md".to_string()));
+    let missing = inv.issues.iter().find(|i| i.id == "rules-missing").unwrap();
+    assert!(missing.agents.contains(&"grok".to_string()));
+    assert!(missing.agents.contains(&"pi".to_string()));
 }

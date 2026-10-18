@@ -44,6 +44,13 @@ pub struct Env {
     pub grok: PathBuf,
     pub hermes: PathBuf,
     pub opencode: PathBuf,
+    /// `OPENCODE_CONFIG_DIR`: OpenCode reads its AGENTS.md before the global one.
+    pub opencode_extra: Option<PathBuf>,
+    /// `KILO_CONFIG_DIR`: read before Kilo's own folders.
+    pub kilo_extra: Option<PathBuf>,
+    pub qwen: PathBuf,
+    pub kimi: PathBuf,
+    pub pi: PathBuf,
     /// Every Claude Code profile folder when there is more than one (`~/.claude`, `~/.claude2`,
     /// a `CLAUDE_CONFIG_DIR`). Empty means `claude` is the only one.
     pub claude_profiles: Vec<PathBuf>,
@@ -63,6 +70,11 @@ impl Env {
             grok: home.join(".grok"),
             hermes: home.join(".hermes"),
             opencode: config.join("opencode"),
+            opencode_extra: None,
+            kilo_extra: None,
+            qwen: home.join(".qwen"),
+            kimi: home.join(".kimi-code"),
+            pi: home.join(".pi").join("agent"),
             config,
             claude_profiles: Vec::new(),
         }
@@ -98,6 +110,17 @@ impl Env {
         }
         if let Some(dir) = abs("HERMES_HOME") {
             env.hermes = dir;
+        }
+        env.opencode_extra = abs("OPENCODE_CONFIG_DIR");
+        env.kilo_extra = abs("KILO_CONFIG_DIR");
+        if let Some(dir) = abs("QWEN_HOME") {
+            env.qwen = dir;
+        }
+        if let Some(dir) = abs("KIMI_CODE_HOME") {
+            env.kimi = dir;
+        }
+        if let Some(dir) = abs("PI_CODING_AGENT_DIR") {
+            env.pi = dir;
         }
         env.claude_profiles = claude_profile_dirs(&home, &env.claude);
         Some(env)
@@ -283,6 +306,14 @@ enum Switch {
     OpencodePermissions,
     HermesConfig,
     GeminiSettings,
+    /// `[skills] disabled` in Grok's config.toml.
+    GrokConfig,
+    /// `options.disabled_skills` in Crush's crush.json.
+    CrushConfig,
+    /// `skills.disabled` in Qwen Code's settings.json.
+    QwenSettings,
+    /// `skills.ignoredSkills` in Oh My Pi's config.yml.
+    OmpConfig,
     None(&'static str),
 }
 
@@ -290,6 +321,10 @@ enum Switch {
 struct Root {
     path: PathBuf,
     recursive: bool,
+    /// Whether the client loads a skill folder that is a link (Continue skips them).
+    dir_links: bool,
+    /// Whether the client loads a SKILL.md that is itself a link (Codex skips them).
+    file_links: bool,
     label: &'static str,
 }
 
@@ -298,14 +333,27 @@ impl Root {
         Root {
             path,
             recursive: false,
+            dir_links: true,
+            file_links: true,
             label,
         }
     }
     fn deep(path: PathBuf, label: &'static str) -> Self {
         Root {
-            path,
             recursive: true,
-            label,
+            ..Root::flat(path, label)
+        }
+    }
+    fn no_file_links(self) -> Self {
+        Root {
+            file_links: false,
+            ..self
+        }
+    }
+    fn no_dir_links(self) -> Self {
+        Root {
+            dir_links: false,
+            ..self
         }
     }
 }
@@ -315,6 +363,9 @@ struct RuleSource {
     path: PathBuf,
     /// Whether the client expands `@path` import lines.
     imports: bool,
+    /// Whether imports resolve next to a linked file rather than next to what it links to
+    /// (Gemini CLI and Qwen Code; Claude Code uses the target).
+    next_to_link: bool,
     /// Only used when no earlier source in the list exists.
     fallback: bool,
 }
@@ -324,7 +375,49 @@ impl RuleSource {
         RuleSource {
             path,
             imports,
+            next_to_link: false,
             fallback: false,
+        }
+    }
+}
+
+/// How a client reads the skill folders inside a project.
+#[derive(Debug, Clone, Copy)]
+struct ProjectWalk {
+    deep: bool,
+    /// Project skills win a name clash over personal ones.
+    first: bool,
+    file_links: bool,
+    dir_links: bool,
+}
+
+impl ProjectWalk {
+    const DEEP: Self = ProjectWalk {
+        deep: true,
+        first: false,
+        file_links: true,
+        dir_links: true,
+    };
+    const FLAT: Self = ProjectWalk {
+        deep: false,
+        ..Self::DEEP
+    };
+    const fn first(self) -> Self {
+        ProjectWalk {
+            first: true,
+            ..self
+        }
+    }
+    const fn no_file_links(self) -> Self {
+        ProjectWalk {
+            file_links: false,
+            ..self
+        }
+    }
+    const fn no_dir_links(self) -> Self {
+        ProjectWalk {
+            dir_links: false,
+            ..self
         }
     }
 }
@@ -337,6 +430,7 @@ struct AgentDef {
     switch: Switch,
     roots: fn(&Env) -> Vec<Root>,
     project_roots: &'static [&'static str],
+    project_walk: ProjectWalk,
     rules: fn(&Env) -> Vec<RuleSource>,
     project_rules: &'static [&'static str],
     /// Shown when the client keeps rules somewhere Toolport cannot read (app settings, cloud).
@@ -427,6 +521,193 @@ fn copilot_builtin_root(env: &Env) -> Option<PathBuf> {
 }
 
 const AGENTS_MD: &[&str] = &["AGENTS.md"];
+const AGENTS_SKILLS: &[&str] = &[".agents/skills"];
+/// For clients with no per-skill off switch at all.
+const NO_SWITCH: &str = msg("This client has no per-skill switch.");
+
+/// `files` as rules sources that each load.
+fn sources(files: Vec<PathBuf>, imports: bool) -> Vec<RuleSource> {
+    files
+        .into_iter()
+        .map(|p| RuleSource::file(p, imports))
+        .collect()
+}
+
+/// A first-found-wins chain: only the first of `files` that exists loads. Put a chain before
+/// any rules that always load, since a later fallback is skipped once anything loaded.
+fn first_of(files: Vec<PathBuf>, imports: bool) -> Vec<RuleSource> {
+    files
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| RuleSource {
+            fallback: i > 0,
+            ..RuleSource::file(p, imports)
+        })
+        .collect()
+}
+
+/// The files in `dir` with one of `names`, matched by the name on disk so a case-insensitive
+/// disk doesn't list one file twice.
+fn named_files(dir: &Path, names: &[&str]) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_str().is_some_and(|n| names.contains(&n)))
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .collect();
+    files.sort();
+    files
+}
+
+/// `named_files`, or `fallback` when none exists yet, so the client still has a place to
+/// create its rules file.
+fn named_or(dir: &Path, names: &[&str], fallback: &str) -> Vec<PathBuf> {
+    let files = named_files(dir, names);
+    if files.is_empty() {
+        vec![dir.join(fallback)]
+    } else {
+        files
+    }
+}
+
+/// Markdown files in `dir` and the folders under it. Hidden folders are skipped, each real
+/// folder is read once, and the walk stops after `MAX_ENTRIES` entries, so a link to the home
+/// folder or a loop can't stall the page.
+fn md_files_deep(dir: &Path) -> Vec<PathBuf> {
+    fn walk(
+        dir: &Path,
+        depth: usize,
+        seen: &mut BTreeSet<PathBuf>,
+        budget: &mut usize,
+        out: &mut Vec<PathBuf>,
+    ) {
+        if *budget == 0 || !canon(dir).is_ok_and(|real| seen.insert(real)) {
+            return;
+        }
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        entries.sort();
+        entries.truncate(*budget);
+        *budget -= entries.len();
+        out.extend(md_files(dir));
+        if depth + 1 >= MAX_DEPTH {
+            return;
+        }
+        for sub in entries {
+            let hidden = sub
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with('.'));
+            if !hidden && sub.is_dir() {
+                walk(&sub, depth + 1, seen, budget, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut budget = MAX_ENTRIES;
+    walk(dir, 0, &mut BTreeSet::new(), &mut budget, &mut out);
+    out
+}
+
+/// Claude Code reads its skills folder one level deep, plus each `synced/<bucket>` folder that
+/// claude.ai account skills arrive in.
+fn claude_skill_roots(env: &Env) -> Vec<Root> {
+    let skills = env.claude.join("skills");
+    let mut roots = vec![Root::flat(skills.clone(), msg("Claude Code skills"))];
+    let mut buckets: Vec<PathBuf> = std::fs::read_dir(skills.join("synced"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    buckets.sort();
+    roots.extend(
+        buckets
+            .into_iter()
+            .map(|b| Root::flat(b, msg("Claude Code skills"))),
+    );
+    roots
+}
+
+/// The rules file names Gemini CLI reads, in `~/.gemini` and in a project: `context.fileName`
+/// in its settings, one name or a list, `GEMINI.md` by default.
+fn gemini_context_names(env: &Env) -> Vec<String> {
+    let names: Vec<String> = match read_json(&gemini_settings_path(env))
+        .and_then(|v| v.get("context")?.get("fileName").cloned())
+    {
+        Some(serde_json::Value::String(name)) => vec![name],
+        Some(serde_json::Value::Array(list)) => list
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    };
+    // A bare file name only; a path here would point outside the folder.
+    let names: Vec<String> = names
+        .into_iter()
+        .filter(|n| !n.is_empty() && !n.contains(['/', '\\']))
+        .collect();
+    if names.is_empty() {
+        vec!["GEMINI.md".to_string()]
+    } else {
+        names
+    }
+}
+
+/// Rules files whose imports resolve next to the file as named, even when it is a link.
+fn next_to_link(files: Vec<PathBuf>) -> Vec<RuleSource> {
+    files
+        .into_iter()
+        .map(|p| RuleSource {
+            next_to_link: true,
+            ..RuleSource::file(p, true)
+        })
+        .collect()
+}
+
+/// Folders listed under `skills.external_dirs` in Hermes's config.yaml. Hermes reads
+/// `~/.agents/skills` only when it is listed here.
+fn hermes_external_roots(env: &Env) -> Vec<Root> {
+    read_yaml(&hermes_config_path(env))
+        .as_ref()
+        .and_then(|v| v.get("skills"))
+        .and_then(|s| s.get("external_dirs"))
+        .and_then(|l| l.as_sequence())
+        .map(|list| {
+            list.iter()
+                .filter_map(|x| x.as_str())
+                .map(|dir| expand(env, dir))
+                .filter(|dir| dir.is_absolute())
+                .map(|dir| Root::deep(dir, msg("Hermes external folder")))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Antigravity loads a file from its rules folder only when its front matter says
+/// `trigger: always_on`; the others load on request.
+fn always_on_rule(path: &Path) -> bool {
+    let Some(text) = read_text(path) else {
+        return false;
+    };
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return false;
+    }
+    lines
+        .take_while(|l| l.trim() != "---")
+        .filter_map(|l| l.split_once(':'))
+        .any(|(key, value)| {
+            key.trim() == "trigger" && value.trim().trim_matches(['"', '\'']) == "always_on"
+        })
+}
 
 fn agent_defs() -> Vec<AgentDef> {
     vec![
@@ -437,7 +718,7 @@ fn agent_defs() -> Vec<AgentDef> {
             dedup: Dedup::NameFirstWins,
             switch: Switch::ClaudeOverrides,
             roots: |env| {
-                let mut roots = vec![Root::deep(env.claude.join("skills"), msg("Claude Code skills"))];
+                let mut roots = claude_skill_roots(env);
                 roots.extend(plugin_skill_roots(
                     &env.claude.join("plugins").join("cache"),
                     &claude_enabled_plugins(env),
@@ -446,12 +727,13 @@ fn agent_defs() -> Vec<AgentDef> {
                 roots
             },
             project_roots: &[".claude/skills"],
+            project_walk: ProjectWalk::FLAT,
             rules: |env| {
                 let mut rules = vec![RuleSource::file(env.claude.join("CLAUDE.md"), true)];
-                rules.extend(md_files(&env.claude.join("rules")).into_iter().map(|p| RuleSource::file(p, true)));
+                rules.extend(sources(md_files_deep(&env.claude.join("rules")), true));
                 rules
             },
-            project_rules: &["CLAUDE.md", "CLAUDE.local.md"],
+            project_rules: &["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"],
             rules_note: None,
         },
         AgentDef {
@@ -460,10 +742,12 @@ fn agent_defs() -> Vec<AgentDef> {
             verified: true,
             dedup: Dedup::NameFirstWins,
             switch: Switch::CodexConfig,
+            // Codex walks its folders six levels deep and skips a SKILL.md that is a link, so a
+            // skill shared into it has to be a linked folder.
             roots: |env| {
                 let mut roots = vec![
-                    Root::flat(env.codex.join("skills"), msg("Codex skills")),
-                    Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")),
+                    Root::deep(env.codex.join("skills"), msg("Codex skills")).no_file_links(),
+                    Root::deep(env.agents_skills(), msg("shared ~/.agents/skills")).no_file_links(),
                     Root::flat(env.codex.join("skills").join(".system"), msg("Codex built-in")),
                 ];
                 roots.extend(plugin_skill_roots(
@@ -474,12 +758,8 @@ fn agent_defs() -> Vec<AgentDef> {
                 roots
             },
             project_roots: &[".agents/skills", ".codex/skills"],
-            rules: |env| {
-                vec![
-                    RuleSource::file(env.codex.join("AGENTS.override.md"), false),
-                    RuleSource { fallback: true, ..RuleSource::file(env.codex.join("AGENTS.md"), false) },
-                ]
-            },
+            project_walk: ProjectWalk::DEEP.no_file_links(),
+            rules: |env| first_of(vec![env.codex.join("AGENTS.override.md"), env.codex.join("AGENTS.md")], false),
             project_rules: AGENTS_MD,
             rules_note: None,
         },
@@ -500,6 +780,7 @@ fn agent_defs() -> Vec<AgentDef> {
                 ]
             },
             project_roots: &[".cursor/skills", ".claude/skills", ".codex/skills", ".grok/skills", ".agents/skills"],
+            project_walk: ProjectWalk::DEEP,
             rules: no_rules,
             project_rules: &["AGENTS.md", "CLAUDE.md", ".cursorrules"],
             rules_note: Some(msg("Cursor keeps your user rules in its app settings, not in a file.")),
@@ -512,8 +793,8 @@ fn agent_defs() -> Vec<AgentDef> {
             switch: Switch::CopilotSettings,
             roots: |env| {
                 let mut roots = vec![
-                    Root::flat(env.copilot.join("skills"), msg("Copilot skills")),
-                    Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")),
+                    Root::deep(env.copilot.join("skills"), msg("Copilot skills")),
+                    Root::deep(env.agents_skills(), msg("shared ~/.agents/skills")),
                 ];
                 if let Some(dir) = copilot_builtin_root(env) {
                     roots.push(Root::flat(dir, msg("Copilot built-in")));
@@ -521,7 +802,12 @@ fn agent_defs() -> Vec<AgentDef> {
                 roots
             },
             project_roots: &[".github/skills", ".agents/skills", ".claude/skills"],
-            rules: |env| vec![RuleSource::file(env.copilot.join("copilot-instructions.md"), false)],
+            project_walk: ProjectWalk::DEEP,
+            rules: |env| {
+                let mut rules = vec![RuleSource::file(env.copilot.join("copilot-instructions.md"), false)];
+                rules.extend(sources(copilot_instruction_files(&env.copilot.join("instructions")), false));
+                rules
+            },
             project_rules: &["AGENTS.md", "CLAUDE.md", ".github/copilot-instructions.md"],
             rules_note: None,
         },
@@ -531,22 +817,26 @@ fn agent_defs() -> Vec<AgentDef> {
             verified: true,
             dedup: Dedup::NameFirstWins,
             switch: Switch::OpencodePermissions,
+            // Of the folders it shares with other clients, ~/.agents beats ~/.claude.
             roots: |env| {
-                vec![
-                    Root::deep(env.opencode.join("skills"), msg("OpenCode skills")),
-                    Root::deep(env.opencode.join("skill"), msg("OpenCode skills")),
-                    Root::deep(env.claude_compat.join("skills"), msg("Claude Code folder")),
-                    Root::deep(env.agents_skills(), msg("shared ~/.agents/skills")),
-                ]
+                let mut roots = Vec::new();
+                for dir in env.opencode_extra.iter().chain([&env.opencode]) {
+                    roots.push(Root::deep(dir.join("skills"), msg("OpenCode skills")));
+                    roots.push(Root::deep(dir.join("skill"), msg("OpenCode skills")));
+                }
+                roots.push(Root::deep(env.agents_skills(), msg("shared ~/.agents/skills")));
+                roots.push(Root::deep(env.claude_compat.join("skills"), msg("Claude Code folder")));
+                roots
             },
-            project_roots: &[".opencode/skills", ".claude/skills", ".agents/skills"],
+            project_roots: &[".opencode/skills", ".agents/skills", ".claude/skills"],
+            project_walk: ProjectWalk::DEEP,
+            // OpenCode 2 reads only its own AGENTS.md: no CLAUDE.md, no ~/.agents/AGENTS.md.
             rules: |env| {
-                vec![
-                    RuleSource::file(env.opencode.join("AGENTS.md"), false),
-                    RuleSource { fallback: true, ..RuleSource::file(env.claude_compat.join("CLAUDE.md"), false) },
-                ]
+                let mut files: Vec<PathBuf> = env.opencode_extra.iter().map(|d| d.join("AGENTS.md")).collect();
+                files.push(env.opencode.join("AGENTS.md"));
+                first_of(files, false)
             },
-            project_rules: &["AGENTS.md", "CLAUDE.md"],
+            project_rules: AGENTS_MD,
             rules_note: None,
         },
         AgentDef {
@@ -554,22 +844,31 @@ fn agent_defs() -> Vec<AgentDef> {
             name: "Grok",
             verified: true,
             dedup: Dedup::NameFirstWins,
-            switch: Switch::None(msg("Turn skills off with /skills inside Grok. Toolport can't change that setting yet.")),
+            switch: Switch::GrokConfig,
             roots: |env| {
                 vec![
                     Root::deep(env.grok.join("skills"), msg("Grok skills")),
+                    Root::deep(env.grok.join("commands"), msg("Grok commands")),
                     Root::deep(env.agents_skills(), msg("shared ~/.agents/skills")),
                     // `grok inspect` shows bundled skills beating same-named Claude ones.
                     Root::flat(env.grok.join("bundled").join("skills"), msg("Grok built-in")),
                     Root::deep(env.claude_compat.join("skills"), msg("Claude Code folder")),
+                    Root::deep(env.home.join(".cursor").join("skills"), msg("Cursor folder")),
                 ]
             },
-            project_roots: &[".grok/skills", ".claude/skills", ".cursor/skills"],
+            project_roots: &[".grok/skills", ".agents/skills", ".claude/skills", ".cursor/skills"],
+            project_walk: ProjectWalk::DEEP,
+            // Every one of these loads; Grok adds them up.
             rules: |env| {
-                vec![
-                    RuleSource::file(env.grok.join("AGENTS.md"), false),
-                    RuleSource::file(env.claude_compat.join("CLAUDE.md"), false),
-                ]
+                const NAMES: &[&str] = &["Agents.md", "Claude.md", "CLAUDE.md", "CLAUDE.local.md", "AGENT.md", "AGENTS.md"];
+                // Grok's own AGENTS.md is the place to start one when it has none.
+                let mut files = named_or(&env.grok, NAMES, "AGENTS.md");
+                files.extend(md_files(&env.grok.join("rules")));
+                for dir in [env.claude_compat.clone(), env.home.join(".cursor")] {
+                    files.extend(named_files(&dir, NAMES));
+                    files.extend(md_files(&dir.join("rules")));
+                }
+                sources(files, false)
             },
             project_rules: &["AGENTS.md", "CLAUDE.md"],
             rules_note: None,
@@ -580,11 +879,16 @@ fn agent_defs() -> Vec<AgentDef> {
             verified: true,
             dedup: Dedup::NameFirstWins,
             switch: Switch::HermesConfig,
-            roots: |env| vec![Root::deep(env.hermes.join("skills"), msg("Hermes skills"))],
+            roots: |env| {
+                let mut roots = vec![Root::deep(env.hermes.join("skills"), msg("Hermes skills"))];
+                roots.extend(hermes_external_roots(env));
+                roots
+            },
             project_roots: &[".hermes/skills", ".agents/skills"],
+            project_walk: ProjectWalk::DEEP.first(),
             rules: |env| vec![RuleSource::file(env.hermes.join("SOUL.md"), false)],
             project_rules: &[],
-            rules_note: None,
+            rules_note: Some(msg("Hermes's SOUL.md is its persona file, so keep your shared rules out of it.")),
         },
         AgentDef {
             id: "gemini-cli",
@@ -599,32 +903,402 @@ fn agent_defs() -> Vec<AgentDef> {
                 ]
             },
             project_roots: &[".agents/skills", ".gemini/skills"],
-            rules: |env| vec![RuleSource::file(env.gemini.join("GEMINI.md"), true)],
+            project_walk: ProjectWalk::FLAT.first(),
+            rules: |env| next_to_link(gemini_context_names(env).iter().map(|n| env.gemini.join(n)).collect()),
             project_rules: &["GEMINI.md"],
             rules_note: None,
         },
-        docs_agent("antigravity", "Antigravity", |env| vec![Root::flat(env.gemini.join("antigravity").join("skills"), msg("Antigravity skills"))], |env| vec![RuleSource::file(env.gemini.join("GEMINI.md"), true)], &["GEMINI.md", "AGENTS.md"]),
-        docs_agent("vscode", "VS Code", |env| vec![Root::flat(env.copilot.join("skills"), msg("Copilot skills")), Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")), Root::flat(env.claude_compat.join("skills"), msg("Claude Code folder"))], |env| md_files(&env.claude_compat.join("rules")).into_iter().map(|p| RuleSource::file(p, false)).collect(), &["AGENTS.md", ".github/copilot-instructions.md"]),
-        docs_agent("amp", "Amp", |env| vec![Root::flat(env.config.join("agents").join("skills"), msg("Amp skills"))], |env| vec![RuleSource::file(env.config.join("amp").join("AGENTS.md"), false)], AGENTS_MD),
-        docs_agent("cline", "Cline", |env| vec![Root::flat(env.agents_skills(), msg("shared ~/.agents/skills"))], |env| md_files(&env.home.join("Documents").join("Cline").join("Rules")).into_iter().map(|p| RuleSource::file(p, false)).collect(), &[".clinerules", "AGENTS.md"]),
-        docs_agent("continue", "Continue", |env| vec![Root::flat(env.home.join(".continue").join("skills"), msg("Continue skills"))], no_rules, AGENTS_MD),
-        docs_agent("crush", "Crush", |env| vec![Root::flat(env.config.join("crush").join("skills"), msg("Crush skills"))], no_rules, &["AGENTS.md", "CRUSH.md"]),
-        docs_agent("devin-cli", "Devin CLI", |env| vec![Root::flat(env.config.join("devin").join("skills"), msg("Devin skills"))], |env| vec![RuleSource::file(env.config.join("devin").join("AGENTS.md"), false)], AGENTS_MD),
-        docs_agent("droid", "Factory Droid", |env| vec![Root::flat(env.home.join(".factory").join("skills"), msg("Droid skills"))], |env| vec![RuleSource::file(env.home.join(".factory").join("AGENTS.md"), false)], AGENTS_MD),
-        docs_agent("goose", "Goose", |env| vec![Root::flat(env.config.join("goose").join("skills"), msg("Goose skills"))], |env| vec![RuleSource::file(env.config.join("goose").join(".goosehints"), false)], &[".goosehints", "AGENTS.md"]),
-        docs_agent("junie", "Junie", |env| vec![Root::flat(env.home.join(".junie").join("skills"), msg("Junie skills"))], no_rules, &[".junie/guidelines.md", "AGENTS.md"]),
-        docs_agent("kilo-code", "Kilo Code", |env| vec![Root::flat(env.home.join(".kilo").join("skills"), msg("Kilo skills"))], no_rules, AGENTS_MD),
-        docs_agent("kimi-code", "Kimi Code", |env| vec![Root::flat(env.agents_skills(), msg("shared ~/.agents/skills"))], no_rules, AGENTS_MD),
-        docs_agent("kiro", "Kiro", |env| vec![Root::flat(env.home.join(".kiro").join("skills"), msg("Kiro skills"))], |env| md_files(&env.home.join(".kiro").join("steering")).into_iter().map(|p| RuleSource::file(p, false)).collect(), AGENTS_MD),
-        docs_agent("pi", "Pi", |env| vec![Root::flat(env.home.join(".pi").join("agent").join("skills"), msg("Pi skills")), Root::flat(env.agents_skills(), msg("shared ~/.agents/skills"))], |env| vec![RuleSource::file(env.home.join(".pi").join("agent").join("AGENTS.md"), false)], AGENTS_MD),
-        docs_agent("omp", "Oh My Pi", |env| vec![Root::flat(env.home.join(".omp").join("agent").join("skills"), msg("Oh My Pi skills")), Root::flat(env.agents_skills(), msg("shared ~/.agents/skills"))], |env| vec![RuleSource::file(env.home.join(".omp").join("agent").join("AGENTS.md"), false)], AGENTS_MD),
-        docs_agent("qwen-code", "Qwen Code", |env| vec![Root::flat(env.home.join(".qwen").join("skills"), msg("Qwen skills"))], |env| vec![RuleSource::file(env.home.join(".qwen").join("QWEN.md"), false)], &["QWEN.md", "AGENTS.md"]),
-        docs_agent("roo-code", "Roo Code", |env| vec![Root::flat(env.home.join(".roo").join("skills"), msg("Roo skills"))], |env| md_files(&env.home.join(".roo").join("rules")).into_iter().map(|p| RuleSource::file(p, false)).collect(), AGENTS_MD),
-        docs_agent("warp", "Warp", |env| vec![Root::flat(env.agents_skills(), msg("shared ~/.agents/skills"))], no_rules, &["AGENTS.md", "WARP.md"]),
-        docs_agent("windsurf", "Devin Desktop", |env| vec![Root::flat(env.home.join(".codeium").join("windsurf").join("skills"), msg("Windsurf skills"))], |env| vec![RuleSource::file(env.home.join(".codeium").join("windsurf").join("memories").join("global_rules.md"), false)], AGENTS_MD),
-        docs_agent("zcode", "ZCode", |env| vec![Root::flat(env.home.join(".zcode").join("skills"), msg("ZCode skills"))], no_rules, AGENTS_MD),
-        docs_agent("zed", "Zed", |env| vec![Root::flat(env.agents_skills(), msg("shared ~/.agents/skills"))], |env| vec![RuleSource::file(env.config.join("zed").join("AGENTS.md"), false)], AGENTS_MD),
+        docs_agent(
+            "antigravity",
+            "Antigravity",
+            // Antigravity keeps ~/.gemini even when GEMINI_CLI_HOME moves Gemini CLI.
+            |env| vec![Root::flat(env.home.join(".gemini").join("config").join("skills"), msg("Antigravity skills"))],
+            AGENTS_SKILLS,
+            |env| {
+                let gemini = env.home.join(".gemini");
+                let config = gemini.join("config");
+                let mut files = named_files(&gemini, &["GEMINI.md", "AGENTS.md"]);
+                files.extend(named_or(&config, &["GEMINI.md", "AGENTS.md"], "AGENTS.md"));
+                files.extend(md_files(&config.join("rules")).into_iter().filter(|p| always_on_rule(p)));
+                sources(files, false)
+            },
+            &["GEMINI.md", "AGENTS.md"],
+        )
+        .project_walk(ProjectWalk::FLAT)
+        .checked(NO_SWITCH),
+        docs_agent(
+            "vscode",
+            "VS Code",
+            |env| {
+                vec![
+                    Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")),
+                    Root::flat(env.copilot.join("skills"), msg("Copilot skills")),
+                    Root::flat(env.claude_compat.join("skills"), msg("Claude Code folder")),
+                ]
+            },
+            &[".agents/skills", ".github/skills", ".claude/skills"],
+            |env| {
+                let mut files = copilot_instruction_files(&env.copilot.join("instructions"));
+                files.extend(md_files(&env.claude_compat.join("rules")));
+                sources(files, false)
+            },
+            &["AGENTS.md", ".github/copilot-instructions.md"],
+        ),
+        docs_agent(
+            "amp",
+            "Amp",
+            |env| {
+                vec![
+                    Root::deep(env.config.join("agents").join("skills"), msg("Amp skills")),
+                    Root::deep(env.agents_skills(), msg("shared ~/.agents/skills")),
+                    Root::deep(env.config.join("amp").join("skills"), msg("Amp skills")),
+                    Root::deep(env.claude_compat.join("skills"), msg("Claude Code folder")),
+                ]
+            },
+            &[".agents/skills", ".claude/skills"],
+            |env| {
+                let amp = env.config.join("amp");
+                let mut rules = first_of(vec![amp.join("AGENTS.md"), amp.join("AGENT.md"), amp.join("CLAUDE.md")], true);
+                rules.push(RuleSource::file(env.config.join("AGENTS.md"), true));
+                rules
+            },
+            AGENTS_MD,
+        )
+        .switch(Switch::None(NO_SWITCH)),
+        docs_agent(
+            "cline",
+            "Cline",
+            |env| {
+                vec![
+                    Root::flat(env.home.join(".cline").join("skills"), msg("Cline skills")),
+                    Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")),
+                ]
+            },
+            AGENTS_SKILLS,
+            |env| {
+                let mut files = vec![env.home.join(".agents").join("AGENTS.md")];
+                files.extend(md_files(&env.home.join(".cline").join("rules")));
+                files.extend(md_files(&env.home.join("Cline").join("Rules")));
+                files.extend(md_files(&env.home.join("Documents").join("Cline").join("Rules")));
+                sources(files, false)
+            },
+            &[".clinerules", "AGENTS.md"],
+        )
+        .project_walk(ProjectWalk::FLAT)
+        .checked(msg("Cline keeps its skill switches in VS Code's own storage, which Toolport doesn't change.")),
+        docs_agent(
+            "continue",
+            "Continue",
+            // Continue skips a skill folder that is a link.
+            |env| vec![Root::flat(env.home.join(".continue").join("skills"), msg("Continue skills")).no_dir_links()],
+            &[".continue/skills", ".claude/skills"],
+            |env| sources(md_files_deep(&env.home.join(".continue").join("rules")), false),
+            AGENTS_MD,
+        )
+        .project_walk(ProjectWalk::FLAT.no_dir_links().first())
+        .checked(NO_SWITCH),
+        // Crush lets a later folder win a name clash, so the list runs from last to first.
+        docs_agent(
+            "crush",
+            "Crush",
+            |env| {
+                vec![
+                    Root::deep(env.claude_compat.join("skills"), msg("Claude Code folder")),
+                    Root::deep(env.agents_skills(), msg("shared ~/.agents/skills")),
+                    Root::deep(env.config.join("agents").join("skills"), msg("Shared skills folder")),
+                    Root::deep(env.config.join("crush").join("skills"), msg("Crush skills")),
+                ]
+            },
+            AGENTS_SKILLS,
+            |env| sources(vec![env.config.join("crush").join("CRUSH.md"), env.config.join("AGENTS.md")], false),
+            &["AGENTS.md", "CRUSH.md"],
+        )
+        .checked(NO_SWITCH)
+        .switch(Switch::CrushConfig),
+        docs_agent(
+            "devin-cli",
+            "Devin CLI",
+            |env| {
+                vec![
+                    Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")),
+                    Root::flat(env.config.join("devin").join("skills"), msg("Devin skills")),
+                    Root::flat(env.home.join(".codeium").join("windsurf").join("skills"), msg("Windsurf skills")),
+                ]
+            },
+            AGENTS_SKILLS,
+            |env| {
+                let devin = env.config.join("devin");
+                let mut rules = first_of(vec![devin.join("AGENTS.md"), devin.join("AGENT.md")], false);
+                rules.push(RuleSource::file(env.claude_compat.join("CLAUDE.md"), false));
+                rules.extend(sources(md_files(&env.home.join(".devin").join("rules")), false));
+                rules.push(RuleSource::file(env.home.join(".devin").join("global_rules.md"), false));
+                rules
+            },
+            AGENTS_MD,
+        )
+        .switch(Switch::None(NO_SWITCH)),
+        docs_agent(
+            "droid",
+            "Factory Droid",
+            |env| {
+                vec![
+                    Root::deep(env.home.join(".factory").join("skills"), msg("Droid skills")),
+                    Root::deep(env.agents_skills(), msg("shared ~/.agents/skills")),
+                    Root::deep(env.home.join(".agent").join("skills"), msg("Shared skills folder")),
+                ]
+            },
+            &[".factory/skills", ".agents/skills"],
+            |env| vec![RuleSource::file(env.home.join(".factory").join("AGENTS.md"), false)],
+            AGENTS_MD,
+        )
+        .project_walk(ProjectWalk::DEEP.first()),
+        docs_agent(
+            "goose",
+            "Goose",
+            |env| {
+                vec![
+                    Root::deep(env.config.join("goose").join("skills"), msg("Goose skills")),
+                    Root::deep(env.agents_skills(), msg("shared ~/.agents/skills")),
+                    Root::deep(env.claude_compat.join("skills"), msg("Claude Code folder")),
+                ]
+            },
+            AGENTS_SKILLS,
+            // Goose refuses a hints file in its folder that links outside that folder.
+            |env| {
+                let goose = env.config.join("goose");
+                let inside = |p: &PathBuf| !is_link(p) || canon(p).is_ok_and(|real| canon(&goose).is_ok_and(|g| real.starts_with(g)));
+                let mut files: Vec<PathBuf> = [goose.join(".goosehints"), goose.join("AGENTS.md")].into_iter().filter(inside).collect();
+                files.push(env.home.join(".agents").join("AGENTS.md"));
+                sources(files, true)
+            },
+            &[".goosehints", "AGENTS.md"],
+        )
+        .checked(NO_SWITCH),
+        docs_agent(
+            "junie",
+            "Junie",
+            |env| {
+                vec![
+                    Root::flat(env.home.join(".junie").join("skills"), msg("Junie skills")),
+                    Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")),
+                ]
+            },
+            AGENTS_SKILLS,
+            |env| vec![RuleSource::file(env.home.join(".junie").join("AGENTS.md"), false)],
+            &[".junie/guidelines.md", "AGENTS.md"],
+        ),
+        docs_agent(
+            "kilo-code",
+            "Kilo Code",
+            |env| {
+                let mut roots = Vec::new();
+                let dirs = env.kilo_extra.iter().cloned().chain([env.config.join("kilo"), env.home.join(".kilocode"), env.home.join(".kilo")]);
+                for dir in dirs {
+                    roots.push(Root::deep(dir.join("skills"), msg("Kilo skills")));
+                    roots.push(Root::deep(dir.join("skill"), msg("Kilo skills")));
+                }
+                // Kilo uses OpenCode's loader, where ~/.agents beats ~/.claude.
+                roots.push(Root::deep(env.agents_skills(), msg("shared ~/.agents/skills")));
+                roots.push(Root::deep(env.claude_compat.join("skills"), msg("Claude Code folder")));
+                roots
+            },
+            &[".kilocode/skills", ".kilo/skills", ".claude/skills", ".agents/skills"],
+            |env| {
+                let mut files: Vec<PathBuf> = env.kilo_extra.iter().map(|d| d.join("AGENTS.md")).collect();
+                files.extend([env.config.join("kilo").join("AGENTS.md"), env.claude_compat.join("CLAUDE.md")]);
+                first_of(files, false)
+            },
+            AGENTS_MD,
+        )
+        .checked(msg("Kilo turns skills off with a permission rule. Toolport can't change that yet.")),
+        docs_agent(
+            "kimi-code",
+            "Kimi Code",
+            |env| {
+                vec![
+                    Root::deep(env.kimi.join("skills"), msg("Kimi Code skills")),
+                    Root::deep(env.agents_skills(), msg("shared ~/.agents/skills")),
+                ]
+            },
+            &[".kimi-code/skills", ".agents/skills"],
+            |env| vec![RuleSource::file(env.kimi.join("AGENTS.md"), false)],
+            AGENTS_MD,
+        )
+        .checked(NO_SWITCH),
+        docs_agent(
+            "kiro",
+            "Kiro",
+            |env| vec![Root::flat(env.home.join(".kiro").join("skills"), msg("Kiro skills"))],
+            &[".kiro/skills"],
+            |env| sources(md_files(&env.home.join(".kiro").join("steering")), false),
+            AGENTS_MD,
+        )
+        .project_walk(ProjectWalk::FLAT.first()),
+        docs_agent(
+            "pi",
+            "Pi",
+            |env| {
+                vec![
+                    Root::deep(env.pi.join("skills"), msg("Pi skills")),
+                    Root::deep(env.agents_skills(), msg("shared ~/.agents/skills")),
+                ]
+            },
+            AGENTS_SKILLS,
+            |env| {
+                let names = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+                let found: Vec<PathBuf> = names.iter().flat_map(|n| named_files(&env.pi, &[n])).collect();
+                let files = if found.is_empty() { vec![env.pi.join("AGENTS.md")] } else { found };
+                first_of(files, false)
+            },
+            AGENTS_MD,
+        )
+        .checked(msg("Pi turns skills off with a -path entry in its settings.json. Toolport can't change that yet.")),
+        docs_agent(
+            "omp",
+            "Oh My Pi",
+            |env| {
+                let agent = env.home.join(".omp").join("agent");
+                vec![
+                    Root::flat(agent.join("skills"), msg("Oh My Pi skills")),
+                    Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")),
+                ]
+            },
+            AGENTS_SKILLS,
+            |env| vec![RuleSource::file(env.home.join(".omp").join("agent").join("AGENTS.md"), false)],
+            AGENTS_MD,
+        )
+        .project_walk(ProjectWalk::FLAT)
+        .checked(NO_SWITCH)
+        .switch(Switch::OmpConfig),
+        docs_agent(
+            "qwen-code",
+            "Qwen Code",
+            |env| {
+                vec![
+                    Root::flat(env.qwen.join("skills"), msg("Qwen skills")),
+                    Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")),
+                ]
+            },
+            AGENTS_SKILLS,
+            |env| next_to_link(vec![env.qwen.join("QWEN.md"), env.qwen.join("AGENTS.md")]),
+            &["QWEN.md", "AGENTS.md"],
+        )
+        .project_walk(ProjectWalk::FLAT)
+        .checked(NO_SWITCH)
+        .switch(Switch::QwenSettings),
+        docs_agent(
+            "roo-code",
+            "Roo Code",
+            |env| {
+                vec![
+                    Root::flat(env.home.join(".roo").join("skills"), msg("Roo skills")),
+                    Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")),
+                ]
+            },
+            &[".roo/skills", ".agents/skills"],
+            |env| sources(md_files(&env.home.join(".roo").join("rules")), false),
+            AGENTS_MD,
+        )
+        .project_walk(ProjectWalk::FLAT)
+        .switch(Switch::None(NO_SWITCH)),
+        docs_agent(
+            "warp",
+            "Warp",
+            |env| {
+                let mut roots = vec![
+                    Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")),
+                    Root::flat(env.home.join(".warp").join("skills"), msg("Warp skills")),
+                ];
+                for dir in [".claude", ".codex", ".cursor", ".gemini", ".copilot", ".factory", ".github", ".opencode", ".kiro"] {
+                    roots.push(Root::flat(env.home.join(dir).join("skills"), msg("Shared skills folder")));
+                }
+                roots
+            },
+            AGENTS_SKILLS,
+            |env| vec![RuleSource::file(env.home.join(".agents").join("AGENTS.md"), false)],
+            &["AGENTS.md", "WARP.md"],
+        )
+        .project_walk(ProjectWalk::FLAT)
+        .switch(Switch::None(NO_SWITCH)),
+        docs_agent(
+            "windsurf",
+            "Devin Desktop",
+            |env| vec![Root::flat(env.home.join(".codeium").join("windsurf").join("skills"), msg("Windsurf skills"))],
+            &[".devin/skills", ".windsurf/skills"],
+            |env| vec![RuleSource::file(env.home.join(".codeium").join("windsurf").join("memories").join("global_rules.md"), false)],
+            AGENTS_MD,
+        ),
+        docs_agent(
+            "zcode",
+            "ZCode",
+            |env| vec![Root::flat(env.home.join(".zcode").join("skills"), msg("ZCode skills"))],
+            AGENTS_SKILLS,
+            |env| vec![RuleSource::file(env.home.join(".zcode").join("AGENTS.md"), false)],
+            AGENTS_MD,
+        ),
+        docs_agent(
+            "zed",
+            "Zed",
+            |env| vec![Root::flat(env.agents_skills(), msg("shared ~/.agents/skills"))],
+            AGENTS_SKILLS,
+            |env| vec![RuleSource::file(env.config.join("zed").join("AGENTS.md"), false)],
+            AGENTS_MD,
+        )
+        .project_walk(ProjectWalk::FLAT.first())
+        .switch(Switch::None(NO_SWITCH)),
+        docs_agent(
+            "auggie",
+            "Auggie",
+            |env| {
+                vec![
+                    Root::flat(env.home.join(".augment").join("skills"), msg("Auggie skills")),
+                    Root::flat(env.claude_compat.join("skills"), msg("Claude Code folder")),
+                    Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")),
+                ]
+            },
+            &[".augment/skills", ".claude/skills", ".agents/skills"],
+            |env| sources(md_files_deep(&env.home.join(".augment").join("rules")), false),
+            AGENTS_MD,
+        ),
+        docs_agent(
+            "command-code",
+            "Command Code",
+            |env| {
+                vec![
+                    Root::flat(env.home.join(".commandcode").join("skills"), msg("Command Code skills")),
+                    Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")),
+                ]
+            },
+            AGENTS_SKILLS,
+            |env| vec![RuleSource::file(env.home.join(".commandcode").join("AGENTS.md"), false)],
+            AGENTS_MD,
+        ),
+        docs_agent(
+            "tabnine",
+            "Tabnine",
+            |env| {
+                vec![
+                    Root::flat(env.home.join(".tabnine").join("agent").join("skills"), msg("Tabnine skills")),
+                    Root::flat(env.agents_skills(), msg("shared ~/.agents/skills")),
+                ]
+            },
+            AGENTS_SKILLS,
+            no_rules,
+            AGENTS_MD,
+        ),
     ]
+}
+
+/// Copilot's extra instruction files: `*.instructions.md` in its instructions folder.
+fn copilot_instruction_files(dir: &Path) -> Vec<PathBuf> {
+    md_files(dir)
+        .into_iter()
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".instructions.md"))
+        })
+        .collect()
 }
 
 /// A client whose folders come from published docs, not a check against a real install.
@@ -632,6 +1306,7 @@ fn docs_agent(
     id: &'static str,
     name: &'static str,
     roots: fn(&Env) -> Vec<Root>,
+    project_roots: &'static [&'static str],
     rules: fn(&Env) -> Vec<RuleSource>,
     project_rules: &'static [&'static str],
 ) -> AgentDef {
@@ -642,10 +1317,33 @@ fn docs_agent(
         dedup: Dedup::NameFirstWins,
         switch: Switch::None(msg("Toolport doesn't know this client's off switch yet.")),
         roots,
-        project_roots: &[".agents/skills"],
+        project_roots,
+        project_walk: ProjectWalk::DEEP,
         rules,
         project_rules,
         rules_note: None,
+    }
+}
+
+impl AgentDef {
+    /// Checked against a real install. `no_switch` says why there is no switch to use.
+    fn checked(self, no_switch: &'static str) -> Self {
+        AgentDef {
+            verified: true,
+            switch: Switch::None(no_switch),
+            ..self
+        }
+    }
+
+    fn switch(self, switch: Switch) -> Self {
+        AgentDef { switch, ..self }
+    }
+
+    fn project_walk(self, project_walk: ProjectWalk) -> Self {
+        AgentDef {
+            project_walk,
+            ..self
+        }
     }
 }
 
@@ -964,12 +1662,17 @@ fn walk_root(root: &Root) -> Vec<Found> {
 /// Several clients read the same folders (`~/.claude/skills`, `~/.agents/skills`), so each one
 /// is walked once per scan and reused with the reading client's label.
 #[derive(Default)]
-struct WalkCache(HashMap<(PathBuf, bool), Vec<Found>>);
+struct WalkCache(HashMap<(PathBuf, bool, bool, bool), Vec<Found>>);
 
 impl WalkCache {
     fn walk(&mut self, root: &Root) -> Vec<Found> {
         self.0
-            .entry((root.path.clone(), root.recursive))
+            .entry((
+                root.path.clone(),
+                root.recursive,
+                root.dir_links,
+                root.file_links,
+            ))
             .or_insert_with(|| walk_root(root))
             .iter()
             .map(|f| Found {
@@ -1020,10 +1723,13 @@ fn walk_dir(
             }
             continue;
         }
-        if !path.is_dir() {
+        if !path.is_dir() || (!root.dir_links && is_link(&path)) {
             continue;
         }
         let skill_md = path.join("SKILL.md");
+        if !root.file_links && is_link(&skill_md) {
+            continue;
+        }
         if skill_md.is_file() {
             out.push(Found {
                 real: canon(&skill_md).ok(),
@@ -1067,6 +1773,39 @@ fn gemini_settings_path(env: &Env) -> PathBuf {
 }
 fn hermes_config_path(env: &Env) -> PathBuf {
     env.hermes.join("config.yaml")
+}
+fn grok_config_path(env: &Env) -> PathBuf {
+    env.grok.join("config.toml")
+}
+fn crush_config_path(env: &Env) -> PathBuf {
+    env.config.join("crush").join("crush.json")
+}
+fn qwen_settings_path(env: &Env) -> PathBuf {
+    env.qwen.join("settings.json")
+}
+fn omp_config_path(env: &Env) -> PathBuf {
+    env.home.join(".omp").join("agent").join("config.yml")
+}
+
+/// The JSON list a client keeps its turned-off skill names in, for the clients that use one.
+fn json_list_switch(switch: Switch, env: &Env) -> Option<(PathBuf, &'static [&'static str])> {
+    match switch {
+        Switch::CopilotSettings => Some((copilot_settings_path(env), &["disabledSkills"])),
+        Switch::GeminiSettings => Some((gemini_settings_path(env), &["skills", "disabled"])),
+        Switch::QwenSettings => Some((qwen_settings_path(env), &["skills", "disabled"])),
+        Switch::CrushConfig => Some((crush_config_path(env), &["options", "disabled_skills"])),
+        _ => None,
+    }
+}
+
+/// The YAML list a client keeps its turned-off skill names in: the file and the key under
+/// `skills:`.
+fn yaml_list_switch(switch: Switch, env: &Env) -> Option<(PathBuf, &'static str)> {
+    match switch {
+        Switch::HermesConfig => Some((hermes_config_path(env), "disabled")),
+        Switch::OmpConfig => Some((omp_config_path(env), "ignoredSkills")),
+        _ => None,
+    }
 }
 fn opencode_config_path(env: &Env) -> PathBuf {
     let jsonc = env.opencode.join("opencode.jsonc");
@@ -1130,24 +1869,40 @@ fn read_disabled(switch: Switch, env: &Env) -> Disabled {
                 }
             }
         }
-        Switch::CopilotSettings => {
-            let v = read_json(&copilot_settings_path(env));
-            d.off = string_list(v.as_ref().and_then(|v| v.get("disabledSkills")));
+        Switch::CopilotSettings
+        | Switch::GeminiSettings
+        | Switch::QwenSettings
+        | Switch::CrushConfig => {
+            if let Some((path, keys)) = json_list_switch(switch, env) {
+                let v = read_json(&path);
+                let list = keys
+                    .iter()
+                    .try_fold(v.as_ref(), |v, key| v.map(|v| v.get(*key)))
+                    .flatten();
+                d.off = string_list(list);
+            }
         }
-        Switch::GeminiSettings => {
-            let v = read_json(&gemini_settings_path(env));
-            d.off = string_list(
-                v.as_ref()
+        Switch::HermesConfig | Switch::OmpConfig => {
+            if let Some((path, key)) = yaml_list_switch(switch, env) {
+                if let Some(list) = read_yaml(&path)
+                    .as_ref()
                     .and_then(|v| v.get("skills"))
-                    .and_then(|s| s.get("disabled")),
-            );
+                    .and_then(|s| s.get(key))
+                    .and_then(|l| l.as_sequence())
+                {
+                    d.off = list
+                        .iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect();
+                }
+            }
         }
-        Switch::HermesConfig => {
-            if let Some(list) = read_yaml(&hermes_config_path(env))
+        Switch::GrokConfig => {
+            if let Some(list) = read_toml(&grok_config_path(env))
                 .as_ref()
                 .and_then(|v| v.get("skills"))
                 .and_then(|s| s.get("disabled"))
-                .and_then(|l| l.as_sequence())
+                .and_then(|l| l.as_array())
             {
                 d.off = list
                     .iter()
@@ -1408,14 +2163,23 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
     for inst in &instances {
         let (def, env) = (&inst.def, &inst.env);
         let mut roots = (def.roots)(env);
-        // Project folders keep their documented order and come after the agent's own folders:
-        // Claude Code ranks personal skills above project ones when names collide.
+        // Project folders keep their documented order, walked the way the client walks them.
+        // Most clients rank personal skills above project ones when names collide; the ones
+        // marked `first` rank the project above.
         if let Some(project) = project {
-            roots.extend(
-                def.project_roots
-                    .iter()
-                    .map(|rel| Root::deep(project.join(rel), "project")),
-            );
+            let walk = def.project_walk;
+            let project_roots = def.project_roots.iter().map(|rel| Root {
+                path: project.join(rel),
+                recursive: walk.deep,
+                dir_links: walk.dir_links,
+                file_links: walk.file_links,
+                label: "project",
+            });
+            if walk.first {
+                roots.splice(0..0, project_roots);
+            } else {
+                roots.extend(project_roots);
+            }
         }
         agents.push(Agent {
             id: inst.id.clone(),
@@ -1652,6 +2416,10 @@ fn switch_note(switch: Switch) -> String {
         Switch::OpencodePermissions => tr("Uses a skill deny rule in OpenCode's permissions."),
         Switch::HermesConfig => tr("Uses skills.disabled in Hermes's config.yaml."),
         Switch::GeminiSettings => tr("Uses skills.disabled in Gemini CLI's settings.json."),
+        Switch::GrokConfig => tr("Uses the disabled list under [skills] in Grok's config.toml."),
+        Switch::CrushConfig => tr("Uses options.disabled_skills in Crush's crush.json."),
+        Switch::QwenSettings => tr("Uses skills.disabled in Qwen Code's settings.json."),
+        Switch::OmpConfig => tr("Uses skills.ignoredSkills in Oh My Pi's config.yml."),
         Switch::None(note) => crate::i18n::lookup(note),
     }
 }
@@ -1663,7 +2431,10 @@ fn switch_place(switch: Switch) -> &'static str {
         Switch::CopilotSettings => "disabledSkills",
         Switch::OpencodePermissions => "opencode.json",
         Switch::HermesConfig => "config.yaml",
-        Switch::GeminiSettings => "settings.json",
+        Switch::GeminiSettings | Switch::QwenSettings => "settings.json",
+        Switch::GrokConfig => "config.toml",
+        Switch::CrushConfig => "crush.json",
+        Switch::OmpConfig => "config.yml",
         Switch::None(_) => "settings",
     }
 }
@@ -1784,9 +2555,25 @@ fn scan_rules(instances: &[Instance], project: Option<&Path>) -> Vec<RuleFile> {
             .map(|s| (s, "global"))
             .collect();
         if let Some(project) = project {
-            for rel in def.project_rules {
-                let imports = def.id == "claude-code" || def.id == "gemini-cli";
-                sources.push((RuleSource::file(project.join(rel), imports), "project"));
+            // Gemini CLI reads the same file names in a project as it does globally.
+            let names: Vec<String> = if def.id == "gemini-cli" {
+                gemini_context_names(env)
+            } else {
+                def.project_rules.iter().map(|n| n.to_string()).collect()
+            };
+            for rel in names {
+                let source = RuleSource::file(
+                    project.join(rel),
+                    matches!(
+                        def.id,
+                        "claude-code" | "gemini-cli" | "qwen-code" | "goose" | "amp"
+                    ),
+                );
+                let source = RuleSource {
+                    next_to_link: matches!(def.id, "gemini-cli" | "qwen-code"),
+                    ..source
+                };
+                sources.push((source, "project"));
             }
         }
         let mut loaded_any = false;
@@ -1813,7 +2600,16 @@ fn scan_rules(instances: &[Instance], project: Option<&Path>) -> Vec<RuleFile> {
                 chain.clone(),
             );
             if source.imports {
-                follow_imports(&mut files, env, &source.path, scope, &inst.id, &chain, 0);
+                follow_imports(
+                    &mut files,
+                    env,
+                    &source.path,
+                    source.next_to_link,
+                    scope,
+                    &inst.id,
+                    &chain,
+                    0,
+                );
             } else if let Some(text) =
                 read_text(&canon(&source.path).unwrap_or(source.path.clone()))
             {
@@ -1886,10 +2682,12 @@ fn add_rule(
     file.agents.entry(agent.into()).or_insert(chain);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn follow_imports(
     files: &mut BTreeMap<String, RuleFile>,
     env: &Env,
     path: &Path,
+    next_to_link: bool,
     scope: &str,
     agent: &str,
     chain: &[ChainStep],
@@ -1903,14 +2701,24 @@ fn follow_imports(
     let Some(text) = read_text(&real) else {
         return;
     };
-    for target in imports(&text, real.parent().unwrap_or(Path::new("/")), &env.home) {
+    let base = if next_to_link { path } else { &real };
+    for target in imports(&text, base.parent().unwrap_or(Path::new("/")), &env.home) {
         if !target.is_file() {
             continue;
         }
         let mut next = chain.to_vec();
         next.push(step("import", env.display(&target)));
         add_rule(files, env, &target, scope, agent, next.clone());
-        follow_imports(files, env, &target, scope, agent, &next, depth + 1);
+        follow_imports(
+            files,
+            env,
+            &target,
+            next_to_link,
+            scope,
+            agent,
+            &next,
+            depth + 1,
+        );
     }
 }
 
@@ -2533,20 +3341,18 @@ pub fn set_state(
                 Ok("skillOverrides")
             })
         }
-        Switch::CopilotSettings => {
-            let path = copilot_settings_path(env);
+        Switch::CopilotSettings
+        | Switch::GeminiSettings
+        | Switch::QwenSettings
+        | Switch::CrushConfig => {
+            let (path, keys) =
+                json_list_switch(def.switch, env).ok_or_else(|| wrong_shape("settings"))?;
             edit_json(agent, &path, writer, |root| {
-                toggle_list(root, &["disabledSkills"], &skill.name, off)?;
-                Ok("disabledSkills")
+                toggle_list(root, keys, &skill.name, off)?;
+                Ok(keys[0])
             })
         }
-        Switch::GeminiSettings => {
-            let path = gemini_settings_path(env);
-            edit_json(agent, &path, writer, |root| {
-                toggle_list(root, &["skills", "disabled"], &skill.name, off)?;
-                Ok("skills")
-            })
-        }
+        Switch::GrokConfig => edit_grok(agent, &grok_config_path(env), writer, &skill.name, off),
         Switch::OpencodePermissions => {
             let path = opencode_config_path(env);
             edit_json(agent, &path, writer, |root| {
@@ -2571,8 +3377,9 @@ pub fn set_state(
             }
             edit_codex(agent, &path, writer, &paths, Path::new(&skill.key), off)
         }
-        Switch::HermesConfig => {
-            let path = hermes_config_path(env);
+        Switch::HermesConfig | Switch::OmpConfig => {
+            let (path, key) =
+                yaml_list_switch(def.switch, env).ok_or_else(|| wrong_shape("skills"))?;
             let text = read_existing(&path)?;
             // Start from what the file says, not a lenient read: a list Toolport couldn't parse
             // must not be rewritten as empty.
@@ -2585,11 +3392,11 @@ pub fn set_state(
             if let Some(list) = parsed
                 .as_ref()
                 .and_then(|v| v.get("skills"))
-                .and_then(|s| s.get("disabled"))
+                .and_then(|s| s.get(key))
             {
                 let items = list
                     .as_sequence()
-                    .ok_or_else(|| wrong_shape("skills.disabled"))?;
+                    .ok_or_else(|| wrong_shape(&format!("skills.{key}")))?;
                 names.extend(items.iter().filter_map(|x| x.as_str().map(str::to_string)));
             }
             if off {
@@ -2597,7 +3404,7 @@ pub fn set_state(
             } else {
                 names.remove(&skill.name);
             }
-            let next = set_yaml_skills_disabled(&text, &names.into_iter().collect::<Vec<_>>())?;
+            let next = set_yaml_skills_list(&text, key, &names.into_iter().collect::<Vec<_>>())?;
             if next != text {
                 writer.backup(agent, &path)?;
                 writer.write(&path, &next)?;
@@ -3099,9 +3906,49 @@ fn edit_codex(
     writer.write(path, &next)
 }
 
-/// Replace (or add) the `disabled` list under the top-level `skills:` key of a YAML file while
-/// leaving every other line, including comments, as it was.
-fn set_yaml_skills_disabled(text: &str, names: &[String]) -> Result<String, String> {
+/// Add or remove `name` in the `disabled` list under `[skills]` in Grok's config.toml, keeping
+/// the rest of the file as written.
+fn edit_grok(
+    agent: &str,
+    path: &Path,
+    writer: &dyn Writer,
+    name: &str,
+    off: bool,
+) -> Result<(), String> {
+    let text = read_existing(path)?;
+    let mut doc: toml_edit::DocumentMut =
+        text.parse().map_err(|e| not_valid(path, &format!("{e}")))?;
+    let skills = doc
+        .entry("skills")
+        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_like_mut()
+        .ok_or_else(|| wrong_shape("skills"))?;
+    if skills.get("disabled").is_none() {
+        skills.insert("disabled", toml_edit::value(toml_edit::Array::new()));
+    }
+    let list = skills
+        .get_mut("disabled")
+        .and_then(|d| d.as_array_mut())
+        .ok_or_else(|| wrong_shape("skills.disabled"))?;
+    list.retain(|v| v.as_str() != Some(name));
+    if off {
+        list.push(name);
+    }
+    // A removed first entry leaves its spacing on the next one (`[ "b"]`).
+    list.fmt();
+    let next = doc.to_string();
+    if next == text {
+        return Ok(());
+    }
+    if path.exists() {
+        writer.backup(agent, path)?;
+    }
+    writer.write(path, &next)
+}
+
+/// Replace (or add) the `key` list (`disabled`, `ignoredSkills`) under the top-level `skills:`
+/// key of a YAML file while leaving every other line, including comments, as it was.
+fn set_yaml_skills_list(text: &str, key: &str, names: &[String]) -> Result<String, String> {
     let flow = if names.is_empty() {
         "[]".to_string()
     } else {
@@ -3125,7 +3972,7 @@ fn set_yaml_skills_disabled(text: &str, names: &[String]) -> Result<String, Stri
         if !out.is_empty() && !out.ends_with('\n') {
             out.push('\n');
         }
-        out.push_str(&format!("skills:\n  disabled: {flow}\n"));
+        out.push_str(&format!("skills:\n  {key}: {flow}\n"));
         return Ok(out);
     };
     let rest = key_rest(lines[skills_at]).unwrap_or_default();
@@ -3150,8 +3997,8 @@ fn set_yaml_skills_disabled(text: &str, names: &[String]) -> Result<String, Stri
     while i < end {
         let line = lines[i];
         let own = line.len() - line.trim_start().len();
-        if own == indent && line.trim_start().starts_with("disabled:") {
-            out.push(format!("{pad}disabled: {flow}"));
+        if own == indent && line.trim_start().starts_with(&format!("{key}:")) {
+            out.push(format!("{pad}{key}: {flow}"));
             replaced = true;
             i += 1;
             // Drop a block list that followed the key.
@@ -3172,7 +4019,7 @@ fn set_yaml_skills_disabled(text: &str, names: &[String]) -> Result<String, Stri
         i += 1;
     }
     if !replaced {
-        out.insert(skills_at + 1, format!("{pad}disabled: {flow}"));
+        out.insert(skills_at + 1, format!("{pad}{key}: {flow}"));
     }
     out.extend(lines[end..].iter().map(|s| s.to_string()));
     let mut joined = out.join("\n");
