@@ -299,3 +299,15 @@ fn mixed_ending_raw_plugin_restores_its_own_newlines() {
         text.replace("'dark'", "'light'")
     );
 }
+
+#[test]
+fn raw_restore_uses_nested_and_named_array_neighbors() {
+    for text in [
+        "[ui]\ntheme = 'dark'\n[ui.colors]\naccent = 'blue'\n\n[[plugins]]\nname = 'a'\ncommand = 'a'\n",
+        "[[plugins]]\nname = 'a'\ncommand = 'a'\n\n[[providers]]\nname = 'local'\nurl = 'http://localhost'\n",
+    ] {
+        let moved = without(text, "a");
+        let raw = raw_entries(text).unwrap();
+        assert_eq!(append_raw(Some(&moved), &texts(&raw)).unwrap(), text);
+    }
+}

@@ -507,7 +507,7 @@ struct Anchor {
 }
 
 fn recorded_body(raw: &str) -> &str {
-    if raw.starts_with(ANCHOR_PREFIX) {
+    if recorded_anchor(raw).is_some() {
         raw.split_once('\n').map_or(raw, |(_, body)| body)
     } else {
         raw
@@ -518,33 +518,50 @@ fn recorded_anchor(raw: &str) -> Option<Anchor> {
     serde_json::from_str(raw.strip_prefix(ANCHOR_PREFIX)?.split_once('\n')?.0).ok()
 }
 
-/// Stable top-level neighbors; plugin names are unique in accepted documents.
+/// Stable section paths and named array entries, including nested settings.
 fn headers(doc: &DocumentMut) -> Vec<(usize, String)> {
-    let mut out = Vec::new();
-    for (key, item) in doc.iter() {
-        match item {
-            Item::Table(table) => {
-                if let Some(at) = table.position() {
-                    out.push((at, format!("section:{key}")));
+    fn collect(table: &Table, path: &[String], out: &mut Vec<(usize, String)>) {
+        for (key, item) in table.iter() {
+            let mut path = path.to_vec();
+            path.push(key.to_string());
+            let mut add = |t: &Table, path: Vec<String>| {
+                if let Some(at) = t.position() {
+                    out.push((at, serde_json::to_string(&path).expect("section path")));
                 }
-            }
-            Item::ArrayOfTables(list) if key == "plugins" => {
-                for table in list.iter() {
-                    if let (Some(at), Some(name)) = (table.position(), name_of(table)) {
-                        out.push((at, format!("plugin:{name}")));
+                collect(t, &path, out);
+            };
+            match item {
+                Item::Table(t) => add(t, path),
+                Item::ArrayOfTables(list) => {
+                    for (i, t) in list.iter().enumerate() {
+                        let mut path = path.clone();
+                        path.push(
+                            name_of(t).map_or_else(
+                                || format!("index:{i}"),
+                                |name| format!("name:{name}"),
+                            ),
+                        );
+                        add(t, path);
                     }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
+    let mut out = Vec::new();
+    collect(doc.as_table(), &[], &mut out);
     out.sort();
     out
 }
 
 fn anchor_for(doc: &DocumentMut, table: &Table) -> Anchor {
     let at = table.position().unwrap_or(0);
-    let headers = headers(doc);
+    let mut own = Vec::new();
+    positions(table, &mut own);
+    let headers: Vec<_> = headers(doc)
+        .into_iter()
+        .filter(|(at, _)| !own.contains(&Some(*at)))
+        .collect();
     Anchor {
         position: at,
         previous: headers
