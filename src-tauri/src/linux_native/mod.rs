@@ -7590,15 +7590,21 @@ fn approval_card(
     deny.connect_clicked(move |_| deny_page.decide(&deny_id, false));
     actions.append(&deny);
 
+    // Picking how long to remember only sets the choice. Approve still sends
+    // the decision, so opening this menu can never approve a call by itself.
+    let scope = std::rc::Rc::new(std::cell::Cell::new("once"));
     if view.tool_fingerprint.is_some()
         && view.url_elicitation.is_none()
         && view.pii_release.is_none()
     {
+        const CHOICES: [(&str, &str); 3] = [
+            (crate::i18n::msg("Ask every time"), "once"),
+            (crate::i18n::msg("Allow for this session"), "session"),
+            (crate::i18n::msg("Always allow this tool"), "always"),
+        ];
         let remember = gtk::MenuButton::builder()
-            .label(crate::i18n::tr("Remember approval"))
-            .tooltip_text(crate::i18n::tr(
-                "Approve this definition without asking again",
-            ))
+            .label(crate::i18n::tr("Ask every time"))
+            .tooltip_text(crate::i18n::tr("Skip next time?"))
             .build();
         remember.add_css_class("toolport-secondary-action");
         let popover = toolport_menu_popover();
@@ -7607,17 +7613,40 @@ fn approval_card(
         choices.set_margin_bottom(6);
         choices.set_margin_start(6);
         choices.set_margin_end(6);
-        for (label, scope) in [
-            (crate::i18n::msg("For this session"), "session"),
-            (crate::i18n::msg("Always for this definition"), "always"),
-        ] {
-            let choice = toolport_menu_source_button(label);
-            let id = view.id.clone();
-            let page = page.clone();
+        let checks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        for (index, (label, value)) in CHOICES.into_iter().enumerate() {
+            let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+            content.append(&{
+                let widget = gtk::Label::builder()
+                    .label(label)
+                    .halign(gtk::Align::Start)
+                    .xalign(0.0)
+                    .hexpand(true)
+                    .build();
+                l10n::bind_label(&widget, label);
+                widget
+            });
+            let check = gtk::Image::builder()
+                .icon_name("object-select-symbolic")
+                .css_classes(["toolport-menu-check"])
+                .visible(index == 0)
+                .build();
+            content.append(&check);
+            checks.borrow_mut().push(check);
+            let choice = gtk::Button::builder()
+                .child(&content)
+                .css_classes(["flat", "toolport-menu-item"])
+                .build();
+            let scope = scope.clone();
+            let checks = checks.clone();
             let remember = remember.clone();
             choice.connect_clicked(move |_| {
+                scope.set(value);
+                for (other, check) in checks.borrow().iter().enumerate() {
+                    check.set_visible(other == index);
+                }
+                remember.set_label(&crate::i18n::lookup(label));
                 remember.popdown();
-                page.approve_with_scope(&id, scope);
             });
             choices.append(&choice);
         }
@@ -7629,11 +7658,14 @@ fn approval_card(
     let approve = l10n::button(if view.url_elicitation.is_some() {
         crate::i18n::msg("Continue")
     } else {
-        crate::i18n::msg("Approve once")
+        crate::i18n::msg("Approve")
     });
     approve.add_css_class("suggested-action");
     let approve_id = view.id;
-    approve.connect_clicked(move |_| page.decide(&approve_id, true));
+    approve.connect_clicked(move |_| match scope.get() {
+        "once" => page.decide(&approve_id, true),
+        scope => page.approve_with_scope(&approve_id, scope),
+    });
     actions.append(&approve);
     card.append(&actions);
     (card, deadline)

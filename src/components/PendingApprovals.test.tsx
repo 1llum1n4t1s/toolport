@@ -91,6 +91,44 @@ describe("PendingApprovals PII release", () => {
   });
 });
 
+describe("PendingApprovals remember choice", () => {
+  it("only selects the scope until Approve is pressed", async () => {
+    listPendingApprovals.mockResolvedValue([approval()]);
+    decideApproval.mockResolvedValue(null);
+    render(<PendingApprovals />);
+    await act(async () => {});
+
+    const session = screen.getByRole("radio", { name: "Allow for this session" });
+    await act(async () => {
+      fireEvent.click(session);
+    });
+    expect(decideApproval).not.toHaveBeenCalled();
+    expect(session).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Approve$/ }));
+    });
+    expect(decideApproval).toHaveBeenCalledWith("req-1", true, "session");
+  });
+
+  it("approves once by default", async () => {
+    listPendingApprovals.mockResolvedValue([approval()]);
+    decideApproval.mockResolvedValue(null);
+    render(<PendingApprovals />);
+    await act(async () => {});
+
+    expect(screen.getByRole("radio", { name: "Ask every time" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Approve$/ }));
+    });
+    expect(decideApproval).toHaveBeenCalledWith("req-1", true, "once");
+  });
+});
+
 describe("PendingApprovals refresh ordering", () => {
   it("applies the decision refresh while a newer poll is still pending", async () => {
     vi.useFakeTimers();

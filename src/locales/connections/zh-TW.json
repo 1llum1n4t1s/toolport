@@ -199,6 +199,7 @@
   "Arguments changed on another machine and could not be matched to the secret values saved here. Toolport kept this machine's arguments. Check them before enabling.": "引數已在另一臺機器上更改，無法與本機儲存的機密值匹配。Toolport 保留了本機引數。請檢查後再啟用。",
   "Arguments changed:": "引數改變：",
   "Arguments must be a JSON object.": "引數必須是 JSON 物件。",
+  "Ask every time": "每次都詢問",
   "asks before calls from shared or registry servers": "呼叫來自共享伺服器或伺服器目錄的工具前詢問",
   "Authenticate": "進行身份驗證",
   "Authenticated": "已通過身份驗證",

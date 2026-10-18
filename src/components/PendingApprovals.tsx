@@ -20,6 +20,13 @@ const TIMEOUT_MS = 120_000;
 
 type Reason = PendingApproval["reason"];
 
+/** The remember choices under an approval. "once" asks again next time. */
+const SCOPES: { scope: ApprovalScope; label: SourceMessage }[] = [
+  { scope: "once", label: msg("Ask every time") },
+  { scope: "session", label: msg("Allow for this session") },
+  { scope: "always", label: msg("Always allow this tool") },
+];
+
 /** How each gate reason presents: label, badge tone, and an icon. */
 const REASON: Record<
   Reason,
@@ -63,6 +70,9 @@ export function PendingApprovals({
   // resolved event / poll (NOT optimistically), so a poll landing before the backend
   // reflects the decision can't flicker the row back looking un-decided.
   const [resolving, setResolving] = useState<Set<string>>(new Set());
+  // How long to remember each approval. Choosing only records the scope; Approve
+  // still has to be pressed, so changing it can never approve a call by itself.
+  const [scopes, setScopes] = useState<Record<string, ApprovalScope>>({});
   // Fallback only: first-sighting time per id, used to drive the countdown if a pending
   // entry ever lacks the broker's authoritative deadlineMs (older backend / transient).
   const seenAt = useRef<Map<string, number>>(new Map());
@@ -418,7 +428,15 @@ export function PendingApprovals({
                     <Button
                       size="sm"
                       disabled={isBusy}
-                      onClick={() => void decide(a.id, true)}
+                      onClick={() =>
+                        void decide(
+                          a.id,
+                          true,
+                          urlElicitation || piiRelease
+                            ? "once"
+                            : (scopes[a.id] ?? "once"),
+                        )
+                      }
                       className="bg-[color-mix(in_oklch,var(--success),black_16%)] text-white shadow-sm hover:bg-[color-mix(in_oklch,var(--success),black_26%)]"
                     >
                       {isBusy ? <Loader2 className="animate-spin" /> : <Check />}
@@ -428,27 +446,38 @@ export function PendingApprovals({
                 </div>
 
                 {/* Skip the prompt for this tool next time - curbs approval fatigue.
-                    Never offered for a PII release: the allow key binds a tool
-                    definition, and the broker deliberately refuses to auto-approve a
-                    release on one (SBS-696). */}
+                    Picking a scope only applies when Approve is pressed. Never offered
+                    for a PII release: the allow key binds a tool definition, and the
+                    broker deliberately refuses to auto-approve a release on one
+                    (SBS-696). */}
                 {!urlElicitation && !piiRelease && (
-                  <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-meta text-muted-foreground">
+                  <div
+                    role="radiogroup"
+                    aria-label={translate("Skip next time?")}
+                    className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-meta text-muted-foreground"
+                  >
                     <span>{translate("Skip next time?")}</span>
-                    <button
-                      disabled={isBusy}
-                      onClick={() => void decide(a.id, true, "session")}
-                      className="font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
-                    >
-                      {translate("Allow for this session")}
-                    </button>
-                    <span className="text-muted-foreground">·</span>
-                    <button
-                      disabled={isBusy}
-                      onClick={() => void decide(a.id, true, "always")}
-                      className="font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
-                    >
-                      {translate("Always allow this tool")}
-                    </button>
+                    {SCOPES.map(({ scope, label }) => {
+                      const selected = (scopes[a.id] ?? "once") === scope;
+                      return (
+                        <button
+                          key={scope}
+                          type="button"
+                          role="radio"
+                          aria-checked={selected}
+                          disabled={isBusy}
+                          onClick={() => setScopes((s) => ({ ...s, [a.id]: scope }))}
+                          className={
+                            "rounded-full border px-2 py-0.5 font-medium transition-colors disabled:opacity-50 " +
+                            (selected
+                              ? "border-foreground/30 bg-foreground/10 text-foreground"
+                              : "border-transparent text-muted-foreground hover:text-foreground")
+                          }
+                        >
+                          {t(label)}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </li>
