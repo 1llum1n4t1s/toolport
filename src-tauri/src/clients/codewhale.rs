@@ -149,6 +149,9 @@ pub(super) fn validate_import(
     names: &[String],
     migration: bool,
 ) -> Result<(), String> {
+    if names.is_empty() {
+        return Ok(());
+    }
     let text = std::fs::read_to_string(path).map_err(|_| {
         "Could not read the Codewhale MCP config; client config unchanged.".to_string()
     })?;

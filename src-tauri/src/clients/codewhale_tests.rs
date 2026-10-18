@@ -179,6 +179,8 @@ fn import_audit_refuses_native_settings_the_shared_importer_drops() {
         "toolport-codewhale-import-audit-{}.json",
         std::process::id()
     ));
+    let _ = std::fs::remove_file(&path);
+    validate_import(&path, &[], true).unwrap();
     for (field, value) in [
         ("cwd", serde_json::json!("/srv/work")),
         ("connect_timeout", serde_json::json!(10)),
