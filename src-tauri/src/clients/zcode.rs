@@ -4,20 +4,25 @@
 use super::*;
 use serde_json::{Map, Value};
 
-fn duplicate_keys(object: &jsonc_parser::cst::CstObject, path: &str) -> Result<(), String> {
+/// Refuse a config with a repeated key at any depth, which a rewrite would lose.
+pub(super) fn duplicate_keys(
+    object: &jsonc_parser::cst::CstObject,
+    path: &str,
+    client: &str,
+) -> Result<(), String> {
     let mut seen = std::collections::HashSet::new();
     for property in object.properties() {
         let name = property
             .name()
             .and_then(|name| name.decoded_value().ok())
-            .ok_or("Invalid ZCode config key")?;
+            .ok_or_else(|| format!("Invalid {client} config key"))?;
         if !seen.insert(name.clone()) {
             return Err(format!(
-                "Malformed ZCode config: duplicate '{path}{name}'; leaving it untouched."
+                "Malformed {client} config: duplicate '{path}{name}'; leaving it untouched."
             ));
         }
         if let Some(child) = property.object_value() {
-            duplicate_keys(&child, &format!("{path}{name}."))?;
+            duplicate_keys(&child, &format!("{path}{name}."), client)?;
         }
     }
     Ok(())
@@ -33,7 +38,7 @@ fn root_from_content(content: &str) -> Result<Value, String> {
             jsonc_parser::cst::CstRootNode::parse(content, &jsonc_parser::ParseOptions::default())
                 .map_err(|error| format!("Could not parse ZCode config: {error}"))?;
         if let Some(object) = cst.object_value() {
-            duplicate_keys(&object, "")?;
+            duplicate_keys(&object, "", "ZCode")?;
         }
     }
     Ok(root)

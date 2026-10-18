@@ -40,6 +40,7 @@ mod mutation;
 mod restore;
 pub(crate) use restore::after_capture_conflict as record_config_capture_conflict;
 pub(crate) use restore::after_rollback as record_config_rollback;
+pub(crate) mod openclaw;
 #[cfg(test)]
 mod round3_tests;
 #[cfg(test)]
@@ -193,6 +194,9 @@ enum Format {
     /// Codewhale's strict JSON `mcp.json`, servers under `servers` or the
     /// `mcpServers` alias (never both); see `codewhale`.
     JsonCodewhaleServers,
+    /// OpenClaw's JSON5 gateway config, servers under the nested `mcp.servers`
+    /// map with an explicit `transport`; see `openclaw`.
+    JsonOpenClawMcp,
 }
 
 struct CombinedToolNameBudget {
@@ -679,6 +683,8 @@ fn resolve_client_config_path(
             Platform::MacOs | Platform::Linux => home.join(".reasonix").join("config.toml"),
         },
         "zcode" => home.join(".zcode").join("cli").join("config.json"),
+        // OpenClaw resolves `~/.openclaw` from the user's home on every platform.
+        "openclaw" => home.join(".openclaw").join("openclaw.json"),
         "command-code" => home.join(".commandcode").join("mcp.json"),
         "tabnine" => home.join(".tabnine").join("mcp_servers.json"),
         "lm-studio" => home.join(".lmstudio").join("mcp.json"),
@@ -1312,6 +1318,8 @@ fn resolve_client_config_path_linux(client_id: &str, home: &std::path::Path) -> 
         "codewhale" => home.join(".codewhale").join("mcp.json"),
         "reasonix" => home.join(".reasonix").join("config.toml"),
         "zcode" => home.join(".zcode").join("cli").join("config.json"),
+        // OpenClaw resolves `~/.openclaw` from the user's home on every platform.
+        "openclaw" => home.join(".openclaw").join("openclaw.json"),
         "command-code" => home.join(".commandcode").join("mcp.json"),
         "tabnine" => home.join(".tabnine").join("mcp_servers.json"),
         "lm-studio" => home.join(".lmstudio").join("mcp.json"),
@@ -1428,6 +1436,7 @@ fn resolve_rules_target(
         "command-code" => block(home.join(".commandcode").join("AGENTS.md")),
         // dsh loads `$DSH_HOME/AGENTS.md` first in its user-global chain.
         "deepseek-harness" => block(home.join(".dsh").join("AGENTS.md")),
+        "openclaw" => block(home.join(".openclaw").join("workspace").join("AGENTS.md")),
         // Codewhale reads only the first global instruction file it finds, as a
         // fallback for projects without their own, so the block goes into that
         // one; a new file would hide the user's.
@@ -1536,6 +1545,15 @@ pub fn client_rules_target(
         if let Some(dir) = dsh_home_from(client_path_env("DSH_HOME")) {
             return Some(rules_sentinel_block(dir.join("AGENTS.md"), scope));
         }
+    }
+    if client_id == "openclaw" {
+        // The default agent's workspace AGENTS.md, loaded at the start of
+        // every session.
+        let dirs = openclaw_dirs().filter(|dirs| !dirs.relative && dirs.workspace_known)?;
+        return Some(rules_sentinel_block(
+            dirs.workspace.join("AGENTS.md"),
+            scope,
+        ));
     }
     if client_id == "reasonix" {
         // Its global REASONIX.md, AGENTS.md and CLAUDE.md live in the state root,
@@ -1870,6 +1888,25 @@ fn codewhale_path() -> Option<PathBuf> {
                 .map(std::ffi::OsString::from)
         });
     absolute_env_dir(expand_leading_tilde(configured)).or_else(|| codewhale_state_path("mcp.json"))
+}
+
+/// OpenClaw's directories from the environment, or `None` without a home.
+fn openclaw_dirs() -> Option<openclaw::Dirs> {
+    let env = |key: &str| {
+        let raw = client_path_env(key)?;
+        let text = raw.to_str()?.trim();
+        (!text.is_empty()).then(|| text.to_string())
+    };
+    Some(openclaw::dirs(&home()?, &env))
+}
+
+/// OpenClaw's `openclaw.json`: `OPENCLAW_CONFIG_PATH`, else the one in its
+/// state dir (`OPENCLAW_STATE_DIR`, else `~/.openclaw` or the legacy
+/// `~/.clawdbot`), with `OPENCLAW_HOME` standing in for the home.
+fn openclaw_path() -> Option<PathBuf> {
+    openclaw_dirs()
+        .filter(|dirs| !dirs.relative)
+        .map(|dirs| dirs.config)
 }
 
 /// A file in Codewhale's state home: `$CODEWHALE_HOME`, else `~/.codewhale`,
@@ -2582,6 +2619,18 @@ fn defs() -> Vec<ClientDef> {
             uses_connectors: false,
             // The user `mcp.json` the TUI, `exec` and `serve` all read.
             path: codewhale_path,
+            plugin_scan: None,
+        },
+        ClientDef {
+            location: None,
+            id: "openclaw",
+            discovery: discovery::capabilities("openclaw"),
+            combined_tool_name_budget: None,
+            name: "OpenClaw",
+            format: Format::JsonOpenClawMcp,
+            uses_connectors: false,
+            // The gateway config every OpenClaw agent and the CLI read.
+            path: openclaw_path,
             plugin_scan: None,
         },
         ClientDef {
@@ -3897,6 +3946,8 @@ fn install_override(id: &str) -> Option<PathBuf> {
         // stable user-scope data root created by Junie.
         "junie" => Some(home()?.join(".junie")),
         "zcode" => Some(home()?.join(".zcode")),
+        // The state dir OpenClaw creates on its first run.
+        "openclaw" => Some(openclaw_dirs()?.state),
         _ => None,
     }
 }
@@ -4307,8 +4358,12 @@ pub(crate) fn validate_client_import(
     names: &[String],
     migration: bool,
 ) -> Result<(), String> {
-    if client.id.split('@').next() == Some("zcode") {
-        zcode::validate_import(Path::new(&client.config_path), names, migration)?;
+    match client.id.split('@').next() {
+        Some("zcode") => zcode::validate_import(Path::new(&client.config_path), names, migration)?,
+        Some("openclaw") => {
+            openclaw::validate_import(Path::new(&client.config_path), names, migration)?
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -4326,6 +4381,7 @@ fn parse_client_content(format: Format, content: &str) -> Result<Vec<McpServer>,
         Format::JsonKimiMcpServers => parse_json(content, "mcpServers"),
         Format::JsonAuggieMcpServers => parse_json(content, "mcpServers"),
         Format::JsonZCodeMcp => zcode::parse(content),
+        Format::JsonOpenClawMcp => openclaw::parse(content),
         Format::JsonServers => parse_json(content, "servers"),
         Format::JsonMcp => parse_json(content, "mcp"),
         Format::JsonOpenCodeMcp => parse_opencode_json(content),
@@ -7091,6 +7147,7 @@ fn write_format(
         Format::JsonKimiMcpServers => write_kimi_json(path, servers)?,
         Format::JsonAuggieMcpServers => write_auggie_json(path, servers)?,
         Format::JsonZCodeMcp => zcode::write_servers(path, servers)?,
+        Format::JsonOpenClawMcp => openclaw::write_servers(path, servers)?,
         Format::JsonServers => write_json(path, "servers", servers, lenient)?,
         Format::JsonMcp => write_crush_json(path, servers)?,
         Format::JsonOpenCodeMcp => write_opencode_json(path, servers)?,
@@ -7761,6 +7818,7 @@ fn config_is_whole_app_state(client_id: &str) -> bool {
             | "auggie"
             | "deepseek-harness"
             | "reasonix"
+            | "openclaw"
     )
 }
 
@@ -7814,6 +7872,7 @@ fn edit_format(
         Format::JsonKimiMcpServers => edit_kimi_json_gateway(path, entry)?,
         Format::JsonAuggieMcpServers => edit_auggie_json_gateway(path, entry)?,
         Format::JsonZCodeMcp => zcode::edit_gateway(path, entry)?,
+        Format::JsonOpenClawMcp => openclaw::edit_gateway(path, entry)?,
         Format::JsonServers => edit_json_gateway(path, "servers", entry, lenient)?,
         Format::JsonMcp => edit_crush_gateway(path, entry)?,
         Format::JsonOpenCodeMcp => edit_opencode_gateway(path, entry)?,
@@ -8956,6 +9015,10 @@ fn isolated_client_env(root: &Path) -> Vec<EnvRestore> {
         "CODEWHALE_HOME",
         "CODEWHALE_CONFIG_PATH",
         "DEEPSEEK_CONFIG_PATH",
+        "OPENCLAW_HOME",
+        "OPENCLAW_STATE_DIR",
+        "OPENCLAW_CONFIG_PATH",
+        "OPENCLAW_WORKSPACE_DIR",
     ]
     .into_iter()
     .map(|key| EnvRestore::set(key, Path::new("")))
@@ -13333,6 +13396,138 @@ command = "mcp-server-memory"   # keep this note
         std::fs::write(home.join(".agents/AGENTS.md"), "# shared\n").unwrap();
         assert_eq!(path(&home), home.join(".agents/AGENTS.md"));
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn openclaw_is_registered_with_its_gateway_config() {
+        let def = find_def("openclaw").unwrap();
+        assert_eq!(def.name, "OpenClaw");
+        assert!(matches!(def.format, Format::JsonOpenClawMcp));
+        assert!(!def.uses_connectors);
+        assert!(def.plugin_scan.is_none());
+        assert!(config_is_whole_app_state("openclaw"));
+        // Tool Search defers MCP schemas and the client re-lists on change.
+        assert_eq!(def.discovery.auto_mode, "full");
+        assert_eq!(def.discovery.native_tool_search, Some(true));
+        assert_eq!(def.discovery.tools_list_changed, Some(true));
+    }
+
+    #[test]
+    fn openclaw_follows_its_environment_for_config_and_rules() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home =
+            std::env::temp_dir().join(format!("toolport-openclaw-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let _home = TestHome::set(&home);
+        let _clear = isolated_client_env(&home);
+        let rules = || {
+            client_rules_target("openclaw", crate::instructions::Scope::Team)
+                .unwrap()
+                .path
+        };
+        assert_eq!(
+            openclaw_path(),
+            Some(home.join(".openclaw").join("openclaw.json"))
+        );
+        assert_eq!(
+            rules(),
+            home.join(".openclaw").join("workspace").join("AGENTS.md")
+        );
+        let state = home.join("state");
+        let _state = EnvRestore::set("OPENCLAW_STATE_DIR", &state);
+        assert_eq!(openclaw_path(), Some(state.join("openclaw.json")));
+        assert_eq!(rules(), state.join("workspace").join("AGENTS.md"));
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(
+            state.join("openclaw.json"),
+            "{ agents: { defaults: { workspace: '~/agent' } } }",
+        )
+        .unwrap();
+        assert_eq!(rules(), home.join("agent").join("AGENTS.md"));
+        for key in [
+            "OPENCLAW_HOME",
+            "OPENCLAW_STATE_DIR",
+            "OPENCLAW_CONFIG_PATH",
+        ] {
+            let _relative = EnvRestore::set(key, Path::new("relative"));
+            assert_eq!(openclaw_path(), None, "{key}");
+            assert!(
+                client_rules_target("openclaw", crate::instructions::Scope::Team).is_none(),
+                "{key}"
+            );
+        }
+        {
+            let _workspace = EnvRestore::set("OPENCLAW_WORKSPACE_DIR", Path::new("relative"));
+            // Config workspace wins; a relative env fallback must not hide it.
+            assert_eq!(rules(), home.join("agent").join("AGENTS.md"));
+            std::fs::write(state.join("openclaw.json"), "{}").unwrap();
+            assert!(client_rules_target("openclaw", crate::instructions::Scope::Team).is_none());
+            assert_eq!(openclaw_path(), Some(state.join("openclaw.json")));
+        }
+        let file = home.join("elsewhere.json");
+        let _file = EnvRestore::set("OPENCLAW_CONFIG_PATH", &file);
+        assert_eq!(openclaw_path(), Some(file));
+        drop(_file);
+        drop(_state);
+        drop(_clear);
+        drop(_home);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn openclaw_connect_and_disconnect_round_trip_in_a_temp_home() {
+        // Data dir lock first, as the other tests take them.
+        let _data = crate::registry::DataDirTestEnv::new("openclaw-rt");
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home =
+            std::env::temp_dir().join(format!("toolport-openclaw-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".openclaw")).unwrap();
+        let _home = TestHome::set(&home);
+        let _clear = isolated_client_env(&home);
+        let def = find_def("openclaw").unwrap();
+        let path = resolved_definition_path(&def).unwrap();
+        assert_eq!(path, home.join(".openclaw").join("openclaw.json"));
+        let lenient = config_is_whole_app_state("openclaw");
+
+        let missing = read_client(&def);
+        assert!(!missing.config_exists);
+        assert!(missing.error.is_none());
+        assert!(!missing.gateway_installed);
+
+        let config = "{\n  // mine\n  gateway: { port: 18789 },\n  mcp: {\n    servers: {\n      git: { command: 'uvx', args: ['mcp-server-git'] },\n    },\n  },\n}\n";
+        std::fs::write(&path, config).unwrap();
+        let entry = gateway_entry(Some("Work"), "openclaw").unwrap();
+        // Through the mutation guard, as Connect runs it: JSON5 is allowed.
+        mutation::run("openclaw", &path, def.format, || {
+            edit_format(def.format, &path, Some(&entry), lenient)
+        })
+        .unwrap();
+        let connected = read_client(&def);
+        assert!(connected.error.is_none(), "{:?}", connected.error);
+        assert!(connected.gateway_installed);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("// mine"), "{content}");
+        let root = parse_json_value(&content).unwrap();
+        let env = &root["mcp"]["servers"][GATEWAY_ENTRY_NAME]["env"];
+        assert_eq!(env[crate::brand::CLIENT_ID], "openclaw");
+        assert_eq!(env[crate::brand::PROFILE], "Work");
+
+        edit_format(def.format, &path, None, lenient).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
+        let disconnected = read_client(&def);
+        assert!(!disconnected.gateway_installed);
+        let names: Vec<_> = disconnected
+            .servers
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, ["git"]);
+
+        drop(_clear);
+        drop(_home);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

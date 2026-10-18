@@ -155,6 +155,7 @@ fn round3_reserved_duplicates_removed_in_all_formats_and_foreign_slots_preserved
     for (index, (format, raw)) in [
         (Format::JsonMcpServers, r#"{"mcpServers":{"toolport":{"command":"toolport-gateway"},"conduit":{"command":"conduit-gateway"},"foreign":{"command":"toolport-gateway"}}}"#),
         (Format::JsonZCodeMcp, r#"{"mcp":{"servers":{"toolport":{"type":"stdio","command":"toolport-gateway"},"conduit":{"type":"stdio","command":"conduit-gateway"},"foreign":{"type":"stdio","command":"toolport-gateway"}}}}"#),
+        (Format::JsonOpenClawMcp, r#"{"mcp":{"servers":{"toolport":{"command":"toolport-gateway"},"conduit":{"command":"conduit-gateway"},"foreign":{"command":"toolport-gateway"}}}}"#),
         (Format::JsonOpenCodeMcp, r#"{"mcp":{"toolport":{"type":"local","command":["toolport-gateway"]},"conduit":{"type":"local","command":["conduit-gateway"]},"foreign":{"type":"local","command":["toolport-gateway"]}}}"#),
         (Format::TomlMcpServers, "[mcp_servers.toolport]\ncommand='toolport-gateway'\n[mcp_servers.conduit]\ncommand='conduit-gateway'\n[mcp_servers.foreign]\ncommand='toolport-gateway'\n"),
         (Format::YamlExtensions, "extensions:\n  toolport: {type: stdio, cmd: toolport-gateway, enabled: true}\n  conduit: {type: stdio, cmd: conduit-gateway, enabled: true}\n  foreign: {type: stdio, cmd: toolport-gateway, enabled: true}\n"),

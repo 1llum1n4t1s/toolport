@@ -77,6 +77,7 @@ pub(super) fn client_logo(id: &str) -> gtk::Image {
         )),
         "reasonix" => Some(include_bytes!("../../icons/client-logos/reasonix.png")),
         "codewhale" => Some(include_bytes!("../../icons/client-logos/codewhale.png")),
+        "openclaw" => Some(include_bytes!("../../icons/client-logos/openclaw.png")),
         "junie" => Some(include_bytes!("../../icons/client-logos/junie.png")),
         "kilo-code" => Some(include_bytes!("../../icons/client-logos/kilo-code.png")),
         "github-copilot-cli" => Some(include_bytes!(

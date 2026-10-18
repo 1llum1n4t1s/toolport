@@ -67,6 +67,8 @@ pub struct Env {
     pub codewhale: PathBuf,
     /// Codewhale's config.toml (`CODEWHALE_CONFIG_PATH`, else in its state home).
     pub codewhale_config: PathBuf,
+    /// OpenClaw's home, state dir, config and default workspace.
+    pub(crate) openclaw: crate::clients::openclaw::Dirs,
     /// Every Claude Code profile folder when there is more than one (`~/.claude`, `~/.claude2`,
     /// a `CLAUDE_CONFIG_DIR`). Empty means `claude` is the only one.
     pub claude_profiles: Vec<PathBuf>,
@@ -98,6 +100,7 @@ impl Env {
             reasonix_state: home.join(".reasonix"),
             codewhale: home.join(".codewhale"),
             codewhale_config: codewhale_config(home, &home.join(".codewhale"), false),
+            openclaw: crate::clients::openclaw::dirs(home, &|_| None),
             config,
             claude_profiles: Vec::new(),
         }
@@ -196,6 +199,7 @@ impl Env {
             .or_else(|| trimmed("DEEPSEEK_CONFIG_PATH"))
             .and_then(expand)
             .unwrap_or_else(|| codewhale_config(&home, &env.codewhale, explicit_home));
+        env.openclaw = crate::clients::openclaw::dirs(&home, &trimmed);
         env.claude_profiles = claude_profile_dirs(&home, &env.claude);
         Some(env)
     }
@@ -386,6 +390,8 @@ enum Switch {
     ReasonixConfig,
     /// `disabled` in Codewhale's skills_state.toml.
     CodewhaleState,
+    /// `skills.entries.<name>.enabled` in OpenClaw's openclaw.json.
+    OpenclawEntries,
     /// `options.disabled_skills` in Crush's crush.json.
     CrushConfig,
     /// `skills.disabled` in Qwen Code's settings.json.
@@ -1421,6 +1427,18 @@ fn agent_defs() -> Vec<AgentDef> {
         )
         .switch(Switch::CodewhaleState)
         .project_walk(ProjectWalk::DEEP.first()),
+        // OpenClaw docs/tools/skills.md: the agent's workspace is its project, so
+        // there are no folders under the current directory. Each root is walked
+        // deep and the first folder with a name wins.
+        docs_agent(
+            "openclaw",
+            "OpenClaw",
+            openclaw_skill_roots,
+            &[],
+            |env| if env.openclaw.relative || !env.openclaw.workspace_known { Vec::new() } else { sources(vec![env.openclaw.workspace.join("AGENTS.md")], false) },
+            &[],
+        )
+        .switch(Switch::OpenclawEntries),
         docs_agent(
             "tabnine",
             "Tabnine",
@@ -1803,7 +1821,7 @@ fn walk_root(root: &Root) -> Vec<Found> {
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
     let mut budget = MAX_ENTRIES;
-    walk_dir(root, &root.path, 0, &mut seen, &mut budget, &mut out);
+    walk_dir(root, &root.path, 0, &mut seen, &mut budget, &mut out, None);
     out
 }
 
@@ -1840,6 +1858,7 @@ fn walk_dir(
     seen: &mut BTreeSet<PathBuf>,
     budget: &mut usize,
     out: &mut Vec<Found>,
+    allowed: Option<&dyn Fn(&Path) -> bool>,
 ) {
     let Ok(real_dir) = canon(dir) else {
         return;
@@ -1874,6 +1893,9 @@ fn walk_dir(
         if !path.is_dir() || (!root.dir_links && is_link(&path)) {
             continue;
         }
+        if allowed.is_some_and(|allowed| !allowed(&path)) {
+            continue;
+        }
         let skill_md = path.join("SKILL.md");
         if !root.file_links && is_link(&skill_md) {
             continue;
@@ -1886,7 +1908,7 @@ fn walk_dir(
                 root_path: root.path.clone(),
             });
         } else if root.recursive && depth + 1 < MAX_DEPTH {
-            walk_dir(root, &path, depth + 1, seen, budget, out);
+            walk_dir(root, &path, depth + 1, seen, budget, out, allowed);
         }
     }
 }
@@ -1938,6 +1960,178 @@ fn toml_list_switch(switch: Switch, env: &Env) -> Option<(PathBuf, &'static str)
         Switch::CodewhaleState => Some((env.codewhale.join("skills_state.toml"), "disabled")),
         _ => None,
     }
+}
+
+/// OpenClaw's skill folders, highest first: the workspace's own and its
+/// `.agents/skills`, the personal `~/.agents/skills` (only with the default state
+/// dir), the managed `<state>/skills`, then `skills.load.extraDirs`.
+fn openclaw_skill_roots(env: &Env) -> Vec<Root> {
+    let dirs = &env.openclaw;
+    if dirs.relative || !dirs.workspace_known {
+        return Vec::new();
+    }
+    let mut roots = vec![
+        Root::deep(dirs.workspace.join("skills"), msg("OpenClaw workspace")),
+        Root::deep(
+            dirs.workspace.join(".agents").join("skills"),
+            msg("OpenClaw workspace"),
+        ),
+    ];
+    if dirs.default_state {
+        roots.push(Root::deep(
+            dirs.home.join(".agents").join("skills"),
+            msg("shared ~/.agents/skills"),
+        ));
+    }
+    roots.push(Root::deep(
+        dirs.state.join("skills"),
+        msg("OpenClaw skills"),
+    ));
+    let extra = read_json(&dirs.config)
+        .as_ref()
+        .and_then(|v| v.get("skills")?.get("load")?.get("extraDirs").cloned());
+    for dir in string_list(extra.as_ref()) {
+        let dir = match dir.strip_prefix("~/") {
+            Some(rest) => dirs.home.join(rest),
+            None => PathBuf::from(dir),
+        };
+        if dir.is_absolute() {
+            roots.push(Root::deep(dir, msg("OpenClaw extra folder")));
+        }
+    }
+    roots
+}
+
+/// OpenClaw 2026.10.4 confines workspace and extra roots unless an escaped
+/// directory is in skills.load.allowSymlinkTargets. Managed/personal directories
+/// permit folder links, but every SKILL.md must stay within its own skill folder.
+fn openclaw_skill_allowed(env: &Env, root: &Root, found: &Found, trusted: &[PathBuf]) -> bool {
+    let Some(real_file) = found.real.as_ref() else {
+        return false;
+    };
+    let Some(skill_dir) = found.link.parent().and_then(|path| canon(path).ok()) else {
+        return false;
+    };
+    if !real_file.starts_with(&skill_dir) {
+        return false;
+    }
+    let dirs = &env.openclaw;
+    if root.path == dirs.state.join("skills") || root.path == dirs.home.join(".agents/skills") {
+        return true;
+    }
+    if canon(&root.path).is_ok_and(|base| skill_dir.starts_with(base)) {
+        return true;
+    }
+    trusted.iter().any(|base| skill_dir.starts_with(base))
+}
+
+fn walk_openclaw_root(env: &Env, root: &Root, trusted: &[PathBuf]) -> Vec<Found> {
+    let dirs = &env.openclaw;
+    let folder_links =
+        root.path == dirs.state.join("skills") || root.path == dirs.home.join(".agents/skills");
+    let base = canon(&root.path).ok();
+    let allowed = |path: &Path| {
+        folder_links
+            || canon(path).is_ok_and(|real| {
+                base.as_ref().is_some_and(|base| real.starts_with(base))
+                    || trusted.iter().any(|base| real.starts_with(base))
+            })
+    };
+    let mut out = Vec::new();
+    let mut budget = MAX_ENTRIES;
+    walk_dir(
+        root,
+        &root.path,
+        0,
+        &mut BTreeSet::new(),
+        &mut budget,
+        &mut out,
+        Some(&allowed),
+    );
+    out.into_iter()
+        .filter(|found| openclaw_skill_allowed(env, root, found, trusted))
+        .collect()
+}
+
+fn openclaw_trusted_skill_dirs(env: &Env) -> Vec<PathBuf> {
+    let dirs = &env.openclaw;
+    let config = read_json(&dirs.config);
+    let trusted = config
+        .as_ref()
+        .and_then(|value| value.get("skills")?.get("load")?.get("allowSymlinkTargets"));
+    string_list(trusted)
+        .iter()
+        .filter_map(|raw| {
+            let raw = raw.trim();
+            let path = if raw == "~" {
+                dirs.home.clone()
+            } else if let Some(rest) = raw.strip_prefix("~/") {
+                dirs.home.join(rest)
+            } else {
+                PathBuf::from(raw)
+            };
+            path.is_absolute().then(|| canon(&path).ok()).flatten()
+        })
+        .collect()
+}
+
+/// `metadata.openclaw.skillKey` from a SKILL.md: the key OpenClaw uses for the
+/// skill under `skills.entries` instead of its name. `metadata` may be a YAML
+/// mapping or a JSON5 string, as OpenClaw reads both.
+fn openclaw_skill_key(skill_md: &Path) -> Option<String> {
+    let text = read_text(skill_md)?;
+    let rest = text.trim_start_matches('\u{feff}').strip_prefix("---")?;
+    let yaml = &rest[..rest.find("\n---")?];
+    let parsed: serde_yaml::Value = serde_yaml::from_str(yaml).ok()?;
+    let metadata: serde_json::Value = match parsed.get("metadata")? {
+        serde_yaml::Value::String(text) => json5::from_str(text).ok()?,
+        other => serde_json::to_value(other).ok()?,
+    };
+    let key = metadata.get("openclaw")?.get("skillKey")?.as_str()?.trim();
+    (!key.is_empty()).then(|| key.to_string())
+}
+
+/// Turn an OpenClaw skill off with `enabled: false` in its `skills.entries`
+/// entry, or back on by removing that, and the entry when nothing else is left.
+/// An `$include` at the root or on the way to the entry is refused: a key
+/// written next to it would override the included file.
+fn openclaw_toggle(root: &mut serde_json::Value, name: &str, off: bool) -> Result<(), String> {
+    let included = |v: Option<&serde_json::Value>| v.is_some_and(|v| v.get("$include").is_some());
+    if included(Some(&*root))
+        || included(root.get("skills"))
+        || included(root.pointer("/skills/entries"))
+        || included(root.get("skills").and_then(|s| s.get("entries")?.get(name)))
+    {
+        return Err(wrong_shape("skills.entries"));
+    }
+    if !off
+        && root
+            .get("skills")
+            .and_then(|s| s.get("entries"))
+            .and_then(|e| e.get(name))
+            .is_none()
+    {
+        return Ok(());
+    }
+    let entries = object_at(root, &["skills", "entries"])?;
+    if off {
+        let entry = entries
+            .entry(name.to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let entry = entry
+            .as_object_mut()
+            .ok_or_else(|| wrong_shape(&format!("skills.entries.{name}")))?;
+        entry.insert("enabled".into(), serde_json::Value::Bool(false));
+    } else if let Some(entry) = entries.get_mut(name) {
+        let entry = entry
+            .as_object_mut()
+            .ok_or_else(|| wrong_shape(&format!("skills.entries.{name}")))?;
+        entry.remove("enabled");
+        if entry.is_empty() {
+            entries.remove(name);
+        }
+    }
+    Ok(())
 }
 
 /// Codewhale's config.toml in its home, or the legacy `~/.deepseek/config.toml`
@@ -2162,6 +2356,22 @@ fn read_disabled(switch: Switch, env: &Env) -> Disabled {
                         .filter_map(|x| x.as_str().map(str::to_string))
                         .collect();
                 }
+            }
+        }
+        Switch::OpenclawEntries => {
+            if let Some(entries) = read_json(&env.openclaw.config)
+                .as_ref()
+                .and_then(|v| v.get("skills"))
+                .and_then(|s| s.get("entries"))
+                .and_then(|e| e.as_object())
+            {
+                d.off = entries
+                    .iter()
+                    .filter(|(_, entry)| {
+                        entry.get("enabled") == Some(&serde_json::Value::Bool(false))
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect();
             }
         }
         Switch::GrokConfig | Switch::ReasonixConfig | Switch::CodewhaleState => {
@@ -2483,7 +2693,21 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             stale_codex = disabled.stale_paths.clone();
         }
 
-        let found: Vec<Found> = roots.iter().flat_map(|r| walks.walk(r)).collect();
+        let openclaw_trusted = if def.id == "openclaw" {
+            openclaw_trusted_skill_dirs(env)
+        } else {
+            Vec::new()
+        };
+        let found: Vec<Found> = roots
+            .iter()
+            .flat_map(|root| {
+                if def.id == "openclaw" {
+                    walk_openclaw_root(env, root, &openclaw_trusted)
+                } else {
+                    walks.walk(root)
+                }
+            })
+            .collect();
         // name -> winning key, for name-based dedup.
         let mut by_name: HashMap<String, String> = HashMap::new();
         let mut reached: Vec<(String, Found, String)> = Vec::new();
@@ -2571,8 +2795,13 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 .ends_with("plugin")
                 .then(|| plugin_of(&f.root_path).map(|p| format!("{p}:{name}")))
                 .flatten();
+            // OpenClaw files a skill under its `skillKey` when it sets one.
+            let switch_name = (def.switch == Switch::OpenclawEntries)
+                .then(|| real.as_deref().and_then(openclaw_skill_key))
+                .flatten()
+                .unwrap_or_else(|| name.clone());
             let named = |set: &BTreeSet<String>| {
-                set.contains(&name) || plugin_name.as_ref().is_some_and(|p| set.contains(p))
+                set.contains(&switch_name) || plugin_name.as_ref().is_some_and(|p| set.contains(p))
             };
             let (switched_off, by_pattern) = if disabled.rules.is_empty() {
                 (named(&disabled.off), false)
@@ -2695,6 +2924,9 @@ fn switch_note(switch: Switch) -> String {
             tr("Uses disabled_skills under [skills] in Reasonix's config.toml.")
         }
         Switch::CodewhaleState => tr("Uses the disabled list in Codewhale's skills_state.toml."),
+        Switch::OpenclawEntries => {
+            tr("Uses skills.entries in OpenClaw's openclaw.json (enabled: false).")
+        }
         Switch::CrushConfig => tr("Uses options.disabled_skills in Crush's crush.json."),
         Switch::QwenSettings => tr("Uses skills.disabled in Qwen Code's settings.json."),
         Switch::OmpConfig => tr("Uses skills.ignoredSkills in Oh My Pi's config.yml."),
@@ -2712,6 +2944,7 @@ fn switch_place(switch: Switch) -> &'static str {
         Switch::GeminiSettings | Switch::QwenSettings => "settings.json",
         Switch::GrokConfig | Switch::ReasonixConfig => "config.toml",
         Switch::CodewhaleState => "skills_state.toml",
+        Switch::OpenclawEntries => "openclaw.json",
         Switch::CrushConfig => "crush.json",
         Switch::OmpConfig => "config.yml",
         Switch::None(_) => "settings",
@@ -3629,6 +3862,14 @@ pub fn set_state(
             edit_json(agent, &path, writer, |root| {
                 toggle_list(root, keys, &skill.name, off)?;
                 Ok(keys[0])
+            })
+        }
+        Switch::OpenclawEntries => {
+            let path = env.openclaw.config.clone();
+            edit_json(agent, &path, writer, |root| {
+                let key = openclaw_skill_key(Path::new(&skill.key));
+                openclaw_toggle(root, key.as_deref().unwrap_or(&skill.name), off)?;
+                Ok("skills")
             })
         }
         Switch::GrokConfig | Switch::ReasonixConfig | Switch::CodewhaleState => {

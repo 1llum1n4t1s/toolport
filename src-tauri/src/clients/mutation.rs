@@ -242,11 +242,16 @@ fn run_inner<T>(
         )
         && !matches!(
             client_id.split('@').next().unwrap_or(client_id),
-            "vscode" | "zed" | "opencode" | "kilo-code"
+            "vscode" | "zed" | "opencode" | "kilo-code" | "openclaw"
         );
     for _ in 0..3 {
         if !value(format, original.as_deref())?.is_object() {
             return Err("Client config root must be an object; leaving it untouched".into());
+        }
+        if matches!(format, Format::JsonOpenClawMcp) {
+            if let Some(text) = original.as_deref().filter(|text| !text.trim().is_empty()) {
+                super::openclaw::root_from_content(text)?;
+            }
         }
         if strict_json {
             if let Some(text) = original.as_deref().filter(|text| !text.trim().is_empty()) {

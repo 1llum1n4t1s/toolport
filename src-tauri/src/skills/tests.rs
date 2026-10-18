@@ -174,6 +174,10 @@ fn native_switches_turn_skills_off_per_client() {
     );
     home.write(".codewhale/skills_state.toml", "disabled = [\"orca\"]\n");
     home.write(
+        ".openclaw/openclaw.json",
+        "{ skills: { entries: { orca: { enabled: false } } } }\n",
+    );
+    home.write(
         ".config/crush/crush.json",
         r#"{"options": {"disabled_skills": ["orca"]}}"#,
     );
@@ -200,6 +204,7 @@ fn native_switches_turn_skills_off_per_client() {
         "omp",
         "reasonix",
         "codewhale",
+        "openclaw",
     ] {
         assert_eq!(state(&inv, "orca", agent), Some(State::Off), "{agent}");
     }
@@ -1757,6 +1762,94 @@ fn codewhale_reads_its_folders_and_switches_through_skills_state() {
 }
 
 #[test]
+fn openclaw_reads_its_workspace_first_and_switches_through_skill_entries() {
+    let home = Home::new();
+    let writer = TestWriter::default();
+    home.skill(".openclaw/workspace/skills/style", "style", "Workspace");
+    home.skill(".openclaw/skills/style", "style", "Managed");
+    home.skill(".openclaw/skills/team/deploy", "deploy", "Deploy");
+    home.skill(".agents/skills/shared", "shared", "Shared");
+    home.skill("extra/tools/lint", "lint", "Lint");
+    let config = "{\n  // mine\n  gateway: { port: 18789 },\n  skills: {\n    load: { extraDirs: ['~/extra'] },\n    entries: { shared: { enabled: false, env: { A: '1' } } },\n  },\n}\n";
+    home.write(".openclaw/openclaw.json", config);
+    home.write(".openclaw/workspace/AGENTS.md", "# agent\n");
+
+    let inv = scan(&home.env(), &only(&["openclaw"]), None);
+    for name in ["deploy", "lint"] {
+        assert_eq!(state(&inv, name, "openclaw"), Some(State::On), "{name}");
+    }
+    assert_eq!(state(&inv, "shared", "openclaw"), Some(State::Off));
+    let winner = inv
+        .skills
+        .iter()
+        .find(|s| s.name == "style" && s.states["openclaw"].state == State::On)
+        .unwrap();
+    assert!(winner.key.contains("workspace"), "{}", winner.key);
+    let rule = inv
+        .rules
+        .iter()
+        .find(|r| r.path == "~/.openclaw/workspace/AGENTS.md")
+        .unwrap();
+    assert!(rule.agents.contains_key("openclaw"));
+
+    // On removes only `enabled`; off adds it. The rest of the file stays.
+    let shared = skill(&inv, "shared").key.clone();
+    set_state(&home.env(), &inv, "openclaw", &shared, Wanted::On, &writer).unwrap();
+    let text = home.read(".openclaw/openclaw.json");
+    assert!(
+        text.contains("// mine") && text.contains("extraDirs: ['~/extra']"),
+        "{text}"
+    );
+    assert!(!text.contains("enabled"), "{text}");
+    assert!(text.contains("A: '1'"), "{text}");
+    let inv = scan(&home.env(), &only(&["openclaw"]), None);
+    let deploy = skill(&inv, "deploy").key.clone();
+    set_state(&home.env(), &inv, "openclaw", &deploy, Wanted::Off, &writer).unwrap();
+    let inv = scan(&home.env(), &only(&["openclaw"]), None);
+    assert_eq!(state(&inv, "deploy", "openclaw"), Some(State::Off));
+    assert_eq!(state(&inv, "shared", "openclaw"), Some(State::On));
+    set_state(&home.env(), &inv, "openclaw", &deploy, Wanted::On, &writer).unwrap();
+    assert!(!home.read(".openclaw/openclaw.json").contains("deploy"));
+
+    // A skill with a skillKey is filed under that key.
+    home.write(
+        ".openclaw/skills/keyed/SKILL.md",
+        "---\nname: keyed\ndescription: Keyed\nmetadata: { \"openclaw\": { \"skillKey\": \"keyed-tool\" } }\n---\n",
+    );
+    let inv = scan(&home.env(), &only(&["openclaw"]), None);
+    let keyed = skill(&inv, "keyed").key.clone();
+    set_state(&home.env(), &inv, "openclaw", &keyed, Wanted::Off, &writer).unwrap();
+    let text = home.read(".openclaw/openclaw.json");
+    assert!(
+        text.contains("keyed-tool") && !text.contains("\"keyed\""),
+        "{text}"
+    );
+    let inv = scan(&home.env(), &only(&["openclaw"]), None);
+    assert_eq!(state(&inv, "keyed", "openclaw"), Some(State::Off));
+
+    // A root $include is refused: a skills key next to it would override it.
+    home.write(".openclaw/openclaw.json", "{ $include: './base.json5' }\n");
+    let inv = scan(&home.env(), &only(&["openclaw"]), None);
+    assert!(set_state(&home.env(), &inv, "openclaw", &deploy, Wanted::Off, &writer).is_err());
+    assert_eq!(
+        home.read(".openclaw/openclaw.json"),
+        "{ $include: './base.json5' }\n"
+    );
+    home.write(".openclaw/openclaw.json", config);
+
+    // A state dir of its own drops the personal ~/.agents/skills.
+    let mut env = home.env();
+    env.openclaw = crate::clients::openclaw::dirs(&home.path(""), &|key| {
+        (key == "OPENCLAW_STATE_DIR").then(|| "~/state".to_string())
+    });
+    let inv = scan(&env, &only(&["openclaw"]), None);
+    assert!(!inv
+        .skills
+        .iter()
+        .any(|s| s.name == "shared" && s.states.contains_key("openclaw")));
+}
+
+#[test]
 fn grok_edits_keep_the_skills_table_and_refuse_a_list_they_cannot_read() {
     let home = Home::new();
     let writer = TestWriter::default();
@@ -1909,4 +2002,71 @@ fn clients_without_a_rules_file_yet_still_offer_where_one_goes() {
     let missing = inv.issues.iter().find(|i| i.id == "rules-missing").unwrap();
     assert!(missing.agents.contains(&"grok".to_string()));
     assert!(missing.agents.contains(&"pi".to_string()));
+}
+
+#[test]
+fn openclaw_symlink_boundaries_apply_before_skill_precedence() {
+    let home = Home::new();
+    let escaped = home.skill("outside/style", "style", "Escaped workspace skill");
+    let managed = home.skill(".openclaw/skills/style", "style", "Managed winner");
+    home.link(
+        ".openclaw/workspace/skills/style",
+        escaped.parent().unwrap(),
+    );
+    let personal = home.skill("other/personal", "personal", "Personal folder link");
+    home.link(".agents/skills/personal", personal.parent().unwrap());
+    let foreign = home.write(
+        "outside/file.md",
+        "---\nname: foreign\ndescription: External file\n---\n",
+    );
+    home.link(".openclaw/skills/foreign/SKILL.md", &foreign);
+    let hidden = home.skill(
+        ".openclaw/workspace/skills/.hidden/leaf",
+        "hidden",
+        "Only reachable through an untrusted group",
+    );
+    home.link("group-outside/leaf", hidden.parent().unwrap());
+    home.link(
+        ".openclaw/workspace/skills/group",
+        &home.path("group-outside"),
+    );
+    let inv = scan(&home.env(), &only(&["openclaw"]), None);
+    assert!(inv.skills.iter().all(|skill| skill.name != "hidden"));
+    assert_eq!(skill(&inv, "style").key, managed.display().to_string());
+    assert_eq!(state(&inv, "style", "openclaw"), Some(State::On));
+    assert_eq!(state(&inv, "personal", "openclaw"), Some(State::On));
+    assert!(inv.skills.iter().all(|skill| skill.name != "foreign"));
+    home.write(
+        ".openclaw/openclaw.json",
+        "{ skills: { load: { allowSymlinkTargets: [' ~/outside '] } } }\n",
+    );
+    let inv = scan(&home.env(), &only(&["openclaw"]), None);
+    let winner = inv
+        .skills
+        .iter()
+        .find(|skill| skill.name == "style" && skill.states["openclaw"].state == State::On)
+        .unwrap();
+    assert_eq!(winner.key, escaped.display().to_string());
+    assert!(inv.skills.iter().all(|skill| skill.name != "foreign"));
+}
+
+#[test]
+fn openclaw_relative_workspace_does_not_report_fallback_skills_or_rules() {
+    let home = Home::new();
+    home.skill(
+        ".openclaw/workspace/skills/demo",
+        "demo",
+        "Not the selected workspace",
+    );
+    home.write(
+        ".openclaw/workspace/AGENTS.md",
+        "Not the selected workspace\n",
+    );
+    let mut env = home.env();
+    env.openclaw = crate::clients::openclaw::dirs(&home.root, &|key| {
+        (key == "OPENCLAW_WORKSPACE_DIR").then(|| "relative".into())
+    });
+    let inv = scan(&env, &only(&["openclaw"]), None);
+    assert!(inv.skills.is_empty());
+    assert!(inv.rules.is_empty());
 }

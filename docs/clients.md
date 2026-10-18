@@ -34,6 +34,7 @@ below for you, so you never have to edit these by hand.
 | DeepSeek Harness        | `$DSH_HOME/cordis.patch.yml` (default `~/.dsh/cordis.patch.yml`)                                       | YAML (patch rows)        |
 | Reasonix                | `$REASONIX_HOME/config.toml` (default `~/.reasonix/config.toml`)                                       | TOML (`[[plugins]]`)     |
 | Codewhale               | `~/.codewhale/mcp.json` (or `CODEWHALE_MCP_CONFIG`, `mcp_config_path`)                                 | JSON (`servers`)         |
+| OpenClaw                | `~/.openclaw/openclaw.json` (or `OPENCLAW_CONFIG_PATH`, `OPENCLAW_STATE_DIR`)                          | JSON5 (`mcp.servers`)    |
 | ZCode                   | `~/.zcode/cli/config.json`                                                                             | JSON (`mcp.servers`)     |
 | Command Code            | `~/.commandcode/mcp.json`                                                                              | JSON (`mcpServers`)      |
 | Tabnine Agent           | `~/.tabnine/mcp_servers.json`                                                                          | JSON (`mcpServers`)      |
@@ -133,6 +134,39 @@ instructions file, the first of `~/.codewhale/AGENTS.md`, `~/.agents/AGENTS.md`,
 `~/.deepseek/AGENTS.md` and the matching `instructions.md`, and only in projects
 without their own. Team rules go into the one it already reads, or
 `~/.codewhale/AGENTS.md` when there is none.
+
+### OpenClaw setup
+
+OpenClaw reads MCP servers from `mcp.servers` in its gateway config,
+`~/.openclaw/openclaw.json`. Toolport finds the same file OpenClaw does:
+`OPENCLAW_CONFIG_PATH`, else `openclaw.json` in `OPENCLAW_STATE_DIR`, else
+`~/.openclaw` (or the legacy `~/.clawdbot` when that is the only one), with
+`OPENCLAW_HOME` standing in for your home. Connect adds a `toolport` server and
+Disconnect removes it. The file is JSON5, and Toolport edits only the `mcp`
+section, so comments, unquoted keys and your other settings stay. Servers you
+turned off with `enabled: false` are left alone. A config that brings in `mcp`
+through `$include` is refused; add the server with `openclaw mcp add` instead.
+The Gateway hot-reloads the change, and `openclaw mcp doctor toolport --probe`
+checks it.
+
+OpenClaw's Tool Search defers MCP schemas by default, so Toolport's Auto mode
+lists the full catalog, and OpenClaw refreshes its catalog when the list
+changes. The Skills page shows the skills in the default agent's workspace
+(`skills` and `.agents/skills`), `~/.agents/skills`, `~/.openclaw/skills` and
+`skills.load.extraDirs`, and turns them off with `enabled: false` under
+`skills.entries`. Team rules go to the workspace's `AGENTS.md`
+(`~/.openclaw/workspace` unless `OPENCLAW_WORKSPACE_DIR` or
+`agents.defaults.workspace` moves it). An explicit default-agent workspace wins
+over `agents.defaults.workspace`, which wins over `OPENCLAW_WORKSPACE_DIR`.
+Config paths expand `~`; the workspace environment override accepts an absolute
+path only, matching OpenClaw. Empty or ambiguous agent rosters, included agent
+settings and cwd-dependent workspace paths have no skills or rules target in
+Toolport. A known MCP config can still be managed separately.
+
+Workspace and extra skill roots follow OpenClaw's symlink boundaries. Escaped
+skill folders are skipped unless their real targets are covered by
+`skills.load.allowSymlinkTargets`. Managed and personal roots accept folder
+links; a linked `SKILL.md` must still stay inside its own skill folder.
 
 ### ZCode setup
 

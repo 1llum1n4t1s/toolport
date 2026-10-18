@@ -19,6 +19,21 @@ The Visual Studio Code client icon is adapted from
 
 Copyright (c) 2015 konpa
 
+## Codewhale
+
+The Codewhale client icon is adapted from
+[Codewhale](https://github.com/codewhale-hq/Codewhale), licensed under the MIT License.
+
+Copyright (c) 2024-2025 DeepSeek-TUI Contributors
+
+## OpenClaw
+
+The OpenClaw client icon is adapted from the
+[OpenClaw 2026.10.4 package](https://www.npmjs.com/package/openclaw/v/2026.10.4),
+licensed under the MIT License.
+
+Copyright (c) 2026 OpenClaw Foundation
+
 ## MIT License text
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
