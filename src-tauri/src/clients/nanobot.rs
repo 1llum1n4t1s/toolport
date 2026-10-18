@@ -159,7 +159,7 @@ fn transport(definition: &Value) -> Option<&'static str> {
 }
 
 /// The definition in the shape the shared parsers read, with `type` set.
-fn normalized_server(name: &str, definition: &Value) -> Result<Value, String> {
+pub(super) fn normalized_server(name: &str, definition: &Value) -> Result<Value, String> {
     let mut value = definition
         .as_object()
         .cloned()

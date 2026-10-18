@@ -729,6 +729,75 @@ mod tests {
     }
 
     #[test]
+    fn nanobot_imports_only_the_active_transports_credentials() {
+        let root =
+            std::env::temp_dir().join(format!("toolport-nanobot-import-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.json");
+        for (kind, remote) in [("sse", true), ("streamableHttp", true), ("stdio", false)] {
+            let raw = json!({"type":kind,"command":"node","args":["old.js"],"url":"https://example.invalid/mcp","env":{"Authorization":"stdio-secret","STDIO_ONLY":"ignored"},"headers":{"Authorization":"remote-secret","REMOTE_ONLY":"ignored"}});
+            std::fs::write(
+                &path,
+                json!({"tools":{"mcpServers":{"native":raw}}}).to_string(),
+            )
+            .unwrap();
+            let client = crate::clients::DetectedClient {
+                id: "nanobot".into(),
+                name: "nanobot".into(),
+                uses_connectors: false,
+                location_removable: false,
+                discovery: crate::clients::DiscoveryCapabilities {
+                    auto_mode: "lazy",
+                    native_tool_search: Some(false),
+                    tools_list_changed: Some(false),
+                    cold_full_list_wait_ms: 5000,
+                    max_tools: None,
+                    auto_full_max_tools: None,
+                    evidence: "test",
+                },
+                config_path: path.display().to_string(),
+                config_exists: true,
+                app_present: true,
+                servers: vec![],
+                plugin_servers: vec![],
+                gateway_installed: false,
+                entry_state: crate::clients::GatewayEntryState::Absent,
+                error: None,
+                claude_profile: None,
+            };
+            let definition = crate::clients::import_definition(&client, "native")
+                .unwrap()
+                .unwrap();
+            let mut server = entry(remote);
+            server.url = remote.then(|| "https://example.invalid/mcp".into());
+            server.env.clear();
+            let import = Import::prepare(server, Some(&definition)).unwrap();
+            let actual = import
+                .values
+                .iter()
+                .find(|(key, _)| key == "Authorization")
+                .unwrap()
+                .1
+                .as_deref();
+            assert_eq!(
+                actual,
+                Some(if remote {
+                    "remote-secret"
+                } else {
+                    "stdio-secret"
+                }),
+                "{kind}"
+            );
+            assert!(!import
+                .entry
+                .env
+                .iter()
+                .any(|env| env.key == if remote { "STDIO_ONLY" } else { "REMOTE_ONLY" }));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn reviewed_secret_heuristics_cover_connection_strings_and_word_names() {
         for (key, value) in [
             ("DATABASE_URL", "postgres://u:p@host/db"),

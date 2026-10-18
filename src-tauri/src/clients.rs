@@ -4379,8 +4379,14 @@ pub(crate) fn import_definition(
     name: &str,
 ) -> Result<Option<serde_json::Value>, String> {
     let def = find_def(&client.id).ok_or("Unknown client")?;
-    moved::definition(def.format, Path::new(&client.config_path), name)
-        .map_err(|_| "Could not read imported credentials. Client config unchanged.".into())
+    let definition = moved::definition(def.format, Path::new(&client.config_path), name)
+        .map_err(|_| "Could not read imported credentials. Client config unchanged.".to_string())?;
+    if matches!(def.format, Format::JsonNanobotMcp) {
+        return definition
+            .map(|definition| nanobot::normalized_server(name, &definition))
+            .transpose();
+    }
+    Ok(definition)
 }
 
 pub(crate) fn validate_client_import(
