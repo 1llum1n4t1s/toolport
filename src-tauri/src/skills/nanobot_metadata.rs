@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
-use unsafe_libyaml as yaml;
+use unsafe_libyaml as unsafe_yaml;
 
 #[derive(Clone)]
 struct Scalar {
@@ -25,20 +25,20 @@ enum Event {
     DocEnd,
 }
 struct Reader<'a> {
-    raw: Box<MaybeUninit<yaml::yaml_parser_t>>,
+    raw: Box<MaybeUninit<unsafe_yaml::yaml_parser_t>>,
     input: PhantomData<&'a [u8]>,
     remaining: usize,
 }
 impl<'a> Reader<'a> {
     fn new(input: &'a str) -> Option<Self> {
-        let mut raw = Box::<yaml::yaml_parser_t>::new_uninit();
+        let mut raw = Box::<unsafe_yaml::yaml_parser_t>::new_uninit();
         // SAFETY: Box pins the parser's address. The input outlives Reader; only
         // successfully initialized parsers reach Drop.
         unsafe {
-            if yaml::yaml_parser_initialize(raw.as_mut_ptr()).fail {
+            if unsafe_yaml::yaml_parser_initialize(raw.as_mut_ptr()).fail {
                 return None;
             }
-            yaml::yaml_parser_set_input_string(
+            unsafe_yaml::yaml_parser_set_input_string(
                 raw.as_mut_ptr(),
                 input.as_ptr(),
                 input.len() as u64,
@@ -52,12 +52,12 @@ impl<'a> Reader<'a> {
     }
     fn next(&mut self) -> Option<Event> {
         self.remaining = self.remaining.checked_sub(1)?;
-        let mut event = MaybeUninit::<yaml::yaml_event_t>::uninit();
-        // SAFETY: The parser owns its input and internal allocations. Union
+        let mut event = MaybeUninit::<unsafe_yaml::yaml_event_t>::uninit();
+        // SAFETY: Reader keeps its input borrowed for the parser's lifetime. Union
         // fields are read only for their matching event type; all borrowed event
         // data is copied before yaml_event_delete, even on conversion errors.
         unsafe {
-            if yaml::yaml_parser_parse(self.raw.as_mut_ptr(), event.as_mut_ptr()).fail {
+            if unsafe_yaml::yaml_parser_parse(self.raw.as_mut_ptr(), event.as_mut_ptr()).fail {
                 return None;
             }
             let event = event.assume_init_mut();
@@ -70,28 +70,28 @@ impl<'a> Reader<'a> {
                     }
                 };
                 Some(match event.type_ {
-                    yaml::YAML_STREAM_START_EVENT => Event::StreamStart,
-                    yaml::YAML_STREAM_END_EVENT => Event::StreamEnd,
-                    yaml::YAML_DOCUMENT_START_EVENT => Event::DocStart,
-                    yaml::YAML_DOCUMENT_END_EVENT => Event::DocEnd,
-                    yaml::YAML_MAPPING_START_EVENT => {
+                    unsafe_yaml::YAML_STREAM_START_EVENT => Event::StreamStart,
+                    unsafe_yaml::YAML_STREAM_END_EVENT => Event::StreamEnd,
+                    unsafe_yaml::YAML_DOCUMENT_START_EVENT => Event::DocStart,
+                    unsafe_yaml::YAML_DOCUMENT_END_EVENT => Event::DocEnd,
+                    unsafe_yaml::YAML_MAPPING_START_EVENT => {
                         let data = event.data.mapping_start;
                         if !valid_tag(text(data.tag)?.as_deref(), "map") {
                             return None;
                         }
                         Event::Map(text(data.anchor)?)
                     }
-                    yaml::YAML_MAPPING_END_EVENT => Event::MapEnd,
-                    yaml::YAML_SEQUENCE_START_EVENT => {
+                    unsafe_yaml::YAML_MAPPING_END_EVENT => Event::MapEnd,
+                    unsafe_yaml::YAML_SEQUENCE_START_EVENT => {
                         let data = event.data.sequence_start;
                         if !valid_tag(text(data.tag)?.as_deref(), "seq") {
                             return None;
                         }
                         Event::Seq(text(data.anchor)?)
                     }
-                    yaml::YAML_SEQUENCE_END_EVENT => Event::SeqEnd,
-                    yaml::YAML_ALIAS_EVENT => Event::Alias(text(event.data.alias.anchor)??),
-                    yaml::YAML_SCALAR_EVENT => {
+                    unsafe_yaml::YAML_SEQUENCE_END_EVENT => Event::SeqEnd,
+                    unsafe_yaml::YAML_ALIAS_EVENT => Event::Alias(text(event.data.alias.anchor)??),
+                    unsafe_yaml::YAML_SCALAR_EVENT => {
                         let data = event.data.scalar;
                         let tag = text(data.tag)?;
                         // Explicit non-string/custom scalar tags cannot satisfy
@@ -112,7 +112,7 @@ impl<'a> Reader<'a> {
                             Scalar {
                                 value,
                                 tag,
-                                plain: data.style == yaml::YAML_PLAIN_SCALAR_STYLE,
+                                plain: data.style == unsafe_yaml::YAML_PLAIN_SCALAR_STYLE,
                             },
                             text(data.anchor)?,
                         )
@@ -121,7 +121,7 @@ impl<'a> Reader<'a> {
                 })
             };
             let result = convert();
-            yaml::yaml_event_delete(event);
+            unsafe_yaml::yaml_event_delete(event);
             result
         }
     }
@@ -130,7 +130,7 @@ impl Drop for Reader<'_> {
     fn drop(&mut self) {
         // SAFETY: Reader is created only after successful initialization, and
         // each reader exclusively owns and deletes one parser.
-        unsafe { yaml::yaml_parser_delete(self.raw.as_mut_ptr()) }
+        unsafe { unsafe_yaml::yaml_parser_delete(self.raw.as_mut_ptr()) }
     }
 }
 fn valid_tag(tag: Option<&str>, expected: &str) -> bool {
@@ -220,7 +220,8 @@ impl Document<'_> {
         self.nodes[index] = node;
         Some(index)
     }
-    fn field(&self, root: usize, name: &str, depth: usize) -> Option<usize> {
+    fn field(&self, root: usize, name: &str, depth: usize, work: &mut usize) -> Option<usize> {
+        *work = work.checked_sub(1)?;
         if depth > 64 {
             return None;
         }
@@ -230,13 +231,15 @@ impl Document<'_> {
         // Explicit keys win over merges regardless of their position; duplicate
         // explicit keys have PyYAML's last-key-wins behavior.
         for &(key, value) in pairs.iter().rev() {
+            *work = work.checked_sub(1)?;
             if let Node::Scalar(key) = &self.nodes[key] {
-                if string(key) == Some(name) {
+                if key.value == name && string(key).is_some() {
                     return Some(value);
                 }
             }
         }
         for &(key, value) in pairs.iter().rev() {
+            *work = work.checked_sub(1)?;
             let Node::Scalar(key) = &self.nodes[key] else {
                 continue;
             };
@@ -245,11 +248,12 @@ impl Document<'_> {
             }
             if let Node::Seq(maps) = &self.nodes[value] {
                 for &map in maps {
-                    if let Some(value) = self.field(map, name, depth + 1) {
+                    *work = work.checked_sub(1)?;
+                    if let Some(value) = self.field(map, name, depth + 1, work) {
                         return Some(value);
                     }
                 }
-            } else if let Some(value) = self.field(value, name, depth + 1) {
+            } else if let Some(value) = self.field(value, name, depth + 1, work) {
                 return Some(value);
             }
         }
@@ -258,12 +262,17 @@ impl Document<'_> {
 }
 fn merge_key(key: &Scalar) -> bool {
     key.value == "<<"
-        && ((key.plain && key.tag.is_none())
+        && ((key.plain && (key.tag.is_none() || key.tag.as_deref() == Some("!")))
             || key.tag.as_deref() == Some("tag:yaml.org,2002:merge"))
 }
 
 fn string(scalar: &Scalar) -> Option<&str> {
-    if scalar.tag.is_some() || !scalar.plain {
+    match scalar.tag.as_deref() {
+        Some("tag:yaml.org,2002:str") => return Some(&scalar.value),
+        None | Some("!") => {}
+        _ => return None,
+    }
+    if !scalar.plain {
         return Some(&scalar.value);
     }
     static TYPES: std::sync::OnceLock<regex::RegexSet> = std::sync::OnceLock::new();
@@ -278,6 +287,11 @@ fn string(scalar: &Scalar) -> Option<&str> {
 }
 
 pub(super) fn fields(yaml: &str) -> Option<(String, String)> {
+    let mut work = super::MAX_ENTRIES;
+    fields_with_budget(yaml, &mut work)
+}
+
+fn fields_with_budget(yaml: &str, work: &mut usize) -> Option<(String, String)> {
     let mut document = Document {
         reader: Reader::new(yaml)?,
         nodes: Vec::new(),
@@ -295,10 +309,12 @@ pub(super) fn fields(yaml: &str) -> Option<(String, String)> {
     {
         return None;
     }
-    let Node::Scalar(name) = &document.nodes[document.field(root, "name", 0)?] else {
+    let Node::Scalar(name) = &document.nodes[document.field(root, "name", 0, work)?] else {
         return None;
     };
-    let Node::Scalar(description) = &document.nodes[document.field(root, "description", 0)?] else {
+    let Node::Scalar(description) =
+        &document.nodes[document.field(root, "description", 0, work)?]
+    else {
         return None;
     };
     Some((string(name)?.to_string(), string(description)?.to_string()))
@@ -342,6 +358,12 @@ mod tests {
             );
         }
         assert!(fields("name: yes\ndescription: ordinary\n").is_none());
+        assert!(fields("name: valid\ndescription: ! yes\n").is_none());
+        assert!(fields("name: valid\ndescription: !!merge <<\n").is_none());
+        assert_eq!(
+            fields("name: valid\ndescription: ! 'yes'\n"),
+            Some(("valid".into(), "yes".into()))
+        );
         assert_eq!(
             fields("name: 'yes'\ndescription: ordinary\n"),
             Some(("yes".into(), "ordinary".into()))
@@ -359,6 +381,8 @@ mod tests {
     fn aliases_merge_precedence_and_duplicate_fields_match_pyyaml() {
         for yaml in [
             "base: &base {name: valid, description: 'yes'}\n<<: *base\n",
+            "base: &base {name: valid, description: 'yes'}\n! <<: *base\n",
+            "base: &base {name: valid, description: 'yes'}\n!!merge '<<': *base\n",
             "<<: [{name: valid, description: 'yes'}, {name: other, description: 'no'}]\n",
             "base: &base {name: other, description: 'yes'}\nname: valid\n<<: *base\n",
             "name: first\nname: valid\nvalue: &description 'yes'\ndescription: *description\n",
@@ -390,5 +414,24 @@ mod tests {
             "]".repeat(66)
         );
         assert!(fields(&nested).is_none());
+    }
+    #[test]
+    fn alias_dag_missing_fields_share_a_finite_lookup_budget() {
+        let mut yaml = "base: &n0 {other: ordinary}\n".to_string();
+        for level in 1..=30 {
+            yaml.push_str(&format!(
+                "node{level}: &n{level} {{<<: [*n{}, *n{}]}}\n",
+                level - 1,
+                level - 1
+            ));
+        }
+        yaml.push_str("name: valid\n<<: *n30\n");
+        let mut work = super::super::MAX_ENTRIES;
+        assert!(fields_with_budget(&yaml, &mut work).is_none());
+        assert_eq!(
+            work, 0,
+            "the alias DAG must exhaust the shared bound instead of expanding exponentially"
+        );
+        assert!(fields("name: valid\nbase: &base {<<: *base}\n<<: *base\n").is_none());
     }
 }

@@ -313,6 +313,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let file = std::fs::File::create(root.join("large")).unwrap();
         file.set_len(MAX_PACKAGE_BYTES + 1).unwrap();
+        drop(file);
         assert!(fingerprint(&root).is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
