@@ -5581,6 +5581,101 @@ mod tests {
         }
     }
 
+    fn openhands_reviewed_move(layout: &str) {
+        for native_add in [false, true] {
+            let fixture = MoveFixture::new(&Registry::default());
+            let folder = fixture.root.join("openhands");
+            std::fs::create_dir_all(&folder).unwrap();
+            let _persistence = clients::EnvRestore::set("OPENHANDS_PERSISTENCE_DIR", &folder);
+            let path = folder.join("mcp.json");
+            let servers = serde_json::json!({
+                "git": {"command":"fixture-git", "env":{"PAT":"synthetic-private-pat"}},
+                "docs": {"url":"https://example.test/mcp", "headers":{"Authorization":"Bearer synthetic-private-header"}},
+                "off": {"command":"off", "enabled":false, "custom":{"keep":true}}
+            });
+            let original = match layout {
+                "root" => servers.clone(),
+                "mixed" => {
+                    serde_json::json!({"ignored":{"command":"root-extra"}, "mcpServers":servers})
+                }
+                _ => serde_json::json!({"mcpServers":servers}),
+            };
+            let bytes = format!("{}\n", serde_json::to_string_pretty(&original).unwrap());
+            std::fs::write(&path, &bytes).unwrap();
+            let review = preview_client_setup("openhands").unwrap();
+            let names = review
+                .items
+                .iter()
+                .map(|item| item.name.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(names, ["docs", "git"]);
+            assert!(review.items.iter().all(|item| item.unsupported.is_none()));
+            migrate_client_reviewed_with(
+                "openhands",
+                None,
+                false,
+                &names,
+                &review.revision,
+                |registry, _, _, _| {
+                    let git = registry
+                        .servers
+                        .iter()
+                        .find(|server| server.name == "git")
+                        .unwrap();
+                    assert_eq!(
+                        crate::secrets::get_vault_secret_result(&git.id, "PAT")
+                            .unwrap()
+                            .as_deref(),
+                        Some("synthetic-private-pat")
+                    );
+                    let text = serde_json::to_string(registry).unwrap();
+                    assert!(!text.contains("synthetic-private-pat"));
+                    assert!(!text.contains("synthetic-private-header"));
+                    Ok(Vec::new().into())
+                },
+            )
+            .unwrap();
+            let mut connected = json_file(&path);
+            assert!(connected["mcpServers"]["toolport"].is_object());
+            assert_eq!(connected["mcpServers"]["off"], servers["off"]);
+            assert!(connected["mcpServers"].get("git").is_none());
+            assert!(connected["mcpServers"].get("docs").is_none());
+            if layout == "mixed" {
+                assert_eq!(connected["ignored"], original["ignored"]);
+            } else {
+                assert!(connected.get("git").is_none());
+            }
+            if native_add {
+                connected["mcpServers"]["native"] = serde_json::json!({"command":"native"});
+                std::fs::write(&path, connected.to_string()).unwrap();
+            }
+            let outcome = clients::uninstall_gateway("openhands").unwrap();
+            clients::finish_uninstall("openhands", &outcome).unwrap();
+            if native_add {
+                let mut expected = if layout == "root" {
+                    serde_json::json!({"mcpServers":servers})
+                } else {
+                    original.clone()
+                };
+                expected["mcpServers"]["native"] = serde_json::json!({"command":"native"});
+                assert_eq!(json_file(&path), expected);
+            } else {
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn openhands_reviewed_move_reads_root_servers_and_private_credentials() {
+        openhands_reviewed_move("root");
+    }
+
+    #[test]
+    fn openhands_reviewed_move_uses_only_mcp_servers_in_wrapped_and_mixed_files() {
+        openhands_reviewed_move("wrapped");
+        openhands_reviewed_move("mixed");
+    }
+
     fn enabled_names(registry: &Registry, profile: &str) -> Vec<String> {
         let mut names = registry
             .servers

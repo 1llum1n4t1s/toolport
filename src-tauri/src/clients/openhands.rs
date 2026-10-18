@@ -93,7 +93,7 @@ fn servers_at_root(root: &Value) -> bool {
         })
 }
 
-fn server_map(root: &Value) -> Result<Map<String, Value>, String> {
+pub(super) fn server_map(root: &Value) -> Result<Map<String, Value>, String> {
     if servers_at_root(root) {
         return Ok(root.as_object().cloned().unwrap_or_default());
     }
@@ -308,6 +308,15 @@ pub(super) fn edit_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(
         servers.insert(GATEWAY_ENTRY_NAME.into(), value);
     } else if servers.len() == count {
         return Ok(());
+    }
+    write_map(path, root, original.as_deref(), servers)
+}
+
+pub(super) fn remove_selected(path: &Path, names: &[String]) -> Result<(), String> {
+    let (root, original) = read_root(path)?;
+    let mut servers = server_map(&root)?;
+    for name in names {
+        servers.remove(name);
     }
     write_map(path, root, original.as_deref(), servers)
 }

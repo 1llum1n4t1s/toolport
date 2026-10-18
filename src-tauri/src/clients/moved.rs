@@ -101,6 +101,11 @@ fn container(format: Format) -> Container {
 }
 
 pub(super) fn server_container(format: Format, root: &serde_json::Value) -> serde_json::Value {
+    if matches!(format, Format::JsonOpenHandsMcpServers) {
+        return openhands::server_map(root)
+            .map(serde_json::Value::Object)
+            .unwrap_or(serde_json::Value::Null);
+    }
     match container(format) {
         Container::Json { key, nested } => {
             let value = &root[key];
@@ -173,7 +178,7 @@ pub(super) fn definition(
     path: &Path,
     name: &str,
 ) -> Result<Option<serde_json::Value>, String> {
-    let entries = extract(container(format), &read_config_file(path)?)?;
+    let entries = extract(format, &read_config_file(path)?)?;
     let Some(entry) = entries.into_iter().find(|entry| entry.name == name) else {
         return Ok(None);
     };
@@ -203,7 +208,7 @@ pub(super) fn definition(
 /// a name moved again takes its newest definition.
 #[cfg(test)]
 pub(super) fn record(client_id: &str, format: Format, path: &Path) -> Result<(), String> {
-    let names = extract(container(format), &read_config_file(path)?)?
+    let names = extract(format, &read_config_file(path)?)?
         .into_iter()
         .map(|entry| entry.name)
         .collect::<Vec<_>>();
@@ -223,7 +228,7 @@ pub(super) fn record_selected(
         Err(e) => return Err(format!("could not read {}: {e}", record_file.display())),
     };
     let entries = if mutation::exists(path) {
-        extract(container(format), &read_config_file(path)?)?
+        extract(format, &read_config_file(path)?)?
     } else {
         Vec::new()
     };
@@ -261,6 +266,9 @@ pub(super) fn record_selected(
 pub(super) fn remove_selected(format: Format, path: &Path, names: &[String]) -> Result<(), String> {
     if names.is_empty() {
         return Ok(());
+    }
+    if matches!(format, Format::JsonOpenHandsMcpServers) {
+        return openhands::remove_selected(path, names);
     }
     match container(format) {
         Container::Json { key, nested } => {
@@ -507,7 +515,7 @@ pub(super) fn missing_names(
         return Ok(Vec::new());
     }
     let existing = if mutation::exists(path) {
-        extract(container(format), &read_config_file(path)?)?
+        extract(format, &read_config_file(path)?)?
     } else {
         Vec::new()
     };
@@ -573,14 +581,17 @@ fn yaml_command(definition: &serde_yaml::Value) -> Option<&str> {
         .and_then(|value| value.as_str())
 }
 
-fn extract(container: Container, text: &str) -> Result<Vec<Moved>, String> {
+fn extract(format: Format, text: &str) -> Result<Vec<Moved>, String> {
     if text.trim().is_empty() {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    match container {
+    match container(format) {
         Container::Json { key, nested } => {
-            let root = read_existing_json(text, true)?;
+            let mut root = read_existing_json(text, true)?;
+            if matches!(format, Format::JsonOpenHandsMcpServers) {
+                root = serde_json::json!({"mcpServers": openhands::server_map(&root)?});
+            }
             let mut servers = root.get(key);
             if let Some(nested) = nested {
                 servers = servers.and_then(|value| value.get(nested));
