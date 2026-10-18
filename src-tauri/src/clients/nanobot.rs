@@ -44,10 +44,14 @@ pub(crate) fn workspace(user_home: &Path) -> Option<PathBuf> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
         Err(_) => return None,
     };
-    let configured = root
-        .get("agents")
-        .and_then(|v| v.get("defaults"))
-        .and_then(|v| v.get("workspace"));
+    let defaults = match root.get("agents") {
+        None => None,
+        Some(agents) => match agents.as_object()?.get("defaults") {
+            None => None,
+            Some(defaults) => Some(defaults.as_object()?),
+        },
+    };
+    let configured = defaults.and_then(|defaults| defaults.get("workspace"));
     let configured = match configured {
         Some(value) => Some(value.as_str()?.to_string()),
         None => None,
@@ -68,7 +72,7 @@ pub(crate) fn workspace(user_home: &Path) -> Option<PathBuf> {
 /// Parse a config and refuse what Toolport can't edit safely: a root that isn't
 /// an object, repeated keys and the snake_case server map. The mutation guard
 /// runs this before every write, Disconnect and restores included.
-pub(super) fn root_from_content(content: &str) -> Result<Value, String> {
+pub(crate) fn root_from_content(content: &str) -> Result<Value, String> {
     let root: Value = if content.trim().is_empty() {
         serde_json::json!({})
     } else {

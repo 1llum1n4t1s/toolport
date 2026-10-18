@@ -167,6 +167,12 @@ fn workspace_respects_custom_absolute_or_tilde_paths_and_refuses_invalid_config(
         .unwrap();
         assert_eq!(workspace(home), expected);
     }
-    std::fs::write(config, "invalid").unwrap();
-    assert!(workspace(home).is_none());
+    for invalid in [
+        "invalid",
+        r#"{"agents":null}"#,
+        r#"{"agents":{"defaults":[]}}"#,
+    ] {
+        std::fs::write(&config, invalid).unwrap();
+        assert!(workspace(home).is_none());
+    }
 }
