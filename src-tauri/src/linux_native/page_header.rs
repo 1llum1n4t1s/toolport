@@ -50,7 +50,8 @@ mod imp {
         }
 
         fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
-            let (Some(title), Some(actions)) = (self.title.borrow().clone(), self.actions.borrow().clone())
+            let (Some(title), Some(actions)) =
+                (self.title.borrow().clone(), self.actions.borrow().clone())
             else {
                 return (0, 0, -1, -1);
             };
@@ -58,7 +59,12 @@ mod imp {
             let (actions_min, actions_nat) = action_width(&actions);
             if orientation == gtk::Orientation::Horizontal {
                 let gap = if actions_nat > 0 { COLUMN_GAP } else { 0 };
-                return (title_min.max(actions_min), title_nat + gap + actions_nat, -1, -1);
+                return (
+                    title_min.max(actions_min),
+                    title_nat + gap + actions_nat,
+                    -1,
+                    -1,
+                );
             }
             let (_, actions_height) = action_height(&actions, -1);
             if for_size < 0 || fits_one_row(title_nat, actions_nat, for_size) {
@@ -72,11 +78,17 @@ mod imp {
             }
             let (min, nat, _, _) = title.measure(gtk::Orientation::Vertical, for_size);
             let (_, actions_height) = action_height(&actions, for_size.min(actions_nat));
-            (min + ROW_GAP + actions_height, nat + ROW_GAP + actions_height, -1, -1)
+            (
+                min + ROW_GAP + actions_height,
+                nat + ROW_GAP + actions_height,
+                -1,
+                -1,
+            )
         }
 
         fn size_allocate(&self, width: i32, height: i32, _baseline: i32) {
-            let (Some(title), Some(actions)) = (self.title.borrow().clone(), self.actions.borrow().clone())
+            let (Some(title), Some(actions)) =
+                (self.title.borrow().clone(), self.actions.borrow().clone())
             else {
                 return;
             };

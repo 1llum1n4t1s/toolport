@@ -12,8 +12,8 @@ mod i18n;
 mod io;
 mod notify;
 mod onboarding;
-mod page_header;
 mod package_updates;
+mod page_header;
 mod pairing;
 mod settings;
 mod setup;
@@ -715,7 +715,7 @@ fn build_window(
         if let state::RegistryState::Ready(ready) = &snapshot {
             team_button.set_visible(true);
             let label = if !ready.paired {
-                crate::i18n::msg("Sign in to sync")
+                crate::i18n::msg("Sync")
             } else if ready.personal_sync {
                 "Sync"
             } else {
@@ -1009,11 +1009,7 @@ const NAV_SECTIONS: &[(&str, &str, &str)] = &[
         crate::i18n::msg("Settings"),
         "emblem-system-symbolic",
     ),
-    (
-        "teams",
-        crate::i18n::msg("Sign in to sync"),
-        "system-users-symbolic",
-    ),
+    ("teams", crate::i18n::msg("Sync"), "system-users-symbolic"),
     (
         "catalog",
         crate::i18n::msg("Catalog"),
@@ -1052,21 +1048,24 @@ fn build_sidebar(
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.add_css_class("toolport-sidebar");
 
-    let header = adw::HeaderBar::new();
-    header.add_css_class("toolport-header");
     let brand = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    brand.add_css_class("toolport-sidebar-brand");
+    let controls = gtk::WindowControls::new(gtk::PackType::Start);
+    brand.append(&controls);
     let mark = branding::toolport_mark();
+    mark.set_pixel_size(32);
     brand.append(&mark);
-    brand.append(&{
-        let widget = gtk::Label::builder()
-            .label(crate::i18n::tr("Toolport"))
-            .css_classes(["title"])
-            .build();
-        l10n::bind_label(&widget, "Toolport");
-        widget
-    });
-    header.set_title_widget(Some(&brand));
-    root.append(&header);
+    let copy = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let name = l10n::label("Toolport");
+    name.set_xalign(0.0);
+    name.add_css_class("heading");
+    copy.append(&name);
+    let subtitle = l10n::label("MCP control center");
+    subtitle.set_xalign(0.0);
+    subtitle.add_css_class("toolport-muted");
+    copy.append(&subtitle);
+    brand.append(&copy);
+    root.append(&gtk::WindowHandle::builder().child(&brand).build());
 
     let nav = gtk::Box::new(gtk::Orientation::Vertical, 6);
     nav.set_margin_top(12);
@@ -1124,7 +1123,7 @@ fn build_sidebar(
         let button = gtk::Button::new();
         button.set_halign(gtk::Align::Fill);
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        row.append(&gtk::Image::from_icon_name(icon));
+        row.append(&gtk::Image::builder().icon_name(icon).pixel_size(16).build());
         row.append(&{
             let widget = l10n::label(label);
             widget.set_halign(gtk::Align::Start);
@@ -1169,7 +1168,7 @@ fn build_sidebar(
                 child.add_css_class("flat");
                 child.add_css_class("toolport-nav-item");
                 let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-                row.append(&gtk::Image::from_icon_name(icon));
+                row.append(&gtk::Image::builder().icon_name(icon).pixel_size(16).build());
                 let section_label = l10n::label(label);
                 section_label.set_xalign(0.0);
                 section_label.set_hexpand(true);
@@ -1305,12 +1304,138 @@ fn build_sidebar(
         .build();
     root.append(&nav_scroll);
     install_star_prompt(&root);
+    install_sidebar_footer(&root, app, &server_page);
 
     (
         root,
         quarantine_badge,
         team_button.expect("the Team row is always in NAV_SECTIONS"),
     )
+}
+
+/// Sidebar telemetry is read off the UI thread, once now and then each minute.
+/// Weak widgets let the timer stop with the window and keep async reads from
+/// holding the sidebar alive after it closes.
+fn install_sidebar_footer(root: &gtk::Box, app: &adw::Application, page: &ServerPage) {
+    let savings = gtk::Button::builder()
+        .visible(false)
+        .css_classes(["flat", "toolport-sidebar-savings"])
+        .action_name("app.show-activity")
+        .build();
+    l10n::bind_tooltip(&savings, "cl100k_base tokenizer; one full catalog baseline per client session minus every catalog and search response. Sessionless HTTP and unverifiable history excluded; not model usage or billing. Click for the breakdown.");
+    root.append(&savings);
+    let refresh = {
+        let savings = savings.downgrade();
+        move || {
+            let savings = savings.clone();
+            gtk::glib::spawn_future_local(async move {
+                let result = gtk::gio::spawn_blocking(crate::savings::try_summary).await;
+                let Some(button) = savings.upgrade() else {
+                    return;
+                };
+                match result {
+                    Ok(Ok(summary)) => {
+                        let loads = summary["tokenizedLoads"].as_u64().unwrap_or(0);
+                        let tokens = summary["tokensSaved"].as_i64().unwrap_or(0);
+                        let text = format_saved_tokens(tokens);
+                        l10n::bind_button_with(&button, move || {
+                            crate::i18n::trf("{value0} tokens saved", &[("value0", &text)])
+                        });
+                        button.set_visible(loads > 0);
+                    }
+                    _ => button.set_visible(false),
+                }
+            });
+        }
+    };
+    refresh();
+    let weak = root.downgrade();
+    gtk::glib::timeout_add_seconds_local(60, move || {
+        if weak.upgrade().is_none() {
+            return gtk::glib::ControlFlow::Break;
+        }
+        refresh();
+        gtk::glib::ControlFlow::Continue
+    });
+
+    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    footer.add_css_class("toolport-sidebar-footer");
+    let version = gtk::Label::new(Some(&format!("Toolport v{}", env!("CARGO_PKG_VERSION"))));
+    version.add_css_class("toolport-muted");
+    version.set_xalign(0.0);
+    version.set_hexpand(true);
+    footer.append(&version);
+    let help = gtk::MenuButton::builder().css_classes(["flat"]).build();
+    let help_content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    help_content.append(
+        &gtk::Image::builder()
+            .icon_name("help-browser-symbolic")
+            .pixel_size(16)
+            .build(),
+    );
+    help_content.append(&l10n::label("Help"));
+    help.set_child(Some(&help_content));
+    l10n::bind_tooltip(&help, "Help");
+    let popover = toolport_menu_popover();
+    let items = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    items.add_css_class("toolport-main-menu");
+    for (label, action) in [
+        (crate::i18n::msg("Import setup…"), "app.import-setup"),
+        (crate::i18n::msg("Import pasted setup…"), "app.paste-setup"),
+        (crate::i18n::msg("Export setup…"), "app.export-setup"),
+        (crate::i18n::msg("Share setup…"), "app.share-setup"),
+        (
+            crate::i18n::msg("Run setup assistant…"),
+            "app.show-onboarding",
+        ),
+    ] {
+        let button = toolport_menu_source_button(label);
+        button.set_action_name(Some(action));
+        items.append(&button);
+    }
+    let open_data = toolport_menu_source_button(crate::i18n::msg("Open data folder"));
+    let page_for_data = page.clone();
+    open_data.connect_clicked(move |_| {
+        let page = page_for_data.clone();
+        gtk::glib::spawn_future_local(async move {
+            match gtk::gio::spawn_blocking(crate::diagnostics_controller::open_data_dir).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => page.show_feedback(&error, true),
+                Err(_) => page.show_feedback(
+                    &crate::i18n::tr("the file manager task stopped unexpectedly"),
+                    true,
+                ),
+            }
+        });
+    });
+    items.append(&open_data);
+    let diagnostics = toolport_menu_source_button(crate::i18n::msg("Copy diagnostics"));
+    let page_for_diagnostics = page.clone();
+    diagnostics.connect_clicked(move |_| {
+        let page = page_for_diagnostics.clone();
+        gtk::glib::spawn_future_local(async move {
+            if let Ok(text) = gtk::gio::spawn_blocking(crate::diagnostics_controller::gather).await
+            {
+                if let Some(display) = gtk::gdk::Display::default() {
+                    display.clipboard().set_text(&text);
+                    page.show_confirmation(&crate::i18n::tr(
+                        "Diagnostics copied, paste them into your bug report",
+                    ));
+                }
+            }
+        });
+    });
+    items.append(&diagnostics);
+    items.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    let quit = toolport_menu_source_button(crate::i18n::msg("Quit Toolport"));
+    quit.set_action_name(Some("app.quit"));
+    l10n::bind_tooltip(&quit, "Quit Toolport (Ctrl+Q)");
+    items.append(&quit);
+    popover.set_child(Some(&items));
+    help.set_popover(Some(&popover));
+    footer.append(&help);
+    root.append(&footer);
+    let _ = app;
 }
 
 /// The one-off "star the repo" ask, shown once ever, only to someone actually
@@ -1899,7 +2024,7 @@ fn show_native_page(
     stack.set_visible_child_name(target);
     split.set_show_content(true);
     for (name, candidate) in buttons {
-        if name == target {
+        if name == target || (target == "catalog" && name == "servers") {
             candidate.add_css_class("selected");
         } else {
             candidate.remove_css_class("selected");
@@ -2063,6 +2188,7 @@ impl ServerPage {
         self.off_heading.borrow_mut().take();
         l10n::bind_text(&self.section_title, "Servers");
         if snapshot.servers.is_empty() {
+            self.server_count.set_visible(false);
             self.clear_server_list();
             self.posture.set_visible(false);
             self.list.append(&state_card(
@@ -2381,9 +2507,6 @@ struct ClientPage {
     root: gtk::Box,
     list: gtk::Box,
     feedback: gtk::Label,
-    installed_count: gtk::Label,
-    connected_count: gtk::Label,
-    configured_count: gtk::Label,
     import_button: gtk::Button,
     refresh_button: gtk::Button,
     scanning: std::rc::Rc<std::cell::Cell<bool>>,
@@ -2400,71 +2523,30 @@ impl ClientPage {
     fn new(app: &adw::Application, credential_page: ServerPage) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("toolport-content");
-        let header = adw::HeaderBar::new();
-        header.add_css_class("toolport-header");
-        header.set_show_back_button(true);
-        header.set_title_widget(Some(&{
-            let widget = gtk::Label::builder()
-                .label(crate::i18n::tr("Clients"))
-                .css_classes(["title"])
-                .build();
-            l10n::bind_label(&widget, "Clients");
-            widget
-        }));
-        let refresh_button = gtk::Button::builder()
-            .icon_name("view-refresh-symbolic")
-            .tooltip_text(crate::i18n::tr("Scan clients again"))
-            .build();
-        header.pack_end(&refresh_button);
-        let add_location = l10n::button("Add client location");
-        let import_button = l10n::button("Import");
-        import_button.set_tooltip_text(Some(&crate::i18n::tr(
+        let header = page_header::PageHeader::new(
+            crate::i18n::msg("Clients"),
+            crate::i18n::msg("Manage Toolport in your installed AI tools"),
+        );
+        let refresh_button = header_icon_button("view-refresh-symbolic");
+        l10n::bind_tooltip(&refresh_button, "Scan clients again");
+        let add_location =
+            header_button("list-add-symbolic", crate::i18n::msg("Add client location"));
+        l10n::bind_tooltip(&add_location, "Toolport reads each client's local MCP configuration. Existing Toolport entries in extra locations are adopted with a backup.");
+        let import_button = header_button("document-open-symbolic", crate::i18n::msg("Import"));
+        l10n::bind_tooltip(
+            &import_button,
             "Review servers found in client configurations",
-        )));
-        import_button.add_css_class("toolport-secondary-action");
-        root.append(&header);
+        );
+        header.add_action(&add_location);
+        header.add_action(&import_button);
+        header.add_action(&refresh_button);
+        root.append(&header.root);
 
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
             .build();
-        let page = gtk::Box::new(gtk::Orientation::Vertical, 14);
-        page.add_css_class("toolport-page");
-        page.set_margin_top(20);
-        page.set_margin_bottom(20);
-        page.set_margin_start(20);
-        page.set_margin_end(20);
-        // Title on the left, the page's two actions on the right.
-        let intro = gtk::Box::new(gtk::Orientation::Horizontal, 16);
-        let intro_copy = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        intro_copy.set_hexpand(true);
-        intro.append(&intro_copy);
-        let page_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        page_actions.set_valign(gtk::Align::Start);
-        page_actions.append(&add_location);
-        page_actions.append(&import_button);
-        intro.append(&page_actions);
-        page.append(&intro);
-        intro_copy.append(&{
-            let widget = gtk::Label::builder()
-                .label(crate::i18n::tr("Your AI clients, one Toolport gateway"))
-                .halign(gtk::Align::Fill)
-                .xalign(0.0)
-                .wrap(true)
-                .css_classes(["title-2"])
-                .build();
-            l10n::bind_label(&widget, "Your AI clients, one Toolport gateway");
-            widget
-        });
-        intro_copy.append(
-            &{ let widget = gtk::Label::builder()
-                .label(crate::i18n::tr("Toolport reads each client's local MCP configuration. Existing Toolport entries in extra locations are adopted with a backup."))
-                .halign(gtk::Align::Fill)
-                .xalign(0.0)
-                .wrap(true)
-                .css_classes(["toolport-muted"])
-                .build(); l10n::bind_label(&widget, "Toolport reads each client's local MCP configuration. Existing Toolport entries in extra locations are adopted with a backup."); widget },
-        );
+        let page = page_body(14);
         let feedback = gtk::Label::builder()
             .halign(gtk::Align::Fill)
             .xalign(0.0)
@@ -2474,26 +2556,6 @@ impl ClientPage {
         l10n::bind_text(&feedback, "Open Clients to scan this machine.");
         page.append(&feedback);
 
-        let summary = gtk::Grid::new();
-        summary.add_css_class("toolport-summary");
-        summary.set_column_spacing(10);
-        summary.set_column_homogeneous(true);
-        let mut values = Vec::new();
-        for (column, (value, label)) in [
-            ("–", crate::i18n::msg("Installed")),
-            ("–", crate::i18n::msg("Connected")),
-            ("–", crate::i18n::msg("Configured")),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let (item, value) = summary_item(value, label);
-            item.set_size_request(0, -1);
-            item.set_hexpand(true);
-            values.push(value);
-            summary.attach(&item, column as i32, 0, 1, 1);
-        }
-        page.append(&summary);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 12);
         page.append(&list);
         // Rows read as one line each; past this width they would only spread apart.
@@ -2511,9 +2573,6 @@ impl ClientPage {
             root,
             list,
             feedback,
-            installed_count: values.remove(0),
-            connected_count: values.remove(0),
-            configured_count: values.remove(0),
             import_button,
             refresh_button,
             scanning: std::rc::Rc::new(std::cell::Cell::new(false)),
@@ -2533,6 +2592,10 @@ impl ClientPage {
         client_page
             .import_button
             .connect_clicked(move |_| page_for_import.preview_imports());
+        let import_action = gtk::gio::SimpleAction::new("import-from-clients", None);
+        let page = client_page.clone();
+        import_action.connect_activate(move |_, _| page.preview_imports());
+        app.add_action(&import_action);
         client_page
     }
 
@@ -2751,11 +2814,6 @@ impl ClientPage {
             .filter(|client| client.gateway_state != state::ClientGatewayState::Connected)
             .copied()
             .collect::<Vec<_>>();
-        let configured = clients.iter().filter(|client| client.config_exists).count();
-        self.installed_count.set_label(&installed.len().to_string());
-        self.connected_count
-            .set_label(&connected_clients.len().to_string());
-        self.configured_count.set_label(&configured.to_string());
         if let Some(confirmation) = self.pending_confirmation.borrow_mut().take() {
             self.show_confirmation(&confirmation);
         } else {
@@ -3084,6 +3142,18 @@ fn page_body(spacing: i32) -> gtk::Box {
     page.set_margin_start(24);
     page.set_margin_end(24);
     page
+}
+
+/// Cap the complete form column (including its 24px page padding) at 808px,
+/// leaving at most 760px for fields. The wrapper always hugs the left edge.
+fn form_column(page: &gtk::Box) -> adw::Clamp {
+    adw::Clamp::builder()
+        .maximum_size(808)
+        .tightening_threshold(808)
+        .halign(gtk::Align::Start)
+        .hexpand(true)
+        .child(page)
+        .build()
 }
 
 fn toolport_menu_popover() -> gtk::Popover {
@@ -3652,30 +3722,23 @@ impl ActivityPage {
     fn new(app: &adw::Application) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("toolport-content");
-        let header = adw::HeaderBar::new();
-        header.add_css_class("toolport-header");
-        header.set_show_back_button(true);
-        header.set_title_widget(Some(&{
-            let widget = gtk::Label::builder()
-                .label(crate::i18n::tr("Activity"))
-                .css_classes(["title"])
-                .build();
-            l10n::bind_label(&widget, "Activity");
-            widget
-        }));
-        let clear_button = gtk::Button::builder()
-            .icon_name("user-trash-symbolic")
-            .tooltip_text(crate::i18n::tr("Clear retained activity"))
-            .build();
-        clear_button.add_css_class("flat");
-        let refresh_button = gtk::Button::builder()
-            .icon_name("view-refresh-symbolic")
-            .tooltip_text(crate::i18n::tr("Refresh activity"))
-            .build();
+        let header = page_header::PageHeader::new(
+            crate::i18n::msg("Activity"),
+            crate::i18n::msg("Tool calls routed through Toolport"),
+        );
+        let clear_button = header_button("user-trash-symbolic", crate::i18n::msg("Clear"));
+        clear_button.add_css_class("toolport-destructive");
+        l10n::bind_tooltip(&clear_button, "Clear retained activity");
+        let refresh_button = header_icon_button("view-refresh-symbolic");
+        l10n::bind_tooltip(&refresh_button, "Refresh activity");
         let export_button = gtk::MenuButton::builder()
-            .icon_name("document-save-symbolic")
-            .tooltip_text(crate::i18n::tr("Export activity"))
+            .label(crate::i18n::tr("Export"))
+            .valign(gtk::Align::Center)
+            .css_classes(["toolport-secondary-action"])
             .build();
+        let export_label = l10n::label("Export");
+        export_button.set_child(Some(&export_label));
+        l10n::bind_tooltip(&export_button, "Export activity");
         let export_menu = toolport_menu_popover();
         let export_actions = gtk::Box::new(gtk::Orientation::Vertical, 4);
         export_actions.set_margin_top(6);
@@ -3688,41 +3751,16 @@ impl ActivityPage {
         export_actions.append(&export_csv);
         export_menu.set_child(Some(&export_actions));
         export_button.set_popover(Some(&export_menu));
-        header.pack_end(&clear_button);
-        header.pack_end(&export_button);
-        header.pack_end(&refresh_button);
-        root.append(&header);
+        header.add_action(&export_button);
+        header.add_action(&clear_button);
+        header.add_action(&refresh_button);
+        root.append(&header.root);
 
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
             .build();
-        let page = gtk::Box::new(gtk::Orientation::Vertical, 14);
-        page.add_css_class("toolport-page");
-        page.set_margin_top(20);
-        page.set_margin_bottom(20);
-        page.set_margin_start(20);
-        page.set_margin_end(20);
-        page.append(&{
-            let widget = gtk::Label::builder()
-                .label(crate::i18n::tr("Calls and approvals, visible locally"))
-                .halign(gtk::Align::Fill)
-                .xalign(0.0)
-                .wrap(true)
-                .css_classes(["title-2"])
-                .build();
-            l10n::bind_label(&widget, "Calls and approvals, visible locally");
-            widget
-        });
-        page.append(
-            &{ let widget = gtk::Label::builder()
-                .label(crate::i18n::tr("Toolport records outcomes and timing, never tool arguments or result data. Recent activity is shown below; export includes all saved history."))
-                .halign(gtk::Align::Fill)
-                .xalign(0.0)
-                .wrap(true)
-                .css_classes(["toolport-muted"])
-                .build(); l10n::bind_label(&widget, "Toolport records outcomes and timing, never tool arguments or result data. Recent activity is shown below; export includes all saved history."); widget },
-        );
+        let page = page_body(14);
         let feedback = gtk::Label::builder()
             .halign(gtk::Align::Fill)
             .xalign(0.0)
@@ -7631,7 +7669,10 @@ fn build_content(
     // Catalog left the sidebar in 2.0, so an install that already has servers
     // never sees the onboarding catalog link. Keep it reachable from the Servers
     // header for both fresh and existing setups.
-    let browse_catalog = header_button("system-software-install-symbolic", crate::i18n::msg("Browse catalog"));
+    let browse_catalog = header_button(
+        "system-software-install-symbolic",
+        crate::i18n::msg("Browse catalog"),
+    );
     l10n::bind_tooltip(&browse_catalog, "Browse Toolport's curated server catalog");
     {
         let app = app.clone();
@@ -10344,7 +10385,7 @@ fn action_menu_button(label: &'static str, icon: &str) -> gtk::Button {
     button.set_halign(gtk::Align::Fill);
     button.add_css_class("toolport-action-item");
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 9);
-    row.append(&gtk::Image::from_icon_name(icon));
+    row.append(&gtk::Image::builder().icon_name(icon).pixel_size(16).build());
     row.append(&{
         let widget = gtk::Label::builder()
             .label(label)

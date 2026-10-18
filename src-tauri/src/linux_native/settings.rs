@@ -18,11 +18,11 @@ pub(super) const NATIVE_AUTOSTART_NAME: &str = "Toolport";
 pub(super) const LEGACY_AUTOSTART_NAME: &str = "ToolportNativePreview";
 
 pub(super) const SETTINGS_PAGES: &[(&str, &str)] = &[
-    (msg("General"), "emblem-system-symbolic"),
+    (msg("General"), "user-home-symbolic"),
     (msg("Tools"), "applications-engineering-symbolic"),
     (msg("Safety"), "security-high-symbolic"),
-    (msg("Access"), "changes-prevent-symbolic"),
-    (msg("Connections"), "network-server-symbolic"),
+    (msg("Access"), "dialog-password-symbolic"),
+    (msg("Connections"), "network-wired-symbolic"),
     (msg("Help and data"), "help-browser-symbolic"),
 ];
 
@@ -87,36 +87,20 @@ impl SettingsPage {
     ) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("toolport-content");
-        let header = adw::HeaderBar::new();
-        header.add_css_class("toolport-header");
-        header.set_show_back_button(true);
-        header.set_title_widget(Some(&source_label(
+        let header = super::page_header::PageHeader::new(
             msg("Settings"),
-            source_label(
-                msg("Settings"),
-                gtk::Label::builder()
-                    .label(tr("Settings"))
-                    .css_classes(["title"])
-                    .build(),
-            ),
-        )));
-        let refresh_button = gtk::Button::builder()
-            .icon_name("view-refresh-symbolic")
-            .tooltip_text(tr("Refresh settings"))
-            .build();
-        header.pack_end(&refresh_button);
-        root.append(&header);
+            msg("Global discovery and security policy"),
+        );
+        let refresh_button = super::header_icon_button("view-refresh-symbolic");
+        l10n::bind_tooltip(&refresh_button, "Refresh settings");
+        header.add_action(&refresh_button);
+        root.append(&header.root);
 
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
             .build();
-        let page = gtk::Box::new(gtk::Orientation::Vertical, 14);
-        page.add_css_class("toolport-page");
-        page.set_margin_top(20);
-        page.set_margin_bottom(20);
-        page.set_margin_start(20);
-        page.set_margin_end(20);
+        let page = super::page_body(14);
         let feedback = gtk::Label::builder()
             .halign(gtk::Align::Fill)
             .xalign(0.0)
@@ -812,7 +796,7 @@ l10n::bind_dialog_heading(&error_dialog, msg("Could not start data removal"));
         for (index, section) in pages.iter().enumerate() {
             section.set_visible(index == 0);
         }
-        scroller.set_child(Some(&page));
+        scroller.set_child(Some(&super::form_column(&page)));
         root.append(&scroller);
         let settings_page = Self {
             stop_stale: stop_stale.clone(),

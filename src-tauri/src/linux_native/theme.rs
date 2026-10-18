@@ -393,6 +393,16 @@ dialog-host > dialog.alert .response-area > button.destructive-action {{
   border-right: 1px solid @toolport_border;
 }}
 
+/* Shared page header and sidebar structure. */
+.toolport-page-header {{ padding: 16px 24px; border-bottom: 1px solid @toolport_border; background: @toolport_sidebar; }}
+.toolport-page-subtitle {{ font-size: 13px; font-weight: 400; }}
+.toolport-page-back-divider {{ margin: 4px 0; background: @toolport_border; }}
+.toolport-page-actions button, .toolport-page-actions menubutton > button {{ min-height: 32px; padding-top: 0; padding-bottom: 0; }}
+.toolport-page-actions entry {{ min-height: 32px; padding-top: 0; padding-bottom: 0; }}
+.toolport-sidebar-brand {{ padding: 16px; }}
+.toolport-sidebar-footer {{ padding: 12px 16px; border-top: 1px solid @toolport_border; }}
+.toolport-sidebar-savings {{ margin: 12px 16px; padding: 8px; color: @toolport_success; background: alpha(@toolport_success, 0.12); border-radius: 999px; }}
+
 .toolport-header {{
   background-color: @toolport_sidebar;
   border-bottom: 1px solid @toolport_border;

@@ -20,8 +20,7 @@ pub(super) struct TeamsPage {
     app: adw::Application,
     server_page: super::ServerPage,
     content: gtk::Box,
-    header_title: gtk::Label,
-    heading: gtk::Label,
+    header: super::page_header::PageHeader,
     plan_badge: gtk::Label,
     intro: gtk::Label,
     feedback: gtk::Label,
@@ -50,44 +49,15 @@ impl TeamsPage {
     pub(super) fn new(app: &adw::Application, server_page: super::ServerPage) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("toolport-content");
-        let header = adw::HeaderBar::new();
-        header.add_css_class("toolport-header");
-        header.set_show_back_button(true);
-        let header_title = source_label(
-            msg("Sync"),
-            source_label(
-                msg("Sync"),
-                gtk::Label::builder()
-                    .label(tr("Sync"))
-                    .css_classes(["title"])
-                    .build(),
-            ),
-        );
-        header.set_title_widget(Some(&header_title));
-        root.append(&header);
+        let header =
+            super::page_header::PageHeader::new(msg("Sync"), msg("Your setup, on every machine"));
+        root.append(&header.root);
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
             .build();
-        let page = gtk::Box::new(gtk::Orientation::Vertical, 14);
-        page.add_css_class("toolport-page");
-        page.set_margin_top(20);
-        page.set_margin_bottom(20);
-        page.set_margin_start(20);
-        page.set_margin_end(20);
-        let title_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        let heading = source_label(
-            msg("Sync"),
-            source_label(
-                msg("Sync"),
-                gtk::Label::builder()
-                    .label(tr("Sync"))
-                    .halign(gtk::Align::Start)
-                    .css_classes(["title-2"])
-                    .build(),
-            ),
-        );
-        title_row.append(&heading);
+        let page = super::page_body(14);
+        let title_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let plan_badge = source_label(
             msg("Free: 1 person, 1 device"),
             source_label(
@@ -113,15 +83,14 @@ impl TeamsPage {
         page.append(&feedback);
         let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
         page.append(&content);
-        scroller.set_child(Some(&page));
+        scroller.set_child(Some(&super::form_column(&page)));
         root.append(&scroller);
         Self {
             root,
             app: app.clone(),
             server_page,
             content,
-            header_title,
-            heading,
+            header,
             plan_badge,
             intro,
             feedback,
@@ -247,14 +216,13 @@ impl TeamsPage {
         *self.server_snapshot.borrow_mut() = Some(snapshot.servers);
         let personal = registry.team.is_none() || crate::personal_sync::is_personal(&registry);
         self.personal.set(personal);
-        l10n::bind_label(
-            &self.header_title,
-            if personal { msg("Sync") } else { msg("Teams") },
-        );
-        l10n::bind_label(
-            &self.heading,
-            if personal { msg("Sync") } else { msg("Teams") },
-        );
+        self.header
+            .set_title(if personal { msg("Sync") } else { msg("Team") });
+        self.header.set_subtitle(if personal {
+            msg("Your setup, on every machine")
+        } else {
+            msg("Share one MCP server set across your team")
+        });
         self.plan_badge.set_visible(false);
         // The personal page states its status itself; the intro is for joining and teams.
         self.intro
