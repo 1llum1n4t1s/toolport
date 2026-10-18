@@ -1888,7 +1888,14 @@ fn walk_openhands_root_budget(root: &Root, mut budget: usize) -> Vec<Found> {
             return;
         }
         let Ok(real) = canon(dir) else { return };
-        if !seen.insert(real) {
+        // A linked folder only offers its SKILL.md, so it doesn't claim its
+        // target; the real folder may still come later in the walk.
+        let visited = if linked {
+            seen.contains(&real)
+        } else {
+            !seen.insert(real)
+        };
+        if visited {
             return;
         }
         let Ok(entries) = std::fs::read_dir(dir) else {
