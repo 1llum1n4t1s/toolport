@@ -13580,11 +13580,14 @@ command = "mcp-server-memory"   # keep this note
         assert_eq!(def.discovery.auto_mode, "lazy");
         assert_eq!(def.discovery.native_tool_search, Some(false));
         assert_eq!(def.discovery.tools_list_changed, Some(false));
-        let user_home = Path::new("/home/test");
-        assert_eq!(
-            resolve_client_config_path_linux("nanobot", user_home),
-            Some(user_home.join(".nanobot/config.json"))
-        );
+        let user_home = std::env::temp_dir().join("toolport-nanobot-home");
+        assert!(user_home.is_absolute());
+        for platform in [Platform::Windows, Platform::MacOs, Platform::Linux] {
+            assert_eq!(
+                resolve_client_config_path("nanobot", &user_home, platform),
+                Some(user_home.join(".nanobot/config.json"))
+            );
+        }
     }
 
     #[test]

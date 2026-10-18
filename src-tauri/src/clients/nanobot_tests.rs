@@ -167,12 +167,15 @@ fn workspace_respects_custom_absolute_or_tilde_paths_and_refuses_invalid_config(
     assert_eq!(workspace(home), Some(home.join(".nanobot/workspace")));
     std::fs::create_dir_all(home.join(".nanobot")).unwrap();
     let config = home.join(".nanobot/config.json");
+    let absolute = home.join("configured-absolute");
+    assert!(absolute.is_absolute());
+    let absolute_text = absolute.to_str().expect("fixture path is Unicode");
     for (raw, expected) in [
         ("~/my-work", Some(home.join("my-work"))),
         ("~//configured", Some(home.join("configured"))),
         ("~///configured", Some(home.join("configured"))),
         ("~//", Some(home.clone())),
-        ("/srv/nanobot", Some(PathBuf::from("/srv/nanobot"))),
+        (absolute_text, Some(absolute.clone())),
         ("relative", None),
     ] {
         std::fs::write(
