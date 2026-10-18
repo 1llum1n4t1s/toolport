@@ -1435,7 +1435,7 @@ fn agent_defs() -> Vec<AgentDef> {
             "OpenClaw",
             openclaw_skill_roots,
             &[],
-            |env| if env.openclaw.relative { Vec::new() } else { sources(vec![env.openclaw.workspace.join("AGENTS.md")], false) },
+            |env| if env.openclaw.relative || !env.openclaw.workspace_known { Vec::new() } else { sources(vec![env.openclaw.workspace.join("AGENTS.md")], false) },
             &[],
         )
         .switch(Switch::OpenclawEntries),
@@ -1967,7 +1967,7 @@ fn toml_list_switch(switch: Switch, env: &Env) -> Option<(PathBuf, &'static str)
 /// dir), the managed `<state>/skills`, then `skills.load.extraDirs`.
 fn openclaw_skill_roots(env: &Env) -> Vec<Root> {
     let dirs = &env.openclaw;
-    if dirs.relative {
+    if dirs.relative || !dirs.workspace_known {
         return Vec::new();
     }
     let mut roots = vec![

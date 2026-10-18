@@ -342,9 +342,11 @@ pub(crate) struct Dirs {
     pub state: PathBuf,
     /// `OPENCLAW_CONFIG_PATH`, else `<state>/openclaw.json`.
     pub config: PathBuf,
-    /// The default agent's workspace: `OPENCLAW_WORKSPACE_DIR`, else
-    /// `agents.defaults.workspace` in the config, else `<state>/workspace`.
+    /// The selected default agent's workspace. Configured agent/default paths
+    /// precede OPENCLAW_WORKSPACE_DIR and the state workspace fallback.
     pub workspace: PathBuf,
+    /// The default agent and its workspace can be resolved without the CLI cwd.
+    pub workspace_known: bool,
     /// Whether the state dir is the default one; OpenClaw reads personal
     /// `~/.agents/skills` only then.
     pub default_state: bool,
@@ -373,7 +375,6 @@ pub(crate) fn dirs(user_home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Di
         "OPENCLAW_HOME",
         "OPENCLAW_STATE_DIR",
         "OPENCLAW_CONFIG_PATH",
-        "OPENCLAW_WORKSPACE_DIR",
     ]
     .iter()
     .filter_map(|key| env(key))
@@ -401,30 +402,152 @@ pub(crate) fn dirs(user_home: &Path, env: &dyn Fn(&str) -> Option<String>) -> Di
     let config = env("OPENCLAW_CONFIG_PATH")
         .and_then(expand)
         .unwrap_or_else(|| state.join("openclaw.json"));
-    let configured = || {
-        let text = std::fs::read_to_string(&config).ok()?;
-        let root = parse_json_value(&text).ok()?;
-        let raw = root
-            .get("agents")?
-            .get("defaults")?
-            .get("workspace")?
-            .as_str()?
-            .trim()
-            .to_string();
-        expand(raw)
+    let root = match std::fs::read_to_string(&config) {
+        Ok(text) => parse_json_value(&text).ok(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(serde_json::json!({})),
+        Err(_) => None,
     };
-    let workspace = env("OPENCLAW_WORKSPACE_DIR")
-        .and_then(expand)
-        .or_else(configured)
-        .unwrap_or_else(|| state.join("workspace"));
+    let resolved_workspace = default_workspace(&home, &state, root.as_ref(), env);
+    let workspace_known = resolved_workspace.is_some();
+    let workspace = resolved_workspace.unwrap_or_else(|| state.join("workspace"));
     Dirs {
         home,
         state,
         config,
         workspace,
+        workspace_known,
         default_state,
         relative,
     }
+}
+
+/// Match the packaged agents-list default selection. A fleet without a default,
+/// an empty roster, includes or a cwd-dependent path has no writable rules target.
+fn default_workspace(
+    home: &Path,
+    state: &Path,
+    root: Option<&Value>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Option<PathBuf> {
+    let root = root?;
+    if !root.is_object() || root.get("$include").is_some() {
+        return None;
+    }
+    let empty = serde_json::json!({});
+    let agents = root.get("agents").unwrap_or(&empty);
+    if !agents.is_object() || agents.get("$include").is_some() {
+        return None;
+    }
+    let defaults = agents.get("defaults").unwrap_or(&empty);
+    if !defaults.is_object() || defaults.get("$include").is_some() {
+        return None;
+    }
+    let explicit = agents.get("ownership").and_then(Value::as_str) == Some("explicit");
+    let mut roster: Vec<(String, &Value)> = Vec::new();
+    let has_roster = if let Some(entries) = agents.get("entries") {
+        for (id, entry) in entries.as_object()? {
+            if !entry.is_object() || entry.get("$include").is_some() {
+                return None;
+            }
+            roster.push((id.trim().to_ascii_lowercase(), entry));
+        }
+        true
+    } else if let Some(entries) = agents.get("list") {
+        for entry in entries.as_array()? {
+            if entry.get("$include").is_some() {
+                return None;
+            }
+            roster.push((
+                entry.get("id")?.as_str()?.trim().to_ascii_lowercase(),
+                entry,
+            ));
+        }
+        true
+    } else {
+        false
+    };
+    let marked: Vec<_> = roster
+        .iter()
+        .filter(|(_, entry)| entry.get("default") == Some(&Value::Bool(true)))
+        .collect();
+    let inherited = roster.len() == 1 || (!explicit && marked.len() == 1) || !has_roster;
+    let selected = if explicit {
+        let id = defaults
+            .get("systemAgent")?
+            .get("agentId")?
+            .as_str()?
+            .trim()
+            .to_ascii_lowercase();
+        if !has_roster && id == "main" {
+            return workspace_path(home, state, defaults, env, None, true);
+        }
+        roster.iter().find(|(candidate, _)| *candidate == id)?
+    } else if marked.len() == 1 {
+        marked[0]
+    } else if roster.len() == 1 {
+        &roster[0]
+    } else if !has_roster {
+        // The unconfigured legacy/default agent inherits the default workspace.
+        return workspace_path(home, state, defaults, env, None, true);
+    } else {
+        return None;
+    };
+    if selected.0.is_empty()
+        || !selected
+            .0
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        return None;
+    }
+    if let Some(raw) = selected
+        .1
+        .get("workspace")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+    {
+        return expand_workspace(home, raw);
+    }
+    workspace_path(home, state, defaults, env, Some(&selected.0), inherited)
+}
+
+fn expand_workspace(home: &Path, raw: &str) -> Option<PathBuf> {
+    let path = if raw == "~" {
+        home.to_path_buf()
+    } else if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+        home.join(rest)
+    } else {
+        PathBuf::from(raw)
+    };
+    path.is_absolute().then_some(path)
+}
+
+fn workspace_path(
+    home: &Path,
+    state: &Path,
+    defaults: &Value,
+    env: &dyn Fn(&str) -> Option<String>,
+    agent: Option<&str>,
+    inherited: bool,
+) -> Option<PathBuf> {
+    if let Some(raw) = defaults
+        .get("workspace")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+    {
+        let path = expand_workspace(home, raw)?;
+        return Some(if inherited { path } else { path.join(agent?) });
+    }
+    if !inherited {
+        return Some(state.join(format!("workspace-{}", agent?)));
+    }
+    if let Some(raw) = env("OPENCLAW_WORKSPACE_DIR") {
+        let path = PathBuf::from(raw);
+        return path.is_absolute().then_some(path);
+    }
+    Some(state.join("workspace"))
 }
 
 #[cfg(test)]

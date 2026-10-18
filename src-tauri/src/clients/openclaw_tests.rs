@@ -269,5 +269,82 @@ fn dirs_follow_openclaws_environment() {
             elsewhere.display().to_string(),
         )]),
     );
+    assert_eq!(env.workspace, user.join("work"));
+    std::fs::write(user.join(".openclaw/openclaw.json"), "{}").unwrap();
+    let env = dirs(
+        &user,
+        &set(vec![(
+            "OPENCLAW_WORKSPACE_DIR",
+            elsewhere.display().to_string(),
+        )]),
+    );
     assert_eq!(env.workspace, elsewhere);
+    assert!(env.workspace_known);
+}
+
+#[test]
+fn workspace_selection_matches_the_default_agents_list() {
+    let fixture = Dir::new("workspace-selection");
+    let home = fixture.0.clone();
+    let state = home.join(".openclaw");
+    let env_dir = home.join("env");
+    let env_path = env_dir.to_str().unwrap();
+    for (root, raw_env, expected) in [
+        (
+            serde_json::json!({"agents":{"defaults":{"workspace":"~/configured"}}}),
+            Some(env_path),
+            Some(home.join("configured")),
+        ),
+        (
+            serde_json::json!({"agents":{"defaults":{"workspace":"relative"}}}),
+            Some(env_path),
+            None,
+        ),
+        (
+            serde_json::json!({"agents":{"entries":{"solo":{"workspace":"~/solo"}}}}),
+            Some(env_path),
+            Some(home.join("solo")),
+        ),
+        (
+            serde_json::json!({"agents":{"list":[{"id":"solo","workspace":"~/legacy"}]}}),
+            Some(env_path),
+            Some(home.join("legacy")),
+        ),
+        (
+            serde_json::json!({"agents":{"entries":{"one":{},"two":{}}}}),
+            None,
+            None,
+        ),
+        (serde_json::json!({"agents":{"entries":{}}}), None, None),
+        (serde_json::json!({"agents":{"list":[]}}), None, None),
+        (
+            serde_json::json!({"agents":{"entries":{"one":{"workspace":"~/one"},"two":{"workspace":"~/two","default":true}}}}),
+            None,
+            Some(home.join("two")),
+        ),
+        (
+            serde_json::json!({"agents":{"ownership":"explicit","defaults":{"workspace":"~/all","systemAgent":{"agentId":"two"}},"entries":{"one":{},"two":{}}}}),
+            Some(env_path),
+            Some(home.join("all/two")),
+        ),
+        (serde_json::json!({}), Some("~/env"), None),
+        (serde_json::json!({}), Some("relative"), None),
+        (
+            serde_json::json!({}),
+            Some(env_path),
+            Some(PathBuf::from(env_path)),
+        ),
+        (serde_json::json!({"$include":"elsewhere.json"}), None, None),
+    ] {
+        let env = |key: &str| {
+            (key == "OPENCLAW_WORKSPACE_DIR")
+                .then(|| raw_env.map(str::to_string))
+                .flatten()
+        };
+        assert_eq!(
+            default_workspace(&home, &state, Some(&root), &env),
+            expected,
+            "{root} {raw_env:?}"
+        );
+    }
 }

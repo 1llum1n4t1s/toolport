@@ -1549,7 +1549,7 @@ pub fn client_rules_target(
     if client_id == "openclaw" {
         // The default agent's workspace AGENTS.md, loaded at the start of
         // every session.
-        let dirs = openclaw_dirs().filter(|dirs| !dirs.relative)?;
+        let dirs = openclaw_dirs().filter(|dirs| !dirs.relative && dirs.workspace_known)?;
         return Some(rules_sentinel_block(
             dirs.workspace.join("AGENTS.md"),
             scope,
@@ -13449,7 +13449,6 @@ command = "mcp-server-memory"   # keep this note
             "OPENCLAW_HOME",
             "OPENCLAW_STATE_DIR",
             "OPENCLAW_CONFIG_PATH",
-            "OPENCLAW_WORKSPACE_DIR",
         ] {
             let _relative = EnvRestore::set(key, Path::new("relative"));
             assert_eq!(openclaw_path(), None, "{key}");
@@ -13457,6 +13456,14 @@ command = "mcp-server-memory"   # keep this note
                 client_rules_target("openclaw", crate::instructions::Scope::Team).is_none(),
                 "{key}"
             );
+        }
+        {
+            let _workspace = EnvRestore::set("OPENCLAW_WORKSPACE_DIR", Path::new("relative"));
+            // Config workspace wins; a relative env fallback must not hide it.
+            assert_eq!(rules(), home.join("agent").join("AGENTS.md"));
+            std::fs::write(state.join("openclaw.json"), "{}").unwrap();
+            assert!(client_rules_target("openclaw", crate::instructions::Scope::Team).is_none());
+            assert_eq!(openclaw_path(), Some(state.join("openclaw.json")));
         }
         let file = home.join("elsewhere.json");
         let _file = EnvRestore::set("OPENCLAW_CONFIG_PATH", &file);

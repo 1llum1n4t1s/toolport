@@ -156,7 +156,12 @@ changes. The Skills page shows the skills in the default agent's workspace
 `skills.load.extraDirs`, and turns them off with `enabled: false` under
 `skills.entries`. Team rules go to the workspace's `AGENTS.md`
 (`~/.openclaw/workspace` unless `OPENCLAW_WORKSPACE_DIR` or
-`agents.defaults.workspace` moves it).
+`agents.defaults.workspace` moves it). An explicit default-agent workspace wins
+over `agents.defaults.workspace`, which wins over `OPENCLAW_WORKSPACE_DIR`.
+Config paths expand `~`; the workspace environment override accepts an absolute
+path only, matching OpenClaw. Empty or ambiguous agent rosters, included agent
+settings and cwd-dependent workspace paths have no skills or rules target in
+Toolport. A known MCP config can still be managed separately.
 
 Workspace and extra skill roots follow OpenClaw's symlink boundaries. Escaped
 skill folders are skipped unless their real targets are covered by
