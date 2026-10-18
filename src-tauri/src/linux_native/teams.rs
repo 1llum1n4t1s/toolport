@@ -51,6 +51,9 @@ impl TeamsPage {
         root.add_css_class("toolport-content");
         let header =
             super::page_header::PageHeader::new(msg("Sync"), msg("Your setup, on every machine"));
+        let refresh = super::header_icon_button("view-refresh-symbolic");
+        l10n::bind_tooltip(&refresh, "Refresh sync status");
+        header.add_action(&refresh);
         root.append(&header.root);
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -85,7 +88,7 @@ impl TeamsPage {
         page.append(&content);
         scroller.set_child(Some(&super::form_column(&page)));
         root.append(&scroller);
-        Self {
+        let page = Self {
             root,
             app: app.clone(),
             server_page,
@@ -108,7 +111,10 @@ impl TeamsPage {
             rendered_state: Rc::new(RefCell::new(None)),
             sync_line: Rc::new(RefCell::new(None)),
             action_error: Rc::new(RefCell::new(None)),
-        }
+        };
+        let page_for_refresh = page.clone();
+        refresh.connect_clicked(move |_| page_for_refresh.refresh());
+        page
     }
 
     pub(super) fn refresh(&self) {

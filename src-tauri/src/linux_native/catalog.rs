@@ -69,6 +69,9 @@ impl CatalogPage {
         back.connect_clicked(move |_| {
             app.activate_action("show-servers", None);
         });
+        let refresh = super::header_icon_button("view-refresh-symbolic");
+        l10n::bind_tooltip(&refresh, "Refresh catalog");
+        header.add_action(&refresh);
         root.append(&header.root);
 
         let scroller = gtk::ScrolledWindow::builder()
@@ -156,6 +159,8 @@ impl CatalogPage {
             #[cfg(test)]
             completed_suggestions: Default::default(),
         };
+        let page_for_refresh = catalog.clone();
+        refresh.connect_clicked(move |_| page_for_refresh.refresh());
         let page_for_activate = catalog.clone();
         catalog.search.connect_activate(move |entry| {
             page_for_activate.cancel_suggestion_timer();
