@@ -401,7 +401,7 @@ dialog-host > dialog.alert .response-area > button.destructive-action {{
 .toolport-page-actions entry {{ min-height: 32px; padding-top: 0; padding-bottom: 0; }}
 .toolport-sidebar-brand {{ padding: 16px; }}
 .toolport-sidebar-footer {{ padding: 12px 16px; border-top: 1px solid @toolport_border; }}
-.toolport-sidebar-savings {{ margin: 8px 12px; padding: 8px 12px; border: 1px solid alpha(@toolport_success, 0.3); background: alpha(@toolport_success, 0.05); border-radius: 8px; }}
+.toolport-sidebar-savings {{ margin: 8px 0; padding: 8px 12px; border: 1px solid alpha(@toolport_success, 0.3); background: alpha(@toolport_success, 0.05); border-radius: 8px; }}
 
 .toolport-header {{
   background-color: @toolport_sidebar;

@@ -1309,7 +1309,7 @@ fn build_sidebar(
         .build();
     root.append(&nav_scroll);
     install_star_prompt(&root);
-    install_sidebar_footer(&root, &server_page);
+    install_sidebar_footer(&root, &nav, &server_page);
 
     (
         root,
@@ -1321,7 +1321,7 @@ fn build_sidebar(
 /// Sidebar telemetry is read off the UI thread, once now and then each minute.
 /// Weak widgets let the timer stop with the window and keep async reads from
 /// holding the sidebar alive after it closes.
-fn install_sidebar_footer(root: &gtk::Box, page: &ServerPage) {
+fn install_sidebar_footer(root: &gtk::Box, nav: &gtk::Box, page: &ServerPage) {
     let savings = gtk::Button::builder()
         .visible(false)
         .css_classes(["flat", "toolport-sidebar-savings"])
@@ -1341,7 +1341,7 @@ fn install_sidebar_footer(root: &gtk::Box, page: &ServerPage) {
         .build();
     savings_row.append(&savings_label);
     savings.set_child(Some(&savings_row));
-    root.append(&savings);
+    nav.append(&savings);
     let refresh = {
         let savings = savings.downgrade();
         let label = savings_label.downgrade();
@@ -1414,6 +1414,8 @@ fn install_sidebar_footer(root: &gtk::Box, page: &ServerPage) {
     ] {
         let button = toolport_menu_source_button(label);
         button.set_action_name(Some(action));
+        let menu = popover.clone();
+        button.connect_clicked(move |_| menu.popdown());
         items.append(&button);
     }
     let open_data = toolport_menu_source_button(crate::i18n::msg("Open data folder"));
@@ -1431,6 +1433,8 @@ fn install_sidebar_footer(root: &gtk::Box, page: &ServerPage) {
             }
         });
     });
+    let menu = popover.clone();
+    open_data.connect_clicked(move |_| menu.popdown());
     items.append(&open_data);
     let diagnostics = toolport_menu_source_button(crate::i18n::msg("Copy diagnostics"));
     let page_for_diagnostics = page.clone();
@@ -1448,6 +1452,8 @@ fn install_sidebar_footer(root: &gtk::Box, page: &ServerPage) {
             }
         });
     });
+    let menu = popover.clone();
+    diagnostics.connect_clicked(move |_| menu.popdown());
     items.append(&diagnostics);
     items.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     let quit = toolport_menu_source_button(crate::i18n::msg("Quit Toolport"));
