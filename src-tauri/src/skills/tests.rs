@@ -2183,7 +2183,7 @@ fn openhands_markdown_walk_bounds_depth_and_follows_cycles_once() {
     home.link(".openhands/skills/topic/cycle", &root);
     let deep = format!(
         ".openhands/skills/{}/hidden.md",
-        vec!["deep"; MAX_DEPTH + 1].join("/")
+        ["deep"; MAX_DEPTH + 1].join("/")
     );
     home.write(&deep, "---\ntriggers: [hidden]\n---\nToo deep.\n");
     let found = walk_openhands_root(&Root::flat(root, "OpenHands skills"));
