@@ -2906,6 +2906,54 @@ fn nanobot_package_frontmatter_matches_newlines_closers_and_python_strip() {
 }
 
 #[test]
+fn nanobot_package_frontmatter_preserves_final_block_scalar_chomping() {
+    let home = Home::new();
+    let (root, marker) = nanobot_package(&home, "valid", "valid", &["valid-skill"], true);
+    for yaml in [
+        "name: valid-skill\ndescription: ordinary\nx: ! |\n  yes",
+        "description: ordinary\nname: |\n  valid-skill",
+    ] {
+        home.write(
+            ".nanobot/workspace/plugins/valid/skills/valid-skill/SKILL.md",
+            &format!("---\n{yaml}\n---\n"),
+        );
+        std::fs::write(&marker, nanobot_plugins::activation(&root).unwrap()).unwrap();
+        let inv = scan(&home.env(), &only(&["nanobot"]), None);
+        assert_eq!(
+            state(&inv, "valid-skill", "nanobot"),
+            Some(State::On),
+            "{yaml}"
+        );
+        assert_eq!(skill(&inv, "valid-skill").description, "ordinary");
+    }
+}
+
+#[test]
+fn nanobot_package_frontmatter_keeps_a_leading_yaml_document_marker() {
+    let home = Home::new();
+    let (root, marker) = nanobot_package(&home, "valid", "valid", &["valid-skill"], true);
+    for prefix in [
+        "---\n---",
+        "---\n\n---",
+        "---\n--- # start",
+        "---\u{1c}\n---",
+    ] {
+        home.write(
+            ".nanobot/workspace/plugins/valid/skills/valid-skill/SKILL.md",
+            &format!("{prefix}\nname: valid-skill\ndescription: ordinary\n---\n"),
+        );
+        std::fs::write(&marker, nanobot_plugins::activation(&root).unwrap()).unwrap();
+        let inv = scan(&home.env(), &only(&["nanobot"]), None);
+        assert_eq!(
+            state(&inv, "valid-skill", "nanobot"),
+            Some(State::On),
+            "{prefix:?}"
+        );
+        assert_eq!(skill(&inv, "valid-skill").description, "ordinary");
+    }
+}
+
+#[test]
 #[cfg(unix)]
 fn nanobot_unreadable_subdirectory_preserves_package_discovery() {
     use std::os::unix::fs::PermissionsExt;

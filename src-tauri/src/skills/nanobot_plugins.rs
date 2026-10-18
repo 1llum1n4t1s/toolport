@@ -189,24 +189,16 @@ fn valid_skill(path: &Path, name: &str) -> bool {
 /// The fields accepted by nanobot, reused for package labels and descriptions.
 pub(super) fn skill_metadata(text: &str) -> Option<(String, String)> {
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
-    let mut lines = text.lines();
-    if lines.next().map(str::trim_end) != Some("---") {
-        return None;
-    }
-    let mut yaml = String::new();
-    let mut closed = false;
-    for line in lines {
-        if line.starts_with("---") {
-            closed = true;
-            break;
-        }
-        yaml.push_str(line);
-        yaml.push('\n');
-    }
-    if !closed {
-        return None;
-    }
-    super::nanobot_metadata::fields(&yaml)
+    static FRONTMATTER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    // Match nanobot's capture exactly: the newline before the closer is not
+    // YAML content, and the opener consumes whitespace before the first line.
+    // Python's Unicode \s additionally includes these four control characters.
+    let pattern = FRONTMATTER.get_or_init(|| {
+        regex::Regex::new(r"(?s)^---[\s\x1c-\x1f]*\n(.*?)\n---")
+            .expect("constant nanobot frontmatter pattern")
+    });
+    let captures = pattern.captures(&text)?;
+    super::nanobot_metadata::fields(&captures[1])
 }
 
 pub(super) fn discover(home: &Path) -> Vec<Found> {
