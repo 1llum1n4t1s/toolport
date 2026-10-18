@@ -2173,7 +2173,7 @@ fn walk_root(root: &Root) -> Vec<Found> {
 /// Several clients read the same folders (`~/.claude/skills`, `~/.agents/skills`), so each one
 /// is walked once per scan and reused with the reading client's label.
 #[derive(Default)]
-struct WalkCache(HashMap<(PathBuf, bool, bool, bool), Vec<Found>>);
+struct WalkCache(HashMap<(PathBuf, bool, bool, bool, bool), Vec<Found>>);
 
 impl WalkCache {
     fn walk(&mut self, root: &Root) -> Vec<Found> {
@@ -2183,6 +2183,7 @@ impl WalkCache {
                 root.recursive,
                 root.dir_links,
                 root.file_links,
+                root.all_names,
             ))
             .or_insert_with(|| walk_root(root))
             .iter()

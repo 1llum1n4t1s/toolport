@@ -2919,3 +2919,16 @@ fn nanobot_unreadable_subdirectory_preserves_package_discovery() {
         assert_eq!(count, Some(1));
     }
 }
+
+#[test]
+fn nanobot_hidden_folder_policy_is_part_of_the_shared_walk_cache_key() {
+    let home = Home::new();
+    home.skill(".claude/skills/.hidden", ".hidden", "Hidden skill");
+    home.write(
+        ".nanobot/config.json",
+        r#"{"agents":{"defaults":{"workspace":"~/.claude"}}}"#,
+    );
+    let inv = scan(&home.env(), &only(&["claude-code", "nanobot"]), None);
+    assert_eq!(state(&inv, ".hidden", "nanobot"), Some(State::On));
+    assert_eq!(state(&inv, ".hidden", "claude-code"), None);
+}
