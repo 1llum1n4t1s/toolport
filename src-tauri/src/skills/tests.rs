@@ -1568,7 +1568,10 @@ fn deepseek_harness_reads_both_homes_flat_and_both_user_rules() {
     let inv = scan(&home.env(), &only(&["deepseek-harness"]), None);
     assert_eq!(state(&inv, "own", "deepseek-harness"), Some(State::On));
     assert_eq!(state(&inv, "shared", "deepseek-harness"), Some(State::On));
-    assert!(!inv.skills.iter().any(|s| s.name == "nested" || s.name == "bundled"));
+    assert!(!inv
+        .skills
+        .iter()
+        .any(|s| s.name == "nested" || s.name == "bundled"));
     for path in ["~/.dsh/AGENTS.md", "~/.agents/AGENTS.md"] {
         let rule = inv.rules.iter().find(|r| r.path == path).expect(path);
         assert!(rule.agents.contains_key("deepseek-harness"), "{path}");

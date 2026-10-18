@@ -149,11 +149,7 @@
         "jsonrpc": "2.0",
         "id": 0
       },
-      "initialMethods": [
-        "initialize",
-        "notifications/initialized",
-        "tools/list"
-      ],
+      "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
       "listChanged": {
         "supported": true,
         "detail": "Yes, source handler directly re-lists; latency unmeasured"
@@ -179,11 +175,7 @@
         "jsonrpc": "2.0",
         "id": 0
       },
-      "initialMethods": [
-        "initialize",
-        "notifications/initialized",
-        "tools/list"
-      ],
+      "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
       "listChanged": {
         "supported": null,
         "detail": "Unverified, do not infer OpenCode parity"
@@ -228,11 +220,7 @@
           }
         }
       },
-      "initialMethods": [
-        "initialize",
-        "notifications/initialized",
-        "tools/list"
-      ],
+      "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
       "listChanged": {
         "supported": false,
         "detail": "No generic list-change handler found in pinned source"
@@ -319,11 +307,7 @@
         "jsonrpc": "2.0",
         "id": 0
       },
-      "initialMethods": [
-        "initialize",
-        "notifications/initialized",
-        "tools/list"
-      ],
+      "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
       "listChanged": {
         "supported": true,
         "detail": "Yes, docs; latency unmeasured"
@@ -347,11 +331,7 @@
         "jsonrpc": "2.0",
         "id": 0
       },
-      "initialMethods": [
-        "initialize",
-        "notifications/initialized",
-        "ping"
-      ],
+      "initialMethods": ["initialize", "notifications/initialized", "ping"],
       "listChanged": {
         "supported": true,
         "detail": "Yes, source refreshes tools/resources/prompts; latency unmeasured"
@@ -369,9 +349,7 @@
           "capabilities": {
             "extensions": {
               "io.modelcontextprotocol/ui": {
-                "mimeTypes": [
-                  "text/html;profile=mcp-app"
-                ]
+                "mimeTypes": ["text/html;profile=mcp-app"]
               }
             }
           },
@@ -383,10 +361,7 @@
         "jsonrpc": "2.0",
         "id": 0
       },
-      "initialMethods": [
-        "initialize",
-        "notifications/initialized"
-      ],
+      "initialMethods": ["initialize", "notifications/initialized"],
       "listChanged": {
         "supported": null,
         "detail": "Unverified, do not infer Gemini parity"
@@ -506,11 +481,7 @@
         "jsonrpc": "2.0",
         "id": 0
       },
-      "initialMethods": [
-        "initialize",
-        "notifications/initialized",
-        "tools/list"
-      ],
+      "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
       "listChanged": {
         "supported": true,
         "detail": "dsh 0.2.0-rc.2 re-lists tools after notifications/tools/list_changed (subscriptions/listen against toolport-gateway 2.2.0)"
@@ -663,11 +634,7 @@
           "_meta": {}
         }
       },
-      "initialMethods": [
-        "initialize",
-        "notifications/initialized",
-        "tools/list"
-      ],
+      "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
       "listChanged": {
         "supported": null,
         "detail": "unverified"

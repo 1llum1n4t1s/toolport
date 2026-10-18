@@ -124,7 +124,10 @@ fn removing_one_server_from_a_shared_row_takes_only_its_lines() {
     let out = without(BUSY, "reference_memory");
     assert!(out.contains("# memory, from the mcp-memory guide\n- insert:\n    # remote search\n    - id: mcp-web\n"), "{out}");
     assert!(!out.contains("memory-mcp-reference"), "{out}");
-    assert!(out.contains("apiKeyEnv: GATEWAY_API_KEY   # keep the key out of this file"), "{out}");
+    assert!(
+        out.contains("apiKeyEnv: GATEWAY_API_KEY   # keep the key out of this file"),
+        "{out}"
+    );
     let names: Vec<_> = servers(&out).unwrap().into_iter().map(|s| s.name).collect();
     assert_eq!(names, ["web"]);
 
@@ -155,16 +158,24 @@ fn expressions_survive_being_moved_out_and_back() {
     assert_eq!(raw.len(), 2);
     let (name, text, _) = &raw[0];
     assert_eq!(name, "reference_memory");
-    assert!(text.starts_with("id: memory-mcp-reference\nname: '@deepseek-ai/dsh-mcp-client'\n"), "{text}");
+    assert!(
+        text.starts_with("id: memory-mcp-reference\nname: '@deepseek-ai/dsh-mcp-client'\n"),
+        "{text}"
+    );
     assert!(text.contains("cwd: !!js process.cwd()"), "{text}");
 
     let emptied = without(&without(BUSY, "reference_memory"), "web");
     let restored = append_raw(
         Some(&emptied),
-        &raw.iter().map(|(_, text, _)| text.clone()).collect::<Vec<_>>(),
+        &raw.iter()
+            .map(|(_, text, _)| text.clone())
+            .collect::<Vec<_>>(),
     )
     .unwrap();
-    assert!(restored.contains("        cwd: !!js process.cwd()\n"), "{restored}");
+    assert!(
+        restored.contains("        cwd: !!js process.cwd()\n"),
+        "{restored}"
+    );
     assert!(restored.contains("    # remote search\n") || !restored.contains("# remote search"));
     assert_eq!(
         normalized(&restored).unwrap()[KEY],
@@ -185,14 +196,22 @@ fn tagged_values_compare_and_write_back_as_the_same_tag() {
 #[test]
 fn a_disabled_server_is_not_listed_and_is_left_alone() {
     let text = format!("{BUSY}\n- id: mcp-web\n  disabled: true\n");
-    let names: Vec<_> = servers(&text).unwrap().into_iter().map(|s| s.name).collect();
+    let names: Vec<_> = servers(&text)
+        .unwrap()
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
     assert_eq!(names, ["reference_memory"]);
     let added = with(&text, &stdio("toolport"));
     assert!(added.starts_with(&text), "{added}");
     // Re-adding a disabled name gets a fresh id rather than reviving the old row.
-    let readded = with(&text, &serde_json::from_value::<ServerEntry>(serde_json::json!({
-        "name": "web", "transport": "http", "url": "http://localhost:4000/mcp",
-    })).unwrap());
+    let readded = with(
+        &text,
+        &serde_json::from_value::<ServerEntry>(serde_json::json!({
+            "name": "web", "transport": "http", "url": "http://localhost:4000/mcp",
+        }))
+        .unwrap(),
+    );
     assert!(readded.contains("id: mcp-web-2"), "{readded}");
 }
 
@@ -202,14 +221,18 @@ fn layouts_the_scan_cannot_split_are_read_but_never_edited() {
     assert_eq!(servers(flow).unwrap().len(), 1);
     let mut want = desired(flow);
     want.insert("toolport".into(), config_of(&stdio("toolport")).unwrap());
-    assert!(sync(Some(flow), &want).unwrap_err().contains("edit it by hand"));
+    assert!(sync(Some(flow), &want)
+        .unwrap_err()
+        .contains("edit it by hand"));
     // Nothing to change is not an edit.
     assert_eq!(sync(Some(flow), &desired(flow)).unwrap(), flow);
 
     let inline = "- insert: [{id: mcp-a, name: '@deepseek-ai/dsh-mcp-client', config: {serverName: a, transport: stdio, command: a}}]\n";
     let mut want = desired(inline);
     want.remove("a");
-    assert!(sync(Some(inline), &want).unwrap_err().contains("edit it by hand"));
+    assert!(sync(Some(inline), &want)
+        .unwrap_err()
+        .contains("edit it by hand"));
     // Appending next to a row it cannot split is still exact.
     let mut want = desired(inline);
     want.insert("toolport".into(), config_of(&stdio("toolport")).unwrap());
@@ -255,4 +278,18 @@ fn crlf_files_keep_their_line_endings() {
     assert!(out.contains("\r\n"), "{out}");
     assert!(!out.contains("mcp-web"), "{out}");
     assert_eq!(servers(&out).unwrap().len(), 1);
+    let added = with(&text, &stdio("toolport"));
+    assert!(added.starts_with(&text), "{added}");
+    assert!(
+        !added.replace("\r\n", "").contains('\n'),
+        "every line Toolport adds ends in CRLF: {added:?}"
+    );
+}
+
+#[test]
+fn a_disabled_server_counts_as_other_settings() {
+    let text = format!("{BUSY}\n- id: mcp-web\n  disabled: true\n");
+    let rows = normalized(&text).unwrap()["rows"].to_string();
+    assert!(rows.contains("http://localhost:3000/mcp"), "{rows}");
+    assert!(!rows.contains("mcp-server-memory"), "{rows}");
 }

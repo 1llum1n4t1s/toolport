@@ -12920,7 +12920,10 @@ command = "npx"
         drop(_restore);
         let home = home().unwrap();
         let _tilde = EnvRestore::set("DSH_HOME", Path::new("~/dsh-elsewhere"));
-        assert_eq!(dsh_path(), Some(home.join("dsh-elsewhere").join("cordis.patch.yml")));
+        assert_eq!(
+            dsh_path(),
+            Some(home.join("dsh-elsewhere").join("cordis.patch.yml"))
+        );
         drop(_tilde);
         // Blank and relative values: dsh uses its default, or a cwd Toolport
         // cannot see; both resolve to the default home layer.
@@ -12952,7 +12955,8 @@ command = "npx"
 
     #[test]
     fn deepseek_harness_connect_and_disconnect_round_trip_in_a_temp_home() {
-        let home = std::env::temp_dir().join(format!("toolport-dsh-home-rt-{}", std::process::id()));
+        let home =
+            std::env::temp_dir().join(format!("toolport-dsh-home-rt-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(home.join(".dsh")).unwrap();
         let _home = TestHome::set(&home);
@@ -12982,7 +12986,10 @@ command = "npx"
         assert_eq!(gateway.transport, "stdio");
         assert_eq!(gateway.command, entry.command);
         assert_eq!(gateway.args, entry.args);
-        assert!(gateway.env_keys.iter().any(|k| k == crate::brand::CLIENT_ID));
+        assert!(gateway
+            .env_keys
+            .iter()
+            .any(|k| k == crate::brand::CLIENT_ID));
         let normalized = dsh::normalized(&content).unwrap();
         let env = &normalized[dsh::KEY][GATEWAY_ENTRY_NAME]["env"];
         assert_eq!(env[crate::brand::CLIENT_ID], "deepseek-harness");
@@ -12993,7 +13000,11 @@ command = "npx"
         assert_eq!(content.trim_end(), DSH_PATCH.trim_end());
         let disconnected = read_client(&def);
         assert!(!disconnected.gateway_installed);
-        let names: Vec<_> = disconnected.servers.iter().map(|s| s.name.as_str()).collect();
+        let names: Vec<_> = disconnected
+            .servers
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
         assert_eq!(names, ["reference_memory"]);
 
         drop(_home);
