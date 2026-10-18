@@ -315,3 +315,118 @@ fn remote_type_is_ignored_and_url_paths_remain_case_sensitive() {
         ]
     );
 }
+
+#[test]
+fn public_disconnect_keeps_converted_servers_after_native_edits() {
+    let data = crate::registry::DataDirTestEnv::new("openhands-native-disconnect");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
+    let _home = TestHome::set(&data.dir);
+    let folder = data.dir.join(".openhands");
+    std::fs::create_dir_all(&folder).unwrap();
+    let _persistence = EnvRestore::set("OPENHANDS_PERSISTENCE_DIR", &folder);
+    let path = folder.join("mcp.json");
+    let original = "{\n \"git\": {\"command\": \"uvx\", \"args\": [\"mcp-server-git\"]},\n \"old\": {\"command\": \"old\"}\n}\n";
+    for edit in ["unchanged", "add", "edit", "remove", "move-and-add"] {
+        crate::registry::save(&crate::registry::Registry::default()).unwrap();
+        std::fs::write(&path, original).unwrap();
+        install_or_remove("openhands", Some(&gateway())).unwrap();
+        if edit == "move-and-add" {
+            mutation::run("openhands", &path, Format::JsonOpenHandsMcpServers, || {
+                moved::record_selected(
+                    "openhands",
+                    Format::JsonOpenHandsMcpServers,
+                    &path,
+                    &["git".into()],
+                )?;
+                moved::remove_selected(Format::JsonOpenHandsMcpServers, &path, &["git".into()])
+            })
+            .unwrap();
+        }
+        let mut connected: Value = serde_json::from_str(&read_config_file(&path).unwrap()).unwrap();
+        assert!(connected.get("git").is_none());
+        if edit != "move-and-add" {
+            assert_eq!(connected["mcpServers"]["git"]["command"], "uvx");
+        }
+        match edit {
+            "add" | "move-and-add" => {
+                connected["mcpServers"]["remote"] =
+                    serde_json::json!({"url":"https://example.test/mcp", "transport":"http"})
+            }
+            "edit" => connected["mcpServers"]["git"]["args"] = serde_json::json!(["edited"]),
+            "remove" => {
+                connected["mcpServers"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("git");
+            }
+            _ => {}
+        }
+        if edit != "unchanged" {
+            std::fs::write(&path, connected.to_string()).unwrap();
+        }
+        uninstall_gateway("openhands").unwrap();
+        let text = read_config_file(&path).unwrap();
+        if edit == "unchanged" {
+            assert_eq!(text, original);
+        } else {
+            if edit == "move-and-add" {
+                connected["mcpServers"]["git"] =
+                    serde_json::json!({"command":"uvx", "args":["mcp-server-git"]});
+            }
+            connected["mcpServers"]
+                .as_object_mut()
+                .unwrap()
+                .remove("toolport");
+            assert_eq!(
+                serde_json::from_str::<Value>(&text).unwrap(),
+                connected,
+                "{edit}"
+            );
+            assert_eq!(
+                parse(&text).unwrap().len(),
+                if matches!(edit, "add" | "move-and-add") {
+                    3
+                } else if edit == "remove" {
+                    1
+                } else {
+                    2
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn public_disconnect_preserves_mixed_root_and_mcp_servers() {
+    let data = crate::registry::DataDirTestEnv::new("openhands-mixed-disconnect");
+    let _env_lock = env_test_lock();
+    let _client_env = isolated_client_env(&data.dir);
+    let _home = TestHome::set(&data.dir);
+    let folder = data.dir.join(".openhands");
+    std::fs::create_dir_all(&folder).unwrap();
+    let _persistence = EnvRestore::set("OPENHANDS_PERSISTENCE_DIR", &folder);
+    let path = folder.join("mcp.json");
+    let original = serde_json::json!({"ignored": {"command":"root-extra"}, "mcpServers":{"git":{"command":"uvx"}}});
+    std::fs::write(&path, original.to_string()).unwrap();
+    crate::registry::save(&crate::registry::Registry::default()).unwrap();
+    install_or_remove("openhands", Some(&gateway())).unwrap();
+    let mut connected: Value = serde_json::from_str(&read_config_file(&path).unwrap()).unwrap();
+    connected["mcpServers"]["remote"] = serde_json::json!({"url":"https://example.test/mcp"});
+    std::fs::write(&path, connected.to_string()).unwrap();
+    uninstall_gateway("openhands").unwrap();
+    connected["mcpServers"]
+        .as_object_mut()
+        .unwrap()
+        .remove("toolport");
+    let text = read_config_file(&path).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), connected);
+    assert_eq!(
+        parse(&text)
+            .unwrap()
+            .iter()
+            .map(|server| server.name.as_str())
+            .collect::<Vec<_>>(),
+        ["git", "remote"]
+    );
+}

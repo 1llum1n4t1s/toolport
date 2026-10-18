@@ -190,8 +190,10 @@ so a relative value leaves the client unresolved. Connect adds a `toolport`
 server under `mcpServers` and Disconnect removes it; the rest of the file keeps
 its text. Like OpenHands, Toolport reads servers listed at the top level of a
 file with no `mcpServers` key, and Connect moves them under `mcpServers` so they
-keep running. Settings set to `null`, as `openhands mcp add` writes them, count
-as unset. Servers turned off with `enabled: false` (`openhands mcp disable`) or
+keep running. Disconnect restores the original bytes if the file is unchanged
+since Connect. After native edits, it removes only Toolport and keeps the current
+server layout, including servers added under `mcpServers`. Settings set to `null`,
+as `openhands mcp add` writes them, count as unset. Servers turned off with `enabled: false` (`openhands mcp disable`) or
 another false-like value such as `0` or `null` are left alone, and a Toolport
 entry you turn off stays off when Toolport repairs it. Remote servers always get a `transport`. Start a new OpenHands session to
 load the change; `openhands mcp list` shows it. The OpenHands web app keeps its
