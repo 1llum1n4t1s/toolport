@@ -197,10 +197,11 @@ pub(super) fn parse(content: &str) -> Result<Vec<McpServer>, String> {
 
 fn importable(name: &str, definition: &Value, reject_disabled: bool) -> Result<(), String> {
     normalized_server(name, definition)?;
-    if let Some(field) = NOT_IMPORTED
-        .iter()
-        .find(|field| definition.get(**field).is_some_and(|value| !value.is_null()))
-    {
+    if let Some(field) = NOT_IMPORTED.iter().find(|field| {
+        definition
+            .get(**field)
+            .is_some_and(|value| !value.is_null())
+    }) {
         return Err(format!(
             "Cannot import OpenHands server '{name}': Toolport can't keep its '{field}' setting. Keep this server in OpenHands, or set up the same behavior in Toolport by hand first."
         ));

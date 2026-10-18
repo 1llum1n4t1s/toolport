@@ -2202,7 +2202,10 @@ fn openhands_markdown_walk_skips_linked_folders_python_rglob_skips() {
         ".openhands/skills/real/sub/real.md",
         "---\ntriggers: [real]\n---\nReal.\n",
     );
-    home.write("shared/plain/linked.md", "---\ntriggers: [linked]\n---\nLinked.\n");
+    home.write(
+        "shared/plain/linked.md",
+        "---\ntriggers: [linked]\n---\nLinked.\n",
+    );
     home.write("shared/agent/SKILL.md", "---\nname: agent\n---\nAgent.\n");
     home.link(".openhands/skills/plain", &home.path("shared/plain"));
     home.link(".openhands/skills/real/nested", &home.path("shared/plain"));
@@ -2210,7 +2213,14 @@ fn openhands_markdown_walk_skips_linked_folders_python_rglob_skips() {
     let found = walk_openhands_root(&Root::flat(root, "OpenHands skills"));
     let mut names: Vec<_> = found
         .iter()
-        .map(|found| found.link.file_name().unwrap().to_string_lossy().into_owned())
+        .map(|found| {
+            found
+                .link
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     names.sort();
     // A top-level linked AgentSkills folder still loads; linked Markdown doesn't.
