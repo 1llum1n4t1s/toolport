@@ -272,10 +272,18 @@ impl Document<'_> {
         None
     }
 }
+// Python's resolver regexes allow one final newline at their `$` anchor.
+fn implicit_value(scalar: &Scalar) -> Option<&str> {
+    if !matches!(scalar.tag.as_deref(), None | Some("!"))
+        || (!scalar.plain && scalar.tag.as_deref() != Some("!"))
+    {
+        return None;
+    }
+    Some(scalar.value.strip_suffix('\n').unwrap_or(&scalar.value))
+}
+
 fn merge_key(key: &Scalar) -> bool {
-    key.value == "<<"
-        && (((key.plain && key.tag.is_none()) || key.tag.as_deref() == Some("!"))
-            || key.tag.as_deref() == Some("tag:yaml.org,2002:merge"))
+    key.tag.as_deref() == Some("tag:yaml.org,2002:merge") || implicit_value(key) == Some("<<")
 }
 
 fn string(scalar: &Scalar) -> Option<&str> {
@@ -284,39 +292,54 @@ fn string(scalar: &Scalar) -> Option<&str> {
         None | Some("!") => {}
         _ => return None,
     }
-    if !scalar.plain && scalar.tag.as_deref() != Some("!") {
-        return Some(&scalar.value);
-    }
+    implicit_value(scalar)
+        .is_none_or(|value| !implicit_types().is_match(value))
+        .then_some(scalar.value.as_str())
+}
+
+fn implicit_types() -> &'static regex::RegexSet {
     static TYPES: std::sync::OnceLock<regex::RegexSet> = std::sync::OnceLock::new();
-    let types = TYPES.get_or_init(|| regex::RegexSet::new([
+    TYPES.get_or_init(|| regex::RegexSet::new([
         r"^(?:yes|Yes|YES|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF)$",
         r"^(?:~|null|Null|NULL|<<|=|)$",
         r"^(?:[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+|[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+)$",
         r"^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$",
         r"^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:[Tt]|[ \t]+)[0-9]{1,2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]*)?(?:[ \t]*(?:Z|[-+][0-9]{1,2}(?::[0-9]{2})?))?)$",
-    ]).expect("constant PyYAML scalar resolvers"));
-    (!types.is_match(&scalar.value)).then_some(scalar.value.as_str())
+    ]).expect("constant PyYAML scalar resolvers"))
 }
 
 fn invalid_value(scalar: &Scalar) -> bool {
     // PyYAML rewrites the value tag to a string only in mapping keys.
-    merge_key(scalar)
-        || (scalar.value == "="
-            && ((scalar.plain && scalar.tag.is_none()) || scalar.tag.as_deref() == Some("!")))
+    merge_key(scalar) || implicit_value(scalar) == Some("=")
 }
 
 /// PyYAML constructs every value, even fields outside the identity contract.
 fn valid_constructor(scalar: &Scalar) -> bool {
-    if scalar.tag.as_deref() == Some("tag:yaml.org,2002:str")
-        || (!scalar.plain && scalar.tag.as_deref() != Some("!"))
-    {
+    let Some(value) = implicit_value(scalar) else {
         return true;
+    };
+    // PyYAML resolves these as bools but its boolean constructor rejects the
+    // trailing newline. Integer constructors instead accept that whitespace.
+    if value != scalar.value.as_str() && implicit_types().matches(value).matched(0) {
+        return false;
+    }
+    let unsigned = value
+        .strip_prefix('+')
+        .or_else(|| value.strip_prefix('-'))
+        .unwrap_or(value);
+    for prefix in ["0b", "0x"] {
+        if unsigned
+            .strip_prefix(prefix)
+            .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|ch| ch == '_'))
+        {
+            return false; // The resolver accepts these, but int("", base) fails.
+        }
     }
     static TIMESTAMP: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let pattern = TIMESTAMP.get_or_init(|| regex::Regex::new(
         r"^(?P<y>[0-9]{4})-(?P<m>[0-9]{1,2})-(?P<d>[0-9]{1,2})(?:(?:[Tt]|[ \t]+)(?P<h>[0-9]{1,2}):(?P<min>[0-9]{2}):(?P<s>[0-9]{2})(?:\.[0-9]*)?(?:[ \t]*(?:Z|[-+](?P<zh>[0-9]{1,2})(?::(?P<zm>[0-9]{2}))?))?)?$"
     ).expect("constant PyYAML timestamp constructor"));
-    let Some(parts) = pattern.captures(&scalar.value) else {
+    let Some(parts) = pattern.captures(value) else {
         return true;
     };
     // A short month/day without a time is not implicitly a timestamp.
@@ -572,6 +595,46 @@ mod standard_tag_tests {
                 ))
                 .is_some(),
                 "{value}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod resolver_newline_tests {
+    use super::*;
+    #[test]
+    fn nonspecific_tags_preserve_python_resolver_and_constructor_newlines() {
+        for value in [r#"! "yes\n""#, r#"! "=\n""#, r#"! "<<\n""#, "0x_", "-0b__"] {
+            assert!(
+                fields(&format!(
+                    "name: valid\ndescription: ordinary\nother: {value}\n"
+                ))
+                .is_none(),
+                "{value}"
+            );
+        }
+        for value in [r#"! "1000\n""#, "0_", "'0x_'", "!!str 0b_"] {
+            assert!(
+                fields(&format!(
+                    "name: valid\ndescription: ordinary\nother: {value}\n"
+                ))
+                .is_some(),
+                "{value}"
+            );
+        }
+        assert!(fields(
+            r#"name: valid
+description: ! "1000\n"
+"#
+        )
+        .is_none());
+        for key in [r#"! "<<\n""#, "!!merge anything"] {
+            assert_eq!(
+                fields(&format!(
+                    "base: &base {{name: valid, description: ordinary}}\n{key}: *base\n"
+                )),
+                Some(("valid".into(), "ordinary".into()))
             );
         }
     }
