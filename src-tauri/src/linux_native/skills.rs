@@ -97,6 +97,9 @@ pub(super) struct SkillsPage {
     issues_list: gtk::Box,
     issues_side: gtk::Box,
     search: gtk::SearchEntry,
+    agent_filter: gtk::DropDown,
+    filter_ids: Rc<RefCell<Vec<String>>>,
+    syncing_filter: Rc<Cell<bool>>,
     feedback: gtk::Label,
     /// Hides a success message after a few seconds; errors stay until the next action.
     feedback_timer: Rc<RefCell<Option<gtk::glib::SourceId>>>,
@@ -304,7 +307,10 @@ fn dot_detail(state: Option<&crate::skills::SkillState>) -> String {
     };
     let label = state_label(Some(at.state));
     match at.state {
-        State::On => crate::i18n::trf("{state} via {path}", &[("state", &label), ("path", &at.via)]),
+        State::On => crate::i18n::trf(
+            "{state} via {path}",
+            &[("state", &label), ("path", &at.via)],
+        ),
         State::NameOnly => format!("{label} · {}", at.via),
         _ => at.via.clone(),
     }
@@ -810,6 +816,13 @@ impl SkillsPage {
             .valign(gtk::Align::Center)
             .css_classes(["toolport-search"])
             .build();
+        let agent_filter = gtk::DropDown::from_strings(&[]);
+        agent_filter.set_valign(gtk::Align::Center);
+        agent_filter.set_tooltip_text(Some(&crate::i18n::tr("Filter by agent")));
+        agent_filter.update_property(&[gtk::accessible::Property::Label(&crate::i18n::tr(
+            "Filter by agent",
+        ))]);
+        bar.append(&agent_filter);
         bar.append(&search);
         let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
         refresh_button.set_valign(gtk::Align::Center);
@@ -957,6 +970,9 @@ impl SkillsPage {
             issues_list,
             issues_side,
             search,
+            agent_filter,
+            filter_ids: Rc::default(),
+            syncing_filter: Rc::default(),
             feedback,
             feedback_timer: Rc::default(),
             project_label,
@@ -1005,6 +1021,35 @@ impl SkillsPage {
         }
         if let Some((_, first, _)) = page.tabs.first() {
             first.set_active(true);
+        }
+        {
+            let page_ref = page.clone();
+            page.agent_filter.connect_selected_notify(move |filter| {
+                if page_ref.syncing_filter.get() {
+                    return;
+                }
+                let id = page_ref
+                    .filter_ids
+                    .borrow()
+                    .get(filter.selected() as usize)
+                    .cloned()
+                    .filter(|id| !id.is_empty());
+                page_ref.focus.replace(id);
+                page_ref.render();
+            });
+        }
+        for pane in [&page.skills, &page.rules] {
+            let page_ref = page.clone();
+            let pane_ref = pane.clone();
+            pane.scroll.hadjustment().connect_changed(move |_| {
+                let count = pane_ref.cells.borrow().len();
+                if count > 0 && pane_ref.fitting_column(count) != pane_ref.column.get() {
+                    // Set before scheduling, so allocation changes queue only one redraw.
+                    pane_ref.column.set(pane_ref.fitting_column(count));
+                    let page = page_ref.clone();
+                    gtk::glib::idle_add_local_once(move || page.render());
+                }
+            });
         }
         page.connect_list(&page.skills, true);
         page.connect_list(&page.rules, false);
@@ -1392,6 +1437,26 @@ impl SkillsPage {
                 label.remove_css_class("warning");
             }
         }
+        self.syncing_filter.set(true);
+        let mut ids = vec![String::new()];
+        let mut names = vec![crate::i18n::tr("All agents")];
+        for agent in &inv.agents {
+            if self.tab.get() == Tab::Rules || agent.supports_skills {
+                ids.push(agent.id.clone());
+                names.push(agent.name.clone());
+            }
+        }
+        self.agent_filter.set_model(Some(&gtk::StringList::new(
+            &names.iter().map(String::as_str).collect::<Vec<_>>(),
+        )));
+        self.agent_filter.set_selected(
+            ids.iter()
+                .position(|id| Some(id.as_str()) == self.focus.borrow().as_deref())
+                .unwrap_or(0) as u32,
+        );
+        self.filter_ids.replace(ids);
+        self.agent_filter.set_visible(self.tab.get() != Tab::Issues);
+        self.syncing_filter.set(false);
         let needle = self.search.text().trim().to_lowercase();
         match self.tab.get() {
             Tab::Skills => self.render_skills(inv, &needle),
@@ -1522,9 +1587,18 @@ impl SkillsPage {
     /// The "SKILL … logos" row. Clicking a logo shows only what that agent loads.
     fn render_head(&self, pane: &Pane, agents: &[&Agent], label: &str, size_column: bool) {
         clear_box(&pane.head);
+        pane.cells.borrow_mut().clear();
+        pane.column.set(pane.fitting_column(agents.len()));
+        let title_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        title_box.set_hexpand(true);
+        let hint = one_line("", &["caption", "toolport-muted"]);
+        hint.set_visible(false);
+        title_box.append(&hint);
+        pane.hint.replace(Some(hint));
         let title = section(label);
         title.set_valign(gtk::Align::End);
-        pane.head.append(&title);
+        title_box.append(&title);
+        pane.head.append(&title_box);
         if size_column {
             let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             spacer.set_size_request(SIZE_COLUMN, 1);
@@ -1533,8 +1607,8 @@ impl SkillsPage {
         let focus = self.focus.borrow().clone();
         for agent in agents {
             let overlay = gtk::Overlay::new();
-            overlay.set_size_request(COLUMN, 22);
-            let image = logo(&agent.id, 18);
+            overlay.set_size_request(pane.column.get(), 22);
+            let image = logo(&agent.id, 20);
             image.set_halign(gtk::Align::Center);
             image.set_valign(gtk::Align::Center);
             overlay.set_child(Some(&image));
@@ -1545,9 +1619,19 @@ impl SkillsPage {
                 pip.set_valign(gtk::Align::Start);
                 overlay.add_overlay(&pip);
             }
+            let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            column.append(&overlay);
+            if pane.column.get() == WIDE_COLUMN {
+                column.append(
+                    &gtk::Label::builder()
+                        .label(short_agent_name(&agent.name))
+                        .css_classes(["caption"])
+                        .build(),
+                );
+            }
             let button = gtk::Button::builder()
-                .child(&overlay)
-                .width_request(COLUMN)
+                .child(&column)
+                .width_request(pane.column.get())
                 .css_classes(["flat", "toolport-skill-col"])
                 .tooltip_text(if agent.verified {
                     agent.name.clone()
@@ -1570,7 +1654,7 @@ impl SkillsPage {
             button.update_state(&[gtk::accessible::State::Pressed(tristate(pressed))]);
             match &focus {
                 Some(id) if *id == agent.id => button.add_css_class("selected"),
-                Some(_) => button.set_opacity(0.4),
+                Some(_) => {}
                 None => {}
             }
             let page = self.clone();
@@ -1584,6 +1668,13 @@ impl SkillsPage {
                 page.focus.replace(next);
                 page.render_keeping_focus(format!("column:{id}"));
             });
+            pane.track_cell(agent, &button, None);
+            let watch = gtk::EventControllerFocus::new();
+            let (p, id, name) = (pane.clone(), agent.id.clone(), agent.name.clone());
+            watch.connect_enter(move |_| p.hover_column(&id, &name, None, true));
+            let (p, id, name) = (pane.clone(), agent.id.clone(), agent.name.clone());
+            watch.connect_leave(move |_| p.hover_column(&id, &name, None, false));
+            button.add_controller(watch);
             self.offer_focus(&format!("column:{}", agent.id), &button);
             pane.head.append(&button);
         }
@@ -1716,6 +1807,7 @@ impl SkillsPage {
         content.add_css_class("toolport-skill-row");
         let copy = gtk::Box::new(gtk::Orientation::Vertical, 2);
         copy.set_hexpand(true);
+        copy.add_css_class("toolport-skill-row-copy");
         let name = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let title = one_line(&skill.name, &["toolport-skill-name"]);
         title.set_hexpand(false);
@@ -1750,20 +1842,33 @@ impl SkillsPage {
             .css_classes(["toolport-muted", "caption", "numeric"])
             .build();
         content.append(&size);
+        let pane = &self.skills;
         let dots = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let focus = self.focus.borrow();
         for agent in agents {
-            let state = skill.states.get(&agent.id).map(|s| s.state);
+            let saved = skill.states.get(&agent.id);
+            let state = saved.map(|s| s.state);
+            let detail = saved.map_or_else(
+                || state_label(None),
+                |s| {
+                    if s.state == State::On {
+                        crate::i18n::trf(
+                            "{state} via {path}",
+                            &[("state", &state_label(state)), ("path", &s.via)],
+                        )
+                    } else {
+                        s.via.clone()
+                    }
+                },
+            );
             let dot = state_dot(
                 state,
                 &crate::i18n::trf(
                     "{client}: {state}",
                     &[("client", &agent.name), ("state", &state_label(state))],
                 ),
+                pane.column.get(),
             );
-            if focus.as_ref().is_some_and(|id| *id != agent.id) {
-                dot.set_opacity(0.35);
-            }
+            pane.track_cell(agent, &dot, Some(detail));
             dots.append(&dot);
         }
         content.append(&dots);
@@ -2453,16 +2558,22 @@ impl SkillsPage {
         content.add_css_class("toolport-skill-row");
         let copy = gtk::Box::new(gtk::Orientation::Vertical, 2);
         copy.set_hexpand(true);
+        copy.add_css_class("toolport-skill-row-copy");
         copy.append(&one_line(&rule.name, &["toolport-skill-name"]));
         copy.append(&one_line(
             &rule.path,
             &["toolport-muted", "caption", "monospace"],
         ));
         content.append(&copy);
+        let pane = &self.rules;
         let dots = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let focus = self.focus.borrow();
         for agent in agents {
             let loaded = rule.agents.contains_key(&agent.id);
+            let detail = if loaded {
+                crate::i18n::tr("Loaded")
+            } else {
+                crate::i18n::tr("Not loaded")
+            };
             let dot = state_dot(
                 loaded.then_some(State::On),
                 &crate::i18n::trf(
@@ -2479,10 +2590,9 @@ impl SkillsPage {
                         ),
                     ],
                 ),
+                pane.column.get(),
             );
-            if focus.as_ref().is_some_and(|id| *id != agent.id) {
-                dot.set_opacity(0.35);
-            }
+            pane.track_cell(agent, &dot, Some(detail));
             dots.append(&dot);
         }
         content.append(&dots);
@@ -2719,7 +2829,7 @@ impl SkillsPage {
         self.issues_side.append(&note);
     }
 
-    fn issue_card(&self, inv: &Inventory, issue: &Issue) -> gtk::Box {
+    fn issue_card(&self, inv: &Inventory, issue: &Issue) -> adw::BreakpointBin {
         let card = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         card.add_css_class("toolport-skill-issue");
         let (icon, class) = match issue.level.as_str() {
@@ -2727,6 +2837,7 @@ impl SkillsPage {
             "warn" => ("dialog-warning-symbolic", "warning"),
             _ => ("dialog-information-symbolic", "info"),
         };
+        card.add_css_class(class);
         card.append(&tile(icon, class, 32));
         let copy = gtk::Box::new(gtk::Orientation::Vertical, 6);
         copy.set_hexpand(true);
@@ -2766,10 +2877,12 @@ impl SkillsPage {
             });
         }
         self.offer_focus(&format!("issue:{}", issue.fingerprint), &dismiss);
-        top.append(&dismiss);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        actions.set_valign(gtk::Align::Start);
+        actions.append(&dismiss);
         if let Some(label) = issue.fix_label.as_ref().filter(|_| !issue.dismissed) {
             let button = gtk::Button::with_label(label);
-            button.add_css_class("suggested-action");
+            button.add_css_class("toolport-secondary-action");
             button.set_valign(gtk::Align::Start);
             button.set_sensitive(!self.busy.get());
             let page = self.clone();
@@ -2778,8 +2891,9 @@ impl SkillsPage {
             let title = issue.title.clone();
             let label = label.clone();
             button.connect_clicked(move |_| page.confirm_fix(&id, &fingerprint, &title, &label));
-            top.append(&button);
+            actions.append(&button);
         }
+        top.append(&actions);
         copy.append(&top);
         copy.append(&muted(&issue.detail));
         let logos = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -2843,8 +2957,29 @@ impl SkillsPage {
         if chips.first_child().is_some() {
             copy.append(&chips);
         }
+        let narrow = adw::Breakpoint::new(
+            adw::BreakpointCondition::parse("max-width: 560px").expect("static issue breakpoint"),
+        );
+        let (a, t, c) = (actions.clone(), top.clone(), copy.clone());
+        narrow.connect_apply(move |_| {
+            t.remove(&a);
+            a.set_halign(gtk::Align::Start);
+            c.append(&a);
+        });
+        let (a, t, c) = (actions.clone(), top.clone(), copy.clone());
+        narrow.connect_unapply(move |_| {
+            c.remove(&a);
+            a.set_halign(gtk::Align::End);
+            t.append(&a);
+        });
         card.append(&copy);
-        card
+        let adaptive = adw::BreakpointBin::builder()
+            .child(&card)
+            .width_request(280)
+            .height_request(80)
+            .build();
+        adaptive.add_breakpoint(narrow);
+        adaptive
     }
 
     /// Jump from a Needs a look chip to that skill on the Skills tab.

@@ -1353,7 +1353,7 @@ button.toolport-skill-tab:checked {{
   background-color: alpha(@toolport_accent, 0.16);
   box-shadow: inset 0 0 0 1px alpha(@toolport_accent, 0.60);
 }}
-.toolport-skill-head .toolport-client-logo {{ min-width: 18px; min-height: 18px; margin: 0; }}
+.toolport-skill-head .toolport-client-logo {{ min-width: 20px; min-height: 20px; margin: 0; }}
 .toolport-skill-logo .toolport-client-logo {{ min-width: 20px; min-height: 20px; margin: 0; }}
 .toolport-skill-chip .toolport-client-logo {{ min-width: 14px; min-height: 14px; margin: 0; }}
 .toolport-skill-pip {{
@@ -1368,7 +1368,15 @@ list.toolport-skill-list > row {{ border-radius: 8px; padding: 0; }}
 list.toolport-skill-list > row:hover {{ background-color: alpha(@toolport_fg, 0.04); }}
 list.toolport-skill-list > row:selected {{ background-color: alpha(@toolport_accent, 0.14); }}
 list.toolport-skill-list > row.toolport-skill-group-row:hover {{ background: none; }}
-.toolport-skill-row {{ padding: 7px 8px; }}
+.toolport-skill-row {{ padding: 0 8px; }}
+.toolport-skill-row-copy {{ padding: 12px 0; }}
+.toolport-skill-col-hl {{ background-color: alpha(@toolport_accent, 0.08); }}
+.toolport-chip-dot {{ min-width: 8px; min-height: 8px; border-radius: 999px; background-color: currentColor; }}
+.toolport-chip-dot.name-only {{ background-image: linear-gradient(90deg, currentColor 50%, transparent 50%); background-color: transparent; border: 1px solid currentColor; }}
+.toolport-chip-dot.ring {{ background-color: transparent; border: 1px solid currentColor; }}
+.toolport-skill-lock:focus-visible {{ outline: 2px solid alpha(@toolport_accent, 0.50); outline-offset: 2px; }}
+.toolport-skill-issue.warning {{ border-left: 3px solid @toolport_warning; }}
+.toolport-skill-issue.error {{ border-left: 3px solid @toolport_error; }}
 .toolport-skill-name {{ font-weight: 600; }}
 .toolport-skill-group {{ padding: 14px 8px 5px 8px; }}
 .toolport-skill-dot {{
