@@ -1684,3 +1684,28 @@ fn gemini_reads_its_configured_file_names_in_a_project_too() {
     assert!(gemini("AGENTS.md"));
     assert!(!gemini("GEMINI.md"));
 }
+
+#[test]
+fn clients_without_a_rules_file_yet_still_offer_where_one_goes() {
+    let home = Home::new();
+    // Another client has rules, so the ones without stand out.
+    home.write(".codex/AGENTS.md", "# Codex\n");
+    let inv = scan(
+        &home.env(),
+        &only(&["codex", "grok", "pi", "antigravity"]),
+        None,
+    );
+    let locations = |id: &str| {
+        inv.agents
+            .iter()
+            .find(|a| a.id == id)
+            .map(|a| a.rule_locations.clone())
+            .unwrap_or_default()
+    };
+    assert!(locations("grok").contains(&"~/.grok/AGENTS.md".to_string()));
+    assert!(locations("pi").contains(&"~/.pi/agent/AGENTS.md".to_string()));
+    assert!(locations("antigravity").contains(&"~/.gemini/config/AGENTS.md".to_string()));
+    let missing = inv.issues.iter().find(|i| i.id == "rules-missing").unwrap();
+    assert!(missing.agents.contains(&"grok".to_string()));
+    assert!(missing.agents.contains(&"pi".to_string()));
+}

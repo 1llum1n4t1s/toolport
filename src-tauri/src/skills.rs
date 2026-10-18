@@ -561,6 +561,17 @@ fn named_files(dir: &Path, names: &[&str]) -> Vec<PathBuf> {
     files
 }
 
+/// `named_files`, or `fallback` when none exists yet, so the client still has a place to
+/// create its rules file.
+fn named_or(dir: &Path, names: &[&str], fallback: &str) -> Vec<PathBuf> {
+    let files = named_files(dir, names);
+    if files.is_empty() {
+        vec![dir.join(fallback)]
+    } else {
+        files
+    }
+}
+
 /// Markdown files in `dir` and the folders under it. Hidden folders are skipped, each real
 /// folder is read once, and the walk stops after `MAX_ENTRIES` entries, so a link to the home
 /// folder or a loop can't stall the page.
@@ -850,8 +861,10 @@ fn agent_defs() -> Vec<AgentDef> {
             // Every one of these loads; Grok adds them up.
             rules: |env| {
                 const NAMES: &[&str] = &["Agents.md", "Claude.md", "CLAUDE.md", "CLAUDE.local.md", "AGENT.md", "AGENTS.md"];
-                let mut files = Vec::new();
-                for dir in [env.grok.clone(), env.claude_compat.clone(), env.home.join(".cursor")] {
+                // Grok's own AGENTS.md is the place to start one when it has none.
+                let mut files = named_or(&env.grok, NAMES, "AGENTS.md");
+                files.extend(md_files(&env.grok.join("rules")));
+                for dir in [env.claude_compat.clone(), env.home.join(".cursor")] {
                     files.extend(named_files(&dir, NAMES));
                     files.extend(md_files(&dir.join("rules")));
                 }
@@ -905,7 +918,7 @@ fn agent_defs() -> Vec<AgentDef> {
                 let gemini = env.home.join(".gemini");
                 let config = gemini.join("config");
                 let mut files = named_files(&gemini, &["GEMINI.md", "AGENTS.md"]);
-                files.extend(named_files(&config, &["GEMINI.md", "AGENTS.md"]));
+                files.extend(named_or(&config, &["GEMINI.md", "AGENTS.md"], "AGENTS.md"));
                 files.extend(md_files(&config.join("rules")).into_iter().filter(|p| always_on_rule(p)));
                 sources(files, false)
             },
@@ -1133,7 +1146,9 @@ fn agent_defs() -> Vec<AgentDef> {
             AGENTS_SKILLS,
             |env| {
                 let names = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
-                first_of(names.iter().flat_map(|n| named_files(&env.pi, &[n])).collect(), false)
+                let found: Vec<PathBuf> = names.iter().flat_map(|n| named_files(&env.pi, &[n])).collect();
+                let files = if found.is_empty() { vec![env.pi.join("AGENTS.md")] } else { found };
+                first_of(files, false)
             },
             AGENTS_MD,
         )
