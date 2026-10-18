@@ -72,7 +72,7 @@ export function AccessUpgradeNotice({
             setBusy(false);
           }
         }}
-        className="rounded-[8px] border px-2.5 py-1 text-[13px] font-semibold"
+        className="rounded-md border px-2.5 py-1 text-[13px] font-semibold"
       >
         {t("Stop old gateways")}
       </button>
@@ -90,7 +90,7 @@ export function AccessUpgradeNotice({
             setBusy(false);
           }
         }}
-        className="rounded-[8px] border px-2.5 py-1 text-[13px] font-semibold"
+        className="rounded-md border px-2.5 py-1 text-[13px] font-semibold"
       >
         {t("Dismiss")}
       </button>

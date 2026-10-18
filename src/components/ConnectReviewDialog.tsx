@@ -93,7 +93,7 @@ export function ConnectReviewDialog({
                     >
                       <div>
                         <p className="font-medium">{row.name}</p>
-                        <p className="text-xs text-muted-foreground">
+                        <p className="text-meta text-muted-foreground">
                           {translate("{count} tools", { count: row.toolCount })} ·{" "}
                           {row.credentialState === "stored"
                             ? translate("Stored in keychain")
@@ -107,13 +107,13 @@ export function ConnectReviewDialog({
                 })}
               </ul>
               {result.outcome.warnings?.map((warning) => (
-                <p key={warning} className="text-xs text-muted-foreground">
+                <p key={warning} className="text-meta text-muted-foreground">
                   {warning}
                 </p>
               ))}
               <details>
                 <summary>{t("What your agent sees")}</summary>
-                <ul className="mt-2 font-mono text-xs">
+                <ul className="mt-2 font-mono text-meta">
                   {result.tools.map((t) => (
                     <li key={t.name}>{t.name}</li>
                   ))}

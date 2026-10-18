@@ -60,7 +60,7 @@ function StatusBadge({ status }: { status: ClientStatus }) {
     case "error":
       return <Badge variant="warning">{t("Couldn't read config")}</Badge>;
     case "missing":
-      return <Badge variant="outline">{t("Not installed")}</Badge>;
+      return <Badge variant="off">{t("Not installed")}</Badge>;
   }
 }
 
@@ -193,7 +193,7 @@ function ClientRow({
           : variant === "line"
             ? "border-b border-border/60 px-1 py-2.5 last:border-b-0"
             : ""
-      } ${status === "missing" ? "opacity-60" : ""}`}
+      }`}
     >
       {!profile && <ClientLogo id={client.id} name={client.name} size={28} />}
       <span className="min-w-0">
@@ -223,7 +223,7 @@ function ClientRow({
           )}
         </span>
         <span
-          className="block truncate text-xs text-muted-foreground"
+          className="block truncate text-meta text-muted-foreground"
           title={detail.full}
         >
           {detail.text}
@@ -243,7 +243,7 @@ function ClientRow({
         <StatusBadge status={status} />
       </span>
       <ChevronRight
-        className={`${profile ? "col-start-2" : "col-start-3"} row-start-1 size-4 text-muted-foreground/50 sm:col-auto sm:row-auto`}
+        className={`${profile ? "col-start-2" : "col-start-3"} row-start-1 size-4 text-muted-foreground sm:col-auto sm:row-auto`}
         aria-hidden="true"
       />
     </button>
@@ -311,7 +311,7 @@ function ClaudeGroup({
   const copiesNote = copies.length > 0 && (
     <div className="border-t border-border/60">
       <div className="flex items-center gap-3 py-2.5 pr-1 pl-11">
-        <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+        <p className="min-w-0 flex-1 text-meta text-muted-foreground">
           {t(
             "Also found {folder}: the same account as {command}. Claude Code only reads it when CLAUDE_CONFIG_DIR points there, as some background tools do.",
             {
@@ -369,7 +369,7 @@ function ClaudeGroup({
               )}
             </Badge>
           </span>
-          <span id={summaryId} className="block truncate text-xs text-muted-foreground">
+          <span id={summaryId} className="block truncate text-meta text-muted-foreground">
             {t("{connected} of {total} connected", {
               connected,
               total: shown.length,
@@ -377,7 +377,7 @@ function ClaudeGroup({
           </span>
         </span>
         <ChevronDown
-          className={`size-4 text-muted-foreground/70 transition-transform ${open ? "" : "-rotate-90"}`}
+          className={`size-4 text-muted-foreground transition-transform ${open ? "" : "-rotate-90"}`}
           aria-hidden="true"
         />
       </button>
@@ -488,7 +488,7 @@ export function ClientsView({
         </>
       )}
       {sessionError && (
-        <p role="status" className="text-xs text-muted-foreground">
+        <p role="status" className="text-meta text-muted-foreground">
           {translate("Client session history could not be read.")}
         </p>
       )}
@@ -528,7 +528,7 @@ export function ClientsView({
           <SectionHeader count={availableCount}>
             {t("Available to connect")}
           </SectionHeader>
-          <p className="mb-2 text-xs text-muted-foreground">
+          <p className="mb-2 text-meta text-muted-foreground">
             {t("Select an installed client to connect it or review its configuration.")}
           </p>
           {!claudeConnected && claudeGroup && (
@@ -557,7 +557,7 @@ export function ClientsView({
             type="button"
             onClick={() => setShowMissing((value) => !value)}
             aria-expanded={showMissing}
-            className="flex w-full items-center gap-2 rounded-md px-1 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="flex w-full items-center gap-2 rounded-md px-1 py-1.5 text-left text-meta text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <ChevronRight
               className={`size-3.5 transition-transform ${showMissing ? "rotate-90" : ""}`}
@@ -587,7 +587,7 @@ export function ClientsView({
             type="button"
             onClick={() => setShowRecent((value) => !value)}
             aria-expanded={showRecent}
-            className="flex w-full items-center gap-2 rounded-md px-1 py-1.5 text-left text-xs text-muted-foreground hover:text-foreground"
+            className="flex w-full items-center gap-2 rounded-md px-1 py-1.5 text-left text-meta text-muted-foreground hover:text-foreground"
           >
             <ChevronRight
               className={`size-3.5 ${showRecent ? "rotate-90" : ""}`}
@@ -623,7 +623,7 @@ export function ClientsView({
                     {trustedClientName(client)}
                   </p>
                   <p
-                    className="text-xs text-muted-foreground"
+                    className="text-meta text-muted-foreground"
                     title={translate(
                       "Calls today counts retained tool calls since local midnight. Older calls may no longer be retained.",
                     )}

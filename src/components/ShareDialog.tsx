@@ -381,7 +381,7 @@ export function ShareDialog({ trigger, onImported }: Props) {
 
         {preview ? (
           <div className="flex flex-col gap-4 py-1">
-            <p className="text-xs text-muted-foreground">
+            <p className="text-meta text-muted-foreground">
               {t(
                 "These servers come from a shared file. Each runs the command shown when you enable it, so review them before importing. You'll add your own keys after. ",
               )}
@@ -431,7 +431,7 @@ export function ShareDialog({ trigger, onImported }: Props) {
           <div className="flex flex-col gap-5 py-1">
             <div className="flex flex-col gap-2">
               <Label className="text-sm">{t("Your setup")}</Label>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-meta text-muted-foreground">
                 {t(
                   "Send this to a teammate to share your server set. Secrets are never included, each person adds their own keys after importing. ",
                 )}
@@ -460,13 +460,13 @@ export function ShareDialog({ trigger, onImported }: Props) {
               {servers.length > 0 && (
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-muted-foreground">
+                    <span className="text-meta text-muted-foreground">
                       <Trans
                         message={"Servers to include ({value1}/{value2})"}
                         values={{ value1: selected.size, value2: servers.length }}
                       />
                     </span>
-                    <div className="flex gap-2 text-[11px]">
+                    <div className="flex gap-2 text-meta">
                       <button
                         type="button"
                         className="text-muted-foreground hover:text-foreground"
@@ -520,14 +520,14 @@ export function ShareDialog({ trigger, onImported }: Props) {
               )}
 
               {registryState === "loading" && (
-                <p role="status" className="text-xs text-muted-foreground">
+                <p role="status" className="text-meta text-muted-foreground">
                   {t("Loading servers… ")}
                 </p>
               )}
               {registryState === "error" && (
                 <div
                   role="alert"
-                  className="flex items-center justify-between gap-2 toolport-alert border-destructive bg-destructive/8 px-2.5 py-2 text-xs text-destructive"
+                  className="flex items-center justify-between gap-2 toolport-alert border-destructive bg-destructive/8 px-2.5 py-2 text-meta text-destructive"
                 >
                   <span>
                     <Trans
@@ -541,14 +541,14 @@ export function ShareDialog({ trigger, onImported }: Props) {
                 </div>
               )}
               {registryState === "ready" && exportState === "loading" && (
-                <p role="status" className="text-xs text-muted-foreground">
+                <p role="status" className="text-meta text-muted-foreground">
                   {t("Updating setup… ")}
                 </p>
               )}
               {registryState === "ready" && exportState === "error" && (
                 <div
                   role="alert"
-                  className="flex items-center justify-between gap-2 toolport-alert border-destructive bg-destructive/8 px-2.5 py-2 text-xs text-destructive"
+                  className="flex items-center justify-between gap-2 toolport-alert border-destructive bg-destructive/8 px-2.5 py-2 text-meta text-destructive"
                 >
                   <span>
                     <Trans
@@ -574,7 +574,7 @@ export function ShareDialog({ trigger, onImported }: Props) {
                 aria-label={t("Exported setup")}
                 value={exported}
                 rows={5}
-                className="resize-none font-mono text-xs"
+                className="resize-none font-mono text-meta"
               />
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -637,7 +637,7 @@ export function ShareDialog({ trigger, onImported }: Props) {
               {shareLink && (
                 <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2.5 py-1.5">
                   <Link2 className="size-3.5 shrink-0 text-success" />
-                  <code className="min-w-0 flex-1 truncate text-xs">{shareLink}</code>
+                  <code className="min-w-0 flex-1 truncate text-meta">{shareLink}</code>
                   <button
                     type="button"
                     title={linkCopied ? t("Copied") : t("Copy link")}
@@ -662,7 +662,7 @@ export function ShareDialog({ trigger, onImported }: Props) {
                 value={paste}
                 onChange={(e) => setPaste(e.target.value)}
                 rows={5}
-                className="resize-none font-mono text-xs"
+                className="resize-none font-mono text-meta"
               />
               <div className="flex flex-wrap gap-2">
                 <Button

@@ -18,7 +18,7 @@ export default function ExecutionReview({
   const { t } = useI18n();
   useEffect(() => onReady(server), [server, onReady]);
   return (
-    <div className="max-h-[60vh] space-y-2 overflow-auto break-all font-mono text-xs">
+    <div className="max-h-[60vh] space-y-2 overflow-auto break-all font-mono text-meta">
       <p>{t("Review the highlighted changes. Enable only a setup you trust.")}</p>
       {executionReviewLines(server).map((line, i) => (
         <p

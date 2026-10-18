@@ -5,7 +5,8 @@ const VARIANTS = {
   danger: "border-destructive bg-destructive/8",
   warning: "border-warning bg-warning/8",
   success: "border-success bg-success/8",
-  info: "border-info bg-info/8",
+  // Info needs no action, so it has no status bar.
+  info: "border-transparent bg-muted",
 } as const;
 
 interface Props {

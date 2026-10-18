@@ -155,7 +155,7 @@ export function LaunchSetupDialog({ server, trigger, onSaved, onChanged }: Props
                 />
               )}
               {!input.secret && references[input.key] === undefined && (
-                <label className="flex items-center gap-2 text-xs">
+                <label className="flex items-center gap-2 text-meta">
                   <input
                     type="checkbox"
                     checked={portable[input.key] === true}
@@ -168,7 +168,7 @@ export function LaunchSetupDialog({ server, trigger, onSaved, onChanged }: Props
               )}
             </div>
           ))}
-          <p className="text-xs text-muted-foreground">
+          <p className="text-meta text-muted-foreground">
             {t(
               "Pasted keys stay in Toolport's vault. Password manager references sync to your other machines. Sign in to the provider on each machine.",
             )}

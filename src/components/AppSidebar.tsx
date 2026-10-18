@@ -248,7 +248,7 @@ function VersionFooter({
   const progressLabel = updateProgressLabel(installProgress);
 
   return (
-    <div className="sidebar-footer mt-auto flex shrink-0 flex-wrap items-center justify-between gap-2 border-t px-4 py-3 text-xs">
+    <div className="sidebar-footer mt-auto flex shrink-0 flex-wrap items-center justify-between gap-2 border-t px-4 py-3 text-meta">
       <div className="sidebar-version min-w-0">
         {update ? (
           <button
@@ -557,7 +557,7 @@ export function AppSidebar({
       <span className="sidebar-label">{t(label)}</span>
       {badge !== undefined && badge !== null && badge > 0 && (
         <span
-          className="ml-auto inline-flex shrink-0 items-center rounded-full bg-warning/15 px-1.5 text-[10px] font-medium text-warning"
+          className="ml-auto inline-flex shrink-0 items-center rounded-full bg-warning/15 px-1.5 text-xs font-medium text-warning"
           aria-label={
             badge === 1
               ? t("{value1} tool blocked", { value1: badge })
@@ -574,7 +574,7 @@ export function AppSidebar({
       )}
       {badge === null && stale && (
         <span
-          className="ml-auto inline-flex shrink-0 items-center rounded-full bg-warning/15 px-1.5 text-[10px] font-medium text-warning"
+          className="ml-auto inline-flex shrink-0 items-center rounded-full bg-warning/15 px-1.5 text-xs font-medium text-warning"
           aria-label={t("Quarantine status unknown")}
           title={t("Could not reach the gateway — quarantine status unknown")}
         >
@@ -615,7 +615,7 @@ export function AppSidebar({
         </svg>
         <div className="sidebar-label leading-tight">
           <div className="font-semibold tracking-tight">{t("Toolport")}</div>
-          <div className="text-xs text-muted-foreground">{t("MCP control center")}</div>
+          <div className="text-meta text-muted-foreground">{t("MCP control center")}</div>
         </div>
       </div>
 
@@ -680,7 +680,7 @@ export function AppSidebar({
         {savings && (savings.tokenizedLoads ?? 0) > 0 && (
           <button
             onClick={() => onSelectView("activity")}
-            className="sidebar-savings mx-3 mt-2 flex items-center gap-2 rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-left text-xs transition-colors hover:bg-success/10"
+            className="sidebar-savings mx-3 mt-2 flex items-center gap-2 rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-left text-meta transition-colors hover:bg-success/10"
             title={`${savingsStale ? t("Catalog telemetry unavailable; showing the last loaded measurement. ") : ""}${t("cl100k_base tokenizer; one full catalog baseline per client session minus every catalog and search response. Sessionless HTTP and unverifiable history excluded; not model usage or billing. Click for the breakdown.")}`}
           >
             <Zap className="size-3.5 shrink-0 text-success" />

@@ -34,7 +34,7 @@ export function ServerLogo({
     <span
       aria-hidden
       className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-lg border border-black/10 bg-white/90 p-1.5 text-muted-foreground",
+        "inline-flex shrink-0 items-center justify-center rounded-md border border-black/10 bg-white/90 p-1.5 text-muted-foreground",
         className,
       )}
       style={{ width: size, height: size }}

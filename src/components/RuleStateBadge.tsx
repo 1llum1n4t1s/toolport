@@ -57,7 +57,7 @@ export function RuleStateBadge({ state }: { state: InstructionsApplyState }) {
   return (
     <span
       title={tr(EXPLANATION[state])}
-      className={`flex shrink-0 items-center gap-1 text-xs ${meta.className}`}
+      className={`flex shrink-0 items-center gap-1 text-meta ${meta.className}`}
     >
       <Icon className="size-3.5" />
       {tr(meta.label)}

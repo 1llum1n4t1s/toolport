@@ -11,12 +11,17 @@ const badgeVariants = cva(
       variant: {
         default: "bg-primary text-primary-foreground [a]:hover:bg-primary/80",
         secondary: "bg-secondary text-secondary-foreground [a]:hover:bg-secondary/80",
+        // Status tints: the status color at 12% with full-color text, the same rule as the GTK
+        // `.toolport-badge.{success,warning,error,partial,off}` classes.
         destructive:
-          "bg-destructive/10 text-destructive focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:focus-visible:ring-destructive/40 [a]:hover:bg-destructive/20",
-        success: "bg-success/12 text-success dark:bg-success/16",
-        warning: "bg-warning/14 text-warning dark:bg-warning/16",
-        info: "bg-info/12 text-info dark:bg-info/16",
-        owned: "bg-owned/12 text-owned dark:bg-owned/16",
+          "bg-destructive/12 text-destructive focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 [a]:hover:bg-destructive/20",
+        success: "bg-success/12 text-success",
+        warning: "bg-warning/12 text-warning",
+        partial: "bg-partial/12 text-partial",
+        off: "bg-muted text-muted-foreground",
+        // Kept for existing callers: owned is the partial color and info is neutral.
+        info: "bg-muted text-muted-foreground",
+        owned: "bg-partial/12 text-partial",
         outline:
           "border-border text-foreground [a]:hover:bg-muted [a]:hover:text-muted-foreground",
         ghost: "hover:bg-muted hover:text-muted-foreground dark:hover:bg-muted/50",

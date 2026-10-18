@@ -602,7 +602,7 @@ export function SecretsDialog({
         {trigger ?? (
           <button
             aria-label={t("Manage secrets for {value1}", { value1: server.name })}
-            className="rounded p-1 text-muted-foreground/60 transition hover:bg-accent hover:text-foreground"
+            className="rounded p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground"
           >
             <KeyRound className="size-3.5" />
           </button>
@@ -619,13 +619,13 @@ export function SecretsDialog({
           {isRemote && server.url && (
             <div className="flex flex-col gap-2.5 border-b pb-3">
               {probing && (
-                <p className="text-xs text-muted-foreground">
+                <p className="text-meta text-muted-foreground">
                   {t("Checking what this server needs… ")}
                 </p>
               )}
 
               {authInfo?.kind === "none" ? (
-                <div className="flex items-start gap-2 rounded-md bg-success/10 p-2.5 text-xs text-success">
+                <div className="flex items-start gap-2 rounded-md bg-success/10 p-2.5 text-meta text-success">
                   <Check className="mt-0.5 size-3.5 shrink-0" />
                   <span>
                     {t(
@@ -636,7 +636,7 @@ export function SecretsDialog({
               ) : (
                 <>
                   {authInfo?.vendor && authInfo.instructions && (
-                    <div className="rounded-md bg-muted/40 p-2.5 text-xs text-muted-foreground">
+                    <div className="rounded-md bg-muted/40 p-2.5 text-meta text-muted-foreground">
                       <span className="font-medium text-foreground">
                         {authInfo.vendor}:{" "}
                       </span>
@@ -656,22 +656,22 @@ export function SecretsDialog({
                   )}
 
                   {authInfo?.kind === "oauth" && (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-meta text-muted-foreground">
                       {t(
                         "This server supports browser sign-in. A pasted access token is optional if your provider supplies one. ",
                       )}
                     </p>
                   )}
                   {oauthMessage && (
-                    <p role="status" className="text-xs text-muted-foreground">
+                    <p role="status" className="text-meta text-muted-foreground">
                       {oauthMessage}
                     </p>
                   )}
                   <div className="flex flex-col gap-1.5">
                     <div className="flex items-center gap-2">
-                      <Label className="text-xs">{t("Access token")}</Label>
+                      <Label className="text-meta">{t("Access token")}</Label>
                       {authSet && (
-                        <span className="inline-flex items-center gap-1 text-xs text-success">
+                        <span className="inline-flex items-center gap-1 text-meta text-success">
                           <Trans
                             message={"{value1}vaulted"}
                             values={{ value1: <Check className="size-3" /> }}
@@ -679,7 +679,7 @@ export function SecretsDialog({
                         </span>
                       )}
                       {authProbeError && (
-                        <span className="text-xs text-warning">
+                        <span className="text-meta text-warning">
                           {t("couldn't check the keychain ")}
                         </span>
                       )}
@@ -765,14 +765,14 @@ export function SecretsDialog({
                         </Button>
                       )}
                       {!oauthBusy && /mac/i.test(navigator.userAgent) && (
-                        <p className="text-[11px] text-muted-foreground">
+                        <p className="text-meta text-muted-foreground">
                           {t(
                             "On macOS, set Chrome or Brave as your default browser first. Safari can block the local sign-in redirect. ",
                           )}
                         </p>
                       )}
                       {oauthBusy && (
-                        <p className="text-[11px] text-muted-foreground">
+                        <p className="text-meta text-muted-foreground">
                           {t(
                             "Finish signing in and approve access in your browser. This attempt waits up to 3 minutes for the browser callback. If you closed the browser, cancel sign-in, then sign in again to reopen it. Closing this panel cancels sign-in. Closing the app window keeps Toolport running in the tray; use Quit Toolport to exit. ",
                           )}
@@ -782,7 +782,7 @@ export function SecretsDialog({
                   )}
 
                   {authInfo?.kind === "token" && (
-                    <p className="text-[11px] text-muted-foreground">
+                    <p className="text-meta text-muted-foreground">
                       {t(
                         "This server needs a pasted token. OAuth sign-in isn't available here. ",
                       )}
@@ -798,7 +798,7 @@ export function SecretsDialog({
                     {!ccOpen ? (
                       <button
                         type="button"
-                        className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                        className="text-meta text-muted-foreground underline underline-offset-2 hover:text-foreground"
                         onClick={() => setCcOpen(true)}
                       >
                         {t("No browser available? Use a client id and secret instead ")}
@@ -806,11 +806,11 @@ export function SecretsDialog({
                     ) : (
                       <div className="space-y-2">
                         <div className="flex items-center justify-between gap-2">
-                          <p className="text-xs font-medium">
+                          <p className="text-meta font-medium">
                             {t("Client credentials (no browser) ")}
                           </p>
                           {ccSecretSet && (
-                            <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                            <span className="inline-flex items-center gap-1 text-meta text-muted-foreground">
                               <Trans
                                 message={"{value1} secret stored"}
                                 values={{ value1: <Check className="size-3" /> }}
@@ -818,12 +818,12 @@ export function SecretsDialog({
                             </span>
                           )}
                           {ccSecretProbeError && (
-                            <span className="text-[11px] text-warning">
+                            <span className="text-meta text-warning">
                               {t("Couldn't check the stored secret ")}
                             </span>
                           )}
                         </div>
-                        <p className="text-[11px] text-muted-foreground">
+                        <p className="text-meta text-muted-foreground">
                           {t(
                             "For servers that authenticate the application rather than a person, e.g. on a build machine. Toolport requests a token directly and renews it automatically; it never opens a browser for this server. ",
                           )}
@@ -851,7 +851,7 @@ export function SecretsDialog({
                           placeholder={t("Scopes (optional, space separated)")}
                           autoComplete="off"
                         />
-                        <p className="text-[11px] text-muted-foreground">
+                        <p className="text-meta text-muted-foreground">
                           <Trans
                             message={
                               "The secret is stored in your OS keychain, never in Toolport’s config file, backups, or shared setups. {value1}{value2}"
@@ -873,7 +873,7 @@ export function SecretsDialog({
                         {ccSecretProbeError && (
                           <button
                             type="button"
-                            className="text-[11px] font-medium text-primary hover:underline"
+                            className="text-meta font-medium text-primary hover:underline"
                             onClick={() => void retrySecretProbe()}
                           >
                             {t("Retry the secret check ")}
@@ -926,7 +926,7 @@ export function SecretsDialog({
           {secretKeys.length > 0 && (
             <div className="flex flex-col gap-3">
               {keyHint && (
-                <div className="rounded-md bg-muted/40 p-2.5 text-xs text-muted-foreground">
+                <div className="rounded-md bg-muted/40 p-2.5 text-meta text-muted-foreground">
                   <span className="font-medium text-foreground">
                     {vendorFromKey(primaryKey)}:{" "}
                   </span>
@@ -949,7 +949,7 @@ export function SecretsDialog({
                   Remove button is simply missing, which reads as "nothing is
                   saved here" (SBS-841). */}
               {secretProbeError && (
-                <div className="toolport-alert border-warning bg-warning/8 p-2.5 text-xs text-warning">
+                <div className="toolport-alert border-warning bg-warning/8 p-2.5 text-meta text-warning">
                   <p>
                     {t(
                       "Couldn't check the keychain, so saved keys aren't shown below. Unlock it and retry; saving now overwrites anything already stored. ",
@@ -974,11 +974,11 @@ export function SecretsDialog({
                         values={{ value1: vendorFromKey(key) }}
                       />
                     </Label>
-                    <code className="rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-muted-foreground">
                       {key}
                     </code>
                     {vaulted[key] && (
-                      <span className="inline-flex items-center gap-1 text-xs text-success">
+                      <span className="inline-flex items-center gap-1 text-meta text-success">
                         <Trans
                           message={"{value1}saved"}
                           values={{ value1: <Check className="size-3" /> }}
@@ -1002,7 +1002,7 @@ export function SecretsDialog({
                   </select>
                   {references[key] !== undefined ? (
                     <>
-                      <p className="text-xs">
+                      <p className="text-meta">
                         {referenceProvider(references[key])?.name ??
                           t("Password manager")}
                       </p>
@@ -1133,7 +1133,7 @@ export function SecretsDialog({
             className="mt-1 border-t pt-3"
             open={secretKeys.length === 0 && !isRemote}
           >
-            <summary className="cursor-pointer text-xs text-muted-foreground select-none">
+            <summary className="cursor-pointer text-meta text-muted-foreground select-none">
               {t("Add another environment secret ")}
             </summary>
             <div className="mt-2 flex flex-col gap-2">

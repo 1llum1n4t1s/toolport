@@ -46,7 +46,7 @@ export function SecretReferenceField({
   }
   return (
     <div className="flex w-full flex-col gap-2">
-      <label className="text-xs">
+      <label className="text-meta">
         {t("Provider")}
         <select
           aria-label={t("Password manager provider")}
@@ -83,13 +83,13 @@ export function SecretReferenceField({
           {busy ? t("Testing…") : t("Test")}
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-meta text-muted-foreground">
         {t(
           "Test uses the desktop app environment. The MCP client gateway may use different environment variables or PATH. Only the reference syncs. Sign in to this provider on each machine.",
         )}
       </p>
       {result && (
-        <p role="status" className="text-xs">
+        <p role="status" className="text-meta">
           {result}
         </p>
       )}

@@ -162,7 +162,7 @@ fn status_badge(client: &state::ClientView) -> gtk::Label {
     } else {
         crate::i18n::msg("Customized")
     });
-    let class = if connected { "success" } else { "review" };
+    let class = if connected { "success" } else { "warning" };
     badge.add_css_class("toolport-badge");
     badge.add_css_class("caption");
     badge.add_css_class(class);

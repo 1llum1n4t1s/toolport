@@ -1396,7 +1396,7 @@ function ServerPosture({
       className={`flex items-center gap-3 toolport-alert px-4 py-3 ${String(healthy ? "border-success bg-success/8" : "border-info bg-info/8")}`}
     >
       <div
-        className={`grid size-8 shrink-0 place-items-center rounded-lg ${String(
+        className={`grid size-8 shrink-0 place-items-center rounded-md ${String(
           healthy
             ? "bg-success/10 text-success"
             : probing
@@ -1412,7 +1412,7 @@ function ServerPosture({
       </div>
       <div>
         <p className="text-sm font-semibold">{title}</p>
-        <p className="text-xs text-muted-foreground">{detail}</p>
+        <p className="text-meta text-muted-foreground">{detail}</p>
       </div>
     </div>
   );
@@ -1454,7 +1454,7 @@ function ServerNextAction({
 
   return (
     <div className="flex items-start gap-3 toolport-alert border-warning bg-warning/8 px-4 py-3">
-      <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-warning/10 text-warning">
+      <div className="grid size-8 shrink-0 place-items-center rounded-md bg-warning/10 text-warning">
         {authCount > 0 && errorCount === 0 ? (
           <KeyRound className="size-4" />
         ) : (
@@ -1463,7 +1463,7 @@ function ServerNextAction({
       </div>
       <div>
         <p className="text-sm font-semibold">{title}</p>
-        <p className="text-xs text-muted-foreground">{detail}</p>
+        <p className="text-meta text-muted-foreground">{detail}</p>
       </div>
     </div>
   );
@@ -1481,7 +1481,7 @@ function EmptyState({
   const { t } = useI18n();
   return (
     <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
-      <ServerOff className="size-10 text-muted-foreground/50" />
+      <ServerOff className="size-10 text-muted-foreground" />
       <div>
         <p className="font-medium">{t("No servers in Toolport yet")}</p>
         <p className="text-sm text-muted-foreground">
@@ -1525,7 +1525,7 @@ function ViewCrash({ error, onRetry }: { error: Error; onRetry: () => void }) {
             "The rest of Toolport is still running. Try again, or reload the window if it keeps happening.",
           )}{" "}
         </p>
-        <p className="mt-2 font-mono text-xs text-muted-foreground/70">{error.message}</p>
+        <p className="mt-2 font-mono text-meta text-muted-foreground">{error.message}</p>
       </div>
       <div className="flex gap-2">
         <Button variant="outline" onClick={onRetry}>
@@ -1559,7 +1559,7 @@ function ErrorState({ message }: { message: string }) {
             </>
           )}
         </p>
-        <p className="mt-2 font-mono text-xs text-muted-foreground/70">{message}</p>
+        <p className="mt-2 font-mono text-meta text-muted-foreground">{message}</p>
       </div>
     </div>
   );

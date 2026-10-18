@@ -597,7 +597,7 @@ export function ServerDialog({
             {showPaste && (
               <div className="flex flex-col gap-2 border-t px-3 pb-3 pt-2">
                 <textarea
-                  className="min-h-[100px] w-full resize-y rounded-md bg-muted/50 p-2 font-mono text-xs"
+                  className="min-h-[100px] w-full resize-y rounded-md bg-muted/50 p-2 font-mono text-meta"
                   placeholder={t(
                     'Paste a config snippet from any client:\n\n• Claude Code: claude mcp add-json ...\n• Cursor/Devin/Antigravity: {"mcpServers": ...}\n• VS Code: {"servers": ...}\n• Codex: [mcp_servers.name]\n• Zed: {"context_servers": ...}',
                   )}
@@ -656,7 +656,7 @@ export function ServerDialog({
               </SelectContent>
             </Select>
 
-            <p className="text-xs text-muted-foreground">
+            <p className="text-meta text-muted-foreground">
               {t("Use stdio for a local command, or http/sse for a remote URL. ")}
             </p>
           </div>
@@ -683,7 +683,7 @@ export function ServerDialog({
                   onChange={(e) => set("args", e.target.value)}
                 />
                 {bindingCleared && (
-                  <p className="text-xs text-warning">
+                  <p className="text-meta text-warning">
                     {t(
                       "Catalog launch setup was removed when you edited the command or arguments. Add any required values to the new command or restore the catalog preset. ",
                     )}
@@ -773,7 +773,7 @@ export function ServerDialog({
                       )}
                     </div>
                   ))}
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-meta text-muted-foreground">
                     {t(
                       "Secret inputs are saved in Toolport's vault. This server stays disabled until required inputs are configured. ",
                     )}
@@ -788,7 +788,7 @@ export function ServerDialog({
                   value={form.cwd}
                   onChange={(e) => set("cwd", e.target.value)}
                 />
-                <p className="text-xs text-muted-foreground">
+                <p className="text-meta text-muted-foreground">
                   <Trans
                     message={
                       "Where this server runs. Leave blank to inherit Toolport's directory. Useful for tools that work on a project (a filesystem or code-search server). {value1} and{value2}{value3} are expanded."
@@ -804,7 +804,7 @@ export function ServerDialog({
               <div className="flex items-start justify-between gap-4">
                 <div className="flex flex-col gap-1">
                   <Label htmlFor="srv-inherit-env">{t("Use my shell environment")}</Label>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-meta text-muted-foreground">
                     {t(
                       "Gives this server every variable from your shell, such as AWS, GitHub or kube settings. When off it gets only PATH, HOME and other basics, plus the variables you set here.",
                     )}
@@ -827,7 +827,7 @@ export function ServerDialog({
                 onChange={(e) => set("url", e.target.value)}
               />
               {urlHint && (
-                <p className="text-xs text-muted-foreground">
+                <p className="text-meta text-muted-foreground">
                   <Trans
                     message={
                       "Enter the URL of your self-hosted instance. For example:{value1}{value2}"
@@ -866,7 +866,7 @@ export function ServerDialog({
               value={form.initializeTimeoutSeconds}
               onChange={(e) => set("initializeTimeoutSeconds", e.target.value)}
             />
-            <p className="text-xs text-muted-foreground">
+            <p className="text-meta text-muted-foreground">
               {t(
                 "Seconds to wait for this server to initialize. Raise this for a slow first start, such as a model download or index build. ",
               )}
@@ -875,7 +875,7 @@ export function ServerDialog({
 
           <div className="flex flex-col gap-2">
             <Label>{t("Environment variables")}</Label>
-            <p className="-mt-1 text-xs text-muted-foreground">
+            <p className="-mt-1 text-meta text-muted-foreground">
               <Trans
                 message={
                   "API keys and other secrets the server needs (e.g.{value1}{value2}). Values are stored in your OS keychain, never in the config."
@@ -944,7 +944,7 @@ export function ServerDialog({
                     onChange={(e) => setEnvRow(i, "value", e.target.value)}
                   />
                 )}
-                <label className="flex shrink-0 items-center gap-1 text-xs">
+                <label className="flex shrink-0 items-center gap-1 text-meta">
                   <input
                     type="checkbox"
                     aria-label={t("Keep {value1} in keychain", {
@@ -969,7 +969,7 @@ export function ServerDialog({
                 </label>
                 {row.secret === false && (
                   <label
-                    className="flex shrink-0 items-center gap-1 text-xs"
+                    className="flex shrink-0 items-center gap-1 text-meta"
                     title={
                       riskySyncEnv(row.key)
                         ? t(
@@ -1021,7 +1021,7 @@ export function ServerDialog({
             duplicateName ||
             test.status === "ok" ||
             test.status === "fail") && (
-            <div className="flex flex-col gap-1.5 text-xs">
+            <div className="flex flex-col gap-1.5 text-meta">
               {visibleErrors.map((msg) => (
                 <p key={msg} className="text-destructive">
                   {msg}

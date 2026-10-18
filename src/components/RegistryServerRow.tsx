@@ -210,9 +210,7 @@ export function RegistryServerRow({
   const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 
   return (
-    <div
-      className={`border-b border-border/60 last:border-b-0 ${enabled ? "" : "opacity-60"}`}
-    >
+    <div className="border-b border-border/60 last:border-b-0">
       {/* Mouse users can click anywhere on the row to expand. Keyboard and screen
           reader users use the chevron button at the end. The row itself is not a
           button, so the toggle and Authenticate controls aren't nested inside one. */}
@@ -234,21 +232,21 @@ export function RegistryServerRow({
         <span title={server.name} className="min-w-0 flex-1 truncate text-sm font-[550]">
           {server.name}
           {providers.length > 0 && (
-            <span className="ml-2 text-[10px] font-normal text-muted-foreground">
+            <span className="ml-2 text-meta font-normal text-muted-foreground">
               {t("Keys from {providers}", { providers: providers.join(", ") })}
             </span>
           )}
         </span>
 
         {isTeam ? (
-          <span className="hidden shrink-0 items-center gap-1 rounded bg-info/15 px-1.5 py-0.5 text-[11px] font-medium text-info md:inline-flex">
+          <span className="hidden shrink-0 items-center gap-1 rounded bg-info/15 px-1.5 py-0.5 text-xs font-medium text-info md:inline-flex">
             <Trans
               message={msg("{value1}Team")}
               values={{ value1: <Users className="size-3" aria-hidden="true" /> }}
             />
           </span>
         ) : (
-          <span className="hidden max-w-40 shrink-0 truncate rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground md:inline">
+          <span className="hidden max-w-40 shrink-0 truncate rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground md:inline">
             {personalSync
               ? server.syncLocalOnly
                 ? translate("This machine only")
@@ -354,7 +352,7 @@ export function RegistryServerRow({
                 ? t("Hide {value1} details", { value1: server.name })
                 : t("Show {value1} details", { value1: server.name })
             }
-            className="rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <ChevronDown
               className={`size-4 transition-transform ${expanded ? "rotate-180" : ""}`}
@@ -365,7 +363,7 @@ export function RegistryServerRow({
       </div>
 
       {!enabled && server.teamRouteRemoved && (
-        <p className="px-3.5 pb-2 pl-12 text-xs text-muted-foreground">
+        <p className="px-3.5 pb-2 pl-12 text-meta text-muted-foreground">
           {translate("Removed or disabled by the team. Your personal server stays off.")}
         </p>
       )}
@@ -432,7 +430,7 @@ export function RegistryServerRow({
               className={PANEL}
             >
               {!!requiredLaunch.length && (
-                <p className="text-xs text-muted-foreground">
+                <p className="text-meta text-muted-foreground">
                   {t(
                     "Launch setup: {inputs}. Open Launch setup to add or review these values before enabling.",
                     { inputs: requiredLaunch.map((input) => input.label).join(", ") },
@@ -440,7 +438,7 @@ export function RegistryServerRow({
                 </p>
               )}
               {target && (
-                <code className="block rounded-md bg-muted px-2 py-1.5 font-mono text-xs break-all text-muted-foreground">
+                <code className="block rounded-md bg-muted px-2 py-1.5 font-mono text-meta break-all text-muted-foreground">
                   {target}
                 </code>
               )}
@@ -451,7 +449,7 @@ export function RegistryServerRow({
                   OAuth URL; the full output stays below, bounded and scrollable
                   with long URLs shortened. */}
                   <div className="flex items-start justify-between gap-2">
-                    <p className="text-xs font-medium text-warning">
+                    <p className="text-meta font-medium text-warning">
                       {errorHeadline(health.error)}
                     </p>
                     <button
@@ -462,13 +460,13 @@ export function RegistryServerRow({
                         toast.success(translate("Error copied"));
                       }}
                       title={translate("Copy the full error")}
-                      className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                       <Copy className="size-3" />
                       {translate("Copy")}
                     </button>
                   </div>
-                  <p className="max-h-32 overflow-y-auto font-mono text-[11px] break-words whitespace-pre-wrap text-muted-foreground">
+                  <p className="max-h-32 overflow-y-auto font-mono text-meta break-words whitespace-pre-wrap text-muted-foreground">
                     {shortenUrls(health.error)}
                   </p>
                 </div>
@@ -500,7 +498,7 @@ export function RegistryServerRow({
                 )}
 
                 {personalSync && (
-                  <label className="inline-flex items-center gap-2 text-xs">
+                  <label className="inline-flex items-center gap-2 text-meta">
                     <input
                       type="checkbox"
                       checked={server.syncLocalOnly === true}
@@ -517,20 +515,20 @@ export function RegistryServerRow({
                       }}
                     />{" "}
                     {translate("Keep on this machine only")}
-                    <span className="text-xs text-muted-foreground">
+                    <span className="text-meta text-muted-foreground">
                       {translate("Copies already on your other machines stay there.")}
                     </span>
                   </label>
                 )}
                 {personalSync && (
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-meta text-muted-foreground">
                     {server.syncLocalOnly
                       ? translate("This machine only")
                       : translate("Synced")}
                   </span>
                 )}
                 {isTeam ? (
-                  <span className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground">
+                  <span className="inline-flex items-center gap-1.5 px-2 py-1 text-meta text-muted-foreground">
                     <Users className="size-3.5" aria-hidden="true" />
                     {translate(
                       "Managed by your team. Ask an admin to change or remove it.",
@@ -613,7 +611,7 @@ function StatusLabel({
   const text = (
     <span
       aria-hidden="true"
-      className={`inline-flex items-center gap-1.5 text-[13px] whitespace-nowrap ${STATUS_TEXT[status]}`}
+      className={`inline-flex items-center gap-1.5 text-meta whitespace-nowrap ${STATUS_TEXT[status]}`}
     >
       <span
         className={`size-[7px] shrink-0 rounded-full ${status === "connected" ? "bg-success" : status === "needs-auth" ? "bg-warning" : status === "error" ? "bg-destructive" : "bg-muted-foreground/60"}`}
@@ -626,7 +624,7 @@ function StatusLabel({
       <Tooltip>
         <TooltipTrigger asChild>{text}</TooltipTrigger>
         <TooltipContent side="top" className="max-w-xs">
-          <p className="text-xs text-warning">{errorHeadline(error)}</p>
+          <p className="text-meta text-warning">{errorHeadline(error)}</p>
         </TooltipContent>
       </Tooltip>
     );

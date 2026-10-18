@@ -1842,7 +1842,7 @@ impl SkillsPage {
         let mut badges: Vec<gtk::Widget> = vec![icon_badge(
             source_icon(skill.source),
             &source_label(skill.source),
-            if broken { "error" } else { "review" },
+            if broken { "error" } else { "off" },
         )
         .upcast()];
         if let Some(repo) = &skill.git_repo {
@@ -2059,9 +2059,6 @@ impl SkillsPage {
         let control = self.state_control(agent, skill);
         control.set_valign(gtk::Align::Center);
         row.append(&control);
-        if state.is_none() {
-            row.add_css_class("dim");
-        }
         row
     }
 
@@ -2472,7 +2469,6 @@ impl SkillsPage {
                     state.set_valign(gtk::Align::Start);
                     state.add_css_class("caption");
                     row.append(&state);
-                    row.add_css_class("dim");
                 }
             }
             list.append(&row);
@@ -2546,7 +2542,6 @@ impl SkillsPage {
             if open {
                 for issue in dismissed {
                     let card = self.issue_card(inv, issue);
-                    card.set_opacity(0.7);
                     self.issues_list.append(&card);
                 }
             }

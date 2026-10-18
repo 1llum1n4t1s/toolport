@@ -193,7 +193,7 @@ export function CatalogView({ registry, onAdded }: Props) {
         />
       </div>
 
-      <div className="flex items-center justify-between text-xs text-muted-foreground">
+      <div className="flex items-center justify-between text-meta text-muted-foreground">
         <span>
           {!browsing
             ? loading
@@ -336,7 +336,7 @@ export function CatalogView({ registry, onAdded }: Props) {
                   : cat === "Other"
                     ? t("Other")
                     : cat}
-                <span className="text-muted-foreground/60">{entries.length}</span>
+                <span className="text-muted-foreground">{entries.length}</span>
               </h2>
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {entries.map(card)}
@@ -387,7 +387,7 @@ function Provenance({ entry }: { entry: CatalogEntry }) {
         ? { label: translate("MCP Registry"), cls: "text-info" }
         : { label: t("Your pick"), cls: "text-owned" };
   return (
-    <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+    <div className="flex items-center gap-1.5 text-meta text-muted-foreground">
       <ShieldCheck className={`size-3 shrink-0 ${tier.cls}`} />
       <span className={tier.cls}>{tier.label}</span>
       {entry.publisher && (
@@ -422,23 +422,23 @@ function CatalogCard({
             <button
               onClick={() => openExternal(entry.homepage)}
               aria-label={t("Open docs")}
-              className="shrink-0 text-muted-foreground/60 hover:text-foreground"
+              className="shrink-0 text-muted-foreground hover:text-foreground"
             >
               <ExternalLink className="size-3" />
             </button>
           )}
         </div>
       </div>
-      <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">
+      <p className="line-clamp-2 min-h-8 text-meta text-muted-foreground">
         {entry.description}
       </p>
-      <code title={target} className="truncate font-mono text-2xs text-muted-foreground">
+      <code title={target} className="truncate font-mono text-meta text-muted-foreground">
         {target}
       </code>
       <Provenance entry={entry} />
       <div className="mt-auto flex justify-end pt-1">
         {added ? (
-          <span className="inline-flex items-center gap-1 text-xs text-success">
+          <span className="inline-flex items-center gap-1 text-meta text-success">
             <Trans
               message={msg("{value1}in Toolport")}
               values={{ value1: <Check className="size-3" /> }}

@@ -216,7 +216,7 @@ function Legend() {
     [undefined, t("Not loaded")],
   ];
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t pt-3 text-xs text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t pt-3 text-meta text-muted-foreground">
       {items.map(([state, label]) => (
         <span key={label} className="flex items-center">
           <span aria-hidden="true">
@@ -246,7 +246,7 @@ function AgentHeader({
   const { t } = useI18n();
   return (
     <div className="flex items-end justify-between gap-3 border-b px-2 pb-2">
-      <span className="text-2xs font-semibold tracking-wider text-muted-foreground uppercase">
+      <span className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
         {label}
       </span>
       <span className="flex">
@@ -318,10 +318,10 @@ function GroupHeader({
       )}
       <span className="text-muted-foreground [&_svg]:size-3.5">{icon}</span>
       <span className="font-semibold">{label}</span>
-      <span className="rounded-full bg-muted px-1.5 text-2xs text-muted-foreground tabular-nums">
+      <span className="rounded-full bg-muted px-1.5 text-xs text-muted-foreground tabular-nums">
         {count}
       </span>
-      {note && <span className="truncate text-xs text-muted-foreground">{note}</span>}
+      {note && <span className="truncate text-meta text-muted-foreground">{note}</span>}
     </button>
   );
 }
@@ -448,10 +448,10 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 function PanelHeading({ children, aside }: { children: ReactNode; aside?: ReactNode }) {
   return (
     <div className="mt-5 mb-2 flex items-baseline justify-between gap-2">
-      <h3 className="text-2xs font-semibold tracking-wider text-muted-foreground uppercase">
+      <h3 className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
         {children}
       </h3>
-      {aside && <span className="text-xs text-muted-foreground">{aside}</span>}
+      {aside && <span className="text-meta text-muted-foreground">{aside}</span>}
     </div>
   );
 }
@@ -483,7 +483,7 @@ function StateControl({
     });
   };
   if (!current)
-    return <span className="text-xs text-muted-foreground">{t("Not loaded")}</span>;
+    return <span className="text-meta text-muted-foreground">{t("Not loaded")}</span>;
   if (current === "broken") return <Badge variant="destructive">{t("Broken")}</Badge>;
   if (current === "shadowed")
     return <Badge variant="warning">{t("Another copy wins")}</Badge>;
@@ -586,7 +586,7 @@ function SkillDetail({
   return (
     <div>
       <div className="flex items-start gap-3">
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/12 text-primary">
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-primary/12 text-primary">
           <Sparkles className="size-5" />
         </span>
         <div className="min-w-0">
@@ -667,7 +667,7 @@ function SkillDetail({
               style={{ width: `${ratio * 100}%` }}
             />
           </div>
-          <div className="mt-1 flex justify-between text-xs text-muted-foreground">
+          <div className="mt-1 flex justify-between text-meta text-muted-foreground">
             <span>
               {t("{count} of {cap} characters", {
                 count: skill.descriptionChars.toLocaleString(getLocale()),
@@ -681,11 +681,11 @@ function SkillDetail({
 
       <PanelHeading>{t("File")}</PanelHeading>
       <Field label={t("Path")}>
-        <span className="font-mono text-xs">{skill.path}</span>
+        <span className="font-mono text-meta">{skill.path}</span>
       </Field>
       {otherLinks.length > 0 && (
         <Field label={t("Reached by")}>
-          <span className="flex flex-col gap-0.5 font-mono text-xs">
+          <span className="flex flex-col gap-0.5 font-mono text-meta">
             {otherLinks.map((link) => (
               <span key={link}>{link}</span>
             ))}
@@ -716,24 +716,18 @@ function SkillDetail({
         {agents.map((agent) => {
           const state = skill.states[agent.id];
           return (
-            <li
-              key={agent.id}
-              className={cn(
-                "flex items-center gap-3 px-3 py-2.5",
-                !state && "opacity-60",
-              )}
-            >
+            <li key={agent.id} className="flex items-center gap-3 px-3 py-2.5">
               <ClientLogo id={agent.id} name={agent.name} size={24} />
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-1.5 text-sm font-medium">
                   {agent.name}
                   {!agent.verified && (
-                    <Badge variant="outline" className="h-4 px-1.5 text-2xs">
+                    <Badge variant="outline" className="h-4 px-1.5 text-xs">
                       {t("from docs")}
                     </Badge>
                   )}
                 </span>
-                <span className="block text-xs break-words text-muted-foreground">
+                <span className="block text-meta break-words text-muted-foreground">
                   {state?.via ?? t("Not in any folder it reads")}
                 </span>
               </span>
@@ -749,7 +743,7 @@ function SkillDetail({
       {skill.preview && (
         <>
           <PanelHeading>{t("Preview")}</PanelHeading>
-          <pre className="max-h-64 overflow-auto rounded-lg border bg-muted/40 p-3 font-mono text-2xs leading-relaxed whitespace-pre-wrap">
+          <pre className="max-h-64 overflow-auto rounded-lg border bg-muted/40 p-3 font-mono text-meta leading-relaxed whitespace-pre-wrap">
             {skill.preview}
           </pre>
         </>
@@ -789,7 +783,7 @@ function RuleDetail({
   return (
     <div>
       <div className="flex items-start gap-3">
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/12 text-primary">
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-primary/12 text-primary">
           <ScrollText className="size-5" />
         </span>
         <div className="min-w-0">
@@ -811,7 +805,7 @@ function RuleDetail({
       </div>
       <PanelHeading>{t("File")}</PanelHeading>
       <Field label={t("Path")}>
-        <span className="font-mono text-xs">{rule.path}</span>
+        <span className="font-mono text-meta">{rule.path}</span>
       </Field>
       <Field label={t("Size")}>{fmtBytes(rule.sizeBytes)}</Field>
 
@@ -824,10 +818,7 @@ function RuleDetail({
         {agents.map((agent) => {
           const chain = rule.agents[agent.id];
           return (
-            <li
-              key={agent.id}
-              className={cn("flex gap-3 px-3 py-2.5", !chain && "opacity-60")}
-            >
+            <li key={agent.id} className="flex gap-3 px-3 py-2.5">
               <ClientLogo id={agent.id} name={agent.name} size={24} />
               <span className="min-w-0 flex-1">
                 <span className="flex items-center justify-between gap-2">
@@ -835,13 +826,13 @@ function RuleDetail({
                   {chain ? (
                     <Badge variant="success">{t("Loaded")}</Badge>
                   ) : (
-                    <span className="text-xs text-muted-foreground">
+                    <span className="text-meta text-muted-foreground">
                       {t("Not loaded")}
                     </span>
                   )}
                 </span>
                 {chain ? (
-                  <span className="mt-0.5 flex flex-col gap-0.5 text-xs text-muted-foreground">
+                  <span className="mt-0.5 flex flex-col gap-0.5 text-meta text-muted-foreground">
                     {chain.map((step, i) => (
                       <span
                         key={`${step.kind}:${step.path}:${i}`}
@@ -868,7 +859,7 @@ function RuleDetail({
                     ))}
                   </span>
                 ) : (
-                  <span className="block text-xs text-muted-foreground">
+                  <span className="block text-meta text-muted-foreground">
                     {agent.rulesNote ?? otherRulesNote(agent, rule)}
                   </span>
                 )}
@@ -880,7 +871,7 @@ function RuleDetail({
       {rule.preview && (
         <>
           <PanelHeading>{t("Preview")}</PanelHeading>
-          <pre className="max-h-72 overflow-auto rounded-lg border bg-muted/40 p-3 font-mono text-2xs leading-relaxed whitespace-pre-wrap">
+          <pre className="max-h-72 overflow-auto rounded-lg border bg-muted/40 p-3 font-mono text-meta leading-relaxed whitespace-pre-wrap">
             {rule.preview}
           </pre>
         </>
@@ -915,20 +906,15 @@ function IssueCard({
       <Info className="size-4 text-info" />
     );
   return (
-    <article
-      className={cn(
-        "flex gap-3 rounded-xl border bg-card p-4",
-        issue.dismissed && "opacity-70",
-      )}
-    >
+    <article className="flex gap-3 rounded-xl border bg-card p-4">
       <span
         className={cn(
-          "flex size-8 shrink-0 items-center justify-center rounded-lg",
+          "flex size-8 shrink-0 items-center justify-center rounded-md",
           issue.level === "error"
             ? "bg-destructive/12"
             : issue.level === "warn"
-              ? "bg-warning/14"
-              : "bg-info/12",
+              ? "bg-warning/12"
+              : "bg-muted",
         )}
       >
         {icon}
@@ -976,7 +962,7 @@ function IssueCard({
               </button>
             ))}
             {issue.skillNames.length > 12 && (
-              <span className="text-xs text-muted-foreground">
+              <span className="text-meta text-muted-foreground">
                 {t("+{count} more", { count: issue.skillNames.length - 12 })}
               </span>
             )}
@@ -1025,7 +1011,7 @@ function AgentSummary({ inv }: { inv: SkillsInventory }) {
               <ClientLogo id={agent.id} name={agent.name} size={24} />
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium">{agent.name}</span>
-                <span className="block text-xs text-muted-foreground">
+                <span className="block text-meta text-muted-foreground">
                   {parts.join(" · ")}
                 </span>
               </span>
@@ -1049,7 +1035,7 @@ function AgentSummary({ inv }: { inv: SkillsInventory }) {
           );
         })}
       </ul>
-      <p className="mt-2 text-xs text-muted-foreground">
+      <p className="mt-2 text-meta text-muted-foreground">
         {t(
           '"Own switch" means the agent has its own per-skill setting that Toolport can write. Toolport never moves or deletes your skill folders to turn a skill off.',
         )}
@@ -1424,7 +1410,7 @@ export function SkillsView() {
           {project && (
             <>
               <DropdownMenuSeparator />
-              <div className="px-2 py-1.5 font-mono text-2xs break-all text-muted-foreground">
+              <div className="px-2 py-1.5 font-mono text-meta break-all text-muted-foreground">
                 {project}
               </div>
             </>
@@ -1488,7 +1474,7 @@ export function SkillsView() {
             {label}
             <span
               className={cn(
-                "rounded-full px-1.5 text-2xs tabular-nums",
+                "rounded-full px-1.5 text-xs tabular-nums",
                 warn ? "bg-warning/16 text-warning" : "bg-muted text-muted-foreground",
               )}
             >
@@ -1546,7 +1532,7 @@ export function SkillsView() {
   const banner =
     activeIssues.length > 0 && tab !== "issues" ? (
       <div className="mb-4 flex items-center gap-3 rounded-xl border border-l-4 border-l-warning bg-card px-4 py-3">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-warning/14">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-warning/14">
           <AlertTriangle className="size-4 text-warning" />
         </span>
         <span className="min-w-0 flex-1">
@@ -1616,7 +1602,7 @@ export function SkillsView() {
                         onClick={() => setSelectedSkill(s.key)}
                         aria-current={skill?.key === s.key ? "true" : undefined}
                         className={cn(
-                          "flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent/40 focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
+                          "flex w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent/40 focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
                           skill?.key === s.key && "bg-accent/70 hover:bg-accent/70",
                         )}
                       >
@@ -1630,7 +1616,7 @@ export function SkillsView() {
                               />
                             )}
                           </span>
-                          <span className="block truncate text-xs text-muted-foreground">
+                          <span className="block truncate text-meta text-muted-foreground">
                             {s.source === "broken" ? s.path : s.description}
                           </span>
                         </span>
@@ -1731,7 +1717,7 @@ export function SkillsView() {
                       onClick={() => setSelectedRule(r.key)}
                       aria-current={rule?.key === r.key ? "true" : undefined}
                       className={cn(
-                        "flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent/40 focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
+                        "flex w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent/40 focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
                         rule?.key === r.key && "bg-accent/70 hover:bg-accent/70",
                       )}
                     >
@@ -1739,7 +1725,7 @@ export function SkillsView() {
                         <span className="block truncate text-sm font-medium">
                           {r.name}
                         </span>
-                        <span className="block truncate font-mono text-2xs text-muted-foreground">
+                        <span className="block truncate font-mono text-meta text-muted-foreground">
                           {r.path}
                         </span>
                       </span>
