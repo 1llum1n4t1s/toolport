@@ -1728,11 +1728,32 @@ fn codewhale_reads_its_folders_and_switches_through_skills_state() {
         ".codewhale/config.toml",
         "[skills]\nscan_codewhale_only = true\n",
     );
-    let inv = scan(&home.env(), &only(&["codewhale"]), None);
-    assert!(inv
-        .skills
-        .iter()
-        .all(|s| s.name != "shared" && s.name != "claude"));
+    let project = home.path("work/app");
+    home.skill("work/app/.codewhale/skills/mine", "mine", "Mine");
+    home.skill("work/app/.claude/skills/theirs", "theirs", "Theirs");
+    let on = |inv: &Inventory, name: &str| {
+        inv.skills.iter().any(|s| {
+            s.name == name
+                && s.states
+                    .get("codewhale")
+                    .is_some_and(|st| st.state == State::On)
+        })
+    };
+    let inv = scan(&home.env(), &only(&["codewhale"]), Some(&project));
+    assert!(on(&inv, "mine") && !on(&inv, "theirs"));
+    assert!(!on(&inv, "shared") && !on(&inv, "claude"));
+
+    // The flag is read from the legacy config when Codewhale's home has none.
+    std::fs::rename(
+        home.path(".codewhale/config.toml"),
+        home.path(".deepseek/config.toml"),
+    )
+    .unwrap();
+    let inv = scan(&home.env(), &only(&["codewhale"]), Some(&project));
+    assert!(on(&inv, "mine") && !on(&inv, "theirs"));
+    home.write(".codewhale/config.toml", "");
+    let inv = scan(&home.env(), &only(&["codewhale"]), Some(&project));
+    assert!(on(&inv, "theirs") && on(&inv, "claude"));
 }
 
 #[test]

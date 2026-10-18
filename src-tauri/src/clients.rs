@@ -1428,9 +1428,17 @@ fn resolve_rules_target(
         "command-code" => block(home.join(".commandcode").join("AGENTS.md")),
         // dsh loads `$DSH_HOME/AGENTS.md` first in its user-global chain.
         "deepseek-harness" => block(home.join(".dsh").join("AGENTS.md")),
-        // The first of Codewhale's global instruction files, a fallback layer
-        // for projects without their own.
-        "codewhale" => block(home.join(".codewhale").join("AGENTS.md")),
+        // Codewhale reads only the first global instruction file it finds, as a
+        // fallback for projects without their own, so the block goes into that
+        // one; a new file would hide the user's.
+        "codewhale" => {
+            let chain = [".codewhale", ".agents", ".deepseek"];
+            let found = ["AGENTS.md", "instructions.md"]
+                .iter()
+                .flat_map(|file| chain.iter().map(move |dir| home.join(dir).join(file)))
+                .find(|path| path.is_file());
+            block(found.unwrap_or_else(|| home.join(".codewhale").join("AGENTS.md")))
+        }
         // Reasonix loads REASONIX.md, AGENTS.md and CLAUDE.md from its state
         // root, which is its home by default.
         "reasonix" => match platform {
@@ -13285,6 +13293,25 @@ command = "mcp-server-memory"   # keep this note
         assert_eq!(def.discovery.auto_mode, "full");
         assert_eq!(def.discovery.native_tool_search, Some(true));
         assert_eq!(def.discovery.tools_list_changed, Some(false));
+    }
+
+    #[test]
+    fn codewhale_rules_go_into_the_global_file_it_already_reads() {
+        let home = std::env::temp_dir().join(format!("toolport-cw-rules-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let path = |home: &Path| {
+            team_rules_target("codewhale", home, Platform::Linux)
+                .unwrap()
+                .path
+        };
+        assert_eq!(path(&home), home.join(".codewhale/AGENTS.md"));
+        std::fs::create_dir_all(home.join(".deepseek")).unwrap();
+        std::fs::write(home.join(".deepseek/instructions.md"), "# mine\n").unwrap();
+        assert_eq!(path(&home), home.join(".deepseek/instructions.md"));
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
+        std::fs::write(home.join(".agents/AGENTS.md"), "# shared\n").unwrap();
+        assert_eq!(path(&home), home.join(".agents/AGENTS.md"));
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]

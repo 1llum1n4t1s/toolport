@@ -128,9 +128,11 @@ start a new one.
 
 Codewhale keeps MCP tools in its deferred catalog behind `tool_search`, so
 Toolport's Auto mode lists the full catalog. It doesn't pick up catalog changes
-during a session; `/mcp reload` picks them up. Its global `~/.codewhale/AGENTS.md`
-is a fallback Codewhale reads only in projects without their own instructions,
-and team rules go there.
+during a session; `/mcp reload` picks them up. Codewhale reads one global
+instructions file, the first of `~/.codewhale/AGENTS.md`, `~/.agents/AGENTS.md`,
+`~/.deepseek/AGENTS.md` and the matching `instructions.md`, and only in projects
+without their own. Team rules go into the one it already reads, or
+`~/.codewhale/AGENTS.md` when there is none.
 
 ### ZCode setup
 

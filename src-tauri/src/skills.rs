@@ -97,7 +97,7 @@ impl Env {
             reasonix_portable: false,
             reasonix_state: home.join(".reasonix"),
             codewhale: home.join(".codewhale"),
-            codewhale_config: home.join(".codewhale").join("config.toml"),
+            codewhale_config: codewhale_config(home, &home.join(".codewhale"), false),
             config,
             claude_profiles: Vec::new(),
         }
@@ -187,13 +187,15 @@ impl Env {
         env.reasonix_state = trimmed("REASONIX_STATE_HOME")
             .and_then(expand)
             .unwrap_or_else(|| env.reasonix.clone());
-        if let Some(dir) = trimmed("CODEWHALE_HOME").and_then(expand) {
+        let codewhale_home = trimmed("CODEWHALE_HOME").and_then(expand);
+        let explicit_home = codewhale_home.is_some();
+        if let Some(dir) = codewhale_home {
             env.codewhale = dir;
         }
         env.codewhale_config = trimmed("CODEWHALE_CONFIG_PATH")
             .or_else(|| trimmed("DEEPSEEK_CONFIG_PATH"))
             .and_then(expand)
-            .unwrap_or_else(|| env.codewhale.join("config.toml"));
+            .unwrap_or_else(|| codewhale_config(&home, &env.codewhale, explicit_home));
         env.claude_profiles = claude_profile_dirs(&home, &env.claude);
         Some(env)
     }
@@ -1938,15 +1940,33 @@ fn toml_list_switch(switch: Switch, env: &Env) -> Option<(PathBuf, &'static str)
     }
 }
 
-/// Codewhale's personal skill folders in its order: its own, `~/.agents`, `~/.claude`, then
-/// the legacy `~/.deepseek`. `[skills] scan_codewhale_only` keeps only its own two.
-fn codewhale_skill_roots(env: &Env) -> Vec<Root> {
-    let only_own = read_toml(&env.codewhale_config)
+/// Codewhale's config.toml in its home, or the legacy `~/.deepseek/config.toml`
+/// when the home is the default and has no config of its own.
+fn codewhale_config(home: &Path, codewhale: &Path, explicit_home: bool) -> PathBuf {
+    let primary = codewhale.join("config.toml");
+    let legacy = home.join(".deepseek").join("config.toml");
+    if !explicit_home && !primary.exists() && legacy.exists() {
+        legacy
+    } else {
+        primary
+    }
+}
+
+/// `[skills] scan_codewhale_only`: Codewhale skips other tools' skill folders,
+/// personal and project ones alike.
+fn codewhale_only(env: &Env) -> bool {
+    read_toml(&env.codewhale_config)
         .as_ref()
         .and_then(|v| v.get("skills"))
         .and_then(|s| s.get("scan_codewhale_only"))
         .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+        .unwrap_or(false)
+}
+
+/// Codewhale's personal skill folders in its order: its own, `~/.agents`, `~/.claude`, then
+/// the legacy `~/.deepseek`. `[skills] scan_codewhale_only` keeps only its own two.
+fn codewhale_skill_roots(env: &Env) -> Vec<Root> {
+    let only_own = codewhale_only(env);
     let mut roots = vec![Root::deep(
         env.home.join(".codewhale").join("skills"),
         msg("Codewhale skills"),
@@ -2417,13 +2437,18 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
         // marked `first` rank the project above.
         if let Some(project) = project {
             let walk = def.project_walk;
-            let project_roots = def.project_roots.iter().map(|rel| Root {
-                path: project.join(rel),
-                recursive: walk.deep,
-                dir_links: walk.dir_links,
-                file_links: walk.file_links,
-                label: "project",
-            });
+            let only_own = def.id == "codewhale" && codewhale_only(env);
+            let project_roots = def
+                .project_roots
+                .iter()
+                .filter(|rel| !only_own || rel.starts_with(".codewhale/"))
+                .map(|rel| Root {
+                    path: project.join(rel),
+                    recursive: walk.deep,
+                    dir_links: walk.dir_links,
+                    file_links: walk.file_links,
+                    label: "project",
+                });
             if walk.first {
                 roots.splice(0..0, project_roots);
             } else {
