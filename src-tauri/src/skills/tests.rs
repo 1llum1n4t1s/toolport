@@ -2137,6 +2137,17 @@ fn openhands_installed_metadata_and_lower_priority_are_respected() {
         "Installed lower priority",
     );
     home.skill(".openhands/microagents/duplicate", "duplicate", "User wins");
+    // SDK auto-discovers valid copied directories without a metadata record.
+    home.skill(
+        ".openhands/skills/installed/copied-skill",
+        "copied-skill",
+        "Copied locally",
+    );
+    // Ordinary Markdown loads independently even inside a disabled installed skill.
+    home.write(
+        ".openhands/skills/installed/disabled-skill/notes.md",
+        "---\nname: plain-notes\ntriggers: [notes]\n---\nNotes.\n",
+    );
     home.write(
         ".openhands/skills/installed/.installed.json",
         r#"{
@@ -2147,6 +2158,11 @@ fn openhands_installed_metadata_and_lower_priority_are_respected() {
     let inv = scan(&home.env(), &only(&["openhands"]), None);
     assert_eq!(state(&inv, "active-skill", "openhands"), Some(State::On));
     assert_eq!(state(&inv, "disabled-skill", "openhands"), Some(State::Off));
+    assert_eq!(state(&inv, "copied-skill", "openhands"), Some(State::On));
+    assert_eq!(state(&inv, "plain-notes", "openhands"), Some(State::On));
+    assert!(skill(&inv, "disabled-skill").states["openhands"]
+        .via
+        .contains(".installed.json"));
     let installed = inv
         .skills
         .iter()

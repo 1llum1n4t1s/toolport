@@ -1990,7 +1990,20 @@ fn openhands_disabled_paths(env: &Env) -> BTreeSet<PathBuf> {
             {
                 return None;
             }
-            canon(&dir.join(name)).ok()
+            // Only the installed AgentSkill is disabled. Ordinary Markdown
+            // below this folder is still loaded by the regular user-skills scan.
+            std::fs::read_dir(dir.join(name))
+                .ok()?
+                .take(MAX_ENTRIES)
+                .flatten()
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.is_file()
+                        && path.file_name().is_some_and(|name| {
+                            name.to_string_lossy().eq_ignore_ascii_case("skill.md")
+                        })
+                })
+                .and_then(|path| canon(&path).ok())
         })
         .collect()
 }
@@ -3038,7 +3051,17 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             } else if path_off || switched_off {
                 (
                     State::Off,
-                    trf("Off in {place}", &[("place", switch_place(def.switch))]),
+                    trf(
+                        "Off in {place}",
+                        &[(
+                            "place",
+                            if def.id == "openhands" {
+                                ".installed.json"
+                            } else {
+                                switch_place(def.switch)
+                            },
+                        )],
+                    ),
                 )
             } else if named(&disabled.name_only) {
                 (State::NameOnly, tr("Listed by name; loads when asked"))
