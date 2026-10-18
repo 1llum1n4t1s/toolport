@@ -3576,7 +3576,7 @@ fn reasonix_discovers_bounded_nested_and_flat_skills_and_switches_them() {
         assert_eq!(state(&inv, name, "reasonix"), Some(State::On), "{name}");
     }
     for name in ["fourth", "no-description", "readme"] {
-        assert!(state(&inv, name, "reasonix").is_none(), "{name}");
+        assert!(inv.skills.iter().all(|skill| skill.name != name), "{name}");
     }
     assert!(!skill(&inv, "flat").editable);
     assert!(!skill(&inv, "flat").removable);
@@ -3604,7 +3604,8 @@ fn reasonix_discovers_bounded_nested_and_flat_skills_and_switches_them() {
         Some(State::On)
     );
     home.write(".reasonix/config.toml", "[skills]\nmax_depth = 1\n");
-    assert!(state(&scan(&env, &only(&["reasonix"]), None), "third", "reasonix").is_none());
+    let shallow = scan(&env, &only(&["reasonix"]), None);
+    assert!(shallow.skills.iter().all(|skill| skill.name != "third"));
 }
 
 #[test]
