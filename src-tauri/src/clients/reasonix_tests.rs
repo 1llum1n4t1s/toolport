@@ -333,3 +333,15 @@ fn raw_restore_uses_nested_and_named_array_neighbors() {
         assert_eq!(append_raw(Some(&moved), &texts(&raw)).unwrap(), text);
     }
 }
+
+#[test]
+fn raw_restore_middle_plugin_keeps_identical_neighbor_comments() {
+    let text = "\n# MCP server\n[[plugins]]\nname = 'a'\ncommand = 'a'\n\n# MCP server\n[[plugins]]\nname = 'b'\ncommand = 'b'\n\n# MCP server\n[[plugins]]\nname = 'c'\ncommand = 'c'\n";
+    let raw = raw_entries(text)
+        .unwrap()
+        .into_iter()
+        .filter(|(name, _, _)| name == "b")
+        .collect::<Vec<_>>();
+    let moved = without(text, "b");
+    assert_eq!(append_raw(Some(&moved), &texts(&raw)).unwrap(), text);
+}

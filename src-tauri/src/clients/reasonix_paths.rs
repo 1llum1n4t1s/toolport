@@ -34,7 +34,7 @@ fn expand(home: &Path, raw: &str, env: &dyn Fn(&str) -> Option<String>) -> Optio
         .strip_prefix("~/")
         .or_else(|| expanded.strip_prefix("~\\"))
     {
-        Some(rest) => home.join(rest),
+        Some(rest) => home.join(rest.trim_start_matches(['/', '\\'])),
         None if expanded == "~" => home.to_path_buf(),
         None => PathBuf::from(expanded.as_ref()),
     };
@@ -82,5 +82,18 @@ mod tests {
         std::fs::write(reasonix.join("config.toml"), "broken = [").unwrap();
         assert_eq!(state_root(home, &reasonix, &|_| None), reasonix);
         std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn tilde_expansion_keeps_repeated_separators_under_home() {
+        let home = std::env::temp_dir().join("toolport-reasonix-tilde-home");
+        for raw in ["~//state", "~///state", r"~\\state", r"~/\/state"] {
+            assert_eq!(
+                expand(&home, raw, &|_| None),
+                Some(home.join("state")),
+                "{raw}"
+            );
+        }
+        assert_eq!(expand(&home, "~", &|_| None), Some(home.clone()));
+        assert_eq!(expand(&home, home.to_str().unwrap(), &|_| None), Some(home));
     }
 }

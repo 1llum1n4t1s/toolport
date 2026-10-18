@@ -743,6 +743,11 @@ function SkillDetail({
                 <span className="block text-meta break-words text-muted-foreground">
                   {state?.via ?? t("Not in any folder it reads")}
                 </span>
+                {state?.readOnlyReason && (
+                  <span className="block text-meta break-words text-muted-foreground">
+                    {state.readOnlyReason}
+                  </span>
+                )}
               </span>
               <StateControl
                 agent={agent}

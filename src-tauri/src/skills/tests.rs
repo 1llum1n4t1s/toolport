@@ -3919,3 +3919,56 @@ fn reasonix_certification_rejects_header_controls_before_trimming() {
         );
     }
 }
+
+#[test]
+fn reasonix_certification_respects_the_skill_file_size_cap() {
+    let home = Home::new();
+    let path = home.write(
+        ".reasonix/skills/review.md",
+        "---\nname: inspect\ndescription: Review\n---\nBody\n",
+    );
+    let found = Found {
+        link: path.clone(),
+        real: Some(path.clone()),
+        root_label: "test",
+        root_path: home.path(".reasonix/skills"),
+    };
+    let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.set_len(MAX_FILE_BYTES).unwrap();
+    assert_eq!(
+        reasonix_proven_skill_name(&found).as_deref(),
+        Some("inspect")
+    );
+    file.set_len(MAX_FILE_BYTES + 1).unwrap();
+    assert_eq!(reasonix_proven_skill_name(&found), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn reasonix_read_only_identity_keeps_each_state_explanation() {
+    let home = Home::new();
+    for file in ["a", "b"] {
+        home.write(
+            &format!(".reasonix/skills/{file}.md"),
+            "---\nname: 'shared'\ndescription: Review\n---\nReview\n",
+        );
+    }
+    home.link(".reasonix/skills/broken", &home.path("missing"));
+    home.write(
+        ".reasonix/config.toml",
+        "[skills]\ndisabled_skills = ['shared']\n",
+    );
+    let inv = scan(&home.env(), &only(&["reasonix"]), None);
+    for (suffix, expected, via) in [
+        ("/a.md", State::Off, "Off in"),
+        ("/b.md", State::Shadowed, "wins in"),
+        ("/broken", State::Broken, "missing folder"),
+    ] {
+        let record = inv.skills.iter().find(|s| s.key.ends_with(suffix)).unwrap();
+        let state = &record.states["reasonix"];
+        assert_eq!(state.state, expected);
+        assert!(state.read_only_reason.is_some());
+        assert!(state.via.contains(via), "{suffix}: {}", state.via);
+        assert_ne!(Some(&state.via), state.read_only_reason.as_ref());
+    }
+}

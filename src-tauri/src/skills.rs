@@ -2761,9 +2761,7 @@ fn reasonix_proven_skill_name(found: &Found) -> Option<String> {
     if !reasonix_ascii_skill_name(stem) {
         return None;
     }
-    let text = std::fs::read_to_string(&found.link)
-        .ok()?
-        .replace("\r\n", "\n");
+    let text = read_text(&found.link)?.replace("\r\n", "\n");
     // split, rather than lines, keeps bare CR visible to the byte allowlist.
     let mut lines = text.split('\n');
     let first = lines.next()?;
@@ -3702,10 +3700,10 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 record.states.insert(
                     inst.id.clone(),
                     SkillState {
-                        read_only_reason: read_only_reason.clone(),
+                        read_only_reason,
                         by_pattern: state == State::Off && by_pattern && !path_off,
                         state,
-                        via: read_only_reason.unwrap_or(via),
+                        via,
                         switch_name: reasonix_name
                             .or(codewhale_name)
                             .or(nanobot_name)

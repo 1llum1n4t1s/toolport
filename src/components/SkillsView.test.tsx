@@ -514,3 +514,28 @@ it("shows the reason for an uncertain identifier without offering its toggle", a
   );
   expect(setSkillState).not.toHaveBeenCalled();
 });
+
+it.each(["broken", "shadowed", "off"] as const)(
+  "keeps the %s explanation beside the read-only reason",
+  async (state) => {
+    const inv = skillsFixture();
+    const entry = inv.skills.find((s) => s.name === "screenshot")!;
+    entry.states.opencode = {
+      state,
+      via: "Specific state explanation",
+      readOnlyReason: "Identifier cannot be verified; use the client.",
+    };
+    vi.mocked(skillsInventory).mockResolvedValue(inv);
+    renderView();
+    const list = await screen.findByRole("region", { name: "Skills" });
+    await userEvent.click(within(list).getByRole("button", { name: /screenshot/ }));
+    const details = screen.getByRole("complementary", { name: "Skill details" });
+    expect(within(details).getByText("Specific state explanation")).toBeVisible();
+    expect(
+      within(details).getByText("Identifier cannot be verified; use the client."),
+    ).toBeVisible();
+    expect(
+      within(details).queryByRole("switch", { name: "Load screenshot in OpenCode" }),
+    ).not.toBeInTheDocument();
+  },
+);

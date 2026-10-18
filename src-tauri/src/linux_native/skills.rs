@@ -2055,6 +2055,11 @@ impl SkillsPage {
         ));
         via.add_css_class("caption");
         copy.append(&via);
+        if let Some(reason) = state.and_then(|s| s.read_only_reason.as_deref()) {
+            let reason = muted(reason);
+            reason.add_css_class("caption");
+            copy.append(&reason);
+        }
         row.append(&copy);
         let control = self.state_control(agent, skill);
         control.set_valign(gtk::Align::Center);

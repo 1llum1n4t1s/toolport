@@ -399,8 +399,9 @@ pub(super) fn sync(
     }
     put_back
         .sort_by_key(|(_, anchor)| std::cmp::Reverse(anchor.as_ref().map_or(0, |a| a.position)));
+    let note_headers: Vec<_> = headers(&doc).into_iter().map(|(_, key)| key).collect();
     for (table, anchor) in put_back {
-        push_recorded(&mut doc, table, anchor.as_ref());
+        push_recorded(&mut doc, table, anchor.as_ref(), &note_headers);
     }
     if doc
         .get("plugins")
@@ -740,26 +741,13 @@ fn strip_note<'a>(mut prefix: &'a str, note: &str) -> Option<&'a str> {
 
 /// Restore beside a surviving neighbor, falling back to after the last plugin
 /// or the end of the file. Renumber subtable headers together to retain ownership.
-fn push_recorded(doc: &mut DocumentMut, mut table: Table, anchor: Option<&Anchor>) {
-    if let Some(note) = split_note(&table).0 {
-        let mut removed = false;
-        each_table(doc.as_table_mut(), &mut |t| {
-            let prefix = t.decor().prefix().and_then(|p| p.as_str()).unwrap_or("");
-            if !removed {
-                if let Some(rest) = strip_note(prefix, &note) {
-                    let rest = rest.to_string();
-                    t.decor_mut().set_prefix(rest);
-                    removed = true;
-                }
-            }
-        });
-        if !removed {
-            let trailing = doc.trailing().as_str().unwrap_or("");
-            if let Some(rest) = strip_note(trailing, &note) {
-                doc.set_trailing(rest.to_string());
-            }
-        }
-    }
+fn push_recorded(
+    doc: &mut DocumentMut,
+    mut table: Table,
+    anchor: Option<&Anchor>,
+    note_headers: &[String],
+) {
+    let note = split_note(&table).0;
     let mut own = Vec::new();
     positions(&table, &mut own);
     // A header without a position sorts with the one before it, as on display.
@@ -836,6 +824,30 @@ fn push_recorded(doc: &mut DocumentMut, mut table: Table, anchor: Option<&Anchor
                 })
         })
         .unwrap_or(fallback);
+    // sync moved this note to the next header, or to the document trailing text.
+    // An identical prefix on an earlier table belongs to that table.
+    if let Some(note) = note {
+        // A neighbor restored earlier in this batch did not receive the note.
+        // Follow the next header that existed before this restore batch instead.
+        let next = anchors
+            .iter()
+            .find(|(at, key)| *at > after && note_headers.contains(key))
+            .map(|(at, _)| *at);
+        match next.and_then(|at| table_at(doc.as_table_mut(), at)) {
+            Some(next) => {
+                let prefix = next.decor().prefix().and_then(|p| p.as_str()).unwrap_or("");
+                if let Some(rest) = strip_note(prefix, &note).map(str::to_string) {
+                    next.decor_mut().set_prefix(rest);
+                }
+            }
+            None => {
+                let trailing = doc.trailing().as_str().unwrap_or("");
+                if let Some(rest) = strip_note(trailing, &note).map(str::to_string) {
+                    doc.set_trailing(rest);
+                }
+            }
+        }
+    }
     let room = own.len();
     for (_, item) in doc.as_table_mut().iter_mut() {
         let mut shift = |t: &mut Table| {
@@ -871,6 +883,7 @@ pub(super) fn append_raw(text: Option<&str>, entries: &[String]) -> Result<Strin
     plugins(&doc)?;
     let mut desired = servers_map(&doc)?;
     let records: Vec<_> = entries.iter().map(|text| recorded_body(text)).collect();
+    let note_headers: Vec<_> = headers(&doc).into_iter().map(|(_, key)| key).collect();
     let mut entries: Vec<_> = entries.iter().collect();
     entries.sort_by_key(|raw| std::cmp::Reverse(recorded_anchor(raw).map_or(0, |a| a.position)));
     for raw in entries {
@@ -884,7 +897,7 @@ pub(super) fn append_raw(text: Option<&str>, entries: &[String]) -> Result<Strin
         desired.insert(name, definition(raw)?);
         let anchor = recorded_anchor(raw);
         for table in tables {
-            push_recorded(&mut doc, table, anchor.as_ref());
+            push_recorded(&mut doc, table, anchor.as_ref(), &note_headers);
         }
     }
     let out = preserve_newlines(text, &doc.to_string(), &records);
