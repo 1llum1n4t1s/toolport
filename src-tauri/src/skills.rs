@@ -4189,9 +4189,10 @@ fn edit_codex(
     writer.write(path, &next)
 }
 
-/// Add or remove `name` in the TOML list at dotted `key` (Grok's `skills.disabled`,
-/// Reasonix's `skills.disabled_skills`, Codewhale's top-level `disabled`), keeping the rest
-/// of the file, Codewhale's reserved `!codewhale-skill-state:` entries included, as written.
+/// Add or remove `name` in the TOML list at `key`, either top-level or one table deep
+/// (Grok's `skills.disabled`, Reasonix's `skills.disabled_skills`, Codewhale's top-level
+/// `disabled`), keeping the rest of the file, Codewhale's reserved
+/// `!codewhale-skill-state:` entries included, as written.
 fn edit_toml_skills_list(
     agent: &str,
     path: &Path,

@@ -1849,12 +1849,13 @@ fn trimmed_env_dir(raw: Option<std::ffi::OsString>) -> Option<PathBuf> {
 
 /// Codewhale's `mcp.json`, resolved as Codewhale does: `CODEWHALE_MCP_CONFIG`
 /// (or the legacy `DEEPSEEK_MCP_CONFIG`), else `mcp_config_path` in its
-/// config.toml, else the file in its state home. A relative override falls back
-/// to the default, as it does in Codewhale.
+/// config.toml, else the file in its state home. The first override that is set
+/// wins even when blank, and the value is not trimmed, so a blank or relative
+/// one falls back to the default, as it does in Codewhale.
 fn codewhale_path() -> Option<PathBuf> {
     let configured = ["CODEWHALE_MCP_CONFIG", "DEEPSEEK_MCP_CONFIG"]
         .into_iter()
-        .find_map(|key| client_path_env(key).filter(|value| !value.is_empty()))
+        .find_map(client_path_env)
         .map(Some)
         .unwrap_or_else(|| {
             let config = ["CODEWHALE_CONFIG_PATH", "DEEPSEEK_CONFIG_PATH"]
@@ -1868,7 +1869,7 @@ fn codewhale_path() -> Option<PathBuf> {
                 .and_then(toml::Value::as_str)
                 .map(std::ffi::OsString::from)
         });
-    trimmed_env_dir(configured).or_else(|| codewhale_state_path("mcp.json"))
+    absolute_env_dir(expand_leading_tilde(configured)).or_else(|| codewhale_state_path("mcp.json"))
 }
 
 /// A file in Codewhale's state home: `$CODEWHALE_HOME`, else `~/.codewhale`,
@@ -8916,6 +8917,23 @@ impl EnvRestore {
             client_previous,
         }
     }
+
+    /// Leave `key` unset, for clients that tell an unset variable from a blank one.
+    pub(crate) fn unset(key: &'static str) -> Self {
+        let previous = if test_paths::is_client_path_key(key) {
+            None
+        } else {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Some(previous)
+        };
+        let client_previous = test_paths::set(key, None);
+        Self {
+            key,
+            previous,
+            client_previous,
+        }
+    }
 }
 
 /// Isolate every ambient client override and OS directory input. Hold env_test_lock.
@@ -8936,14 +8954,17 @@ fn isolated_client_env(root: &Path) -> Vec<EnvRestore> {
         "REASONIX_HOME",
         "REASONIX_STATE_HOME",
         "CODEWHALE_HOME",
-        "CODEWHALE_MCP_CONFIG",
-        "DEEPSEEK_MCP_CONFIG",
         "CODEWHALE_CONFIG_PATH",
         "DEEPSEEK_CONFIG_PATH",
     ]
     .into_iter()
     .map(|key| EnvRestore::set(key, Path::new("")))
     .collect();
+    env.extend(
+        ["CODEWHALE_MCP_CONFIG", "DEEPSEEK_MCP_CONFIG"]
+            .into_iter()
+            .map(EnvRestore::unset),
+    );
     for (key, suffix) in [
         ("HOME", "home"),
         ("USERPROFILE", "home"),
@@ -13355,6 +13376,12 @@ command = "mcp-server-memory"   # keep this note
         assert_eq!(codewhale_path(), Some(custom.clone()));
         let _env_path = EnvRestore::set("CODEWHALE_MCP_CONFIG", Path::new("relative.json"));
         assert_eq!(codewhale_path(), Some(state.join("mcp.json")));
+        // A blank or padded override still wins over the legacy one and, being
+        // relative, falls back to the default.
+        for blank in ["", "  ", " /abs/mcp.json"] {
+            let _blank = EnvRestore::set("CODEWHALE_MCP_CONFIG", Path::new(blank));
+            assert_eq!(codewhale_path(), Some(state.join("mcp.json")), "{blank:?}");
+        }
         drop(_env_path);
         drop(_legacy_env);
         drop(_state);
