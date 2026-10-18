@@ -671,10 +671,11 @@ impl SkillsPage {
             .halign(gtk::Align::Fill)
             .xalign(0.0)
             .wrap(true)
-            .css_classes(["toolport-feedback"])
+            .css_classes(["toolport-feedback", "idle"])
             .accessible_role(gtk::AccessibleRole::Status)
             .build();
-        feedback.set_visible(false);
+        // Always in place, empty when there is nothing to say, so the rows below never move
+        // under the pointer when a message comes or goes.
         top.append(&feedback);
         content.append(&top);
 
@@ -1099,7 +1100,11 @@ impl SkillsPage {
             timer.remove();
         }
         self.feedback.set_label(message);
-        self.feedback.set_visible(!message.is_empty());
+        if message.is_empty() {
+            self.feedback.add_css_class("idle");
+        } else {
+            self.feedback.remove_css_class("idle");
+        }
         if error {
             self.feedback.add_css_class("error");
         } else {
@@ -1110,8 +1115,8 @@ impl SkillsPage {
             let feedback_timer = self.feedback_timer.clone();
             let timer = gtk::glib::timeout_add_seconds_local_once(5, move || {
                 feedback_timer.borrow_mut().take();
-                feedback.set_visible(false);
                 feedback.set_label("");
+                feedback.add_css_class("idle");
             });
             *self.feedback_timer.borrow_mut() = Some(timer);
         }
