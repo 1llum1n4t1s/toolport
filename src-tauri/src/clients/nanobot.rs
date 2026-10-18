@@ -64,7 +64,9 @@ pub(crate) fn workspace(user_home: &Path) -> Option<PathBuf> {
     } else if let Some(rest) = raw.strip_prefix("~/") {
         // pathlib normalizes repeated separators before expanding `~`. Keep the
         // suffix relative so `~//workspace` cannot replace the user's home.
-        user_home.join(rest.trim_start_matches('/'))
+        user_home.join(rest.trim_start_matches(|ch| ch == '/' || (cfg!(windows) && ch == '\\')))
+    } else if cfg!(windows) && raw.starts_with("~\\") {
+        user_home.join(raw[2..].trim_start_matches(['/', '\\']))
     } else {
         PathBuf::from(raw)
     };
@@ -222,12 +224,19 @@ pub(super) fn normalized_server(name: &str, definition: &Value) -> Result<Value,
 }
 
 fn inventory(servers: &Map<String, Value>) -> Result<Vec<McpServer>, String> {
-    let mut inventory = servers
-        .iter()
-        .map(|(name, definition)| {
-            normalized_server(name, definition).map(|value| json_server(name, &value))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut inventory = Vec::new();
+    for (name, definition) in servers {
+        if !definition.is_object() {
+            return Err(format!(
+                "Malformed nanobot server '{name}': expected an object"
+            ));
+        }
+        // nanobot skips incomplete entries while connecting the remaining servers.
+        // Import still validates each requested entry and returns its hard error.
+        if let Ok(value) = normalized_server(name, definition) {
+            inventory.push(json_server(name, &value));
+        }
+    }
     inventory.sort_by_key(|server| server.name.to_lowercase());
     Ok(inventory)
 }
@@ -254,7 +263,14 @@ fn importable(name: &str, definition: &Value) -> Result<(), String> {
     normalized_server(name, definition)?;
     let field = NOT_IMPORTED
         .iter()
-        .find(|field| definition.get(**field).is_some())
+        .find(|field| {
+            definition.get(**field).is_some_and(|value| match **field {
+                "cwd" => value != "",
+                "auth" => !value.is_null(),
+                "toolTimeout" | "tool_timeout" => value.as_f64() != Some(30.0),
+                _ => unreachable!("known nanobot setting"),
+            })
+        })
         .copied()
         .or_else(|| filters_tools(definition).then_some("enabledTools"));
     if let Some(field) = field {

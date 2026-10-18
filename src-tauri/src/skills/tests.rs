@@ -2837,3 +2837,85 @@ fn openclaw_origin_metadata_rejects_directory_and_file_escapes() {
     );
     assert_eq!(openclaw_skill_key(&file), None);
 }
+
+#[test]
+fn nanobot_lists_and_toggles_hidden_workspace_folders() {
+    let home = Home::new();
+    home.skill(
+        ".nanobot/workspace/skills/.hidden",
+        ".hidden",
+        "Hidden skill",
+    );
+    let env = home.env();
+    let inv = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(state(&inv, ".hidden", "nanobot"), Some(State::On));
+    let key = inv
+        .skills
+        .iter()
+        .find(|s| s.name == ".hidden")
+        .unwrap()
+        .key
+        .clone();
+    set_state(
+        &env,
+        &inv,
+        "nanobot",
+        &key,
+        Wanted::Off,
+        &TestWriter::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        state(&scan(&env, &only(&["nanobot"]), None), ".hidden", "nanobot"),
+        Some(State::Off)
+    );
+}
+
+#[test]
+fn nanobot_package_frontmatter_matches_newlines_closers_and_python_strip() {
+    let home = Home::new();
+    let (root, marker) = nanobot_package(&home, "valid", "valid", &["valid-skill"], true);
+    let skill = root.join("skills/valid-skill/SKILL.md");
+    for newline in ["\n", "\r\n", "\r"] {
+        for closer in ["--- # end", "----", "---more"] {
+            std::fs::write(&skill, format!("---{newline}name: valid-skill{newline}description: ordinary{newline}{closer}{newline}body")).unwrap();
+            std::fs::write(&marker, nanobot_plugins::activation(&root).unwrap()).unwrap();
+            assert_eq!(
+                nanobot_plugins::discover(&home.root).len(),
+                1,
+                "{newline:?} {closer}"
+            );
+        }
+    }
+    for description in [r#""\x1c""#, r#""\x1d\x1e\x1f""#] {
+        std::fs::write(
+            &skill,
+            format!("---\nname: valid-skill\ndescription: {description}\n---\n"),
+        )
+        .unwrap();
+        std::fs::write(&marker, nanobot_plugins::activation(&root).unwrap()).unwrap();
+        assert!(nanobot_plugins::discover(&home.root).is_empty());
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn nanobot_unreadable_subdirectory_preserves_package_discovery() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new();
+    let (root, marker) = nanobot_package(&home, "valid", "valid", &["valid-skill"], true);
+    let locked = root.join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0)).unwrap();
+    let unreadable = std::fs::read_dir(&locked).is_err();
+    let fingerprint = nanobot_plugins::activation(&root);
+    let count = fingerprint.as_ref().map(|activation| {
+        std::fs::write(&marker, activation).unwrap();
+        nanobot_plugins::discover(&home.root).len()
+    });
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if unreadable {
+        assert!(fingerprint.is_some());
+        assert_eq!(count, Some(1));
+    }
+}
