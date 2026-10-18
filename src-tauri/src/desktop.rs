@@ -2672,6 +2672,11 @@ fn open_data_dir() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_gateway_log() -> Result<(), String> {
+    crate::diagnostics_controller::open_gateway_log()
+}
+
+#[tauri::command]
 fn open_exports_dir() -> Result<(), String> {
     crate::diagnostics_controller::open_exports_dir()
 }
@@ -4534,6 +4539,7 @@ pub fn run() {
             popular_catalog,
             search_catalog,
             open_data_dir,
+            open_gateway_log,
             set_all_enabled,
             export_config,
             export_config_to_path,

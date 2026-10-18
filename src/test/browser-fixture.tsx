@@ -767,6 +767,7 @@ mockIPC(
           registry.removedFeaturesNotice.dismissed = true;
         return registry;
       case "open_exports_dir":
+      case "open_gateway_log":
         return null;
       case "set_default_access":
         registry.defaultAccessProfileId = args.profile as string | null;

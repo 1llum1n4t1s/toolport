@@ -5,12 +5,19 @@ import { getClientSessions } from "@/lib/api";
 import type { ClientActivity } from "@/lib/types";
 import { fmtAgo } from "@/lib/utils";
 import { useEffect, useId, useState } from "react";
-import { ChevronDown, ChevronRight, Download, MonitorCog, Puzzle } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Download,
+  MonitorCog,
+  Puzzle,
+  RefreshCw,
+} from "lucide-react";
 import { ClientLogo } from "@/components/ClientLogo";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SectionHeader } from "@/components/ui/section-header";
-import { Skeleton } from "@/components/ui/skeleton";
+import { SkeletonRows } from "@/components/ui/skeleton";
 import { clientDiscovery } from "@/lib/clientDiscovery";
 import {
   importableServers,
@@ -405,6 +412,16 @@ export function ClientsView({
 }) {
   const { t, locale } = useI18n();
   const [showMissing, setShowMissing] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = async () => {
+    if (!onChanged) return;
+    setRefreshing(true);
+    try {
+      await onChanged();
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const [showRecent, setShowRecent] = useState(false);
   const [sessions, setSessions] = useState<ClientActivity[]>([]);
   const [sessionError, setSessionError] = useState(false);
@@ -442,14 +459,14 @@ export function ClientsView({
     <ClaudeGroup profiles={claude} registry={registry} onSelectClient={onSelectClient} />
   );
 
+  const refreshAction = onChanged && (
+    <Button variant="outline" disabled={refreshing} onClick={() => void refresh()}>
+      <RefreshCw className={refreshing ? "animate-spin" : undefined} /> {t("Refresh")}
+    </Button>
+  );
+
   if (loading && clients.length === 0) {
-    return (
-      <div className="flex flex-col gap-2" aria-label={t("Loading AI clients")}>
-        {Array.from({ length: 4 }).map((_, i) => (
-          <Skeleton key={i} className="h-14 w-full rounded-lg" />
-        ))}
-      </div>
-    );
+    return <SkeletonRows label={t("Loading AI clients")} />;
   }
 
   if (!onChanged && clients.length === 0 && sessions.length === 0 && !sessionError) {
@@ -460,6 +477,7 @@ export function ClientsView({
         description={t(
           "Install Claude Desktop, Cursor, VS Code, or another supported client, then refresh.",
         )}
+        action={refreshAction}
       />
     );
   }
@@ -478,7 +496,7 @@ export function ClientsView({
           description={t(
             "Install Claude Desktop, Cursor, VS Code, or another supported client, then refresh.",
           )}
-          className="py-12"
+          action={refreshAction}
         />
       )}
 
