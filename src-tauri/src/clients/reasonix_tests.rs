@@ -126,53 +126,104 @@ fn removing_a_server_leaves_the_others_and_every_setting() {
     );
 }
 
+fn texts(raw: &[(String, String, Json)]) -> Vec<String> {
+    raw.iter().map(|(_, text, _)| text.clone()).collect()
+}
+
+fn recorded(text: &str) -> std::collections::BTreeMap<String, String> {
+    raw_entries(text)
+        .unwrap()
+        .into_iter()
+        .map(|(name, text, _)| (name, text))
+        .collect()
+}
+
+/// `CONFIG` with the demo table moved after the web one.
+const DEMO_LAST: &str = r#"# Reasonix configuration.
+config_version = 12   # schema marker for diagnostics
+default_model = "deepseek-flash"
+
+[ui]
+theme = "auto"   # auto|dark|light
+
+[skills]
+# disabled_skills = ["review"]   # hide noisy or unwanted skills
+
+# External MCP servers. type: "stdio" (default, a subprocess) | "http" | "sse".
+
+[[plugins]]
+name    = "web"
+type    = "http"
+url     = "https://example.test/mcp"
+headers = { Authorization = "Bearer ${WEB_TOKEN}" }
+
+[[plugins]]
+name    = "demo"
+command = "python3"   # keep this note
+args    = ["/opt/demo/server.py"]
+"#;
+
 #[test]
 fn tables_move_out_and_back_with_their_comments() {
     let raw = raw_entries(CONFIG).unwrap();
     assert_eq!(raw.len(), 2);
     assert!(raw[0].1.contains("# keep this note"), "{}", raw[0].1);
+    // The comment above the table stays in the file, so the record leaves it out.
+    assert!(!raw[0].1.contains("External MCP servers"), "{}", raw[0].1);
     assert_eq!(definition(&raw[0].1).unwrap(), desired(CONFIG)["demo"]);
     let emptied = without(&without(CONFIG, "demo"), "web");
-    let restored = append_raw(
-        Some(&emptied),
-        &raw.iter()
-            .map(|(_, text, _)| text.clone())
-            .collect::<Vec<_>>(),
-    )
-    .unwrap();
-    assert!(
-        restored.contains("command = \"python3\"   # keep this note"),
-        "{restored}"
-    );
-    assert_eq!(desired(&restored), desired(CONFIG));
-}
-
-#[test]
-fn a_duplicate_name_keeps_the_first_table_like_reasonix() {
-    let text = format!("{CONFIG}\n[[plugins]]\nname = \"demo\"\ncommand = \"other\"\n");
-    assert_eq!(desired(&text)["demo"]["command"], "python3");
-    let out = with(&text, &stdio("toolport"));
-    assert!(out.contains("command = \"other\""), "{out}");
-    assert_eq!(desired(&out)["demo"]["command"], "python3");
-    // Removing the name removes every table Reasonix could fall back to.
-    let gone = without(&text, "demo");
-    assert!(!gone.contains("name = \"demo\""), "{gone}");
+    assert_eq!(emptied.matches("# External MCP servers").count(), 1);
+    let restored = append_raw(Some(&emptied), &texts(&raw)).unwrap();
+    assert_eq!(restored, CONFIG);
 }
 
 #[test]
 fn a_server_put_back_uses_its_recorded_table() {
-    let raw: std::collections::BTreeMap<String, String> = raw_entries(CONFIG)
-        .unwrap()
-        .into_iter()
-        .map(|(name, text, _)| (name, text))
-        .collect();
     let moved = without(CONFIG, "demo");
-    let back = sync(Some(&moved), &desired(CONFIG), &raw).unwrap();
-    assert!(
-        back.contains("command = \"python3\"   # keep this note"),
-        "{back}"
+    let back = sync(Some(&moved), &desired(CONFIG), &recorded(CONFIG)).unwrap();
+    assert_eq!(back, DEMO_LAST);
+    let appended = append_raw(Some(&moved), &texts(&raw_entries(CONFIG).unwrap())).unwrap();
+    assert_eq!(appended, DEMO_LAST);
+}
+
+#[test]
+fn a_table_with_subtables_goes_back_in_one_piece() {
+    let text = "default_model = \"x\"\n\n[[plugins]]\nname = \"a\"\ncommand = \"a\"\n\n[plugins.env]\nA = \"1\"\n\n[[plugins]]\nname = \"b\"\ncommand = \"b\"\n\n[plugins.env]\nB = \"2\"\n\n[skills]\ndisabled_skills = []\n";
+    let a_last = "default_model = \"x\"\n\n[[plugins]]\nname = \"b\"\ncommand = \"b\"\n\n[plugins.env]\nB = \"2\"\n\n[[plugins]]\nname = \"a\"\ncommand = \"a\"\n\n[plugins.env]\nA = \"1\"\n\n[skills]\ndisabled_skills = []\n";
+    let raw = raw_entries(text).unwrap();
+    let moved = without(text, "a");
+    assert_eq!(
+        sync(Some(&moved), &desired(text), &recorded(text)).unwrap(),
+        a_last
     );
-    assert_eq!(desired(&back), desired(CONFIG));
+    assert_eq!(append_raw(Some(&moved), &texts(&raw[..1])).unwrap(), a_last);
+    // The last plugin goes back exactly where it was.
+    let moved = without(text, "b");
+    assert_eq!(append_raw(Some(&moved), &texts(&raw[1..])).unwrap(), text);
+    // Into a file without plugins, at the end.
+    let empty = "[skills]\ndisabled_skills = []\n";
+    let into = append_raw(Some(empty), &texts(&raw)).unwrap();
+    assert_eq!(desired(&into), desired(text));
+    assert!(into.starts_with(empty), "{into}");
+    assert_eq!(into.parse::<DocumentMut>().unwrap().to_string(), into);
+}
+
+#[test]
+fn a_shadowed_table_moves_with_the_one_reasonix_uses() {
+    let text = format!("{CONFIG}\n[[plugins]]\nname = \"demo\"\ncommand = \"other\"\n");
+    let raw = raw_entries(&text).unwrap();
+    assert_eq!(raw.len(), 2);
+    assert!(raw[0].1.contains("command = \"other\""), "{}", raw[0].1);
+    assert_eq!(raw[0].2, desired(&text)["demo"]);
+    let emptied = without(&without(&text, "demo"), "web");
+    let back = append_raw(Some(&emptied), &texts(&raw)).unwrap();
+    assert!(back.contains("command = \"other\""), "{back}");
+    assert_eq!(desired(&back), desired(&text));
+    let moved = without(&text, "demo");
+    let synced = sync(Some(&moved), &desired(&text), &recorded(&text)).unwrap();
+    assert_eq!(synced.matches("name = \"demo\"").count(), 1, "{synced}");
+    assert!(synced.contains("command = \"other\""), "{synced}");
+    assert_eq!(desired(&synced), desired(&text));
 }
 
 #[test]

@@ -317,17 +317,13 @@ pub(super) fn sync(
     let mut notes = Vec::new();
     for i in drop.into_iter().rev() {
         let table = list.get(i).expect("index from this list");
-        let note = table
-            .decor()
-            .prefix()
-            .and_then(|prefix| prefix.as_str())
-            .filter(|prefix| prefix.contains('#'))
-            .map(|prefix| prefix.trim_end_matches(['\n', '\r', ' ', '\t']).to_string() + "\n");
+        let note = split_note(table).0;
         if let (Some(note), Some(at)) = (note, table.position()) {
             notes.push((at, note));
         }
         list.remove(i);
     }
+    let mut put_back = Vec::new();
     for (name, config) in desired {
         if seen.contains(name) {
             continue;
@@ -335,15 +331,11 @@ pub(super) fn sync(
         let recorded = raw
             .get(name)
             .filter(|text| definition(text).ok().as_ref() == Some(config))
-            .and_then(|text| document(text).ok())
-            .and_then(|one| plugins(&one).ok().flatten().and_then(|l| l.get(0)).cloned());
+            .and_then(|text| recorded_tables(text).ok());
         match recorded {
-            Some(table) => list.push(table),
+            Some(tables) => put_back.extend(tables),
             None => list.push(new_table(name, config)?),
         }
-    }
-    if list.is_empty() {
-        doc.remove("plugins");
     }
     // Latest first, so notes from adjacent removed tables keep their order.
     notes.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
@@ -366,9 +358,40 @@ pub(super) fn sync(
             }
         }
     }
+    // After the notes, so a note lands where its table was, not on a table
+    // being put back.
+    for table in put_back {
+        push_recorded(&mut doc, table);
+    }
+    if doc
+        .get("plugins")
+        .and_then(Item::as_array_of_tables)
+        .is_some_and(ArrayOfTables::is_empty)
+    {
+        doc.remove("plugins");
+    }
     let out = doc.to_string();
     verify(&out, &before_rest, desired)?;
     Ok(out)
+}
+
+/// The comment lines above a table's header, if any, and the spacing after them.
+fn split_note(table: &Table) -> (Option<String>, String) {
+    let prefix = table
+        .decor()
+        .prefix()
+        .and_then(|prefix| prefix.as_str())
+        .unwrap_or("");
+    if !prefix.contains('#') {
+        return (None, prefix.to_string());
+    }
+    let note = prefix.trim_end_matches(['\n', '\r', ' ', '\t']);
+    let after = &prefix[note.len()..];
+    let after = after
+        .strip_prefix("\r\n")
+        .or_else(|| after.strip_prefix('\n'))
+        .unwrap_or(after);
+    (Some(note.to_string() + "\n"), after.to_string())
 }
 
 /// The smallest table header position in the document after `after`.
@@ -409,64 +432,189 @@ fn table_at(table: &mut Table, position: usize) -> Option<&mut Table> {
     None
 }
 
-/// Each plugin table as a one-table document, for the move record, so it goes
-/// back with its comments when Disconnect restores it.
+/// Each plugin name's tables as a small document, for the move record: the
+/// table Reasonix uses and any later ones it shadows, with the comments inside
+/// them. The comment lines above a table stay in the file when it moves out
+/// (see [`sync`]), so the record leaves them out.
 pub(super) fn raw_entries(text: &str) -> Result<Vec<(String, String, Json)>, String> {
     let doc = document(text)?;
-    let mut out = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
+    let mut grouped: Vec<(String, Vec<Table>, Json)> = Vec::new();
     for table in plugins(&doc)?.into_iter().flat_map(ArrayOfTables::iter) {
         let Some(name) = name_of(table) else {
             continue;
         };
-        if !seen.insert(name.to_string()) {
-            continue;
+        let mut table = table.clone();
+        let spacing = split_note(&table).1;
+        table.decor_mut().set_prefix(spacing);
+        match grouped.iter_mut().find(|(seen, _, _)| seen == name) {
+            Some((_, tables, _)) => tables.push(table),
+            None => {
+                let config = config_json(&table);
+                grouped.push((name.to_string(), vec![table], config));
+            }
         }
-        let mut one = DocumentMut::new();
-        let mut list = ArrayOfTables::new();
-        list.push(table.clone());
-        one.insert("plugins", Item::ArrayOfTables(list));
-        out.push((name.to_string(), one.to_string(), config_json(table)));
     }
-    Ok(out)
+    Ok(grouped
+        .into_iter()
+        .map(|(name, tables, config)| {
+            let mut one = DocumentMut::new();
+            let mut list = ArrayOfTables::new();
+            tables.into_iter().for_each(|table| list.push(table));
+            one.insert("plugins", Item::ArrayOfTables(list));
+            (name, one.to_string(), config)
+        })
+        .collect())
 }
 
-/// The fields of a recorded one-table document.
-pub(super) fn definition(raw: &str) -> Result<Json, String> {
+/// The tables of a recorded document, the one Reasonix uses first.
+fn recorded_tables(raw: &str) -> Result<Vec<Table>, String> {
     let doc = document(raw)?;
-    plugins(&doc)?
-        .and_then(|list| list.get(0))
-        .map(config_json)
-        .ok_or_else(|| "Could not read imported settings".to_string())
+    let tables: Vec<Table> = plugins(&doc)?
+        .into_iter()
+        .flat_map(ArrayOfTables::iter)
+        .cloned()
+        .collect();
+    if tables.is_empty() || name_of(&tables[0]).is_none() {
+        return Err("Could not read imported settings".into());
+    }
+    Ok(tables)
 }
 
-/// Append recorded tables back into the file.
+/// The fields of a recorded document's first table.
+pub(super) fn definition(raw: &str) -> Result<Json, String> {
+    recorded_tables(raw).map(|tables| config_json(&tables[0]))
+}
+
+/// Header positions of `table` and the tables inside it, in visit order.
+fn positions(table: &Table, out: &mut Vec<Option<usize>>) {
+    out.push(table.position());
+    for (_, item) in table.iter() {
+        match item {
+            Item::Table(t) => positions(t, out),
+            Item::ArrayOfTables(list) => list.iter().for_each(|t| positions(t, out)),
+            _ => {}
+        }
+    }
+}
+
+/// Visit `table` and the tables inside it in the order of [`positions`].
+fn each_table(table: &mut Table, f: &mut impl FnMut(&mut Table)) {
+    f(table);
+    for (_, item) in table.iter_mut() {
+        match item {
+            Item::Table(t) => each_table(t, f),
+            Item::ArrayOfTables(list) => list.iter_mut().for_each(|t| each_table(t, f)),
+            _ => {}
+        }
+    }
+}
+
+/// Append a recorded table to `[[plugins]]` right after the last plugin, or at
+/// the end of the file when there is none. The record numbers its headers from
+/// the top of its own small document, so they are renumbered from that spot,
+/// and later sections move down to make room.
+fn push_recorded(doc: &mut DocumentMut, mut table: Table) {
+    let mut own = Vec::new();
+    positions(&table, &mut own);
+    // A header without a position sorts with the one before it, as on display.
+    let mut last = 0;
+    let mut order: Vec<(usize, usize)> = own
+        .iter()
+        .enumerate()
+        .map(|(i, at)| {
+            last = at.unwrap_or(last);
+            (last, i)
+        })
+        .collect();
+    order.sort();
+    let mut rank = vec![0; own.len()];
+    for (r, (_, i)) in order.into_iter().enumerate() {
+        rank[i] = r + 1;
+    }
+    let highest = |table: &Table| {
+        let mut all = Vec::new();
+        positions(table, &mut all);
+        all.into_iter().flatten().max()
+    };
+    let list = doc
+        .get("plugins")
+        .and_then(Item::as_array_of_tables)
+        .filter(|list| !list.is_empty());
+    let after = match list {
+        Some(list) => list.iter().filter_map(highest).max().unwrap_or(0),
+        None => {
+            let mut all = Vec::new();
+            for (_, item) in doc.as_table().iter() {
+                match item {
+                    Item::Table(t) => positions(t, &mut all),
+                    Item::ArrayOfTables(l) => l.iter().for_each(|t| positions(t, &mut all)),
+                    _ => {}
+                }
+            }
+            all.into_iter().flatten().max().unwrap_or(0)
+        }
+    };
+    // With no plugins left, the comments that sat above them were kept at the
+    // end of the file; they go back above the first table put back.
+    if list.is_none() {
+        let trailing = doc.trailing().as_str().unwrap_or("").to_string();
+        if trailing.contains('#') {
+            let own = table
+                .decor()
+                .prefix()
+                .and_then(|p| p.as_str())
+                .unwrap_or("");
+            let prefix = trailing + own;
+            table.decor_mut().set_prefix(prefix);
+            doc.set_trailing("");
+        }
+    }
+    let room = own.len();
+    for (_, item) in doc.as_table_mut().iter_mut() {
+        let mut shift = |t: &mut Table| {
+            if let Some(at) = t.position().filter(|&at| at > after) {
+                t.set_position(at + room);
+            }
+        };
+        match item {
+            Item::Table(t) => each_table(t, &mut shift),
+            Item::ArrayOfTables(l) => l.iter_mut().for_each(|t| each_table(t, &mut shift)),
+            _ => {}
+        }
+    }
+    let mut next = rank.into_iter();
+    each_table(&mut table, &mut |t| {
+        t.set_position(after + next.next().expect("one rank per table"));
+    });
+    if !matches!(doc.get("plugins"), Some(Item::ArrayOfTables(_))) {
+        doc.remove("plugins");
+        doc.insert("plugins", Item::ArrayOfTables(ArrayOfTables::new()));
+    }
+    doc["plugins"]
+        .as_array_of_tables_mut()
+        .expect("set to an array of tables above")
+        .push(table);
+}
+
+/// Put recorded tables back into the file. Names already there stay as they are.
 pub(super) fn append_raw(text: Option<&str>, entries: &[String]) -> Result<String, String> {
     let text = text.unwrap_or("");
     let mut doc = document(text)?;
     let before_rest = rest(text)?;
     plugins(&doc)?;
     let mut desired = servers_map(&doc)?;
-    if !matches!(doc.get("plugins"), Some(Item::ArrayOfTables(_))) {
-        doc.remove("plugins");
-        doc.insert("plugins", Item::ArrayOfTables(ArrayOfTables::new()));
-    }
-    let list = doc["plugins"]
-        .as_array_of_tables_mut()
-        .expect("set to an array of tables above");
     for raw in entries {
-        let one = document(raw)?;
-        let Some(table) = plugins(&one)?.and_then(|l| l.get(0)).cloned() else {
-            continue;
-        };
-        let Some(name) = name_of(&table).map(str::to_string) else {
-            continue;
-        };
+        let tables = recorded_tables(raw)?;
+        let name = name_of(&tables[0])
+            .expect("checked by recorded_tables")
+            .to_string();
         if desired.contains_key(&name) {
             continue;
         }
-        desired.insert(name, config_json(&table));
-        list.push(table);
+        desired.insert(name, config_json(&tables[0]));
+        for table in tables {
+            push_recorded(&mut doc, table);
+        }
     }
     let out = doc.to_string();
     verify(&out, &before_rest, &desired)?;
