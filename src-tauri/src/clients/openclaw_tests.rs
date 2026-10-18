@@ -370,3 +370,30 @@ fn automatic_legacy_state_does_not_move_the_default_workspace() {
         Some(legacy.join("workspace"))
     );
 }
+
+#[test]
+fn connect_edits_active_legacy_config_without_shadowing_it() {
+    let home = Dir::new("legacy-active");
+    let legacy = home.0.join(".clawdbot/clawdbot.json");
+    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    std::fs::write(
+        &legacy,
+        "{gateway: {port: 18789}, channels: {demo: {enabled: true}}}\n",
+    )
+    .unwrap();
+    for primary_exists in [false, true] {
+        if primary_exists {
+            std::fs::create_dir_all(home.0.join(".openclaw")).unwrap();
+        }
+        let active = dirs(&home.0, &|_| None);
+        assert_eq!(active.config, legacy);
+        edit_gateway(&active.config, Some(&gateway())).unwrap();
+        let root = parse_json_value(&std::fs::read_to_string(&legacy).unwrap()).unwrap();
+        assert_eq!(root["gateway"]["port"], 18789);
+        assert_eq!(root["channels"]["demo"]["enabled"], true);
+        assert!(root["mcp"]["servers"]["toolport"].is_object());
+        assert!(!home.0.join(".clawdbot/openclaw.json").exists());
+        assert!(!home.0.join(".openclaw/openclaw.json").exists());
+        assert_eq!(dirs(&home.0, &|_| None).config, legacy);
+    }
+}

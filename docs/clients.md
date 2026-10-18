@@ -141,10 +141,11 @@ without their own. Team rules go into the one it already reads, or
 
 OpenClaw reads MCP servers from `mcp.servers` in its gateway config,
 `~/.openclaw/openclaw.json`. Toolport finds the same file OpenClaw does:
-`OPENCLAW_CONFIG_PATH`, else `openclaw.json` in `OPENCLAW_STATE_DIR`, else
-`~/.openclaw` (or the legacy `~/.clawdbot` when that is the only one), with
-`OPENCLAW_HOME` standing in for your home. Connect adds a `toolport` server and
-Disconnect removes it. The file is JSON5, and Toolport edits only the `mcp`
+`OPENCLAW_CONFIG_PATH` wins; otherwise existing `openclaw.json` and legacy
+`clawdbot.json` files are searched in `OPENCLAW_STATE_DIR`, `~/.openclaw` and
+`~/.clawdbot`, in that order. A new file is created only when no candidate exists.
+`OPENCLAW_HOME` stands in for your home when resolving these config paths.
+Connect adds a `toolport` server and Disconnect removes it. The file is JSON5, and Toolport edits only the `mcp`
 section, so comments, unquoted keys and your other settings stay. Servers you
 turned off with `enabled: false` are left alone. A config that brings in `mcp`
 through `$include` is refused; add the server with `openclaw mcp add` instead.
@@ -156,7 +157,10 @@ lists the full catalog, and OpenClaw refreshes its catalog when the list
 changes. The Skills page shows the skills in the default agent's workspace
 (`skills` and `.agents/skills`), `~/.agents/skills`, `~/.openclaw/skills` and
 `skills.load.extraDirs`, and turns them off with `enabled: false` under
-`skills.entries`. Team rules go to the workspace's `AGENTS.md`
+`skills.entries`, using manifest skill keys or installed source-origin slugs
+before the display name. Personal skills use the OS home even with
+`OPENCLAW_HOME`; later `extraDirs` win when names repeat. Team rules go to the
+workspace's `AGENTS.md`
 (`~/.openclaw/workspace` unless `OPENCLAW_WORKSPACE_DIR` or
 `agents.defaults.workspace` moves it). An explicit default-agent workspace wins
 over `agents.defaults.workspace`, which wins over `OPENCLAW_WORKSPACE_DIR`.
