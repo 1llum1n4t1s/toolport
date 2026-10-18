@@ -12,6 +12,7 @@ mod i18n;
 mod io;
 mod notify;
 mod onboarding;
+mod page_header;
 mod package_updates;
 mod pairing;
 mod settings;
@@ -1924,8 +1925,8 @@ fn show_native_page(
 struct ServerPage {
     app: adw::Application,
     share_requests: std::rc::Rc<io::RequestGuard>,
+    /// Count badge in the Servers group header.
     server_count: gtk::Label,
-    enabled_count: gtk::Label,
     section_title: gtk::Label,
     posture: gtk::Label,
     search: gtk::SearchEntry,
@@ -1978,10 +1979,6 @@ impl ServerPage {
                     return;
                 }
                 *self.last_snapshot.borrow_mut() = Some(snapshot.clone());
-                self.server_count
-                    .set_label(&snapshot.servers.len().to_string());
-                self.enabled_count
-                    .set_label(&snapshot.enabled_count.to_string());
                 self.render_server_list(&snapshot);
             }
             state::RegistryState::FirstRun => {
@@ -1994,8 +1991,7 @@ impl ServerPage {
             state::RegistryState::Unavailable => {
                 self.clear_server_list();
                 *self.last_snapshot.borrow_mut() = None;
-                self.server_count.set_label("–");
-                self.enabled_count.set_label("–");
+                self.server_count.set_visible(false);
                 self.section_title
                     .set_label(&crate::i18n::tr("Servers unavailable"));
                 self.list.append(&state_card("dialog-warning-symbolic", crate::i18n::msg("Configuration could not be displayed"), crate::i18n::msg("Toolport left the registry untouched. Open the app again to inspect or recover it."), true));
@@ -2003,8 +1999,7 @@ impl ServerPage {
             state::RegistryState::NewerVersion(message) => {
                 self.clear_server_list();
                 *self.last_snapshot.borrow_mut() = None;
-                self.server_count.set_label("–");
-                self.enabled_count.set_label("–");
+                self.server_count.set_visible(false);
                 self.section_title
                     .set_label(&crate::i18n::tr("Servers unavailable"));
                 self.list.append(&state_card_formatted(
@@ -2104,6 +2099,8 @@ impl ServerPage {
             }
             rows.push((server.clone(), card));
         }
+        self.server_count.set_label(&rows.len().to_string());
+        self.server_count.set_visible(!rows.is_empty());
         if !off.is_empty() {
             let heading = client_section_title(crate::i18n::msg("Turned off"), off.len());
             self.list.append(&heading);
@@ -2319,8 +2316,7 @@ impl ServerPage {
     }
 
     fn reset_summary(&self) {
-        self.server_count.set_label("0");
-        self.enabled_count.set_label("0");
+        self.server_count.set_visible(false);
     }
 
     fn show_feedback(&self, message: &str, error: bool) {
@@ -2343,7 +2339,7 @@ impl ServerPage {
         let feedback_timer = self.feedback_timer.clone();
         let timer =
             gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(4), move || {
-                feedback.set_visible(true);
+                feedback.set_visible(false);
                 feedback.set_label("");
                 feedback.remove_css_class("success");
                 feedback.remove_css_class("error");
@@ -2356,7 +2352,7 @@ impl ServerPage {
     #[cfg(test)]
     fn hide_feedback(&self) {
         self.cancel_feedback_timer();
-        self.feedback.set_visible(true);
+        self.feedback.set_visible(false);
         self.feedback.set_label("");
         self.feedback.remove_css_class("success");
         self.feedback.remove_css_class("error");
@@ -3056,6 +3052,38 @@ fn client_section_title(title: &'static str, count: usize) -> gtk::Box {
     count.set_halign(gtk::Align::Start);
     heading.append(&count);
     heading
+}
+
+/// A secondary header action: icon plus label.
+fn header_button(icon: &str, label: &'static str) -> gtk::Button {
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    content.append(&gtk::Image::builder().icon_name(icon).pixel_size(16).build());
+    content.append(&l10n::label(label));
+    gtk::Button::builder()
+        .child(&content)
+        .valign(gtk::Align::Center)
+        .css_classes(["toolport-secondary-action"])
+        .build()
+}
+
+/// An icon-only (tertiary) header action, such as refresh.
+fn header_icon_button(icon: &str) -> gtk::Button {
+    gtk::Button::builder()
+        .icon_name(icon)
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build()
+}
+
+/// The scrolling body of a page: 24px padding on every side.
+fn page_body(spacing: i32) -> gtk::Box {
+    let page = gtk::Box::new(gtk::Orientation::Vertical, spacing);
+    page.add_css_class("toolport-page");
+    page.set_margin_top(24);
+    page.set_margin_bottom(24);
+    page.set_margin_start(24);
+    page.set_margin_end(24);
+    page
 }
 
 fn toolport_menu_popover() -> gtk::Popover {
@@ -12871,7 +12899,6 @@ mod tests {
             app: app.clone(),
             share_requests: Default::default(),
             server_count: gtk::Label::new(None),
-            enabled_count: gtk::Label::new(None),
             section_title: gtk::Label::new(None),
             posture: gtk::Label::new(None),
             search: gtk::SearchEntry::new(),
@@ -13035,7 +13062,6 @@ mod tests {
             app: app.clone(),
             share_requests: Default::default(),
             server_count: gtk::Label::new(None),
-            enabled_count: gtk::Label::new(None),
             section_title: gtk::Label::new(None),
             posture: gtk::Label::new(None),
             search: gtk::SearchEntry::new(),
@@ -13133,7 +13159,6 @@ mod tests {
             app: app.clone(),
             share_requests: Default::default(),
             server_count: gtk::Label::new(None),
-            enabled_count: gtk::Label::new(None),
             section_title: gtk::Label::new(None),
             posture: gtk::Label::new(None),
             search: gtk::SearchEntry::new(),
