@@ -1164,5 +1164,7 @@
   "OpenClaw workspace": "OpenClaw 工作区",
   "OpenClaw skills": "OpenClaw 技能",
   "OpenClaw extra folder": "OpenClaw 额外文件夹",
-  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "使用 OpenClaw 的 openclaw.json 中的 skills.entries（enabled: false）。"
+  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "使用 OpenClaw 的 openclaw.json 中的 skills.entries（enabled: false）。",
+  "OpenHands skills": "OpenHands 技能",
+  "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "此处的 OpenHands 技能为只读。请在 OpenHands 中启用或停用已安装的技能。"
 }

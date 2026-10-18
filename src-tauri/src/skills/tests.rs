@@ -2070,3 +2070,253 @@ fn openclaw_relative_workspace_does_not_report_fallback_skills_or_rules() {
     assert!(inv.skills.is_empty());
     assert!(inv.rules.is_empty());
 }
+
+#[test]
+fn openhands_matches_released_skill_formats_and_keeps_plain_files_safe() {
+    let home = Home::new();
+    let direct = home.skill(".openhands/skills/direct", "direct", "Immediate AgentSkill");
+    std::fs::rename(&direct, direct.with_file_name("skill.md")).unwrap();
+    home.skill(
+        ".openhands/skills/group/nested",
+        "nested",
+        "Not an immediate child",
+    );
+    home.write(
+        ".openhands/skills/topic/review.md",
+        "---\ntriggers: [review]\n---\nReview changes.\n",
+    );
+    home.write(
+        ".openhands/skills/task.md",
+        "---\nname: task\ninputs: []\n---\nDo task.\n",
+    );
+    let rules = home.write(
+        ".openhands/microagents/toolport-team-rules.md",
+        "Always follow team rules.\n",
+    );
+    home.write(
+        ".openhands/skills/direct/details.md",
+        "---\nname: excluded\ntriggers: [details]\n---\nSupporting file.\n",
+    );
+    home.write(".openhands/skills/README.md", "Not a skill.\n");
+    let inv = scan(&home.env(), &only(&["openhands"]), None);
+    assert_eq!(state(&inv, "direct", "openhands"), Some(State::On));
+    assert_eq!(state(&inv, "topic/review", "openhands"), Some(State::On));
+    assert_eq!(state(&inv, "task", "openhands"), Some(State::On));
+    assert_eq!(inv.skills.len(), 3);
+    assert!(!skill(&inv, "topic/review").editable);
+    assert!(!skill(&inv, "topic/review").removable);
+    assert!(inv
+        .rules
+        .iter()
+        .any(|rule| rule.path == home.env().display(&rules)));
+    assert!(
+        !inv.agents
+            .iter()
+            .find(|agent| agent.id == "openhands")
+            .unwrap()
+            .can_toggle
+    );
+}
+
+#[test]
+fn openhands_installed_metadata_and_lower_priority_are_respected() {
+    let home = Home::new();
+    home.skill(
+        ".openhands/skills/installed/active-skill",
+        "active-skill",
+        "Installed",
+    );
+    home.skill(
+        ".openhands/skills/installed/disabled-skill",
+        "disabled-skill",
+        "Installed off",
+    );
+    let duplicate = home.skill(
+        ".openhands/skills/installed/duplicate",
+        "duplicate",
+        "Installed lower priority",
+    );
+    home.skill(".openhands/microagents/duplicate", "duplicate", "User wins");
+    // SDK auto-discovers valid copied directories without a metadata record.
+    home.skill(
+        ".openhands/skills/installed/copied-skill",
+        "copied-skill",
+        "Copied locally",
+    );
+    // Ordinary Markdown loads independently even inside a disabled installed skill.
+    home.write(
+        ".openhands/skills/installed/disabled-skill/notes.md",
+        "---\nname: plain-notes\ntriggers: [notes]\n---\nNotes.\n",
+    );
+    home.write(
+        ".openhands/skills/installed/.installed.json",
+        r#"{
+        "skills":{"active-skill":{"enabled":false},"disabled-skill":{"enabled":false}},
+        "extensions":{"active-skill":{"enabled":true}}
+    }"#,
+    );
+    let inv = scan(&home.env(), &only(&["openhands"]), None);
+    assert_eq!(state(&inv, "active-skill", "openhands"), Some(State::On));
+    assert_eq!(state(&inv, "disabled-skill", "openhands"), Some(State::Off));
+    assert_eq!(state(&inv, "copied-skill", "openhands"), Some(State::On));
+    assert_eq!(state(&inv, "plain-notes", "openhands"), Some(State::On));
+    assert!(skill(&inv, "disabled-skill").states["openhands"]
+        .via
+        .contains(".installed.json"));
+    let installed = inv
+        .skills
+        .iter()
+        .find(|skill| skill.key == duplicate.display().to_string())
+        .unwrap();
+    assert_eq!(installed.states["openhands"].state, State::Shadowed);
+    assert!(!inv.agents[0].can_toggle);
+}
+
+#[test]
+fn openhands_markdown_walk_bounds_depth_and_follows_cycles_once() {
+    let home = Home::new();
+    let root = home.path(".openhands/skills");
+    home.write(
+        ".openhands/skills/topic/visible.md",
+        "---\ntriggers: [visible]\n---\nVisible.\n",
+    );
+    home.link(".openhands/skills/topic/cycle", &root);
+    let deep = format!(
+        ".openhands/skills/{}/hidden.md",
+        ["deep"; MAX_DEPTH + 1].join("/")
+    );
+    home.write(&deep, "---\ntriggers: [hidden]\n---\nToo deep.\n");
+    let found = walk_openhands_root(&Root::flat(root, "OpenHands skills"));
+    assert_eq!(found.len(), 1);
+    assert!(found[0].link.ends_with("visible.md"));
+}
+
+#[test]
+fn openhands_markdown_walk_respects_its_entry_budget() {
+    let home = Home::new();
+    for name in ["a", "b", "c"] {
+        home.write(
+            &format!(".openhands/skills/{name}.md"),
+            "---\ntriggers: [test]\n---\nTest.\n",
+        );
+    }
+    let root = Root::flat(home.path(".openhands/skills"), "OpenHands skills");
+    assert_eq!(walk_openhands_root_budget(&root, 2).len(), 2);
+    assert!(walk_openhands_root_budget(&root, 0).is_empty());
+}
+
+#[test]
+fn openhands_project_search_uses_local_then_nearest_git_root() {
+    let home = Home::new();
+    // A .git file, as used by Git worktrees, also identifies a root.
+    home.write("repo/.git", "gitdir: /unused/worktree\n");
+    let root_only = home.skill("repo/.agents/skills/root-only", "root-only", "Root skill");
+    let root_duplicate = home.skill("repo/.agents/skills/shared", "shared", "Root loses");
+    let local_duplicate = home.skill(
+        "repo/sub/work/.openhands/skills/shared",
+        "shared",
+        "Local wins",
+    );
+    let root_agents = home.write("repo/AGENTS.md", "Root agents\n");
+    let local_agents = home.write("repo/sub/work/aGeNt.md", "Local agents\n");
+    let claude = home.write("repo/ClAuDe.Md", "Root Claude\n");
+    let gemini = home.write("repo/sub/work/gEmInI.mD", "Local Gemini\n");
+    let cursor = home.write("repo/.CuRsOrRuLeS", "Root Cursor\n");
+    // Canonical aliases never create a second rules row.
+    home.link("repo/sub/work/CLAUDE.md", &local_agents);
+    home.write(
+        "repo/sub/AGENTS.md",
+        "Intermediate directory is not searched\n",
+    );
+    home.skill(
+        "repo/sub/.agents/skills/intermediate",
+        "intermediate",
+        "Not searched",
+    );
+    let project = home.path("repo/sub/work");
+    let inv = scan(&home.env(), &only(&["openhands"]), Some(&project));
+    assert_eq!(state(&inv, "root-only", "openhands"), Some(State::On));
+    let by_path = |path: &Path| {
+        inv.skills
+            .iter()
+            .find(|skill| skill.key == path.display().to_string())
+            .unwrap()
+            .states["openhands"]
+            .state
+    };
+    assert_eq!(by_path(&root_only), State::On);
+    assert_eq!(by_path(&root_duplicate), State::Shadowed);
+    assert_eq!(by_path(&local_duplicate), State::On);
+    assert!(!inv.skills.iter().any(|skill| skill.name == "intermediate"));
+    let paths: BTreeSet<_> = inv.rules.iter().map(|rule| rule.path.clone()).collect();
+    for path in [&local_agents, &claude, &gemini, &cursor] {
+        assert!(
+            paths.contains(&home.env().display(path)),
+            "{}",
+            path.display()
+        );
+    }
+    assert!(!paths.contains(&home.env().display(&root_agents)));
+    assert_eq!(paths.len(), 4);
+    assert_eq!(
+        openhands_project_dirs(&project),
+        vec![project, home.path("repo")]
+    );
+}
+
+#[test]
+fn openhands_project_search_stops_at_nearest_git_root_and_deduplicates_aliases() {
+    let home = Home::new();
+    home.write("repo/.git", "outer\n");
+    home.write("repo/nested/.git", "inner\n");
+    home.write("repo/nested/work/AGENTS.md", "Local\n");
+    let project = home.path("repo/nested/work");
+    assert_eq!(
+        openhands_project_dirs(&project),
+        vec![project.clone(), home.path("repo/nested")]
+    );
+    home.link("alias", &project);
+    assert_eq!(
+        openhands_project_dirs(&home.path("alias")),
+        openhands_project_dirs(&project)
+    );
+    assert_eq!(
+        openhands_project_dirs(&home.path("repo/nested")),
+        vec![home.path("repo/nested")]
+    );
+    assert_eq!(openhands_project_dirs(&home.root), vec![home.root.clone()]);
+}
+
+#[test]
+fn openhands_global_rules_follow_name_precedence_and_canonical_dedup() {
+    let home = Home::new();
+    let shared = home.write(".agents/skills/team.md", "Shared rules win.\n");
+    let explicit = home.write(
+        ".openhands/skills/renamed.md",
+        "---\nname: explicit\n---\nExplicit name wins.\n",
+    );
+    home.write(
+        ".openhands/microagents/team.md",
+        "Legacy team rules lose.\n",
+    );
+    home.write(
+        ".openhands/microagents/other.md",
+        "---\nname: explicit\n---\nDuplicate explicit name loses.\n",
+    );
+    home.write(
+        ".agents/skills/triggered.md",
+        "---\ntriggers: [review]\n---\nHigher-priority skill.\n",
+    );
+    home.write(
+        ".openhands/microagents/triggered.md",
+        "Lower-priority rule loses to skill.\n",
+    );
+    home.link(".openhands/microagents/alias.md", &shared);
+    let inv = scan(&home.env(), &only(&["openhands"]), None);
+    let paths: BTreeSet<_> = inv.rules.iter().map(|rule| rule.path.clone()).collect();
+    assert_eq!(
+        paths,
+        BTreeSet::from([home.env().display(&shared), home.env().display(&explicit)])
+    );
+    assert_eq!(state(&inv, "triggered", "openhands"), Some(State::On));
+}

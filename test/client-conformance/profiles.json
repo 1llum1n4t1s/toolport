@@ -577,6 +577,30 @@
       "observedSessionKind": "openclaw mcp add probing the server before saving, the same client the agent runtime uses"
     },
     {
+      "id": "openhands",
+      "evidence": "captured headless startup",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {},
+          "clientInfo": {
+            "name": "mcp",
+            "version": "0.1.0"
+          }
+        }
+      },
+      "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
+      "listChanged": {
+        "supported": false,
+        "detail": "OpenHands CLI 1.16.0 (SDK 1.21.0) uses server/discover with toolport-gateway 2.2.0, lists tools once and opens no subscriptions/listen; the SDK it pins has no tools/list_changed handler"
+      },
+      "source": "https://github.com/OpenHands/OpenHands-CLI/blob/main/openhands_cli/mcp/mcp_utils.py",
+      "observedSessionKind": "openhands --headless startup; initialize is the fallback after a server without server/discover"
+    },
+    {
       "id": "zcode",
       "evidence": "documentation only",
       "initialize": null,

@@ -1164,5 +1164,7 @@
   "OpenClaw workspace": "OpenClaw workspace",
   "OpenClaw skills": "OpenClaw skills",
   "OpenClaw extra folder": "OpenClaw extra folder",
-  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "Uses skills.entries in OpenClaw's openclaw.json (enabled: false)."
+  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).",
+  "OpenHands skills": "OpenHands skills",
+  "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off."
 }

@@ -35,6 +35,7 @@ below for you, so you never have to edit these by hand.
 | Reasonix                | `$REASONIX_HOME/config.toml` (default `~/.reasonix/config.toml`)                                       | TOML (`[[plugins]]`)     |
 | Codewhale               | `~/.codewhale/mcp.json` (or `CODEWHALE_MCP_CONFIG`, `mcp_config_path`)                                 | JSON (`servers`)         |
 | OpenClaw                | `~/.openclaw/openclaw.json` (or `OPENCLAW_CONFIG_PATH`, `OPENCLAW_STATE_DIR`)                          | JSON5 (`mcp.servers`)    |
+| OpenHands               | `~/.openhands/mcp.json` (or `OPENHANDS_PERSISTENCE_DIR`)                                               | JSON (`mcpServers`)      |
 | ZCode                   | `~/.zcode/cli/config.json`                                                                             | JSON (`mcp.servers`)     |
 | Command Code            | `~/.commandcode/mcp.json`                                                                              | JSON (`mcpServers`)      |
 | Tabnine Agent           | `~/.tabnine/mcp_servers.json`                                                                          | JSON (`mcpServers`)      |
@@ -167,6 +168,34 @@ Workspace and extra skill roots follow OpenClaw's symlink boundaries. Escaped
 skill folders are skipped unless their real targets are covered by
 `skills.load.allowSymlinkTargets`. Managed and personal roots accept folder
 links; a linked `SKILL.md` must still stay inside its own skill folder.
+
+### OpenHands setup
+
+Toolport manages the OpenHands CLI's `mcp.json`, in `~/.openhands` unless
+`OPENHANDS_PERSISTENCE_DIR` moves it. OpenHands uses that variable as written,
+so a relative value leaves the client unresolved. Connect adds a `toolport`
+server under `mcpServers` and Disconnect removes it; the rest of the file keeps
+its text. Servers turned off with `enabled: false` (`openhands mcp disable`) are
+left alone, and a Toolport entry you turn off stays off when Toolport repairs
+it. Remote servers always get a `transport`. Start a new OpenHands session to
+load the change; `openhands mcp list` shows it. The OpenHands web app keeps its
+MCP settings in its own settings page, which Toolport doesn't change.
+
+OpenHands puts every MCP tool in the agent's tool list and doesn't re-list
+during a session, so Toolport's Auto mode stays Lazy. The Skills page shows the
+skills in `~/.agents/skills`, `~/.openhands/skills` and the legacy
+`~/.openhands/microagents`, after the same folders in the selected project
+directory and its nearest Git root. Project rules also include case-insensitive
+`AGENTS.md`, `AGENT.md`, `CLAUDE.md`, `GEMINI.md` and `.cursorrules`; the selected
+directory wins name collisions with the Git root. OpenHands
+can only turn off skills it installed itself. Toolport shows those installed
+skills and their enabled state after user skills, but keeps the OpenHands column
+read-only. Ordinary Markdown files with triggers appear as skills; files without
+triggers appear as rules. AgentSkills are read from immediate child folders, not
+arbitrary nested folders. Toolport bounds recursive Markdown scans to six levels
+and 20,000 entries per root. OpenHands has no global `AGENTS.md`; team rules go to
+`~/.openhands/microagents/toolport-team-rules.md`, which OpenHands loads as
+always-on context.
 
 ### ZCode setup
 
