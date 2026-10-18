@@ -198,6 +198,7 @@ pub(super) fn normalized_server(name: &str, definition: &Value) -> Result<Value,
         "bearerTokenEnvVar",
         "bearer_token_env_var",
         "env_http_headers",
+        "requestInit",
     ] {
         value.remove(key);
     }

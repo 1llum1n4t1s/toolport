@@ -180,7 +180,7 @@ fn workspace_respects_custom_absolute_or_tilde_paths_and_refuses_invalid_config(
 #[test]
 fn explicit_remote_type_overrides_stale_stdio_fields_in_inventory() {
     for (kind, expected) in [("sse", "sse"), ("streamableHttp", "http")] {
-        let definition = serde_json::json!({"type":kind,"url":"https://example.test/mcp","command":"node","args":["old.js"],"env":{"STDIO_ONLY":"ignored"},"headers":{"Authorization":"Bearer x"}});
+        let definition = serde_json::json!({"type":kind,"url":"https://example.test/mcp","command":"node","args":["old.js"],"env":{"STDIO_ONLY":"ignored"},"headers":{"Authorization":"Bearer x"},"requestInit":{"headers":{"PHANTOM_ONLY":"ignored"}}});
         let content = serde_json::json!({"tools":{"mcpServers":{"remote":definition}}}).to_string();
         let servers = parse(&content).unwrap();
         assert_eq!(servers[0].transport, expected);

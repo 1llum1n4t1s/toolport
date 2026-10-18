@@ -4372,8 +4372,8 @@ pub fn client_metadata() -> Vec<DetectedClient> {
         .collect()
 }
 
-/// Validate behavior the redacted inventory cannot carry before a ZCode import.
-/// Other adapters retain their existing import policy and public inventory ABI.
+/// Read private native settings for import, applying each client's transport semantics.
+/// The public inventory remains redacted.
 pub(crate) fn import_definition(
     client: &DetectedClient,
     name: &str,

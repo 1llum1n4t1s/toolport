@@ -735,7 +735,10 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("config.json");
         for (kind, remote) in [("sse", true), ("streamableHttp", true), ("stdio", false)] {
-            let raw = json!({"type":kind,"command":"node","args":["old.js"],"url":"https://example.invalid/mcp","env":{"Authorization":"stdio-secret","STDIO_ONLY":"ignored"},"headers":{"Authorization":"remote-secret","REMOTE_ONLY":"ignored"},"environment":{"UNKNOWN_ONLY":"ignored"},"bearerTokenEnvVar":"UNKNOWN_TOKEN"});
+            let mut raw = json!({"type":kind,"command":"node","args":["old.js"],"url":"https://example.invalid/mcp","env":{"Authorization":"Bearer stdio-secret","STDIO_ONLY":"ignored"},"headers":{"Authorization":"Bearer remote-secret"},"environment":{"UNKNOWN_ONLY":"ignored"},"bearerTokenEnvVar":"UNKNOWN_TOKEN","requestInit":{"headers":{"PHANTOM_ONLY":"ignored"}}});
+            if !remote {
+                raw["headers"]["REMOTE_ONLY"] = "ignored".into();
+            }
             std::fs::write(
                 &path,
                 json!({"tools":{"mcpServers":{"native":raw}}}).to_string(),
@@ -772,15 +775,20 @@ mod tests {
             server.url = remote.then(|| "https://example.invalid/mcp".into());
             server.env.clear();
             let import = Import::prepare(server, Some(&definition)).unwrap();
-            assert!(!import
-                .entry
-                .env
-                .iter()
-                .any(|env| matches!(env.key.as_str(), "UNKNOWN_ONLY" | "UNKNOWN_TOKEN")));
+            assert!(!import.entry.env.iter().any(|env| matches!(
+                env.key.as_str(),
+                "UNKNOWN_ONLY" | "UNKNOWN_TOKEN" | "PHANTOM_ONLY"
+            )));
             let actual = import
                 .values
                 .iter()
-                .find(|(key, _)| key == "Authorization")
+                .find(|(key, _)| {
+                    key == if remote {
+                        secrets::HTTP_AUTH_KEY
+                    } else {
+                        "Authorization"
+                    }
+                })
                 .unwrap()
                 .1
                 .as_deref();
@@ -789,7 +797,7 @@ mod tests {
                 Some(if remote {
                     "remote-secret"
                 } else {
-                    "stdio-secret"
+                    "Bearer stdio-secret"
                 }),
                 "{kind}"
             );
