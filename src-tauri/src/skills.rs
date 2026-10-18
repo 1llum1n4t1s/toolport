@@ -3140,6 +3140,22 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 record.source = Source::BuiltIn;
                 record.source_note = tr("From a nanobot package");
                 record.editable = false;
+                // Keep display fields consistent with the metadata that made
+                // this package skill load, including YAML aliases and merges.
+                if let Some((name, description)) = read_text(f.real.as_deref().unwrap_or(&f.link))
+                    .and_then(|text| nanobot_plugins::skill_metadata(&text))
+                {
+                    let description = description
+                        .trim_matches(|ch: char| {
+                            ch.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&ch)
+                        })
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    record.name = name;
+                    record.description_chars = description.chars().count();
+                    record.description = description;
+                }
             }
             // Legacy OpenHands Markdown files are individual skills, not removable
             // folders. Keep folder-based edit/remove actions away from their siblings.

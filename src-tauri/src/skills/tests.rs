@@ -2690,6 +2690,11 @@ fn nanobot_package_discovery_applies_pyyaml_string_metadata_semantics() {
         names,
         BTreeSet::from(["quoted", "tagged", "block", "alias", "merge"])
     );
+    for name in ["quoted", "alias", "merge"] {
+        assert_eq!(skill(&inv, name).description, "yes", "{name}");
+    }
+    assert_eq!(skill(&inv, "tagged").description, "012");
+    assert_eq!(skill(&inv, "block").description, "2026-10-18");
 }
 
 #[test]
@@ -2885,6 +2890,8 @@ fn nanobot_package_frontmatter_matches_newlines_closers_and_python_strip() {
                 1,
                 "{newline:?} {closer}"
             );
+            let inv = scan(&home.env(), &only(&["nanobot"]), None);
+            assert_eq!(skill(&inv, "valid-skill").description, "ordinary");
         }
     }
     for description in [r#""\x1c""#, r#""\x1d\x1e\x1f""#] {

@@ -174,10 +174,24 @@ fn valid_skill(path: &Path, name: &str) -> bool {
     let Some(text) = read_text(path) else {
         return false;
     };
+    let Some((metadata_name, description)) = skill_metadata(&text) else {
+        return false;
+    };
+    metadata_name == name
+        && (1..=1024).contains(
+            &description
+                .trim_matches(|ch: char| ch.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&ch))
+                .chars()
+                .count(),
+        )
+}
+
+/// The fields accepted by nanobot, reused for package labels and descriptions.
+pub(super) fn skill_metadata(text: &str) -> Option<(String, String)> {
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     let mut lines = text.lines();
     if lines.next().map(str::trim_end) != Some("---") {
-        return false;
+        return None;
     }
     let mut yaml = String::new();
     let mut closed = false;
@@ -190,18 +204,9 @@ fn valid_skill(path: &Path, name: &str) -> bool {
         yaml.push('\n');
     }
     if !closed {
-        return false;
+        return None;
     }
-    let Some((metadata_name, description)) = super::nanobot_metadata::fields(&yaml) else {
-        return false;
-    };
-    metadata_name == name
-        && (1..=1024).contains(
-            &description
-                .trim_matches(|ch: char| ch.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&ch))
-                .chars()
-                .count(),
-        )
+    super::nanobot_metadata::fields(&yaml)
 }
 
 pub(super) fn discover(home: &Path) -> Vec<Found> {
