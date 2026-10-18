@@ -1,6 +1,7 @@
 use super::*;
 
-/// An `mcp.json` the way `openhands mcp add` writes it.
+/// An `mcp.json` the way `openhands mcp add` writes it: every unset fastmcp
+/// setting is a `null`. `events` and `off` were written by hand.
 const CONFIG: &str = r#"{
   "mcpServers": {
     "docs": {
@@ -9,6 +10,12 @@ const CONFIG: &str = r#"{
       "headers": {
         "Authorization": "Bearer x"
       },
+      "auth": null,
+      "sse_read_timeout": null,
+      "timeout": null,
+      "description": null,
+      "icon": null,
+      "authentication": null,
       "enabled": true
     },
     "events": {
@@ -16,11 +23,21 @@ const CONFIG: &str = r#"{
     },
     "local": {
       "command": "node",
-      "args": ["./server.js"],
+      "args": [
+        "./server.js"
+      ],
       "env": {
         "A": "1"
       },
-      "transport": "stdio"
+      "transport": "stdio",
+      "type": null,
+      "cwd": null,
+      "timeout": null,
+      "keep_alive": null,
+      "description": null,
+      "icon": null,
+      "authentication": null,
+      "enabled": true
     },
     "off": {
       "command": "off-server",
@@ -206,6 +223,56 @@ fn import_refuses_settings_toolport_cannot_keep() {
     assert!(error.contains("turned-off"), "{error}");
     let error = validate_import(&path, &["gone".into()], false).unwrap_err();
     assert!(error.contains("changed since detection"), "{error}");
+}
+
+#[test]
+fn servers_added_by_the_cli_can_be_imported_and_moved() {
+    let dir = Dir::new("cli");
+    let path = dir.file(CONFIG);
+    validate_import(&path, &["docs".into(), "local".into()], true).unwrap();
+}
+
+#[test]
+fn falsy_enabled_values_turn_a_server_off_like_python() {
+    let dir = Dir::new("falsy");
+    let path = dir.file(
+        r#"{"mcpServers":{
+          "on":{"command":"a"},
+          "yes":{"command":"a","enabled":"false"},
+          "one":{"command":"a","enabled":1},
+          "zero":{"command":"a","enabled":0},
+          "null":{"command":"a","enabled":null},
+          "empty":{"command":"a","enabled":""},
+          "list":{"command":"a","enabled":[]},
+          "map":{"command":"a","enabled":{}},
+          "false":{"command":"a","enabled":false}
+        }}"#,
+    );
+    let listed = parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let names: Vec<_> = listed.iter().map(|server| server.name.as_str()).collect();
+    assert_eq!(names, ["on", "one", "yes"]);
+    let error = validate_import(&path, &["zero".into()], true).unwrap_err();
+    assert!(error.contains("turned-off"), "{error}");
+}
+
+#[test]
+fn root_level_servers_are_listed_and_connect_moves_them_under_mcp_servers() {
+    let dir = Dir::new("root");
+    let path = dir.file(r#"{"git":{"command":"uvx","args":["mcp-server-git"]}}"#);
+    let text = std::fs::read_to_string(&path).unwrap();
+    let names: Vec<_> = parse(&text).unwrap().into_iter().map(|s| s.name).collect();
+    assert_eq!(names, ["git"]);
+    validate_import(&path, &["git".into()], true).unwrap();
+    edit_gateway(&path, Some(&gateway())).unwrap();
+    let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let keys: Vec<_> = root.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(keys, ["mcpServers"]);
+    assert_eq!(root["mcpServers"]["git"]["command"], "uvx");
+    assert!(root["mcpServers"]["toolport"].is_object());
+    edit_gateway(&path, None).unwrap();
+    let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(root["mcpServers"]["git"]["command"], "uvx");
+    assert!(root["mcpServers"].get("toolport").is_none());
 }
 
 #[test]

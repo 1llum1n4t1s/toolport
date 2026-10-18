@@ -1,11 +1,15 @@
 //! The OpenHands CLI keeps MCP servers in `mcp.json` in its persistence dir,
 //! `~/.openhands` unless `OPENHANDS_PERSISTENCE_DIR` moves it. The file is
-//! strict JSON in fastmcp's `{"mcpServers": {name: server}}` shape.
+//! strict JSON in fastmcp's `{"mcpServers": {name: server}}` shape. Without
+//! `mcpServers`, fastmcp reads the root as the server map when any value there
+//! looks like a server, so Toolport does too and moves them under `mcpServers`
+//! when it writes.
 //!
 //! Each server is `command`/`args`/`env`/`cwd` (stdio) or `url`/`headers` with a
 //! `transport` of `http`, `streamable-http` or `sse`. Without one, fastmcp picks
 //! SSE for a URL whose path has an `/sse` segment and HTTP otherwise, so Toolport
-//! always writes it. A server with `enabled: false` is kept but not started, and
+//! always writes it. `openhands mcp add` writes every unset setting as `null`. A
+//! server whose `enabled` is falsy in Python terms is kept but not started, and
 //! Toolport leaves it alone. Edits go through the shared JSON rewrite, so the rest
 //! of the file keeps its text.
 
@@ -79,7 +83,20 @@ fn read_root(path: &Path) -> Result<(Value, Option<String>), String> {
     }
 }
 
+/// fastmcp's `wrap_servers_at_root`: with no `mcpServers`, a root holding any
+/// object with a `command` or `url` is the server map.
+fn servers_at_root(root: &Value) -> bool {
+    root.get("mcpServers").is_none()
+        && root.as_object().is_some_and(|map| {
+            map.values()
+                .any(|value| value.get("command").is_some() || value.get("url").is_some())
+        })
+}
+
 fn server_map(root: &Value) -> Result<Map<String, Value>, String> {
+    if servers_at_root(root) {
+        return Ok(root.as_object().cloned().unwrap_or_default());
+    }
     match root.get("mcpServers") {
         None => Ok(Map::new()),
         Some(servers) => servers
@@ -89,9 +106,18 @@ fn server_map(root: &Value) -> Result<Map<String, Value>, String> {
     }
 }
 
-/// OpenHands starts every server unless `enabled` is `false`.
+/// OpenHands starts a server when `enabled` is missing or truthy in Python
+/// terms, so `false`, `null`, `0`, `""`, `[]` and `{}` all turn it off.
 fn disabled(definition: &Value) -> bool {
-    definition.get("enabled") == Some(&Value::Bool(false))
+    match definition.get("enabled") {
+        None => false,
+        Some(Value::Null) => true,
+        Some(Value::Bool(on)) => !on,
+        Some(Value::Number(number)) => number.as_f64() == Some(0.0),
+        Some(Value::String(text)) => text.is_empty(),
+        Some(Value::Array(items)) => items.is_empty(),
+        Some(Value::Object(map)) => map.is_empty(),
+    }
 }
 
 /// The transport OpenHands uses for a server: a command means stdio, otherwise
@@ -173,7 +199,7 @@ fn importable(name: &str, definition: &Value, reject_disabled: bool) -> Result<(
     normalized_server(name, definition)?;
     if let Some(field) = NOT_IMPORTED
         .iter()
-        .find(|field| definition.get(**field).is_some())
+        .find(|field| definition.get(**field).is_some_and(|value| !value.is_null()))
     {
         return Err(format!(
             "Cannot import OpenHands server '{name}': Toolport can't keep its '{field}' setting. Keep this server in OpenHands, or set up the same behavior in Toolport by hand first."
@@ -256,6 +282,14 @@ fn write_map(
     original: Option<&str>,
     servers: Map<String, Value>,
 ) -> Result<(), String> {
+    // Root-level servers move under `mcpServers`; once that key exists fastmcp
+    // stops reading the root, so leaving them there would drop them.
+    let original = if servers_at_root(&root) {
+        root = serde_json::json!({});
+        None
+    } else {
+        original
+    };
     root["mcpServers"] = Value::Object(servers);
     atomic_write_json_config(path, original, &root, "mcpServers")
 }

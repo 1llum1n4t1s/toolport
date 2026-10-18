@@ -1879,6 +1879,7 @@ fn walk_openhands_root_budget(root: &Root, mut budget: usize) -> Vec<Found> {
         root: &Root,
         dir: &Path,
         depth: usize,
+        linked: bool,
         seen: &mut BTreeSet<PathBuf>,
         budget: &mut usize,
         out: &mut Vec<Found>,
@@ -1917,9 +1918,18 @@ fn walk_openhands_root_budget(root: &Root, mut budget: usize) -> Vec<Found> {
                 return;
             }
         }
+        // Python 3.12's `rglob` doesn't enter symlinked directories, so the only
+        // thing OpenHands reads through one is a top-level AgentSkills SKILL.md.
+        if linked {
+            return;
+        }
         for path in paths {
             if path.is_dir() {
-                visit(root, &path, depth + 1, seen, budget, out);
+                let linked = std::fs::symlink_metadata(&path)
+                    .is_ok_and(|meta| meta.file_type().is_symlink());
+                if !linked || depth == 0 {
+                    visit(root, &path, depth + 1, linked, seen, budget, out);
+                }
             } else if path.is_file()
                 && path.extension().is_some_and(|ext| ext == "md")
                 && !path.file_name().is_some_and(|name| {
@@ -1940,6 +1950,7 @@ fn walk_openhands_root_budget(root: &Root, mut budget: usize) -> Vec<Found> {
         root,
         &root.path,
         0,
+        false,
         &mut BTreeSet::new(),
         &mut budget,
         &mut found,
