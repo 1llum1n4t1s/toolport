@@ -2641,3 +2641,53 @@ fn nanobot_package_manifests_require_valid_schema_and_identity_even_when_activat
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), activation);
     }
 }
+
+#[test]
+fn nanobot_package_discovery_applies_pyyaml_string_metadata_semantics() {
+    let home = Home::new();
+    let (root, marker) = nanobot_package(
+        &home,
+        "typed",
+        "typed",
+        &[
+            "yes",
+            "bad-description",
+            "quoted",
+            "tagged",
+            "block",
+            "alias",
+            "merge",
+        ],
+        true,
+    );
+    for (name, metadata) in [
+        (
+            "bad-description",
+            "name: bad-description\ndescription: yes\n",
+        ),
+        ("quoted", "name: 'quoted'\ndescription: 'yes'\n"),
+        ("tagged", "name: !!str tagged\ndescription: !!str 012\n"),
+        ("block", "name: block\ndescription: |-\n  2026-10-18\n"),
+        (
+            "alias",
+            "text: &text 'yes'\nname: alias\ndescription: *text\n",
+        ),
+        (
+            "merge",
+            "base: &base {name: merge, description: 'yes'}\n<<: *base\n",
+        ),
+    ] {
+        std::fs::write(
+            root.join(format!("skills/{name}/SKILL.md")),
+            format!("---\n{metadata}---\nBody\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(marker, nanobot_plugins::activation(&root).unwrap()).unwrap();
+    let inv = scan(&home.env(), &only(&["nanobot"]), None);
+    let names: BTreeSet<_> = inv.skills.iter().map(|skill| skill.name.as_str()).collect();
+    assert_eq!(
+        names,
+        BTreeSet::from(["quoted", "tagged", "block", "alias", "merge"])
+    );
+}

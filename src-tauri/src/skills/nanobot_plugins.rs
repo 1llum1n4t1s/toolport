@@ -180,14 +180,10 @@ fn valid_skill(path: &Path, name: &str) -> bool {
     if !closed {
         return false;
     }
-    let Ok(metadata) = serde_yaml::from_str::<serde_yaml::Value>(&yaml) else {
+    let Some((metadata_name, description)) = super::nanobot_metadata::fields(&yaml) else {
         return false;
     };
-    metadata.get("name").and_then(|v| v.as_str()) == Some(name)
-        && metadata
-            .get("description")
-            .and_then(|v| v.as_str())
-            .is_some_and(|text| (1..=1024).contains(&text.trim().chars().count()))
+    metadata_name == name && (1..=1024).contains(&description.trim().chars().count())
 }
 
 pub(super) fn discover(home: &Path) -> Vec<Found> {

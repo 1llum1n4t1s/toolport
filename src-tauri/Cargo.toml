@@ -87,6 +87,8 @@ json5 = "0.4"
 # client configs (VS Code mcp.json, Zed settings, kilo.jsonc, …). Issue #555.
 jsonc-parser = { version = "0.33", features = ["cst"] }
 serde_yaml = "0.9"
+# Already used by serde_yaml; preserve YAML scalar style for nanobot metadata.
+unsafe-libyaml = "0.2"
 toml = "0.8"
 # DocumentMut rewriter so Codex/Grok config.toml comments survive Connect,
 # launch-time repoint, and uninstall (SBS-884). Matches the JSONC CST contract.

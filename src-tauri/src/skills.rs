@@ -11,6 +11,7 @@
 //! or their shipped code (Cursor agent, Gemini CLI, OpenCode). Rows marked `verified: false` come
 //! from published docs and are labelled that way in the UI.
 
+mod nanobot_metadata;
 mod nanobot_plugins;
 
 use crate::i18n::{msg, tr, trf};

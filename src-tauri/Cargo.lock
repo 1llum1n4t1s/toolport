@@ -1002,6 +1002,7 @@ dependencies = [
  "toml_edit 0.22.27",
  "trash",
  "unicode-normalization",
+ "unsafe-libyaml",
  "ureq",
  "ureq-proto",
  "url",
