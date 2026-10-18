@@ -1164,5 +1164,7 @@
   "OpenClaw workspace": "Espacio de trabajo de OpenClaw",
   "OpenClaw skills": "Skills de OpenClaw",
   "OpenClaw extra folder": "Carpeta adicional de OpenClaw",
-  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "Usa skills.entries en el openclaw.json de OpenClaw (enabled: false)."
+  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "Usa skills.entries en el openclaw.json de OpenClaw (enabled: false).",
+  "nanobot skills": "Skills de nanobot",
+  "Uses agents.defaults.disabledSkills in nanobot's config.json.": "Usa agents.defaults.disabledSkills en el config.json de nanobot."
 }

@@ -82,6 +82,10 @@ fn container(format: Format) -> Container {
             key: "mcp",
             nested: Some("servers"),
         },
+        Format::JsonNanobotMcp => Container::Json {
+            key: "tools",
+            nested: Some("mcpServers"),
+        },
         Format::JsonServers => json("servers"),
         Format::JsonMcp | Format::JsonOpenCodeMcp => json("mcp"),
         Format::JsonContextServers => json("context_servers"),

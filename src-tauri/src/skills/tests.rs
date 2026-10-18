@@ -2070,3 +2070,86 @@ fn openclaw_relative_workspace_does_not_report_fallback_skills_or_rules() {
     assert!(inv.skills.is_empty());
     assert!(inv.rules.is_empty());
 }
+
+#[test]
+fn nanobot_uses_workspace_folder_names_rules_and_native_toggle() {
+    let home = Home::new();
+    home.write(".nanobot/config.json", r#"{"agents":{"defaults":{"workspace":"~/robot","disabledSkills":["orca"]}},"tools":{"mcpServers":{"native":{"command":"node"}}}}"#);
+    home.skill("robot/skills/orca", "different-frontmatter-name", "Orca");
+    home.skill("robot/skills/nested/deeper", "hidden", "Not loaded");
+    home.write("robot/AGENTS.md", "Team rules");
+    home.write("robot/SOUL.md", "Personality");
+    home.skill(
+        ".agents/skills/unrelated",
+        "unrelated",
+        "Not loaded by nanobot",
+    );
+    let env = home.env();
+    let inv = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(
+        state(&inv, "different-frontmatter-name", "nanobot"),
+        Some(State::Off)
+    );
+    assert!(inv
+        .skills
+        .iter()
+        .all(|s| s.name != "hidden" && s.name != "unrelated"));
+    let key = skill(&inv, "different-frontmatter-name").key.clone();
+    let writer = TestWriter::default();
+    set_state(&env, &inv, "nanobot", &key, Wanted::On, &writer).unwrap();
+    let after = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(
+        state(&after, "different-frontmatter-name", "nanobot"),
+        Some(State::On)
+    );
+    set_state(&env, &after, "nanobot", &key, Wanted::Off, &writer).unwrap();
+    let root: serde_json::Value = serde_json::from_str(&home.read(".nanobot/config.json")).unwrap();
+    assert_eq!(
+        root["agents"]["defaults"]["disabledSkills"],
+        serde_json::json!(["orca"])
+    );
+    assert_eq!(root["tools"]["mcpServers"]["native"]["command"], "node");
+}
+
+#[test]
+fn nanobot_reads_snake_case_off_list_and_refuses_to_shadow_it() {
+    let home = Home::new();
+    let original = r#"{"agents":{"defaults":{"disabled_skills":["orca"]}}}"#;
+    home.write(".nanobot/config.json", original);
+    home.skill(".nanobot/workspace/skills/orca", "orca", "Orca");
+    let env = home.env();
+    let inv = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(state(&inv, "orca", "nanobot"), Some(State::Off));
+    let key = skill(&inv, "orca").key.clone();
+    assert!(set_state(
+        &env,
+        &inv,
+        "nanobot",
+        &key,
+        Wanted::On,
+        &TestWriter::default()
+    )
+    .is_err());
+    assert_eq!(home.read(".nanobot/config.json"), original);
+}
+
+#[test]
+fn nanobot_skill_writes_refuse_non_json_or_duplicate_keys() {
+    let home = Home::new();
+    let path = home.path(".nanobot/config.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    for original in ["{agents:{defaults:{}}}", r#"{"agents":{},"agents":{}}"#] {
+        std::fs::write(&path, original).unwrap();
+        assert!(edit_json("nanobot", &path, &TestWriter::default(), |root| {
+            toggle_list(
+                root,
+                &["agents", "defaults", "disabledSkills"],
+                "orca",
+                true,
+            )?;
+            Ok("agents")
+        })
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+}

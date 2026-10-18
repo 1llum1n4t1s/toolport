@@ -1164,5 +1164,7 @@
   "OpenClaw workspace": "OpenClaw 工作區",
   "OpenClaw skills": "OpenClaw 技能",
   "OpenClaw extra folder": "OpenClaw 額外資料夾",
-  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "使用 OpenClaw 的 openclaw.json 中的 skills.entries（enabled: false）。"
+  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "使用 OpenClaw 的 openclaw.json 中的 skills.entries（enabled: false）。",
+  "nanobot skills": "nanobot 技能",
+  "Uses agents.defaults.disabledSkills in nanobot's config.json.": "使用 nanobot 的 config.json 中的 agents.defaults.disabledSkills。"
 }

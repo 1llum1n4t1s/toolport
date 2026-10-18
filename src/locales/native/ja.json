@@ -1164,5 +1164,7 @@
   "OpenClaw workspace": "OpenClaw のワークスペース",
   "OpenClaw skills": "OpenClaw のスキル",
   "OpenClaw extra folder": "OpenClaw の追加フォルダー",
-  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "OpenClaw の openclaw.json にある skills.entries を使います (enabled: false)。"
+  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "OpenClaw の openclaw.json にある skills.entries を使います (enabled: false)。",
+  "nanobot skills": "nanobot のスキル",
+  "Uses agents.defaults.disabledSkills in nanobot's config.json.": "nanobot の config.json にある agents.defaults.disabledSkills を使います。"
 }

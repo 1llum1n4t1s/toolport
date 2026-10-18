@@ -145,6 +145,16 @@ pub(super) fn capabilities(id: &str) -> DiscoveryCapabilities {
             auto_full_max_tools: None,
             evidence: "docs/client-conformance.md (captured startup)",
         },
+        // nanobot-ai 0.3.5 lists MCP tools at startup without a list_changed handler.
+        "nanobot" => DiscoveryCapabilities {
+            auto_mode: "lazy",
+            native_tool_search: Some(false),
+            tools_list_changed: Some(false),
+            cold_full_list_wait_ms: 5_000,
+            max_tools: None,
+            auto_full_max_tools: None,
+            evidence: "docs/client-conformance.md (captured startup)",
+        },
         "anthropic-api" => DiscoveryCapabilities {
             auto_mode: "full",
             native_tool_search: Some(true),
@@ -352,6 +362,7 @@ mod tests {
             "lm-studio",
             "jan",
             "anythingllm",
+            "nanobot",
             "unknown",
         ] {
             assert_eq!(capabilities(id).auto_mode(), "lazy", "{id}");

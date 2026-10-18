@@ -1164,5 +1164,7 @@
   "OpenClaw workspace": "OpenClaw 작업 공간",
   "OpenClaw skills": "OpenClaw 스킬",
   "OpenClaw extra folder": "OpenClaw 추가 폴더",
-  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "OpenClaw의 openclaw.json에 있는 skills.entries를 사용합니다 (enabled: false)."
+  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "OpenClaw의 openclaw.json에 있는 skills.entries를 사용합니다 (enabled: false).",
+  "nanobot skills": "nanobot 스킬",
+  "Uses agents.defaults.disabledSkills in nanobot's config.json.": "nanobot의 config.json에서 agents.defaults.disabledSkills를 사용합니다."
 }

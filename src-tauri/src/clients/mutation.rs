@@ -248,9 +248,15 @@ fn run_inner<T>(
         if !value(format, original.as_deref())?.is_object() {
             return Err("Client config root must be an object; leaving it untouched".into());
         }
-        if matches!(format, Format::JsonOpenClawMcp) {
-            if let Some(text) = original.as_deref().filter(|text| !text.trim().is_empty()) {
-                super::openclaw::root_from_content(text)?;
+        if let Some(text) = original.as_deref().filter(|text| !text.trim().is_empty()) {
+            match format {
+                Format::JsonOpenClawMcp => {
+                    super::openclaw::root_from_content(text)?;
+                }
+                Format::JsonNanobotMcp => {
+                    super::nanobot::root_from_content(text)?;
+                }
+                _ => {}
             }
         }
         if strict_json {

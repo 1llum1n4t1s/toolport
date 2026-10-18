@@ -394,6 +394,7 @@ enum Switch {
     OpenclawEntries,
     /// `options.disabled_skills` in Crush's crush.json.
     CrushConfig,
+    NanobotConfig,
     /// `skills.disabled` in Qwen Code's settings.json.
     QwenSettings,
     /// `skills.ignoredSkills` in Oh My Pi's config.yml.
@@ -1440,6 +1441,15 @@ fn agent_defs() -> Vec<AgentDef> {
         )
         .switch(Switch::OpenclawEntries),
         docs_agent(
+            "nanobot",
+            "nanobot",
+            |env| crate::clients::nanobot::workspace(&env.home).map(|workspace| vec![Root::flat(workspace.join("skills"), msg("nanobot skills"))]).unwrap_or_default(),
+            &[],
+            |env| sources(crate::clients::nanobot::workspace(&env.home).map(|workspace| vec![workspace.join("AGENTS.md"), workspace.join("SOUL.md"), workspace.join("USER.md")]).unwrap_or_default(), false),
+            &[],
+        )
+        .switch(Switch::NanobotConfig),
+        docs_agent(
             "tabnine",
             "Tabnine",
             |env| {
@@ -2255,6 +2265,10 @@ fn json_list_switch(switch: Switch, env: &Env) -> Option<(PathBuf, &'static [&'s
         Switch::GeminiSettings => Some((gemini_settings_path(env), &["skills", "disabled"])),
         Switch::QwenSettings => Some((qwen_settings_path(env), &["skills", "disabled"])),
         Switch::CrushConfig => Some((crush_config_path(env), &["options", "disabled_skills"])),
+        Switch::NanobotConfig => Some((
+            crate::clients::nanobot::home_dir(&env.home).join("config.json"),
+            &["agents", "defaults", "disabledSkills"],
+        )),
         _ => None,
     }
 }
@@ -2333,7 +2347,8 @@ fn read_disabled(switch: Switch, env: &Env) -> Disabled {
         Switch::CopilotSettings
         | Switch::GeminiSettings
         | Switch::QwenSettings
-        | Switch::CrushConfig => {
+        | Switch::CrushConfig
+        | Switch::NanobotConfig => {
             if let Some((path, keys)) = json_list_switch(switch, env) {
                 let v = read_json(&path);
                 let list = keys
@@ -2341,6 +2356,14 @@ fn read_disabled(switch: Switch, env: &Env) -> Disabled {
                     .try_fold(v.as_ref(), |v, key| v.map(|v| v.get(*key)))
                     .flatten();
                 d.off = string_list(list);
+                if switch == Switch::NanobotConfig && list.is_none() {
+                    d.off = string_list(
+                        v.as_ref()
+                            .and_then(|v| v.get("agents"))
+                            .and_then(|v| v.get("defaults"))
+                            .and_then(|v| v.get("disabled_skills")),
+                    );
+                }
             }
         }
         Switch::HermesConfig | Switch::OmpConfig => {
@@ -2796,9 +2819,22 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 .then(|| plugin_of(&f.root_path).map(|p| format!("{p}:{name}")))
                 .flatten();
             // OpenClaw files a skill under its `skillKey` when it sets one.
-            let switch_name = (def.switch == Switch::OpenclawEntries)
-                .then(|| real.as_deref().and_then(openclaw_skill_key))
-                .flatten()
+            let nanobot_name = (def.switch == Switch::NanobotConfig)
+                .then(|| {
+                    f.link
+                        .parent()
+                        .and_then(Path::file_name)
+                        .and_then(|name| name.to_str())
+                        .map(str::to_string)
+                })
+                .flatten();
+            let switch_name = nanobot_name
+                .clone()
+                .or_else(|| {
+                    (def.switch == Switch::OpenclawEntries)
+                        .then(|| real.as_deref().and_then(openclaw_skill_key))
+                        .flatten()
+                })
                 .unwrap_or_else(|| name.clone());
             let named = |set: &BTreeSet<String>| {
                 set.contains(&switch_name) || plugin_name.as_ref().is_some_and(|p| set.contains(p))
@@ -2844,7 +2880,7 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                         by_pattern: state == State::Off && by_pattern && !path_off,
                         state,
                         via,
-                        switch_name: plugin_name.clone(),
+                        switch_name: nanobot_name.or_else(|| plugin_name.clone()),
                     },
                 );
             }
@@ -2927,6 +2963,9 @@ fn switch_note(switch: Switch) -> String {
         Switch::OpenclawEntries => {
             tr("Uses skills.entries in OpenClaw's openclaw.json (enabled: false).")
         }
+        Switch::NanobotConfig => {
+            tr("Uses agents.defaults.disabledSkills in nanobot's config.json.")
+        }
         Switch::CrushConfig => tr("Uses options.disabled_skills in Crush's crush.json."),
         Switch::QwenSettings => tr("Uses skills.disabled in Qwen Code's settings.json."),
         Switch::OmpConfig => tr("Uses skills.ignoredSkills in Oh My Pi's config.yml."),
@@ -2946,6 +2985,7 @@ fn switch_place(switch: Switch) -> &'static str {
         Switch::CodewhaleState => "skills_state.toml",
         Switch::OpenclawEntries => "openclaw.json",
         Switch::CrushConfig => "crush.json",
+        Switch::NanobotConfig => "config.json",
         Switch::OmpConfig => "config.yml",
         Switch::None(_) => "settings",
     }
@@ -3856,11 +3896,20 @@ pub fn set_state(
         Switch::CopilotSettings
         | Switch::GeminiSettings
         | Switch::QwenSettings
-        | Switch::CrushConfig => {
+        | Switch::CrushConfig
+        | Switch::NanobotConfig => {
             let (path, keys) =
                 json_list_switch(def.switch, env).ok_or_else(|| wrong_shape("settings"))?;
             edit_json(agent, &path, writer, |root| {
-                toggle_list(root, keys, &skill.name, off)?;
+                let name = if def.switch == Switch::NanobotConfig {
+                    skill.states[agent]
+                        .switch_name
+                        .as_deref()
+                        .unwrap_or(&skill.name)
+                } else {
+                    &skill.name
+                };
+                toggle_list(root, keys, name, off)?;
                 Ok(keys[0])
             })
         }
@@ -4242,6 +4291,19 @@ fn edit_json(
     change: impl FnOnce(&mut serde_json::Value) -> Result<&'static str, String>,
 ) -> Result<(), String> {
     let original = read_existing(path)?;
+    if agent == "nanobot" && !original.trim().is_empty() {
+        crate::clients::nanobot::root_from_content(&original)?;
+        let root: serde_json::Value =
+            serde_json::from_str(&original).map_err(|e| not_valid(path, &e.to_string()))?;
+        if root
+            .get("agents")
+            .and_then(|v| v.get("defaults"))
+            .and_then(|v| v.get("disabled_skills"))
+            .is_some()
+        {
+            return Err(wrong_shape("agents.defaults.disabled_skills"));
+        }
+    }
     let mut value: serde_json::Value = if original.trim().is_empty() {
         serde_json::json!({})
     } else {

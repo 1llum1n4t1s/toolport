@@ -106,3 +106,34 @@ Candle performs CPU inference with f32 arithmetic from these f16 stored weights.
 
 The loader uses Hugging Face tokenizers 0.22.2 under Apache-2.0.
 Its full license is retained in `src-tauri/assets/search/tokenizers-LICENSE`.
+
+## nanobot client logo
+
+The nanobot mark in `src/assets/client-logos/nanobot.svg` and
+`src-tauri/icons/client-logos/nanobot.png` is the upstream WebUI brand icon from
+[HKUDS/nanobot](https://github.com/HKUDS/nanobot/blob/b702ac6/webui/public/brand/nanobot_icon_192.png),
+used under its MIT license.
+
+```text
+MIT License
+
+Copyright (c) 2025-present Xubin Ren and the nanobot contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

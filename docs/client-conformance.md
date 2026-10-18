@@ -112,6 +112,7 @@ establish a supported behavior, not a latency guarantee for every release.
 | Reasonix         | Reasonix 2.44.0 Web startup against toolport-gateway 2.2.0, checked 2026-10-18                                                                            | `server/discover`, no `subscriptions/listen`; tools stay as first listed          |
 | Codewhale        | Codewhale 0.10.1 `mcp tools` against toolport-gateway 2.2.0, checked 2026-10-18                                                                           | No tools/list_changed handler in source; `/mcp reload` re-reads                   |
 | OpenClaw         | OpenClaw 2026.10.4 `mcp add` probe against toolport-gateway 2.2.0, checked 2026-10-18                                                                     | Refreshes its catalog on tools/list_changed (source)                              |
+| nanobot          | nanobot-ai 0.3.5 agent startup against toolport-gateway 2.2.0, checked 2026-10-18                                                                         | `initialize` 2025-11-25, tools, resources and prompts listed; no refresh handler  |
 
 Refresh support does not establish native tool search. OpenCode, Gemini, Cline,
 Zed and DeepSeek Harness retain Auto Lazy and their conservative five-second cold Full budget.
