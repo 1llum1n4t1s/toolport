@@ -12,6 +12,11 @@ Entries before the rename below shipped under the project's former name, Conduit
   that hides it. Skills honor the OS personal home, later extra-directory
   precedence and installed source-origin keys.
 
+- nanobot imports now accept the defaults nanobot saves. Incomplete server
+  entries no longer hide working servers, and GTK keeps Connect available on
+  config errors, matching React. Skill discovery includes hidden workspace
+  folders and matches nanobot's package frontmatter and unreadable folder handling.
+
 ### Added
 
 - DeepSeek Harness (`dsh`) as a supported client. Connect adds the gateway to

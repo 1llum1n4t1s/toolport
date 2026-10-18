@@ -214,13 +214,15 @@ and skill toggles work with either spelling and preserve the MCP map's text. Ins
 `--config` are not managed. The unrelated Obot nanobot is not this client.
 
 nanobot has no server off switch: `enabled: false` does not stop a server.
-Import refuses settings Toolport cannot preserve, including `cwd`, `auth`,
-`toolTimeout` and a non-default `enabledTools` filter. Remote writes specify
+Import accepts nanobot's saved defaults (`cwd: ""`, `auth: null`,
+`toolTimeout: 30` and `enabledTools: ["*"]`), and refuses non-default settings
+Toolport cannot preserve. Incomplete server entries are skipped in the client
+inventory and cannot be imported. Remote writes specify
 `type: "streamableHttp"` or `"sse"` so a URL ending in `/sse` keeps the intended
 transport. Auto uses Lazy because nanobot registers every MCP tool and has no
 `tools/list_changed` handler. Restart the session to load changes.
 
-The Skills page reads one level of folders under `<workspace>/skills` and
+The Skills page reads one level of folders, including hidden folders, under `<workspace>/skills` and
 switches them through `agents.defaults.disabledSkills`. nanobot identifies
 skills by their folder names. A config using `disabled_skills` is read but
 must use the normal `disabledSkills` spelling before switching. Enabled Agent
@@ -229,10 +231,19 @@ folder winning name collisions. They use the same native toggle, and package
 content is protected from editing and removal. Activation must match the complete
 package fingerprint and canonical root; discovery never changes activation markers.
 Verification skips packages above 20,000 entries or 128 MiB of file content.
+Package metadata follows PyYAML's implicit scalar and merge rules. Toolport
+conservatively skips metadata containing explicit standard tags other than
+`!!str`, `!!map`, `!!seq` and `!!merge`, including tags on unrelated fields;
+nanobot may accept those documents.
 Bundled skills are not inventoried. Team rules go to `<workspace>/AGENTS.md`;
 the Rules page also reads `SOUL.md` and `USER.md`. The workspace defaults to
 `~/.nanobot/workspace`, or follows an absolute or `~/` path in
-`agents.defaults.workspace`. Relative workspace settings remain unresolved.
+`agents.defaults.workspace` (also `~\` paths on Windows). Relative workspace
+settings remain unresolved. Toolport reads workspace and disabled skill settings
+from the file; `NANOBOT_AGENTS__DEFAULTS__WORKSPACE` and
+`NANOBOT_AGENTS__DEFAULTS__DISABLED_SKILLS` environment overrides are not managed.
+When those fields are omitted from the file, nanobot can use environment values
+and load a different workspace or skill state than Toolport shows.
 
 ### ZCode setup
 

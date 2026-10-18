@@ -279,7 +279,6 @@ pub(super) fn client_row(
         state::ClientGatewayState::Disconnected => {
             let connect = l10n::button("Connect");
             connect.add_css_class("suggested-action");
-            connect.set_sensitive(!client.config_error);
             let client_for_connect = client.clone();
             let page_for_connect = page.clone();
             connect.connect_clicked(move |_| {

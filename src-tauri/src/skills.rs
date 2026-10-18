@@ -413,6 +413,8 @@ struct Root {
     dir_links: bool,
     /// Whether the client loads a SKILL.md that is itself a link (Codex skips them).
     file_links: bool,
+    /// nanobot loads every immediate skill directory, including dot folders.
+    all_names: bool,
     label: &'static str,
 }
 
@@ -423,6 +425,7 @@ impl Root {
             recursive: false,
             dir_links: true,
             file_links: true,
+            all_names: false,
             label,
         }
     }
@@ -1469,7 +1472,7 @@ fn agent_defs() -> Vec<AgentDef> {
         docs_agent(
             "nanobot",
             "nanobot",
-            |env| crate::clients::nanobot::workspace(&env.home).map(|workspace| vec![Root::flat(workspace.join("skills"), msg("nanobot skills"))]).unwrap_or_default(),
+            |env| crate::clients::nanobot::workspace(&env.home).map(|workspace| vec![Root { all_names: true, ..Root::flat(workspace.join("skills"), msg("nanobot skills")) }]).unwrap_or_default(),
             &[],
             |env| sources(crate::clients::nanobot::workspace(&env.home).map(|workspace| vec![workspace.join("AGENTS.md"), workspace.join("SOUL.md"), workspace.join("USER.md")]).unwrap_or_default(), false),
             &[],
@@ -2170,7 +2173,7 @@ fn walk_root(root: &Root) -> Vec<Found> {
 /// Several clients read the same folders (`~/.claude/skills`, `~/.agents/skills`), so each one
 /// is walked once per scan and reused with the reading client's label.
 #[derive(Default)]
-struct WalkCache(HashMap<(PathBuf, bool, bool, bool), Vec<Found>>);
+struct WalkCache(HashMap<(PathBuf, bool, bool, bool, bool), Vec<Found>>);
 
 impl WalkCache {
     fn walk(&mut self, root: &Root) -> Vec<Found> {
@@ -2180,6 +2183,7 @@ impl WalkCache {
                 root.recursive,
                 root.dir_links,
                 root.file_links,
+                root.all_names,
             ))
             .or_insert_with(|| walk_root(root))
             .iter()
@@ -2218,7 +2222,9 @@ fn walk_dir(
     *budget -= entries.len();
     for path in entries {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name.starts_with('.') || matches!(name, "node_modules" | "__pycache__") {
+        if !root.all_names
+            && (name.starts_with('.') || matches!(name, "node_modules" | "__pycache__"))
+        {
             continue;
         }
         if is_link(&path) && !path.exists() {
@@ -3057,6 +3063,7 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                         recursive: walk.deep,
                         dir_links: walk.dir_links,
                         file_links: walk.file_links,
+                        all_names: false,
                         label: "project",
                     })
             });
@@ -3133,6 +3140,22 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 record.source = Source::BuiltIn;
                 record.source_note = tr("From a nanobot package");
                 record.editable = false;
+                // Keep display fields consistent with the metadata that made
+                // this package skill load, including YAML aliases and merges.
+                if let Some((name, description)) = read_text(f.real.as_deref().unwrap_or(&f.link))
+                    .and_then(|text| nanobot_plugins::skill_metadata(&text))
+                {
+                    let description = description
+                        .trim_matches(|ch: char| {
+                            ch.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&ch)
+                        })
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    record.name = name;
+                    record.description_chars = description.chars().count();
+                    record.description = description;
+                }
             }
             // Legacy OpenHands Markdown files are individual skills, not removable
             // folders. Keep folder-based edit/remove actions away from their siblings.

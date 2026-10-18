@@ -13341,6 +13341,24 @@ mod tests {
             }
         }
 
+        // Match React: Connect remains available so the shared backend can
+        // explain a config error rather than leaving an inert client row.
+        client.gateway_state = state::ClientGatewayState::Disconnected;
+        client.config_error = true;
+        for style in [RowStyle::Line, RowStyle::Tile] {
+            let row = client_row(&client, page.clone(), style);
+            let (_, _, controls) = parts(&row, true);
+            let button = controls
+                .unwrap()
+                .first_child()
+                .unwrap()
+                .downcast::<gtk::Button>()
+                .unwrap();
+            assert_eq!(button.label().as_deref(), Some("Connect"));
+            assert!(button.is_sensitive());
+        }
+        client.config_error = false;
+
         client.id = "claude-code@claude2".into();
         client.name = "Claude Code (claude2)".into();
         client.gateway_state = state::ClientGatewayState::Disconnected;

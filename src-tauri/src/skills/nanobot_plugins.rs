@@ -20,8 +20,19 @@ fn contained(path: &Path, parent: &Path, directory: bool) -> Option<PathBuf> {
 }
 
 fn children(path: &Path) -> Option<Vec<PathBuf>> {
+    walk_children(path, false)
+}
+
+fn walk_children(path: &Path, skip_unreadable: bool) -> Option<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        // pathlib.rglob skips unreadable subdirectories. Keep the directory
+        // itself in the fingerprint, and keep errors at the package root fatal.
+        Err(_) if skip_unreadable => return Some(Vec::new()),
+        Err(_) => return None,
+    };
     let mut paths = Vec::new();
-    for entry in std::fs::read_dir(path).ok()? {
+    for entry in entries {
         paths.push(entry.ok()?.path());
         if paths.len() > MAX_ENTRIES {
             return None;
@@ -70,7 +81,7 @@ pub(super) fn fingerprint(root: &Path) -> Option<String> {
     let mut pending = vec![root.to_path_buf()];
     let mut paths = Vec::new();
     while let Some(dir) = pending.pop() {
-        for path in children(&dir)? {
+        for path in walk_children(&dir, dir != root)? {
             let metadata = std::fs::symlink_metadata(&path).ok()?;
             if metadata.is_dir() && !metadata.file_type().is_symlink() {
                 pending.push(path.clone());
@@ -163,27 +174,31 @@ fn valid_skill(path: &Path, name: &str) -> bool {
     let Some(text) = read_text(path) else {
         return false;
     };
-    let mut lines = text.lines();
-    if lines.next().map(str::trim_end) != Some("---") {
-        return false;
-    }
-    let mut yaml = String::new();
-    let mut closed = false;
-    for line in lines {
-        if line.trim_end() == "---" {
-            closed = true;
-            break;
-        }
-        yaml.push_str(line);
-        yaml.push('\n');
-    }
-    if !closed {
-        return false;
-    }
-    let Some((metadata_name, description)) = super::nanobot_metadata::fields(&yaml) else {
+    let Some((metadata_name, description)) = skill_metadata(&text) else {
         return false;
     };
-    metadata_name == name && (1..=1024).contains(&description.trim().chars().count())
+    metadata_name == name
+        && (1..=1024).contains(
+            &description
+                .trim_matches(|ch: char| ch.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&ch))
+                .chars()
+                .count(),
+        )
+}
+
+/// The fields accepted by nanobot, reused for package labels and descriptions.
+pub(super) fn skill_metadata(text: &str) -> Option<(String, String)> {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    static FRONTMATTER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    // Match nanobot's capture exactly: the newline before the closer is not
+    // YAML content, and the opener consumes whitespace before the first line.
+    // Python's Unicode \s additionally includes these four control characters.
+    let pattern = FRONTMATTER.get_or_init(|| {
+        regex::Regex::new(r"(?s)^---[\s\x1c-\x1f]*\n(.*?)\n---")
+            .expect("constant nanobot frontmatter pattern")
+    });
+    let captures = pattern.captures(&text)?;
+    super::nanobot_metadata::fields(&captures[1])
 }
 
 pub(super) fn discover(home: &Path) -> Vec<Found> {

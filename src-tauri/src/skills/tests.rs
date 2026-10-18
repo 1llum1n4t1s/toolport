@@ -2690,6 +2690,11 @@ fn nanobot_package_discovery_applies_pyyaml_string_metadata_semantics() {
         names,
         BTreeSet::from(["quoted", "tagged", "block", "alias", "merge"])
     );
+    for name in ["quoted", "alias", "merge"] {
+        assert_eq!(skill(&inv, name).description, "yes", "{name}");
+    }
+    assert_eq!(skill(&inv, "tagged").description, "012");
+    assert_eq!(skill(&inv, "block").description, "2026-10-18");
 }
 
 #[test]
@@ -2836,4 +2841,149 @@ fn openclaw_origin_metadata_rejects_directory_and_file_escapes() {
         &home.path("outside/source-origin.json"),
     );
     assert_eq!(openclaw_skill_key(&file), None);
+}
+
+#[test]
+fn nanobot_lists_and_toggles_hidden_workspace_folders() {
+    let home = Home::new();
+    home.skill(
+        ".nanobot/workspace/skills/.hidden",
+        ".hidden",
+        "Hidden skill",
+    );
+    let env = home.env();
+    let inv = scan(&env, &only(&["nanobot"]), None);
+    assert_eq!(state(&inv, ".hidden", "nanobot"), Some(State::On));
+    let key = inv
+        .skills
+        .iter()
+        .find(|s| s.name == ".hidden")
+        .unwrap()
+        .key
+        .clone();
+    set_state(
+        &env,
+        &inv,
+        "nanobot",
+        &key,
+        Wanted::Off,
+        &TestWriter::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        state(&scan(&env, &only(&["nanobot"]), None), ".hidden", "nanobot"),
+        Some(State::Off)
+    );
+}
+
+#[test]
+fn nanobot_package_frontmatter_matches_newlines_closers_and_python_strip() {
+    let home = Home::new();
+    let (root, marker) = nanobot_package(&home, "valid", "valid", &["valid-skill"], true);
+    let skill_path = root.join("skills/valid-skill/SKILL.md");
+    for newline in ["\n", "\r\n", "\r"] {
+        for closer in ["--- # end", "----", "---more"] {
+            std::fs::write(&skill_path, format!("---{newline}name: valid-skill{newline}description: ordinary{newline}{closer}{newline}body")).unwrap();
+            std::fs::write(&marker, nanobot_plugins::activation(&root).unwrap()).unwrap();
+            assert_eq!(
+                nanobot_plugins::discover(&home.root).len(),
+                1,
+                "{newline:?} {closer}"
+            );
+            let inv = scan(&home.env(), &only(&["nanobot"]), None);
+            assert_eq!(skill(&inv, "valid-skill").description, "ordinary");
+        }
+    }
+    for description in [r#""\x1c""#, r#""\x1d\x1e\x1f""#] {
+        std::fs::write(
+            &skill_path,
+            format!("---\nname: valid-skill\ndescription: {description}\n---\n"),
+        )
+        .unwrap();
+        std::fs::write(&marker, nanobot_plugins::activation(&root).unwrap()).unwrap();
+        assert!(nanobot_plugins::discover(&home.root).is_empty());
+    }
+}
+
+#[test]
+fn nanobot_package_frontmatter_preserves_final_block_scalar_chomping() {
+    let home = Home::new();
+    let (root, marker) = nanobot_package(&home, "valid", "valid", &["valid-skill"], true);
+    for yaml in [
+        "name: valid-skill\ndescription: ordinary\nx: ! |\n  yes",
+        "description: ordinary\nname: |\n  valid-skill",
+    ] {
+        home.write(
+            ".nanobot/workspace/plugins/valid/skills/valid-skill/SKILL.md",
+            &format!("---\n{yaml}\n---\n"),
+        );
+        std::fs::write(&marker, nanobot_plugins::activation(&root).unwrap()).unwrap();
+        let inv = scan(&home.env(), &only(&["nanobot"]), None);
+        assert_eq!(
+            state(&inv, "valid-skill", "nanobot"),
+            Some(State::On),
+            "{yaml}"
+        );
+        assert_eq!(skill(&inv, "valid-skill").description, "ordinary");
+    }
+}
+
+#[test]
+fn nanobot_package_frontmatter_keeps_a_leading_yaml_document_marker() {
+    let home = Home::new();
+    let (root, marker) = nanobot_package(&home, "valid", "valid", &["valid-skill"], true);
+    for prefix in [
+        "---\n---",
+        "---\n\n---",
+        "---\n--- # start",
+        "---\u{1c}\n---",
+    ] {
+        home.write(
+            ".nanobot/workspace/plugins/valid/skills/valid-skill/SKILL.md",
+            &format!("{prefix}\nname: valid-skill\ndescription: ordinary\n---\n"),
+        );
+        std::fs::write(&marker, nanobot_plugins::activation(&root).unwrap()).unwrap();
+        let inv = scan(&home.env(), &only(&["nanobot"]), None);
+        assert_eq!(
+            state(&inv, "valid-skill", "nanobot"),
+            Some(State::On),
+            "{prefix:?}"
+        );
+        assert_eq!(skill(&inv, "valid-skill").description, "ordinary");
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn nanobot_unreadable_subdirectory_preserves_package_discovery() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new();
+    let (root, marker) = nanobot_package(&home, "valid", "valid", &["valid-skill"], true);
+    let locked = root.join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o0)).unwrap();
+    let unreadable = std::fs::read_dir(&locked).is_err();
+    let fingerprint = nanobot_plugins::activation(&root);
+    let count = fingerprint.as_ref().map(|activation| {
+        std::fs::write(&marker, activation).unwrap();
+        nanobot_plugins::discover(&home.root).len()
+    });
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if unreadable {
+        assert!(fingerprint.is_some());
+        assert_eq!(count, Some(1));
+    }
+}
+
+#[test]
+fn nanobot_hidden_folder_policy_is_part_of_the_shared_walk_cache_key() {
+    let home = Home::new();
+    home.skill(".claude/skills/.hidden", ".hidden", "Hidden skill");
+    home.write(
+        ".nanobot/config.json",
+        r#"{"agents":{"defaults":{"workspace":"~/.claude"}}}"#,
+    );
+    let inv = scan(&home.env(), &only(&["claude-code", "nanobot"]), None);
+    assert_eq!(state(&inv, ".hidden", "nanobot"), Some(State::On));
+    assert_eq!(state(&inv, ".hidden", "claude-code"), None);
 }

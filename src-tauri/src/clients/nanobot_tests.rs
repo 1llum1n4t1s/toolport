@@ -247,3 +247,71 @@ fn workspace_and_rules_read_alias_maps_with_nanobots_last_key_wins() {
         assert!(root_from_content(content).is_err());
     }
 }
+
+#[test]
+fn imports_accept_nanobots_model_dump_defaults() {
+    // nanobot-ai 0.3.5 MCPServerConfig.model_dump(mode="json", by_alias=True).
+    let definition = serde_json::json!({"type":null,"auth":null,"command":"npx","args":["x"],"env":{},"cwd":"","url":"","headers":{},"toolTimeout":30,"enabledTools":["*"]});
+    assert!(importable("fs", &definition).is_ok());
+    let dir = Dir::new();
+    let path = dir.file(&serde_json::json!({"tools":{"mcpServers":{"fs":definition}}}).to_string());
+    validate_import(&path, &["fs".into()]).unwrap();
+    write_servers(&path, &[gateway()]).unwrap();
+    assert_eq!(
+        parse(&std::fs::read_to_string(path).unwrap())
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(importable(
+        "fs",
+        &serde_json::json!({"command":"node","tool_timeout":30})
+    )
+    .is_ok());
+}
+
+#[test]
+fn incomplete_entries_do_not_hide_usable_servers_but_cannot_be_imported() {
+    for invalid in [
+        serde_json::json!(null),
+        serde_json::json!({"type":"unknown"}),
+        serde_json::json!({"type":false}),
+    ] {
+        assert!(parse(
+            &serde_json::json!({"tools":{"mcpServers":{"invalid":invalid}}}).to_string()
+        )
+        .is_err());
+    }
+    for definition in [
+        serde_json::json!({}),
+        serde_json::json!({"command":"","url":""}),
+        serde_json::json!({"type":"sse"}),
+        serde_json::json!({"type":"stdio","url":"https://example.test/mcp"}),
+    ] {
+        let content = serde_json::json!({"tools":{"mcpServers":{"draft":definition,"working":{"command":"node"}}}}).to_string();
+        let inventory = parse(&content).unwrap();
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].name, "working");
+        assert!(importable("draft", &definition).is_err());
+    }
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_workspace_expands_backslash_tilde() {
+    let dir = Dir::new();
+    std::fs::create_dir_all(dir.0.join(".nanobot")).unwrap();
+    for raw in [
+        r"~\workspace",
+        r"~\\workspace",
+        r"~\/workspace",
+        r"~/\workspace",
+    ] {
+        std::fs::write(
+            dir.0.join(".nanobot/config.json"),
+            serde_json::json!({"agents":{"defaults":{"workspace":raw}}}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(workspace(&dir.0), Some(dir.0.join("workspace")));
+    }
+}
