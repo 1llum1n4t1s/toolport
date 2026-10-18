@@ -176,3 +176,31 @@ fn workspace_respects_custom_absolute_or_tilde_paths_and_refuses_invalid_config(
         assert!(workspace(home).is_none());
     }
 }
+
+#[test]
+fn explicit_remote_type_overrides_stale_stdio_fields_in_inventory() {
+    for (kind, expected) in [("sse", "sse"), ("streamableHttp", "http")] {
+        let definition = serde_json::json!({"type":kind,"url":"https://example.test/mcp","command":"node","args":["old.js"],"env":{"STDIO_ONLY":"ignored"},"headers":{"Authorization":"Bearer x"}});
+        let content = serde_json::json!({"tools":{"mcpServers":{"remote":definition}}}).to_string();
+        let servers = parse(&content).unwrap();
+        assert_eq!(servers[0].transport, expected);
+        assert_eq!(servers[0].command, None);
+        assert!(servers[0].args.is_empty());
+        assert_eq!(servers[0].url.as_deref(), Some("https://example.test/mcp"));
+        assert_eq!(servers[0].env_keys, ["Authorization"]);
+        assert!(importable("remote", &definition).is_ok());
+        let dir = Dir::new();
+        let path = dir.file(&content);
+        validate_import(&path, &["remote".into()]).unwrap();
+    }
+}
+
+#[test]
+fn explicit_transport_requires_its_active_address() {
+    for definition in [
+        serde_json::json!({"type":"stdio","url":"https://example.test/mcp"}),
+        serde_json::json!({"type":"sse","command":"node"}),
+    ] {
+        assert!(normalized_server("broken", &definition).is_err());
+    }
+}

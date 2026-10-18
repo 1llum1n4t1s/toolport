@@ -169,6 +169,26 @@ fn normalized_server(name: &str, definition: &Value) -> Result<Value, String> {
             "Malformed nanobot server '{name}': it needs a command or a URL with a supported type"
         )
     })?;
+    // nanobot honors an explicit type before command/URL inference. Strip the
+    // inactive transport's fields before the shared parser classifies by command.
+    let active_field = if kind == "stdio" { "command" } else { "url" };
+    if !definition
+        .get(active_field)
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Err(format!(
+            "Malformed nanobot server '{name}': its '{kind}' transport needs '{active_field}'"
+        ));
+    }
+    let inactive: &[&str] = if kind == "stdio" {
+        &["url", "headers"]
+    } else {
+        &["command", "args", "env", "cwd"]
+    };
+    for key in inactive {
+        value.remove(*key);
+    }
     value.insert("type".into(), Value::String(kind.into()));
     Ok(Value::Object(value))
 }
@@ -189,7 +209,8 @@ pub(super) fn parse(content: &str) -> Result<Vec<McpServer>, String> {
 }
 
 fn is_gateway(name: &str, definition: &Value) -> bool {
-    gateway_edit_matches(name, definition.get("command").and_then(Value::as_str))
+    transport(definition) == Some("stdio")
+        && gateway_edit_matches(name, definition.get("command").and_then(Value::as_str))
 }
 
 /// A tool allow-list other than nanobot's default `["*"]`.
