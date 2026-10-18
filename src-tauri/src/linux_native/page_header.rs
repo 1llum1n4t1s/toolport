@@ -50,7 +50,7 @@ mod imp {
                 .into_iter()
                 .flatten()
             {
-                if child.should_layout() {
+                if child.should_layout() && child.width() > 0 && child.height() > 0 {
                     self.obj().snapshot_child(&child, snapshot);
                 }
             }
