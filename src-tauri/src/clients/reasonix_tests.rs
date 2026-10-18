@@ -209,6 +209,26 @@ fn a_table_with_subtables_goes_back_in_one_piece() {
 }
 
 #[test]
+fn a_put_back_table_next_to_a_new_one_stays_after_the_settings() {
+    // Every plugin goes, one server is new and one comes back from its record.
+    let mut want = serde_json::Map::new();
+    want.insert("demo".into(), desired(CONFIG)["demo"].clone());
+    want.insert("toolport".into(), config_of(&stdio("toolport")).unwrap());
+    let raw = recorded(CONFIG);
+    let out = sync(Some(&without(CONFIG, "web")), &want, &raw).unwrap();
+    let out = sync(Some(&out), &want, &raw).unwrap();
+    let emptied = without(&without(CONFIG, "demo"), "web");
+    let both = sync(Some(&emptied), &want, &raw).unwrap();
+    for text in [&out, &both] {
+        let skills = text.find("[skills]").unwrap();
+        let demo = text.find("name    = \"demo\"").unwrap();
+        let gateway = text.find("name = \"toolport\"").unwrap();
+        assert!(skills < demo && skills < gateway, "{text}");
+    }
+    assert_eq!(desired(&both), want);
+}
+
+#[test]
 fn a_shadowed_table_moves_with_the_one_reasonix_uses() {
     let text = format!("{CONFIG}\n[[plugins]]\nname = \"demo\"\ncommand = \"other\"\n");
     let raw = raw_entries(&text).unwrap();

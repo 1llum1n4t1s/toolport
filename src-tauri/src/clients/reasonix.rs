@@ -540,8 +540,9 @@ fn push_recorded(doc: &mut DocumentMut, mut table: Table) {
         .get("plugins")
         .and_then(Item::as_array_of_tables)
         .filter(|list| !list.is_empty());
-    let after = match list {
-        Some(list) => list.iter().filter_map(highest).max().unwrap_or(0),
+    // New tables have no position yet, so a list of only those counts as empty.
+    let after = match list.and_then(|list| list.iter().filter_map(highest).max()) {
+        Some(at) => at,
         None => {
             let mut all = Vec::new();
             for (_, item) in doc.as_table().iter() {
