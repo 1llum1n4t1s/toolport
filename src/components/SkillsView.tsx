@@ -1011,6 +1011,25 @@ function RuleDetail({
                   </span>
                 )}
               </span>
+              <span className="flex w-11 shrink-0 justify-end">
+                {chain && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span
+                        role="img"
+                        // A focusable fact exposes its explanation to keyboard users.
+                        // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
+                        tabIndex={0}
+                        aria-label={t("No switch Toolport can write")}
+                        className="flex size-7 items-center justify-center rounded-md text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+                      >
+                        <Lock className="size-3" />
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>{t("No switch Toolport can write")}</TooltipContent>
+                  </Tooltip>
+                )}
+              </span>
             </li>
           );
         })}

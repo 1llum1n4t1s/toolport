@@ -2726,6 +2726,13 @@ impl SkillsPage {
                     row.append(&state);
                 }
             }
+            let slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            slot.set_size_request(44, -1);
+            slot.set_halign(gtk::Align::End);
+            if rule.agents.contains_key(&agent.id) {
+                slot.append(&lock(&crate::i18n::tr("No switch Toolport can write")));
+            }
+            row.append(&slot);
             list.append(&row);
         }
         pane.detail.append(&list);
