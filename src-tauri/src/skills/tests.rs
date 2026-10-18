@@ -2992,6 +2992,143 @@ fn nanobot_hidden_folder_policy_is_part_of_the_shared_walk_cache_key() {
 }
 
 #[test]
+fn codewhale_activation_identity_matches_native_segments() {
+    for (name, current, legacy) in [
+        (" My Skill! ", "my-skill", None),
+        ("---", "skill", None),
+        ("café", "caf-850f7dc43910ff890f8879c0ed26fe69", Some("caf")),
+        (
+            "日本語",
+            "skill-77710aedc74ecfa33685e33a6c7df5cc",
+            Some("skill"),
+        ),
+        (
+            "My Plugin:café",
+            "my-plugin:caf-850f7dc43910ff890f8879c0ed26fe69",
+            Some("my-plugin:caf"),
+        ),
+        ("one:two:three", "one-two-three", None),
+    ] {
+        assert_eq!(
+            codewhale_skill_identity(name),
+            (current.into(), legacy.map(str::to_owned)),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        codewhale_skill_identity(&"A".repeat(65)),
+        ("a".repeat(64), None)
+    );
+}
+
+#[test]
+fn codewhale_native_activation_identities_round_trip() {
+    // Identities and predicate from Codewhale v0.10.1 skills/mod.rs and
+    // runtime/skill_state.rs, independent of Toolport's identity resolver.
+    fn native_enabled(disabled: &BTreeSet<String>, name: &str, legacy: Option<&str>) -> bool {
+        if disabled.contains(name) {
+            return false;
+        }
+        if disabled.contains(&format!("!codewhale-skill-state:1:enabled:{name}")) {
+            return true;
+        }
+        !disabled.contains(&format!("!codewhale-skill-state:1:history:{name}"))
+            && !legacy.is_some_and(|legacy| {
+                disabled.contains(legacy)
+                    || disabled.contains(&format!("!codewhale-skill-state:1:history:{legacy}"))
+            })
+    }
+    for (display, current, legacy) in [
+        ("café", "caf-850f7dc43910ff890f8879c0ed26fe69", Some("caf")),
+        (" My Skill! ", "my-skill", None),
+    ] {
+        for veto in [None, Some(legacy.unwrap_or(current))] {
+            let home = Home::new();
+            home.skill(".codewhale/skills/demo", display, "Demo");
+            if legacy.is_some() {
+                home.skill(".codewhale/skills/sibling", "cafè", "Sibling");
+            }
+            let path = ".codewhale/skills_state.toml";
+            let disabled = veto.map_or_else(Vec::new, |name| {
+                vec![format!("!codewhale-skill-state:1:history:{name}")]
+            });
+            home.write(path, &format!("disabled = {disabled:?}\nother = true\n"));
+            let env = home.env();
+            let writer = TestWriter::default();
+            let inv = scan(&env, &only(&["codewhale"]), None);
+            let target = inv
+                .skills
+                .iter()
+                .find(|s| s.name.trim() == display.trim())
+                .unwrap();
+            assert_eq!(
+                target.states["codewhale"].state,
+                if veto.is_some() {
+                    State::Off
+                } else {
+                    State::On
+                }
+            );
+            let key = target.key.clone();
+            for wanted in [Wanted::On, Wanted::Off, Wanted::On] {
+                let inv = scan(&env, &only(&["codewhale"]), None);
+                set_state(&env, &inv, "codewhale", &key, wanted, &writer).unwrap();
+                let doc: toml::Value = home.read(path).parse().unwrap();
+                let names = doc["disabled"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap().to_owned())
+                    .collect();
+                assert_eq!(
+                    native_enabled(&names, current, legacy),
+                    wanted == Wanted::On
+                );
+                if let Some(veto) = veto {
+                    assert!(names.contains(&format!("!codewhale-skill-state:1:history:{veto}")));
+                    if legacy.is_some() {
+                        // Another Unicode skill in the legacy collision cohort
+                        // keeps its inherited veto after toggling this skill.
+                        assert!(!native_enabled(
+                            &names,
+                            "caf-08dcdafde9046804985b9047747bb587",
+                            Some(veto)
+                        ));
+                    }
+                }
+                let inv = scan(&env, &only(&["codewhale"]), None);
+                if legacy.is_some() && veto.is_some() {
+                    assert_eq!(state(&inv, "cafè", "codewhale"), Some(State::Off));
+                }
+                assert_eq!(
+                    inv.skills.iter().find(|s| s.key == key).unwrap().states["codewhale"].state,
+                    if wanted == Wanted::On {
+                        State::On
+                    } else {
+                        State::Off
+                    }
+                );
+                assert!(home.read(path).contains("other = true"));
+            }
+        }
+    }
+}
+
+#[test]
+fn codewhale_deduplicates_native_activation_identities() {
+    let home = Home::new();
+    home.skill(".codewhale/skills/first", "My Skill", "First");
+    home.skill(".agents/skills/second", "my-skill", "Second");
+    home.skill(".agents/skills/unicode", "café", "Unicode");
+    home.skill(".agents/skills/unicode-other", "cafè", "Other Unicode");
+    let inv = scan(&home.env(), &only(&["codewhale"]), None);
+    assert_eq!(state(&inv, "My Skill", "codewhale"), Some(State::On));
+    assert_eq!(state(&inv, "my-skill", "codewhale"), Some(State::Shadowed));
+    assert_eq!(state(&inv, "café", "codewhale"), Some(State::On));
+    assert_eq!(state(&inv, "cafè", "codewhale"), Some(State::On));
+}
+
+#[test]
 fn codewhale_native_history_veto_and_exact_enable_round_trip() {
     let home = Home::new();
     home.skill(".codewhale/skills/demo", "demo", "Demo");

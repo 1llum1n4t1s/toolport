@@ -3211,6 +3211,9 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             if def.switch == Switch::NanobotConfig {
                 return nanobot_skill_name(f).unwrap_or(name);
             }
+            if def.switch == Switch::CodewhaleState {
+                return codewhale_skill_identity(&name).0;
+            }
             f.root_label
                 .ends_with("plugin")
                 .then(|| plugin_of(&f.root_path).map(|p| format!("{p}:{name}")))
@@ -3264,8 +3267,12 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
             let nanobot_name = (def.switch == Switch::NanobotConfig)
                 .then(|| nanobot_skill_name(f))
                 .flatten();
-            let switch_name = nanobot_name
+            let codewhale_identity =
+                (def.switch == Switch::CodewhaleState).then(|| codewhale_skill_identity(&name));
+            let codewhale_name = codewhale_identity.as_ref().map(|(name, _)| name.clone());
+            let switch_name = codewhale_name
                 .clone()
+                .or_else(|| nanobot_name.clone())
                 .or_else(|| {
                     (def.switch == Switch::OpenclawEntries)
                         .then(|| real.as_deref().and_then(openclaw_skill_key))
@@ -3276,7 +3283,16 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 set.contains(&switch_name) || plugin_name.as_ref().is_some_and(|p| set.contains(p))
             };
             let (switched_off, by_pattern) = if def.switch == Switch::CodewhaleState {
-                (codewhale_skill_off(&disabled.off, &switch_name), false)
+                (
+                    codewhale_skill_off(
+                        &disabled.off,
+                        &switch_name,
+                        codewhale_identity
+                            .as_ref()
+                            .and_then(|(_, legacy)| legacy.as_deref()),
+                    ),
+                    false,
+                )
             } else if disabled.rules.is_empty() {
                 (named(&disabled.off), false)
             } else {
@@ -3328,7 +3344,9 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                         by_pattern: state == State::Off && by_pattern && !path_off,
                         state,
                         via,
-                        switch_name: nanobot_name.or_else(|| plugin_name.clone()),
+                        switch_name: codewhale_name
+                            .or(nanobot_name)
+                            .or_else(|| plugin_name.clone()),
                     },
                 );
             }
@@ -4382,7 +4400,7 @@ pub fn set_state(
             agent,
             &env.codewhale.join("skills_state.toml"),
             writer,
-            &skill.name,
+            &codewhale_skill_identity(&skill.name).0,
             off,
         ),
         Switch::GrokConfig | Switch::ReasonixConfig => {
@@ -4957,10 +4975,67 @@ fn edit_codex(
 const CODEWHALE_HISTORY: &str = "!codewhale-skill-state:1:history:";
 const CODEWHALE_ENABLED: &str = "!codewhale-skill-state:1:enabled:";
 
-fn codewhale_skill_off(disabled: &BTreeSet<String>, name: &str) -> bool {
+/// Codewhale v0.10.1 keeps ASCII slugs and gives Unicode segments a stable
+/// SHA-256 suffix. Its old lossy slug remains an inherited activation veto.
+fn codewhale_skill_identity(name: &str) -> (String, Option<String>) {
+    fn legacy_segment(name: &str) -> String {
+        let mut out = String::new();
+        let mut pending_dash = false;
+        for ch in name.trim().chars() {
+            if ch.is_ascii_alphanumeric() {
+                if pending_dash && !out.is_empty() && out.len() < 64 {
+                    out.push('-');
+                }
+                pending_dash = false;
+                if out.len() < 64 {
+                    out.push(ch.to_ascii_lowercase());
+                }
+            } else {
+                pending_dash = true;
+            }
+            if out.len() >= 64 {
+                break;
+            }
+        }
+        let out = out.trim_end_matches('-');
+        if out.is_empty() {
+            "skill".into()
+        } else {
+            out.into()
+        }
+    }
+    fn current_segment(name: &str) -> String {
+        let name = name.trim();
+        let legacy = legacy_segment(name);
+        if name.is_ascii() {
+            return legacy;
+        }
+        let digest = crate::registry::sha256_hex(&name.to_ascii_lowercase());
+        let prefix = legacy[..legacy.len().min(31)].trim_end_matches('-');
+        format!("{prefix}-{}", &digest[..32])
+    }
+    fn qualified(name: &str, segment: fn(&str) -> String) -> String {
+        if let Some((plugin, skill)) = name.trim().split_once(':') {
+            if !plugin.is_empty() && !skill.is_empty() && !skill.contains(':') {
+                return format!("{}:{}", segment(plugin), segment(skill));
+            }
+        }
+        segment(name)
+    }
+    let current = qualified(name, current_segment);
+    let legacy = qualified(name, legacy_segment);
+    let legacy = (legacy != current).then_some(legacy);
+    (current, legacy)
+}
+
+fn codewhale_skill_off(disabled: &BTreeSet<String>, name: &str, legacy: Option<&str>) -> bool {
     disabled.contains(name)
         || (!disabled.contains(&format!("{CODEWHALE_ENABLED}{name}"))
-            && disabled.contains(&format!("{CODEWHALE_HISTORY}{name}")))
+            && (disabled.contains(&format!("{CODEWHALE_HISTORY}{name}"))
+                || legacy.is_some_and(|legacy| {
+                    disabled.contains(legacy)
+                        || disabled.contains(&format!("{CODEWHALE_HISTORY}{legacy}"))
+                })))
 }
 
 /// Match Codewhale's native writer: retain historical vetoes and write an exact
