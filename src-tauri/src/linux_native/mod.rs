@@ -13178,6 +13178,92 @@ mod tests {
 
     #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn approval_remember_choice_waits_for_approve() {
+        use super::*;
+        let _data = crate::registry::DataDirTestEnv::new("gtk-approval-remember");
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let broker = crate::approval_broker::start_native();
+        let page = ApprovalPage::new(&app, broker.clone());
+        let view = crate::approval_broker::PendingView {
+            id: "remember".into(),
+            client: None,
+            client_name: "Codex".into(),
+            client_label: None,
+            server: "github".into(),
+            tool: "delete_issue".into(),
+            tool_fingerprint: Some("v2:abc".into()),
+            reason: crate::approval::ApprovalReason::Destructive,
+            arguments: serde_json::json!({"issue": 42}),
+            url_elicitation: None,
+            pii_release: None,
+            deadline_ms: epoch_ms() + 120_000,
+        };
+        let decision = broker.park_for_test(view.clone());
+        let (card, _) = approval_card(view, page);
+        fn button(widget: &gtk::Widget, text: &str) -> Option<gtk::Button> {
+            if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+                let mut labels = Vec::new();
+                let mut child = button.first_child();
+                while let Some(w) = child {
+                    if let Some(label) = w.downcast_ref::<gtk::Label>() {
+                        labels.push(label.text().to_string());
+                    }
+                    let mut inner = w.first_child();
+                    while let Some(i) = inner {
+                        if let Some(label) = i.downcast_ref::<gtk::Label>() {
+                            labels.push(label.text().to_string());
+                        }
+                        inner = i.next_sibling();
+                    }
+                    child = w.next_sibling();
+                }
+                if button.label().as_deref() == Some(text) || labels.iter().any(|l| l == text) {
+                    return Some(button.clone());
+                }
+            }
+            if let Some(menu) = widget.downcast_ref::<gtk::MenuButton>() {
+                if let Some(found) = menu.popover().and_then(|p| button(p.upcast_ref(), text)) {
+                    return Some(found);
+                }
+            }
+            let mut child = widget.first_child();
+            while let Some(w) = child {
+                if let Some(found) = button(&w, text) {
+                    return Some(found);
+                }
+                child = w.next_sibling();
+            }
+            None
+        }
+
+        button(card.upcast_ref(), "Allow for this session")
+            .expect("session choice")
+            .emit_clicked();
+        assert_eq!(broker.list().len(), 1, "choosing must not resolve the call");
+        assert!(decision.try_recv().is_err());
+        assert!(broker.session_allowed().is_empty());
+
+        button(card.upcast_ref(), "Approve")
+            .expect("approve button")
+            .emit_clicked();
+        assert_eq!(
+            decision
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap(),
+            crate::approval::ApprovalDecision::Approved
+        );
+        assert!(broker.list().is_empty());
+        let key = crate::approval::fingerprint_allow_key("github", "delete_issue", "v2:abc");
+        assert_eq!(broker.session_allowed(), vec![key.clone()]);
+        assert!(!crate::registry::load().unwrap().is_tool_allowed(&key));
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn session_identity_visual_fixture() {
         use super::*;
         let _data = crate::registry::DataDirTestEnv::new("f3-gtk-identity");
