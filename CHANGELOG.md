@@ -28,7 +28,13 @@ if you are coming from 1.x.
   a skill you own to the trash. Several Claude Code profiles each get their own
   column. Available in the app and the Linux GTK app. See
   [Skills and rules](https://github.com/btsouth/toolport/blob/main/docs/skills-and-rules.md).
-  (#1215, #1218, #1219)
+  (#1213, #1215, #1218, #1219)
+- Auggie CLI and Tabnine Agent as supported clients. Toolport connects and imports
+  through their user settings files, `~/.augment/settings.json` and
+  `~/.tabnine/mcp_servers.json`, and leaves the rest of Auggie's settings alone. A
+  Tabnine remote server keeps its auth header when imported. See
+  [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md).
+  (#1211, #1212, #1217)
 
 ### Changed
 
@@ -47,6 +53,11 @@ if you are coming from 1.x.
 - Several AI clients starting at once no longer leave one without tools. On a
   fresh install a gateway could give up with "The registry is locked by another
   Toolport process" while the others started. (#1214)
+- The Overview and Tools tabs in an expanded server row work from the keyboard.
+  They are one tab stop, the arrow keys and Home/End move between them, and screen
+  readers announce the content below as their panel. (#1209)
+- On Windows, a slow PowerShell no longer gets the shared gateway force-stopped
+  before an update installs. It is asked to exit cleanly, as on a fast PC. (#1206)
 
 ## [2.1.0] - 2026-10-15
 
