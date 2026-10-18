@@ -109,6 +109,25 @@ afterEach(() => {
 });
 
 describe("AppSidebar accessibility", () => {
+  it("keeps Servers selected while browsing Catalog", () => {
+    render(
+      <TooltipProvider>
+        <AppSidebar
+          registry={null}
+          onRegistryChange={vi.fn()}
+          view="catalog"
+          onSelectView={vi.fn()}
+          onShortcuts={vi.fn()}
+          onReplayOnboarding={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+    expect(screen.getByRole("button", { name: "Servers" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
   it("promotes Clients into the primary navigation", () => {
     render(
       <TooltipProvider>

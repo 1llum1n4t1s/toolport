@@ -155,7 +155,7 @@ mod imp {
 glib::wrapper! {
     /// Lays out a title and an actions box on one line when both fit at their
     /// natural width, and on two lines (actions left-aligned below) otherwise.
-    pub(super) struct HeaderWrap(ObjectSubclass<imp::HeaderWrap>)
+    pub struct HeaderWrap(ObjectSubclass<imp::HeaderWrap>)
         @extends gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
