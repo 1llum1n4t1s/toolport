@@ -1160,5 +1160,9 @@
   "Reasonix extra folder": "Zusätzlicher Reasonix-Ordner",
   "Uses disabled_skills under [skills] in Reasonix's config.toml.": "Verwendet disabled_skills unter [skills] in Reasonix' config.toml.",
   "Codewhale skills": "Codewhale-Skills",
-  "Uses the disabled list in Codewhale's skills_state.toml.": "Verwendet die disabled-Liste in Codewhales skills_state.toml."
+  "Uses the disabled list in Codewhale's skills_state.toml.": "Verwendet die disabled-Liste in Codewhales skills_state.toml.",
+  "OpenClaw workspace": "OpenClaw-Arbeitsbereich",
+  "OpenClaw skills": "OpenClaw-Skills",
+  "OpenClaw extra folder": "Zusätzlicher OpenClaw-Ordner",
+  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "Verwendet skills.entries in OpenClaws openclaw.json (enabled: false)."
 }

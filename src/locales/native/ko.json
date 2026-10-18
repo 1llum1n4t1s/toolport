@@ -1160,5 +1160,9 @@
   "Reasonix extra folder": "Reasonix 추가 폴더",
   "Uses disabled_skills under [skills] in Reasonix's config.toml.": "Reasonix의 config.toml에서 [skills] 아래 disabled_skills를 사용합니다.",
   "Codewhale skills": "Codewhale 스킬",
-  "Uses the disabled list in Codewhale's skills_state.toml.": "Codewhale의 skills_state.toml에 있는 disabled 목록을 사용합니다."
+  "Uses the disabled list in Codewhale's skills_state.toml.": "Codewhale의 skills_state.toml에 있는 disabled 목록을 사용합니다.",
+  "OpenClaw workspace": "OpenClaw 작업 공간",
+  "OpenClaw skills": "OpenClaw 스킬",
+  "OpenClaw extra folder": "OpenClaw 추가 폴더",
+  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "OpenClaw의 openclaw.json에 있는 skills.entries를 사용합니다 (enabled: false)."
 }

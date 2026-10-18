@@ -1160,5 +1160,9 @@
   "Reasonix extra folder": "Reasonix の追加フォルダー",
   "Uses disabled_skills under [skills] in Reasonix's config.toml.": "Reasonix の config.toml の [skills] にある disabled_skills を使います。",
   "Codewhale skills": "Codewhale のスキル",
-  "Uses the disabled list in Codewhale's skills_state.toml.": "Codewhale の skills_state.toml にある disabled リストを使います。"
+  "Uses the disabled list in Codewhale's skills_state.toml.": "Codewhale の skills_state.toml にある disabled リストを使います。",
+  "OpenClaw workspace": "OpenClaw のワークスペース",
+  "OpenClaw skills": "OpenClaw のスキル",
+  "OpenClaw extra folder": "OpenClaw の追加フォルダー",
+  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "OpenClaw の openclaw.json にある skills.entries を使います (enabled: false)。"
 }

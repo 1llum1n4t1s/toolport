@@ -1160,5 +1160,9 @@
   "Reasonix extra folder": "Reasonix 額外資料夾",
   "Uses disabled_skills under [skills] in Reasonix's config.toml.": "使用 Reasonix 的 config.toml 中 [skills] 下的 disabled_skills。",
   "Codewhale skills": "Codewhale 技能",
-  "Uses the disabled list in Codewhale's skills_state.toml.": "使用 Codewhale 的 skills_state.toml 中的 disabled 清單。"
+  "Uses the disabled list in Codewhale's skills_state.toml.": "使用 Codewhale 的 skills_state.toml 中的 disabled 清單。",
+  "OpenClaw workspace": "OpenClaw 工作區",
+  "OpenClaw skills": "OpenClaw 技能",
+  "OpenClaw extra folder": "OpenClaw 額外資料夾",
+  "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "使用 OpenClaw 的 openclaw.json 中的 skills.entries（enabled: false）。"
 }

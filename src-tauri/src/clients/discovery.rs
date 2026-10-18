@@ -132,6 +132,19 @@ pub(super) fn capabilities(id: &str) -> DiscoveryCapabilities {
             auto_full_max_tools: None,
             evidence: "docs/client-conformance.md (captured startup)",
         },
+        // OpenClaw 2026.10.4 against toolport-gateway 2.2.0 (2026-10-18): embedded
+        // runs defer MCP schemas behind its structured Tool Search by default, and
+        // the bundle MCP client turns tools/list_changed into a catalog refresh
+        // on the next turn (agents/agent-bundle-mcp-runtime.js).
+        "openclaw" => DiscoveryCapabilities {
+            auto_mode: "full",
+            native_tool_search: Some(true),
+            tools_list_changed: Some(true),
+            cold_full_list_wait_ms: 2_000,
+            max_tools: None,
+            auto_full_max_tools: None,
+            evidence: "docs/client-conformance.md (captured startup)",
+        },
         "anthropic-api" => DiscoveryCapabilities {
             auto_mode: "full",
             native_tool_search: Some(true),
@@ -330,6 +343,9 @@ mod tests {
             assert_eq!(capabilities(id).cold_full_list_wait_ms, budget, "{id}");
         }
         assert_eq!(capabilities("claude-code").cold_full_list_wait_ms, 2_000);
+        // OpenClaw re-lists on change, so it keeps the two-second bound.
+        assert_eq!(capabilities("openclaw").auto_mode(), "full");
+        assert_eq!(capabilities("openclaw").cold_full_list_wait_ms, 2_000);
         for id in [
             "claude-code",
             "opencode",

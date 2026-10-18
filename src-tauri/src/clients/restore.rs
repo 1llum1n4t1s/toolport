@@ -337,10 +337,18 @@ fn undo(
     current.cloned()
 }
 
+/// Formats whose server map sits under `servers` inside the key.
+fn nested_servers(format: Format) -> bool {
+    matches!(format, Format::JsonZCodeMcp | Format::JsonOpenClawMcp)
+}
+
 fn key(format: Format) -> &'static str {
     match format {
         Format::JsonServers => "servers",
-        Format::JsonMcp | Format::JsonOpenCodeMcp | Format::JsonZCodeMcp => "mcp",
+        Format::JsonMcp
+        | Format::JsonOpenCodeMcp
+        | Format::JsonZCodeMcp
+        | Format::JsonOpenClawMcp => "mcp",
         Format::JsonAmpMcpServers => "amp.mcpServers",
         Format::JsonContextServers => "context_servers",
         Format::TomlMcpServers | Format::YamlMcpServers => "mcp_servers",
@@ -408,7 +416,7 @@ fn original_gateways(
 fn gateway_names(format: Format, root: &Value) -> Vec<String> {
     let key = key(format);
     let mut servers = root.get(key);
-    if matches!(format, Format::JsonZCodeMcp) {
+    if nested_servers(format) {
         servers = servers.and_then(|value| value.get("servers"));
     }
     let owned = |entry: &Value| {
@@ -531,7 +539,7 @@ pub(super) fn apply(client_id: &str, format: Format, path: &Path) -> Result<bool
         let key = key(format);
         let entry = |root: &Value| {
             let mut servers = root.get(key)?;
-            if matches!(format, Format::JsonZCodeMcp) {
+            if nested_servers(format) {
                 servers = servers.get("servers")?;
             }
             servers.get(name).cloned()
@@ -552,7 +560,7 @@ pub(super) fn apply(client_id: &str, format: Format, path: &Path) -> Result<bool
         }
     } else {
         let mut map = before.get_mut(key);
-        if matches!(format, Format::JsonZCodeMcp) {
+        if nested_servers(format) {
             map = map.and_then(|value| value.get_mut("servers"));
         }
         if let Some(map) = map.and_then(Value::as_object_mut) {
@@ -584,11 +592,7 @@ pub(super) fn apply(client_id: &str, format: Format, path: &Path) -> Result<bool
         written.get(key),
         latest.get(key),
         1,
-        if matches!(format, Format::JsonZCodeMcp) {
-            3
-        } else {
-            2
-        },
+        if nested_servers(format) { 3 } else { 2 },
     );
     let object = latest
         .as_object_mut()
@@ -925,6 +929,7 @@ mod tests {
             (Format::JsonKimiMcpServers, r#"{"mcpServers":{"native":{"command":"native"}}}"#),
             (Format::JsonAmpMcpServers, r#"{"amp.mcpServers":{"native":{"command":"native"}},"theme":"dark"}"#),
             (Format::JsonZCodeMcp, r#"{"mcp":{"servers":{"native":{"command":"native"}}},"theme":"dark"}"#),
+            (Format::JsonOpenClawMcp, "{\n  // gateway\n  gateway: { port: 18789 },\n  mcp: { servers: { native: { command: 'native', args: [] } } },\n}\n"),
             (Format::JsonServers, "{ // user's comment\r\n \"servers\": {\"native\":{\"command\":\"native\",},},\r\n \"theme\": \"dark\",\r\n}"),
             (Format::JsonMcp, r#"{"mcp":{"native":{"command":"native","type":"stdio"}},"theme":"dark"}"#),
             (Format::JsonOpenCodeMcp, "{ // comment\n \"mcp\": {\"native\":{\"type\":\"local\",\"command\":[\"native\"],\"enabled\":true,},},\n}"),

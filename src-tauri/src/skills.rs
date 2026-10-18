@@ -67,6 +67,8 @@ pub struct Env {
     pub codewhale: PathBuf,
     /// Codewhale's config.toml (`CODEWHALE_CONFIG_PATH`, else in its state home).
     pub codewhale_config: PathBuf,
+    /// OpenClaw's home, state dir, config and default workspace.
+    pub(crate) openclaw: crate::clients::openclaw::Dirs,
     /// Every Claude Code profile folder when there is more than one (`~/.claude`, `~/.claude2`,
     /// a `CLAUDE_CONFIG_DIR`). Empty means `claude` is the only one.
     pub claude_profiles: Vec<PathBuf>,
@@ -98,6 +100,7 @@ impl Env {
             reasonix_state: home.join(".reasonix"),
             codewhale: home.join(".codewhale"),
             codewhale_config: codewhale_config(home, &home.join(".codewhale"), false),
+            openclaw: crate::clients::openclaw::dirs(home, &|_| None),
             config,
             claude_profiles: Vec::new(),
         }
@@ -196,6 +199,7 @@ impl Env {
             .or_else(|| trimmed("DEEPSEEK_CONFIG_PATH"))
             .and_then(expand)
             .unwrap_or_else(|| codewhale_config(&home, &env.codewhale, explicit_home));
+        env.openclaw = crate::clients::openclaw::dirs(&home, &trimmed);
         env.claude_profiles = claude_profile_dirs(&home, &env.claude);
         Some(env)
     }
@@ -386,6 +390,8 @@ enum Switch {
     ReasonixConfig,
     /// `disabled` in Codewhale's skills_state.toml.
     CodewhaleState,
+    /// `skills.entries.<name>.enabled` in OpenClaw's openclaw.json.
+    OpenclawEntries,
     /// `options.disabled_skills` in Crush's crush.json.
     CrushConfig,
     /// `skills.disabled` in Qwen Code's settings.json.
@@ -1421,6 +1427,18 @@ fn agent_defs() -> Vec<AgentDef> {
         )
         .switch(Switch::CodewhaleState)
         .project_walk(ProjectWalk::DEEP.first()),
+        // OpenClaw docs/tools/skills.md: the agent's workspace is its project, so
+        // there are no folders under the current directory. Each root is walked
+        // deep and the first folder with a name wins.
+        docs_agent(
+            "openclaw",
+            "OpenClaw",
+            openclaw_skill_roots,
+            &[],
+            |env| sources(vec![env.openclaw.workspace.join("AGENTS.md")], false),
+            &[],
+        )
+        .switch(Switch::OpenclawEntries),
         docs_agent(
             "tabnine",
             "Tabnine",
@@ -1940,6 +1958,81 @@ fn toml_list_switch(switch: Switch, env: &Env) -> Option<(PathBuf, &'static str)
     }
 }
 
+/// OpenClaw's skill folders, highest first: the workspace's own and its
+/// `.agents/skills`, the personal `~/.agents/skills` (only with the default state
+/// dir), the managed `<state>/skills`, then `skills.load.extraDirs`.
+fn openclaw_skill_roots(env: &Env) -> Vec<Root> {
+    let dirs = &env.openclaw;
+    let mut roots = vec![
+        Root::deep(dirs.workspace.join("skills"), msg("OpenClaw workspace")),
+        Root::deep(
+            dirs.workspace.join(".agents").join("skills"),
+            msg("OpenClaw workspace"),
+        ),
+    ];
+    if dirs.default_state {
+        roots.push(Root::deep(
+            dirs.home.join(".agents").join("skills"),
+            msg("shared ~/.agents/skills"),
+        ));
+    }
+    roots.push(Root::deep(
+        dirs.state.join("skills"),
+        msg("OpenClaw skills"),
+    ));
+    let extra = read_json(&dirs.config)
+        .as_ref()
+        .and_then(|v| v.get("skills")?.get("load")?.get("extraDirs").cloned());
+    for dir in string_list(extra.as_ref()) {
+        let dir = match dir.strip_prefix("~/") {
+            Some(rest) => dirs.home.join(rest),
+            None => PathBuf::from(dir),
+        };
+        if dir.is_absolute() {
+            roots.push(Root::deep(dir, msg("OpenClaw extra folder")));
+        }
+    }
+    roots
+}
+
+/// Turn an OpenClaw skill off with `enabled: false` in its `skills.entries`
+/// entry, or back on by removing that, and the entry when nothing else is left.
+/// An `$include` there is refused: the change would hide the included file.
+fn openclaw_toggle(root: &mut serde_json::Value, name: &str, off: bool) -> Result<(), String> {
+    let included = |v: Option<&serde_json::Value>| v.is_some_and(|v| v.get("$include").is_some());
+    if included(root.get("skills")) || included(root.pointer("/skills/entries")) {
+        return Err(wrong_shape("skills.entries"));
+    }
+    if !off
+        && root
+            .get("skills")
+            .and_then(|s| s.get("entries"))
+            .and_then(|e| e.get(name))
+            .is_none()
+    {
+        return Ok(());
+    }
+    let entries = object_at(root, &["skills", "entries"])?;
+    if off {
+        let entry = entries
+            .entry(name.to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let entry = entry
+            .as_object_mut()
+            .ok_or_else(|| wrong_shape(&format!("skills.entries.{name}")))?;
+        entry.insert("enabled".into(), serde_json::Value::Bool(false));
+    } else if let Some(entry) = entries.get_mut(name) {
+        let entry = entry
+            .as_object_mut()
+            .ok_or_else(|| wrong_shape(&format!("skills.entries.{name}")))?;
+        entry.remove("enabled");
+        if entry.is_empty() {
+            entries.remove(name);
+        }
+    }
+    Ok(())
+}
+
 /// Codewhale's config.toml in its home, or the legacy `~/.deepseek/config.toml`
 /// when the home is the default and has no config of its own.
 fn codewhale_config(home: &Path, codewhale: &Path, explicit_home: bool) -> PathBuf {
@@ -2162,6 +2255,22 @@ fn read_disabled(switch: Switch, env: &Env) -> Disabled {
                         .filter_map(|x| x.as_str().map(str::to_string))
                         .collect();
                 }
+            }
+        }
+        Switch::OpenclawEntries => {
+            if let Some(entries) = read_json(&env.openclaw.config)
+                .as_ref()
+                .and_then(|v| v.get("skills"))
+                .and_then(|s| s.get("entries"))
+                .and_then(|e| e.as_object())
+            {
+                d.off = entries
+                    .iter()
+                    .filter(|(_, entry)| {
+                        entry.get("enabled") == Some(&serde_json::Value::Bool(false))
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect();
             }
         }
         Switch::GrokConfig | Switch::ReasonixConfig | Switch::CodewhaleState => {
@@ -2695,6 +2804,9 @@ fn switch_note(switch: Switch) -> String {
             tr("Uses disabled_skills under [skills] in Reasonix's config.toml.")
         }
         Switch::CodewhaleState => tr("Uses the disabled list in Codewhale's skills_state.toml."),
+        Switch::OpenclawEntries => {
+            tr("Uses skills.entries in OpenClaw's openclaw.json (enabled: false).")
+        }
         Switch::CrushConfig => tr("Uses options.disabled_skills in Crush's crush.json."),
         Switch::QwenSettings => tr("Uses skills.disabled in Qwen Code's settings.json."),
         Switch::OmpConfig => tr("Uses skills.ignoredSkills in Oh My Pi's config.yml."),
@@ -2712,6 +2824,7 @@ fn switch_place(switch: Switch) -> &'static str {
         Switch::GeminiSettings | Switch::QwenSettings => "settings.json",
         Switch::GrokConfig | Switch::ReasonixConfig => "config.toml",
         Switch::CodewhaleState => "skills_state.toml",
+        Switch::OpenclawEntries => "openclaw.json",
         Switch::CrushConfig => "crush.json",
         Switch::OmpConfig => "config.yml",
         Switch::None(_) => "settings",
@@ -3629,6 +3742,13 @@ pub fn set_state(
             edit_json(agent, &path, writer, |root| {
                 toggle_list(root, keys, &skill.name, off)?;
                 Ok(keys[0])
+            })
+        }
+        Switch::OpenclawEntries => {
+            let path = env.openclaw.config.clone();
+            edit_json(agent, &path, writer, |root| {
+                openclaw_toggle(root, &skill.name, off)?;
+                Ok("skills")
             })
         }
         Switch::GrokConfig | Switch::ReasonixConfig | Switch::CodewhaleState => {

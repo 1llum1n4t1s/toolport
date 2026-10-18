@@ -85,8 +85,9 @@ async function baseline(profile) {
   await withFixture(profile, false, async (_fixture, client) => {
     await client.initialize();
     const native = ["codex", "cursor"].includes(profile.id);
-    // Claude Code's Auto lists a catalog this small in full.
-    const full = native || profile.id === "claude-code";
+    // Claude Code's Auto lists a catalog this small in full. OpenClaw's Auto is
+    // Full with refresh, so it gets the plain list and no helpers.
+    const full = native || ["claude-code", "openclaw"].includes(profile.id);
     const tools = await catalog(client, full ? "mock__echo" : "toolport_search_tools");
     assert.equal(
       tools.some((t) => t.name === "toolport_call_tool"),

@@ -33,6 +33,14 @@ Entries before the rename below shipped under the project's former name, Conduit
   `~/.deepseek/skills`, turns them off through `skills_state.toml`, and shows its
   global instructions file. See
   [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#codewhale-setup).
+- OpenClaw as a supported client. Connect adds the gateway under `mcp.servers`
+  in OpenClaw's `openclaw.json` (`~/.openclaw`, `OPENCLAW_STATE_DIR` or
+  `OPENCLAW_CONFIG_PATH`), editing only that section so JSON5 comments and your
+  other settings stay. The Skills page shows the skills from the agent
+  workspace, `~/.agents/skills`, `~/.openclaw/skills` and
+  `skills.load.extraDirs`, turns them off through `skills.entries`, and team
+  rules go to the workspace's `AGENTS.md`. See
+  [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#openclaw-setup).
 
 ## [2.2.0] - 2026-10-18
 

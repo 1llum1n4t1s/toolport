@@ -553,6 +553,30 @@
       "observedSessionKind": "codewhale mcp tools in its own process, not a model session"
     },
     {
+      "id": "openclaw",
+      "evidence": "captured mcp add probe",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {},
+          "clientInfo": {
+            "name": "openclaw-bundle-mcp",
+            "version": "0.0.0"
+          }
+        }
+      },
+      "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
+      "listChanged": {
+        "supported": true,
+        "detail": "OpenClaw 2026.10.4's bundle MCP client handles notifications/tools/list_changed by refreshing the session catalog on the next turn"
+      },
+      "source": "https://github.com/openclaw/openclaw/blob/main/docs/tools/mcp.md",
+      "observedSessionKind": "openclaw mcp add probing the server before saving, the same client the agent runtime uses"
+    },
+    {
       "id": "zcode",
       "evidence": "documentation only",
       "initialize": null,

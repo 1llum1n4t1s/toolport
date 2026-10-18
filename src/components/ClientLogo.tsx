@@ -72,6 +72,7 @@ const CLIENT_LOGO: Record<string, string> = {
   "deepseek-harness": "deepseek-harness",
   reasonix: "reasonix",
   codewhale: "codewhale",
+  openclaw: "openclaw",
   junie: "junie",
   "kilo-code": "kilo-code",
   "github-copilot-cli": "github-copilot-cli",
