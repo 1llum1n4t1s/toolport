@@ -1175,5 +1175,5 @@
   "Quit Toolport (Ctrl+Q)": "退出 Toolport (Ctrl+Q)",
   "Refresh catalog": "刷新目录",
   "Refresh sync status": "刷新同步状态",
-  "{value0} tokens saved": "已节省 {value0} 个 token"
+  "{value0} tokens saved": "已节省 {value0} 个 Token"
 }

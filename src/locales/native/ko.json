@@ -1175,5 +1175,5 @@
   "Quit Toolport (Ctrl+Q)": "Toolport 종료 (Ctrl+Q)",
   "Refresh catalog": "카탈로그 새로고침",
   "Refresh sync status": "동기화 상태 새로고침",
-  "{value0} tokens saved": "토큰 {value0}개 절약"
+  "{value0} tokens saved": "{value0} Token 절감"
 }
