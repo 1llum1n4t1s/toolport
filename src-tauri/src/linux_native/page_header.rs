@@ -311,12 +311,6 @@ impl PageHeader {
         self.leading.set_visible(true);
         back
     }
-
-    /// Adds a logo or icon tile before the title, after any back button.
-    pub(super) fn set_leading(&self, widget: &impl IsA<gtk::Widget>) {
-        self.leading.append(widget);
-        self.leading.set_visible(true);
-    }
 }
 
 #[cfg(test)]

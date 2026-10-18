@@ -8,7 +8,15 @@ import { cn } from "@/lib/utils";
  * `undefined` means no page header at all (a view rendered on its own). */
 const ActionsSlot = createContext<HTMLElement | null | undefined>(undefined);
 
-export const PageHeaderActionsSlot = ActionsSlot.Provider;
+export function PageHeaderActionsSlot({
+  value,
+  children,
+}: {
+  value: HTMLElement | null;
+  children: ReactNode;
+}) {
+  return <ActionsSlot.Provider value={value}>{children}</ActionsSlot.Provider>;
+}
 
 /**
  * Renders a view's actions into the page header, ahead of App's overflow menu
