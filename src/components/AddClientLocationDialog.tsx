@@ -115,7 +115,7 @@ export function AddClientLocationDialog({
             />
           </div>
           {selected && (
-            <p className="text-xs text-muted-foreground">
+            <p className="text-meta text-muted-foreground">
               {t(
                 "Toolport will use {file} in this folder. For Codex, choose its CODEX_HOME folder.",
                 { file: selected.configFile },

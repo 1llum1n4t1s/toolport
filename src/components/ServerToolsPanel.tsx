@@ -123,14 +123,14 @@ function ToolOverrideEditor({
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 px-3 py-2 text-xs text-muted-foreground"
+        className="flex w-full items-center gap-2 px-3 py-2 text-meta text-muted-foreground"
       >
         <Pencil className="size-3.5 shrink-0" />
-        <span className="font-medium text-foreground/80">
+        <span className="font-medium text-muted-foreground">
           {t("Override how clients see this tool")}
         </span>
         {hasOverride && (
-          <span className="rounded-full bg-info/15 px-1.5 py-0.5 text-[10px] font-medium text-info">
+          <span className="rounded-full bg-info/15 px-1.5 py-0.5 text-xs font-medium text-info">
             {t("active")}
           </span>
         )}
@@ -140,15 +140,15 @@ function ToolOverrideEditor({
       </button>
       {open && (
         <div className="flex flex-col gap-2.5 border-t border-border/60 px-3 py-3">
-          <p className="text-xs text-muted-foreground">
+          <p className="text-meta text-muted-foreground">
             {t(
               "Rename the tool or replace its description as every client sees it, e.g. to neutralize a misleading or injection-laden description. The call still runs the original server tool.",
             )}
           </p>
-          <label className="flex flex-col gap-1 text-xs">
+          <label className="flex flex-col gap-1 text-meta">
             <span className="text-muted-foreground">
               {t("Name")}{" "}
-              <span className="text-muted-foreground/60">
+              <span className="text-muted-foreground">
                 <Trans
                   message="(blank keeps {name})"
                   values={{ name: <span className="font-mono">{tool.name}</span> }}
@@ -159,10 +159,10 @@ function ToolOverrideEditor({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder={tool.name}
-              className="rounded-md border border-input bg-transparent px-2.5 py-1.5 font-mono text-xs shadow-sm focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+              className="rounded-md border border-input bg-transparent px-2.5 py-1.5 font-mono text-meta shadow-sm focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
             />
           </label>
-          <label className="flex flex-col gap-1 text-xs">
+          <label className="flex flex-col gap-1 text-meta">
             <span className="text-muted-foreground">
               {t("Description (blank keeps the server's)")}
             </span>
@@ -171,7 +171,7 @@ function ToolOverrideEditor({
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
               placeholder={tool.description ?? t("(server's description)")}
-              className="rounded-md border border-input bg-transparent px-2.5 py-1.5 text-xs shadow-sm focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+              className="rounded-md border border-input bg-transparent px-2.5 py-1.5 text-meta shadow-sm focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
             />
           </label>
           <div className="flex gap-2">
@@ -279,7 +279,7 @@ function ArgField({ name, schema, required, value, onChange }: FieldProps) {
         onChange={(e) => onChange(e.target.value)}
         placeholder={schemaType === "array" ? "[ … ]" : "{ … }"}
         rows={3}
-        className="font-mono text-xs"
+        className="font-mono text-meta"
       />
     );
   } else {
@@ -302,12 +302,12 @@ function ArgField({ name, schema, required, value, onChange }: FieldProps) {
   return (
     <div className="flex flex-col gap-1.5">
       <Label htmlFor={id} className="flex items-center gap-1.5">
-        <span className="font-mono text-xs">{name}</span>
+        <span className="font-mono text-meta">{name}</span>
         {required && <span className="text-destructive">*</span>}
-        <span className="text-xs font-normal text-muted-foreground">{schemaType}</span>
+        <span className="text-meta font-normal text-muted-foreground">{schemaType}</span>
       </Label>
       {schema.description && (
-        <p className="text-xs text-muted-foreground">{schema.description}</p>
+        <p className="text-meta text-muted-foreground">{schema.description}</p>
       )}
       {control}
     </div>
@@ -350,7 +350,7 @@ function CopyButton({ text }: { text: string }) {
           /* clipboard unavailable; no-op */
         }
       }}
-      className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
     >
       {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
       {copied ? t("Copied") : t("Copy")}
@@ -367,7 +367,7 @@ function ResultBlock({ title, value }: { title: string; value: unknown }) {
         <div className="text-sm font-medium">{title}</div>
         <CopyButton text={text} />
       </div>
-      <pre className="max-h-96 overflow-auto rounded-lg border bg-muted/40 p-3 font-mono text-xs whitespace-pre-wrap">
+      <pre className="max-h-96 overflow-auto rounded-lg border bg-muted/40 p-3 font-mono text-meta whitespace-pre-wrap">
         {text}
       </pre>
     </div>
@@ -457,7 +457,7 @@ function ResourcesPanel({ serverId }: { serverId: string }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
-        <Label className="text-xs text-muted-foreground">
+        <Label className="text-meta text-muted-foreground">
           {t("Resources ({count})", { count: resources.length })}
         </Label>
         <div className="flex flex-col divide-y rounded-lg border">
@@ -480,11 +480,11 @@ function ResourcesPanel({ serverId }: { serverId: string }) {
                   </Badge>
                 )}
               </span>
-              <span className="truncate font-mono text-[11px] text-muted-foreground">
+              <span className="truncate font-mono text-meta text-muted-foreground">
                 {r.uri}
               </span>
               {r.description && (
-                <span className="line-clamp-1 text-xs text-muted-foreground">
+                <span className="line-clamp-1 text-meta text-muted-foreground">
                   {r.description}
                 </span>
               )}
@@ -610,7 +610,7 @@ function PromptsPanel({ serverId }: { serverId: string }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
-        <Label className="text-xs text-muted-foreground">
+        <Label className="text-meta text-muted-foreground">
           {t("Prompts ({count})", { count: prompts.length })}
         </Label>
         <div className="flex flex-col divide-y rounded-lg border">
@@ -625,7 +625,7 @@ function PromptsPanel({ serverId }: { serverId: string }) {
             >
               <span className="truncate font-mono text-sm">{p.title ?? p.name}</span>
               {p.description && (
-                <span className="line-clamp-1 text-xs text-muted-foreground">
+                <span className="line-clamp-1 text-meta text-muted-foreground">
                   {p.description}
                 </span>
               )}
@@ -651,11 +651,11 @@ function PromptsPanel({ serverId }: { serverId: string }) {
                     htmlFor={`prompt-arg-${a.name}`}
                     className="flex items-center gap-1.5"
                   >
-                    <span className="font-mono text-xs">{a.name}</span>
+                    <span className="font-mono text-meta">{a.name}</span>
                     {a.required && <span className="text-destructive">*</span>}
                   </Label>
                   {a.description && (
-                    <p className="text-xs text-muted-foreground">{a.description}</p>
+                    <p className="text-meta text-muted-foreground">{a.description}</p>
                   )}
                   <Input
                     id={`prompt-arg-${a.name}`}
@@ -955,7 +955,7 @@ export function ServerToolsPanel({
   if (servers.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
-        <FlaskConical className="size-10 text-muted-foreground/50" />
+        <FlaskConical className="size-10 text-muted-foreground" />
         <div>
           <p className="font-medium">{t("No servers to test")}</p>
           <p className="max-w-md text-sm text-muted-foreground">
@@ -970,12 +970,12 @@ export function ServerToolsPanel({
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-5">
-      <p className="text-xs text-muted-foreground">
+      <p className="text-meta text-muted-foreground">
         {t("Calls use the default access and gateway policy, including approval gates.")}
       </p>
 
       {serverId && (
-        <div className="flex w-fit gap-1 rounded-lg border bg-muted/30 p-1 text-sm">
+        <div className="flex w-fit gap-1 rounded-md border bg-muted/30 p-1 text-sm">
           {(["tools", "resources", "prompts"] as const).map((t) => (
             <button
               key={t}
@@ -1031,7 +1031,7 @@ export function ServerToolsPanel({
                     ),
                   }}
                 />
-                <p className="mt-1.5 font-mono text-xs break-words opacity-70">
+                <p className="mt-1.5 font-mono text-meta break-words text-muted-foreground">
                   {toolsError}
                 </p>
               </Callout>
@@ -1056,7 +1056,7 @@ export function ServerToolsPanel({
                 <p className="text-sm text-muted-foreground">{tool.description}</p>
               )}
               {!isExposed(tool) && (
-                <p className="flex items-center gap-1.5 text-xs text-warning">
+                <p className="flex items-center gap-1.5 text-meta text-warning">
                   <ShieldAlert className="size-3.5" />
                   {t(
                     "Hidden from clients by policy. The gateway will refuse blocked calls.",
@@ -1077,7 +1077,7 @@ export function ServerToolsPanel({
                 <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
                   {t("Arguments")}
                 </span>
-                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <label className="flex items-center gap-2 text-meta text-muted-foreground">
                   {t("Raw JSON")}
                   <Switch checked={rawMode} onCheckedChange={setRawMode} />
                 </label>
@@ -1085,7 +1085,7 @@ export function ServerToolsPanel({
 
               {rawMode ? (
                 <div className="flex flex-col gap-1.5">
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-meta text-muted-foreground">
                     {t(
                       "Raw-JSON mode: type the full arguments object yourself. The generated form is bypassed.",
                     )}
@@ -1095,7 +1095,7 @@ export function ServerToolsPanel({
                     onChange={(e) => setRawJson(e.target.value)}
                     rows={6}
                     spellCheck={false}
-                    className="w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-sm focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+                    className="w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-meta shadow-sm focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
                   />
                 </div>
               ) : Object.keys(props).length === 0 ? (
@@ -1154,7 +1154,7 @@ export function ServerToolsPanel({
                 <CopyButton text={renderResult(result)} />
               </div>
               <pre
-                className={`max-h-96 overflow-auto rounded-lg border p-3 font-mono text-xs whitespace-pre-wrap ${
+                className={`max-h-96 overflow-auto rounded-lg border p-3 font-mono text-meta whitespace-pre-wrap ${
                   result.isError
                     ? "border-destructive/40 bg-destructive/5"
                     : "bg-muted/40"
@@ -1167,7 +1167,7 @@ export function ServerToolsPanel({
           {/* Tool list: click to test, switch to enable/disable per client */}
           {tools && tools.length > 0 && (
             <div className="flex flex-col gap-1.5">
-              <Label className="text-xs text-muted-foreground">
+              <Label className="text-meta text-muted-foreground">
                 {t("Tools")}{" "}
                 {toolFilter.trim()
                   ? t("({value0} of {value1})", {
@@ -1246,10 +1246,10 @@ export function ServerToolsPanel({
                             {t.annotations?.readOnlyHint === true && (
                               <Badge variant="secondary">{translate("read-only")}</Badge>
                             )}
-                            <span className="text-xs text-muted-foreground">
+                            <span className="text-meta text-muted-foreground">
                               {perToolOff ? translate("Disabled") : translate("Enabled")}
                             </span>
-                            <span className="text-xs text-muted-foreground">
+                            <span className="text-meta text-muted-foreground">
                               {t.toolportQuarantine === "quarantined"
                                 ? translate("Quarantined")
                                 : t.toolportQuarantine === "clear"
@@ -1257,13 +1257,13 @@ export function ServerToolsPanel({
                                   : translate("Quarantine unknown")}
                             </span>
                             {!exposed && (
-                              <span className="text-xs text-muted-foreground">
+                              <span className="text-meta text-muted-foreground">
                                 {translate("hidden")}
                               </span>
                             )}
                           </span>
                           {t.description && (
-                            <span className="line-clamp-1 text-xs text-muted-foreground">
+                            <span className="line-clamp-1 text-meta text-muted-foreground">
                               {t.description}
                             </span>
                           )}
@@ -1306,7 +1306,7 @@ export function ServerToolsPanel({
                 </div>
               )}
               {denyDestructive && (
-                <p className="text-xs text-muted-foreground">
+                <p className="text-meta text-muted-foreground">
                   {t(
                     "Destructive tools are hidden from clients by the global switch even when individually enabled.",
                   )}

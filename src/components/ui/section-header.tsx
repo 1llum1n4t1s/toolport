@@ -40,7 +40,7 @@ export function SectionHeader({
       {icon}
       <span>{children}</span>
       {count != null && (
-        <span className="rounded-full bg-secondary px-2 py-px text-2xs font-semibold tracking-normal text-muted-foreground tabular-nums">
+        <span className="rounded-full bg-secondary px-2 py-px text-xs font-semibold tracking-normal text-muted-foreground tabular-nums">
           {count}
         </span>
       )}

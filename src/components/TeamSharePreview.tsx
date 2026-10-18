@@ -26,7 +26,7 @@ export function TeamSharePreview({ preview }: { preview: TeamPushPreview }) {
           </div>
           <p className="mt-1">{selection.teamDetail}</p>
           {selection.notes.map((note, i) => (
-            <p key={i} className="mt-1 text-xs">
+            <p key={i} className="mt-1 text-meta">
               {note}
             </p>
           ))}
@@ -84,8 +84,8 @@ export function TeamSharePreview({ preview }: { preview: TeamPushPreview }) {
                         <dl className="mt-2 grid gap-2">
                           {d.fields.map((field) => (
                             <div key={field.label}>
-                              <dt className="text-xs font-medium">{field.label}</dt>
-                              <dd className="mt-0.5 whitespace-pre-wrap break-all font-mono text-xs text-foreground">
+                              <dt className="text-meta font-medium">{field.label}</dt>
+                              <dd className="mt-0.5 whitespace-pre-wrap break-all font-mono text-meta text-foreground">
                                 {field.value}
                               </dd>
                             </div>

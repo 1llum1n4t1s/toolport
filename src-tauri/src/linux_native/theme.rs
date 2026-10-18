@@ -15,6 +15,20 @@ const FALLBACK_ACCENT: &str = "#7cb0ff";
 const FALLBACK_SELECTION: &str = "#334155";
 const FALLBACK_RED: &str = "#f38ba8";
 const FALLBACK_GREEN: &str = "#7fd0a0";
+const FALLBACK_YELLOW: &str = "#f0c674";
+const FALLBACK_CYAN: &str = "#38bdf8";
+
+/// WCAG AA for body, secondary and status text (12 to 14px).
+const TEXT_CONTRAST: f64 = 4.5;
+/// WCAG minimum for placeholders, which never carry information on their own.
+const DISABLED_CONTRAST: f64 = 3.0;
+/// The strongest foreground tint (chips) and accent tint (selected rows) that
+/// secondary text sits on; the weaker hover and info tints fall between these
+/// and the plain surface.
+const FG_TINT: f64 = 0.07;
+const SELECTION_TINT: f64 = 0.14;
+/// Status badges and tiles: the status color at 12% under its own text.
+const STATUS_TINT: f64 = 0.12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ThemeMode {
@@ -34,6 +48,8 @@ struct OmarchyPalette {
     selection: String,
     red: String,
     green: String,
+    yellow: String,
+    cyan: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -48,6 +64,8 @@ struct RawPalette {
     selection: Option<String>,
     red: Option<String>,
     green: Option<String>,
+    yellow: Option<String>,
+    cyan: Option<String>,
 }
 
 impl Default for OmarchyPalette {
@@ -63,6 +81,8 @@ impl Default for OmarchyPalette {
             selection: FALLBACK_SELECTION.into(),
             red: FALLBACK_RED.into(),
             green: FALLBACK_GREEN.into(),
+            yellow: FALLBACK_YELLOW.into(),
+            cyan: FALLBACK_CYAN.into(),
         }
     }
 }
@@ -87,6 +107,8 @@ impl OmarchyPalette {
             selection: safe_color(raw.selection, &fallback.selection),
             red: safe_color(raw.red, &fallback.red),
             green: safe_color(raw.green, &fallback.green),
+            yellow: safe_color(raw.yellow, &fallback.yellow),
+            cyan: safe_color(raw.cyan, &fallback.cyan),
         })
     }
 
@@ -100,9 +122,70 @@ impl OmarchyPalette {
             })
     }
 
+    /// Colors the stylesheet derives from the palette. Every surface that holds
+    /// text is opaque. Text colors start from the theme's own color and move
+    /// toward black (light themes) or white (dark themes) only as far as WCAG AA
+    /// needs on every surface they sit on. Stock themes whose `muted` is a border
+    /// color, or whose status colors are pale on a light background, stay
+    /// readable and keep their hue.
+    fn tokens(&self) -> Tokens {
+        let background = rgb(&self.background);
+        let card = mix(background, rgb(&self.lighter_background), 0.5).map(f64::round);
+        let surfaces = [background, rgb(&self.dark_background), card];
+        let (black, white) = ([0.0; 3], [255.0; 3]);
+        let toward = if contrast(black, background) > contrast(white, background) {
+            black
+        } else {
+            white
+        };
+        let (foreground, accent) = (rgb(&self.foreground), rgb(&self.accent));
+        // Secondary text sits on the plain surfaces and on the foreground and
+        // selection tints drawn over them (chips, info badges, selected rows).
+        let secondary_backdrops = |_: Rgb| {
+            surfaces
+                .iter()
+                .flat_map(|&surface| {
+                    [
+                        surface,
+                        mix(surface, foreground, FG_TINT),
+                        mix(surface, accent, SELECTION_TINT),
+                    ]
+                })
+                .collect::<Vec<_>>()
+        };
+        let secondary = readable(rgb(&self.muted), toward, TEXT_CONTRAST, secondary_backdrops);
+        // Placeholders: the secondary color pulled 30% toward the page, kept at 3:1.
+        let disabled = readable(
+            mix(secondary, background, 0.3).map(f64::round),
+            toward,
+            DISABLED_CONTRAST,
+            secondary_backdrops,
+        );
+        // Status text sits on the surfaces and on its own 12% tint over them.
+        let status = |color: &str| {
+            hex(readable(rgb(color), toward, TEXT_CONTRAST, |candidate| {
+                surfaces
+                    .iter()
+                    .flat_map(|&surface| [surface, mix(surface, candidate, STATUS_TINT)])
+                    .collect()
+            }))
+        };
+        Tokens {
+            card: hex(card),
+            text_secondary: hex(secondary),
+            text_disabled: hex(disabled),
+            success: status(&self.green),
+            warning: status(&self.yellow),
+            danger: status(&self.red),
+            partial: status(&self.cyan),
+        }
+    }
+
     fn css(&self) -> String {
+        let tokens = self.tokens();
         format!(
             r#"
+/* Palette from Omarchy's colors.toml. */
 @define-color toolport_bg {background};
 @define-color toolport_bg_dark {dark_background};
 @define-color toolport_surface {lighter_background};
@@ -110,8 +193,58 @@ impl OmarchyPalette {
 @define-color toolport_muted {muted};
 @define-color toolport_accent {accent};
 @define-color toolport_selection {selection};
-@define-color toolport_error {red};
-@define-color toolport_success {green};
+
+/* Semantic tokens (design spec: bg, sidebar, surface, raised, border, text,
+   text-secondary, text-disabled, accent and the status colors). Surfaces are
+   opaque; alpha is only for tints, hover, selection and borders on top of them. */
+@define-color toolport_sidebar @toolport_bg_dark;
+@define-color toolport_card {card};
+@define-color toolport_raised @toolport_bg_dark;
+@define-color toolport_border alpha(@toolport_fg, 0.10);
+@define-color toolport_text_secondary {text_secondary};
+@define-color toolport_text_disabled {text_disabled};
+@define-color toolport_success {success};
+@define-color toolport_warning {warning};
+@define-color toolport_error {danger};
+@define-color toolport_partial {partial};
+@define-color toolport_info @toolport_text_secondary;
+@define-color toolport_info_tint alpha(@toolport_fg, 0.06);
+@define-color toolport_off @toolport_text_secondary;
+
+/* libadwaita before 1.6 (the crate supports 1.4) styles widgets and the
+   .accent/.success/.warning/.error classes from these named colors instead of
+   the CSS variables below, so define both. */
+@define-color accent_bg_color @toolport_accent;
+@define-color accent_fg_color @toolport_bg_dark;
+@define-color accent_color @toolport_accent;
+@define-color destructive_bg_color @toolport_error;
+@define-color destructive_fg_color @toolport_bg_dark;
+@define-color destructive_color @toolport_error;
+@define-color success_bg_color @toolport_success;
+@define-color success_fg_color @toolport_bg_dark;
+@define-color success_color @toolport_success;
+@define-color warning_bg_color @toolport_warning;
+@define-color warning_fg_color @toolport_bg_dark;
+@define-color warning_color @toolport_warning;
+@define-color error_bg_color @toolport_error;
+@define-color error_fg_color @toolport_bg_dark;
+@define-color error_color @toolport_error;
+@define-color window_bg_color @toolport_bg;
+@define-color window_fg_color @toolport_fg;
+@define-color view_bg_color @toolport_bg_dark;
+@define-color view_fg_color @toolport_fg;
+@define-color headerbar_bg_color @toolport_sidebar;
+@define-color headerbar_fg_color @toolport_fg;
+@define-color headerbar_border_color @toolport_border;
+@define-color sidebar_bg_color @toolport_sidebar;
+@define-color sidebar_fg_color @toolport_fg;
+@define-color card_bg_color @toolport_card;
+@define-color card_fg_color @toolport_fg;
+@define-color dialog_bg_color @toolport_raised;
+@define-color dialog_fg_color @toolport_fg;
+@define-color popover_bg_color @toolport_raised;
+@define-color popover_fg_color @toolport_fg;
+@define-color shade_color alpha(black, 0.28);
 
 :root {{
   --accent-bg-color: @toolport_accent;
@@ -121,25 +254,56 @@ impl OmarchyPalette {
   --destructive-fg-color: @toolport_bg_dark;
   --destructive-color: @toolport_error;
   --success-bg-color: @toolport_success;
+  --success-fg-color: @toolport_bg_dark;
   --success-color: @toolport_success;
+  --warning-bg-color: @toolport_warning;
+  --warning-fg-color: @toolport_bg_dark;
+  --warning-color: @toolport_warning;
   --error-bg-color: @toolport_error;
+  --error-fg-color: @toolport_bg_dark;
   --error-color: @toolport_error;
   --window-bg-color: @toolport_bg;
   --window-fg-color: @toolport_fg;
   --view-bg-color: @toolport_bg_dark;
   --view-fg-color: @toolport_fg;
-  --headerbar-bg-color: @toolport_bg;
+  --headerbar-bg-color: @toolport_sidebar;
   --headerbar-fg-color: @toolport_fg;
-  --headerbar-border-color: alpha(@toolport_fg, 0.10);
-  --sidebar-bg-color: @toolport_surface;
+  --headerbar-border-color: @toolport_border;
+  --sidebar-bg-color: @toolport_sidebar;
   --sidebar-fg-color: @toolport_fg;
-  --card-bg-color: alpha(@toolport_surface, 0.72);
+  --card-bg-color: @toolport_card;
   --card-fg-color: @toolport_fg;
-  --dialog-bg-color: @toolport_bg_dark;
+  --dialog-bg-color: @toolport_raised;
   --dialog-fg-color: @toolport_fg;
-  --popover-bg-color: @toolport_bg_dark;
+  --popover-bg-color: @toolport_raised;
   --popover-fg-color: @toolport_fg;
   --shade-color: alpha(black, 0.28);
+}}
+
+/* libadwaita fades secondary labels with opacity, which drops them below AA
+   on most themes. Use the opaque secondary color instead, and the opaque
+   disabled color (3:1) for placeholders. */
+.toolport-native .dim-label,
+.toolport-native .dimmed,
+.toolport-native row label.subtitle,
+.toolport-native headerbar .subtitle,
+.toolport-native windowtitle .subtitle {{
+  opacity: 1;
+  color: @toolport_text_secondary;
+}}
+
+.toolport-native entry > text > placeholder,
+.toolport-native spinbutton > text > placeholder,
+.toolport-native textview > text > placeholder {{
+  opacity: 1;
+  color: @toolport_text_disabled;
+}}
+
+tooltip.background {{
+  background-color: @toolport_raised;
+  color: @toolport_fg;
+  border: 1px solid @toolport_border;
+  border-radius: 8px;
 }}
 
 window {{
@@ -152,22 +316,22 @@ window {{
 window.messagedialog,
 window.dialog-window.alert,
 dialog-host > dialog.alert sheet {{
-  background-color: alpha(@toolport_bg_dark, 0.98);
+  background-color: @toolport_raised;
   color: @toolport_fg;
 }}
 
 window.messagedialog .message-area > .body,
 window.dialog-window.alert .message-area > .body,
 dialog-host > dialog.alert .message-area > .body {{
-  color: alpha(@toolport_fg, 0.78);
+  color: @toolport_text_secondary;
 }}
 
 window.messagedialog .response-area > button,
 window.dialog-window.alert .response-area > button,
 dialog-host > dialog.alert .response-area > button {{
-  border: 1px solid alpha(@toolport_fg, 0.10);
+  border: 1px solid @toolport_border;
   color: @toolport_fg;
-  background-color: alpha(@toolport_surface, 0.64);
+  background-color: @toolport_card;
   box-shadow: none;
 }}
 
@@ -194,9 +358,8 @@ dialog-host > dialog.alert .response-area > button.destructive-action {{
   border-color: @toolport_error;
 }}
 
-.toolport-native,
 .toolport-native {{
-  background-color: alpha(@toolport_bg, 0.955);
+  background-color: @toolport_bg;
   color: @toolport_fg;
   /* Omarchy's 0.9091 text scale resolves Adwaita Sans 11 to 13.33px. At that
      fractional raster size Pango drops the top stroke of capitals such as E,
@@ -210,24 +373,29 @@ dialog-host > dialog.alert .response-area > button.destructive-action {{
   font-size: 13px;
 }}
 
-.toolport-shell {{ background-color: transparent; }}
+.toolport-shell {{ background-color: @toolport_bg; }}
 
-.toolport-content,
+.toolport-content {{
+  background-color: @toolport_bg;
+  color: @toolport_fg;
+}}
+
+/* The page itself is opaque; scrolled windows and viewports inside it, in its
+   cards and in its popovers draw nothing, so they show their container. */
 .toolport-content scrolledwindow,
 .toolport-content viewport {{
   background-color: transparent;
-  color: @toolport_fg;
 }}
 
 .toolport-sidebar {{
-  background-color: alpha(@toolport_bg_dark, 0.34);
+  background-color: @toolport_sidebar;
   color: @toolport_fg;
-  border-right: 1px solid alpha(@toolport_fg, 0.12);
+  border-right: 1px solid @toolport_border;
 }}
 
 .toolport-header {{
-  background-color: alpha(@toolport_bg, 0.18);
-  border-bottom: 1px solid alpha(@toolport_fg, 0.08);
+  background-color: @toolport_sidebar;
+  border-bottom: 1px solid @toolport_border;
   box-shadow: none;
 }}
 
@@ -246,11 +414,11 @@ dialog-host > dialog.alert .response-area > button.destructive-action {{
 
 popover.toolport-main-menu > contents {{
   min-width: 220px;
-  padding: 7px;
-  border: 1px solid alpha(@toolport_accent, 0.24);
+  padding: 8px;
+  border: 1px solid @toolport_border;
   border-radius: 12px;
   color: @toolport_fg;
-  background-color: alpha(@toolport_bg_dark, 0.97);
+  background-color: @toolport_raised;
   box-shadow: 0 12px 30px alpha(black, 0.32);
 }}
 
@@ -259,7 +427,7 @@ popover.toolport-main-menu button.toolport-main-menu-item {{
   padding: 0 10px;
   border: none;
   border-radius: 8px;
-  color: alpha(@toolport_fg, 0.82);
+  color: @toolport_fg;
   background-color: transparent;
   box-shadow: none;
 }}
@@ -270,27 +438,27 @@ popover.toolport-main-menu button.toolport-main-menu-item:hover {{
 }}
 
 popover.toolport-main-menu button.toolport-main-menu-quit {{
-  color: alpha(@toolport_error, 0.86);
+  color: @toolport_error;
 }}
 
 popover.toolport-main-menu .toolport-menu-shortcut {{
-  color: alpha(@toolport_muted, 0.72);
+  color: @toolport_text_secondary;
   font-size: 12px;
 }}
 
 popover.toolport-main-menu separator {{
   min-height: 1px;
   margin: 5px 8px;
-  background-color: alpha(@toolport_fg, 0.10);
+  background-color: @toolport_border;
 }}
 
 popover.toolport-menu > contents {{
   min-width: 220px;
-  padding: 6px;
-  border: 1px solid alpha(@toolport_accent, 0.22);
+  padding: 8px;
+  border: 1px solid @toolport_border;
   border-radius: 12px;
   color: @toolport_fg;
-  background-color: alpha(@toolport_bg_dark, 0.97);
+  background-color: @toolport_raised;
   box-shadow: 0 12px 30px alpha(black, 0.32);
 }}
 
@@ -299,7 +467,7 @@ popover.toolport-menu button.toolport-menu-item {{
   padding: 0 10px;
   border: none;
   border-radius: 8px;
-  color: alpha(@toolport_fg, 0.82);
+  color: @toolport_fg;
   background-color: transparent;
   box-shadow: none;
 }}
@@ -310,14 +478,14 @@ popover.toolport-menu button.toolport-menu-item:hover {{
 }}
 
 popover.toolport-menu button.toolport-menu-item.destructive-action {{
-  color: alpha(@toolport_error, 0.88);
+  color: @toolport_error;
 }}
 
 popover.toolport-menu .toolport-menu-heading {{
   margin: 5px 10px 2px;
-  color: alpha(@toolport_muted, 0.78);
+  color: @toolport_text_secondary;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }}
 
 popover.toolport-menu .toolport-menu-check {{
@@ -327,15 +495,15 @@ popover.toolport-menu .toolport-menu-check {{
 popover.toolport-menu separator {{
   min-height: 1px;
   margin: 5px 8px;
-  background-color: alpha(@toolport_fg, 0.10);
+  background-color: @toolport_border;
 }}
 
 popover.toolport-catalog-suggestions > contents {{
-  padding: 7px;
-  border: 1px solid alpha(@toolport_accent, 0.24);
-  border-radius: 11px;
+  padding: 8px;
+  border: 1px solid @toolport_border;
+  border-radius: 12px;
   color: @toolport_fg;
-  background-color: alpha(@toolport_bg_dark, 0.98);
+  background-color: @toolport_raised;
   box-shadow: 0 12px 30px alpha(black, 0.34);
 }}
 
@@ -370,12 +538,13 @@ button.toolport-suggestion-more {{
   background-color: alpha(@toolport_accent, 0.08);
 }}
 
+popover.background > contents,
 popover.menu > contents,
 dropdown popover > contents {{
-  border: 1px solid alpha(@toolport_accent, 0.22);
+  border: 1px solid @toolport_border;
   border-radius: 12px;
   color: @toolport_fg;
-  background-color: alpha(@toolport_bg_dark, 0.97);
+  background-color: @toolport_raised;
   box-shadow: 0 12px 30px alpha(black, 0.32);
 }}
 
@@ -420,7 +589,7 @@ dropdown popover row:selected {{
 .toolport-nav-item {{
   min-height: 34px;
   padding: 0 12px;
-  border-radius: 9px;
+  border-radius: 8px;
   /* Omarchy's `muted` is a border colour and falls below 3:1 on most stock
      themes; navigation is primary text, as in Omarchy's own menus. */
   color: @toolport_fg;
@@ -447,16 +616,16 @@ dropdown popover row:selected {{
 .toolport-mode-badge {{
   margin: 7px 2px;
   padding: 4px 9px;
-  border: 1px solid alpha(@toolport_fg, 0.10);
+  border: 1px solid @toolport_border;
   border-radius: 999px;
-  background-color: alpha(@toolport_fg, 0.04);
-  color: alpha(@toolport_fg, 0.62);
+  background-color: @toolport_info_tint;
+  color: @toolport_text_secondary;
   font-size: 12px;
 }}
 
 .toolport-feedback {{
   padding: 10px 14px;
-  border-radius: 0 10px 10px 0;
+  border-radius: 0 12px 12px 0;
   background-color: alpha(@toolport_accent, 0.08);
   border: none;
   border-left: 3px solid @toolport_accent;
@@ -490,8 +659,8 @@ dropdown popover row:selected {{
 .toolport-editor headerbar {{
   min-height: 48px;
   padding: 4px 8px;
-  background-color: alpha(@toolport_surface, 0.24);
-  border-bottom: 1px solid alpha(@toolport_fg, 0.09);
+  background-color: @toolport_sidebar;
+  border-bottom: 1px solid @toolport_border;
   box-shadow: none;
 }}
 
@@ -499,9 +668,9 @@ dropdown popover row:selected {{
   min-height: 32px;
   min-width: 32px;
   padding: 0 12px;
-  border-radius: 9px;
-  background-color: alpha(@toolport_fg, 0.055);
-  border: 1px solid alpha(@toolport_fg, 0.07);
+  border-radius: 8px;
+  background-color: @toolport_card;
+  border: 1px solid @toolport_border;
 }}
 
 .toolport-editor headerbar button:hover {{
@@ -526,9 +695,9 @@ dropdown popover row:selected {{
 }}
 
 .toolport-import-scroller {{
-  border: 1px solid alpha(@toolport_fg, 0.10);
-  border-radius: 11px;
-  background-color: alpha(@toolport_bg_dark, 0.38);
+  border: 1px solid @toolport_border;
+  border-radius: 12px;
+  background-color: @toolport_card;
 }}
 
 .toolport-import-scroller viewport,
@@ -544,7 +713,7 @@ dropdown popover row:selected {{
   min-height: 48px;
   padding: 9px 11px;
   border-radius: 8px;
-  background-color: alpha(@toolport_surface, 0.34);
+  background-color: @toolport_card;
 }}
 
 .toolport-import-row:hover {{
@@ -553,7 +722,7 @@ dropdown popover row:selected {{
 
 .toolport-editor-lede {{
   margin: 2px 2px 4px;
-  color: alpha(@toolport_fg, 0.72);
+  color: @toolport_text_secondary;
 }}
 
 .toolport-editor-intro {{
@@ -573,15 +742,15 @@ dropdown popover row:selected {{
   border-radius: 0;
   background-color: transparent;
   border: none;
-  border-top: 1px solid alpha(@toolport_fg, 0.12);
+  border-top: 1px solid @toolport_border;
 }}
 
 .toolport-paste-expander {{
   padding: 0 14px;
   border-radius: 12px;
   color: @toolport_fg;
-  background-color: alpha(@toolport_surface, 0.36);
-  border: 1px solid alpha(@toolport_fg, 0.10);
+  background-color: @toolport_card;
+  border: 1px solid @toolport_border;
 }}
 
 .toolport-paste-expander > title {{
@@ -594,7 +763,7 @@ dropdown popover row:selected {{
 }}
 
 .toolport-field-label {{
-  color: alpha(@toolport_fg, 0.72);
+  color: @toolport_text_secondary;
   font-size: 12px;
   font-weight: 600;
 }}
@@ -605,7 +774,7 @@ dropdown popover row:selected {{
 .toolport-text-area,
 .toolport-text-area textview,
 .toolport-text-area text {{
-  background-color: alpha(@toolport_bg_dark, 0.46);
+  background-color: @toolport_card;
   color: @toolport_fg;
 }}
 
@@ -613,7 +782,7 @@ dropdown popover row:selected {{
 .toolport-input > button,
 .toolport-text-area {{
   min-height: 40px;
-  border-radius: 9px;
+  border-radius: 8px;
   border: 1px solid alpha(@toolport_fg, 0.15);
   box-shadow: none;
 }}
@@ -633,19 +802,19 @@ dropdown popover row:selected {{
 
 .toolport-editor-note {{
   padding: 11px 13px;
-  border-radius: 10px;
-  background-color: alpha(@toolport_accent, 0.055);
-  border: 1px solid alpha(@toolport_accent, 0.14);
-  color: alpha(@toolport_fg, 0.66);
+  border-radius: 12px;
+  background-color: @toolport_info_tint;
+  border: 1px solid @toolport_border;
+  color: @toolport_text_secondary;
 }}
 
 .toolport-editor .toolport-muted {{
-  color: alpha(@toolport_fg, 0.66);
+  color: @toolport_text_secondary;
 }}
 
 .toolport-editor button.toolport-secondary-action {{
-  background-color: alpha(@toolport_fg, 0.055);
-  border: 1px solid alpha(@toolport_fg, 0.09);
+  background-color: @toolport_raised;
+  border: 1px solid @toolport_border;
 }}
 
 .toolport-editor button.toolport-destructive-icon {{
@@ -658,7 +827,7 @@ dropdown popover row:selected {{
   padding: 13px 4px;
   border-radius: 0;
   border: none;
-  border-bottom: 1px solid alpha(@toolport_fg, 0.12);
+  border-bottom: 1px solid @toolport_border;
   background-color: transparent;
 }}
 
@@ -671,7 +840,7 @@ dropdown popover row:selected {{
   background-color: @toolport_bg;
   border: none;
   border-left: 3px solid @toolport_accent;
-  border-radius: 0 10px 10px 0;
+  border-radius: 0 12px 12px 0;
   box-shadow: 0 12px 34px alpha(@toolport_bg_dark, 0.58);
 }}
 
@@ -698,9 +867,9 @@ dropdown popover row:selected {{
 .toolport-approval-card {{
   padding: 14px 16px;
   border: none;
-  border-left: 3px solid {warning};
-  border-radius: 0 10px 10px 0;
-  background-color: alpha({warning}, 0.08);
+  border-left: 3px solid @toolport_warning;
+  border-radius: 0 12px 12px 0;
+  background-color: alpha(@toolport_warning, 0.08);
 }}
 
 .toolport-approval-deadline {{
@@ -712,7 +881,7 @@ dropdown popover row:selected {{
 
 .toolport-sensitive-review {{
   padding: 10px 12px;
-  border-radius: 0 10px 10px 0;
+  border-radius: 0 12px 12px 0;
   color: @toolport_fg;
   background-color: alpha(@toolport_error, 0.08);
   border: none;
@@ -723,12 +892,12 @@ dropdown popover row:selected {{
   margin-top: 8px;
   padding: 10px 12px;
   border-radius: 8px;
-  background-color: alpha(@toolport_bg_dark, 0.36);
+  background-color: @toolport_bg_dark;
   font-family: monospace;
 }}
 
 .toolport-page {{
-  background-color: transparent;
+  background-color: @toolport_bg;
 }}
 
 .toolport-dialog-content {{
@@ -743,7 +912,7 @@ dropdown popover row:selected {{
 .toolport-summary-item {{
   background-color: transparent;
   border: none;
-  border-bottom: 1px solid alpha(@toolport_fg, 0.12);
+  border-bottom: 1px solid @toolport_border;
   border-radius: 0;
   padding: 10px 13px;
 }}
@@ -752,15 +921,15 @@ dropdown popover row:selected {{
   min-height: 48px;
   padding: 8px 12px;
   color: @toolport_fg;
-  background-color: alpha(@toolport_surface, 0.28);
+  background-color: @toolport_card;
   border: none;
   border-left: 3px solid @toolport_success;
-  border-radius: 0 10px 10px 0;
+  border-radius: 0 12px 12px 0;
   box-shadow: none;
 }}
 
 .toolport-security-status:hover {{
-  background-color: alpha(@toolport_surface, 0.42);
+  background-color: mix(@toolport_card, @toolport_fg, 0.04);
   border-color: alpha(@toolport_accent, 0.28);
 }}
 
@@ -770,11 +939,11 @@ dropdown popover row:selected {{
 }}
 
 .toolport-security-status.review {{
-  border-color: alpha(@toolport_accent, 0.24);
+  border-color: @toolport_warning;
 }}
 
 .toolport-security-status-icon.review {{
-  color: @toolport_accent;
+  color: @toolport_warning;
 }}
 
 .toolport-security-status-icon {{
@@ -799,23 +968,23 @@ button.toolport-activity-filter {{
 
 .toolport-search {{
   min-height: 36px;
-  border-radius: 10px;
+  border-radius: 8px;
   color: @toolport_fg;
-  background-color: alpha(@toolport_surface, 0.28);
-  border: 1px solid alpha(@toolport_fg, 0.09);
+  background-color: @toolport_card;
+  border: 1px solid @toolport_border;
   box-shadow: none;
 }}
 
 .toolport-search:focus-within {{
   border-color: alpha(@toolport_accent, 0.62);
-  background-color: alpha(@toolport_surface, 0.40);
+  background-color: @toolport_card;
   box-shadow: 0 0 0 2px alpha(@toolport_accent, 0.10);
 }}
 
 .toolport-card {{
   background-color: transparent;
   border: none;
-  border-bottom: 1px solid alpha(@toolport_fg, 0.12);
+  border-bottom: 1px solid @toolport_border;
   border-radius: 0;
   padding: 12px 4px;
   transition: 120ms ease;
@@ -839,27 +1008,22 @@ button.toolport-activity-filter {{
   text-decoration: underline;
 }}
 
-.toolport-card-off .toolport-card-icon,
-.toolport-card-off button.toolport-card-title {{
-  opacity: 0.6;
-}}
-
 .toolport-details-expander {{
   padding: 11px 14px;
-  border: 1px solid alpha(@toolport_fg, 0.10);
-  border-radius: 11px;
+  border: 1px solid @toolport_border;
+  border-radius: 12px;
   color: @toolport_fg;
-  background-color: alpha(@toolport_surface, 0.30);
+  background-color: @toolport_card;
 }}
 
 .toolport-details-expander:hover {{
   border-color: alpha(@toolport_accent, 0.24);
-  background-color: alpha(@toolport_surface, 0.40);
+  background-color: mix(@toolport_card, @toolport_fg, 0.04);
 }}
 
 .toolport-details-expander > title {{
   min-height: 30px;
-  font-weight: 700;
+  font-weight: 600;
 }}
 
 .toolport-stat-row {{
@@ -872,17 +1036,17 @@ button.toolport-activity-filter {{
 }}
 
 .toolport-settings-parent {{ font-weight: 600; }}
-.toolport-safety-card {{ border: 1px solid alpha(@toolport_fg, 0.12); border-radius: 10px; padding: 16px; }}
-.toolport-safety-card:checked {{ border-color: {accent}; background: alpha({accent}, 0.08); }}
+.toolport-safety-card {{ border: 1px solid @toolport_border; border-radius: 12px; padding: 16px; background-color: @toolport_card; }}
+.toolport-safety-card:checked {{ border-color: @toolport_accent; background: mix(@toolport_card, @toolport_accent, 0.08); }}
 .toolport-settings-group.toolport-switch-group {{
-  border: 1px solid alpha(@toolport_fg, 0.12);
-  border-radius: 10px;
-  background-color: alpha(@toolport_bg_dark, 0.18);
+  border: 1px solid @toolport_border;
+  border-radius: 12px;
+  background-color: @toolport_card;
 }}
 .toolport-settings-group {{
   background-color: transparent;
   border: none;
-  border-top: 1px solid alpha(@toolport_fg, 0.12);
+  border-top: 1px solid @toolport_border;
   border-radius: 0;
 }}
 
@@ -898,10 +1062,10 @@ button.toolport-activity-filter {{
   color: @toolport_success;
 }}
 .toolport-state-review {{
-  color: @toolport_accent;
+  color: @toolport_warning;
 }}
 .toolport-state-muted {{
-  color: alpha(@toolport_fg, 0.62);
+  color: @toolport_off;
 }}
 
 /* Wider than `toolport-summary-item`, which is sized for a number over a
@@ -909,7 +1073,7 @@ button.toolport-activity-filter {{
 .toolport-value-card {{
   background-color: transparent;
   border: none;
-  border-bottom: 1px solid alpha(@toolport_fg, 0.12);
+  border-bottom: 1px solid @toolport_border;
   border-radius: 0;
   padding: 15px 17px;
 }}
@@ -924,9 +1088,9 @@ button.toolport-activity-filter {{
 }}
 
 .toolport-project-files {{
-  background-color: alpha(@toolport_bg_dark, 0.22);
-  border: 1px solid alpha(@toolport_fg, 0.075);
-  border-radius: 9px;
+  background-color: @toolport_card;
+  border: 1px solid @toolport_border;
+  border-radius: 12px;
 }}
 
 .toolport-project-file-row {{
@@ -939,76 +1103,78 @@ button.toolport-activity-filter {{
 }}
 
 .toolport-card button.toolport-secondary-action {{
-  background-color: alpha(@toolport_fg, 0.055);
-  border: 1px solid alpha(@toolport_fg, 0.09);
+  background-color: @toolport_raised;
+  border: 1px solid @toolport_border;
 }}
 
 .toolport-card-icon {{
   min-width: 32px;
   min-height: 32px;
   margin: 1px;
-  border-radius: 9px;
+  border-radius: 8px;
   background-color: alpha(@toolport_accent, 0.12);
   color: @toolport_accent;
 }}
 
-.toolport-muted {{ color: alpha(@toolport_fg, 0.62); }}
+.toolport-muted {{ color: @toolport_text_secondary; }}
 
+/* One status chip: a pill with the status color at 12% and full-color text,
+   no border. The React Badge variants use the same colors. `review` and
+   `approval-warning` are warning; `disabled` is off. */
 .toolport-badge {{
-  background-color: alpha(@toolport_muted, 0.14);
-  border: 1px solid alpha(@toolport_muted, 0.16);
+  background-color: @toolport_info_tint;
+  color: @toolport_text_secondary;
+  border: none;
   border-radius: 999px;
-  padding: 4px 9px;
+  padding: 2px 8px;
 }}
 
 .toolport-badge.success {{
   background-color: alpha(@toolport_success, 0.12);
-  border-color: alpha(@toolport_success, 0.22);
   color: @toolport_success;
 }}
 
+.toolport-badge.off,
+.toolport-badge.info,
 .toolport-badge.disabled {{
-  color: @toolport_muted;
+  background-color: @toolport_info_tint;
+  color: @toolport_off;
 }}
 
-.toolport-badge.review {{
-  color: @toolport_accent;
-  border-color: alpha(@toolport_accent, 0.22);
-  background-color: alpha(@toolport_accent, 0.08);
-}}
-.toolport-badge.error {{
-  color: @toolport_error;
-  border-color: alpha(@toolport_error, 0.24);
-  background-color: alpha(@toolport_error, 0.08);
+.toolport-badge.warning,
+.toolport-badge.review,
+.toolport-badge.approval-warning {{
+  color: @toolport_warning;
+  background-color: alpha(@toolport_warning, 0.12);
 }}
 
+.toolport-badge.partial {{
+  color: @toolport_partial;
+  background-color: alpha(@toolport_partial, 0.12);
+}}
+
+.toolport-badge.error,
 .toolport-badge.approval-denied {{
   color: @toolport_error;
-  border-color: alpha(@toolport_error, 0.6);
-  background-color: transparent;
-}}
-.toolport-badge.approval-warning {{
-  color: #d9a441;
-  border-color: alpha(#d9a441, 0.4);
-  background-color: alpha(#d9a441, 0.08);
+  background-color: alpha(@toolport_error, 0.12);
 }}
 image.approval-denied {{ color: @toolport_error; }}
-image.approval-warning {{ color: #d9a441; }}
+image.approval-warning {{ color: @toolport_warning; }}
 image.success {{
   color: @toolport_success;
   -gtk-icon-palette: error @toolport_success, warning @toolport_success, success @toolport_success;
 }}
-image.disabled {{ color: @toolport_muted; }}
+image.disabled {{ color: @toolport_off; }}
 
 .toolport-catalog-added {{
   min-height: 30px;
   padding: 0 8px;
-  border: 1px solid alpha(@toolport_success, 0.22);
+  border: none;
   border-radius: 8px;
-  background-color: alpha(@toolport_success, 0.10);
+  background-color: alpha(@toolport_success, 0.12);
   color: @toolport_success;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }}
 
 button.toolport-catalog-action {{
@@ -1018,34 +1184,32 @@ button.toolport-catalog-action {{
 }}
 
 .toolport-server-state {{
-  color: alpha(@toolport_fg, 0.62);
-  font-size: 12px;
+  color: @toolport_text_secondary;
+  font-size: 13px;
 }}
 
 .toolport-card switch {{
   margin-left: 2px;
 }}
 
+/* Track: accent when on, the foreground at 18% when off. The knob is white in
+   both states and in both modes, as in React. */
 .toolport-native switch {{
   color: @toolport_fg;
-  background-color: alpha(@toolport_muted, 0.28);
-  border: 1px solid alpha(@toolport_fg, 0.14);
+  background-color: alpha(@toolport_fg, 0.18);
+  border: none;
   box-shadow: none;
 }}
 
 .toolport-native switch:checked {{
   color: @toolport_bg_dark;
   background-color: @toolport_accent;
-  border-color: alpha(@toolport_accent, 0.82);
 }}
 
+.toolport-native switch slider,
 .toolport-native switch:checked slider {{
-  background-color: @toolport_bg_dark;
-}}
-
-.toolport-native switch slider {{
-  background-color: @toolport_fg;
-  box-shadow: 0 1px 2px alpha(@toolport_bg_dark, 0.34);
+  background-color: white;
+  box-shadow: 0 1px 2px alpha(black, 0.30);
 }}
 
 .toolport-action-item {{
@@ -1069,8 +1233,8 @@ button.toolport-catalog-action {{
   min-height: 180px;
   padding: 28px;
   border: 1px dashed alpha(@toolport_fg, 0.15);
-  border-radius: 11px;
-  background-color: alpha(@toolport_surface, 0.20);
+  border-radius: 12px;
+  background-color: @toolport_card;
 }}
 
 .toolport-state-icon {{ color: @toolport_accent; }}
@@ -1079,14 +1243,15 @@ button.toolport-catalog-action {{
 }}
 .toolport-state-card.error .toolport-state-icon {{ color: @toolport_error; }}
 
-.toolport-native .title-2 {{ font-size: 22px; font-weight: 650; }}
+.toolport-native .title-2 {{ font-size: 22px; font-weight: 600; }}
+.toolport-native .title-3 {{ font-size: 17px; font-weight: 600; }}
 .toolport-native .heading {{ font-weight: 600; }}
 .toolport-section-label {{
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.6px;
   text-transform: uppercase;
-  color: @toolport_muted;
+  color: @toolport_text_secondary;
 }}
 
 /* Clients page: one line per client, controls on the right. */
@@ -1094,12 +1259,12 @@ button.toolport-catalog-action {{
 .toolport-client-row .toolport-client-logo {{ min-width: 28px; min-height: 28px; }}
 .toolport-card.toolport-client-profile {{ padding-left: 44px; }}
 .toolport-client-tile {{
-  border: 1px solid alpha(@toolport_fg, 0.10);
-  border-radius: 10px;
+  border: 1px solid @toolport_border;
+  border-radius: 12px;
   padding: 10px 12px;
-  background-color: alpha(@toolport_surface, 0.22);
+  background-color: @toolport_card;
 }}
-.toolport-client-tile:hover {{ background-color: alpha(@toolport_accent, 0.05); }}
+.toolport-client-tile:hover {{ background-color: mix(@toolport_card, @toolport_accent, 0.05); }}
 button.toolport-client-group-toggle {{
   padding: 0;
   margin: 0;
@@ -1111,7 +1276,7 @@ button.toolport-client-group-toggle {{
 
 /* Skills page: the React view's list-and-detail layout with one status column per agent. */
 .toolport-skill-tabbar {{
-  border-bottom: 1px solid alpha(@toolport_fg, 0.12);
+  border-bottom: 1px solid @toolport_border;
 }}
 button.toolport-skill-tab {{
   border-radius: 0;
@@ -1120,7 +1285,7 @@ button.toolport-skill-tab {{
   background: none;
   box-shadow: none;
   border-bottom: 2px solid transparent;
-  color: alpha(@toolport_fg, 0.62);
+  color: @toolport_text_secondary;
 }}
 button.toolport-skill-tab:hover {{ color: @toolport_fg; background: none; }}
 button.toolport-skill-tab:checked {{
@@ -1130,35 +1295,35 @@ button.toolport-skill-tab:checked {{
   border-bottom-color: @toolport_accent;
 }}
 .toolport-skill-count {{
-  background-color: alpha(@toolport_muted, 0.18);
-  color: alpha(@toolport_fg, 0.70);
+  background-color: @toolport_info_tint;
+  color: @toolport_text_secondary;
   border-radius: 999px;
   padding: 0 6px;
   font-weight: 500;
 }}
 .toolport-skill-count.warning {{
-  background-color: alpha(@warning_color, 0.16);
-  color: @warning_color;
+  background-color: alpha(@toolport_warning, 0.12);
+  color: @toolport_warning;
 }}
 .toolport-skill-banner {{
-  border: 1px solid alpha(@toolport_fg, 0.10);
-  border-left: 4px solid @warning_color;
+  border: 1px solid @toolport_border;
+  border-left: 3px solid @toolport_warning;
   border-radius: 12px;
-  background-color: alpha(@toolport_surface, 0.45);
+  background-color: @toolport_card;
   padding: 12px 14px;
   margin-bottom: 14px;
 }}
 .toolport-skill-tile {{
-  border-radius: 10px;
-  background-color: alpha(@toolport_accent, 0.14);
+  border-radius: 8px;
+  background-color: alpha(@toolport_accent, 0.12);
   color: @toolport_accent;
 }}
-.toolport-skill-tile.warning {{ background-color: alpha(@warning_color, 0.14); color: @warning_color; }}
+.toolport-skill-tile.warning {{ background-color: alpha(@toolport_warning, 0.12); color: @toolport_warning; }}
 .toolport-skill-tile.error {{ background-color: alpha(@toolport_error, 0.12); color: @toolport_error; }}
-/* React's info violet; libadwaita's named palette has the same hue. */
-.toolport-skill-tile.info {{ background-color: alpha(@purple_2, 0.14); color: @purple_2; }}
+/* Info is neutral in both shells. */
+.toolport-skill-tile.info {{ background-color: @toolport_info_tint; color: @toolport_info; }}
 .toolport-skill-head {{
-  border-bottom: 1px solid alpha(@toolport_fg, 0.12);
+  border-bottom: 1px solid @toolport_border;
   padding: 0 8px 6px 8px;
 }}
 .toolport-skill-head button.toolport-skill-col {{
@@ -1166,7 +1331,7 @@ button.toolport-skill-tab:checked {{
   margin: 0;
   min-width: 0;
   min-height: 0;
-  border-radius: 6px;
+  border-radius: 8px;
 }}
 .toolport-skill-head button.toolport-skill-col.selected {{
   background-color: alpha(@toolport_accent, 0.16);
@@ -1199,13 +1364,13 @@ list.toolport-skill-list > row.toolport-skill-group-row:hover {{ background: non
 .toolport-skill-dot.name-only {{
   min-width: 8px;
   min-height: 8px;
-  border: 2px solid #38bdf8;
-  background-image: linear-gradient(90deg, #38bdf8 50%, transparent 50%);
+  border: 2px solid @toolport_partial;
+  background-image: linear-gradient(90deg, @toolport_partial 50%, transparent 50%);
 }}
 .toolport-skill-dot.shadowed {{
   min-width: 8px;
   min-height: 8px;
-  border: 2px solid @warning_color;
+  border: 2px solid @toolport_warning;
 }}
 .toolport-skill-dot.broken {{
   min-width: 10px;
@@ -1223,22 +1388,22 @@ list.toolport-skill-list > row.toolport-skill-group-row:hover {{ background: non
   min-height: 4px;
   background-color: alpha(@toolport_fg, 0.28);
 }}
-.toolport-skill-off {{ color: alpha(@toolport_fg, 0.55); }}
+.toolport-skill-off {{ color: @toolport_off; }}
 .toolport-skill-legend {{
-  border-top: 1px solid alpha(@toolport_fg, 0.12);
+  border-top: 1px solid @toolport_border;
   padding-top: 8px;
   margin-top: 6px;
 }}
 .toolport-skill-agents {{
-  border: 1px solid alpha(@toolport_fg, 0.12);
+  border: 1px solid @toolport_border;
   border-radius: 12px;
+  background-color: @toolport_card;
 }}
 .toolport-skill-agent {{
   padding: 10px 12px;
-  border-bottom: 1px solid alpha(@toolport_fg, 0.08);
+  border-bottom: 1px solid @toolport_border;
 }}
 .toolport-skill-agent:last-child {{ border-bottom: none; }}
-.toolport-skill-agent.dim {{ opacity: 0.6; }}
 .toolport-skill-logo {{
   min-width: 32px;
   min-height: 32px;
@@ -1256,16 +1421,16 @@ levelbar.toolport-skill-meter trough {{
 levelbar.toolport-skill-meter block {{ min-height: 5px; border-radius: 999px; border: none; }}
 levelbar.toolport-skill-meter block.filled {{ background-color: @toolport_success; }}
 levelbar.toolport-skill-meter block.empty {{ background: none; }}
-levelbar.toolport-skill-meter.over block.filled {{ background-color: @warning_color; }}
+levelbar.toolport-skill-meter.over block.filled {{ background-color: @toolport_warning; }}
 .toolport-skill-issue {{
-  border: 1px solid alpha(@toolport_fg, 0.10);
+  border: 1px solid @toolport_border;
   border-radius: 12px;
-  background-color: alpha(@toolport_surface, 0.40);
-  padding: 14px;
+  background-color: @toolport_card;
+  padding: 16px;
 }}
 .toolport-skill-chip {{
   background-color: alpha(@toolport_fg, 0.07);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 3px 7px;
 }}
 .toolport-skill-chip.logo {{ padding: 0; }}
@@ -1275,14 +1440,14 @@ button.toolport-skill-chip:hover {{ background-color: alpha(@toolport_fg, 0.13);
 
 /* Sync page: one amber block for everything that needs a decision. */
 .toolport-attention {{
-  border-left: 3px solid @warning_color;
-  border-radius: 0 10px 10px 0;
-  background-color: alpha(@warning_color, 0.07);
+  border-left: 3px solid @toolport_warning;
+  border-radius: 0 12px 12px 0;
+  background-color: alpha(@toolport_warning, 0.08);
 }}
 
 .toolport-attention-item {{
   padding: 10px 14px;
-  border-bottom: 1px solid alpha(@warning_color, 0.14);
+  border-bottom: 1px solid alpha(@toolport_warning, 0.14);
 }}
 
 .toolport-attention-item:last-child {{
@@ -1291,7 +1456,7 @@ button.toolport-skill-chip:hover {{ background-color: alpha(@toolport_fg, 0.13);
 
 .toolport-sync-row {{
   padding: 9px 2px;
-  border-bottom: 1px solid alpha(@toolport_fg, 0.075);
+  border-bottom: 1px solid @toolport_border;
 }}
 
 .toolport-sync-row:last-child {{
@@ -1301,34 +1466,34 @@ button.toolport-skill-chip:hover {{ background-color: alpha(@toolport_fg, 0.13);
 .toolport-sync-choice {{
   padding: 2px;
   border-radius: 8px;
-  background-color: alpha(@toolport_fg, 0.05);
-  border: 1px solid alpha(@toolport_fg, 0.10);
+  background-color: @toolport_card;
+  border: 1px solid @toolport_border;
 }}
 
 .toolport-sync-choice > button {{
   min-height: 24px;
   padding: 2px 10px;
-  border-radius: 6px;
+  border-radius: 8px;
   border: none;
   background: none;
   box-shadow: none;
   font-size: 12px;
   font-weight: 500;
-  color: @toolport_muted;
+  color: @toolport_text_secondary;
 }}
 
 .toolport-sync-choice > button:checked {{
   background-color: alpha(@toolport_fg, 0.14);
   color: @toolport_fg;
-  font-weight: 650;
+  font-weight: 600;
 }}
 
 .toolport-sync-tag {{
-  color: @warning_color;
+  color: @toolport_warning;
 }}
 
 .toolport-sync-status {{
-  color: @toolport_muted;
+  color: @toolport_text_secondary;
 }}
 
 .toolport-sync-status.healthy {{
@@ -1337,13 +1502,18 @@ button.toolport-skill-chip:hover {{ background-color: alpha(@toolport_fg, 0.13);
 .toolport-muted {{ font-size: 13px; }}
 .toolport-native button {{ border-radius: 8px; font-weight: 600; }}
 .toolport-feedback.warning {{
-  border-color: {warning};
-  background-color: alpha({warning}, 0.08);
+  border-color: @toolport_warning;
+  background-color: alpha(@toolport_warning, 0.08);
   color: @toolport_fg;
 }}
 .toolport-feedback .heading {{ color: @toolport_fg; }}
 .toolport-feedback + .toolport-feedback {{
-  border-top: 1px solid alpha(@toolport_fg, 0.12);
+  border-top: 1px solid @toolport_border;
+}}
+
+.toolport-native .toolport-badge {{
+  font-size: 12px;
+  font-weight: 500;
 }}
 
 selection {{
@@ -1360,11 +1530,13 @@ window:backdrop .toolport-summary-item {{
   border-color: alpha(@toolport_fg, 0.06);
 }}
 "#,
-            warning = if self.mode == ThemeMode::Light {
-                "#956016"
-            } else {
-                "#f0c674"
-            },
+            card = tokens.card,
+            text_secondary = tokens.text_secondary,
+            text_disabled = tokens.text_disabled,
+            success = tokens.success,
+            warning = tokens.warning,
+            danger = tokens.danger,
+            partial = tokens.partial,
             background = self.background,
             dark_background = self.dark_background,
             lighter_background = self.lighter_background,
@@ -1372,14 +1544,78 @@ window:backdrop .toolport-summary-item {{
             muted = self.muted,
             accent = self.accent,
             selection = self.selection,
-            red = self.red,
-            green = self.green,
             mono_logo_filter = match self.mode {
                 ThemeMode::Dark => "invert(1) hue-rotate(180deg)",
                 ThemeMode::Light => "none",
             },
         )
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Tokens {
+    card: String,
+    text_secondary: String,
+    text_disabled: String,
+    success: String,
+    warning: String,
+    danger: String,
+    partial: String,
+}
+
+type Rgb = [f64; 3];
+
+/// Parses a color that `safe_color` has already validated as `#rrggbb`.
+fn rgb(hex: &str) -> Rgb {
+    let channel = |at: usize| f64::from(u8::from_str_radix(&hex[at..at + 2], 16).unwrap_or(0));
+    [channel(1), channel(3), channel(5)]
+}
+
+fn hex(color: Rgb) -> String {
+    let channel = |value: f64| value.round().clamp(0.0, 255.0) as u8;
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        channel(color[0]),
+        channel(color[1]),
+        channel(color[2])
+    )
+}
+
+/// The same blend as GTK's `mix(a, b, amount)`.
+fn mix(a: Rgb, b: Rgb, amount: f64) -> Rgb {
+    [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * amount)
+}
+
+fn luminance(color: Rgb) -> f64 {
+    let linear = |value: f64| {
+        let value = value / 255.0;
+        if value <= 0.039_28 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(color[0]) + 0.7152 * linear(color[1]) + 0.0722 * linear(color[2])
+}
+
+fn contrast(a: Rgb, b: Rgb) -> f64 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// The first blend of `color` toward `toward` that reaches `minimum` contrast
+/// on every backdrop the text is drawn on. `backdrops` gets the candidate, so a
+/// status color can be checked against its own tint.
+fn readable(color: Rgb, toward: Rgb, minimum: f64, backdrops: impl Fn(Rgb) -> Vec<Rgb>) -> Rgb {
+    (0..=20)
+        // Rounded first, so the check holds for the hex value the CSS gets.
+        .map(|step| mix(color, toward, f64::from(step) / 20.0).map(f64::round))
+        .find(|&candidate| {
+            backdrops(candidate)
+                .iter()
+                .all(|&backdrop| contrast(candidate, backdrop.map(f64::round)) >= minimum)
+        })
+        .unwrap_or(toward)
 }
 
 fn safe_color(candidate: Option<String>, fallback: &str) -> String {
@@ -1559,18 +1795,498 @@ foreground = "#abcdef"
     }
 
     #[test]
-    fn generated_css_preserves_the_translucent_surface_hierarchy() {
+    fn generated_css_draws_opaque_surfaces() {
         let css = OmarchyPalette::default().css();
 
-        assert!(css.contains("background-color: alpha(@toolport_bg, 0.955)"));
         assert!(css.contains("font-size: 14px"));
         assert!(css.contains(".toolport-native .caption"));
         assert!(!css.contains("font-size: 0.88em"));
-        assert!(css.contains(".toolport-shell { background-color: transparent; }"));
-        assert!(css.contains("background-color: alpha(@toolport_surface, 0.42)"));
-        assert!(css.contains("--dialog-bg-color: @toolport_bg_dark"));
+        assert!(css.contains(".toolport-shell { background-color: @toolport_bg; }"));
+        assert!(css.contains("--card-bg-color: @toolport_card"));
+        assert!(css.contains("--dialog-bg-color: @toolport_raised"));
+        assert!(css.contains("--popover-bg-color: @toolport_raised"));
         assert!(css.contains("window.messagedialog"));
         assert!(css.contains("dialog-host > dialog.alert sheet"));
+        // Only tints, hover, selection and borders may use alpha; a surface
+        // color with alpha would let the wallpaper or the rows behind a menu
+        // show through.
+        for surface in [
+            "@toolport_bg",
+            "@toolport_bg_dark",
+            "@toolport_surface",
+            "@toolport_card",
+        ] {
+            assert!(
+                !css.contains(&format!("background-color: alpha({surface},")),
+                "{surface}"
+            );
+        }
+        for selector in [
+            ".toolport-native {",
+            ".toolport-sidebar {",
+            ".toolport-header {",
+            "popover.toolport-menu > contents {",
+            "popover.toolport-main-menu > contents {",
+            "popover.toolport-catalog-suggestions > contents {",
+            "dropdown popover > contents {",
+            "tooltip.background {",
+            ".toolport-search {",
+            ".toolport-skill-issue {",
+            ".toolport-settings-group.toolport-switch-group {",
+        ] {
+            let start = css.find(selector).expect("the selector is generated");
+            let rule = &css[start..start + css[start..].find('}').unwrap()];
+            let background = rule
+                .lines()
+                .find(|line| line.trim_start().starts_with("background-color:"))
+                .unwrap_or_else(|| panic!("{selector} sets a background"));
+            assert!(!background.contains("alpha("), "{selector}: {background}");
+            assert!(
+                !background.contains("transparent"),
+                "{selector}: {background}"
+            );
+        }
+    }
+
+    #[test]
+    fn switch_knob_is_white_in_both_states() {
+        let css = OmarchyPalette::default().css();
+        let start = css.find(".toolport-native switch slider,").unwrap();
+        let rule = &css[start..start + css[start..].find('}').unwrap()];
+        assert!(rule.contains(".toolport-native switch:checked slider"));
+        assert!(rule.contains("background-color: white;"));
+    }
+
+    #[test]
+    fn one_warning_and_partial_color_replace_the_hardcoded_ones() {
+        let css = OmarchyPalette::default().css();
+        for old in [
+            "#f0c674",
+            "#956016",
+            "#d9a441",
+            "#38bdf8",
+            "@warning_color",
+            "@purple_2",
+        ] {
+            assert!(
+                !css.replace("@define-color toolport_warning #f0c674;", "")
+                    .replace("@define-color toolport_partial #38bdf8;", "")
+                    .contains(old),
+                "{old}"
+            );
+        }
+        let palette =
+            OmarchyPalette::parse("mode = \"dark\"\nyellow = \"#e8c66a\"\ncyan = \"#7dd7dc\"\n")
+                .unwrap();
+        let css = palette.css();
+        assert!(css.contains("@define-color toolport_warning #e8c66a;"));
+        assert!(css.contains("@define-color toolport_partial #7dd7dc;"));
+    }
+
+    /// Every stock Omarchy theme (/usr/share/omarchy/themes, Omarchy 4.0), as
+    /// colors.toml with the keys Toolport reads.
+    const STOCK_PALETTES: [(&str, &str); 23] = [
+        (
+            "catppuccin-latte",
+            r##"mode = "light"
+background = "#eff1f5"
+dark_background = "#e3e4e8"
+lighter_background = "#dce0e8"
+foreground = "#4c4f69"
+muted = "#acb0be"
+accent = "#1e66f5"
+red = "#d20f39"
+yellow = "#df8e1d"
+green = "#40a02b"
+cyan = "#179299"
+"##,
+        ),
+        (
+            "catppuccin",
+            r##"mode = "dark"
+background = "#1e1e2e"
+dark_background = "#161622"
+lighter_background = "#313244"
+foreground = "#cdd6f4"
+muted = "#585b70"
+accent = "#89b4fa"
+red = "#f38ba8"
+yellow = "#f9e2af"
+green = "#a6e3a1"
+cyan = "#94e2d5"
+"##,
+        ),
+        (
+            "ethereal",
+            r##"mode = "dark"
+background = "#060B1E"
+dark_background = "#040816"
+lighter_background = "#131a3a"
+foreground = "#ffcead"
+muted = "#6d7db6"
+accent = "#7d82d9"
+red = "#ED5B5A"
+yellow = "#E9BB4F"
+green = "#92a593"
+cyan = "#a3bfd1"
+"##,
+        ),
+        (
+            "everforest",
+            r##"mode = "dark"
+background = "#2d353b"
+dark_background = "#21272c"
+lighter_background = "#343f44"
+foreground = "#d3c6aa"
+muted = "#475258"
+accent = "#7fbbb3"
+red = "#e67e80"
+yellow = "#dbbc7f"
+green = "#a7c080"
+cyan = "#83c092"
+"##,
+        ),
+        (
+            "flexoki-light",
+            r##"mode = "light"
+background = "#FFFCF0"
+dark_background = "#f2efe4"
+lighter_background = "#E6E4D9"
+foreground = "#100F0F"
+muted = "#B7B5AC"
+accent = "#205EA6"
+red = "#D14D41"
+yellow = "#D0A215"
+green = "#879A39"
+cyan = "#3AA99F"
+"##,
+        ),
+        (
+            "gruvbox",
+            r##"mode = "dark"
+background = "#282828"
+dark_background = "#1e1e1e"
+lighter_background = "#3c3836"
+foreground = "#d4be98"
+muted = "#665c54"
+accent = "#7daea3"
+red = "#ea6962"
+yellow = "#d8a657"
+green = "#a9b665"
+cyan = "#89b482"
+"##,
+        ),
+        (
+            "hackerman",
+            r##"mode = "dark"
+background = "#0B0C16"
+dark_background = "#080910"
+lighter_background = "#151828"
+foreground = "#ddf7ff"
+muted = "#2d3450"
+accent = "#82FB9C"
+red = "#50f872"
+yellow = "#50f7d4"
+green = "#4fe88f"
+cyan = "#7cf8f7"
+"##,
+        ),
+        (
+            "kanagawa",
+            r##"mode = "dark"
+background = "#1f1f28"
+dark_background = "#17171e"
+lighter_background = "#223249"
+foreground = "#dcd7ba"
+muted = "#54546D"
+accent = "#dcd7ba"
+red = "#c34043"
+yellow = "#c0a36e"
+green = "#76946a"
+cyan = "#6a9589"
+"##,
+        ),
+        (
+            "last-horizon",
+            r##"mode = "dark"
+background = "#0c0b0c"
+dark_background = "#090809"
+lighter_background = "#0c0b0c"
+foreground = "#FAFCFB"
+muted = "#584e51"
+accent = "#b59790"
+red = "#c38b7b"
+yellow = "#6B5E73"
+green = "#87a9b0"
+cyan = "#a5a0b6"
+"##,
+        ),
+        (
+            "lumon",
+            r##"mode = "dark"
+background = "#16242d"
+dark_background = "#101b21"
+lighter_background = "#1b2d40"
+foreground = "#d6e2ee"
+muted = "#304860"
+accent = "#8bc9eb"
+red = "#4d86b0"
+yellow = "#6fa4c9"
+green = "#5e95bc"
+cyan = "#b4e4f6"
+"##,
+        ),
+        (
+            "lupine",
+            r##"mode = "light"
+background = "#fafafa"
+dark_background = "#ececec"
+lighter_background = "#f5f5f5"
+foreground = "#212121"
+muted = "#9e9e9e"
+accent = "#3264eb"
+red = "#c900c4"
+yellow = "#026fde"
+green = "#4a2fd0"
+cyan = "#0c67de"
+"##,
+        ),
+        (
+            "matte-black",
+            r##"mode = "dark"
+background = "#121212"
+dark_background = "#0d0d0d"
+lighter_background = "#1e1e1e"
+foreground = "#bebebe"
+muted = "#333333"
+accent = "#e68e0d"
+red = "#D35F5F"
+yellow = "#b91c1c"
+green = "#FFC107"
+cyan = "#bebebe"
+"##,
+        ),
+        (
+            "miasma",
+            r##"mode = "dark"
+background = "#222222"
+dark_background = "#191919"
+lighter_background = "#2c2c2c"
+foreground = "#c2c2b0"
+muted = "#666666"
+accent = "#78824b"
+red = "#685742"
+yellow = "#b36d43"
+green = "#5f875f"
+cyan = "#c9a554"
+"##,
+        ),
+        (
+            "nord",
+            r##"mode = "dark"
+background = "#2e3440"
+dark_background = "#222730"
+lighter_background = "#3b4252"
+foreground = "#d8dee9"
+muted = "#4c566a"
+accent = "#81a1c1"
+red = "#bf616a"
+yellow = "#ebcb8b"
+green = "#a3be8c"
+cyan = "#88c0d0"
+"##,
+        ),
+        (
+            "osaka-jade",
+            r##"mode = "dark"
+background = "#111c18"
+dark_background = "#0c1512"
+lighter_background = "#23372B"
+foreground = "#C1C497"
+muted = "#53685B"
+accent = "#509475"
+red = "#FF5345"
+yellow = "#459451"
+green = "#549e6a"
+cyan = "#2DD5B7"
+"##,
+        ),
+        (
+            "retro-82",
+            r##"mode = "dark"
+background = "#05182e"
+dark_background = "#031222"
+lighter_background = "#0a2540"
+foreground = "#f6dcac"
+muted = "#2a6b78"
+accent = "#faa968"
+red = "#f85525"
+yellow = "#e97b3c"
+green = "#028391"
+cyan = "#8cbfb8"
+"##,
+        ),
+        (
+            "ristretto",
+            r##"mode = "dark"
+background = "#2c2525"
+dark_background = "#211b1b"
+lighter_background = "#3d2f2a"
+foreground = "#e6d9db"
+muted = "#72696a"
+accent = "#f38d70"
+red = "#fd6883"
+yellow = "#f9cc6c"
+green = "#adda78"
+cyan = "#85dacc"
+"##,
+        ),
+        (
+            "rose-pine",
+            r##"mode = "light"
+background = "#faf4ed"
+dark_background = "#ede7e1"
+lighter_background = "#f2e9e1"
+foreground = "#575279"
+muted = "#cecacd"
+accent = "#56949f"
+red = "#b4637a"
+yellow = "#ea9d34"
+green = "#286983"
+cyan = "#d7827e"
+"##,
+        ),
+        (
+            "solitude",
+            r##"mode = "dark"
+background = "#101315"
+dark_background = "#0c0e10"
+lighter_background = "#101315"
+foreground = "#cacccc"
+muted = "#4b4e55"
+accent = "#798186"
+red = "#565d60"
+yellow = "#d9dbdc"
+green = "#9fa5a9"
+cyan = "#707070"
+"##,
+        ),
+        (
+            "starship",
+            r##"mode = "dark"
+background = "#1c1c1e"
+dark_background = "#161618"
+lighter_background = "#2c2c2e"
+foreground = "#f5f5f7"
+muted = "#8e8e93"
+accent = "#ff9f0a"
+red = "#ff5f4a"
+yellow = "#ffc27a"
+green = "#ff9f0a"
+cyan = "#a6dcef"
+"##,
+        ),
+        (
+            "tokyo-night",
+            r##"mode = "dark"
+background = "#1a1b26"
+dark_background = "#13141c"
+lighter_background = "#24283b"
+foreground = "#a9b1d6"
+muted = "#414868"
+accent = "#7aa2f7"
+red = "#f7768e"
+yellow = "#e0af68"
+green = "#9ece6a"
+cyan = "#449dab"
+"##,
+        ),
+        (
+            "vantablack",
+            r##"mode = "dark"
+background = "#000000"
+dark_background = "#090909"
+lighter_background = "#1a1a1a"
+foreground = "#ffffff"
+muted = "#7a7a7a"
+accent = "#8d8d8d"
+red = "#a4a4a4"
+yellow = "#cecece"
+green = "#b6b6b6"
+cyan = "#b0b0b0"
+"##,
+        ),
+        (
+            "white",
+            r##"mode = "light"
+background = "#ffffff"
+dark_background = "#f5f5f5"
+lighter_background = "#c0c0c0"
+foreground = "#000000"
+muted = "#808080"
+accent = "#6e6e6e"
+red = "#2a2a2a"
+yellow = "#4a4a4a"
+green = "#3a3a3a"
+cyan = "#3e3e3e"
+"##,
+        ),
+    ];
+
+    #[test]
+    fn secondary_status_and_placeholder_text_meet_their_contrast_on_every_backdrop() {
+        let themes = STOCK_PALETTES
+            .iter()
+            .copied()
+            .chain(std::iter::once(("fallback", "")));
+        for (theme, input) in themes {
+            let palette = OmarchyPalette::parse(input).unwrap();
+            let tokens = palette.tokens();
+            let (foreground, accent) = (rgb(&palette.foreground), rgb(&palette.accent));
+            let surfaces = [
+                rgb(&palette.background),
+                rgb(&palette.dark_background),
+                rgb(&tokens.card),
+            ];
+            let check = |name: &str, color: &str, minimum: f64, backdrop: &dyn Fn(Rgb) -> Rgb| {
+                for surface in surfaces {
+                    let ratio = contrast(rgb(color), backdrop(surface).map(f64::round));
+                    assert!(ratio >= minimum, "{theme}: {name} {color} is {ratio:.2}:1");
+                }
+            };
+            for (name, color, minimum) in [
+                ("text_secondary", &tokens.text_secondary, TEXT_CONTRAST),
+                ("text_disabled", &tokens.text_disabled, DISABLED_CONTRAST),
+            ] {
+                // Plain surface, hover (fg 4%), the info tint (fg 6%), chips
+                // (fg 7%) and selected rows (accent 14%).
+                check(name, color, minimum, &|s| s);
+                for amount in [0.04, 0.06, FG_TINT] {
+                    check(name, color, minimum, &|s| mix(s, foreground, amount));
+                }
+                check(name, color, minimum, &|s| mix(s, accent, SELECTION_TINT));
+            }
+            for (name, color) in [
+                ("success", &tokens.success),
+                ("warning", &tokens.warning),
+                ("danger", &tokens.danger),
+                ("partial", &tokens.partial),
+            ] {
+                let status = rgb(color);
+                check(name, color, TEXT_CONTRAST, &|s| s);
+                check(name, color, TEXT_CONTRAST, &|s| mix(s, status, 0.08));
+                check(name, color, TEXT_CONTRAST, &|s| mix(s, status, STATUS_TINT));
+            }
+        }
+    }
+
+    #[test]
+    fn readable_colors_keep_the_theme_color_when_it_already_passes() {
+        let palette = OmarchyPalette::default();
+        let tokens = palette.tokens();
+        assert_eq!(tokens.text_secondary, FALLBACK_MUTED);
+        assert_eq!(tokens.success, FALLBACK_GREEN);
+        assert_eq!(tokens.warning, FALLBACK_YELLOW);
     }
 
     #[test]
@@ -1580,6 +2296,7 @@ foreground = "#abcdef"
             ".toolport-nav-item {",
             ".toolport-mode-badge {",
             ".toolport-state-muted {",
+            ".toolport-section-label {",
         ] {
             let start = css.find(selector).expect("the selector is generated");
             let rule = &css[start..start + css[start..].find('}').unwrap()];

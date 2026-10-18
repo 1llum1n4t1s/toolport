@@ -194,7 +194,7 @@ function addDismissed(prev: Set<string>, keys: string[]): Set<string> {
 function SecurityResting() {
   const { t: tr } = useI18n();
   return (
-    <div className="mb-4 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-4 py-2.5 text-xs text-muted-foreground">
+    <div className="mb-4 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-4 py-2.5 text-meta text-muted-foreground">
       <ShieldCheck className="size-4 shrink-0 text-owned" />
       <span>
         <span className="block font-semibold text-foreground">
@@ -224,7 +224,7 @@ function SecurityLoadNotice({
     return (
       <div
         role="status"
-        className="mb-4 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-4 py-2.5 text-xs text-muted-foreground"
+        className="mb-4 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-4 py-2.5 text-meta text-muted-foreground"
       >
         <ShieldCheck className="size-4 shrink-0" />
         <span>{tr("Checking protection status…")}</span>
@@ -236,7 +236,7 @@ function SecurityLoadNotice({
   return (
     <div
       role="alert"
-      className="mb-4 flex items-center gap-3 toolport-alert border-warning bg-warning/8 px-4 py-2.5 text-xs"
+      className="mb-4 flex items-center gap-3 toolport-alert border-warning bg-warning/8 px-4 py-2.5 text-meta"
     >
       <AlertTriangle className="size-4 shrink-0 text-muted-foreground" />
       <span className="text-muted-foreground">
@@ -268,7 +268,7 @@ function AuditStaleNotice({ onRetry }: { onRetry: () => void }) {
   return (
     <div
       role="alert"
-      className="mb-4 flex items-center gap-3 toolport-alert border-warning bg-warning/8 px-4 py-2.5 text-xs"
+      className="mb-4 flex items-center gap-3 toolport-alert border-warning bg-warning/8 px-4 py-2.5 text-meta"
     >
       <AlertTriangle className="size-4 shrink-0 text-warning" />
       <span className="text-muted-foreground">
@@ -327,19 +327,19 @@ function SecurityNotices({
           {collapsed.length}
         </span>
         <ChevronRight
-          className={`ml-auto size-4 text-muted-foreground/70 transition-transform ${
+          className={`ml-auto size-4 text-muted-foreground transition-transform ${
             open ? "rotate-90" : ""
           }`}
         />
       </button>
       {open && (
         <>
-          <p className="mt-2 mb-3 max-w-2xl text-xs text-muted-foreground">
+          <p className="mt-2 mb-3 max-w-2xl text-meta text-muted-foreground">
             {tr(
               "A tool changed after you approved it, a tool's definition contains instruction-like content, or a tool returned data that looks like injected instructions. Usually benign, but it's how rug pulls, tool poisoning, and agentjacking work, so Toolport flags it (and labels suspicious tool output as data). Dismiss the ones you've reviewed.",
             )}
           </p>
-          <ul className="space-y-1.5 text-xs">
+          <ul className="space-y-1.5 text-meta">
             {collapsed.slice(0, 10).map(({ e, count }) => {
               const badge = eventBadge(e);
               return (
@@ -371,19 +371,19 @@ function SecurityNotices({
                     <button
                       onClick={() => onDismiss(e)}
                       aria-label={tr("Dismiss this notice")}
-                      className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-warning/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-warning"
+                      className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-warning/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-warning"
                     >
                       <X className="size-3.5" />
                     </button>
                   </div>
                   {e.detail && (
-                    <p className="ml-1 max-w-2xl text-[11px] leading-relaxed break-words text-muted-foreground">
+                    <p className="ml-1 max-w-2xl text-meta leading-relaxed break-words text-muted-foreground">
                       {e.detail}
                     </p>
                   )}
                   {e.evidence && (
-                    <p className="ml-1 max-w-2xl border-l-2 border-warning/40 pl-2 font-mono text-[11px] leading-relaxed break-words text-muted-foreground">
-                      <span className="mr-1 select-none font-sans text-muted-foreground/70">
+                    <p className="ml-1 max-w-2xl border-l-2 border-warning/40 pl-2 font-mono text-meta leading-relaxed break-words text-muted-foreground">
+                      <span className="mr-1 select-none font-sans text-muted-foreground">
                         {tr("matched:")}
                       </span>
                       {e.evidence}
@@ -419,14 +419,14 @@ function QuietDriftHistory({
   const [open, setOpen] = useState(false);
   return (
     <div className="mb-4 rounded-lg border border-border/60 bg-muted/20 p-3">
-      <div className="flex w-full items-center gap-2 text-xs text-muted-foreground">
+      <div className="flex w-full items-center gap-2 text-meta text-muted-foreground">
         <button
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           className="flex flex-1 items-center gap-2 text-left"
         >
           <History className="size-3.5 shrink-0" />
-          <span className="font-medium text-foreground/80">
+          <span className="font-medium text-muted-foreground">
             {tr("New & changed tools")}
           </span>
           <span className="rounded-full bg-muted px-1.5 py-0.5 font-medium">
@@ -438,30 +438,30 @@ function QuietDriftHistory({
         </button>
         <button
           onClick={onDismissAll}
-          className="shrink-0 rounded px-2 py-0.5 font-medium text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border"
+          className="shrink-0 rounded px-2 py-0.5 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border"
         >
           {tr("Dismiss all")}
         </button>
       </div>
       {open && (
         <>
-          <p className="mt-2 mb-2 max-w-2xl text-xs text-muted-foreground">
+          <p className="mt-2 mb-2 max-w-2xl text-meta text-muted-foreground">
             {tr(
               "New tools first seen, and benign, non-destructive changes to tools you've already approved (vendors revise beta tools server-side). Kept for the record, not flagged as a risk, the approval and destructive-tool gates still guard every call. Dismiss any you've reviewed.",
             )}
           </p>
-          <ul className="space-y-1 text-xs">
+          <ul className="space-y-1 text-meta">
             {events.slice(0, 20).map((e) => (
               <li key={renderKey(e)} className="flex items-center gap-2">
                 <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
                   {e.change === "added" ? tr("new tool") : tr("changed")}
                 </span>
                 <code className="font-mono text-muted-foreground">{e.tool}</code>
-                <span className="ml-auto text-muted-foreground/70">{fmtTs(e.ts)}</span>
+                <span className="ml-auto text-muted-foreground">{fmtTs(e.ts)}</span>
                 <button
                   onClick={() => onDismiss(e)}
                   aria-label={tr("Dismiss this change")}
-                  className="rounded p-0.5 text-muted-foreground/50 transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border"
+                  className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border"
                 >
                   <X className="size-3.5" />
                 </button>
@@ -523,7 +523,7 @@ function SavingsBanner({ savings }: { savings: SavingsSummary }) {
           </span>
         </span>
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">
+      <p className="mt-2 text-meta text-muted-foreground">
         {hasCatalog
           ? tr(
               "Full catalog baselines minus all catalog and search responses. Counted locally; not a billing figure.",
@@ -533,7 +533,7 @@ function SavingsBanner({ savings }: { savings: SavingsSummary }) {
             )}
       </p>
       {(savings.previousReportedTokensSaved ?? 0) !== 0 && (
-        <div className="mt-3 border-t border-success/20 pt-3 text-xs text-muted-foreground">
+        <div className="mt-3 border-t border-success/20 pt-3 text-meta text-muted-foreground">
           <p className="font-medium">
             {tr("Old estimate: {tokens} tokens", {
               tokens: exact(savings.previousReportedTokensSaved),
@@ -555,7 +555,7 @@ function SavingsBanner({ savings }: { savings: SavingsSummary }) {
           />
         </button>
       )}
-      <details className="mt-3 text-xs text-muted-foreground">
+      <details className="mt-3 text-meta text-muted-foreground">
         <summary className="cursor-pointer">{tr("How this is measured")}</summary>
         <div className="mt-2 space-y-2">
           <p>{method}</p>
@@ -685,7 +685,7 @@ function ServerRow({ s }: { s: ServerStat }) {
             key={t.tool}
             className="border-b border-border/40 bg-muted/20 last:border-0"
           >
-            <td className="py-1.5 pr-3 pl-9 font-mono text-xs text-muted-foreground">
+            <td className="py-1.5 pr-3 pl-9 font-mono text-meta text-muted-foreground">
               {t.tool}
             </td>
             <td className="px-3 py-1.5 text-right text-xs tabular-nums text-muted-foreground">
@@ -734,7 +734,7 @@ function PiiBadge({ entry }: { entry: AuditEntry }) {
   if (entry.piiIncomplete) {
     return (
       <span
-        className="flex shrink-0 items-center gap-1 rounded bg-warning/15 px-1.5 py-0.5 text-[10px] text-warning"
+        className="flex shrink-0 items-center gap-1 rounded bg-warning/15 px-1.5 py-0.5 text-xs text-warning"
         title={tr(
           "{count} values masked, but the pass did not fully apply: some values reached the model in the clear (the session map was full, or the result exceeded the scan cap).",
           { count: replaced },
@@ -749,7 +749,7 @@ function PiiBadge({ entry }: { entry: AuditEntry }) {
   if (replaced === 0) return null;
   return (
     <span
-      className="flex shrink-0 items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+      className="flex shrink-0 items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
       title={tr(
         "Personal values in this result were replaced before reaching the model. The values themselves are never logged.",
       )}
@@ -845,13 +845,13 @@ function CallRow({ e }: { e: AuditEntry }) {
               {e.kind === "internal" ? internalActivityLabel(e.tool) : e.server}
             </span>
             {e.kind !== "internal" && (
-              <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+              <span className="min-w-0 truncate font-mono text-meta text-muted-foreground">
                 {e.tool}
               </span>
             )}
           </div>
           <div
-            className="mt-1 truncate text-xs text-muted-foreground"
+            className="mt-1 truncate text-meta text-muted-foreground"
             title={[
               meta,
               clientIdentityTooltip(e),
@@ -881,11 +881,13 @@ function CallRow({ e }: { e: AuditEntry }) {
       </div>
       {open && hasDetail && (
         <div className="border-t border-border/50 bg-destructive/5 px-3 py-2 pl-9">
-          <p className="font-mono text-xs whitespace-pre-wrap break-words text-destructive">
+          <p className="font-mono text-meta whitespace-pre-wrap break-words text-destructive">
             {e.error ?? e.failureKind?.replace(/_/g, " ")}
           </p>
           {e.runId && (
-            <p className="mt-1 font-mono text-xs">{tr("Run: {run}", { run: e.runId })}</p>
+            <p className="mt-1 font-mono text-meta">
+              {tr("Run: {run}", { run: e.runId })}
+            </p>
           )}
         </div>
       )}
@@ -987,7 +989,7 @@ export function TelemetryNotice({
   return (
     <div
       role="status"
-      className="mb-4 toolport-alert border-warning bg-warning/8 px-4 py-2.5 text-xs"
+      className="mb-4 toolport-alert border-warning bg-warning/8 px-4 py-2.5 text-meta"
     >
       {messages.map((message) => (
         <p key={message}>{message}</p>
@@ -1015,7 +1017,7 @@ function StatsPanel({ stats }: { stats: AuditStats }) {
           <div className="text-2xl font-semibold tabular-nums">
             {stats.total.toLocaleString(locale)}
           </div>
-          <div className="text-xs text-muted-foreground">{tr("calls recorded")}</div>
+          <div className="text-meta text-muted-foreground">{tr("calls recorded")}</div>
         </div>
         <div
           className={`rounded-lg border p-3 ${stats.errors > 0 ? "border-destructive/40 bg-destructive/[0.04]" : ""}`}
@@ -1025,7 +1027,7 @@ function StatsPanel({ stats }: { stats: AuditStats }) {
           >
             {stats.errors}
           </div>
-          <div className="text-xs text-muted-foreground">
+          <div className="text-meta text-muted-foreground">
             {tr("errors ({value1})", { value1: errPct })}
           </div>
         </div>
@@ -1033,7 +1035,7 @@ function StatsPanel({ stats }: { stats: AuditStats }) {
           <div className="text-2xl font-semibold tabular-nums">
             {stats.servers.length}
           </div>
-          <div className="text-xs text-muted-foreground">{tr("servers used")}</div>
+          <div className="text-meta text-muted-foreground">{tr("servers used")}</div>
         </div>
       </div>
 
@@ -1051,7 +1053,7 @@ function StatsPanel({ stats }: { stats: AuditStats }) {
               />
             ),
             value2: (
-              <span className="text-xs font-normal text-muted-foreground/70">
+              <span className="text-meta font-normal text-muted-foreground">
                 {stats.servers.length === 1
                   ? tr("{count} server", { count: stats.servers.length })
                   : tr("{count} servers", { count: stats.servers.length })}
@@ -1086,7 +1088,7 @@ function StatsPanel({ stats }: { stats: AuditStats }) {
               </tbody>
             </table>
           </div>
-          <p className="text-xs text-muted-foreground/70">
+          <p className="text-meta text-muted-foreground">
             {tr("Click a server to see its per-tool breakdown.")}
           </p>
         </>
@@ -1136,12 +1138,12 @@ function InspectRow({ e }: { e: InspectEntry }) {
           <XCircle className="size-4 shrink-0 text-destructive" />
         )}
         <span className="min-w-0 truncate font-medium">{e.server}</span>
-        <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+        <span className="min-w-0 truncate font-mono text-meta text-muted-foreground">
           {e.tool}
         </span>
         {(e.clientName || e.client) && (
           <span
-            className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"
+            className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
             title={
               e.client
                 ? tr("Client: {value1}", { value1: e.client })
@@ -1154,22 +1156,22 @@ function InspectRow({ e }: { e: InspectEntry }) {
         <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
           {fmtMs(e.durationMs ?? null)}
         </span>
-        <span className="shrink-0 text-xs text-muted-foreground">
+        <span className="shrink-0 text-meta text-muted-foreground">
           {fmtTs(e.ts, "time")}
         </span>
       </div>
       {open && (
         <div className="border-t border-border/50 bg-muted/20 px-3 py-2 pl-9">
-          <div className="mb-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+          <div className="mb-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">
             {tr("Request")}
           </div>
-          <pre className="mb-3 overflow-x-auto rounded bg-background/60 p-2 font-mono text-xs whitespace-pre-wrap break-words">
+          <pre className="mb-3 overflow-x-auto rounded bg-background/60 p-2 font-mono text-meta whitespace-pre-wrap break-words">
             {fmtBody(e.request)}
           </pre>
-          <div className="mb-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+          <div className="mb-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">
             {tr("Response")}
           </div>
-          <pre className="overflow-x-auto rounded bg-background/60 p-2 font-mono text-xs whitespace-pre-wrap break-words">
+          <pre className="overflow-x-auto rounded bg-background/60 p-2 font-mono text-meta whitespace-pre-wrap break-words">
             {fmtBody(e.response)}
           </pre>
         </div>
@@ -1213,49 +1215,49 @@ function DiscoveryRow({ t }: { t: SearchTrace }) {
           }`}
         />
         <Search className="size-4 shrink-0 text-owned" />
-        <span className="min-w-0 truncate font-mono text-xs">
+        <span className="min-w-0 truncate font-mono text-meta">
           {tr("“{value1}”", { value1: t.query || tr("(empty)") })}
         </span>
         {t.client && (
-          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
             {t.client}
           </span>
         )}
         {t.escalated && (
-          <span className="shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-[11px] text-warning">
+          <span className="shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-xs text-warning">
             {tr("loop-broken")}
           </span>
         )}
         {t.mode === "semantic" && (
-          <span className="shrink-0 rounded bg-owned/10 px-1.5 py-0.5 text-[11px] text-owned">
+          <span className="shrink-0 rounded bg-owned/10 px-1.5 py-0.5 text-xs text-owned">
             {tr("semantic")}
           </span>
         )}
         <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
           {resultSummary}
         </span>
-        <span className="shrink-0 text-xs text-muted-foreground">
+        <span className="shrink-0 text-meta text-muted-foreground">
           {fmtTs(t.ts, "time")}
         </span>
       </div>
       {open && (
-        <div className="border-t border-border/50 bg-muted/20 px-3 py-2 pl-9 text-xs">
+        <div className="border-t border-border/50 bg-muted/20 px-3 py-2 pl-9 text-meta">
           {hit ? (
             t.ranking && t.ranking.length > 0 ? (
               <div className="mb-2 space-y-1">
                 {t.ranking.map((r) => (
                   <div key={r.name} className="flex items-baseline gap-2">
-                    <span className="w-5 shrink-0 text-right tabular-nums text-[11px] text-muted-foreground">
+                    <span className="w-5 shrink-0 text-right tabular-nums text-xs text-muted-foreground">
                       #{r.rank}
                     </span>
                     <span
-                      className={`shrink-0 font-mono text-[11px] ${
+                      className={`shrink-0 font-mono text-meta ${
                         r.name === t.top ? "text-owned" : "text-foreground"
                       }`}
                     >
                       {r.name}
                     </span>
-                    <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+                    <span className="min-w-0 truncate text-meta text-muted-foreground">
                       {r.pinned
                         ? tr("pinned prerequisite")
                         : r.fallback
@@ -1274,7 +1276,7 @@ function DiscoveryRow({ t }: { t: SearchTrace }) {
                 {t.names.map((n) => (
                   <span
                     key={n}
-                    className={`rounded px-1.5 py-0.5 font-mono text-[11px] ${
+                    className={`rounded px-1.5 py-0.5 font-mono text-meta ${
                       n === t.top
                         ? "bg-owned/15 text-owned"
                         : "bg-muted text-muted-foreground"
@@ -1350,7 +1352,7 @@ function PanelLoadingNotice({ label, icon: Icon }: { label: string; icon: Lucide
   return (
     <div
       role="status"
-      className="mb-6 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-4 text-xs text-muted-foreground"
+      className="mb-6 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-4 text-meta text-muted-foreground"
     >
       <Icon className="size-4 shrink-0" />
       <span>{tr("Loading {value1}…", { value1: label.toLowerCase() })}</span>
@@ -1366,7 +1368,7 @@ function PanelErrorNotice({ label, onRetry }: { label: string; onRetry: () => vo
   return (
     <div
       role="alert"
-      className="mb-6 flex items-center gap-3 toolport-alert border-warning bg-warning/8 p-4 text-xs"
+      className="mb-6 flex items-center gap-3 toolport-alert border-warning bg-warning/8 p-4 text-meta"
     >
       <AlertTriangle className="size-4 shrink-0 text-warning" />
       <span className="text-muted-foreground">
@@ -1438,10 +1440,10 @@ function DiscoveryTraces({
 
   if (entries.length === 0)
     return (
-      <div className="mb-6 rounded-lg border border-border/60 bg-muted/20 p-4 text-xs text-muted-foreground">
+      <div className="mb-6 rounded-lg border border-border/60 bg-muted/20 p-4 text-meta text-muted-foreground">
         <div className="mb-1 flex items-center gap-2">
           <Search className="size-4 shrink-0 text-owned" />
-          <span className="font-medium text-foreground/80">{tr("Discovery")}</span>
+          <span className="font-medium text-muted-foreground">{tr("Discovery")}</span>
         </div>
         {searches > 0
           ? tr(
@@ -1472,7 +1474,7 @@ function DiscoveryTraces({
       </button>
       {open && (
         <>
-          <p className="mt-2 mb-3 max-w-2xl text-xs text-muted-foreground">
+          <p className="mt-2 mb-3 max-w-2xl text-meta text-muted-foreground">
             {tr(
               "What the model searched for and what Toolport handed back. Each search returns matching tool schemas. Match counts and returned text bytes are exact at Toolport's MCP boundary; token figures are estimates. Local and bounded: tool names only, never arguments or results.",
             )}
@@ -1515,24 +1517,24 @@ function ToolIdentityRow({ t }: { t: ToolIdentity }) {
             open ? "rotate-90" : ""
           }`}
         />
-        <span className="min-w-0 truncate font-mono text-xs">{t.alias}</span>
-        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+        <span className="min-w-0 truncate font-mono text-meta">{t.alias}</span>
+        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
           {t.serverName || t.serverId || tr("unattributed")}
         </span>
         {t.quarantined && (
-          <span className="shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-[11px] text-warning">
+          <span className="shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-xs text-warning">
             {tr("quarantined")}
           </span>
         )}
         <span
-          className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground"
+          className="ml-auto shrink-0 font-mono text-meta text-muted-foreground"
           title={t.fingerprint}
         >
           {fpShort}
         </span>
       </div>
       {open && (
-        <div className="border-t border-border/50 bg-muted/20 px-3 py-2 pl-9 text-xs">
+        <div className="border-t border-border/50 bg-muted/20 px-3 py-2 pl-9 text-meta">
           <dl className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1">
             <dt className="text-muted-foreground">{tr("Upstream tool")}</dt>
             <dd className="font-mono break-all">{t.upstream || "-"}</dd>
@@ -1554,7 +1556,7 @@ function ToolIdentityRow({ t }: { t: ToolIdentity }) {
             ) : (
               <>
                 <dt className="text-muted-foreground">{tr("History")}</dt>
-                <dd className="text-muted-foreground/80">
+                <dd className="text-muted-foreground">
                   {tr(
                     "This tool's baseline predates first-seen tracking, so it has no dates yet. Toolport fills them in automatically the next time a client lists tools through the gateway.",
                   )}
@@ -1597,11 +1599,11 @@ function IdentityServerGroup({
           }`}
         />
         <span className="min-w-0 truncate text-sm font-medium">{label}</span>
-        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
           {items.length}
         </span>
         {quarantined > 0 && (
-          <span className="shrink-0 rounded-full bg-warning/15 px-1.5 py-0.5 text-[11px] font-medium text-warning">
+          <span className="shrink-0 rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning">
             {tr("{value1} quarantined", { value1: quarantined })}
           </span>
         )}
@@ -1721,7 +1723,7 @@ function ToolIdentities({ refreshKey }: { refreshKey: number }) {
       </button>
       {open && (
         <>
-          <p className="mt-2 mb-3 max-w-2xl text-xs text-muted-foreground">
+          <p className="mt-2 mb-3 max-w-2xl text-meta text-muted-foreground">
             {tr(
               "What each model-visible tool name actually maps to: its source server and profiles, the pinned definition fingerprint drift detection checks against, and when it was first seen or last changed. Prefixing helps the model pick a tool; this helps you verify what crossed the boundary.",
             )}
@@ -1739,13 +1741,13 @@ function ToolIdentities({ refreshKey }: { refreshKey: number }) {
           </div>
 
           {filtered.length === 0 ? (
-            <p className="py-6 text-center text-xs text-muted-foreground">
+            <p className="py-6 text-center text-meta text-muted-foreground">
               {tr('No server or tool matches "{value1}".', { value1: query })}
             </p>
           ) : (
             <>
               {q && (
-                <p className="mb-2 text-xs text-muted-foreground/70">
+                <p className="mb-2 text-meta text-muted-foreground">
                   {shownTools === 1
                     ? filtered.length === 1
                       ? tr("{value1} tool in {value3}  server", {
@@ -1836,7 +1838,7 @@ function LiveInspector({ refreshKey }: { refreshKey: number }) {
       </button>
       {open && (
         <>
-          <p className="mt-2 mb-3 max-w-2xl text-xs text-muted-foreground">
+          <p className="mt-2 mb-3 max-w-2xl text-meta text-muted-foreground">
             {tr(
               "Ephemeral, local, opt-in. While live inspection is on, Toolport keeps the last 50 tool calls' arguments and results here so you can inspect them. This buffer is separate from the audit log, never leaves your machine, and clears when you turn inspection off or restart the gateway.",
             )}
@@ -2240,7 +2242,7 @@ export function ActivityView({
       <div>
         {banner}
         <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
-          <AlertTriangle className="size-10 text-destructive/70" />
+          <AlertTriangle className="size-10 text-destructive" />
           <div>
             <p className="font-medium">{tr("Couldn't load activity")}</p>
             <p className="max-w-md text-sm text-muted-foreground">
@@ -2281,7 +2283,7 @@ export function ActivityView({
         {banner}
         <AuditStaleNotice onRetry={retryLoads} />
         <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
-          <AlertTriangle className="size-10 text-warning/70" />
+          <AlertTriangle className="size-10 text-warning" />
           <div>
             <p className="font-medium">{tr("No current activity status")}</p>
             <p className="max-w-md text-sm text-muted-foreground">
@@ -2300,7 +2302,7 @@ export function ActivityView({
       <div>
         {banner}
         <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
-          <ScrollText className="size-10 text-muted-foreground/50" />
+          <ScrollText className="size-10 text-muted-foreground" />
           <div>
             <p className="font-medium">{tr("No activity yet")}</p>
             <p className="max-w-md text-sm text-muted-foreground">
@@ -2330,7 +2332,7 @@ export function ActivityView({
             className={`size-4 transition-transform ${logOpen ? "rotate-90" : ""}`}
           />
           {tr("Recent calls and approvals")}
-          <span className="text-xs font-normal text-muted-foreground/70">
+          <span className="text-meta font-normal text-muted-foreground">
             {tr("latest {count}", { count: entries.length })}
           </span>
         </button>
@@ -2366,7 +2368,7 @@ export function ActivityView({
         />
       </div>
 
-      <p className="mb-2 text-xs text-muted-foreground">
+      <p className="mb-2 text-meta text-muted-foreground">
         {stats
           ? tr(
               stats.total === 1
@@ -2419,7 +2421,7 @@ export function ActivityView({
             >
               {tr("Errors only")}
             </button>
-            <span className="ml-auto text-xs text-muted-foreground">
+            <span className="ml-auto text-meta text-muted-foreground">
               {serverFilter || errorsOnly ? tr("Filtered") : ""}
             </span>
           </div>

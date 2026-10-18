@@ -250,12 +250,12 @@ function Welcome({
       <div className="onboarding-hero grid gap-2.5">
         {benefits.map(({ icon: Icon, title, body }) => (
           <div key={title} className="flex items-start gap-3">
-            <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+            <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
               <Icon className="size-4" />
             </div>
             <div>
               <div className="text-sm font-medium">{title}</div>
-              <div className="text-xs text-muted-foreground">{body}</div>
+              <div className="text-meta text-muted-foreground">{body}</div>
             </div>
           </div>
         ))}
@@ -266,7 +266,7 @@ function Welcome({
           <Waypoints className="size-4" />
           <span className="flex flex-col items-start">
             <span>{t("Set up MCP servers")}</span>
-            <span className="text-2xs font-normal opacity-80">
+            <span className="text-meta font-normal">
               {" "}
               {t("Connect servers once and share them with every AI tool")}{" "}
             </span>
@@ -286,7 +286,7 @@ function Welcome({
         <button
           type="button"
           onClick={() => openExternal(TEAMS_MARKETING_URL)}
-          className="self-start text-2xs text-muted-foreground transition hover:text-foreground"
+          className="self-start text-meta text-muted-foreground transition hover:text-foreground"
         >
           {" "}
           {t("What is Toolport for Teams? →")}{" "}
@@ -462,7 +462,7 @@ export function JoinTeam({
               value={serverUrl}
               onChange={(e) => setServerUrl(e.target.value)}
             />
-            <span className="text-xs text-muted-foreground">
+            <span className="text-meta text-muted-foreground">
               {" "}
               {t(
                 "Only change this if your team runs its own self-hosted Toolport server.",
@@ -473,7 +473,7 @@ export function JoinTeam({
           <button
             type="button"
             onClick={() => setAdvanced(true)}
-            className="flex items-center gap-1.5 self-start text-2xs text-muted-foreground transition hover:text-foreground"
+            className="flex items-center gap-1.5 self-start text-meta text-muted-foreground transition hover:text-foreground"
           >
             <KeyRound className="size-3" />{" "}
             {t("Self-hosted server? Set a custom URL")}{" "}
@@ -503,7 +503,7 @@ export function JoinTeam({
             <button
               type="button"
               onClick={() => setPending(null)}
-              className="ml-1 text-xs text-muted-foreground underline transition hover:text-foreground"
+              className="ml-1 text-meta text-muted-foreground underline transition hover:text-foreground"
             >
               {" "}
               {t("Cancel")}{" "}
@@ -612,7 +612,7 @@ function ConnectClients({
               >
                 <span className="truncate text-sm">{client.name}</span>
                 {connected ? (
-                  <span className="flex shrink-0 items-center gap-1.5 text-xs text-success">
+                  <span className="flex shrink-0 items-center gap-1.5 text-meta text-success">
                     <Check className="size-3.5" /> {t("Connected")}{" "}
                   </span>
                 ) : (
@@ -808,7 +808,7 @@ function Done({
       {checkingHealth && (
         <div
           role="status"
-          className="flex items-center gap-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+          className="flex items-center gap-2 rounded-md bg-muted/40 px-3 py-2 text-meta text-muted-foreground"
         >
           <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />{" "}
           {t("Checking server health…")}{" "}
@@ -828,18 +828,18 @@ function Done({
           <ul className="flex flex-col gap-1.5">
             {broken.map((r) => (
               <li key={r.serverId} className="flex flex-col gap-0.5">
-                <span className="text-xs font-medium text-foreground/80">
+                <span className="text-meta font-medium text-foreground">
                   {nameFor(r.serverId)}
                 </span>
                 {r.error && (
-                  <span className="max-h-20 overflow-y-auto text-xs break-words whitespace-pre-wrap text-muted-foreground">
+                  <span className="max-h-20 overflow-y-auto text-meta break-words whitespace-pre-wrap text-muted-foreground">
                     {r.error}
                   </span>
                 )}
               </li>
             ))}
           </ul>
-          <span className="text-xs text-muted-foreground">
+          <span className="text-meta text-muted-foreground">
             {" "}
             {t(
               "Most first-run failures are a missing runtime (Node/npx or Python/uvx) or a command that needs a fix. Sort it out, then retry from that server's card (the button below takes you to the main screen).",
@@ -849,7 +849,7 @@ function Done({
       )}
 
       {verificationFailed && (
-        <div className="flex items-center gap-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+        <div className="flex items-center gap-2 rounded-md bg-muted/40 px-3 py-2 text-meta text-muted-foreground">
           <span>
             {" "}
             {t("Couldn't verify your servers started, the health check didn't run.")}{" "}
@@ -985,8 +985,8 @@ export function VerifyCall({
                     )
               }
               values={{
-                tool: <code className="text-xs">{hit.tool}</code>,
-                server: <code className="text-xs">{hit.server}</code>,
+                tool: <code className="text-meta">{hit.tool}</code>,
+                server: <code className="text-meta">{hit.server}</code>,
                 client: client.name,
               }}
             />
@@ -996,7 +996,7 @@ export function VerifyCall({
         <>
           {status === "waiting" && (
             <>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-meta text-muted-foreground">
                 {" "}
                 {t(
                   "In {client}, ask your agent to run this. It's read-only, it just lists your tools through Toolport.",
@@ -1004,7 +1004,7 @@ export function VerifyCall({
                 )}{" "}
               </p>
               <div className="flex items-center gap-2 rounded border bg-background px-2 py-1.5">
-                <code className="min-w-0 flex-1 truncate text-xs">{prompt}</code>
+                <code className="min-w-0 flex-1 truncate text-meta">{prompt}</code>
                 <button
                   type="button"
                   onClick={() => void copyPrompt()}
@@ -1018,7 +1018,7 @@ export function VerifyCall({
           )}
 
           {status === "snapshot" || status === "waiting" ? (
-            <div className="flex items-start gap-2 text-xs text-muted-foreground">
+            <div className="flex items-start gap-2 text-meta text-muted-foreground">
               <Loader2 className="mt-0.5 size-3.5 shrink-0 animate-spin" />
               <span>
                 {status === "snapshot"
@@ -1030,7 +1030,7 @@ export function VerifyCall({
               </span>
             </div>
           ) : status === "snapshot-failed" ? (
-            <div className="flex flex-col gap-1.5 rounded-md bg-warning/10 px-3 py-2 text-xs">
+            <div className="flex flex-col gap-1.5 rounded-md bg-warning/10 px-3 py-2 text-meta">
               <span className="font-medium text-warning">
                 {" "}
                 {t("Couldn't read the audit log, so this check did not start.")}{" "}
@@ -1050,7 +1050,7 @@ export function VerifyCall({
               </button>
             </div>
           ) : (
-            <div className="flex flex-col gap-1.5 rounded-md bg-warning/10 px-3 py-2 text-xs">
+            <div className="flex flex-col gap-1.5 rounded-md bg-warning/10 px-3 py-2 text-meta">
               <span className="font-medium text-warning">
                 {t("No call yet. Common fixes:")}
               </span>

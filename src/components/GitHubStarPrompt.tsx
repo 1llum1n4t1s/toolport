@@ -22,7 +22,7 @@ const RETURNING_DELAY_MS = 8000;
 const FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const SHELL =
-  "pointer-events-auto animate-in fade-in slide-in-from-bottom-2 border bg-popover/95 text-popover-foreground shadow-2xl backdrop-blur";
+  "pointer-events-auto animate-in fade-in slide-in-from-bottom-2 border bg-popover text-popover-foreground shadow-2xl";
 
 /** Which surface is on screen (null when none), for the toast-offset callback. */
 export type StarSurface = "returning" | "chip" | null;

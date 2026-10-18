@@ -177,7 +177,7 @@ export function PendingApprovals({
         role="alertdialog"
         aria-modal="false"
         aria-label={translate("Tool calls awaiting your approval")}
-        className="animate-in fade-in slide-in-from-top-2 pointer-events-auto relative flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-r-[10px] border-l-[3px] border-warning bg-popover shadow-2xl outline-none focus-visible:ring-2 focus-visible:ring-warning"
+        className="animate-in fade-in slide-in-from-top-2 pointer-events-auto relative flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-r-xl border-l-[3px] border-warning bg-popover shadow-2xl outline-none focus-visible:ring-2 focus-visible:ring-warning"
       >
         {/* Announce count changes to screen readers without re-announcing on every countdown
          * tick (the visible timer lives elsewhere; this text only changes when the count does). */}
@@ -199,7 +199,7 @@ export function PendingApprovals({
             <div className="text-sm font-semibold leading-tight">
               {t("Action required")}
             </div>
-            <div className="text-xs text-muted-foreground">
+            <div className="text-meta text-muted-foreground">
               <Trans
                 message={
                   pending.length > 1
@@ -256,7 +256,7 @@ export function PendingApprovals({
                           <span className="truncate text-muted-foreground">
                             {a.server}
                           </span>
-                          <span className="text-muted-foreground/50">/</span>
+                          <span className="text-muted-foreground">/</span>
                           <span className="truncate font-medium text-foreground">
                             {a.tool}
                           </span>
@@ -264,7 +264,7 @@ export function PendingApprovals({
                       )}
                     </div>
                     <div
-                      className="mt-1 text-xs"
+                      className="mt-1 text-meta"
                       title={clientIdentityTooltip(a) ?? a.client ?? undefined}
                     >
                       {translate("{client} wants to run this", { client: clientName })} ·{" "}
@@ -278,7 +278,7 @@ export function PendingApprovals({
                     </div>
                     {reportedLabel && (
                       <div
-                        className="mt-1 break-words text-xs text-muted-foreground [overflow-wrap:anywhere]"
+                        className="mt-1 break-words text-meta text-muted-foreground [overflow-wrap:anywhere]"
                         title={reportedLabel}
                         dir="auto"
                       >
@@ -309,7 +309,7 @@ export function PendingApprovals({
                     window is the only place they appear, and the model never sees them. */}
                 {piiRelease && (
                   <div className="mb-3">
-                    <div className="mb-1 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
+                    <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                       <Trans
                         message={msg("Would send to {value1}")}
                         values={{ value1: piiRelease.server }}
@@ -317,7 +317,7 @@ export function PendingApprovals({
                     </div>
                     <ul className="divide-y divide-border/60 toolport-alert border-destructive bg-destructive/8">
                       {piiRelease.values.map((v) => (
-                        <li key={v.token} className="p-2.5 text-xs">
+                        <li key={v.token} className="p-2.5 text-meta">
                           <div className="font-mono break-all text-foreground">
                             {v.value}
                           </div>
@@ -330,7 +330,7 @@ export function PendingApprovals({
                         </li>
                       ))}
                     </ul>
-                    <p className="mt-1.5 text-xs text-muted-foreground">
+                    <p className="mt-1.5 text-meta text-muted-foreground">
                       <Trans
                         message={
                           piiRelease.values.length === 1
@@ -348,7 +348,7 @@ export function PendingApprovals({
                 )}
 
                 <div className="mb-3">
-                  <div className="mb-1 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
+                  <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     {urlElicitation
                       ? translate("Why this is needed")
                       : translate("Arguments")}
@@ -358,7 +358,7 @@ export function PendingApprovals({
                       {urlElicitation.message}
                     </div>
                   ) : (
-                    <pre className="max-h-36 overflow-auto rounded-md border border-border/60 bg-muted/40 p-2.5 font-mono text-xs leading-relaxed">
+                    <pre className="max-h-36 overflow-auto rounded-md border border-border/60 bg-muted/40 p-2.5 font-mono text-meta leading-relaxed">
                       {JSON.stringify(a.arguments, null, 2)}
                     </pre>
                   )}
@@ -432,20 +432,20 @@ export function PendingApprovals({
                     definition, and the broker deliberately refuses to auto-approve a
                     release on one (SBS-696). */}
                 {!urlElicitation && !piiRelease && (
-                  <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
+                  <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-meta text-muted-foreground">
                     <span>{translate("Skip next time?")}</span>
                     <button
                       disabled={isBusy}
                       onClick={() => void decide(a.id, true, "session")}
-                      className="font-medium text-foreground/80 underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+                      className="font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
                     >
                       {translate("Allow for this session")}
                     </button>
-                    <span className="text-muted-foreground/40">·</span>
+                    <span className="text-muted-foreground">·</span>
                     <button
                       disabled={isBusy}
                       onClick={() => void decide(a.id, true, "always")}
-                      className="font-medium text-foreground/80 underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+                      className="font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
                     >
                       {translate("Always allow this tool")}
                     </button>

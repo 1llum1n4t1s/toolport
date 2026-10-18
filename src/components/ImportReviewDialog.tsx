@@ -129,7 +129,7 @@ function ImportReviewContent({
         <DialogTitle>{title ?? t("Review servers to import")}</DialogTitle>
       </DialogHeader>
       <div className="flex flex-col gap-4 py-1">
-        <p className="text-xs text-muted-foreground">
+        <p className="text-meta text-muted-foreground">
           {description ??
             t(
               "Review the commands and URLs before adding them. Leave any server unchecked to keep it as it is.",
@@ -137,8 +137,8 @@ function ImportReviewContent({
         </p>
         {details && (
           <details>
-            <summary className="text-xs">{t("Details")}</summary>
-            <p className="mt-2 whitespace-pre-wrap break-all text-xs text-muted-foreground">
+            <summary className="text-meta">{t("Details")}</summary>
+            <p className="mt-2 whitespace-pre-wrap break-all text-meta text-muted-foreground">
               {details}
             </p>
           </details>
@@ -163,7 +163,7 @@ function ImportReviewContent({
                       ? "ring-1 ring-warning"
                       : isSelected
                         ? "ring-1 ring-success/60"
-                        : "opacity-60"
+                        : ""
                   }`}
                   onClick={() =>
                     setSelected((previous) => {
@@ -180,7 +180,7 @@ function ImportReviewContent({
                     status={
                       <>
                         {!!item.credentials?.length && (
-                          <p className="mt-1 text-xs text-muted-foreground">
+                          <p className="mt-1 text-meta text-muted-foreground">
                             {item.credentials.some(
                               (env) =>
                                 env.required &&
@@ -203,7 +203,7 @@ function ImportReviewContent({
                           </p>
                         )}
                         {busy && isSelected && (
-                          <p role="status" className="mt-1 flex gap-2 text-xs">
+                          <p role="status" className="mt-1 flex gap-2 text-meta">
                             <Loader2 className="size-3 animate-spin" />
                             {t("Checking {name}...", { name: item.name })}
                           </p>
@@ -213,7 +213,7 @@ function ImportReviewContent({
                   />
                 </button>
                 {!!item.credentials?.length && (
-                  <details className="px-3 pb-3 text-xs">
+                  <details className="px-3 pb-3 text-meta">
                     <summary className="cursor-pointer">
                       {item.name} {t("credentials and settings")}
                     </summary>
@@ -272,7 +272,7 @@ function ImportReviewContent({
                   </details>
                 )}
                 {item.unsupported && (
-                  <p className="px-3 pb-2 text-xs text-warning">
+                  <p className="px-3 pb-2 text-meta text-warning">
                     {t("Unsupported:")}
                     {item.unsupported}
                   </p>
@@ -400,7 +400,7 @@ export function ImportRow({
         )}
         <span className="truncate text-sm font-medium">{item.name}</span>
         {
-          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+          <span className="ml-auto shrink-0 text-meta text-muted-foreground">
             {item.updates?.length
               ? t("Updates existing server")
               : item.isNew
@@ -410,12 +410,12 @@ export function ImportRow({
         }
       </div>
       {item.referenceReview?.map((line) => (
-        <p key={line} className="mt-1 text-xs break-all">
+        <p key={line} className="mt-1 text-meta break-all">
           {line}
         </p>
       ))}
       {!!item.updates?.length && (
-        <p className="mt-1 text-xs text-muted-foreground">
+        <p className="mt-1 text-meta text-muted-foreground">
           {t("Changes: {changes}", { changes: item.updates.join(", ") })}
         </p>
       )}
@@ -423,7 +423,7 @@ export function ImportRow({
         <p
           title={runs}
           aria-label={runs}
-          className="mt-1 flex min-w-0 font-mono text-xs text-muted-foreground"
+          className="mt-1 flex min-w-0 font-mono text-meta text-muted-foreground"
         >
           {runs.length > 72 ? (
             <>
@@ -436,14 +436,14 @@ export function ImportRow({
         </p>
       )}
       {!!item.envKeys?.length && !item.credentials?.length && (
-        <p className="mt-1 text-xs text-warning">
+        <p className="mt-1 text-meta text-warning">
           {t("Credentials: {keys}. Review their status before connecting.", {
             keys: item.envKeys.join(", "),
           })}
         </p>
       )}
       {shell && (
-        <p className="mt-1.5 flex items-center gap-1.5 text-xs text-warning">
+        <p className="mt-1.5 flex items-center gap-1.5 text-meta text-warning">
           <Trans
             message={"{value1}Runs a shell command. Only import setups you trust."}
             values={{ value1: <ShieldAlert className="size-3.5 shrink-0" /> }}
@@ -451,7 +451,7 @@ export function ImportRow({
         </p>
       )}
       {privateHost && (
-        <p className="mt-1.5 flex items-center gap-1.5 text-xs text-warning">
+        <p className="mt-1.5 flex items-center gap-1.5 text-meta text-warning">
           <Trans
             message={
               "{value1}Connects to a private or internal address. Only import setups you trust."

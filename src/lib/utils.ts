@@ -1,7 +1,13 @@
 import { translate } from "@/lib/i18n";
 import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
+import { extendTailwindMerge } from "tailwind-merge";
 import { getLocale } from "./i18n";
+
+// `text-meta` is the 13px secondary text size from index.css. Without this, tailwind-merge reads
+// it as a text color and drops it (or the color) when both appear in one cn() call.
+const twMerge = extendTailwindMerge({
+  extend: { classGroups: { "font-size": [{ text: ["meta"] }] } },
+});
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));

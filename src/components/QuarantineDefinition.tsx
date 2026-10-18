@@ -16,7 +16,7 @@ function Definition({ tool }: { tool: QuarantinedTool }) {
   const [error, setError] = useState<string | null>(null);
   if (!(tool.has_definition ?? Boolean(tool.definition))) {
     return (
-      <p className="mt-1 text-xs text-muted-foreground">
+      <p className="mt-1 text-meta text-muted-foreground">
         {t(
           "No saved definition. Approving captures the current definition for one more review. The tool stays blocked until then.",
         )}
@@ -25,7 +25,7 @@ function Definition({ tool }: { tool: QuarantinedTool }) {
   }
   return (
     <details
-      className="mt-1 min-w-0 text-xs"
+      className="mt-1 min-w-0 text-meta"
       onToggle={(event) => {
         const open = event.currentTarget.open;
         setExpanded(open);
@@ -53,7 +53,7 @@ function Definition({ tool }: { tool: QuarantinedTool }) {
             </p>
           )}
           {definition && (
-            <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-background p-2 font-mono text-[11px]">
+            <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-background p-2 font-mono text-meta">
               {JSON.stringify(definition, null, 2)}
             </pre>
           )}

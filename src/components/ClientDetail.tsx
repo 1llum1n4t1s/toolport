@@ -390,7 +390,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
               {t("not installed")}
             </Badge>
           )}
-          <p className="truncate font-mono text-xs text-muted-foreground">
+          <p className="truncate font-mono text-meta text-muted-foreground">
             {client.configExists
               ? client.configPath
               : present
@@ -398,21 +398,21 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
                 : t("not installed on this machine")}
           </p>
           {legacyBearer && (
-            <p className="mt-1 text-xs text-warning">
+            <p className="mt-1 text-meta text-warning">
               {translate(
                 "This older HTTP connection exposes its bearer credential in process arguments. Review migration to stdio below. Your existing connection is preserved until you confirm.",
               )}
             </p>
           )}
           {customized && (
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="mt-1 text-meta text-muted-foreground">
               {t(
                 "Toolport is leaving your hand-edited gateway entry as-is. Reset it only if you want Toolport to manage the entry.",
               )}
             </p>
           )}
           {installed && !customized && (
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="mt-1 text-meta text-muted-foreground">
               <Trans
                 message="Sees {access}"
                 values={{
@@ -433,7 +433,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
             </p>
           )}
           {!present && !installed && (
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="mt-1 text-meta text-muted-foreground">
               <Trans
                 message={msg(
                   "Install {value1} on this machine before connecting it to Toolport.",
@@ -467,7 +467,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
             />
           )}
           {!customized && (
-            <span className="text-xs text-muted-foreground">{translate("Access")}</span>
+            <span className="text-meta text-muted-foreground">{translate("Access")}</span>
           )}
           {!customized && (
             <Select
@@ -584,7 +584,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
             <p className="font-semibold">
               {translate("Couldn't read this client's configuration")}
             </p>
-            <p className="mt-0.5 break-words text-xs">{client.error}</p>
+            <p className="mt-0.5 break-words text-meta">{client.error}</p>
           </div>
         </div>
       )}
@@ -597,13 +597,13 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
           <RefreshCw className="mt-0.5 size-4 shrink-0" />
           <div className="min-w-0 flex-1">
             <p className="font-semibold">{showRestartNotice.title}</p>
-            <p className="mt-0.5 break-words text-xs">{showRestartNotice.text}</p>
+            <p className="mt-0.5 break-words text-meta">{showRestartNotice.text}</p>
           </div>
           <button
             type="button"
             onClick={() => setRestartNotice(null)}
             aria-label={t("Dismiss restart reminder")}
-            className="rounded p-0.5 text-info/70 transition-colors hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-info"
+            className="rounded p-0.5 text-info transition-colors hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-info"
           >
             <X className="size-3.5" />
           </button>
@@ -613,7 +613,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
       {!customized && (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
           <div className="min-w-0">
-            <div className="text-xs font-medium text-foreground">
+            <div className="text-meta font-medium text-foreground">
               {translate("Discovery mode")}
               {!clientMode && (
                 <span className="ml-1.5 font-normal text-muted-foreground">
@@ -621,7 +621,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
                 </span>
               )}
             </div>
-            <p className="mt-0.5 text-2xs text-muted-foreground">
+            <p className="mt-0.5 text-meta text-muted-foreground">
               {t(DISCOVERY_HINT[effectiveMode] ?? DISCOVERY_HINT.lazy)}
             </p>
           </div>
@@ -655,7 +655,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
             {t("Servers it can reach")}
           </div>
           {scopeServers(currentScope).length === 0 ? (
-            <p className="text-xs text-muted-foreground">
+            <p className="text-meta text-muted-foreground">
               {translate(
                 "No enabled servers in this access set yet. Turn servers on in Servers and include them under Settings > Advanced.",
               )}
@@ -665,7 +665,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
               {scopeServers(currentScope).map((s) => (
                 <span
                   key={s.id}
-                  className="rounded-md border border-border/60 bg-muted/40 px-2 py-1 font-mono text-[11px] text-foreground/90"
+                  className="rounded-md border border-border/60 bg-muted/40 px-2 py-1 font-mono text-meta text-foreground"
                 >
                   {s.name}
                 </span>
@@ -752,7 +752,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
       {allServers.length > 0 && (
         <div>
           <div className="mb-1 flex items-center justify-between gap-2">
-            <span className="text-2xs font-semibold tracking-[0.09em] text-muted-foreground uppercase">
+            <span className="text-xs font-semibold tracking-[0.09em] text-muted-foreground uppercase">
               {t("Import into Toolport")}
             </span>
             <div className="flex items-center gap-1.5">
@@ -776,10 +776,10 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
             </div>
           </div>
           <details className="mb-2">
-            <summary className="cursor-pointer text-xs font-medium text-muted-foreground/80 hover:text-foreground">
+            <summary className="cursor-pointer text-meta font-medium text-muted-foreground hover:text-foreground">
               {t("How importing works")}
             </summary>
-            <ul className="mt-1.5 mb-1 space-y-0.5 text-xs text-muted-foreground">
+            <ul className="mt-1.5 mb-1 space-y-0.5 text-meta text-muted-foreground">
               <li>
                 <Trans
                   message={msg(
@@ -811,7 +811,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
             </ul>
           </details>
           {installed && toImport.length > 0 && movable.length > 0 && (
-            <p className="mb-3 -mt-1 inline-flex items-start gap-1.5 rounded-md bg-warning/10 px-2 py-1 text-xs text-warning">
+            <p className="mb-3 -mt-1 inline-flex items-start gap-1.5 rounded-md bg-warning/10 px-2 py-1 text-meta text-warning">
               <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
               <span>
                 <Trans
@@ -843,7 +843,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
           </div>
 
           {toImport.length === 0 && (
-            <p className="mt-3 inline-flex items-center gap-1.5 text-xs text-success">
+            <p className="mt-3 inline-flex items-center gap-1.5 text-meta text-success">
               <Trans
                 message={msg(
                   "{value1}Everything here is already in Toolport. Manage it under{value2}{value3}",
@@ -902,12 +902,12 @@ function GatewayFlow({ clientName, servers }: { clientName: string; servers: str
   const extra = servers.length - shown.length;
   const link = "mb-7 h-px w-8 shrink-0";
   return (
-    <div className="flex flex-wrap items-center justify-center gap-1 rounded-xl border border-border/60 bg-card/40 px-4 py-5">
+    <div className="flex flex-wrap items-center justify-center gap-1 rounded-xl border border-border/60 bg-card px-4 py-5">
       <div className="flex flex-col items-center gap-2 text-center">
         <div className="grid size-14 place-items-center rounded-xl border border-border bg-secondary text-xl">
           <Monitor className="size-6 text-muted-foreground" />
         </div>
-        <div className="text-2xs font-semibold">{clientName}</div>
+        <div className="text-meta font-semibold">{clientName}</div>
       </div>
       <div className={`${link} bg-border`} />
       <div className="flex flex-col items-center gap-2 text-center">
@@ -924,7 +924,7 @@ function GatewayFlow({ clientName, servers }: { clientName: string; servers: str
             <circle cx="16" cy="16" r="5" fill="var(--brand)" />
           </svg>
         </div>
-        <div className="text-2xs font-semibold">
+        <div className="text-meta font-semibold">
           <Trans
             message={msg("Toolport {value1}")}
             values={{
@@ -942,13 +942,13 @@ function GatewayFlow({ clientName, servers }: { clientName: string; servers: str
         {shown.map((s) => (
           <span
             key={s}
-            className="rounded-md border border-border/60 bg-card px-2 py-1 font-mono text-2xs text-muted-foreground"
+            className="rounded-md border border-border/60 bg-card px-2 py-1 font-mono text-xs text-muted-foreground"
           >
             {s}
           </span>
         ))}
         {extra > 0 && (
-          <span className="px-2 font-mono text-2xs text-muted-foreground/60">
+          <span className="px-2 font-mono text-meta text-muted-foreground">
             <Trans message={msg("+{value1} more")} values={{ value1: extra }} />
           </span>
         )}
@@ -972,26 +972,26 @@ function ServerMiniCard({
 }) {
   const { t } = useI18n();
   return (
-    <Card aria-disabled={imported} className={`gap-0 ${imported ? "opacity-70" : ""}`}>
+    <Card aria-disabled={imported} className={`gap-0 ${imported ? "bg-muted" : ""}`}>
       <CardContent className="flex flex-col gap-2 p-3">
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1.5">
             <span className="truncate text-sm font-medium">{server.name}</span>
             {isPlugin && (
-              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              <span className="rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
                 {t("plugin")}
               </span>
             )}
           </div>
         </div>
-        <code className="truncate font-mono text-xs text-muted-foreground">
+        <code className="truncate font-mono text-meta text-muted-foreground">
           {server.command
             ? [server.command, ...server.args].join(" ")
             : (server.url ?? "")}
         </code>
         <div className="flex justify-end">
           {imported ? (
-            <span className="inline-flex items-center gap-1 text-xs text-success">
+            <span className="inline-flex items-center gap-1 text-meta text-success">
               <Trans
                 message={msg("{value1}in Toolport")}
                 values={{ value1: <Check className="size-3" /> }}

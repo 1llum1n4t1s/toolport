@@ -60,7 +60,7 @@ function AttentionItem({
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold">{title}</p>
-          {detail && <p className="text-xs text-muted-foreground">{detail}</p>}
+          {detail && <p className="text-meta text-muted-foreground">{detail}</p>}
         </div>
         {children}
       </div>
@@ -516,7 +516,7 @@ export function PersonalSyncView({
           <section aria-label={t("Servers")}>
             <div className="flex items-center gap-2">
               <SectionLabel className="flex-1">{t("Servers")}</SectionLabel>
-              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <label className="flex items-center gap-2 text-meta text-muted-foreground">
                 {t("Sync new servers")}
                 <select
                   className="rounded-md border bg-background px-2 py-1 text-xs text-foreground"
@@ -551,12 +551,12 @@ export function PersonalSyncView({
                     <ServerLogo name={s.name} transport={s.transport} />
                     <span className="min-w-0 flex-1 truncate font-medium" title={s.name}>
                       {visibleText(s.name)}
-                      {tag && <span className="ml-2 text-xs text-warning">{tag}</span>}
+                      {tag && <span className="ml-2 text-meta text-warning">{tag}</span>}
                     </span>
                     <div
                       role="radiogroup"
                       aria-label={translate("Where {value0} lives", { value0: s.name })}
-                      className="flex shrink-0 rounded-lg border bg-muted/40 p-0.5"
+                      className="flex shrink-0 rounded-md border bg-muted/40 p-0.5"
                     >
                       {[false, true].map((localOnly) => {
                         const active = !!s.syncLocalOnly === localOnly;
@@ -609,7 +609,7 @@ export function PersonalSyncView({
                 </li>
               )}
             </ul>
-            <p className="mt-2 text-xs text-muted-foreground">
+            <p className="mt-2 text-meta text-muted-foreground">
               {t(
                 "Keys and sign-ins never leave a machine. Switching a server to This machine stops syncing it; other machines keep their copy until you remove it there.",
               )}
@@ -622,7 +622,7 @@ export function PersonalSyncView({
                 <div className="min-w-0 flex-1">
                   <p className="font-medium">{t("Your account")}</p>
                   {sync?.signInRequired ? (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-meta text-muted-foreground">
                       {t(
                         "Saved account plan: {plan}. Sign in to confirm your account and resume sync.",
                         { plan: planName(status?.plan) },
@@ -630,12 +630,12 @@ export function PersonalSyncView({
                     </p>
                   ) : status ? (
                     accountStatusText(status).map((line) => (
-                      <p key={line} className="text-xs text-muted-foreground">
+                      <p key={line} className="text-meta text-muted-foreground">
                         {line}
                       </p>
                     ))
                   ) : (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-meta text-muted-foreground">
                       {t("Account status unavailable. Retry sync.")}
                     </p>
                   )}
@@ -661,7 +661,7 @@ export function PersonalSyncView({
               <div className="flex items-center gap-3 py-2.5">
                 <div className="min-w-0 flex-1">
                   <p className="font-medium">{t("Teams")}</p>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-meta text-muted-foreground">
                     {t("Share servers with other people. Your own servers stay yours.")}
                   </p>
                 </div>

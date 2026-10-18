@@ -476,7 +476,7 @@ export function TeamsView({
         </div>
         {on && (
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted-foreground">
+            <span className="text-meta text-muted-foreground">
               {probe
                 ? probe.ok
                   ? tr("Ready · {count} tools", { count: probe.toolCount })
@@ -502,7 +502,7 @@ export function TeamsView({
               </Button>
             ) : null}
             {probe?.error && (
-              <details className="text-xs">
+              <details className="text-meta">
                 <summary className="cursor-pointer">{translate("View log")}</summary>
                 <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all">
                   {probe.error}
@@ -534,19 +534,19 @@ export function TeamsView({
           />
         )}
         {!on && held && (
-          <p className="mt-2 text-xs text-muted-foreground">
+          <p className="mt-2 text-meta text-muted-foreground">
             {translate("This change is held off. Use the team change review above.")}
           </p>
         )}
         {!on && !held && (
           <div className="mt-2 flex items-end justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-xs text-muted-foreground">
+              <p className="text-meta text-muted-foreground">
                 {isLocal
                   ? tr("Runs this local command on your machine:")
                   : tr("Connects to this address:")}
               </p>
-              <code className="block whitespace-pre-wrap break-all font-mono text-xs text-foreground">
+              <code className="block whitespace-pre-wrap break-all font-mono text-meta text-foreground">
                 {detail}
               </code>
             </div>
@@ -696,14 +696,14 @@ export function TeamsView({
               >
                 <h3 className="font-medium">{change.title}</h3>
                 {change.labels.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-meta text-muted-foreground">
                     {translate(
                       "Full diff from your accepted configuration. Change history labels unavailable.",
                     )}
                   </p>
                 ) : (
                   change.labels.map((label, index) => (
-                    <p key={index} className="text-xs text-muted-foreground">
+                    <p key={index} className="text-meta text-muted-foreground">
                       {label.author?.name ?? tr("Unknown author")} ·{" "}
                       {label.at
                         ? new Date(label.at).toLocaleString(locale)
@@ -795,7 +795,7 @@ export function TeamsView({
                     value={serverUrl}
                     onChange={(e) => setServerUrl(e.target.value)}
                   />
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-meta text-muted-foreground">
                     {tr(
                       "Defaults to hosted Toolport Teams. Self-hosting? Replace it with your own server URL.",
                     )}
@@ -810,7 +810,7 @@ export function TeamsView({
                     value={inviteCode}
                     onChange={(e) => setInviteCode(e.target.value)}
                   />
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-meta text-muted-foreground">
                     {tr(
                       "An invite code joins you to a team. A connect code links this device to a seat you already have.",
                     )}
@@ -880,14 +880,14 @@ export function TeamsView({
                   ].map((point) => (
                     <li
                       key={point}
-                      className="flex gap-2 text-2xs leading-relaxed text-muted-foreground"
+                      className="flex gap-2 text-meta leading-relaxed text-muted-foreground"
                     >
                       <Check className="mt-0.5 size-3.5 shrink-0 text-primary" />
                       <span>{point}</span>
                     </li>
                   ))}
                 </ul>
-                <p className="mb-4 text-2xs leading-relaxed text-muted-foreground">
+                <p className="mb-4 text-meta leading-relaxed text-muted-foreground">
                   {teamsPaidLine()}
                 </p>
                 {/* The desktop app has no create-a-team flow, so this hands off to the
@@ -898,13 +898,13 @@ export function TeamsView({
                     values={{ value1: <ArrowUpRight className="size-4" /> }}
                   />
                 </Button>
-                <p className="mt-2 text-2xs text-muted-foreground">
+                <p className="mt-2 text-meta text-muted-foreground">
                   {tr(
                     "Opens in your browser. Google, GitHub, or an email link, no card. Team features are free to try for {value1} days.",
                     { value1: TEAMS_TRIAL_DAYS },
                   )}
                 </p>
-                <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t pt-3 text-2xs">
+                <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t pt-3 text-meta">
                   <button
                     type="button"
                     onClick={() => openExternal(TEAMS_MARKETING_URL)}
@@ -966,7 +966,7 @@ export function TeamsView({
                     <Icon className="size-3.5 text-primary" />
                     {title}
                   </div>
-                  <p className="mt-1 text-2xs leading-relaxed text-muted-foreground">
+                  <p className="mt-1 text-meta leading-relaxed text-muted-foreground">
                     {body}
                   </p>
                 </div>
@@ -1000,7 +1000,7 @@ export function TeamsView({
                         ? tr("Last sync succeeded")
                         : tr("Team connection has not been checked recently")}
                 </p>
-                <p className="mt-1 text-xs text-muted-foreground">
+                <p className="mt-1 text-meta text-muted-foreground">
                   {translate("Last successful sync:")}{" "}
                   {syncStatus?.lastSuccessMs
                     ? new Date(syncStatus.lastSuccessMs).toLocaleString(locale)
@@ -1009,7 +1009,7 @@ export function TeamsView({
                 <p className="mt-1 truncate text-sm text-muted-foreground">
                   {team.serverUrl}
                 </p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
+                <p className="mt-0.5 text-meta text-muted-foreground">
                   {teamServers.length === 1
                     ? tr("{value1} · config v {value2} · {value3} shared  server", {
                         value1:
@@ -1080,7 +1080,7 @@ export function TeamsView({
                       }}
                     />
                   </div>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-meta text-muted-foreground">
                     {tr(
                       "Select one working personal server to begin. Unrelated team servers and your personal originals stay in place. Each member supplies credentials locally.",
                     )}
@@ -1102,7 +1102,7 @@ export function TeamsView({
                         }
                       />
                       {server.name}{" "}
-                      <span className="text-xs text-muted-foreground">
+                      <span className="text-meta text-muted-foreground">
                         {server.env.length
                           ? tr("Local credentials: {value1}", {
                               value1: server.env.map((e) => e.key).join(", "),
@@ -1171,7 +1171,7 @@ export function TeamsView({
                     <>
                       {review.length > 0 && (
                         <div className="mt-3">
-                          <div className="flex items-center gap-1.5 text-xs font-medium text-warning">
+                          <div className="flex items-center gap-1.5 text-meta font-medium text-warning">
                             <Trans
                               message="{value1} Needs review ( {value2})"
                               values={{
@@ -1180,7 +1180,7 @@ export function TeamsView({
                               }}
                             />
                           </div>
-                          <p className="mt-1 mb-2 text-xs text-muted-foreground">
+                          <p className="mt-1 mb-2 text-meta text-muted-foreground">
                             {tr(
                               "Review each server's command, address and authentication before enabling it. Changed remote servers require a new review too.",
                             )}
@@ -1190,7 +1190,7 @@ export function TeamsView({
                       )}
                       {active.length > 0 && (
                         <div className="mt-4">
-                          <div className="flex items-center gap-1.5 text-xs font-medium text-success">
+                          <div className="flex items-center gap-1.5 text-meta font-medium text-success">
                             <ShieldCheck className="size-3.5" />{" "}
                             {tr("Enabled ({count})", { count: active.length })}
                           </div>
@@ -1202,7 +1202,7 @@ export function TeamsView({
                     </>
                   );
                 })()}
-                <p className="mt-3 text-xs text-muted-foreground">
+                <p className="mt-3 text-meta text-muted-foreground">
                   {translate(
                     "Sign in or add a service key here or in Servers. Credentials stay in your OS keychain.",
                   )}
@@ -1217,14 +1217,14 @@ export function TeamsView({
                 <FileText className="size-4 text-muted-foreground" />
                 <h3 className="text-sm font-medium">{tr("Team instructions")}</h3>
                 {instr && (
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-meta text-muted-foreground">
                     {tr("v{value1}", { value1: instr.version })}
                   </span>
                 )}
               </div>
               {instr ? (
                 <>
-                  <p className="mb-3 text-xs text-muted-foreground">
+                  <p className="mb-3 text-meta text-muted-foreground">
                     {tr(
                       "Org-managed agent rules, written to your AI clients alongside — never over — your own instructions. Leaving the team removes them.",
                     )}
@@ -1251,11 +1251,11 @@ export function TeamsView({
                       </Button>
                     </Callout>
                   )}
-                  <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border bg-muted/20 p-3 font-mono text-xs text-foreground">
+                  <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border bg-muted/20 p-3 font-mono text-meta text-foreground">
                     {instr.content}
                   </pre>
                   {instr.clients.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-meta text-muted-foreground">
                       {tr("No supported AI clients detected on this machine.")}
                     </p>
                   ) : (

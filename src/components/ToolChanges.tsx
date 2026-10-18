@@ -177,11 +177,11 @@ export function ToolChanges({
                 <span>
                   {server}: {summary(group.tools)}
                 </span>
-                <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                <span className="ml-auto shrink-0 text-meta text-muted-foreground">
                   {ago(group.ts)}
                 </span>
               </button>
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-meta">
                 <p className={blocked ? "text-destructive" : "text-muted-foreground"}>
                   {reviewRequired
                     ? translate(
@@ -221,7 +221,7 @@ export function ToolChanges({
                 </button>
               </div>
               {group.tools.some((tool) => tool.signatures !== undefined) && (
-                <p className="mt-2 text-xs text-destructive">
+                <p className="mt-2 text-meta text-destructive">
                   {translate(
                     "Suspicious content found. Review and accept each tool separately.",
                   )}
@@ -232,7 +232,7 @@ export function ToolChanges({
                   {group.tools.map((event) => (
                     <details
                       key={`${securityKey(event)}:${event.new_fp}:${event.ts}`}
-                      className="rounded border border-border p-2 text-xs"
+                      className="rounded border border-border p-2 text-meta"
                     >
                       <summary className="cursor-pointer font-medium">
                         {toolName(event)}
