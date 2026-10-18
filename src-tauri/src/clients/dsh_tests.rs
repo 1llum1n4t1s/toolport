@@ -61,13 +61,13 @@ fn desired(text: &str) -> serde_json::Map<String, Json> {
 fn with(text: &str, entry: &ServerEntry) -> String {
     let mut want = desired(text);
     want.insert(entry.name.clone(), config_of(entry).unwrap());
-    sync(Some(text), &want).unwrap()
+    sync(Some(text), &want, &BTreeMap::new()).unwrap()
 }
 
 fn without(text: &str, name: &str) -> String {
     let mut want = desired(text);
     want.remove(name);
-    sync(Some(text), &want).unwrap()
+    sync(Some(text), &want, &BTreeMap::new()).unwrap()
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn an_empty_or_missing_file_starts_a_list() {
     for start in [None, Some(""), Some("\n# only a note\n")] {
         let mut want = serde_json::Map::new();
         want.insert("toolport".into(), config_of(&stdio("toolport")).unwrap());
-        let out = sync(start, &want).unwrap();
+        let out = sync(start, &want, &BTreeMap::new()).unwrap();
         assert_eq!(servers(&out).unwrap().len(), 1, "{out}");
         assert!(out.contains("- insert:\n    - id: mcp-toolport\n"), "{out}");
     }
@@ -138,18 +138,26 @@ fn removing_one_server_from_a_shared_row_takes_only_its_lines() {
 }
 
 #[test]
-fn a_changed_server_keeps_its_id_and_moves_to_a_new_row() {
+fn a_changed_server_keeps_its_id_and_its_place() {
     let added = with(BUSY, &stdio("toolport"));
     let mut entry = stdio("toolport");
     entry.args = vec!["--stdio".into(), "--profile".into(), "Work".into()];
     let changed = with(&added, &entry);
     assert_eq!(changed.matches("id: mcp-toolport").count(), 1, "{changed}");
+    assert_eq!(changed.matches("- insert:").count(), 2, "{changed}");
     let gateway = servers(&changed)
         .unwrap()
         .into_iter()
         .find(|s| s.name == "toolport")
         .unwrap();
     assert_eq!(gateway.args, ["--stdio", "--profile", "Work"]);
+
+    // An entry inside a group's insert row stays in the group.
+    let group = "- id: tools\n  insert:\n    - id: mcp-a\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: a\n        transport: stdio\n        command: a\n";
+    let mut want = desired(group);
+    want["a"]["command"] = "b".into();
+    let out = sync(Some(group), &want, &BTreeMap::new()).unwrap();
+    assert_eq!(out, group.replace("command: a", "command: b"));
 }
 
 #[test]
@@ -188,9 +196,115 @@ fn tagged_values_compare_and_write_back_as_the_same_tag() {
     let doc = parse(BUSY).unwrap();
     let memory = &doc.servers()[0];
     let json = to_json(&memory.config);
+    assert_eq!(
+        json["cwd"],
+        serde_json::json!({"!tag": "!!js", "value": "process.cwd()"})
+    );
     let text = entry_text("mcp-x", None, &json).unwrap();
-    let back: Yaml = serde_yaml::from_str(&text).unwrap();
+    assert!(text.contains("cwd: !!js process.cwd()"), "{text}");
+    assert!(text.contains("MEMORY_FILE_PATH: !!js "), "{text}");
+    let back: Yaml = yaml_from(&text).unwrap();
     assert_eq!(back["config"], memory.config, "{text}");
+    // `!!` inside a string is text, not a tag.
+    let shout = "- insert:\n    - id: mcp-a\n      name: '@deepseek-ai/dsh-mcp-client'\n      config: {serverName: a, transport: stdio, command: echo, args: ['hi!!js', 'x: !!js y']}\n";
+    assert_eq!(servers(shout).unwrap()[0].args, ["hi!!js", "x: !!js y"]);
+}
+
+#[test]
+fn a_server_put_back_uses_its_recorded_entry() {
+    let raw: BTreeMap<String, String> = raw_entries(BUSY)
+        .unwrap()
+        .into_iter()
+        .map(|(name, text, _)| (name, text))
+        .collect();
+    let moved = without(BUSY, "reference_memory");
+    let back = sync(Some(&moved), &desired(BUSY), &raw).unwrap();
+    assert!(back.contains("    - id: memory-mcp-reference\n"), "{back}");
+    assert!(back.contains("        cwd: !!js process.cwd()\n"), "{back}");
+    assert_eq!(desired(&back), desired(BUSY));
+
+    // Without a record it is written fresh, expressions still tagged.
+    let fresh = sync(Some(&moved), &desired(BUSY), &BTreeMap::new()).unwrap();
+    assert!(fresh.contains("id: mcp-reference_memory"), "{fresh}");
+    assert!(fresh.contains("cwd: !!js process.cwd()"), "{fresh}");
+    assert_eq!(desired(&fresh), desired(BUSY));
+}
+
+#[test]
+fn rows_apply_in_order_and_servers_they_change_are_left_alone() {
+    let enabled = "- insert:\n    - id: mcp-a\n      name: '@deepseek-ai/dsh-mcp-client'\n      disabled: true\n      config: {serverName: a, transport: stdio, command: a}\n- id: mcp-a\n  disabled: false\n";
+    assert_eq!(servers(enabled).unwrap().len(), 1);
+    // Another layer's row before the insert does not apply to it.
+    let before = format!(
+        "- id: mcp-web\n  disabled: true\n{}",
+        &BUSY[BUSY.find("- insert").unwrap()..]
+    );
+    assert_eq!(servers(&before).unwrap().len(), 2);
+
+    let config = format!(
+        "{BUSY}\n- id: mcp-web\n  config: {{serverName: web, transport: stdio, command: other}}\n"
+    );
+    let web = servers(&config)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.name == "web")
+        .unwrap();
+    assert_eq!(web.command.as_deref(), Some("other"));
+    let mut want = desired(&config);
+    want.remove("web");
+    assert!(sync(Some(&config), &want, &BTreeMap::new())
+        .unwrap_err()
+        .contains("later row"));
+    assert!(raw_entries(&config)
+        .unwrap()
+        .iter()
+        .all(|(name, _, _)| name != "web"));
+    let added = with(&config, &stdio("toolport"));
+    assert!(added.starts_with(&config), "{added}");
+}
+
+#[test]
+fn a_new_id_avoids_every_id_in_the_file() {
+    let text = "- id: mcp-toolport\n  disabled: true\n";
+    let out = with(text, &stdio("toolport"));
+    assert!(out.contains("id: mcp-toolport-2"), "{out}");
+    assert_eq!(servers(&out).unwrap().len(), 1);
+}
+
+#[test]
+fn two_servers_with_one_name_are_not_merged() {
+    let text = format!("{BUSY}- insert:\n    - id: mcp-web-copy\n      name: '@deepseek-ai/dsh-mcp-client'\n      config: {{serverName: web, transport: stdio, command: web}}\n");
+    let mut want = desired(&text);
+    want.insert("toolport".into(), config_of(&stdio("toolport")).unwrap());
+    assert!(sync(Some(&text), &want, &BTreeMap::new())
+        .unwrap_err()
+        .contains("Two DeepSeek Harness servers"));
+    assert_eq!(
+        sync(Some(&text), &desired(&text), &BTreeMap::new()).unwrap(),
+        text
+    );
+}
+
+#[test]
+fn odd_but_valid_files_still_edit_cleanly() {
+    // The empty list never lands on a comment line.
+    let text = "- insert:\n    - id: mcp-toolport\n      name: '@deepseek-ai/dsh-mcp-client'\n      config: {serverName: toolport, transport: stdio, command: t}\n# end";
+    let out = without(text, "toolport");
+    assert_eq!(out, "# end\n[]\n");
+    assert!(normalized(&out).unwrap().get(KEY).is_none());
+
+    // A byte order mark stays and does not block edits.
+    let bom = format!("\u{feff}{BUSY}");
+    let out = without(&bom, "web");
+    assert!(out.starts_with('\u{feff}'), "{out}");
+    assert_eq!(servers(&out).unwrap().len(), 1);
+
+    // An item that opens with a bare dash moves out as a plain mapping.
+    let bare = "- insert:\n    -\n      id: mcp-a\n      name: '@deepseek-ai/dsh-mcp-client'\n      config: {serverName: a, transport: stdio, command: a}\n";
+    let raw = raw_entries(bare).unwrap();
+    assert!(raw[0].1.starts_with("id: mcp-a\nname:"), "{}", raw[0].1);
+    let back = append_raw(Some(&without(bare, "a")), &[raw[0].1.clone()]).unwrap();
+    assert_eq!(desired(&back), desired(bare));
 }
 
 #[test]
@@ -221,22 +335,25 @@ fn layouts_the_scan_cannot_split_are_read_but_never_edited() {
     assert_eq!(servers(flow).unwrap().len(), 1);
     let mut want = desired(flow);
     want.insert("toolport".into(), config_of(&stdio("toolport")).unwrap());
-    assert!(sync(Some(flow), &want)
+    assert!(sync(Some(flow), &want, &BTreeMap::new())
         .unwrap_err()
         .contains("edit it by hand"));
     // Nothing to change is not an edit.
-    assert_eq!(sync(Some(flow), &desired(flow)).unwrap(), flow);
+    assert_eq!(
+        sync(Some(flow), &desired(flow), &BTreeMap::new()).unwrap(),
+        flow
+    );
 
     let inline = "- insert: [{id: mcp-a, name: '@deepseek-ai/dsh-mcp-client', config: {serverName: a, transport: stdio, command: a}}]\n";
     let mut want = desired(inline);
     want.remove("a");
-    assert!(sync(Some(inline), &want)
+    assert!(sync(Some(inline), &want, &BTreeMap::new())
         .unwrap_err()
         .contains("edit it by hand"));
     // Appending next to a row it cannot split is still exact.
     let mut want = desired(inline);
     want.insert("toolport".into(), config_of(&stdio("toolport")).unwrap());
-    let out = sync(Some(inline), &want).unwrap();
+    let out = sync(Some(inline), &want, &BTreeMap::new()).unwrap();
     assert!(out.starts_with(inline), "{out}");
 }
 

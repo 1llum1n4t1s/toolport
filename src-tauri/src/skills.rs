@@ -132,7 +132,8 @@ impl Env {
         let tilde = |key: &str| {
             let raw = std::env::var(key).ok()?;
             let path = match raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
-                Some(rest) => home.join(rest),
+                // `~//x` is still under home, as the client config path reads it.
+                Some(rest) => home.join(rest.trim_start_matches(['/', '\\'])),
                 None if raw == "~" => home.clone(),
                 None => PathBuf::from(raw),
             };

@@ -13,10 +13,15 @@
 //! appended `insert` row. Anything the line scan cannot place exactly is refused
 //! with the file left untouched.
 //!
+//! Rows apply in order, as dsh's include plugin applies them: a row with an `id`
+//! replaces whole keys (`config`, `disabled`) on an entry inserted before it, and
+//! one that matches nothing is skipped with a warning. A server a later row
+//! changes is read as dsh sees it and left for the user to edit.
+//!
 //! The rest of the client code sees the file through [`normalized`], an object
 //! whose `mcpServers` map holds each server's `config` by `serverName`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde_json::Value as Json;
 use serde_yaml::Value as Yaml;
@@ -58,14 +63,82 @@ struct Doc<'a> {
     empty_flow: Option<Span>,
 }
 
-/// One server as dsh will load it.
+/// One server as dsh will load it, after the file's later rows.
 struct Server {
     name: String,
     id: Option<String>,
+    /// The entry's own `disabled`, kept when Toolport rewrites the entry.
+    own_disabled: Option<Yaml>,
     disabled: Option<Yaml>,
     config: Yaml,
+    /// A later row in this file targets the entry's id.
+    overridden: bool,
     /// Index of the row and the entry within it.
     at: (usize, usize),
+}
+
+impl Server {
+    fn started(&self) -> bool {
+        !js_truthy(self.disabled.as_ref())
+    }
+}
+
+/// `!!js` is a secondary tag (`tag:yaml.org,2002:js`), which serde_yaml drops,
+/// so it is read as this local tag and written back as `!!js`.
+const JS_LOCAL: &str = "!toolport-dsh-js";
+const JS_TAG: &str = "!!js";
+
+/// Mark `!!js` where it stands as a node's tag.
+fn mark_tags(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for (i, _) in text.match_indices(JS_TAG) {
+        let after = bytes.get(i + JS_TAG.len()).copied();
+        let ends = after.is_none_or(|b| b.is_ascii_whitespace() || b",]}".contains(&b));
+        let before = text[..i].trim_end_matches(' ');
+        let spaced = before.len() < i;
+        let starts = match before.as_bytes().last() {
+            None | Some(b'\n') => true,
+            Some(b'-' | b':' | b'?') => spaced,
+            Some(b'[' | b'{' | b',') => true,
+            _ => false,
+        };
+        if ends && starts {
+            out.push_str(&text[at..i]);
+            out.push_str(JS_LOCAL);
+            at = i + JS_TAG.len();
+        }
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
+fn unmark(text: &str) -> String {
+    text.replace(JS_LOCAL, JS_TAG)
+}
+
+fn yaml_from<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, serde_yaml::Error> {
+    serde_yaml::from_str(&mark_tags(text))
+}
+
+/// YAML text with `!!js` tags as dsh writes them.
+fn emit(value: &Yaml) -> Result<String, String> {
+    serde_yaml::to_string(value)
+        .map(|text| unmark(&text))
+        .map_err(|e| e.to_string())
+}
+
+/// JavaScript truthiness, as dsh reads `disabled`. An expression is decided
+/// at run time; it reads as not disabled.
+fn js_truthy(value: Option<&Yaml>) -> bool {
+    match value {
+        None | Some(Yaml::Null | Yaml::Tagged(_)) => false,
+        Some(Yaml::Bool(b)) => *b,
+        Some(Yaml::Number(n)) => n.as_f64().is_some_and(|n| n != 0.0 && !n.is_nan()),
+        Some(Yaml::String(s)) => !s.is_empty(),
+        Some(Yaml::Sequence(_) | Yaml::Mapping(_)) => true,
+    }
 }
 
 fn indent(line: &str) -> usize {
@@ -74,7 +147,7 @@ fn indent(line: &str) -> usize {
 
 /// A line with YAML content, not blank and not only a comment.
 fn has_content(line: &str) -> bool {
-    let trimmed = line.trim();
+    let trimmed = line.trim_start_matches('\u{feff}').trim();
     !trimmed.is_empty() && !trimmed.starts_with('#')
 }
 
@@ -90,7 +163,13 @@ fn lines(text: &str) -> Vec<(usize, &str)> {
     let mut out = Vec::new();
     let mut start = 0;
     for piece in text.split_inclusive('\n') {
-        out.push((start, piece.trim_end_matches(['\n', '\r'])));
+        // A byte order mark stays in the text but not in the line.
+        let skip = if start == 0 && piece.starts_with('\u{feff}') {
+            '\u{feff}'.len_utf8()
+        } else {
+            0
+        };
+        out.push((start + skip, piece[skip..].trim_end_matches(['\n', '\r'])));
         start += piece.len();
     }
     out
@@ -110,7 +189,7 @@ fn line_end(text: &str, start: usize, line: &str) -> usize {
 
 /// Parse a slice holding one block-list item.
 fn parse_item(text: &str) -> Option<Yaml> {
-    let mut list: Vec<Yaml> = serde_yaml::from_str(text).ok()?;
+    let mut list: Vec<Yaml> = yaml_from(text).ok()?;
     (list.len() == 1).then(|| list.remove(0))
 }
 
@@ -206,7 +285,7 @@ fn root_list(text: &str) -> Result<Vec<Yaml>, String> {
     if !text.lines().any(has_content) {
         return Ok(Vec::new());
     }
-    match serde_yaml::from_str::<Yaml>(text) {
+    match yaml_from::<Yaml>(text) {
         Ok(Yaml::Sequence(list)) => Ok(list),
         Ok(Yaml::Null) => Ok(Vec::new()),
         Ok(_) => Err(format!(
@@ -291,84 +370,97 @@ fn is_mcp_entry(entry: &Yaml) -> bool {
             .is_some()
 }
 
-fn truthy(value: Option<&Yaml>) -> bool {
-    matches!(value, Some(Yaml::Bool(true)))
+/// Every `id` the file uses, on entries at any depth and on override rows.
+fn ids(value: &Yaml, out: &mut BTreeSet<String>) {
+    match value {
+        Yaml::Mapping(map) => {
+            if let Some(Yaml::String(id)) = map.get("id") {
+                out.insert(id.clone());
+            }
+            map.values().for_each(|v| ids(v, out));
+        }
+        Yaml::Sequence(list) => list.iter().for_each(|v| ids(v, out)),
+        Yaml::Tagged(tagged) => ids(&tagged.value, out),
+        _ => {}
+    }
 }
 
 impl Doc<'_> {
-    /// Ids a later row in this file sets `disabled: true` on.
-    fn disabled_ids(&self) -> BTreeSet<String> {
-        let mut out = BTreeSet::new();
-        for row in &self.rows {
-            if row.value.get("insert").is_some() {
+    /// MCP servers after applying the file's rows in order.
+    fn servers(&self) -> Vec<Server> {
+        let mut out: Vec<Server> = Vec::new();
+        let mut by_id: HashMap<String, usize> = HashMap::new();
+        for (r, row) in self.rows.iter().enumerate() {
+            if let Some(list) = row.value.get("insert").and_then(Yaml::as_sequence) {
+                for (e, entry) in list.iter().enumerate() {
+                    let id = str_of(entry, "id").map(str::to_string);
+                    if let Some(id) = &id {
+                        by_id.remove(id);
+                    }
+                    if !is_mcp_entry(entry) {
+                        continue;
+                    }
+                    if let Some(id) = &id {
+                        by_id.insert(id.clone(), out.len());
+                    }
+                    out.push(Server {
+                        name: String::new(),
+                        id,
+                        own_disabled: entry.get("disabled").cloned(),
+                        disabled: entry.get("disabled").cloned(),
+                        config: entry["config"].clone(),
+                        overridden: false,
+                        at: (r, e),
+                    });
+                }
                 continue;
             }
-            if let Some(id) = str_of(&row.value, "id") {
-                match row.value.get("disabled") {
-                    Some(Yaml::Bool(true)) => {
-                        out.insert(id.to_string());
-                    }
-                    Some(Yaml::Bool(false)) => {
-                        out.remove(id);
-                    }
+            let Some(&i) = str_of(&row.value, "id").and_then(|id| by_id.get(id)) else {
+                continue;
+            };
+            if str_of(&row.value, "name").is_some_and(|name| name != PLUGIN) {
+                continue;
+            }
+            let server = &mut out[i];
+            server.overridden = true;
+            for (key, value) in row.value.as_mapping().into_iter().flatten() {
+                match key.as_str() {
+                    Some("disabled") => server.disabled = Some(value.clone()),
+                    Some("config") => server.config = value.clone(),
                     _ => {}
                 }
             }
         }
-        out
-    }
-
-    fn servers(&self) -> Vec<Server> {
-        let mut out = Vec::new();
-        for (r, row) in self.rows.iter().enumerate() {
-            let Some(list) = row.value.get("insert").and_then(Yaml::as_sequence) else {
-                continue;
-            };
-            for (e, entry) in list.iter().enumerate() {
-                if !is_mcp_entry(entry) {
-                    continue;
-                }
-                let config = entry["config"].clone();
-                out.push(Server {
-                    name: str_of(&config, "serverName")
-                        .unwrap_or_default()
-                        .to_string(),
-                    id: str_of(entry, "id").map(str::to_string),
-                    disabled: entry.get("disabled").cloned(),
-                    config,
-                    at: (r, e),
-                });
-            }
+        for server in &mut out {
+            server.name = str_of(&server.config, "serverName")
+                .unwrap_or_default()
+                .to_string();
         }
         out
     }
 
-    /// Servers dsh will start: not disabled by their own entry or a later row.
+    /// Servers dsh will start.
     fn active(&self) -> Vec<Server> {
-        let off = self.disabled_ids();
         self.servers()
             .into_iter()
-            .filter(|server| {
-                !truthy(server.disabled.as_ref())
-                    && !server.id.as_ref().is_some_and(|id| off.contains(id))
-            })
+            .filter(|server| server.started() && !server.name.is_empty())
             .collect()
     }
 
     /// Every row and entry except the servers dsh starts, for change detection
     /// outside them. A disabled server stays here, untouched by every edit.
     fn other(&self) -> Json {
-        let off = self.disabled_ids();
-        let started = |entry: &Yaml| {
-            is_mcp_entry(entry)
-                && !truthy(entry.get("disabled"))
-                && !str_of(entry, "id").is_some_and(|id| off.contains(id))
-        };
+        let started: BTreeSet<(usize, usize)> =
+            self.active().into_iter().map(|server| server.at).collect();
         let mut rows = Vec::new();
-        for row in &self.rows {
+        for (r, row) in self.rows.iter().enumerate() {
             let mut value = row.value.clone();
             if let Some(list) = value.get_mut("insert").and_then(Yaml::as_sequence_mut) {
-                list.retain(|entry| !started(entry));
+                let mut e = 0;
+                list.retain(|_| {
+                    e += 1;
+                    !started.contains(&(r, e - 1))
+                });
                 // A row that only carried servers says nothing else.
                 let only_insert = row.value.as_mapping().is_some_and(|map| map.len() == 1);
                 if list.is_empty() && only_insert {
@@ -378,6 +470,14 @@ impl Doc<'_> {
             rows.push(to_json(&value));
         }
         Json::Array(rows)
+    }
+
+    fn ids(&self) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for row in &self.rows {
+            ids(&row.value, &mut out);
+        }
+        out
     }
 }
 
@@ -389,24 +489,21 @@ pub(super) fn to_json(value: &Yaml) -> Json {
         Yaml::Null => Json::Null,
         Yaml::Bool(b) => Json::Bool(*b),
         Yaml::Number(n) => serde_json::to_value(n).unwrap_or(Json::Null),
-        Yaml::String(s) => Json::String(s.clone()),
+        Yaml::String(s) => Json::String(unmark(s)),
         Yaml::Sequence(list) => Json::Array(list.iter().map(to_json).collect()),
         Yaml::Mapping(map) => Json::Object(
             map.iter()
                 .map(|(k, v)| {
                     let key = match k {
-                        Yaml::String(s) => s.clone(),
-                        other => serde_yaml::to_string(other)
-                            .unwrap_or_default()
-                            .trim()
-                            .to_string(),
+                        Yaml::String(s) => unmark(s),
+                        other => emit(other).unwrap_or_default().trim().to_string(),
                     };
                     (key, to_json(v))
                 })
                 .collect(),
         ),
         Yaml::Tagged(tagged) => serde_json::json!({
-            "!tag": tagged.tag.to_string(),
+            "!tag": unmark(&tagged.tag.to_string()),
             "value": to_json(&tagged.value),
         }),
     }
@@ -423,6 +520,7 @@ fn to_yaml(value: &Json) -> Yaml {
             if let (Some(Json::String(tag)), Some(inner), 2) =
                 (map.get("!tag"), map.get("value"), map.len())
             {
+                let tag = if tag == JS_TAG { JS_LOCAL } else { tag };
                 return Yaml::Tagged(Box::new(serde_yaml::value::TaggedValue {
                     tag: serde_yaml::value::Tag::new(tag.trim_start_matches('!')),
                     value: to_yaml(inner),
@@ -441,11 +539,7 @@ fn to_yaml(value: &Json) -> Yaml {
 /// "rows": [...]}`. Disabled servers are left out, as dsh does not start them.
 pub(super) fn normalized(text: &str) -> Result<Json, String> {
     let doc = parse(text)?;
-    let servers: serde_json::Map<String, Json> = doc
-        .active()
-        .into_iter()
-        .map(|server| (server.name, to_json(&server.config)))
-        .collect();
+    let servers = current(&doc);
     let mut root = serde_json::Map::new();
     if !servers.is_empty() {
         root.insert(KEY.into(), Json::Object(servers));
@@ -463,7 +557,7 @@ fn strings(value: Option<&Yaml>) -> Vec<String> {
         .map(|list| {
             list.iter()
                 .filter_map(|item| match item {
-                    Yaml::String(s) => Some(s.clone()),
+                    Yaml::String(s) => Some(unmark(s)),
                     Yaml::Number(n) => Some(n.to_string()),
                     Yaml::Bool(b) => Some(b.to_string()),
                     _ => None,
@@ -507,10 +601,10 @@ pub(super) fn servers(text: &str) -> Result<Vec<McpServer>, String> {
             McpServer {
                 name: server.name,
                 transport: transport.into(),
-                command: str_of(config, "command").map(str::to_string),
+                command: str_of(config, "command").map(unmark),
                 args: strings(config.get("args")),
                 env_keys,
-                url: str_of(config, "url").map(str::to_string),
+                url: str_of(config, "url").map(unmark),
             }
         })
         .collect())
@@ -582,44 +676,61 @@ pub(super) fn config_of(entry: &ServerEntry) -> Result<Json, String> {
 pub(super) fn raw_entries(text: &str) -> Result<Vec<(String, String, Json)>, String> {
     let doc = parse(text)?;
     let mut out = Vec::new();
-    // Only servers dsh starts; a disabled entry stays where it is.
+    // Only servers dsh starts; a disabled entry stays where it is. One a later
+    // row changes is not moved, since Toolport doesn't edit it.
     for server in doc.active() {
+        if server.overridden {
+            continue;
+        }
         let (r, e) = server.at;
         let Some(entry) = doc.rows[r].entries.as_ref().and_then(|list| list.get(e)) else {
             // Not split by line: keep the parsed value as YAML instead.
             let value = &doc.rows[r].value["insert"][e];
-            out.push((
-                server.name,
-                serde_yaml::to_string(value).map_err(|e| e.to_string())?,
-                to_json(&server.config),
-            ));
+            out.push((server.name, emit(value)?, to_json(&server.config)));
             continue;
         };
-        // "    - id: x\n      name: y" -> "id: x\nname: y"
-        let item = dedent(
-            &doc.text[entry.span.start..entry.span.end],
-            indent(&doc.text[entry.span.start..]),
-        );
-        let keys = key_column(&item, 0);
-        let body = format!("{}{}", " ".repeat(keys), &item[keys..]);
-        out.push((server.name, dedent(&body, keys), to_json(&server.config)));
+        let item = &doc.text[entry.span.start..entry.span.end];
+        out.push((server.name, item_body(item), to_json(&server.config)));
     }
     Ok(out)
 }
 
-/// Render entry mappings as one root `insert` row.
-fn insert_row(entries: &[String]) -> String {
-    let mut out = String::from("- insert:\n");
+/// A list item's mapping, dedented: "    - id: x\n      name: y" -> "id: x\nname: y".
+fn item_body(item: &str) -> String {
+    let item = dedent(item, indent(item));
+    if let Some((first, rest)) = item.split_once('\n') {
+        if first.trim_end() == "-" {
+            let at = rest
+                .lines()
+                .find(|line| has_content(line))
+                .map_or(0, indent);
+            return dedent(rest, at);
+        }
+    }
+    let keys = key_column(&item, 0);
+    let body = format!("{}{}", " ".repeat(keys), &item[keys..]);
+    dedent(&body, keys)
+}
+
+/// The fields of one recorded raw entry.
+pub(super) fn definition(raw: &str) -> Result<Json, String> {
+    let doc: Yaml = yaml_from(raw).map_err(|_| "Could not read imported settings")?;
+    Ok(to_json(&doc["config"]))
+}
+
+/// Render entry mappings as list items whose dash sits at `column`.
+fn items(entries: &[String], column: usize) -> String {
+    let mut out = String::new();
     for entry in entries {
         for (i, line) in entry.lines().enumerate() {
-            let lead = if i == 0 { "    - " } else { "      " };
             if line.is_empty() {
                 out.push('\n');
-            } else {
-                out.push_str(lead);
-                out.push_str(line);
-                out.push('\n');
+                continue;
             }
+            out.push_str(&" ".repeat(column));
+            out.push_str(if i == 0 { "- " } else { "  " });
+            out.push_str(line);
+            out.push('\n');
         }
     }
     out
@@ -633,7 +744,7 @@ fn entry_text(id: &str, disabled: Option<&Yaml>, config: &Json) -> Result<String
         map.insert("disabled".into(), disabled.clone());
     }
     map.insert("config".into(), ordered(config));
-    serde_yaml::to_string(&Yaml::Mapping(map)).map_err(|e| e.to_string())
+    emit(&Yaml::Mapping(map))
 }
 
 /// A config mapping with dsh's documented keys first, as its guides write them.
@@ -665,8 +776,14 @@ fn ordered(config: &Json) -> Yaml {
     Yaml::Mapping(out)
 }
 
-/// Remove `drop` (row, entry) pairs and append `add` entry texts as one row.
-fn rewrite(doc: &Doc, drop: &BTreeSet<(usize, usize)>, add: &[String]) -> Result<String, String> {
+/// Remove `drop` entries, rewrite `replace` entries where they stand and
+/// append `add` entry texts as one row.
+fn rewrite(
+    doc: &Doc,
+    drop: &BTreeSet<(usize, usize)>,
+    replace: &BTreeMap<(usize, usize), String>,
+    add: &[String],
+) -> Result<String, String> {
     let refuse = || {
         format!("This DeepSeek Harness patch file is laid out in a way Toolport can't edit safely; edit it by hand, {UNTOUCHED}.")
     };
@@ -674,14 +791,28 @@ fn rewrite(doc: &Doc, drop: &BTreeSet<(usize, usize)>, add: &[String]) -> Result
         return Err(refuse());
     }
     let text = doc.text;
-    let mut cuts: Vec<Span> = Vec::new();
+    let crlf = text.contains("\r\n");
+    // Match a CRLF file; lines Toolport didn't write keep their endings.
+    let ending = |added: String| {
+        if crlf {
+            added.replace('\n', "\r\n")
+        } else {
+            added
+        }
+    };
+    let mut cuts: Vec<(Span, String)> = Vec::new();
     for (r, row) in doc.rows.iter().enumerate() {
         let gone: Vec<usize> = drop
             .iter()
             .filter(|(dr, _)| *dr == r)
             .map(|(_, e)| *e)
             .collect();
-        if gone.is_empty() {
+        let changed: Vec<(usize, &String)> = replace
+            .iter()
+            .filter(|((cr, _), _)| *cr == r)
+            .map(|((_, e), entry)| (*e, entry))
+            .collect();
+        if gone.is_empty() && changed.is_empty() {
             continue;
         }
         let entries = row.entries.as_ref().ok_or_else(refuse)?;
@@ -690,22 +821,28 @@ fn rewrite(doc: &Doc, drop: &BTreeSet<(usize, usize)>, add: &[String]) -> Result
             .as_mapping()
             .is_some_and(|map| map.len() == 1 && map.contains_key("insert"));
         if gone.len() == entries.len() && only_insert {
-            cuts.push(row.span);
+            cuts.push((row.span, String::new()));
+            continue;
         } else if gone.len() == entries.len() {
-            // Keep the row's other keys; an empty list stays valid for dsh.
+            // The row has other keys (a group insert); leave it to the user.
             return Err(refuse());
-        } else {
-            cuts.extend(gone.iter().map(|&e| entries[e].span));
+        }
+        cuts.extend(gone.iter().map(|&e| (entries[e].span, String::new())));
+        for (e, entry) in changed {
+            let span = entries[e].span;
+            let column = indent(&text[span.start..]);
+            cuts.push((span, ending(items(std::slice::from_ref(entry), column))));
         }
     }
     if let Some(span) = doc.empty_flow.filter(|_| !add.is_empty()) {
-        cuts.push(span);
+        cuts.push((span, String::new()));
     }
-    cuts.sort_by_key(|span| span.start);
+    cuts.sort_by_key(|(span, _)| span.start);
     let mut out = String::with_capacity(text.len() + 256);
     let mut at = 0;
-    for span in cuts {
+    for (span, with) in cuts {
         out.push_str(&text[at..span.start]);
+        out.push_str(&with);
         at = span.end;
     }
     out.push_str(&text[at..]);
@@ -718,74 +855,107 @@ fn rewrite(doc: &Doc, drop: &BTreeSet<(usize, usize)>, add: &[String]) -> Result
         if out.lines().any(has_content) && !blank {
             addition.push('\n');
         }
-        addition.push_str(&insert_row(add));
-        if text.contains("\r\n") {
-            // Match a CRLF file; lines Toolport didn't write keep their endings.
-            addition = addition.replace('\n', "\r\n");
-        }
-        out.push_str(&addition);
+        addition.push_str("- insert:\n");
+        addition.push_str(&items(add, 4));
+        out.push_str(&ending(addition));
     }
     if !out.lines().any(has_content) {
         // dsh refuses a file that is not a list; keep its own empty form.
-        out.push_str("[]\n");
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push_str(&ending("\n".into()));
+        }
+        out.push_str(&ending("[]\n".into()));
     }
     Ok(out)
 }
 
 /// Make the file's MCP servers exactly `desired` (`serverName` -> `config`).
-/// Entries already matching stay byte for byte; changed ones keep their id.
+/// Entries already matching stay byte for byte; changed ones are rewritten
+/// where they stand with their id. A server to add whose recorded raw entry in
+/// `raw` still matches goes back verbatim, its id and comments included.
 pub(super) fn sync(
     text: Option<&str>,
     desired: &serde_json::Map<String, Json>,
+    raw: &BTreeMap<String, String>,
 ) -> Result<String, String> {
     let text = text.unwrap_or("");
     let doc = parse(text)?;
     let before_other = doc.other();
-    let off = doc.disabled_ids();
-    let mut drop = BTreeSet::new();
-    let mut add = Vec::new();
-    let mut kept = BTreeSet::new();
-    for server in doc.servers() {
-        let disabled = truthy(server.disabled.as_ref())
-            || server.id.as_ref().is_some_and(|id| off.contains(id));
-        match desired.get(&server.name) {
-            _ if disabled => {}
-            Some(want) if !kept.contains(&server.name) && &to_json(&server.config) == want => {
-                kept.insert(server.name.clone());
-            }
-            Some(want) if !kept.contains(&server.name) => {
-                drop.insert(server.at);
-                let id = server
-                    .id
-                    .clone()
-                    .unwrap_or_else(|| format!("mcp-{}", server.name));
-                add.push(entry_text(&id, server.disabled.as_ref(), want)?);
-                kept.insert(server.name.clone());
-            }
-            _ => {
-                drop.insert(server.at);
-            }
+    let active = doc.active();
+    let mut names = BTreeSet::new();
+    if let Some(twice) = active.iter().find(|s| !names.insert(s.name.as_str())) {
+        if &current(&doc) == desired {
+            return Ok(text.to_string());
         }
+        return Err(format!(
+            "Two DeepSeek Harness servers are named '{}'; remove one by hand, {UNTOUCHED}.",
+            twice.name
+        ));
     }
-    for (name, config) in desired {
-        if kept.contains(name) {
-            continue;
-        }
-        let taken: BTreeSet<String> = doc.servers().into_iter().filter_map(|s| s.id).collect();
+    let locked = |name: &str| {
+        format!("A later row in the DeepSeek Harness patch file changes '{name}'; edit it by hand, {UNTOUCHED}.")
+    };
+    let mut taken = doc.ids();
+    let fresh = |name: &str, taken: &mut BTreeSet<String>| {
         let mut id = format!("mcp-{name}");
         let mut n = 2;
         while taken.contains(&id) {
             id = format!("mcp-{name}-{n}");
             n += 1;
         }
-        add.push(entry_text(&id, None, config)?);
+        taken.insert(id.clone());
+        id
+    };
+    let mut drop = BTreeSet::new();
+    let mut replace = BTreeMap::new();
+    for server in &active {
+        match desired.get(&server.name) {
+            Some(want) if &to_json(&server.config) == want => {}
+            _ if server.overridden => return Err(locked(&server.name)),
+            Some(want) => {
+                let id = match &server.id {
+                    Some(id) => id.clone(),
+                    None => fresh(&server.name, &mut taken),
+                };
+                replace.insert(
+                    server.at,
+                    entry_text(&id, server.own_disabled.as_ref(), want)?,
+                );
+            }
+            None => {
+                drop.insert(server.at);
+            }
+        }
     }
-    if drop.is_empty() && add.is_empty() {
+    let mut add = Vec::new();
+    for (name, config) in desired {
+        if names.contains(name.as_str()) {
+            continue;
+        }
+        let recorded = raw.get(name).filter(|text| {
+            let id = yaml_from::<Yaml>(text)
+                .ok()
+                .and_then(|value| str_of(&value, "id").map(str::to_string));
+            definition(text).ok().as_ref() == Some(config) && id.is_some_and(|id| taken.insert(id))
+        });
+        match recorded {
+            Some(text) => add.push(text.clone()),
+            None => add.push(entry_text(&fresh(name, &mut taken), None, config)?),
+        }
+    }
+    if drop.is_empty() && replace.is_empty() && add.is_empty() {
         return Ok(text.to_string());
     }
-    let out = rewrite(&doc, &drop, &add)?;
+    let out = rewrite(&doc, &drop, &replace, &add)?;
     verify(&out, &before_other, desired)?;
     Ok(out)
+}
+
+fn current(doc: &Doc) -> serde_json::Map<String, Json> {
+    doc.active()
+        .into_iter()
+        .map(|server| (server.name, to_json(&server.config)))
+        .collect()
 }
 
 /// Append raw entry mappings (from the move record) as one row.
@@ -793,7 +963,7 @@ pub(super) fn append_raw(text: Option<&str>, entries: &[String]) -> Result<Strin
     let text = text.unwrap_or("");
     let doc = parse(text)?;
     let before = normalized(text)?;
-    let out = rewrite(&doc, &BTreeSet::new(), entries)?;
+    let out = rewrite(&doc, &BTreeSet::new(), &BTreeMap::new(), entries)?;
     let after = normalized(&out)?;
     if after.get("rows") != before.get("rows") {
         return Err(format!(
@@ -810,12 +980,7 @@ fn verify(
 ) -> Result<(), String> {
     let doc = parse(out)
         .map_err(|e| format!("Toolport produced an unreadable patch file ({e}); {UNTOUCHED}."))?;
-    let got: serde_json::Map<String, Json> = doc
-        .active()
-        .into_iter()
-        .map(|server| (server.name, to_json(&server.config)))
-        .collect();
-    if &got != desired || &doc.other() != before_other {
+    if &current(&doc) != desired || &doc.other() != before_other {
         return Err(format!(
             "Toolport could not apply this change exactly; {UNTOUCHED}."
         ));

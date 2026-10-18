@@ -6673,7 +6673,7 @@ fn write_dsh_servers(path: &Path, servers: &[ServerEntry]) -> Result<(), String>
     for server in servers {
         desired.insert(server.name.clone(), dsh::config_of(server)?);
     }
-    let out = dsh::sync(original.as_deref(), &desired)?;
+    let out = dsh::sync(original.as_deref(), &desired, &Default::default())?;
     if original.as_deref() != Some(out.as_str()) {
         atomic_write(path, &out)?;
     }
@@ -6693,7 +6693,7 @@ fn edit_dsh_gateway(path: &Path, entry: Option<&ServerEntry>) -> Result<(), Stri
     if let Some(entry) = entry {
         desired.insert(GATEWAY_ENTRY_NAME.into(), dsh::config_of(entry)?);
     }
-    let out = dsh::sync(original.as_deref(), &desired)?;
+    let out = dsh::sync(original.as_deref(), &desired, &Default::default())?;
     if original.as_deref() != Some(out.as_str()) {
         atomic_write(path, &out)?;
     }

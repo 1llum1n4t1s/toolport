@@ -181,11 +181,7 @@ pub(super) fn definition(
                 serde_yaml::from_str(&text).map_err(|_| "Could not read imported settings")?;
             serde_json::to_value(doc).map_err(|_| "Could not read imported settings")?
         }
-        Raw::Dsh { text } => {
-            let doc: serde_yaml::Value =
-                serde_yaml::from_str(&text).map_err(|_| "Could not read imported settings")?;
-            dsh::to_json(&doc["config"])
-        }
+        Raw::Dsh { text } => dsh::definition(&text)?,
     };
     Ok(Some(value))
 }
@@ -323,7 +319,7 @@ fn write_dsh(
     original: &str,
     desired: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
-    let out = dsh::sync(Some(original), desired)?;
+    let out = dsh::sync(Some(original), desired, &Default::default())?;
     if out != original {
         atomic_write(path, &out)?;
     }
@@ -470,6 +466,27 @@ pub(super) fn toml_entry(
         .get("mcp_servers")
         .and_then(|table| table.get(name))
         .cloned())
+}
+
+/// Recorded raw DeepSeek Harness entries for `path`, by server name.
+pub(super) fn dsh_entries(
+    client_id: &str,
+    path: &Path,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let Some(record) = load(client_id)? else {
+        return Ok(Default::default());
+    };
+    if record.config_path != path.to_string_lossy() {
+        return Ok(Default::default());
+    }
+    Ok(record
+        .entries
+        .into_iter()
+        .filter_map(|entry| match entry.raw {
+            Raw::Dsh { text } => Some((entry.name, text)),
+            _ => None,
+        })
+        .collect())
 }
 
 pub(super) fn missing_names(

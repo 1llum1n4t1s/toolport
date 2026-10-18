@@ -671,7 +671,19 @@ pub(super) fn apply(client_id: &str, format: Format, path: &Path) -> Result<bool
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
-            let output = super::dsh::sync(current.as_deref(), &desired)?;
+            // A server going back is written as it was: its moved entry, else
+            // its entry in the original file.
+            let mut raw: std::collections::BTreeMap<String, String> = record
+                .original
+                .as_deref()
+                .map(super::dsh::raw_entries)
+                .transpose()?
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, text, _)| (name, text))
+                .collect();
+            raw.extend(moved::dsh_entries(client_id, path)?);
+            let output = super::dsh::sync(current.as_deref(), &desired, &raw)?;
             if current.as_deref() != Some(output.as_str()) {
                 atomic_write(path, &output)?;
             }
