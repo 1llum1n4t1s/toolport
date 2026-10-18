@@ -3252,7 +3252,7 @@ fn codewhale_native_name_identity_table_and_toggle_round_trip() {
         let target = inv
             .skills
             .iter()
-            .find(|skill| skill.key.ends_with("/case/SKILL.md"))
+            .find(|skill| Path::new(&skill.key).ends_with(Path::new("case").join("SKILL.md")))
             .unwrap();
         assert_eq!(
             target.states["codewhale"].switch_name.as_deref(),
