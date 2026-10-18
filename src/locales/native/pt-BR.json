@@ -1166,5 +1166,5 @@
   "OpenClaw extra folder": "Pasta extra do OpenClaw",
   "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "Usa skills.entries no openclaw.json do OpenClaw (enabled: false).",
   "OpenHands skills": "Skills do OpenHands",
-  "OpenHands can only turn off skills it installed itself, not skills in your folders.": "O OpenHands só consegue desativar skills que ele mesmo instalou, não as skills das suas pastas."
+  "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "As habilidades do OpenHands são somente leitura aqui. Use o OpenHands para ativar ou desativar as habilidades instaladas."
 }

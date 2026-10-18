@@ -1166,5 +1166,5 @@
   "OpenClaw extra folder": "OpenClaw 추가 폴더",
   "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "OpenClaw의 openclaw.json에 있는 skills.entries를 사용합니다 (enabled: false).",
   "OpenHands skills": "OpenHands 스킬",
-  "OpenHands can only turn off skills it installed itself, not skills in your folders.": "OpenHands는 직접 설치한 스킬만 끌 수 있고, 내 폴더에 있는 스킬은 끌 수 없습니다."
+  "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "여기서 OpenHands 스킬은 읽기 전용입니다. 설치된 스킬은 OpenHands에서 켜거나 끄세요."
 }

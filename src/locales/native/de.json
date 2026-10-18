@@ -1166,5 +1166,5 @@
   "OpenClaw extra folder": "Zusätzlicher OpenClaw-Ordner",
   "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "Verwendet skills.entries in OpenClaws openclaw.json (enabled: false).",
   "OpenHands skills": "OpenHands-Skills",
-  "OpenHands can only turn off skills it installed itself, not skills in your folders.": "OpenHands kann nur Skills ausschalten, die es selbst installiert hat, nicht Skills in deinen Ordnern."
+  "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "OpenHands-Skills sind hier schreibgeschützt. Aktivieren oder deaktivieren Sie installierte Skills in OpenHands."
 }

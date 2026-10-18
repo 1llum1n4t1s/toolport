@@ -1166,5 +1166,5 @@
   "OpenClaw extra folder": "OpenClaw の追加フォルダー",
   "Uses skills.entries in OpenClaw's openclaw.json (enabled: false).": "OpenClaw の openclaw.json にある skills.entries を使います (enabled: false)。",
   "OpenHands skills": "OpenHands のスキル",
-  "OpenHands can only turn off skills it installed itself, not skills in your folders.": "OpenHands がオフにできるのは自身でインストールしたスキルだけで、あなたのフォルダにあるスキルはオフにできません。"
+  "OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.": "ここでは OpenHands のスキルは読み取り専用です。インストール済みスキルの有効・無効は OpenHands で切り替えてください。"
 }

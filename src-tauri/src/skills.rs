@@ -1461,7 +1461,7 @@ fn agent_defs() -> Vec<AgentDef> {
             AGENTS_MD,
         )
         .project_walk(ProjectWalk::FLAT.first())
-        .checked(msg("OpenHands can only turn off skills it installed itself, not skills in your folders.")),
+        .checked(msg("OpenHands skills are read-only here. Use OpenHands to switch installed skills on or off.")),
         docs_agent(
             "tabnine",
             "Tabnine",
