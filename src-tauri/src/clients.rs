@@ -27,6 +27,7 @@ mod discovery;
 mod dsh;
 mod locations;
 mod reasonix;
+pub(crate) mod reasonix_paths;
 mod synced;
 pub use discovery::DiscoveryCapabilities;
 pub(crate) use locations::folder_key as claude_profile_key;
@@ -1581,13 +1582,11 @@ pub fn client_rules_target(
         ));
     }
     if client_id == "reasonix" {
-        // Its global REASONIX.md, AGENTS.md and CLAUDE.md live in the state root,
-        // which is the Reasonix home unless REASONIX_STATE_HOME moves it.
-        let dir = reasonix_home_from(client_path_env("REASONIX_STATE_HOME"))
-            .or_else(|| reasonix_home_from(client_path_env("REASONIX_HOME")));
-        if let Some(dir) = dir {
-            return Some(rules_sentinel_block(dir.join("AGENTS.md"), scope));
-        }
+        let home = home()?;
+        let reasonix = reasonix_path()?.parent()?.to_path_buf();
+        let env = |key: &str| client_path_env(key).and_then(|v| v.into_string().ok());
+        let state = reasonix_paths::state_root(&home, &reasonix, &env);
+        return Some(rules_sentinel_block(state.join("AGENTS.md"), scope));
     }
     let home = home()?;
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -13406,6 +13405,25 @@ command = "npx"
             let _value = EnvRestore::set("REASONIX_HOME", Path::new(value));
             assert_eq!(reasonix_path(), client_config_path("reasonix"), "{value:?}");
         }
+    }
+
+    #[test]
+    fn reasonix_rules_follow_configured_state() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root =
+            std::env::temp_dir().join(format!("toolport-reasonix-state-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let _restore = EnvRestore::set("REASONIX_HOME", &root);
+        let _state = EnvRestore::set("REASONIX_STATE_HOME", Path::new(""));
+        let state = root.join("configured-state");
+        std::fs::write(
+            root.join("config.toml"),
+            format!("[storage]\nstate = {:?}\n", state.to_string_lossy()),
+        )
+        .unwrap();
+        let rules = client_rules_target("reasonix", crate::instructions::Scope::Team).unwrap();
+        assert_eq!(rules.path, state.join("AGENTS.md"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     const REASONIX_CONFIG: &str = r#"# Reasonix configuration.

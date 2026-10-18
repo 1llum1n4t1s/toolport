@@ -120,7 +120,27 @@ the place of Claude Code's, so its calls show up as Reasonix in Activity.
 Reasonix keeps an MCP server's tools behind its own capability search, so
 Toolport's Auto mode lists the full catalog. It does not pick up catalog
 changes during a session, so a server you add in Toolport appears in the next
-session. A plugin list written inline (`plugins = [{ ... }]`) is left untouched.
+session. Plugin lists written inline (`plugins = [{ ... }]`) are left untouched.
+Duplicate names use the last command with merged disabled-tool policies. You
+can connect the gateway while leaving those tables intact; resolve a duplicated
+name before moving or replacing that server.
+
+Global rules follow `REASONIX_STATE_HOME`, then `[storage] state` in the global
+config, then the Reasonix home. Absolute paths and leading `~` are supported;
+configured `${VAR}` and `${VAR:-default}` references are expanded. Relative
+paths depend on Reasonix's launch directory and fall back to the home here.
+The Skills page includes nested directory and single-file Markdown skills,
+with `[skills] max_depth` (default 3, capped at 5). Nested skills need a
+description; flat files under `.claude/skills` need skill frontmatter. Skill
+toggles use `[skills] disabled_skills` only when Toolport can verify the exact
+identifier: an ASCII filename and printable ASCII frontmatter with LF or CRLF
+line endings, no tabs or other controls, and at most one literal `name:` field.
+That name must be a bare, unquoted value containing only letters, digits, dots,
+underscores or hyphens. Numeric spelling is preserved. Quoted names, repeated
+names and empty name fields are read-only.
+Unicode names, complex YAML and other uncertain identifiers stay visible with
+a read-only reason; use Reasonix to switch those skills. Other skills and
+clients remain independently switchable.
 
 ### Codewhale setup
 

@@ -1614,7 +1614,7 @@ fn reasonix_reads_its_folders_in_order_and_switches_through_disabled_skills() {
     home.skill(".agents/skills/shared", "shared", "Shared");
     home.skill(".claude/skills/claude", "claude", "Claude");
     home.skill("more/extra", "extra", "Extra");
-    // `[skills] excluded_paths` drops a folder; Reasonix doesn't walk nested folders.
+    // `[skills] excluded_paths` drops a folder; nested skills are supported.
     home.skill(".agent/skills/skipped", "skipped", "Skipped");
     home.skill(".reasonix/skills/group/nested", "nested", "Nested");
     // `[skills] paths` wins a name clash over the home folder.
@@ -1627,14 +1627,11 @@ fn reasonix_reads_its_folders_in_order_and_switches_through_disabled_skills() {
     home.write(".reasonix/AGENTS.md", "# agents\n");
     let env = home.env();
     let inv = scan(&env, &only(&["reasonix"]), None);
-    for name in ["own", "shared"] {
+    for name in ["own", "shared", "nested"] {
         assert_eq!(state(&inv, name, "reasonix"), Some(State::On), "{name}");
     }
     assert_eq!(state(&inv, "claude", "reasonix"), Some(State::Off));
-    assert!(!inv
-        .skills
-        .iter()
-        .any(|s| s.name == "skipped" || s.name == "nested"));
+    assert!(!inv.skills.iter().any(|s| s.name == "skipped"));
     let extra: Vec<_> = inv.skills.iter().filter(|s| s.name == "extra").collect();
     let winner = extra
         .iter()
@@ -3542,5 +3539,436 @@ fn codewhale_native_history_veto_and_exact_enable_round_trip() {
             ),
             Some(State::Off)
         );
+    }
+}
+
+#[test]
+fn reasonix_discovers_bounded_nested_and_flat_skills_and_switches_them() {
+    let home = Home::new();
+    home.write(
+        ".reasonix/skills/flat.md",
+        "---\ndescription: Flat\n---\nDo it\n",
+    );
+    home.skill(".reasonix/skills/a/b/c", "third", "Depth three");
+    home.skill(".reasonix/skills/a/b/d/e", "fourth", "Depth four");
+    home.write(".reasonix/skills/a/no-description.md", "No description\n");
+    home.write(".claude/skills/readme.md", "# ordinary docs\n");
+    home.write(
+        ".claude/skills/marked.md",
+        "---\nuser-invocable: false\n---\nMarked\n",
+    );
+    home.write(
+        "work/app/.reasonix/skills/pack/project.md",
+        "---\ndescription: Project flat\n---\nDo it\n",
+    );
+    home.skill(
+        "work/app/.reasonix/skills/pack/nested",
+        "project-nested",
+        "Project nested",
+    );
+    let project = home.path("work/app");
+    let env = home.env();
+    let inv = scan(&env, &only(&["reasonix"]), Some(&project));
+    for name in ["flat", "third", "marked", "project", "project-nested"] {
+        assert_eq!(state(&inv, name, "reasonix"), Some(State::On), "{name}");
+    }
+    for name in ["fourth", "no-description", "readme"] {
+        assert!(inv.skills.iter().all(|skill| skill.name != name), "{name}");
+    }
+    assert!(!skill(&inv, "flat").editable);
+    assert!(!skill(&inv, "flat").removable);
+    let key = skill(&inv, "flat").key.clone();
+    set_state(
+        &env,
+        &inv,
+        "reasonix",
+        &key,
+        Wanted::Off,
+        &TestWriter::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        state(&scan(&env, &only(&["reasonix"]), None), "flat", "reasonix"),
+        Some(State::Off)
+    );
+    home.write(".reasonix/config.toml", "[skills]\nmax_depth = 4\n");
+    assert_eq!(
+        state(
+            &scan(&env, &only(&["reasonix"]), None),
+            "fourth",
+            "reasonix"
+        ),
+        Some(State::On)
+    );
+    home.write(".reasonix/config.toml", "[skills]\nmax_depth = 1\n");
+    let shallow = scan(&env, &only(&["reasonix"]), None);
+    assert!(shallow.skills.iter().all(|skill| skill.name != "third"));
+}
+
+#[test]
+fn reasonix_inventory_reads_rules_from_configured_state() {
+    let home = Home::new();
+    home.write(
+        ".reasonix/config.toml",
+        "[storage]\nstate = '~/relocated'\n",
+    );
+    home.write("relocated/AGENTS.md", "# Actual rules\n");
+    let inv = scan(&home.env(), &only(&["reasonix"]), None);
+    assert!(inv
+        .rules
+        .iter()
+        .any(|r| r.path == "~/relocated/AGENTS.md" && r.agents.contains_key("reasonix")));
+}
+
+#[test]
+fn reasonix_switches_by_its_resolved_identity_without_renaming_other_clients() {
+    let home = Home::new();
+    for (file, declared, expected) in [
+        ("review", "レビュー", "review"),
+        ("invalid", "review changes", "invalid"),
+        ("renamed", "inspect", "inspect"),
+        ("cafe\u{301}", "", "café"),
+    ] {
+        home.write(
+            &format!(".reasonix/skills/{file}.md"),
+            &format!("---\nname: '{declared}'\ndescription: Review changes\n---\nReview\n"),
+        );
+        let env = home.env();
+        let inv = scan(&env, &only(&["reasonix"]), None);
+        let record = inv
+            .skills
+            .iter()
+            .find(|s| s.key.ends_with(&format!("/{file}.md")))
+            .unwrap();
+        assert_eq!(
+            record.states["reasonix"].switch_name.as_deref(),
+            Some(expected)
+        );
+        assert!(record.states["reasonix"].read_only_reason.is_some());
+        assert!(set_state(
+            &env,
+            &inv,
+            "reasonix",
+            &record.key,
+            Wanted::Off,
+            &TestWriter::default()
+        )
+        .is_err());
+    }
+    home.skill(".claude/skills/shared", "レビュー", "Shared review");
+    let env = home.env();
+    let inv = scan(&env, &only(&["claude-code", "reasonix"]), None);
+    let record = inv
+        .skills
+        .iter()
+        .find(|s| s.key.ends_with("/shared/SKILL.md"))
+        .unwrap();
+    assert_eq!(record.name, "レビュー");
+    assert_eq!(
+        record.states["reasonix"].switch_name.as_deref(),
+        Some("shared")
+    );
+    assert!(record.states["reasonix"].read_only_reason.is_some());
+    assert!(set_state(
+        &env,
+        &inv,
+        "reasonix",
+        &record.key,
+        Wanted::Off,
+        &TestWriter::default()
+    )
+    .is_err());
+    assert_eq!(record.states["claude-code"].state, State::On);
+    assert!(record.states["claude-code"].read_only_reason.is_none());
+}
+
+#[test]
+fn reasonix_deduplicates_but_keeps_unicode_switches_read_only() {
+    let home = Home::new();
+    home.write(
+        ".reasonix/skills/review.md",
+        "---\nname: レビュー\ndescription: Review\n---\nReview\n",
+    );
+    home.write(
+        ".reasonix/skills/second.md",
+        "---\nname: review\ndescription: Second\n---\nSecond\n",
+    );
+    home.write(
+        ".reasonix/skills/café.md",
+        "---\ndescription: Cafe\n---\nCafe\n",
+    );
+    home.write(
+        ".reasonix/config.toml",
+        "[skills]\ndisabled_skills = ['cafe\u{301}']\n",
+    );
+    let env = home.env();
+    let inv = scan(&env, &only(&["reasonix"]), None);
+    let first = inv
+        .skills
+        .iter()
+        .find(|s| s.key.ends_with("/review.md"))
+        .unwrap();
+    let second = inv
+        .skills
+        .iter()
+        .find(|s| s.key.ends_with("/second.md"))
+        .unwrap();
+    assert_eq!(first.states["reasonix"].state, State::On);
+    assert_eq!(second.states["reasonix"].state, State::Shadowed);
+    let cafe = inv
+        .skills
+        .iter()
+        .find(|s| s.key.ends_with("/café.md"))
+        .unwrap();
+    assert_eq!(cafe.states["reasonix"].state, State::Off);
+    assert!(cafe.states["reasonix"].read_only_reason.is_some());
+    let before = std::fs::read(home.path(".reasonix/config.toml")).unwrap();
+    assert!(set_state(
+        &env,
+        &inv,
+        "reasonix",
+        &cafe.key,
+        Wanted::On,
+        &TestWriter::default()
+    )
+    .is_err());
+    assert_eq!(
+        std::fs::read(home.path(".reasonix/config.toml")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn reasonix_scalar_spelling_matches_upstream_when_toggled() {
+    for (header, expected) in [
+        ("name: inspect\n", "inspect"),
+        ("name: 123\n", "123"),
+        ("name: Inspect\n", "Inspect"),
+        ("name: 00123\n", "00123"),
+    ] {
+        let home = Home::new();
+        home.write(
+            ".reasonix/skills/review.md",
+            &format!("---\n{header}description: Review\n---\nReview\n"),
+        );
+        let env = home.env();
+        let inv = scan(&env, &only(&["reasonix"]), None);
+        let record = inv.skills.first().unwrap();
+        set_state(
+            &env,
+            &inv,
+            "reasonix",
+            &record.key,
+            Wanted::Off,
+            &TestWriter::default(),
+        )
+        .unwrap();
+        let config = read_toml(&home.path(".reasonix/config.toml")).unwrap();
+        assert_eq!(
+            config["skills"]["disabled_skills"][0].as_str(),
+            Some(expected),
+            "{header}"
+        );
+    }
+}
+
+#[test]
+fn reasonix_switch_certification_uses_upstream_name_table() {
+    // Generated by running the unmodified frontmatter/{document,frontmatter}.go
+    // and config/skill_name.go from Reasonix 31f230cf490ffee9db98e6734860dc0b92fb5bc5.
+    // Uncertified rows deliberately refuse both directions without writing config.
+    let cases: serde_json::Value =
+        serde_json::from_str(include_str!("reasonix-name-cases.json")).unwrap();
+    for case in cases.as_array().unwrap() {
+        let home = Home::new();
+        let stem = case["stem"].as_str().unwrap();
+        let header = case["header"].as_str().unwrap();
+        let expected = case["expected"].as_str().unwrap();
+        let safe = case["safe"].as_bool().unwrap();
+        home.write(
+            &format!(".reasonix/skills/{stem}.md"),
+            &format!("---\n{header}description: Review\n---\nReview\n"),
+        );
+        let env = home.env();
+        let inv = scan(&env, &only(&["reasonix"]), None);
+        let record = inv.skills.first().unwrap();
+        assert_eq!(
+            record.states["reasonix"].read_only_reason.is_none(),
+            safe,
+            "{case}"
+        );
+        for wanted in [Wanted::Off, Wanted::On] {
+            let result = set_state(
+                &env,
+                &inv,
+                "reasonix",
+                &record.key,
+                wanted,
+                &TestWriter::default(),
+            );
+            if safe {
+                result.unwrap();
+                assert_eq!(
+                    record.states["reasonix"].switch_name.as_deref(),
+                    Some(expected),
+                    "{case}"
+                );
+                let config = read_toml(&home.path(".reasonix/config.toml")).unwrap();
+                let list = config["skills"]["disabled_skills"].as_array().unwrap();
+                assert_eq!(
+                    list.iter().any(|v| v.as_str() == Some(expected)),
+                    wanted == Wanted::Off,
+                    "{case}"
+                );
+                let after = scan(&env, &only(&["reasonix"]), None);
+                assert_eq!(
+                    after.skills.first().unwrap().states["reasonix"].state,
+                    if wanted == Wanted::Off {
+                        State::Off
+                    } else {
+                        State::On
+                    },
+                    "{case}"
+                );
+            } else {
+                assert!(result.unwrap_err().contains("cannot verify"), "{case}");
+                assert!(!home.path(".reasonix/config.toml").exists(), "{case}");
+            }
+        }
+    }
+}
+
+#[test]
+fn reasonix_malformed_frontmatter_never_certifies_a_switch() {
+    let cases: serde_json::Value =
+        serde_json::from_str(include_str!("reasonix-refused-name-cases.json")).unwrap();
+    for case in cases.as_array().unwrap() {
+        let home = Home::new();
+        let text = case["text"].as_str().map(str::to_owned).unwrap_or_else(|| {
+            format!(
+                "---\n{}description: Review\n---\nReview\n",
+                case["header"].as_str().unwrap()
+            )
+        });
+        home.write(".reasonix/skills/review.md", &text);
+        for initial in [None, Some("[skills]\ndisabled_skills = ['review']\n")] {
+            if let Some(initial) = initial {
+                home.write(".reasonix/config.toml", initial);
+            }
+            let before = std::fs::read(home.path(".reasonix/config.toml")).ok();
+            let env = home.env();
+            let inv = scan(&env, &only(&["reasonix"]), None);
+            let record = inv.skills.first().unwrap();
+            assert!(
+                record.states["reasonix"].read_only_reason.is_some(),
+                "{case}"
+            );
+            for wanted in [Wanted::Off, Wanted::On] {
+                assert!(
+                    set_state(
+                        &env,
+                        &inv,
+                        "reasonix",
+                        &record.key,
+                        wanted,
+                        &TestWriter::default()
+                    )
+                    .unwrap_err()
+                    .contains("cannot verify"),
+                    "{case}"
+                );
+                assert_eq!(
+                    std::fs::read(home.path(".reasonix/config.toml")).ok(),
+                    before,
+                    "{case}"
+                );
+                let after = scan(&env, &only(&["reasonix"]), None);
+                assert!(after.skills.first().unwrap().states["reasonix"]
+                    .read_only_reason
+                    .is_some());
+            }
+        }
+    }
+}
+
+#[test]
+fn reasonix_certification_rejects_header_controls_before_trimming() {
+    let home = Home::new();
+    let path = home.path(".reasonix/skills/review.md");
+    let found = Found {
+        link: path.clone(),
+        real: Some(path),
+        root_label: "test",
+        root_path: home.path(".reasonix/skills"),
+    };
+    for byte in (0..=31).chain([127]).filter(|byte| *byte != b'\n') {
+        home.write(
+            ".reasonix/skills/review.md",
+            &format!(
+                "---\nname: inspect\ndescription: Rev{}iew\n---\nReview\n",
+                char::from(byte)
+            ),
+        );
+        assert_eq!(reasonix_proven_skill_name(&found), None, "byte {byte:#x}");
+    }
+    for newline in ["\n", "\r\n"] {
+        home.write(".reasonix/skills/review.md", &format!("---{newline}name: inspect{newline}description: Review{newline}---{newline}Body\x0c"));
+        assert_eq!(
+            reasonix_proven_skill_name(&found).as_deref(),
+            Some("inspect")
+        );
+    }
+}
+
+#[test]
+fn reasonix_certification_respects_the_skill_file_size_cap() {
+    let home = Home::new();
+    let path = home.write(
+        ".reasonix/skills/review.md",
+        "---\nname: inspect\ndescription: Review\n---\nBody\n",
+    );
+    let found = Found {
+        link: path.clone(),
+        real: Some(path.clone()),
+        root_label: "test",
+        root_path: home.path(".reasonix/skills"),
+    };
+    let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.set_len(MAX_FILE_BYTES).unwrap();
+    assert_eq!(
+        reasonix_proven_skill_name(&found).as_deref(),
+        Some("inspect")
+    );
+    file.set_len(MAX_FILE_BYTES + 1).unwrap();
+    assert_eq!(reasonix_proven_skill_name(&found), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn reasonix_read_only_identity_keeps_each_state_explanation() {
+    let home = Home::new();
+    for file in ["a", "b"] {
+        home.write(
+            &format!(".reasonix/skills/{file}.md"),
+            "---\nname: 'shared'\ndescription: Review\n---\nReview\n",
+        );
+    }
+    home.link(".reasonix/skills/broken", &home.path("missing"));
+    home.write(
+        ".reasonix/config.toml",
+        "[skills]\ndisabled_skills = ['shared']\n",
+    );
+    let inv = scan(&home.env(), &only(&["reasonix"]), None);
+    for (suffix, expected, via) in [
+        ("/a.md", State::Off, "Off in"),
+        ("/b.md", State::Shadowed, "wins in"),
+        ("/broken", State::Broken, "missing folder"),
+    ] {
+        let record = inv.skills.iter().find(|s| s.key.ends_with(suffix)).unwrap();
+        let state = &record.states["reasonix"];
+        assert_eq!(state.state, expected);
+        assert!(state.read_only_reason.is_some());
+        assert!(state.via.contains(via), "{suffix}: {}", state.via);
+        assert_ne!(Some(&state.via), state.read_only_reason.as_ref());
     }
 }

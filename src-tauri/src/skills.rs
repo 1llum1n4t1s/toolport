@@ -64,7 +64,7 @@ pub struct Env {
     pub reasonix: PathBuf,
     /// `REASONIX_HOME` is set, so Reasonix skips the folders under the OS home.
     pub reasonix_portable: bool,
-    /// Where Reasonix reads its global REASONIX.md (`REASONIX_STATE_HOME`, else its home).
+    /// Where Reasonix reads global rules (`REASONIX_STATE_HOME`, `[storage].state`, else home).
     pub reasonix_state: PathBuf,
     /// Codewhale's state home (`CODEWHALE_HOME`, default `~/.codewhale`), which holds
     /// `skills_state.toml`. Its skill folders and instructions stay under the OS home.
@@ -101,7 +101,11 @@ impl Env {
             dsh_agents: home.join(".agents"),
             reasonix: home.join(".reasonix"),
             reasonix_portable: false,
-            reasonix_state: home.join(".reasonix"),
+            reasonix_state: crate::clients::reasonix_paths::state_root(
+                home,
+                &home.join(".reasonix"),
+                &|_| None,
+            ),
             codewhale: home.join(".codewhale"),
             codewhale_config: codewhale_config(home, &home.join(".codewhale"), false),
             openclaw: crate::clients::openclaw::dirs(home, &|_| None),
@@ -191,9 +195,10 @@ impl Env {
             env.reasonix = dir;
             env.reasonix_portable = true;
         }
-        env.reasonix_state = trimmed("REASONIX_STATE_HOME")
-            .and_then(expand)
-            .unwrap_or_else(|| env.reasonix.clone());
+        env.reasonix_state =
+            crate::clients::reasonix_paths::state_root(&home, &env.reasonix, &|key| {
+                std::env::var(key).ok()
+            });
         let codewhale_home = trimmed("CODEWHALE_HOME").and_then(expand);
         let explicit_home = codewhale_home.is_some();
         if let Some(dir) = codewhale_home {
@@ -410,6 +415,9 @@ enum Switch {
 struct Root {
     path: PathBuf,
     recursive: bool,
+    /// Reasonix also reads flat Markdown skills, with a configurable depth.
+    reasonix_depth: Option<usize>,
+    reasonix_marker: bool,
     /// Whether the client loads a skill folder that is a link (Continue skips them).
     dir_links: bool,
     /// Whether the client loads a SKILL.md that is itself a link (Codex skips them).
@@ -424,6 +432,8 @@ impl Root {
         Root {
             path,
             recursive: false,
+            reasonix_depth: None,
+            reasonix_marker: false,
             dir_links: true,
             file_links: true,
             all_names: false,
@@ -1688,6 +1698,9 @@ pub struct SkillState {
     /// (Claude Code plugin skills are `plugin:skill`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switch_name: Option<String>,
+    /// This individual client/skill switch cannot be written faithfully.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only_reason: Option<String>,
     /// Off through a rule that covers many skills (OpenCode's `"skill": "deny"` or `team-*`),
     /// not a choice about this one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -2191,8 +2204,9 @@ fn walk_root(root: &Root) -> Vec<Found> {
 
 /// Several clients read the same folders (`~/.claude/skills`, `~/.agents/skills`), so each one
 /// is walked once per scan and reused with the reading client's label.
+type WalkKey = (PathBuf, bool, bool, bool, bool, Option<usize>, bool);
 #[derive(Default)]
-struct WalkCache(HashMap<(PathBuf, bool, bool, bool, bool), Vec<Found>>);
+struct WalkCache(HashMap<WalkKey, Vec<Found>>);
 
 impl WalkCache {
     fn walk(&mut self, root: &Root) -> Vec<Found> {
@@ -2203,6 +2217,8 @@ impl WalkCache {
                 root.dir_links,
                 root.file_links,
                 root.all_names,
+                root.reasonix_depth,
+                root.reasonix_marker,
             ))
             .or_insert_with(|| walk_root(root))
             .iter()
@@ -2257,6 +2273,27 @@ fn walk_dir(
             }
             continue;
         }
+        if root.reasonix_depth.is_some()
+            && path.is_file()
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
+            let text = read_text(&path).unwrap_or_default();
+            let (_, description) = front_matter(&text);
+            if (depth == 0 || description.is_some())
+                && (!root.reasonix_marker || reasonix_skill_marker(&text))
+            {
+                out.push(Found {
+                    real: canon(&path).ok(),
+                    link: path,
+                    root_label: root.label,
+                    root_path: root.path.clone(),
+                });
+            }
+            continue;
+        }
         if !path.is_dir() || (!root.dir_links && is_link(&path)) {
             continue;
         }
@@ -2268,13 +2305,19 @@ fn walk_dir(
             continue;
         }
         if skill_md.is_file() {
+            if root.reasonix_depth.is_some()
+                && depth > 0
+                && read_text(&skill_md).is_none_or(|text| front_matter(&text).1.is_none())
+            {
+                continue;
+            }
             out.push(Found {
                 real: canon(&skill_md).ok(),
                 link: skill_md,
                 root_label: root.label,
                 root_path: root.path.clone(),
             });
-        } else if root.recursive && depth + 1 < MAX_DEPTH {
+        } else if root.recursive && depth + 1 < root.reasonix_depth.unwrap_or(MAX_DEPTH) {
             walk_dir(root, &path, depth + 1, seen, budget, out, allowed);
         }
     }
@@ -2643,7 +2686,241 @@ fn reasonix_skill_roots(env: &Env) -> Vec<Root> {
     let excluded = paths("excluded_paths");
     let mut seen = BTreeSet::new();
     roots.retain(|root| !excluded.contains(&root.path) && seen.insert(root.path.clone()));
+    for root in &mut roots {
+        root.recursive = true;
+        root.reasonix_depth = Some(reasonix_skill_depth(env));
+        root.reasonix_marker = root.label == msg("Claude Code folder");
+    }
     roots
+}
+
+fn reasonix_skill_depth(env: &Env) -> usize {
+    read_toml(&reasonix_config_path(env))
+        .and_then(|c| c.get("skills")?.get("max_depth")?.as_integer())
+        .map(|depth| {
+            if depth == 0 {
+                3
+            } else {
+                depth.clamp(1, 5) as usize
+            }
+        })
+        .unwrap_or(3)
+}
+
+// Reasonix resolves a declaration against the filename before indexing or toggling.
+fn reasonix_valid_skill_name(name: &str) -> bool {
+    use unicode_normalization::UnicodeNormalization;
+    static VALID: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static IGNORABLE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let name: String = name.nfc().collect();
+    name.chars().count() <= 64
+        && VALID
+            .get_or_init(|| {
+                regex::Regex::new(r"^[\p{L}\p{N}][\p{L}\p{N}\p{M}._-]*$")
+                    .expect("valid skill pattern")
+            })
+            .is_match(&name)
+        && !IGNORABLE
+            .get_or_init(|| {
+                regex::Regex::new(r"\p{Default_Ignorable_Code_Point}")
+                    .expect("valid Unicode property")
+            })
+            .is_match(&name)
+}
+
+fn reasonix_ascii_skill_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    (1..=64).contains(&name.len())
+        && bytes.next().is_some_and(|b| b.is_ascii_alphanumeric())
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
+fn reasonix_skill_stem(found: &Found) -> &str {
+    if found.link.file_name().is_some_and(|n| n == "SKILL.md")
+        && found.link.parent() != Some(found.root_path.as_path())
+    {
+        found
+            .link
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+    } else {
+        found
+            .link
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+    }
+}
+
+// An allowlist shared by the YAML parser and Reasonix's malformed-YAML fallback.
+// Reject controls before inspecting fields, and never unquote or clean up a name.
+fn reasonix_proven_skill_name(found: &Found) -> Option<String> {
+    let stem = reasonix_skill_stem(found);
+    if !reasonix_ascii_skill_name(stem) {
+        return None;
+    }
+    let text = read_text(&found.link)?.replace("\r\n", "\n");
+    // split, rather than lines, keeps bare CR visible to the byte allowlist.
+    let mut lines = text.split('\n');
+    let first = lines.next()?;
+    let printable = |line: &str| line.bytes().all(|byte| (0x20..=0x7e).contains(&byte));
+    if !printable(first) {
+        return None;
+    }
+    if first.trim_matches(' ') != "---" {
+        return Some(stem.to_string());
+    }
+    let mut declared: Option<&str> = None;
+    for line in lines {
+        if !printable(line) {
+            return None;
+        }
+        if line.trim_matches(' ') == "---" {
+            return Some(
+                declared
+                    .filter(|name| reasonix_ascii_skill_name(name))
+                    .unwrap_or(stem)
+                    .to_string(),
+            );
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with(' ') {
+            return None;
+        }
+        let (key, value) = line.split_once(':')?;
+        if key.is_empty()
+            || !key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphabetic() || b"_-".contains(&byte))
+        {
+            return None;
+        }
+        if !value.is_empty() && !value.starts_with(' ') {
+            return None;
+        }
+        let value = value.trim_matches(' ');
+        if key.eq_ignore_ascii_case("name") {
+            // Exactly one literal name field, with a bare, nonempty identifier.
+            if key != "name"
+                || declared.is_some()
+                || value.is_empty()
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+            {
+                return None;
+            }
+            declared = Some(value);
+        } else if (!value.is_empty() && !value.as_bytes()[0].is_ascii_alphanumeric())
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b" .,_/-".contains(&byte))
+        {
+            return None;
+        }
+    }
+    None
+}
+
+fn reasonix_ascii_switch_config(env: &Env) -> bool {
+    read_toml(&reasonix_config_path(env))
+        .and_then(|config| {
+            config
+                .get("skills")?
+                .get("disabled_skills")?
+                .as_array()
+                .cloned()
+        })
+        .is_none_or(|names| {
+            names
+                .iter()
+                .all(|name| name.as_str().is_some_and(str::is_ascii))
+        })
+}
+
+fn reasonix_read_only_reason() -> String {
+    tr("Toolport cannot verify this skill's Reasonix identifier. Use Reasonix to switch it on or off.")
+}
+
+fn reasonix_skill_name(found: &Found) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    if let Some(name) = reasonix_proven_skill_name(found) {
+        return name;
+    }
+    let stem = reasonix_skill_stem(found);
+    let text = read_text(&found.link)
+        .unwrap_or_default()
+        .replace("\r\n", "\n");
+    let declared = text
+        .trim_start_matches('\u{feff}')
+        .strip_prefix("---\n")
+        .and_then(|s| s.split_once("\n---").map(|(header, _)| header))
+        .and_then(|header| serde_yaml::from_str::<serde_yaml::Value>(header).ok())
+        .and_then(|fm| fm.get("name").and_then(|v| v.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    let name = if reasonix_valid_skill_name(&declared)
+        && (reasonix_ascii_skill_name(&declared) || !reasonix_ascii_skill_name(stem))
+    {
+        declared.as_str()
+    } else {
+        stem
+    };
+    name.nfc().collect()
+}
+
+fn reasonix_skill_name_key(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let name = name.trim();
+    if !reasonix_valid_skill_name(name) {
+        return String::new();
+    }
+    let name: String = name.nfc().collect();
+    if cfg!(windows) {
+        name.to_lowercase()
+    } else {
+        name
+    }
+}
+
+fn reasonix_skill_marker(text: &str) -> bool {
+    const KEYS: &[&str] = &[
+        "description",
+        "name",
+        "runas",
+        "context",
+        "agent",
+        "allowed-tools",
+        "model",
+        "effort",
+        "read-only",
+        "triggers",
+        "negative-triggers",
+        "auto-use",
+        "cost",
+        "color",
+        "invocation",
+        "requires",
+        "profiles",
+        "disable-model-invocation",
+        "user-invocable",
+        "argument-hint",
+        "paths",
+    ];
+    let text = text.trim_start_matches('\u{feff}').replace("\r\n", "\n");
+    let Some(rest) = text.strip_prefix("---\n") else {
+        return false;
+    };
+    let Some((header, _)) = rest.split_once("\n---") else {
+        return false;
+    };
+    header
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .any(|(key, _)| KEYS.contains(&key.trim().to_ascii_lowercase().as_str()))
 }
 fn crush_config_path(env: &Env) -> PathBuf {
     env.config.join("crush").join("crush.json")
@@ -2805,7 +3082,16 @@ fn read_disabled(switch: Switch, env: &Env) -> Disabled {
             {
                 d.off = list
                     .iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .filter_map(|x| {
+                        x.as_str().map(|name| {
+                            if switch == Switch::ReasonixConfig {
+                                reasonix_skill_name_key(name)
+                            } else {
+                                name.to_string()
+                            }
+                        })
+                    })
+                    .filter(|name| switch != Switch::ReasonixConfig || !name.is_empty())
                     .collect();
             }
         }
@@ -3079,7 +3365,9 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                     .filter(|rel| !only_own || rel.starts_with(".codewhale/"))
                     .map(move |rel| Root {
                         path: project.join(rel),
-                        recursive: walk.deep,
+                        recursive: walk.deep || def.id == "reasonix",
+                        reasonix_depth: (def.id == "reasonix").then(|| reasonix_skill_depth(env)),
+                        reasonix_marker: def.id == "reasonix" && rel.starts_with(".claude/"),
                         dir_links: walk.dir_links,
                         file_links: walk.file_links,
                         all_names: false,
@@ -3152,6 +3440,11 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
         let mut seen_real: BTreeSet<String> = BTreeSet::new();
         let mut codewhale_identities = HashMap::new();
         for f in found {
+            if def.switch == Switch::ReasonixConfig
+                && !reasonix_valid_skill_name(reasonix_skill_stem(&f))
+            {
+                continue;
+            }
             let key = f.real.as_ref().unwrap_or(&f.link).display().to_string();
             if def.switch == Switch::CodewhaleState {
                 if let Some(real) = &f.real {
@@ -3210,6 +3503,24 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                         .replace('\\', "/");
                 }
             }
+            let reasonix_flat = def.id == "reasonix"
+                && (f.link.file_name().is_some_and(|name| name != "SKILL.md")
+                    || f.link.parent() == Some(f.root_path.as_path()));
+            if reasonix_flat {
+                // Folder edit/remove actions would affect neighboring flat skills.
+                record.editable = false;
+                if front_matter(&read_text(&f.link).unwrap_or_default())
+                    .0
+                    .is_none()
+                {
+                    record.name = f
+                        .link
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
+                }
+            }
             let link_display = env.display(f.link.parent().unwrap_or(&f.link));
             let link_display = if f.real.is_none() {
                 env.display(&f.link)
@@ -3247,6 +3558,9 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                     .get(key)
                     .map(|(name, _)| name.clone())
                     .unwrap_or(name);
+            }
+            if def.switch == Switch::ReasonixConfig {
+                return reasonix_skill_name_key(&reasonix_skill_name(f));
             }
             f.root_label
                 .ends_with("plugin")
@@ -3303,8 +3617,11 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 .flatten();
             let codewhale_identity = codewhale_identities.get(key);
             let codewhale_name = codewhale_identity.as_ref().map(|(name, _)| name.clone());
-            let switch_name = codewhale_name
+            let reasonix_name =
+                (def.switch == Switch::ReasonixConfig).then(|| reasonix_skill_name(f));
+            let switch_name = reasonix_name
                 .clone()
+                .or_else(|| codewhale_name.clone())
                 .or_else(|| nanobot_name.clone())
                 .or_else(|| {
                     (def.switch == Switch::OpenclawEntries)
@@ -3313,6 +3630,11 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 })
                 .unwrap_or_else(|| name.clone());
             let named = |set: &BTreeSet<String>| {
+                let switch_name = if def.switch == Switch::ReasonixConfig {
+                    reasonix_skill_name_key(&switch_name)
+                } else {
+                    switch_name.clone()
+                };
                 set.contains(&switch_name) || plugin_name.as_ref().is_some_and(|p| set.contains(p))
             };
             let (switched_off, by_pattern) = if def.switch == Switch::CodewhaleState {
@@ -3334,6 +3656,10 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                     None => (false, false),
                 }
             };
+            let read_only_reason = (def.switch == Switch::ReasonixConfig
+                && (reasonix_proven_skill_name(f).is_none()
+                    || (cfg!(windows) && !reasonix_ascii_switch_config(env))))
+            .then(reasonix_read_only_reason);
             let (state, via) = if broken {
                 (
                     State::Broken,
@@ -3374,10 +3700,12 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
                 record.states.insert(
                     inst.id.clone(),
                     SkillState {
+                        read_only_reason,
                         by_pattern: state == State::Off && by_pattern && !path_off,
                         state,
                         via,
-                        switch_name: codewhale_name
+                        switch_name: reasonix_name
+                            .or(codewhale_name)
                             .or(nanobot_name)
                             .or_else(|| plugin_name.clone()),
                     },
@@ -4359,6 +4687,9 @@ pub fn set_state(
             &[("client", &inst.name), ("skill", &skill.name)],
         ));
     }
+    if let Some(reason) = &skill.states[agent].read_only_reason {
+        return Err(reason.clone());
+    }
     if wanted == Wanted::NameOnly && def.switch != Switch::ClaudeOverrides {
         return Err(tr("Only Claude Code can list a skill by name only."));
     }
@@ -4442,7 +4773,15 @@ pub fn set_state(
         Switch::GrokConfig | Switch::ReasonixConfig => {
             let (path, key) =
                 toml_list_switch(def.switch, env).ok_or_else(|| wrong_shape("skills"))?;
-            edit_toml_skills_list(agent, &path, key, writer, &skill.name, off)
+            let name = if def.switch == Switch::ReasonixConfig {
+                skill.states[agent]
+                    .switch_name
+                    .as_deref()
+                    .unwrap_or(&skill.name)
+            } else {
+                &skill.name
+            };
+            edit_toml_skills_list(agent, &path, key, writer, name, off)
         }
         Switch::OpencodePermissions => {
             let path = opencode_config_path(env);
@@ -5166,7 +5505,14 @@ fn edit_toml_skills_list(
         .get_mut(last)
         .and_then(|d| d.as_array_mut())
         .ok_or_else(|| wrong_shape(key))?;
-    list.retain(|v| v.as_str() != Some(name));
+    list.retain(|v| {
+        if agent == "reasonix" {
+            v.as_str()
+                .is_none_or(|value| reasonix_skill_name_key(value) != reasonix_skill_name_key(name))
+        } else {
+            v.as_str() != Some(name)
+        }
+    });
     if off {
         list.push(name);
     }

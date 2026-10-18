@@ -85,9 +85,29 @@ fn servers_map(doc: &DocumentMut) -> Result<serde_json::Map<String, Json>, Strin
     let mut out = serde_json::Map::new();
     for table in plugins(doc)?.into_iter().flat_map(ArrayOfTables::iter) {
         if let Some(name) = name_of(table) {
-            // Reasonix keeps the first table of a name.
-            out.entry(name.to_string())
-                .or_insert_with(|| config_json(table));
+            let mut config = config_json(table);
+            if let Some(previous) = out.get(name) {
+                // The last command wins, but earlier disabled-tool policies survive.
+                let mut disabled = previous
+                    .get("disabled_tools")
+                    .and_then(Json::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                for tool in config
+                    .get("disabled_tools")
+                    .and_then(Json::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if !disabled.contains(tool) {
+                        disabled.push(tool.clone());
+                    }
+                }
+                if !disabled.is_empty() {
+                    config["disabled_tools"] = Json::Array(disabled);
+                }
+            }
+            out.insert(name.to_string(), config);
         }
     }
     Ok(out)
@@ -285,8 +305,27 @@ pub(super) fn sync(
     let mut doc = document(text)?;
     let before_rest = rest(text)?;
     plugins(&doc)?;
-    if servers_map(&doc)? == *desired {
+    let current = servers_map(&doc)?;
+    if current == *desired {
         return Ok(text.to_string());
+    }
+    let mut names = std::collections::BTreeSet::new();
+    let mut duplicates = std::collections::BTreeSet::new();
+    for table in plugins(&doc)?.into_iter().flat_map(ArrayOfTables::iter) {
+        if let Some(name) = name_of(table) {
+            if !names.insert(name.to_string()) {
+                duplicates.insert(name.to_string());
+            }
+        }
+    }
+    // Preserve every duplicate table for unrelated edits, including Connect.
+    // Moving or replacing that name needs its merged policy and raw layout.
+    for name in &duplicates {
+        if desired.get(name) != current.get(name) {
+            return Err(format!(
+                "Reasonix has duplicate plugins named '{name}'; resolve that name before moving or replacing it, {UNTOUCHED}."
+            ));
+        }
     }
     if !matches!(doc.get("plugins"), Some(Item::ArrayOfTables(_))) {
         doc.remove("plugins");
@@ -302,18 +341,15 @@ pub(super) fn sync(
             continue;
         };
         match desired.get(&name) {
-            // Reasonix ignores a later table with a taken name; so does Toolport.
-            Some(_) if !seen.insert(name.clone()) => {}
             Some(want) => {
-                if config_json(table) != *want {
+                seen.insert(name.clone());
+                if !duplicates.contains(&name) && config_json(table) != *want {
                     fill(table, want)?;
                 }
             }
             None => drop.push(i),
         }
     }
-    // Comment lines above a removed table's header belong to whatever came
-    // before it (often the end of another section), so they stay.
     let mut notes = Vec::new();
     for i in drop.into_iter().rev() {
         let table = list.get(i).expect("index from this list");
@@ -333,7 +369,10 @@ pub(super) fn sync(
             .filter(|text| definition(text).ok().as_ref() == Some(config))
             .and_then(|text| recorded_tables(text).ok());
         match recorded {
-            Some(tables) => put_back.extend(tables),
+            Some(tables) => {
+                let anchor = raw.get(name).and_then(|text| recorded_anchor(text));
+                put_back.extend(tables.into_iter().map(|table| (table, anchor.clone())));
+            }
             None => list.push(new_table(name, config)?),
         }
     }
@@ -358,10 +397,11 @@ pub(super) fn sync(
             }
         }
     }
-    // After the notes, so a note lands where its table was, not on a table
-    // being put back.
-    for table in put_back {
-        push_recorded(&mut doc, table);
+    put_back
+        .sort_by_key(|(_, anchor)| std::cmp::Reverse(anchor.as_ref().map_or(0, |a| a.position)));
+    let note_headers: Vec<_> = headers(&doc).into_iter().map(|(_, key)| key).collect();
+    for (table, anchor) in put_back {
+        push_recorded(&mut doc, table, anchor.as_ref(), &note_headers);
     }
     if doc
         .get("plugins")
@@ -370,7 +410,8 @@ pub(super) fn sync(
     {
         doc.remove("plugins");
     }
-    let out = doc.to_string();
+    let records: Vec<_> = raw.values().map(|text| recorded_body(text)).collect();
+    let out = preserve_newlines(text, &doc.to_string(), &records);
     verify(&out, &before_rest, desired)?;
     Ok(out)
 }
@@ -433,23 +474,21 @@ fn table_at(table: &mut Table, position: usize) -> Option<&mut Table> {
 }
 
 /// Each plugin name's tables as a small document, for the move record: the
-/// table Reasonix uses and any later ones it shadows, with the comments inside
-/// them. The comment lines above a table stay in the file when it moves out
-/// (see [`sync`]), so the record leaves them out.
+/// table and its leading comments, with stable neighboring section anchors.
+/// Older records without anchors still append safely.
 pub(super) fn raw_entries(text: &str) -> Result<Vec<(String, String, Json)>, String> {
     let doc = document(text)?;
+    let effective = servers_map(&doc)?;
     let mut grouped: Vec<(String, Vec<Table>, Json)> = Vec::new();
     for table in plugins(&doc)?.into_iter().flat_map(ArrayOfTables::iter) {
         let Some(name) = name_of(table) else {
             continue;
         };
-        let mut table = table.clone();
-        let spacing = split_note(&table).1;
-        table.decor_mut().set_prefix(spacing);
+        let table = table.clone();
         match grouped.iter_mut().find(|(seen, _, _)| seen == name) {
             Some((_, tables, _)) => tables.push(table),
             None => {
-                let config = config_json(&table);
+                let config = effective[name].clone();
                 grouped.push((name.to_string(), vec![table], config));
             }
         }
@@ -459,30 +498,209 @@ pub(super) fn raw_entries(text: &str) -> Result<Vec<(String, String, Json)>, Str
         .map(|(name, tables, config)| {
             let mut one = DocumentMut::new();
             let mut list = ArrayOfTables::new();
+            let anchor = anchor_for(&doc, &tables[0]);
             tables.into_iter().for_each(|table| list.push(table));
             one.insert("plugins", Item::ArrayOfTables(list));
-            (name, one.to_string(), config)
+            let body = preserve_newlines(text, &one.to_string(), &[]);
+            let raw = format!(
+                "{ANCHOR_PREFIX}{}\n{body}",
+                serde_json::to_string(&anchor).expect("serializable anchors")
+            );
+            (name, raw, config)
         })
         .collect())
 }
 
-/// The tables of a recorded document, the one Reasonix uses first.
+/// The tables of an unambiguous recorded document.
 fn recorded_tables(raw: &str) -> Result<Vec<Table>, String> {
-    let doc = document(raw)?;
+    let doc = document(recorded_body(raw))?;
+    servers_map(&doc)?;
     let tables: Vec<Table> = plugins(&doc)?
         .into_iter()
         .flat_map(ArrayOfTables::iter)
         .cloned()
         .collect();
-    if tables.is_empty() || name_of(&tables[0]).is_none() {
+    if tables.is_empty()
+        || name_of(&tables[0]).is_none()
+        || tables
+            .iter()
+            .any(|table| name_of(table) != name_of(&tables[0]))
+    {
         return Err("Could not read imported settings".into());
     }
     Ok(tables)
 }
 
-/// The fields of a recorded document's first table.
+/// The effective fields of a recorded name, including merged disabled tools.
 pub(super) fn definition(raw: &str) -> Result<Json, String> {
-    recorded_tables(raw).map(|tables| config_json(&tables[0]))
+    let tables = recorded_tables(raw)?;
+    let doc = document(recorded_body(raw))?;
+    Ok(servers_map(&doc)?[name_of(&tables[0]).expect("validated name")].clone())
+}
+
+// Metadata stays inside the native raw record, never in the client's config.
+const ANCHOR_PREFIX: &str = "# toolport-restore-anchor: ";
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+struct Anchor {
+    #[serde(default)]
+    position: usize,
+    previous: Option<String>,
+    next: Option<String>,
+}
+
+fn recorded_body(raw: &str) -> &str {
+    if recorded_anchor(raw).is_some() {
+        raw.split_once('\n').map_or(raw, |(_, body)| body)
+    } else {
+        raw
+    }
+}
+
+fn recorded_anchor(raw: &str) -> Option<Anchor> {
+    serde_json::from_str(raw.strip_prefix(ANCHOR_PREFIX)?.split_once('\n')?.0).ok()
+}
+
+/// Stable section paths and named array entries, including nested settings.
+fn headers(doc: &DocumentMut) -> Vec<(usize, String)> {
+    fn collect(table: &Table, path: &[String], out: &mut Vec<(usize, String)>) {
+        for (key, item) in table.iter() {
+            let mut path = path.to_vec();
+            path.push(key.to_string());
+            let mut add = |t: &Table, path: Vec<String>| {
+                if let Some(at) = t.position() {
+                    out.push((at, serde_json::to_string(&path).expect("section path")));
+                }
+                collect(t, &path, out);
+            };
+            match item {
+                Item::Table(t) => add(t, path),
+                Item::ArrayOfTables(list) => {
+                    for (i, t) in list.iter().enumerate() {
+                        let mut path = path.clone();
+                        path.push(
+                            name_of(t).map_or_else(
+                                || format!("index:{i}"),
+                                |name| format!("name:{name}"),
+                            ),
+                        );
+                        add(t, path);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    collect(doc.as_table(), &[], &mut out);
+    out.sort();
+    out
+}
+
+fn anchor_for(doc: &DocumentMut, table: &Table) -> Anchor {
+    let at = table.position().unwrap_or(0);
+    let mut own = Vec::new();
+    positions(table, &mut own);
+    let headers: Vec<_> = headers(doc)
+        .into_iter()
+        .filter(|(at, _)| !own.contains(&Some(*at)))
+        .collect();
+    Anchor {
+        position: at,
+        previous: headers
+            .iter()
+            .rev()
+            .find(|(p, _)| *p < at)
+            .map(|(_, id)| id.clone()),
+        next: headers
+            .iter()
+            .find(|(p, _)| *p > at)
+            .map(|(_, id)| id.clone()),
+    }
+}
+
+/// Line endings are scoped to their owning TOML section, so removing one
+/// plugin cannot consume an identical line's ending from an untouched plugin.
+fn scoped_lines(text: &str) -> Vec<(String, &str, &str)> {
+    fn collect(table: &Table, path: &str, out: &mut Vec<(usize, String)>) {
+        for (key, item) in table.iter() {
+            let path = format!("{path}/{key}");
+            match item {
+                Item::Table(t) => {
+                    if let Some(span) = t.span() {
+                        out.push((span.start, path.clone()));
+                    }
+                    collect(t, &path, out);
+                }
+                Item::ArrayOfTables(list) => {
+                    for (i, t) in list.iter().enumerate() {
+                        let id = format!(
+                            "{path}/{}",
+                            name_of(t).map_or_else(|| i.to_string(), str::to_string)
+                        );
+                        if let Some(span) = t.span() {
+                            out.push((span.start, id.clone()));
+                        }
+                        collect(t, &id, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut sections = Vec::new();
+    if let Ok(doc) = toml_edit::ImDocument::parse(text) {
+        collect(doc.as_table(), "", &mut sections);
+    }
+    sections.sort();
+    let mut sections = sections.into_iter().peekable();
+    let mut section = String::new();
+    let mut offset = 0;
+    text.split_inclusive('\n')
+        .map(|line| {
+            while sections.peek().is_some_and(|(at, _)| *at <= offset) {
+                section = sections.next().expect("peeked section").1;
+            }
+            offset += line.len();
+            let content = line
+                .strip_suffix('\n')
+                .unwrap_or(line)
+                .strip_suffix('\r')
+                .unwrap_or(line.strip_suffix('\n').unwrap_or(line));
+            (section.clone(), content, &line[content.len()..])
+        })
+        .collect()
+}
+
+fn preserve_newlines(source: &str, rendered: &str, records: &[&str]) -> String {
+    use std::collections::{HashMap, VecDeque};
+    let mut endings: HashMap<(String, &str), VecDeque<&str>> = HashMap::new();
+    let default = source.find('\n').map_or("\n", |at| {
+        if at > 0 && source.as_bytes()[at - 1] == b'\r' {
+            "\r\n"
+        } else {
+            "\n"
+        }
+    });
+    for text in std::iter::once(source).chain(records.iter().copied()) {
+        for (section, content, ending) in scoped_lines(text) {
+            endings
+                .entry((section, content))
+                .or_default()
+                .push_back(ending);
+        }
+    }
+    let mut out = String::new();
+    for (section, content, ending) in scoped_lines(rendered) {
+        out.push_str(content);
+        out.push_str(
+            endings
+                .get_mut(&(section, content))
+                .and_then(VecDeque::pop_front)
+                .unwrap_or(if ending.is_empty() { "" } else { default }),
+        );
+    }
+    out
 }
 
 /// Header positions of `table` and the tables inside it, in visit order.
@@ -509,11 +727,27 @@ fn each_table(table: &mut Table, f: &mut impl FnMut(&mut Table)) {
     }
 }
 
-/// Append a recorded table to `[[plugins]]` right after the last plugin, or at
-/// the end of the file when there is none. The record numbers its headers from
-/// the top of its own small document, so they are renumbered from that spot,
-/// and later sections move down to make room.
-fn push_recorded(doc: &mut DocumentMut, mut table: Table) {
+fn strip_note<'a>(mut prefix: &'a str, note: &str) -> Option<&'a str> {
+    let note = note.replace("\r\n", "\n");
+    for line in note.split_inclusive('\n') {
+        let (head, rest) = prefix.split_once('\n')?;
+        if head.trim_end_matches('\r') != line.strip_suffix('\n')? {
+            return None;
+        }
+        prefix = rest;
+    }
+    Some(prefix)
+}
+
+/// Restore beside a surviving neighbor, falling back to after the last plugin
+/// or the end of the file. Renumber subtable headers together to retain ownership.
+fn push_recorded(
+    doc: &mut DocumentMut,
+    mut table: Table,
+    anchor: Option<&Anchor>,
+    note_headers: &[String],
+) {
+    let note = split_note(&table).0;
     let mut own = Vec::new();
     positions(&table, &mut own);
     // A header without a position sorts with the one before it, as on display.
@@ -541,7 +775,7 @@ fn push_recorded(doc: &mut DocumentMut, mut table: Table) {
         .and_then(Item::as_array_of_tables)
         .filter(|list| !list.is_empty());
     // New tables have no position yet, so a list of only those counts as empty.
-    let after = match list.and_then(|list| list.iter().filter_map(highest).max()) {
+    let fallback = match list.and_then(|list| list.iter().filter_map(highest).max()) {
         Some(at) => at,
         None => {
             let mut all = Vec::new();
@@ -555,19 +789,63 @@ fn push_recorded(doc: &mut DocumentMut, mut table: Table) {
             all.into_iter().flatten().max().unwrap_or(0)
         }
     };
-    // With no plugins left, the comments that sat above them were kept at the
-    // end of the file; they go back above the first table put back.
-    if list.is_none() {
+    // Legacy records stripped leading notes and have no anchors. Keep their
+    // original trailing-comment restoration behavior.
+    if anchor.is_none() && list.is_none() {
         let trailing = doc.trailing().as_str().unwrap_or("").to_string();
         if trailing.contains('#') {
-            let own = table
+            let prefix = table
                 .decor()
                 .prefix()
                 .and_then(|p| p.as_str())
                 .unwrap_or("");
-            let prefix = trailing + own;
+            let prefix = trailing + prefix;
             table.decor_mut().set_prefix(prefix);
             doc.set_trailing("");
+        }
+    }
+    let anchors = headers(doc);
+    let after = anchor
+        .and_then(|anchor| {
+            anchor
+                .next
+                .as_ref()
+                .and_then(|id| {
+                    anchors
+                        .iter()
+                        .find(|(_, key)| key == id)
+                        .map(|(at, _)| at.saturating_sub(1))
+                })
+                .or_else(|| {
+                    anchor
+                        .previous
+                        .as_ref()
+                        .and_then(|id| anchors.iter().find(|(_, key)| key == id).map(|(at, _)| *at))
+                })
+        })
+        .unwrap_or(fallback);
+    // sync moved this note to the next header, or to the document trailing text.
+    // An identical prefix on an earlier table belongs to that table.
+    if let Some(note) = note {
+        // A neighbor restored earlier in this batch did not receive the note.
+        // Follow the next header that existed before this restore batch instead.
+        let next = anchors
+            .iter()
+            .find(|(at, key)| *at > after && note_headers.contains(key))
+            .map(|(at, _)| *at);
+        match next.and_then(|at| table_at(doc.as_table_mut(), at)) {
+            Some(next) => {
+                let prefix = next.decor().prefix().and_then(|p| p.as_str()).unwrap_or("");
+                if let Some(rest) = strip_note(prefix, &note).map(str::to_string) {
+                    next.decor_mut().set_prefix(rest);
+                }
+            }
+            None => {
+                let trailing = doc.trailing().as_str().unwrap_or("");
+                if let Some(rest) = strip_note(trailing, &note).map(str::to_string) {
+                    doc.set_trailing(rest);
+                }
+            }
         }
     }
     let room = own.len();
@@ -604,6 +882,10 @@ pub(super) fn append_raw(text: Option<&str>, entries: &[String]) -> Result<Strin
     let before_rest = rest(text)?;
     plugins(&doc)?;
     let mut desired = servers_map(&doc)?;
+    let records: Vec<_> = entries.iter().map(|text| recorded_body(text)).collect();
+    let note_headers: Vec<_> = headers(&doc).into_iter().map(|(_, key)| key).collect();
+    let mut entries: Vec<_> = entries.iter().collect();
+    entries.sort_by_key(|raw| std::cmp::Reverse(recorded_anchor(raw).map_or(0, |a| a.position)));
     for raw in entries {
         let tables = recorded_tables(raw)?;
         let name = name_of(&tables[0])
@@ -612,12 +894,13 @@ pub(super) fn append_raw(text: Option<&str>, entries: &[String]) -> Result<Strin
         if desired.contains_key(&name) {
             continue;
         }
-        desired.insert(name, config_json(&tables[0]));
+        desired.insert(name, definition(raw)?);
+        let anchor = recorded_anchor(raw);
         for table in tables {
-            push_recorded(&mut doc, table);
+            push_recorded(&mut doc, table, anchor.as_ref(), &note_headers);
         }
     }
-    let out = doc.to_string();
+    let out = preserve_newlines(text, &doc.to_string(), &records);
     verify(&out, &before_rest, &desired)?;
     Ok(out)
 }

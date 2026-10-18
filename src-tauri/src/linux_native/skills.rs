@@ -2055,6 +2055,11 @@ impl SkillsPage {
         ));
         via.add_css_class("caption");
         copy.append(&via);
+        if let Some(reason) = state.and_then(|s| s.read_only_reason.as_deref()) {
+            let reason = muted(reason);
+            reason.add_css_class("caption");
+            copy.append(&reason);
+        }
         row.append(&copy);
         let control = self.state_control(agent, skill);
         control.set_valign(gtk::Align::Center);
@@ -2077,6 +2082,15 @@ impl SkillsPage {
                 return badge(&state_label(Some(current)), "approval-warning").upcast()
             }
             _ => {}
+        }
+        if let Some(reason) = skill
+            .states
+            .get(&agent.id)
+            .and_then(|s| s.read_only_reason.as_deref())
+        {
+            let pill = badge(&crate::i18n::tr("Read only"), "disabled");
+            pill.set_tooltip_text(Some(reason));
+            return pill.upcast();
         }
         if !agent.can_toggle {
             let pill = icon_badge(
