@@ -534,6 +534,15 @@ pub(super) fn apply(client_id: &str, format: Format, path: &Path) -> Result<bool
         }
         return Ok(true);
     }
+    // OpenHands Connect can move the entire root server map under mcpServers.
+    // After native edits, undoing that conversion would hide restored servers
+    // beside mcpServers. Keep the current layout and remove only our entry;
+    // the unchanged-file path above still restores the original bytes.
+    if matches!(format, Format::JsonOpenHandsMcpServers) {
+        super::openhands::edit_gateway(path, None)?;
+        moved::restore(client_id, format, path)?;
+        return Ok(true);
+    }
     let mut before = record.baseline.clone();
     // A preview/1.x install can already have our gateway at first capture.
     // Its real pre-install bytes are unknown, so remove that owned entry and

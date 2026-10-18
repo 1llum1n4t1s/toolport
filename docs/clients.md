@@ -188,9 +188,14 @@ Toolport manages the OpenHands CLI's `mcp.json`, in `~/.openhands` unless
 `OPENHANDS_PERSISTENCE_DIR` moves it. OpenHands uses that variable as written,
 so a relative value leaves the client unresolved. Connect adds a `toolport`
 server under `mcpServers` and Disconnect removes it; the rest of the file keeps
-its text. Servers turned off with `enabled: false` (`openhands mcp disable`) are
-left alone, and a Toolport entry you turn off stays off when Toolport repairs
-it. Remote servers always get a `transport`. Start a new OpenHands session to
+its text. Like OpenHands, Toolport reads servers listed at the top level of a
+file with no `mcpServers` key, and Connect moves them under `mcpServers` so they
+keep running. Disconnect restores the original bytes if the file is unchanged
+since Connect. After native edits, it removes only Toolport and keeps the current
+server layout, including servers added under `mcpServers`. Settings set to `null`,
+as `openhands mcp add` writes them, count as unset. Servers turned off with `enabled: false` (`openhands mcp disable`) or
+another false-like value such as `0` or `null` are left alone, and a Toolport
+entry you turn off stays off when Toolport repairs it. Remote servers always get a `transport`. Start a new OpenHands session to
 load the change; `openhands mcp list` shows it. The OpenHands web app keeps its
 MCP settings in its own settings page, which Toolport doesn't change.
 
@@ -205,7 +210,9 @@ can only turn off skills it installed itself. Toolport shows those installed
 skills and their enabled state after user skills, but keeps the OpenHands column
 read-only. Ordinary Markdown files with triggers appear as skills; files without
 triggers appear as rules. AgentSkills are read from immediate child folders, not
-arbitrary nested folders. Toolport bounds recursive Markdown scans to six levels
+arbitrary nested folders. Like OpenHands, Toolport doesn't look for Markdown
+inside linked folders, except for a `SKILL.md` in a linked top-level skill
+folder. Toolport bounds recursive Markdown scans to six levels
 and 20,000 entries per root. OpenHands has no global `AGENTS.md`; team rules go to
 `~/.openhands/microagents/toolport-team-rules.md`, which OpenHands loads as
 always-on context.
