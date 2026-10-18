@@ -184,7 +184,10 @@ MCP settings in its own settings page, which Toolport doesn't change.
 OpenHands puts every MCP tool in the agent's tool list and doesn't re-list
 during a session, so Toolport's Auto mode stays Lazy. The Skills page shows the
 skills in `~/.agents/skills`, `~/.openhands/skills` and the legacy
-`~/.openhands/microagents`, after the same folders in the project. OpenHands
+`~/.openhands/microagents`, after the same folders in the selected project
+directory and its nearest Git root. Project rules also include case-insensitive
+`AGENTS.md`, `AGENT.md`, `CLAUDE.md`, `GEMINI.md` and `.cursorrules`; the selected
+directory wins name collisions with the Git root. OpenHands
 can only turn off skills it installed itself. Toolport shows those installed
 skills and their enabled state after user skills, but keeps the OpenHands column
 read-only. Ordinary Markdown files with triggers appear as skills; files without

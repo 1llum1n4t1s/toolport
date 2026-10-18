@@ -2204,3 +2204,85 @@ fn openhands_markdown_walk_respects_its_entry_budget() {
     assert_eq!(walk_openhands_root_budget(&root, 2).len(), 2);
     assert!(walk_openhands_root_budget(&root, 0).is_empty());
 }
+
+#[test]
+fn openhands_project_search_uses_local_then_nearest_git_root() {
+    let home = Home::new();
+    // A .git file, as used by Git worktrees, also identifies a root.
+    home.write("repo/.git", "gitdir: /unused/worktree\n");
+    let root_only = home.skill("repo/.agents/skills/root-only", "root-only", "Root skill");
+    let root_duplicate = home.skill("repo/.agents/skills/shared", "shared", "Root loses");
+    let local_duplicate = home.skill(
+        "repo/sub/work/.openhands/skills/shared",
+        "shared",
+        "Local wins",
+    );
+    let root_agents = home.write("repo/AGENTS.md", "Root agents\n");
+    let local_agents = home.write("repo/sub/work/aGeNt.md", "Local agents\n");
+    let claude = home.write("repo/ClAuDe.Md", "Root Claude\n");
+    let gemini = home.write("repo/sub/work/gEmInI.mD", "Local Gemini\n");
+    let cursor = home.write("repo/.CuRsOrRuLeS", "Root Cursor\n");
+    // Canonical aliases never create a second rules row.
+    home.link("repo/sub/work/CLAUDE.md", &local_agents);
+    home.write(
+        "repo/sub/AGENTS.md",
+        "Intermediate directory is not searched\n",
+    );
+    home.skill(
+        "repo/sub/.agents/skills/intermediate",
+        "intermediate",
+        "Not searched",
+    );
+    let project = home.path("repo/sub/work");
+    let inv = scan(&home.env(), &only(&["openhands"]), Some(&project));
+    assert_eq!(state(&inv, "root-only", "openhands"), Some(State::On));
+    let by_path = |path: &Path| {
+        inv.skills
+            .iter()
+            .find(|skill| skill.key == path.display().to_string())
+            .unwrap()
+            .states["openhands"]
+            .state
+    };
+    assert_eq!(by_path(&root_only), State::On);
+    assert_eq!(by_path(&root_duplicate), State::Shadowed);
+    assert_eq!(by_path(&local_duplicate), State::On);
+    assert!(!inv.skills.iter().any(|skill| skill.name == "intermediate"));
+    let paths: BTreeSet<_> = inv.rules.iter().map(|rule| rule.path.clone()).collect();
+    for path in [&local_agents, &claude, &gemini, &cursor] {
+        assert!(
+            paths.contains(&home.env().display(path)),
+            "{}",
+            path.display()
+        );
+    }
+    assert!(!paths.contains(&home.env().display(&root_agents)));
+    assert_eq!(paths.len(), 4);
+    assert_eq!(
+        openhands_project_dirs(&project),
+        vec![project, home.path("repo")]
+    );
+}
+
+#[test]
+fn openhands_project_search_stops_at_nearest_git_root_and_deduplicates_aliases() {
+    let home = Home::new();
+    home.write("repo/.git", "outer\n");
+    home.write("repo/nested/.git", "inner\n");
+    home.write("repo/nested/work/AGENTS.md", "Local\n");
+    let project = home.path("repo/nested/work");
+    assert_eq!(
+        openhands_project_dirs(&project),
+        vec![project.clone(), home.path("repo/nested")]
+    );
+    home.link("alias", &project);
+    assert_eq!(
+        openhands_project_dirs(&home.path("alias")),
+        openhands_project_dirs(&project)
+    );
+    assert_eq!(
+        openhands_project_dirs(&home.path("repo/nested")),
+        vec![home.path("repo/nested")]
+    );
+    assert_eq!(openhands_project_dirs(&home.root), vec![home.root.clone()]);
+}

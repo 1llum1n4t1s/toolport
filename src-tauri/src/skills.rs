@@ -1920,6 +1920,99 @@ fn walk_openhands_root_budget(root: &Root, mut budget: usize) -> Vec<Found> {
     found
 }
 
+/// SDK 1.21 searches the selected working directory, then only its nearest
+/// Git root (including a worktree's .git file). Ancestors are lexical and finite;
+/// canonical paths prevent the same directory being scanned through aliases.
+fn openhands_project_dirs(project: &Path) -> Vec<PathBuf> {
+    let work = canon(project).unwrap_or_else(|_| project.to_path_buf());
+    let mut roots = vec![work.clone()];
+    if let Some(root) = work.ancestors().find(|path| path.join(".git").exists()) {
+        if root != work {
+            roots.push(root.to_path_buf());
+        }
+    }
+    roots
+}
+
+fn openhands_third_party_name(path: &Path) -> Option<&'static str> {
+    match path
+        .file_name()?
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        ".cursorrules" => Some("cursorrules"),
+        "agents.md" | "agent.md" => Some("agents"),
+        "claude.md" => Some("claude"),
+        "gemini.md" => Some("gemini"),
+        _ => None,
+    }
+}
+
+fn openhands_project_rules(project: &Path) -> Vec<RuleSource> {
+    let roots = openhands_project_dirs(project);
+    let mut names = BTreeSet::new();
+    let mut real_paths = BTreeSet::new();
+    let mut sources = Vec::new();
+    // SDK loads all third-party instruction files before legacy skills. The
+    // working directory wins both a name collision and a canonical path alias.
+    for root in &roots {
+        let mut files: Vec<_> = std::fs::read_dir(root)
+            .into_iter()
+            .flatten()
+            .take(MAX_ENTRIES)
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        files.sort_by_key(|path| (is_link(path), path.clone()));
+        for path in files {
+            let Some(name) = openhands_third_party_name(&path) else {
+                continue;
+            };
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(real) = canon(&path) else { continue };
+            if names.contains(name) || !real_paths.insert(real) {
+                continue;
+            }
+            names.insert(name.to_string());
+            sources.push(RuleSource::file(path, false));
+        }
+    }
+    for root in roots {
+        for rel in [
+            ".agents/skills",
+            ".openhands/skills",
+            ".openhands/microagents",
+        ] {
+            for found in walk_openhands_root(&Root::flat(root.join(rel), "project")) {
+                if openhands_is_skill(&found.link) {
+                    continue;
+                }
+                let name = front_matter(&read_text(&found.link).unwrap_or_default())
+                    .0
+                    .unwrap_or_else(|| {
+                        found
+                            .link
+                            .strip_prefix(&found.root_path)
+                            .unwrap_or(&found.link)
+                            .with_extension("")
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                    });
+                let Some(real) = found.real else { continue };
+                if names.contains(&name) || !real_paths.insert(real) {
+                    continue;
+                }
+                names.insert(name);
+                sources.push(RuleSource::file(found.link, false));
+            }
+        }
+    }
+    sources
+}
+
 /// Ordinary files without triggers are always-on instructions, shown as rules.
 fn openhands_is_skill(path: &Path) -> bool {
     if path
@@ -2839,17 +2932,23 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
         if let Some(project) = project {
             let walk = def.project_walk;
             let only_own = def.id == "codewhale" && codewhale_only(env);
-            let project_roots = def
-                .project_roots
-                .iter()
-                .filter(|rel| !only_own || rel.starts_with(".codewhale/"))
-                .map(|rel| Root {
-                    path: project.join(rel),
-                    recursive: walk.deep,
-                    dir_links: walk.dir_links,
-                    file_links: walk.file_links,
-                    label: "project",
-                });
+            let project_dirs = if def.id == "openhands" {
+                openhands_project_dirs(project)
+            } else {
+                vec![project.to_path_buf()]
+            };
+            let project_roots = project_dirs.iter().flat_map(|project| {
+                def.project_roots
+                    .iter()
+                    .filter(|rel| !only_own || rel.starts_with(".codewhale/"))
+                    .map(move |rel| Root {
+                        path: project.join(rel),
+                        recursive: walk.deep,
+                        dir_links: walk.dir_links,
+                        file_links: walk.file_links,
+                        label: "project",
+                    })
+            });
             if walk.first {
                 roots.splice(0..0, project_roots);
             } else {
@@ -3299,17 +3398,16 @@ fn scan_rules(instances: &[Instance], project: Option<&Path>) -> Vec<RuleFile> {
             .collect();
         if let Some(project) = project {
             if def.id == "openhands" {
-                for rel in def.project_roots {
-                    sources.extend(
-                        walk_openhands_root(&Root::flat(project.join(rel), "project"))
-                            .into_iter()
-                            .filter(|found| !openhands_is_skill(&found.link))
-                            .map(|found| (RuleSource::file(found.link, false), "project")),
-                    );
-                }
+                sources.extend(
+                    openhands_project_rules(project)
+                        .into_iter()
+                        .map(|source| (source, "project")),
+                );
             }
             // Gemini CLI reads the same file names in a project as it does globally.
-            let names: Vec<String> = if def.id == "gemini-cli" {
+            let names: Vec<String> = if def.id == "openhands" {
+                Vec::new() // Actual case-sensitive paths were found above.
+            } else if def.id == "gemini-cli" {
                 gemini_context_names(env)
             } else {
                 def.project_rules.iter().map(|n| n.to_string()).collect()
