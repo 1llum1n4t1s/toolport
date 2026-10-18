@@ -2717,10 +2717,10 @@ fn openclaw_personal_skills_use_os_home_with_relocated_openclaw_home() {
 #[test]
 fn openclaw_later_extra_directory_wins_and_toggles_its_key() {
     let home = Home::new();
-    for (dir, key) in [("extra-a", "copy-a"), ("extra-b", "copy-b")] {
+    for (dir, key) in [("extra-z", "copy-a"), ("extra-a", "copy-b")] {
         home.write(&format!("{dir}/demo/SKILL.md"), &format!("---\nname: demo\ndescription: {key}\nmetadata:\n  openclaw:\n    skillKey: {key}\n---\n"));
     }
-    home.write(".openclaw/openclaw.json", &serde_json::json!({"skills":{"load":{"extraDirs":[home.path("extra-a"), home.path("extra-b")]}}}).to_string());
+    home.write(".openclaw/openclaw.json", &serde_json::json!({"skills":{"load":{"extraDirs":[home.path("extra-z"), home.path("extra-a")]}}}).to_string());
     let env = home.env();
     let inv = scan(&env, &only(&["openclaw"]), None);
     let winner = inv

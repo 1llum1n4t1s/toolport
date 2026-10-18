@@ -2334,7 +2334,15 @@ fn openclaw_skill_roots(env: &Env) -> Vec<Root> {
         .and_then(|v| v.get("skills")?.get("load")?.get("extraDirs").cloned());
     // Native merging replaces earlier names within this tier. Our scan keeps
     // the first name, so visit extra directories from last to first.
-    for dir in string_list(extra.as_ref()).into_iter().rev() {
+    for dir in extra
+        .as_ref()
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .rev()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::trim)
+    {
         let dir = match dir.strip_prefix("~/") {
             Some(rest) => dirs.home.join(rest),
             None => PathBuf::from(dir),
