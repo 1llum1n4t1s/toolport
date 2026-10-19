@@ -696,15 +696,16 @@ fn missing_rules_fix_never_replaces_a_file_or_feeds_a_client_twice() {
     // Copilot's path stays as it is.
     assert_eq!(issue.fix_paths, vec!["~/.claude/CLAUDE.md".to_string()]);
 
-    // A file appears at the path after the scan: the fix plans again and leaves it alone.
-    // Grok no longer gets Claude Code's link, so it gets its own.
+    // A file appears at the path after the scan: the fix plans again, finds a plan that
+    // differs from the one shown, and makes nothing.
     home.write(".claude/CLAUDE.md", "mine\n");
-    assert_eq!(
-        apply_fix(&env, &inv, "rules-missing", &TestWriter::default()),
-        Ok(1)
+    assert!(
+        apply_fix(&env, &inv, "rules-missing", &TestWriter::default())
+            .unwrap_err()
+            .contains("changed since you looked")
     );
     assert_eq!(home.read(".claude/CLAUDE.md"), "mine\n");
-    assert!(is_link(&home.path(".grok/AGENTS.md")));
+    assert!(home.path(".grok/AGENTS.md").symlink_metadata().is_err());
     assert!(DiskWriter
         .link(
             &home.path(".codex/AGENTS.md"),
@@ -713,6 +714,64 @@ fn missing_rules_fix_never_replaces_a_file_or_feeds_a_client_twice() {
         .unwrap_err()
         .contains("already exists"));
     assert_eq!(home.read(".claude/CLAUDE.md"), "mine\n");
+}
+
+#[test]
+fn missing_rules_fix_never_shares_a_persona_file() {
+    let home = Home::new();
+    home.write("notes.md", "# Notes\n");
+    home.write(".codex/AGENTS.md", "@~/notes.md\n");
+    home.write(".hermes/SOUL.md", "Be kind.\n");
+    let env = home.env();
+    let inv = scan(
+        &env,
+        &only(&["codex", "hermes", "github-copilot-cli"]),
+        None,
+    );
+    let issue = missing_rules(&inv).unwrap();
+    assert_eq!(issue.agents, vec!["github-copilot-cli".to_string()]);
+    // SOUL.md is the only plain file, but it is Hermes's persona.
+    assert_eq!(issue.fix_label, None);
+    assert!(issue.fix_paths.is_empty());
+}
+
+#[test]
+fn missing_rules_fix_plans_each_claude_code_profile_in_its_own_folder() {
+    let home = Home::new();
+    home.write(".claude/CLAUDE.md", "# Work\n");
+    home.write(".claude2/settings.json", "{}\n");
+    let mut env = home.env();
+    env.claude_profiles = claude_profile_dirs(&home.root, &env.claude);
+    let inv = scan(&env, &only(&["claude-code"]), None);
+    let issue = missing_rules(&inv).unwrap();
+    assert_eq!(issue.agents, vec!["claude-code@claude2".to_string()]);
+    assert_eq!(issue.fix_paths, vec!["~/.claude2/CLAUDE.md".to_string()]);
+    assert_eq!(
+        apply_fix(&env, &inv, "rules-missing", &TestWriter::default()),
+        Ok(1)
+    );
+    assert_eq!(
+        std::fs::read_link(home.path(".claude2/CLAUDE.md")).unwrap(),
+        home.path(".claude/CLAUDE.md")
+    );
+    assert!(missing_rules(&scan(&env, &only(&["claude-code"]), None)).is_none());
+}
+
+#[test]
+fn missing_rules_fix_fingerprint_covers_the_plan() {
+    let home = Home::new();
+    home.write(".codex/AGENTS.md", "# Rules\n");
+    std::fs::create_dir_all(home.path(".copilot")).unwrap();
+    home.link(".copilot/copilot-instructions.md", &home.path("gone.md"));
+    let env = home.env();
+    let present = only(&["codex", "github-copilot-cli", "gemini-cli"]);
+    let before = missing_rules(&scan(&env, &present, None)).unwrap().clone();
+    assert_eq!(before.fix_paths, vec!["~/.gemini/GEMINI.md".to_string()]);
+    // Removing the dangling link adds Copilot to the plan, so the fix shown is stale.
+    std::fs::remove_file(home.path(".copilot/copilot-instructions.md")).unwrap();
+    let after = missing_rules(&scan(&env, &present, None)).unwrap().clone();
+    assert_eq!(after.agents, before.agents);
+    assert_ne!(after.fingerprint, before.fingerprint);
 }
 
 #[test]

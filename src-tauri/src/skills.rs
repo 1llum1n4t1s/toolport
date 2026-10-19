@@ -671,11 +671,6 @@ fn add_planned(files: &mut Vec<PathBuf>, dir: &Path, keep: impl Fn(&Path) -> boo
     });
 }
 
-/// A file that exists, or a link the planner treats as made.
-fn exists_or_planned(path: &Path) -> bool {
-    path.is_file() || PLANNED.with(|planned| planned.borrow().iter().any(|p| p == path))
-}
-
 /// The files in `dir` with one of `names`, matched by the name on disk so a case-insensitive
 /// disk doesn't list one file twice.
 fn named_files(dir: &Path, names: &[&str]) -> Vec<PathBuf> {
@@ -4299,10 +4294,20 @@ fn rules_links(env: &Env, agents: &[Agent], rules: &[RuleFile]) -> Result<RulesL
     if without.is_empty() || global.is_empty() {
         return Err(NoLinks::Nothing);
     }
+    // Files read by a client whose rules file is something else (Hermes's SOUL.md is its
+    // persona) are never shared.
+    let noted: BTreeSet<&str> = agents
+        .iter()
+        .filter(|a| a.rules_note.is_some())
+        .map(|a| a.id.as_str())
+        .collect();
     // A file made of @import lines gives a client that skips imports nothing, so only plain
     // files qualify. The one most clients already read wins; ties keep the first by path.
     let mut best: Option<&RuleFile> = None;
     for rule in &global {
+        if rule.agents.keys().any(|id| noted.contains(id.as_str())) {
+            continue;
+        }
         let real = Path::new(&rule.key);
         let Some(text) = read_text(real) else {
             continue;
@@ -4320,27 +4325,36 @@ fn rules_links(env: &Env, agents: &[Agent], rules: &[RuleFile]) -> Result<RulesL
     let Some(source) = best else {
         return Err(NoLinks::OnlyImports);
     };
+    // Each Claude Code profile is its own client with its own folder, as on the page.
     let present: BTreeSet<&str> = agents.iter().map(|a| a.id.as_str()).collect();
-    let defs: Vec<AgentDef> = agent_defs()
+    let clients: Vec<Instance> = instances(env, &|id| present.contains(id))
         .into_iter()
-        .filter(|d| present.contains(d.id))
+        .filter(|i| present.contains(i.id.as_str()))
         .collect();
     // The paths each client would read once `planned` links exist. Rule lists name only
     // files that exist (plus the place to start one), so the planned links are treated as
     // made. A fallback counts only while nothing before it exists, as in `scan_rules`.
-    let reads = |def: &AgentDef, planned: &[PathBuf]| -> Vec<PathBuf> {
+    let reads = |client: &Instance, planned: &[PathBuf]| -> Vec<PathBuf> {
+        /// Clears the planned links even if a rules list panics.
+        struct Planning;
+        impl Drop for Planning {
+            fn drop(&mut self) {
+                PLANNED.with(|p| p.borrow_mut().clear());
+            }
+        }
         PLANNED.with(|p| *p.borrow_mut() = planned.to_vec());
-        let rules = (def.rules)(env);
+        let planning = Planning;
+        let rules = (client.def.rules)(&client.env);
+        drop(planning);
         let mut loaded_any = false;
         let mut out = Vec::new();
         for source in rules {
             if source.fallback && loaded_any {
                 continue;
             }
-            loaded_any |= exists_or_planned(&source.path);
+            loaded_any |= source.path.is_file() || planned.contains(&source.path);
             out.push(source.path);
         }
-        PLANNED.with(|p| p.borrow_mut().clear());
         out
     };
     let without_set: BTreeSet<&str> = without.iter().map(String::as_str).collect();
@@ -4349,12 +4363,15 @@ fn rules_links(env: &Env, agents: &[Agent], rules: &[RuleFile]) -> Result<RulesL
         .flat_map(|r| r.agents.keys().map(String::as_str))
         .collect();
     let mut links: Vec<PathBuf> = Vec::new();
-    for def in defs.iter().filter(|d| without_set.contains(d.id)) {
+    for client in clients
+        .iter()
+        .filter(|c| without_set.contains(c.id.as_str()))
+    {
         // Already covered by a link made for another client (Claude Code's CLAUDE.md feeds Grok).
-        if reads(def, &links).iter().any(|p| links.contains(p)) {
+        if reads(client, &links).iter().any(|p| links.contains(p)) {
             continue;
         }
-        let Some(link) = (def.rules_link)(env) else {
+        let Some(link) = (client.def.rules_link)(&client.env) else {
             continue;
         };
         // Never replace anything, not even an empty file or a dangling link.
@@ -4362,8 +4379,9 @@ fn rules_links(env: &Env, agents: &[Agent], rules: &[RuleFile]) -> Result<RulesL
             continue;
         }
         // A client that already has rules and also reads this path would change too.
-        let changes_others = defs.iter().any(|d| {
-            has_rules.contains(d.id) && reads(d, std::slice::from_ref(&link)).contains(&link)
+        let changes_others = clients.iter().any(|c| {
+            has_rules.contains(c.id.as_str())
+                && reads(c, std::slice::from_ref(&link)).contains(&link)
         });
         if changes_others {
             continue;
@@ -4763,6 +4781,10 @@ fn find_issues(
                 &[("file", &file)],
             ));
             found.fix_paths = links.links.iter().map(|p| env.display(p)).collect();
+            // A different plan is a different problem: the fix makes only what was shown.
+            found.subject = std::iter::once(links.source.display().to_string())
+                .chain(links.links.iter().map(|p| p.display().to_string()))
+                .collect();
         }
         issues.push(found);
     }
@@ -5335,6 +5357,18 @@ pub fn apply_fix(
             // Planned again from what is on disk now; the link itself refuses an existing path.
             let plan = rules_links(env, &inventory.agents, &inventory.rules)
                 .map_err(|_| tr("Toolport has no automatic fix for this one."))?;
+            let shown = inventory
+                .issues
+                .iter()
+                .find(|i| i.id == "rules-missing")
+                .map(|i| i.fix_paths.clone())
+                .unwrap_or_default();
+            let planned: Vec<String> = plan.links.iter().map(|p| env.display(p)).collect();
+            if planned != shown {
+                return Err(tr(
+                    "That problem changed since you looked. Check it again, then fix it.",
+                ));
+            }
             let mut done = 0;
             let mut first_error = None;
             for link in &plan.links {
