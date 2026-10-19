@@ -35,7 +35,8 @@ import { serverFailureLabel } from "@/lib/serverHealth";
 import type { TeamSyncStatus } from "@/lib/api";
 import { RuleStateBadge } from "@/components/RuleStateBadge";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
+import { SkeletonRows } from "@/components/ui/skeleton";
+import { ErrorCallout } from "@/components/ui/status-card";
 import {
   teamConnect,
   teamAccountLink,
@@ -145,6 +146,8 @@ export function TeamsView({
   const [memberName, setMemberName] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<TeamsFeedback | null>(null);
+  // Which action threw. Only a failed sync gets the Retry callout.
+  const [errorFrom, setErrorFrom] = useState<string | null>(null);
   const [notice, setNotice] = useState<TeamsFeedback | null>(null);
   const [skipNote, setSkipNote] = useState<
     string | { review: number; blocked: number } | null
@@ -251,12 +254,14 @@ export function TeamsView({
   async function run(label: string, fn: () => Promise<void>) {
     setBusy(label);
     setError(null);
+    setErrorFrom(null);
     setNotice(null);
     setSkipNote(null);
     try {
       await fn();
     } catch (e) {
       setError(String(e));
+      setErrorFrom(label);
     } finally {
       setBusy(null);
     }
@@ -596,11 +601,7 @@ export function TeamsView({
           <Users className="size-5 text-muted-foreground" />
           <h2 className="text-base font-semibold">{tr("Toolport Teams")}</h2>
         </div>
-        <div className="flex flex-col gap-2" aria-label={tr("Loading Toolport Teams")}>
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-14 w-full rounded-lg" />
-          ))}
-        </div>
+        <SkeletonRows label={tr("Loading Toolport Teams")} />
       </div>
     );
   }
@@ -621,11 +622,24 @@ export function TeamsView({
         <h2 className="text-base font-semibold">{tr("Toolport Teams")}</h2>
       </div>
 
-      {(error || team?.accountStatusError) && (
-        <Callout variant="danger" className="mb-4">
-          {(typeof error === "object" && error ? tr(error.key) : error) ||
-            team?.accountStatusError}
-        </Callout>
+      {error && errorFrom !== "sync" && (
+        <p role="alert" className="mb-4 text-sm text-destructive">
+          {typeof error === "object" ? tr(error.key) : error}
+        </p>
+      )}
+      {((errorFrom === "sync" && error) || team?.accountStatusError) && (
+        <ErrorCallout
+          className="mb-4"
+          title={tr("Sync")}
+          cause={
+            (errorFrom === "sync" && error
+              ? typeof error === "object"
+                ? tr(error.key)
+                : error
+              : null) || team?.accountStatusError
+          }
+          onRetry={() => void onSync()}
+        />
       )}
       {skipNote && (
         <Callout variant="warning" className="mb-4 whitespace-pre-line">

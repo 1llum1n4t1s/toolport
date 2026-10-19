@@ -7,6 +7,10 @@ import "../index.css";
 
 if (!import.meta.env.DEV) throw new Error("Fixtures require the development server");
 const state = new URLSearchParams(location.search).get("state") ?? "normal";
+document.documentElement.classList.toggle(
+  "dark",
+  window.matchMedia("(prefers-color-scheme: dark)").matches,
+);
 const entries: CatalogEntry[] = [
   {
     name: "GitHub",
@@ -84,9 +88,13 @@ const registry: Registry = {
   activeProfileId: null,
 };
 mockIPC((command) => {
+  if (command === "popular_catalog" || command === "search_catalog") {
+    if (state === "loading") return new Promise(() => {});
+    if (state === "error") throw new Error("Synthetic catalog read failure");
+  }
   switch (command) {
     case "popular_catalog":
-      return entries;
+      return state === "empty" ? [] : entries;
     case "search_catalog":
       return {
         entries: state === "empty-outage" ? [] : entries.slice(0, 1),

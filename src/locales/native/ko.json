@@ -828,7 +828,7 @@
   "Toolport has no automatic fix for this one.": "Toolport에는 이 문제에 대한 자동 수정이 없습니다.",
   "Toolport is ready for setup": "Toolport 설정 준비 완료",
   "Toolport is still running": "Toolport는 아직 실행 중입니다.",
-  "Toolport left the registry untouched. Open the app again to inspect or recover it.": "Toolport 레지스트리를 그대로 두었습니다. 앱을 다시 열어 검사하거나 복구하세요.",
+  "Toolport couldn't read the registry and didn't change it. Fix or restore the file, then retry.": "Toolport에서 레지스트리를 읽을 수 없어 변경하지 않았습니다. 파일을 수정하거나 복원한 후 다시 시도하세요.",
   "Toolport manages {value0} server for {value2} connected client.": "Toolport는 {value2} 연결된 클라이언트의 {value0} 서버를 관리합니다.",
   "Toolport manages {value0} server for {value2} connected clients.": "Toolport는 연결된 클라이언트 {value2}에 대한 {value0} 서버를 관리합니다.",
   "Toolport manages {value0} servers for {value2} connected client.": "Toolport는 {value2} 연결된 클라이언트에 대한 {value0} 서버를 관리합니다.",

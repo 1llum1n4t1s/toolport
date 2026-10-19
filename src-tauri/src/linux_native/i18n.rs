@@ -243,6 +243,24 @@ pub(super) fn bind_tooltip_with(
     );
 }
 
+/// The accessible name read by screen readers, kept in the current language.
+pub(super) fn bind_accessible_label(widget: &impl IsA<gtk::Accessible>, source: &'static str) {
+    let weak = widget.as_ref().downgrade();
+    register(
+        widget.as_ref(),
+        "accessible-label",
+        Rc::new(move || {
+            let Some(widget) = weak.upgrade() else {
+                return false;
+            };
+            widget.update_property(&[gtk::accessible::Property::Label(&crate::i18n::lookup(
+                source,
+            ))]);
+            true
+        }),
+    );
+}
+
 pub(super) fn bind_window_title(window: &impl IsA<gtk::Window>, source: &'static str) {
     let weak = window.as_ref().downgrade();
     register(

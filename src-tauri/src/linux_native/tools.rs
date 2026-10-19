@@ -135,7 +135,17 @@ impl ServerToolsPanel {
             return;
         }
         let server_id = self.server_id.clone();
-        self.set_status(&crate::i18n::tr("Connecting to server…"));
+        self.set_status("");
+        if self.last_load.borrow().is_none() {
+            for list in [&self.tools, &self.resources, &self.prompts] {
+                while let Some(child) = list.first_child() {
+                    list.remove(&child);
+                }
+                list.append(&super::skeleton_rows(crate::i18n::msg(
+                    "Connecting to server…",
+                )));
+            }
+        }
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
             let result = gtk::gio::spawn_blocking(move || {
@@ -190,13 +200,13 @@ impl ServerToolsPanel {
             self.prompts.append(&prompt_row(prompt, self.clone()));
         }
         if resource_count == 0 {
-            self.resources.append(&empty_capability(&crate::i18n::tr(
+            self.resources.append(&empty_capability(crate::i18n::msg(
                 "No resources advertised",
             )));
         }
         if prompt_count == 0 {
             self.prompts
-                .append(&empty_capability(&crate::i18n::tr("No prompts advertised")));
+                .append(&empty_capability(crate::i18n::msg("No prompts advertised")));
         }
         *self.last_load.borrow_mut() = Some((capabilities, policy));
         self.render_tools();
@@ -250,7 +260,7 @@ impl ServerToolsPanel {
         }
         if capabilities.tools.is_empty() {
             self.tools
-                .append(&empty_capability(&crate::i18n::tr("No tools advertised")));
+                .append(&empty_capability(crate::i18n::msg("No tools advertised")));
             return;
         }
         let query = self.tool_filter.text().to_lowercase();
@@ -282,7 +292,7 @@ impl ServerToolsPanel {
             ));
         }
         if shown == 0 {
-            self.tools.append(&empty_capability(&crate::i18n::tr(
+            self.tools.append(&empty_capability(crate::i18n::msg(
                 "No tool matches the filter",
             )));
         }
@@ -325,6 +335,22 @@ impl ServerToolsPanel {
     }
 
     fn show_error(&self, error: &str) {
+        if self.last_load.borrow().is_none() {
+            for list in [&self.tools, &self.resources, &self.prompts] {
+                while let Some(child) = list.first_child() {
+                    list.remove(&child);
+                }
+                let page = self.clone();
+                list.append(&super::error_callout(
+                    crate::i18n::msg("Tools"),
+                    error,
+                    move || page.refresh(),
+                ));
+            }
+            self.feedback.set_visible(false);
+            return;
+        }
+
         self.set_status(&crate::i18n::trf(
             "Tools error: {value0}",
             &[("value0", error)],
@@ -337,12 +363,13 @@ fn capability_list() -> gtk::Box {
     gtk::Box::new(gtk::Orientation::Vertical, 10)
 }
 
-fn empty_capability(message: &str) -> gtk::Label {
-    gtk::Label::builder()
-        .label(message)
-        .halign(gtk::Align::Start)
-        .css_classes(["toolport-muted"])
-        .build()
+fn empty_capability(message: &'static str) -> gtk::Box {
+    super::state_card(
+        "view-list-symbolic",
+        crate::i18n::msg("Nothing here yet"),
+        message,
+        false,
+    )
 }
 
 /// GtkLabel implements `lines` as a negative Pango layout height, and Pango

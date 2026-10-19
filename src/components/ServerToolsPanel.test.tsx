@@ -322,11 +322,13 @@ describe("server Tools panel", () => {
       await readA.promise.catch(() => {});
     });
     expect(screen.queryByText("Error: read A failed")).not.toBeInTheDocument();
-    expect(screen.getByText("Reading resource…")).toBeVisible();
+    expect(screen.getByRole("status", { name: "Reading resource…" })).toBeVisible();
 
     readB.resolve("contents of B");
     expect(await screen.findByText("contents of B")).toBeVisible();
-    expect(screen.queryByText("Reading resource…")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", { name: "Reading resource…" }),
+    ).not.toBeInTheDocument();
   });
 
   it("ignores a resource read that finishes after the panel unmounts", async () => {

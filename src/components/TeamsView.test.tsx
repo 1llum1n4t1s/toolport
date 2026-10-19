@@ -620,6 +620,49 @@ describe("Sync setup", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/https/);
     expect(api.teamConnect).not.toHaveBeenCalled();
   });
+  it("keeps validation errors inline without a sync Retry", async () => {
+    render(<TeamsView registry={noTeam} onRegistryChange={vi.fn()} />);
+    await userEvent.click(screen.getByText("Use a manual code"));
+    await userEvent.clear(screen.getByLabelText("Sync service URL"));
+    await userEvent.type(screen.getByLabelText("Sync service URL"), "http://example.com");
+    await userEvent.type(screen.getByLabelText("Manual code"), "fixture-code");
+    await userEvent.click(screen.getByRole("button", { name: "Sign in with code" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/https/);
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /View log/ })).not.toBeInTheDocument();
+  });
+  it("retries a failed team sync from its callout", async () => {
+    api.teamSync.mockRejectedValueOnce("Network offline").mockResolvedValueOnce(registry);
+    const changed = vi.fn();
+    render(<TeamsView registry={registry} onRegistryChange={changed} />);
+    await userEvent.click(screen.getByRole("button", { name: "Sync now" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Network offline");
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(changed).toHaveBeenCalledWith(registry));
+    expect(api.teamSync).toHaveBeenCalledTimes(2);
+    expect(api.getRegistry).not.toHaveBeenCalled();
+  });
+  it("retries a failed personal sync from its callout", async () => {
+    const solo = structuredClone(registry);
+    solo.team!.accountStatus = {
+      personalSync: true,
+      plan: "pro",
+      deviceId: "fixture",
+      canReceiveConfig: true,
+      trialActive: false,
+      trialEndsAt: null,
+      freeSyncGraceEndsAt: null,
+      reason: null,
+    };
+    api.teamSync.mockRejectedValueOnce("Network offline").mockResolvedValueOnce(solo);
+    api.getRegistry.mockResolvedValue(solo);
+    render(<TeamsView registry={solo} onRegistryChange={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Sync now" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Network offline");
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(api.teamSync).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  });
   it("explains trial, grace and blocked status in personal mode", () => {
     const solo = {
       ...registry,
@@ -648,6 +691,28 @@ describe("Sync setup", () => {
     expect(
       screen.queryByRole("button", { name: /Share selected/ }),
     ).not.toBeInTheDocument();
+  });
+  it("retries persisted personal sync errors before reloading the registry", async () => {
+    const solo = structuredClone(registry);
+    solo.team!.accountStatus = {
+      personalSync: true,
+      plan: "pro",
+      deviceId: "fixture",
+      canReceiveConfig: true,
+      trialActive: false,
+      trialEndsAt: null,
+      freeSyncGraceEndsAt: null,
+      reason: null,
+    };
+    solo.team!.personalSyncState = { error: "Network offline" };
+    api.teamSync.mockResolvedValue(solo);
+    api.getRegistry.mockResolvedValue(solo);
+    const changed = vi.fn();
+    render(<TeamsView registry={solo} onRegistryChange={changed} />);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(changed).toHaveBeenCalledWith(solo));
+    expect(api.teamSync).toHaveBeenCalledOnce();
+    expect(api.getRegistry).toHaveBeenCalledOnce();
   });
   it("shows per-server publish errors and asks which local servers to sync", async () => {
     const personal = structuredClone(registry);

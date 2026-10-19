@@ -825,6 +825,11 @@ export function openDataDir(): Promise<void> {
   return invoke<void>("open_data_dir");
 }
 
+/** Open the gateway log (or the data directory before the first gateway run). */
+export function openGatewayLog(): Promise<void> {
+  return invoke<void>("open_gateway_log");
+}
+
 /** Serialize the user's servers into a shareable setup (no secret values),
  * optionally labelled with a name + description. */
 export function exportConfig(

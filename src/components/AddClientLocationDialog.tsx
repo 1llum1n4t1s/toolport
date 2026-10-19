@@ -6,6 +6,8 @@ import {
   getClientLocationTypes,
   type ClientLocationType,
 } from "@/lib/api";
+import { SkeletonRows } from "@/components/ui/skeleton";
+import { ErrorCallout } from "@/components/ui/status-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -32,26 +34,34 @@ export function AddClientLocationDialog({
   const [clientType, setClientType] = useState("claude-code");
   const [folder, setFolder] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [errorSource, setErrorSource] = useState<"load" | "submit" | null>(null);
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
     if (!open) return;
     let current = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the previous dialog error as the client-type request starts.
     setError(null);
+    setErrorSource(null);
+    setLoading(true);
     getClientLocationTypes()
       .then((rows) => {
         if (current) setTypes(rows);
       })
       .catch(() => {
-        if (current)
-          setError(
-            translate("Could not load client types. Close this dialog and try again."),
-          );
+        if (current) {
+          setErrorSource("load");
+          setError(translate("Could not load client types."));
+        }
+      })
+      .finally(() => {
+        if (current) setLoading(false);
       });
     return () => {
       current = false;
     };
-  }, [open]);
+  }, [open, retry]);
   const selected = types.find((type) => type.id === clientType);
   return (
     <Dialog
@@ -69,18 +79,21 @@ export function AddClientLocationDialog({
             )}
           </DialogDescription>
         </DialogHeader>
+        {loading && <SkeletonRows label={t("Loading…")} />}
         <form
           className="flex flex-col gap-4"
           onSubmit={async (event) => {
             event.preventDefault();
             setSaving(true);
             setError(null);
+            setErrorSource(null);
             try {
               const id = await addClientLocation(clientType, folder);
               await onAdded(id);
               setFolder("");
               onOpenChange(false);
             } catch (error) {
+              setErrorSource("submit");
               setError(error instanceof Error ? error.message : String(error));
             } finally {
               setSaving(false);
@@ -123,9 +136,13 @@ export function AddClientLocationDialog({
             </p>
           )}
           {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
+            <ErrorCallout
+              title={t("Add client location")}
+              cause={error}
+              onRetry={
+                errorSource === "load" ? () => setRetry((value) => value + 1) : undefined
+              }
+            />
           )}
           <Button type="submit" disabled={saving || !folder.trim() || !selected}>
             {saving ? t("Adding…") : t("Add location")}

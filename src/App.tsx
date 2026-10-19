@@ -30,6 +30,7 @@ import {
   getRegistry,
   takeRegistryRecoveryNotice,
   importServers,
+  openGatewayLog,
   previewImportServers,
   probeServers,
   removeServer,
@@ -104,7 +105,9 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Skeleton } from "@/components/ui/skeleton";
+import { SkeletonRows } from "@/components/ui/skeleton";
+import { EmptyState as SharedEmptyState } from "@/components/ui/empty-state";
+import { ErrorCallout, StatusCard } from "@/components/ui/status-card";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { useTheme } from "@/lib/theme";
@@ -856,9 +859,11 @@ function App() {
                 ? selectedClient
                   ? translate("MCP client")
                   : translate("Manage Toolport in your installed AI tools")
-                : loading || !registry
-                  ? translate("Loading…")
-                  : translate("One gateway in front of every MCP server you run");
+                : error
+                  ? translate("Servers unavailable")
+                  : loading || !registry
+                    ? translate("Loading…")
+                    : translate("One gateway in front of every MCP server you run");
 
   const serverRow = (server: ServerEntry) => (
     <RegistryServerRow
@@ -1106,15 +1111,7 @@ function App() {
                   resetKey={`${view}:${selectedClient?.id ?? ""}`}
                   fallback={(err, retry) => <ViewCrash error={err} onRetry={retry} />}
                 >
-                  <Suspense
-                    fallback={
-                      <div className="flex flex-col gap-2">
-                        {Array.from({ length: 6 }).map((_, i) => (
-                          <Skeleton key={i} className="h-11 w-full rounded-lg" />
-                        ))}
-                      </div>
-                    }
-                  >
+                  <Suspense fallback={<SkeletonRows label={t("Loading…")} />}>
                     {view === "clients" ? (
                       selectedClient ? (
                         <ClientDetail
@@ -1128,6 +1125,7 @@ function App() {
                           clients={clients}
                           registry={registry}
                           loading={loading}
+                          error={error}
                           onSelectClient={selectClient}
                           onChanged={load}
                         />
@@ -1161,50 +1159,44 @@ function App() {
                         onRegistryChange={applyRegistryChange}
                       />
                     ) : loading && registry === null ? (
-                      <div className="flex flex-col gap-2">
-                        {Array.from({ length: 6 }).map((_, i) => (
-                          <Skeleton key={i} className="h-11 w-full rounded-lg" />
-                        ))}
-                      </div>
+                      <SkeletonRows label={t("Loading servers… ")} />
                     ) : error ? (
-                      <ErrorState message={error} />
+                      <ErrorState message={error} onRetry={() => load(true)} />
                     ) : servers.length === 0 ? (
-                      <EmptyState
+                      <ServersEmptyState
                         importable={importable}
                         onImport={handleImport}
+                        onAddServer={() => setAddServerOpen(true)}
                         onBrowseCatalog={() => selectView("catalog")}
                       />
                     ) : visible.length === 0 ? (
-                      <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-3 py-6 text-center">
-                        <p className="text-sm text-muted-foreground">
-                          {" "}
-                          {t('No servers match "{query}".', { query })}
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => setQuery("")}
-                          className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                        >
-                          <X className="size-3.5" /> {t("Clear search")}{" "}
-                        </button>
-                      </div>
+                      <SharedEmptyState
+                        icon={<Search />}
+                        title={t('No servers match "{query}".', { query })}
+                        description={t("Try a different server name or transport.")}
+                        action={
+                          <Button variant="outline" onClick={() => setQuery("")}>
+                            <X /> {t("Clear search")}
+                          </Button>
+                        }
+                      />
                     ) : (
                       <div className="flex flex-col gap-5">
-                        <ServerPosture
-                          backendReachable={backendReachable}
-                          probing={probing}
-                          enabled={enabledCount}
-                          checked={checkedCount}
-                          connected={connectedCount}
-                          attention={attentionCount}
-                          disabled={servers.length - enabledCount}
-                        />
-                        {backendReachable && attentionCount > 0 && (
-                          <ServerNextAction
-                            authServers={authAttention}
-                            errorServers={errorAttention}
-                          />
-                        )}
+                        {backendReachable &&
+                          (attentionCount > 0 ? (
+                            <ServerNextAction
+                              authServers={authAttention}
+                              errorServers={errorAttention}
+                            />
+                          ) : (
+                            <ServerPosture
+                              probing={probing}
+                              enabled={enabledCount}
+                              checked={checkedCount}
+                              connected={connectedCount}
+                              disabled={servers.length - enabledCount}
+                            />
+                          ))}
                         <div className="toolport-list">{visible.map(serverRow)}</div>
                       </div>
                     )}
@@ -1390,7 +1382,7 @@ function App() {
       </Dialog>
       <Toaster
         theme={resolvedTheme}
-        position="bottom-right"
+        position="bottom-center"
         offset={
           starSurface === "chip"
             ? { bottom: "3.5rem" }
@@ -1404,58 +1396,39 @@ function App() {
 }
 
 function ServerPosture({
-  backendReachable,
   probing,
   enabled,
   checked,
   connected,
-  attention,
   disabled,
 }: {
-  backendReachable: boolean;
   probing: boolean;
   enabled: number;
   checked: number;
   connected: number;
-  attention: number;
   disabled: number;
 }) {
   useI18n();
+  // Shown only when the backend answers and nothing needs attention: the backend banner and
+  // ServerNextAction already own those cases, and two banners must not say the same thing.
   const { healthy, title, detail } = serverPostureCopy({
-    backendReachable,
+    backendReachable: true,
     probing,
     enabled,
     checked,
     connected,
-    attention,
+    attention: 0,
     disabled,
   });
 
   return (
-    <div
+    <StatusCard
       role="status"
-      className={`flex items-center gap-3 toolport-alert px-4 py-3 ${String(healthy ? "border-success bg-success/8" : "border-info bg-info/8")}`}
-    >
-      <div
-        className={`grid size-8 shrink-0 place-items-center rounded-md ${String(
-          healthy
-            ? "bg-success/10 text-success"
-            : probing
-              ? "bg-info/10 text-info"
-              : "bg-muted text-muted-foreground",
-        )}`}
-      >
-        {healthy ? (
-          <CircleCheck className="size-4" />
-        ) : (
-          <RefreshCw className={`size-4 ${String(probing ? "animate-spin" : "")}`} />
-        )}
-      </div>
-      <div>
-        <p className="text-sm font-semibold">{title}</p>
-        <p className="text-meta text-muted-foreground">{detail}</p>
-      </div>
-    </div>
+      variant={healthy ? "success" : "info"}
+      icon={healthy ? <CircleCheck /> : <RefreshCw />}
+      title={title}
+      detail={detail}
+    />
   );
 }
 
@@ -1494,115 +1467,115 @@ function ServerNextAction({
           );
 
   return (
-    <div className="flex items-start gap-3 toolport-alert border-warning bg-warning/8 px-4 py-3">
-      <div className="grid size-8 shrink-0 place-items-center rounded-md bg-warning/10 text-warning">
-        {authCount > 0 && errorCount === 0 ? (
-          <KeyRound className="size-4" />
-        ) : (
-          <TriangleAlert className="size-4" />
-        )}
-      </div>
-      <div>
-        <p className="text-sm font-semibold">{title}</p>
-        <p className="text-meta text-muted-foreground">{detail}</p>
-      </div>
-    </div>
+    <StatusCard
+      variant={authCount === 0 ? "danger" : "warning"}
+      icon={authCount > 0 && errorCount === 0 ? <KeyRound /> : <TriangleAlert />}
+      title={title}
+      detail={detail}
+    />
   );
 }
 
-function EmptyState({
+function ServersEmptyState({
   importable,
   onImport,
+  onAddServer,
   onBrowseCatalog,
 }: {
   importable: number;
   onImport: () => void;
+  onAddServer: () => void;
   onBrowseCatalog: () => void;
 }) {
   const { t } = useI18n();
   return (
-    <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
-      <ServerOff className="size-10 text-muted-foreground" />
-      <div>
-        <p className="font-medium">{t("No servers in Toolport yet")}</p>
-        <p className="text-sm text-muted-foreground">
-          {importable > 0
-            ? importable === 1
-              ? t(
-                  "Found {value1} server in your installed clients. Import them to get started.",
-                  { value1: importable },
-                )
-              : t(
-                  "Found {value1} servers in your installed clients. Import them to get started.",
-                  { value1: importable },
-                )
-            : t("Browse the catalog to add one, or import servers from a client.")}
-        </p>
-      </div>
-      {importable > 0 ? (
-        <Button onClick={onImport}>
-          <Download className="size-4" /> {t("Import")} {importable}{" "}
-          {t("from clients")}{" "}
-        </Button>
-      ) : (
-        <Button onClick={onBrowseCatalog}>
-          <Store className="size-4" /> {t("Browse catalog")}{" "}
-        </Button>
-      )}
-    </div>
+    <SharedEmptyState
+      icon={<ServerOff />}
+      title={t("No servers in Toolport yet")}
+      description={
+        importable > 0
+          ? importable === 1
+            ? t(
+                "Found {value1} server in your installed clients. Import them to get started.",
+                { value1: importable },
+              )
+            : t(
+                "Found {value1} servers in your installed clients. Import them to get started.",
+                { value1: importable },
+              )
+          : t("Browse the catalog to add one, or import servers from a client.")
+      }
+      action={
+        <>
+          <Button variant="outline" onClick={onAddServer}>
+            <Plus /> {t("Add server")}
+          </Button>
+          {importable > 0 ? (
+            <Button variant="outline" onClick={onImport}>
+              <Download /> {t("Import")} {importable} {t("from clients")}
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={onBrowseCatalog}>
+              <Store /> {t("Browse catalog")}
+            </Button>
+          )}
+        </>
+      }
+    />
   );
+}
+
+function viewLog() {
+  void openGatewayLog().catch((e: unknown) => toastError(String(e)));
 }
 
 function ViewCrash({ error, onRetry }: { error: Error; onRetry: () => void }) {
   const { t } = useI18n();
   return (
-    <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
-      <TriangleAlert className="size-10 text-warning" />
-      <div>
-        <p className="font-medium">{t("Something went wrong in this view")}</p>
-        <p className="max-w-md text-sm text-muted-foreground">
-          {" "}
+    <ErrorCallout
+      title={t("Something went wrong in this view")}
+      cause={
+        <>
           {t(
             "The rest of Toolport is still running. Try again, or reload the window if it keeps happening.",
-          )}{" "}
-        </p>
-        <p className="mt-2 font-mono text-meta text-muted-foreground">{error.message}</p>
-      </div>
-      <div className="flex gap-2">
-        <Button variant="outline" onClick={onRetry}>
-          {" "}
-          {t("Try again")}{" "}
+          )}
+          <span className="mt-1 block font-mono">{error.message}</span>
+        </>
+      }
+      onRetry={onRetry}
+      retryLabel={t("Try again")}
+      onViewLog={viewLog}
+      actions={
+        <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
+          {t("Reload")}
         </Button>
-        <Button onClick={() => window.location.reload()}>{t("Reload")}</Button>
-      </div>
-    </div>
+      }
+    />
   );
 }
 
-function ErrorState({ message }: { message: string }) {
+function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
   const { t } = useI18n();
   return (
-    <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
-      <TriangleAlert className="size-10 text-warning" />
-      <div>
-        <p className="font-medium">{t("Couldn't reach the backend")}</p>
-        <p className="max-w-md text-sm text-muted-foreground">
+    <ErrorCallout
+      title={t("Couldn't reach the backend")}
+      cause={
+        <>
           {import.meta.env.DEV ? (
             <>
-              {" "}
               {t("Make sure you're running the desktop app with")}{" "}
               <code className="font-mono">{technicalText("npm run tauri dev")}</code>
-              {t(", not the browser-only dev server.")}{" "}
+              {t(", not the browser-only dev server.")}
             </>
           ) : (
-            <>
-              {t("Toolport's backend didn't start. Try quitting and reopening the app.")}
-            </>
+            t("Toolport's backend didn't start. Try quitting and reopening the app.")
           )}
-        </p>
-        <p className="mt-2 font-mono text-meta text-muted-foreground">{message}</p>
-      </div>
-    </div>
+          <span className="mt-1 block font-mono">{message}</span>
+        </>
+      }
+      onRetry={onRetry}
+      onViewLog={viewLog}
+    />
   );
 }
 

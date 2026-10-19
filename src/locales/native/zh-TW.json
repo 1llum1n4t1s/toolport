@@ -828,7 +828,7 @@
   "Toolport has no automatic fix for this one.": "Toolport 對此沒有自動修復。",
   "Toolport is ready for setup": "Toolport 已準備好設定",
   "Toolport is still running": "Toolport仍在執行",
-  "Toolport left the registry untouched. Open the app again to inspect or recover it.": "Toolport 保持登錄檔不變。再次開啟應用程式以檢查或恢復它。",
+  "Toolport couldn't read the registry and didn't change it. Fix or restore the file, then retry.": "Toolport 無法讀取登錄檔，因此未做任何變更。請修正或還原該檔案，然後重試。",
   "Toolport manages {value0} server for {value2} connected client.": "Toolport 為 {value2} 個已連線用戶端管理 {value0} 個伺服器。",
   "Toolport manages {value0} server for {value2} connected clients.": "Toolport 為 {value2} 個已連線用戶端管理 {value0} 個伺服器。",
   "Toolport manages {value0} servers for {value2} connected client.": "Toolport 為 {value2} 個已連線用戶端管理 {value0} 個伺服器。",

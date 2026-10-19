@@ -5,6 +5,15 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
+// Older paired registries have no account snapshot. Null deliberately produces
+// the existing unknown/free state until a successful sync supplies one.
+fn account_status(team: &crate::registry::TeamConnection) -> &serde_json::Value {
+    team.unknown_fields
+        .get("accountStatus")
+        .filter(|value| value.is_object())
+        .unwrap_or(&serde_json::Value::Null)
+}
+
 const SYNC_DESTINATIONS: &[&str] = &[msg("Every machine"), msg("This machine")];
 
 #[derive(Clone)]
@@ -24,6 +33,7 @@ pub(super) struct TeamsPage {
     plan_badge: gtk::Label,
     intro: gtk::Label,
     feedback: gtk::Label,
+    errors: gtk::Box,
     busy: Rc<Cell<bool>>,
     refresh_generation: Rc<Cell<u64>>,
     refresh_running: Rc<Cell<bool>>,
@@ -42,7 +52,21 @@ pub(super) struct TeamsPage {
     sync_line: Rc<RefCell<Option<gtk::Label>>>,
     /// The last failed action. Polls redraw the status line every few seconds,
     /// so without this an error vanished before anyone could read it.
-    action_error: Rc<RefCell<Option<(String, std::time::Instant)>>>,
+    action_error: Rc<RefCell<Option<ActionError>>>,
+}
+
+/// What Retry reruns. Failures without one (validation, a declined join, a
+/// failed save) show as plain inline feedback instead of a callout.
+#[derive(Clone)]
+enum ErrorRetry {
+    Refresh,
+    Sync(gtk::Button),
+}
+
+struct ActionError {
+    message: String,
+    at: std::time::Instant,
+    retry: Option<ErrorRetry>,
 }
 
 impl TeamsPage {
@@ -84,6 +108,8 @@ impl TeamsPage {
             .build();
         feedback.set_visible(false);
         page.append(&feedback);
+        let errors = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        page.append(&errors);
         let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
         page.append(&content);
         scroller.set_child(Some(&super::form_column(&page)));
@@ -97,6 +123,7 @@ impl TeamsPage {
             plan_badge,
             intro,
             feedback,
+            errors,
             busy: Rc::new(Cell::new(false)),
             refresh_generation: Rc::new(Cell::new(0)),
             refresh_running: Rc::new(Cell::new(false)),
@@ -123,6 +150,9 @@ impl TeamsPage {
         if self.refresh_running.replace(true) {
             return;
         }
+        while let Some(child) = self.errors.first_child() {
+            self.errors.remove(&child);
+        }
         self.feedback.set_label(&tr("Loading sync status…"));
         self.server_page.reprobe_if_stale();
         let page = self.clone();
@@ -137,9 +167,15 @@ impl TeamsPage {
                     continue;
                 }
                 match result {
-                    Ok(Ok(snapshot)) => page.render_snapshot(snapshot),
-                    Ok(Err(error)) => page.show_error(&error),
-                    Err(_) => page.show_error(&tr("the team status read stopped unexpectedly")),
+                    Ok(Ok(snapshot)) => {
+                        page.clear_action_error(|retry| matches!(retry, Some(ErrorRetry::Refresh)));
+                        page.render_snapshot(snapshot)
+                    }
+                    Ok(Err(error)) => page.show_failure(&error, Some(ErrorRetry::Refresh)),
+                    Err(_) => page.show_failure(
+                        &tr("the team status read stopped unexpectedly"),
+                        Some(ErrorRetry::Refresh),
+                    ),
                 }
                 break;
             }
@@ -257,7 +293,7 @@ impl TeamsPage {
                     .team
                     .as_ref()
                     .map(|t| crate::personal_sync::status_lines(
-                        &t.unknown_fields["accountStatus"],
+                        account_status(t),
                         self.sync_state.borrow().last_synced_at
                     ))
             ),
@@ -313,15 +349,21 @@ impl TeamsPage {
     }
 
     fn show_sync_status(&self, registry: &crate::registry::Registry) {
+        let recent_error = self.action_error.borrow().as_ref().and_then(|error| {
+            (error.at.elapsed() < std::time::Duration::from_secs(30))
+                .then(|| (error.message.clone(), error.retry.clone()))
+        });
         if !crate::personal_sync::is_personal(registry) {
             self.render_sync_status();
+            // The status line stays; a failed sync or read keeps its Retry callout.
+            if let Some((error, Some(retry))) = recent_error {
+                self.show_callout(&error, retry);
+            }
             return;
         }
-        let recent_error = self.action_error.borrow().as_ref().and_then(|(error, at)| {
-            (at.elapsed() < std::time::Duration::from_secs(30)).then(|| error.clone())
-        });
-        if let Some(error) = recent_error {
-            self.show_error(&error);
+        if let Some((error, retry)) = recent_error {
+            // Replay with the original Retry so a sync failure still retries the sync.
+            self.present_failure(&error, retry);
             return;
         }
         // The status line under the title says it; the banner only carries errors.
@@ -341,18 +383,23 @@ impl TeamsPage {
         }
         let sign_in = l10n::button("Sign in to sync");
         sign_in.add_css_class("suggested-action");
+        sign_in.set_halign(gtk::Align::Start);
 
         self.content.append(&sign_in);
-        self.content.append(
-            &gtk::Label::builder()
-                .label(crate::teams_plan::pro_line())
-                .wrap(true)
-                .xalign(0.0)
-                .build(),
-        );
+        let pricing = gtk::Label::builder().wrap(true).xalign(0.0).build();
+        l10n::bind_label_with(&pricing, || {
+            format!("{} {}",
+            trf("Free: {people} person, 1 device. No card required.", &[("people", &crate::teams_plan::FREE_SEATS.to_string())]),
+            trf("Pro is ${monthly}/month or ${annual}/year for one person on unlimited devices. Try it free for 14 days, no card.", &[("monthly", "5"), ("annual", "48")]))
+        });
+        self.content.append(&pricing);
         let group = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        group.add_css_class("toolport-settings-group");
-        group.append(&super::section_heading(crate::i18n::msg("Use a manual code"), crate::i18n::msg("If your browser cannot open Toolport, copy the manual code shown after approving this device.")));
+        group.set_margin_top(16);
+        let detail = l10n::label(msg("If your browser cannot open Toolport, copy the manual code shown after approving this device."));
+        detail.set_wrap(true);
+        detail.set_xalign(0.0);
+        detail.add_css_class("toolport-muted");
+        group.append(&detail);
         let url = gtk::Entry::builder()
             .text(crate::teams::HOSTED_TEAMS_URL)
             .build();
@@ -385,7 +432,13 @@ impl TeamsPage {
             )
         });
         group.append(&button);
-        self.content.append(&group);
+        let manual = gtk::Expander::builder()
+            .label_widget(&l10n::label(msg("Use a manual code")))
+            .expanded(false)
+            .child(&group)
+            .build();
+        manual.add_css_class("toolport-manual-code");
+        self.content.append(&manual);
     }
 
     fn render_connected(
@@ -1047,8 +1100,8 @@ impl TeamsPage {
             button.set_sensitive(true);
             match result {
                 Ok(Ok(outcome)) => page.absorb_sync_result(outcome),
-                Ok(Err(error)) => page.show_error(&error),
-                Err(_) => page.show_error(&tr("the team sync stopped unexpectedly")),
+                Ok(Err(error)) => page.show_sync_error(&error, &button),
+                Err(_) => page.show_sync_error(&tr("the team sync stopped unexpectedly"), &button),
             }
         });
     }
@@ -1059,6 +1112,7 @@ impl TeamsPage {
     /// state because `refresh` renders asynchronously and would otherwise
     /// overwrite whatever is set here.
     fn absorb_sync_result(&self, result: crate::teams::SyncResult) {
+        self.clear_action_error(|retry| matches!(retry, Some(ErrorRetry::Sync(_))));
         match result {
             crate::teams::SyncResult::Removed => {
                 let message = tr("You were removed from the team. Its shared servers and this machine's team token have been cleared.");
@@ -1311,22 +1365,69 @@ impl TeamsPage {
         }
     }
 
-    fn show_error(&self, error: &str) {
-        let now = std::time::Instant::now();
+    /// Forget the last failure once the action it came from has succeeded.
+    fn clear_action_error(&self, from: impl Fn(Option<&ErrorRetry>) -> bool) {
         let mut last = self.action_error.borrow_mut();
-        // Re-showing the same error keeps its original deadline.
-        if last.as_ref().is_none_or(|(previous, _)| previous != error) {
-            *last = Some((error.to_string(), now));
+        if last
+            .as_ref()
+            .is_some_and(|error| from(error.retry.as_ref()))
+        {
+            *last = None;
         }
-        drop(last);
-        l10n::bind_formatted_label(
-            &self.feedback,
-            msg("Sync error: {error}"),
-            &[("error", (error))],
-        );
-        self.feedback.set_visible(true);
+    }
+
+    fn show_sync_error(&self, error: &str, button: &gtk::Button) {
+        self.show_failure(error, Some(ErrorRetry::Sync(button.clone())));
+    }
+
+    fn show_error(&self, error: &str) {
+        self.show_failure(error, None);
+    }
+
+    fn show_failure(&self, error: &str, retry: Option<ErrorRetry>) {
+        // A new failure starts its own 30 seconds, even when the message repeats.
+        *self.action_error.borrow_mut() = Some(ActionError {
+            message: error.to_string(),
+            at: std::time::Instant::now(),
+            retry: retry.clone(),
+        });
+        self.present_failure(error, retry);
+    }
+
+    /// Show a failure without restarting its deadline, for redraws that replay it.
+    fn present_failure(&self, error: &str, retry: Option<ErrorRetry>) {
+        while let Some(child) = self.errors.first_child() {
+            self.errors.remove(&child);
+        }
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
+        let Some(retry) = retry else {
+            l10n::bind_formatted_label(
+                &self.feedback,
+                msg("Sync error: {error}"),
+                &[("error", (error))],
+            );
+            self.feedback.set_visible(true);
+            return;
+        };
+        // The callout carries the error, so the inline line stays hidden.
+        self.feedback.set_visible(false);
+        self.show_callout(error, retry);
+    }
+
+    fn show_callout(&self, error: &str, retry: ErrorRetry) {
+        while let Some(child) = self.errors.first_child() {
+            self.errors.remove(&child);
+        }
+        let page = self.clone();
+        self.errors.append(&super::error_callout(
+            msg("Sync"),
+            error,
+            move || match &retry {
+                ErrorRetry::Refresh => page.refresh(),
+                ErrorRetry::Sync(button) => page.sync(button.clone()),
+            },
+        ));
     }
 }
 
@@ -2342,6 +2443,124 @@ fn source_formatted_label(
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn paired_registry_without_valid_account_status_has_safe_fallback() {
+        for status in [
+            None,
+            Some(serde_json::json!(false)),
+            Some(serde_json::json!("bad")),
+            Some(serde_json::json!([])),
+        ] {
+            let mut value = serde_json::json!({"teamId":"fixture", "role":"member", "serverUrl":"https://example.invalid"});
+            if let Some(status) = status {
+                value["accountStatus"] = status;
+            }
+            let team = serde_json::from_value(value).unwrap();
+            assert!(super::account_status(&team).is_null());
+            let _ = crate::personal_sync::status_lines(super::account_status(&team), None);
+        }
+        let team = serde_json::from_value(serde_json::json!({"teamId":"fixture", "role":"member", "serverUrl":"https://example.invalid", "accountStatus":{"plan":"pro"}})).unwrap();
+        assert_eq!(super::account_status(&team)["plan"], "pro");
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b6_sync_errors_keep_their_retry_and_validation_stays_inline() {
+        adw::init().unwrap();
+        let _data = crate::registry::DataDirTestEnv::new("gtk-teams-error-retry");
+        let app = adw::Application::builder()
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let (_, servers, _) =
+            super::super::build_content(&app, crate::approval_broker::start_native());
+        let page = super::TeamsPage::new(&app, servers);
+        let registry = crate::registry::Registry {
+            team: Some(serde_json::from_value(serde_json::json!({"teamId":"solo","role":"admin","serverUrl":"http://127.0.0.1:1","accountStatus":{"personalSync":true,"plan":"pro","canReceiveConfig":true},"personalSyncState":{"initialized":true}})).unwrap()),
+            ..Default::default()
+        };
+        assert!(crate::personal_sync::is_personal(&registry));
+        page.render(registry.clone());
+        let retry_kind = |page: &super::TeamsPage| {
+            page.action_error
+                .borrow()
+                .as_ref()
+                .map(|error| match error.retry {
+                    None => "inline",
+                    Some(super::ErrorRetry::Refresh) => "refresh",
+                    Some(super::ErrorRetry::Sync(_)) => "sync",
+                })
+        };
+
+        // Validation: plain inline feedback, no Retry callout, also after a redraw.
+        page.show_error("Enter the sync service URL and manual code");
+        assert!(page.errors.first_child().is_none());
+        assert!(page.feedback.is_visible());
+        assert!(page.feedback.text().contains("Enter the sync service URL"));
+        page.show_sync_status(&registry);
+        assert!(page.errors.first_child().is_none());
+        assert_eq!(retry_kind(&page), Some("inline"));
+
+        // A sync failure replayed by the watcher or a page switch still retries the sync.
+        let button = gtk::Button::new();
+        page.show_sync_error("Network offline", &button);
+        assert!(page.errors.first_child().is_some());
+        assert!(!page.feedback.is_visible());
+        page.show_sync_status(&registry);
+        assert!(page.errors.first_child().is_some());
+        assert_eq!(retry_kind(&page), Some("sync"));
+
+        // The same failure again, after the first expired, gets its own 30 seconds.
+        if let Some(error) = page.action_error.borrow_mut().as_mut() {
+            error.at -= std::time::Duration::from_secs(40);
+        }
+        while let Some(child) = page.errors.first_child() {
+            page.errors.remove(&child);
+        }
+        page.show_sync_status(&registry);
+        assert!(
+            page.errors.first_child().is_none(),
+            "an expired failure is not replayed"
+        );
+        page.show_sync_error("Network offline", &button);
+        while let Some(child) = page.errors.first_child() {
+            page.errors.remove(&child);
+        }
+        page.show_sync_status(&registry);
+        assert!(
+            page.errors.first_child().is_some(),
+            "a repeated failure is replayed"
+        );
+
+        // A successful reread clears a read failure but not a sync failure.
+        page.clear_action_error(|retry| matches!(retry, Some(super::ErrorRetry::Refresh)));
+        assert_eq!(retry_kind(&page), Some("sync"));
+        page.show_failure("registry unreadable", Some(super::ErrorRetry::Refresh));
+        assert_eq!(retry_kind(&page), Some("refresh"));
+        page.clear_action_error(|retry| matches!(retry, Some(super::ErrorRetry::Refresh)));
+        assert_eq!(retry_kind(&page), None);
+
+        // A shared team keeps its status line and still replays the sync callout.
+        let team = crate::registry::Registry {
+            team: Some(
+                serde_json::from_value(serde_json::json!({
+                    "teamId":"fixture", "role":"admin", "serverUrl":"http://127.0.0.1:1"
+                }))
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        assert!(!crate::personal_sync::is_personal(&team));
+        page.show_sync_error("Team sync failed", &button);
+        while let Some(child) = page.errors.first_child() {
+            page.errors.remove(&child);
+        }
+        page.show_sync_status(&team);
+        assert!(page.errors.first_child().is_some());
+        assert!(page.feedback.is_visible());
+        assert_eq!(retry_kind(&page), Some("sync"));
+    }
+
     #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn review_rows_use_the_supplied_snapshot_even_when_disk_is_unreadable() {

@@ -2672,6 +2672,11 @@ fn open_data_dir() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_gateway_log() -> Result<(), String> {
+    crate::diagnostics_controller::open_gateway_log()
+}
+
+#[tauri::command]
 fn open_exports_dir() -> Result<(), String> {
     crate::diagnostics_controller::open_exports_dir()
 }
@@ -4109,6 +4114,7 @@ fn update_tray_tooltip(app: &AppHandle) {
         .map(|b| b.list().len())
         .unwrap_or(0);
     if let Some(menu) = app.try_state::<TrayMenuState>() {
+        let _ = menu.pending_approvals.set_enabled(pending > 0);
         let _ = menu.pending_approvals.set_text(trf(
             "Pending approvals ({count})",
             &[("count", &pending.to_string())],
@@ -4167,7 +4173,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         app,
         "tray_approvals",
         trf("Pending approvals ({count})", &[("count", "0")]),
-        true,
+        false,
         None::<&str>,
     )?;
     let check_updates = MenuItem::with_id(
@@ -4233,6 +4239,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         builder = builder.icon(icon);
     }
     builder.build(app)?;
+    update_tray_tooltip(app);
     Ok(())
 }
 
@@ -4534,6 +4541,7 @@ pub fn run() {
             popular_catalog,
             search_catalog,
             open_data_dir,
+            open_gateway_log,
             set_all_enabled,
             export_config,
             export_config_to_path,

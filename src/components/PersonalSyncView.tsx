@@ -18,6 +18,7 @@ import { openExternal } from "@/lib/openUrl";
 import { visibleExecutionText as visibleText } from "@/lib/visibleExecutionText";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { ErrorCallout } from "./ui/status-card";
 import { Callout } from "./Callout";
 import { ServerLogo } from "./ServerLogo";
 
@@ -173,6 +174,8 @@ export function PersonalSyncView({
 }) {
   const { t } = useI18n();
   const [error, setError] = useState<string | null>(null);
+  // Only a failed sync or sign-in gets the Retry callout; other errors stay inline.
+  const [syncFailed, setSyncFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [url, setUrl] = useState(HOSTED_TEAMS_URL);
   const [code, setCode] = useState("");
@@ -208,7 +211,13 @@ export function PersonalSyncView({
     };
   }, [pending, onRegistryChange]);
   const team = registry.team;
-  const status = team?.accountStatus;
+  const status =
+    team?.accountStatus &&
+    typeof team.accountStatus === "object" &&
+    !Array.isArray(team.accountStatus) &&
+    typeof team.accountStatus.plan === "string"
+      ? team.accountStatus
+      : undefined;
   const sync = team?.personalSyncState;
   // The sidebar badge counts these, so name them here and point to where the
   // review happens.
@@ -261,13 +270,15 @@ export function PersonalSyncView({
     !!lastSynced &&
     !Object.keys(sync?.pending ?? {}).length;
   const statusLine = lastSynced ? `${summary} · ${lastSynced}` : summary;
-  async function run(work: () => Promise<void>) {
+  async function run(work: () => Promise<void>, { sync = false } = {}) {
     setBusy(true);
     setError(null);
+    setSyncFailed(false);
     try {
       await work();
     } catch (e) {
       setError(String(e));
+      setSyncFailed(sync);
     } finally {
       setBusy(false);
     }
@@ -281,10 +292,26 @@ export function PersonalSyncView({
           )}
         </p>
       )}
-      {(error || sync?.error || team?.accountStatusError) && (
-        <Callout variant="danger">
-          <p role="alert">{error || sync?.error || team?.accountStatusError}</p>
-        </Callout>
+      {error && !syncFailed && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      {((syncFailed && error) || sync?.error || team?.accountStatusError) && (
+        <ErrorCallout
+          title={t("Sync")}
+          cause={(syncFailed && error) || sync?.error || team?.accountStatusError}
+          onRetry={() =>
+            void run(
+              async () => {
+                if (sync?.signInRequired) await reconnectSync();
+                else await teamSync();
+                onRegistryChange(await getRegistry());
+              },
+              { sync: true },
+            )
+          }
+        />
       )}
       {Object.entries(sync?.warnings ?? {}).map(([id, warning]) => (
         <Callout key={id} variant="warning">
@@ -371,17 +398,23 @@ export function PersonalSyncView({
             </p>
             {sync?.signInRequired ? (
               // Sync cannot succeed without sign-in.
-              <Button disabled={busy} onClick={() => void run(() => reconnectSync())}>
+              <Button
+                disabled={busy}
+                onClick={() => void run(() => reconnectSync(), { sync: true })}
+              >
                 {t("Sign in")}
               </Button>
             ) : (
               <Button
                 disabled={busy}
                 onClick={() =>
-                  void run(async () => {
-                    await teamSync();
-                    onRegistryChange(await getRegistry());
-                  })
+                  void run(
+                    async () => {
+                      await teamSync();
+                      onRegistryChange(await getRegistry());
+                    },
+                    { sync: true },
+                  )
                 }
               >
                 {t("Sync now")}

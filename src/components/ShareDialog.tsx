@@ -26,6 +26,9 @@ import {
 } from "@/lib/api";
 import { listen } from "@tauri-apps/api/event";
 import { isGatewayServer, type ImportItem, type Registry } from "@/lib/types";
+import { SkeletonRows } from "@/components/ui/skeleton";
+import { ErrorCallout } from "@/components/ui/status-card";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -520,53 +523,30 @@ export function ShareDialog({ trigger, onImported }: Props) {
               )}
 
               {registryState === "loading" && (
-                <p role="status" className="text-meta text-muted-foreground">
-                  {t("Loading servers… ")}
-                </p>
+                <SkeletonRows label={t("Loading servers… ")} />
               )}
               {registryState === "error" && (
-                <div
-                  role="alert"
-                  className="flex items-center justify-between gap-2 toolport-alert border-destructive bg-destructive/8 px-2.5 py-2 text-meta text-destructive"
-                >
-                  <span>
-                    <Trans
-                      message={"Couldn't load your servers: {value1}"}
-                      values={{ value1: registryError }}
-                    />
-                  </span>
-                  <Button size="sm" variant="outline" onClick={() => void loadServers()}>
-                    {t("Retry ")}
-                  </Button>
-                </div>
+                <ErrorCallout
+                  title={t("Share setup")}
+                  cause={registryError}
+                  onRetry={() => void loadServers()}
+                />
+              )}
+              {registryState === "ready" && servers.length === 0 && (
+                <EmptyState title={t("No servers yet")} />
               )}
               {registryState === "ready" && exportState === "loading" && (
-                <p role="status" className="text-meta text-muted-foreground">
-                  {t("Updating setup… ")}
-                </p>
+                <SkeletonRows label={t("Updating setup… ")} />
               )}
               {registryState === "ready" && exportState === "error" && (
-                <div
-                  role="alert"
-                  className="flex items-center justify-between gap-2 toolport-alert border-destructive bg-destructive/8 px-2.5 py-2 text-meta text-destructive"
-                >
-                  <span>
-                    <Trans
-                      message={"Couldn't build this setup: {value1}"}
-                      values={{ value1: exportError }}
-                    />
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      invalidateShareOutput();
-                      setExportRetry((value) => value + 1);
-                    }}
-                  >
-                    {t("Retry ")}
-                  </Button>
-                </div>
+                <ErrorCallout
+                  title={t("Share setup")}
+                  cause={exportError}
+                  onRetry={() => {
+                    invalidateShareOutput();
+                    setExportRetry((value) => value + 1);
+                  }}
+                />
               )}
 
               <Textarea

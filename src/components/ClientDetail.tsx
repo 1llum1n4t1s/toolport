@@ -34,6 +34,7 @@ import {
   type Registry,
 } from "@/lib/types";
 import { Button } from "@/components/ui/button";
+import { ErrorCallout } from "@/components/ui/status-card";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -580,18 +581,11 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
       </div>
 
       {client.error && (
-        <div
-          role="alert"
-          className="flex items-start gap-2 toolport-alert border-warning bg-warning/8 px-3 py-2 text-sm text-warning"
-        >
-          <TriangleAlert className="mt-0.5 size-4 shrink-0" />
-          <div className="min-w-0">
-            <p className="font-semibold">
-              {translate("Couldn't read this client's configuration")}
-            </p>
-            <p className="mt-0.5 break-words text-meta">{client.error}</p>
-          </div>
-        </div>
+        <ErrorCallout
+          title={translate("Couldn't read this client's configuration")}
+          cause={client.error}
+          onRetry={onChanged}
+        />
       )}
 
       {showRestartNotice && (

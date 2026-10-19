@@ -583,6 +583,26 @@ mockIPC(
         ? payload
         : {};
     calls[command] = (calls[command] ?? 0) + 1;
+    const state = new URLSearchParams(location.search).get("visual-state");
+    const stateCommands = [
+      "get_registry",
+      "detect_clients",
+      "get_audit_log",
+      "audit_stats",
+      "get_search_traces",
+      "get_security_events",
+    ];
+    if (stateCommands.includes(command)) {
+      if (state === "loading") return new Promise(() => {});
+      if (state === "error" && command !== "detect_clients")
+        throw new Error("Synthetic gateway read failure");
+      if (state === "empty") {
+        if (command === "get_registry") return { ...registry, servers: [] };
+        if (command === "audit_stats")
+          return { total: 0, errors: 0, errorRate: 0, servers: [] };
+        return [];
+      }
+    }
     switch (command) {
       case "preview_client_setup":
         return {
@@ -767,6 +787,7 @@ mockIPC(
           registry.removedFeaturesNotice.dismissed = true;
         return registry;
       case "open_exports_dir":
+      case "open_gateway_log":
         return null;
       case "set_default_access":
         registry.defaultAccessProfileId = args.profile as string | null;

@@ -1,6 +1,6 @@
 import { msg, Trans, translate, useI18n, type SourceMessage } from "@/lib/i18n";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, ExternalLink, Loader2, Plus, Search, ShieldCheck } from "lucide-react";
+import { Check, CloudOff, ExternalLink, Plus, Search, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { toastError } from "@/lib/toast";
 import { openExternal } from "@/lib/openUrl";
@@ -13,7 +13,10 @@ import {
 import type { CatalogEntry, CatalogSearch, Registry } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
+import { SkeletonRows } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
+import { SectionHeader } from "@/components/ui/section-header";
+import { ErrorCallout, StatusCard } from "@/components/ui/status-card";
 import { ServerDialog } from "@/components/ServerDialog";
 import { ServerLogo } from "@/components/ServerLogo";
 
@@ -179,9 +182,6 @@ export function CatalogView({ registry, onAdded }: Props) {
     <div className="flex min-w-0 w-full flex-col gap-4">
       <div className="relative">
         <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-        {loading && (
-          <Loader2 className="absolute top-1/2 right-3 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
-        )}
         <Input
           autoFocus
           value={query}
@@ -224,128 +224,102 @@ export function CatalogView({ registry, onAdded }: Props) {
 
       {!loading &&
         (registryStatus === "unavailable" || registryStatus === "timedOut") && (
-          <div
+          <StatusCard
             role="status"
-            aria-live="polite"
-            className="flex items-center justify-between gap-3 border-b border-border px-1 py-3"
-          >
-            <p className="text-sm">
-              {registryStatus === "timedOut"
+            variant="warning"
+            icon={<CloudOff />}
+            title={
+              registryStatus === "timedOut"
                 ? translate("The live MCP Registry took too long to respond.")
-                : translate("The live MCP Registry is unavailable.")}{" "}
-              {translate("Showing curated matches only.")}
-            </p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setSearchNonce((n) => n + 1)}
-            >
-              {translate("Try again")}
-            </Button>
-          </div>
+                : translate("The live MCP Registry is unavailable.")
+            }
+            detail={translate("Showing curated matches only.")}
+            actions={
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSearchNonce((n) => n + 1)}
+              >
+                {translate("Try again")}
+              </Button>
+            }
+          />
         )}
 
       {shown.length === 0 ? (
         browsing && popularLoading ? (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-28 rounded-lg" />
-            ))}
-          </div>
+          <SkeletonRows label={translate("Loading curated servers…")} />
         ) : browsing && popularError ? (
-          <div
-            role="status"
-            aria-live="polite"
-            className="flex flex-col items-center gap-3 py-20 text-center"
-          >
-            <div>
-              <p className="font-medium">{t("Catalog couldn't load")}</p>
-              <p className="max-w-md text-sm text-muted-foreground">
-                {t("Toolport couldn't load the curated picks. Try again in a moment.")}
-              </p>
-            </div>
-            <Button variant="outline" size="sm" onClick={reloadPopular}>
-              {t("Try again")}
-            </Button>
-          </div>
+          <ErrorCallout
+            title={t("Catalog couldn't load")}
+            cause={t("Toolport couldn't load the curated picks. Try again in a moment.")}
+            onRetry={reloadPopular}
+            retryLabel={t("Try again")}
+          />
         ) : !browsing && searchError ? (
-          <div
-            role="status"
-            aria-live="polite"
-            className="flex flex-col items-center gap-3 py-20 text-center"
-          >
-            <div>
-              <p className="font-medium">{t("Search failed")}</p>
-              <p className="max-w-md text-sm text-muted-foreground">
-                {t(
-                  "Toolport couldn't reach the MCP Registry. Check your connection, then retry.",
-                )}
-              </p>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setSearchNonce((n) => n + 1)}
-            >
-              {t("Try again")}
-            </Button>
-          </div>
+          <ErrorCallout
+            title={t("Search failed")}
+            cause={t(
+              "Toolport couldn't reach the MCP Registry. Check your connection, then retry.",
+            )}
+            onRetry={() => setSearchNonce((n) => n + 1)}
+            retryLabel={t("Try again")}
+          />
         ) : (
           !loading && (
-            <div
-              role="status"
-              aria-live="polite"
-              className="flex flex-col items-center gap-1 py-20 text-center"
-            >
-              <p className="font-medium">
-                {results !== null
+            <EmptyState
+              icon={<Search />}
+              title={
+                results !== null
                   ? registryStatus === "unavailable" || registryStatus === "timedOut"
                     ? translate('No curated matches for "{value0}"', { value0: query })
                     : translate('No catalog results for "{value0}"', { value0: query })
-                  : translate("No popular servers available")}
-              </p>
-              <p className="max-w-md text-sm text-muted-foreground">
-                {results !== null
+                  : translate("No popular servers available")
+              }
+              description={
+                results !== null
                   ? t(
                       "Try a provider name, app name, or shorter query. You can also clear the search to browse popular servers.",
                     )
                   : t(
                       "Use search to query the MCP Registry, or try again later if the browse list stays empty.",
-                    )}
-              </p>
-              {results !== null && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="mt-2"
-                  onClick={() => setQuery("")}
-                >
-                  {t("Clear search")}
-                </Button>
-              )}
-            </div>
+                    )
+              }
+              action={
+                results !== null ? (
+                  <Button variant="outline" onClick={() => setQuery("")}>
+                    {t("Clear search")}
+                  </Button>
+                ) : (
+                  <Button variant="outline" onClick={reloadPopular}>
+                    {t("Try again")}
+                  </Button>
+                )
+              }
+            />
           )
         )
       ) : browsing ? (
         <div className="flex flex-col gap-6">
           {byCategory.map(([cat, entries]) => (
             <section key={cat}>
-              <h2 className="mb-2 flex items-center gap-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+              <SectionHeader count={entries.length}>
                 {CATEGORY_ORDER.find((category) => category === cat)
                   ? t(CATEGORY_ORDER.find((category) => category === cat)!)
                   : cat === "Other"
                     ? t("Other")
                     : cat}
-                <span className="text-muted-foreground">{entries.length}</span>
-              </h2>
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              </SectionHeader>
+              <div className="divide-y overflow-hidden rounded-xl border bg-card">
                 {entries.map(card)}
               </div>
             </section>
           ))}
         </div>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{shown.map(card)}</div>
+        <div className="divide-y overflow-hidden rounded-xl border bg-card">
+          {shown.map(card)}
+        </div>
       )}
       {configEntry && (
         <ServerDialog
@@ -413,11 +387,11 @@ function CatalogCard({
     ? [entry.command, ...entry.args].join(" ")
     : (entry.url ?? "");
   return (
-    <div className="flex flex-col gap-2 border-b border-border px-1 py-3 transition-colors hover:bg-accent/30">
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <ServerLogo name={entry.name} transport={entry.transport} size={28} />
-          <span className="truncate text-sm font-medium">{entry.name}</span>
+    <div className="flex h-14 items-center gap-3 px-4 transition-colors hover:bg-foreground/4">
+      <ServerLogo name={entry.name} transport={entry.transport} size={28} />
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-semibold">{entry.name}</span>
           {entry.homepage && (
             <button
               onClick={() => openExternal(entry.homepage)}
@@ -427,16 +401,17 @@ function CatalogCard({
               <ExternalLink className="size-3" />
             </button>
           )}
+          <Provenance entry={entry} />
         </div>
+        <p
+          className="flex min-w-0 gap-2 text-meta text-muted-foreground"
+          title={`${entry.description} · ${target}`}
+        >
+          <span className="min-w-0 flex-1 truncate">{entry.description}</span>
+          <span className="max-w-1/2 shrink-0 truncate font-mono">{target}</span>
+        </p>
       </div>
-      <p className="line-clamp-2 min-h-8 text-meta text-muted-foreground">
-        {entry.description}
-      </p>
-      <code title={target} className="truncate font-mono text-meta text-muted-foreground">
-        {target}
-      </code>
-      <Provenance entry={entry} />
-      <div className="mt-auto flex justify-end pt-1">
+      <div className="shrink-0">
         {added ? (
           <span className="inline-flex items-center gap-1 text-meta text-success">
             <Trans
@@ -445,17 +420,8 @@ function CatalogCard({
             />
           </span>
         ) : (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 px-2 text-xs"
-            disabled={busy}
-            onClick={onAdd}
-          >
-            <Trans
-              message={msg("{value1}Add")}
-              values={{ value1: <Plus className="size-3" /> }}
-            />
+          <Button size="sm" variant="outline" disabled={busy} onClick={onAdd}>
+            <Trans message={msg("{value1}Add")} values={{ value1: <Plus /> }} />
           </Button>
         )}
       </div>

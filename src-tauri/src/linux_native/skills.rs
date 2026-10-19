@@ -72,7 +72,7 @@ gtk::glib::wrapper! {
 }
 
 impl IssueFrame {
-    fn new(bin: &adw::BreakpointBin, content: &impl IsA<gtk::Widget>) -> Self {
+    pub(super) fn new(bin: &adw::BreakpointBin, content: &impl IsA<gtk::Widget>) -> Self {
         use gtk::subclass::prelude::*;
         let frame: Self = gtk::glib::Object::new();
         bin.set_parent(&frame);
@@ -1453,6 +1453,13 @@ impl SkillsPage {
     fn show_feedback(&self, message: &str, error: bool) {
         if let Some(timer) = self.feedback_timer.borrow_mut().take() {
             timer.remove();
+        }
+        if !error && !message.is_empty() && super::show_toast(&self.feedback, message) {
+            // The toast carries it; clear any earlier error so no empty red bar is left.
+            self.feedback.set_label("");
+            self.feedback.remove_css_class("error");
+            self.feedback.add_css_class("idle");
+            return;
         }
         self.feedback.set_label(message);
         if message.is_empty() {
@@ -3372,6 +3379,40 @@ mod tests {
             rules_note: None,
             rule_locations: vec![],
         }
+    }
+
+    #[test]
+    #[ignore = "requires GTK; explicitly run in the isolated omabox session"]
+    fn b6_toast_confirmation_clears_an_earlier_error_bar() {
+        adw::init().expect("this regression runs inside omabox");
+        let _lock = crate::registry::data_dir_test_lock();
+        let scratch = std::env::temp_dir().join(format!(
+            "toolport-b6_toast_confirmation_clears_an_earlier_error_bar-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _data = crate::registry::DataDirOverride::set(&scratch);
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.SkillsToastTest")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let page = SkillsPage::new(&app);
+        let overlay = adw::ToastOverlay::new();
+        overlay.set_child(Some(&page.root));
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .content(&overlay)
+            .build();
+        page.show_feedback("Could not write the skill", true);
+        assert!(page.feedback.has_css_class("error"));
+        page.show_feedback("Skill turned on", false);
+        assert_eq!(page.feedback.text(), "");
+        assert!(!page.feedback.has_css_class("error"), "no empty red bar");
+        assert!(page.feedback.has_css_class("idle"));
+        assert!(page.feedback_timer.borrow().is_none());
+        window.destroy();
+        std::fs::remove_dir_all(&scratch).unwrap();
     }
 
     #[test]

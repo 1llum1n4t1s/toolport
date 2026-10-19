@@ -37,6 +37,9 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { SkeletonRows } from "@/components/ui/skeleton";
+import { ErrorCallout } from "@/components/ui/status-card";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Button } from "@/components/ui/button";
 import {
   gatherDiagnostics,
@@ -147,11 +150,13 @@ function PinnedPrerequisites({
         </span>
       </div>
       {pins.length === 0 ? (
-        <p className="mt-2 max-w-2xl text-meta text-muted-foreground">
-          {translate(
+        <EmptyState
+          title={translate("Nothing here yet")}
+          framed={false}
+          description={translate(
             "None yet. In Servers, open a server's Tools tab and pin tools your agent needs every time, such as sign-in or a required lookup. They will be included even when they do not match the search.",
           )}
-        </p>
+        />
       ) : (
         <ul className="mt-2 space-y-1">
           {pins.map((p) => (
@@ -251,6 +256,12 @@ function FolderRouting({
           {t("auto-scope a client by the folder it opens in")}{" "}
         </span>
       </div>
+      {mappings.length === 0 && (
+        <EmptyState
+          framed={false}
+          title={translate("No project folders are mapped yet.")}
+        />
+      )}
       {mappings.length > 0 && (
         <ul className="mt-2 space-y-1">
           {mappings.map((m) => (
@@ -541,27 +552,12 @@ function ProfileToolScope({
                 </DialogHeader>
                 <div className="max-h-[60vh] overflow-y-auto">
                   {loadingByServer[serverId] ? (
-                    <p className="text-meta text-muted-foreground">
-                      {translate("Loading tools…")}
-                    </p>
+                    <SkeletonRows label={translate("Loading tools…")} />
                   ) : errorByServer[serverId] ? (
-                    <div
-                      role="status"
-                      aria-live="polite"
-                      className="flex flex-col gap-2 rounded-md border border-border p-3"
-                    >
-                      <p className="text-meta text-muted-foreground">
-                        {translate("Couldn't load tools")}
-                      </p>
-                      <Button
-                        variant="outline"
-                        size="xs"
-                        className="w-fit"
-                        onClick={() => loadTools(serverId)}
-                      >
-                        {translate("Retry")}
-                      </Button>
-                    </div>
+                    <ErrorCallout
+                      title={translate("Couldn't load tools")}
+                      onRetry={() => loadTools(serverId)}
+                    />
                   ) : allTools && allTools.length > 0 ? (
                     <div className="flex flex-col gap-1">
                       {allTools.map((tool) => (
@@ -1431,12 +1427,18 @@ export function SettingsView({
             </p>
           )}
           {quarantined.length === 0 && quarantineError && (
-            <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-meta text-muted-foreground">
-              <ShieldX className="size-4 shrink-0 text-destructive" />
-              <span>
-                {translate("Couldn't read quarantine status. Retrying every 15s.")}
-              </span>
-            </div>
+            <ErrorCallout
+              title={translate("Quarantined tools")}
+              cause={translate("Couldn't read quarantine status. Retrying every 15s.")}
+              onRetry={() => {
+                void listQuarantined()
+                  .then((rows) => {
+                    setQuarantined(rows);
+                    setQuarantineError(false);
+                  })
+                  .catch(() => setQuarantineError(true));
+              }}
+            />
           )}
           {quarantined.length > 0 && (
             <div className="toolport-alert flex flex-col gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5">
@@ -1475,12 +1477,20 @@ export function SettingsView({
             </div>
           )}
           {allowedTools.length === 0 && allowedError && (
-            <div className="flex items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-meta text-muted-foreground">
-              <UserCheck className="size-4 shrink-0 text-info" />
-              <span>
-                {translate("Couldn't read the allowed-tools list. Retrying every 10s.")}
-              </span>
-            </div>
+            <ErrorCallout
+              title={translate("Allowed tools")}
+              cause={translate(
+                "Couldn't read the allowed-tools list. Retrying every 10s.",
+              )}
+              onRetry={() => {
+                void listAllowedTools()
+                  .then((rows) => {
+                    setAllowedTools(rows);
+                    setAllowedError(false);
+                  })
+                  .catch(() => setAllowedError(true));
+              }}
+            />
           )}
           {allowedTools.length > 0 && (
             <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/20 px-3 py-2.5">

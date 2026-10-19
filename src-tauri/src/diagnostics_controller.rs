@@ -200,6 +200,15 @@ pub fn open_data_dir() -> Result<(), String> {
     open_directory(directory, "data directory")
 }
 
+/// Open the gateway log, the "View log" action on error callouts in both shells. Before the
+/// first gateway run there is no log yet, so open the data directory that will hold it.
+pub fn open_gateway_log() -> Result<(), String> {
+    match registry::gateway_log_path() {
+        Some(path) if path.is_file() => open_in_default_app(&path),
+        _ => open_data_dir(),
+    }
+}
+
 /// Where the 2.0 upgrade saved settings for removed 1.x features.
 pub fn open_exports_dir() -> Result<(), String> {
     let directory = registry::conduit_dir().ok_or("could not resolve the data directory")?;

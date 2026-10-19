@@ -35,7 +35,7 @@ interface Props {
   onboardingOpen?: boolean;
   refreshKey?: number;
   /** Told which surface is on screen, so the toast stack can move up by the
-   *  right amount instead of landing on top of it. Both live bottom-right. */
+   *  right amount instead of landing on top of it on a narrow window. */
   onVisibleChange?: (surface: StarSurface) => void;
 }
 

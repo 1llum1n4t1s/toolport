@@ -25,9 +25,11 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--normal-bg": "var(--popover)",
           "--normal-text": "var(--popover-foreground)",
           "--normal-border": "var(--border)",
-          "--border-radius": "var(--radius)",
+          "--border-radius": "var(--radius-card)",
         } as React.CSSProperties
       }
+      // Spec §11: raised, opaque, 12px radius, bottom center, 4 seconds.
+      duration={4000}
       toastOptions={{
         classNames: {
           toast: "cn-toast",

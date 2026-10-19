@@ -110,6 +110,7 @@ impl ksni::Tray for ToolportTray {
             }
             .into(),
             StandardItem {
+                enabled: self.pending > 0,
                 label: trf(
                     "Pending approvals ({count})",
                     &[("count", &self.pending.to_string())],
@@ -212,6 +213,22 @@ pub(super) fn start(app: &adw::Application) -> Option<ksni::blocking::Handle<Too
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approvals_are_actionable_only_when_pending() {
+        let (commands, _receiver) = mpsc::channel();
+        for pending in [0, 1, 3] {
+            let tray = ToolportTray {
+                commands: commands.clone(),
+                pending,
+            };
+            let menu = ksni::Tray::menu(&tray);
+            let ksni::MenuItem::Standard(item) = &menu[1] else {
+                panic!("approval item");
+            };
+            assert_eq!(item.enabled, pending > 0);
+        }
+    }
 
     #[test]
     fn tray_uses_the_embedded_icon_without_a_theme_lookup() {

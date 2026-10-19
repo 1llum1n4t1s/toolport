@@ -383,11 +383,29 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
             }
             credential_choices.push((item.name.clone(), env.key, choice));
         }
+        let error_chip = l10n::label(crate::i18n::msg("Error"));
+        error_chip.add_css_class("toolport-badge");
+        error_chip.add_css_class("error");
+        error_chip.set_valign(gtk::Align::Center);
+        error_chip.set_visible(false);
+        row.add_suffix(&error_chip);
         rows.append(&row);
+        let row_error = gtk::Label::builder()
+            .wrap(true)
+            .xalign(0.0)
+            .visible(false)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_bottom(8)
+            .css_classes(["toolport-inline-error"])
+            .build();
+        rows.append(&row_error);
         if credential_rows.first_child().is_some() {
             rows.append(&settings);
         }
-        selected.push((check, row, spinner, item.key, item.name));
+        selected.push((
+            check, row, spinner, item.key, item.name, row_error, error_chip,
+        ));
     }
     body.append(&rows);
     body.append(&missing_reason);
@@ -457,8 +475,8 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
         }
         let chosen = selected
             .iter()
-            .filter(|(check, _, _, _, _)| check.is_active())
-            .map(|(_, _, _, key, _)| key.clone())
+            .filter(|(check, _, _, _, _, _, _)| check.is_active())
+            .map(|(_, _, _, key, _, _, _)| key.clone())
             .collect::<Vec<_>>();
         let mut choices =
             std::collections::BTreeMap::<String, std::collections::BTreeMap<String, bool>>::new();
@@ -473,8 +491,9 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
         busy.set(true);
         button.set_sensitive(false);
         cancel.set_sensitive(false);
-        for (check, row, spinner, _, _) in selected.iter() {
-            row.remove_css_class("error");
+        for (check, _row, spinner, _, _, row_error, error_chip) in selected.iter() {
+            row_error.set_visible(false);
+            error_chip.set_visible(false);
             check.set_sensitive(false);
             spinner.set_visible(check.is_active());
             spinner.set_spinning(check.is_active());
@@ -505,7 +524,7 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
             for (name, key, choice) in credential_choices.iter() {
                 choice.set_sensitive(
                     !key.starts_with("__")
-                        && selected.iter().any(|(_, row, _, _, server)| {
+                        && selected.iter().any(|(_, row, _, _, server, _, _)| {
                             server == name
                                 && !row
                                     .subtitle()
@@ -515,7 +534,8 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
             }
             cancel.set_sensitive(true);
             button.set_sensitive(true);
-            for (check, row, spinner, _, _) in selected.iter() {
+            for (check, row, spinner, _, _, row_error, _) in selected.iter() {
+                row_error.set_visible(false);
                 check.set_sensitive(
                     !row.subtitle()
                         .is_some_and(|text| text.starts_with("Unsupported:")),
@@ -542,6 +562,7 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
                         )
                         .build();
                     status.add_css_class("compact");
+                    status.add_css_class("toolport-success");
                     status.set_vexpand(false);
                     body.prepend(&status);
                     if let Some((_, description)) = outcome.message.split_once(". ") {
@@ -623,11 +644,16 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
                     feedback.add_css_class("error");
                     l10n::bind_text(&button, "Retry");
                     refresh_confirm();
-                    for (_, row, _, _, name) in selected.iter() {
+                    let mut has_row_error = false;
+                    for (_, _, _, _, name, row_error, error_chip) in selected.iter() {
                         if error.contains(name) {
-                            row.add_css_class("error");
+                            has_row_error = true;
+                            error_chip.set_visible(true);
+                            row_error.set_label(&error);
+                            row_error.set_visible(true);
                         }
                     }
+                    feedback.set_visible(!has_row_error);
                 }
             }
         });

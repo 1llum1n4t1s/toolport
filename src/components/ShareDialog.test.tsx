@@ -123,7 +123,7 @@ describe("ShareDialog share links", () => {
     render(<ShareDialog trigger={<button>Share</button>} onImported={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: "Share" }));
 
-    expect(await screen.findByText("Loading servers…")).toBeVisible();
+    expect(await screen.findByRole("status", { name: "Loading servers…" })).toBeVisible();
     expect(screen.getByRole("button", { name: /create share link/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^copy$/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /save to file/i })).toBeDisabled();

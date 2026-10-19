@@ -281,7 +281,7 @@ describe("ActivityView trust-state loading", () => {
 
     render(<ActivityView refreshKey={0} registry={null} />);
 
-    expect(screen.getByText("Loading activity…")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Loading activity…" })).toBeInTheDocument();
     expect(screen.getByText("Checking protection status…")).toBeInTheDocument();
     expect(screen.queryByText("Protection active.")).not.toBeInTheDocument();
   });
@@ -427,7 +427,7 @@ describe("ActivityView trust-state loading", () => {
       vi.advanceTimersByTime(3000);
     });
 
-    expect(screen.getByText("Activity may be out of date.")).toBeInTheDocument();
+    expect(screen.queryByText("Activity may be out of date.")).not.toBeInTheDocument();
     expect(screen.getByText("No current activity status")).toBeInTheDocument();
     expect(screen.queryByText("No activity yet")).not.toBeInTheDocument();
     expect(
