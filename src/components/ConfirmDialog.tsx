@@ -31,6 +31,7 @@ interface Props {
   open?: boolean;
   /** Notified on open/close in controlled mode (and alongside internal state). */
   onOpenChange?: (open: boolean) => void;
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 /** A lightweight confirm gate for irreversible actions (remove, delete, leave).
@@ -47,6 +48,7 @@ export function ConfirmDialog({
   onConfirm,
   open: openProp,
   onOpenChange,
+  onCloseAutoFocus,
 }: Props) {
   const { t } = useI18n();
   const [openState, setOpenState] = useState(false);
@@ -84,6 +86,7 @@ export function ConfirmDialog({
     <Dialog open={open} onOpenChange={setOpen}>
       {trigger && <DialogTrigger asChild>{trigger}</DialogTrigger>}
       <DialogContent
+        onCloseAutoFocus={onCloseAutoFocus}
         className={contentClassName}
         onClick={(e) => e.stopPropagation()}
         aria-describedby={richDescription ? descriptionId : undefined}

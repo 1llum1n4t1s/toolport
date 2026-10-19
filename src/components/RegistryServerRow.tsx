@@ -7,6 +7,7 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useCallback,
   useId,
   useRef,
   useState,
@@ -49,6 +50,7 @@ interface Props {
   busy?: boolean;
   health?: ProbeResult;
   onToggle: (enabled: boolean) => void;
+  onSwitchRef?: (id: string, node: HTMLButtonElement | null) => void;
   onRemove: () => void;
   onRegistryChange: (registry: Registry) => void;
   /** Re-run the health probe (e.g. after authenticating). */
@@ -110,12 +112,17 @@ export function RegistryServerRow({
   busy,
   health,
   onToggle,
+  onSwitchRef,
   onRemove,
   onRegistryChange,
   onReprobe,
   openTools,
 }: Props) {
   const { t } = useI18n();
+  const switchRef = useCallback(
+    (node: HTMLButtonElement | null) => onSwitchRef?.(server.id, node),
+    [onSwitchRef, server.id],
+  );
   const [expanded, setExpanded] = useState(false);
   const [detailTab, setDetailTab] = useState<DetailTab>("overview");
   // Tab and panel IDs are per row, so two expanded rows never share them.
@@ -350,9 +357,15 @@ export function RegistryServerRow({
           )}
           <span className="flex items-center" onClick={stop}>
             <Switch
+              ref={switchRef}
               checked={enabled}
-              disabled={busy}
-              onCheckedChange={onToggle}
+              // Keep the pending control focusable so Tab can leave it and a
+              // successful move can restore it. Block repeat requests here.
+              aria-disabled={busy || undefined}
+              data-disabled={busy ? "" : undefined}
+              onCheckedChange={(next) => {
+                if (!busy) onToggle(next);
+              }}
               aria-label={t("Toggle {value1}", { value1: server.name })}
             />
           </span>
