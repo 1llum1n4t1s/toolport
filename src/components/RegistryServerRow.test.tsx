@@ -78,7 +78,34 @@ describe("RegistryServerRow status accessibility", () => {
         bindings: [],
       },
     });
-    expect(screen.getByText("Keys from 1Password")).toBeInTheDocument();
+    expect(
+      screen.getByText("Personal · Local stdio · Keys from 1Password"),
+    ).toBeInTheDocument();
+  });
+
+  it("draws a two-line row with the status chip and a trailing switch", () => {
+    const { container } = renderRow(true, health({ ok: true, toolCount: 3 }));
+    expect(screen.getByText("Personal · Local stdio")).toBeInTheDocument();
+    const chip = container.querySelector('[data-slot="badge"]');
+    expect(chip).toHaveTextContent("Ready · 3 tools");
+    expect(chip).toHaveAttribute("data-variant", "success");
+    expect(screen.queryByText("Enabled")).not.toBeInTheDocument();
+    const toggle = screen.getByRole("switch", { name: "Toggle Example" });
+    const name = screen.getByText("Example");
+    // The switch trails the name and the status chip.
+    expect(
+      name.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      chip!.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("shows a turned-off server as an Off chip", () => {
+    const { container } = renderRow(false);
+    const chip = container.querySelector('[data-slot="badge"]');
+    expect(chip).toHaveTextContent("Off");
+    expect(chip).toHaveAttribute("data-variant", "off");
   });
 
   it.each([

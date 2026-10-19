@@ -24,6 +24,24 @@ function renderControlledDialog(
 }
 
 describe("ConfirmDialog", () => {
+  it("fills only a destructive final confirm, with a tertiary Cancel", () => {
+    renderControlledDialog({ destructive: true, confirmLabel: "Remove" });
+    const confirm = screen.getByRole("button", { name: "Remove" });
+    expect(confirm).toHaveAttribute("data-variant", "destructive");
+    expect(confirm).toHaveAttribute("data-confirm");
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveAttribute(
+      "data-variant",
+      "ghost",
+    );
+  });
+
+  it("keeps a non-destructive confirm primary, without data-confirm", () => {
+    renderControlledDialog();
+    const confirm = screen.getByRole("button", { name: /confirm/i });
+    expect(confirm).toHaveAttribute("data-variant", "default");
+    expect(confirm).not.toHaveAttribute("data-confirm");
+  });
+
   it("calls onConfirm and requests to close when it resolves", async () => {
     const { onConfirm, onOpenChange } = renderControlledDialog();
 

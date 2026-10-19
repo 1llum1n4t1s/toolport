@@ -108,6 +108,7 @@ export function ConfirmDialog({
           </Button>
           <Button
             variant={destructive ? "destructive" : "default"}
+            data-confirm={destructive ? "" : undefined}
             onClick={handleConfirm}
             disabled={busy || confirmDisabled}
           >

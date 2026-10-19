@@ -28,12 +28,14 @@ import {
   Clock,
   Undo2,
   Sparkles,
+  Wrench,
   Trash2,
   X,
   XCircle,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
 import {
   fmtAgo,
   fmtBytes,
@@ -785,15 +787,16 @@ function CallRow({ e }: { e: AuditEntry }) {
     e.kind === "approval"
       ? (APPROVAL_OUTCOME[e.decision ?? ""] ?? UNKNOWN_APPROVAL)
       : null;
-  const RowIcon =
-    approvalOutcome?.Icon ??
-    (e.kind === "internal"
-      ? Clock
-      : e.held
-        ? ShieldAlert
-        : e.ok
-          ? CheckCircle2
-          : XCircle);
+  // The icon says what kind of call this was, in a neutral color; the status
+  // chip is the row's only status color, as in the GTK shell.
+  const RowIcon = approvalOutcome?.Icon ?? (e.kind === "internal" ? Search : Wrench);
+  const status: { label: SourceMessage; variant: StatusVariant } = approvalOutcome
+    ? approvalOutcome
+    : e.held
+      ? { label: msg("Held"), variant: "warning" }
+      : e.ok
+        ? { label: msg("Succeeded"), variant: "success" }
+        : { label: msg("Failed"), variant: "destructive" };
   const duration = approvalOutcome ? e.heldMs : e.durationMs;
   const meta = [
     activityClientName(e),
@@ -810,11 +813,11 @@ function CallRow({ e }: { e: AuditEntry }) {
   const hasDetail = !approvalOutcome && !e.ok && (!!e.error || !!e.runId);
   return (
     <div
-      className={`border-b border-border text-sm ${e.kind === "internal" ? "bg-muted/30" : ""}`}
+      className={`border-b border-border text-sm last:border-b-0 ${e.kind === "internal" ? "bg-muted/30" : ""}`}
     >
       <div
-        className={`flex items-center gap-3 rounded-md px-3 py-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
-          hasDetail ? "cursor-pointer hover:bg-muted/30" : ""
+        className={`flex min-h-14 items-center gap-3 px-4 py-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:outline-none ${
+          hasDetail ? "cursor-pointer hover:bg-foreground/[0.04]" : ""
         }`}
         role={hasDetail ? "button" : undefined}
         tabIndex={hasDetail ? 0 : undefined}
@@ -841,9 +844,9 @@ function CallRow({ e }: { e: AuditEntry }) {
         ) : (
           <span className="inline-block size-3.5 shrink-0" />
         )}
-        <RowIcon
-          className={`size-4 shrink-0 ${approvalOutcome?.iconClass ?? (e.kind === "internal" && e.ok ? "text-muted-foreground" : e.held ? "text-warning" : e.ok ? "text-success" : "text-destructive")}`}
-        />
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+          <RowIcon aria-hidden="true" className="size-4" />
+        </span>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
             <span className="min-w-0 truncate font-medium">
@@ -875,17 +878,11 @@ function CallRow({ e }: { e: AuditEntry }) {
             {meta}
           </div>
         </div>
-        {approvalOutcome && (
-          <span
-            className={`shrink-0 rounded border px-2 py-0.5 text-xs ${approvalOutcome.className}`}
-          >
-            {tr(approvalOutcome.label)}
-          </span>
-        )}
         <PiiBadge entry={e} />
+        <Badge variant={status.variant}>{tr(status.label)}</Badge>
       </div>
       {open && hasDetail && (
-        <div className="border-t border-border/50 bg-destructive/5 px-3 py-2 pl-9">
+        <div className="border-t border-border bg-destructive/5 py-2 pr-4 pl-[86px]">
           <p className="font-mono text-meta whitespace-pre-wrap break-words text-destructive">
             {e.error ?? e.failureKind?.replace(/_/g, " ")}
           </p>
@@ -900,52 +897,31 @@ function CallRow({ e }: { e: AuditEntry }) {
   );
 }
 
+type StatusVariant = "success" | "warning" | "destructive" | "off";
+
 const APPROVAL_OUTCOME: Record<
   string,
-  { label: SourceMessage; Icon: LucideIcon; iconClass: string; className: string }
+  { label: SourceMessage; Icon: LucideIcon; variant: StatusVariant }
 > = {
-  approved: {
-    label: msg("Approved"),
-    Icon: ShieldCheck,
-    iconClass: "text-success",
-    className: "border-success/30 bg-success/10 text-success",
-  },
-  denied: {
-    label: msg("Denied"),
-    Icon: ShieldX,
-    iconClass: "text-destructive",
-    className: "border-destructive/50 text-destructive",
-  },
-  no_response: {
-    label: msg("No answer"),
-    Icon: Clock,
-    iconClass: "text-warning",
-    className: "border-warning/30 bg-warning/10 text-warning",
-  },
-  withdrawn: {
-    label: msg("Withdrawn"),
-    Icon: Undo2,
-    iconClass: "text-muted-foreground",
-    className: "border-border text-muted-foreground",
-  },
+  approved: { label: msg("Approved"), Icon: ShieldCheck, variant: "success" },
+  denied: { label: msg("Denied"), Icon: ShieldX, variant: "destructive" },
+  no_response: { label: msg("No answer"), Icon: Clock, variant: "warning" },
+  withdrawn: { label: msg("Withdrawn"), Icon: Undo2, variant: "off" },
   stale_state: {
     label: msg("Changed after approval"),
     Icon: AlertTriangle,
-    iconClass: "text-warning",
-    className: "border-warning/30 bg-warning/10 text-warning",
+    variant: "warning",
   },
   unreachable: {
     label: msg("No approver available"),
     Icon: AlertTriangle,
-    iconClass: "text-warning",
-    className: "border-warning/30 bg-warning/10 text-warning",
+    variant: "warning",
   },
 };
 const UNKNOWN_APPROVAL = {
   label: msg("Approval event"),
   Icon: ShieldAlert,
-  iconClass: "text-muted-foreground",
-  className: "border-border text-muted-foreground",
+  variant: "off" as const,
 };
 
 export function TelemetryNotice({
@@ -2414,7 +2390,7 @@ export function ActivityView({
             </span>
           </div>
 
-          <div className="flex flex-col gap-1">
+          <div className={visible.length === 0 ? "flex flex-col" : "toolport-list"}>
             {visible.length === 0 ? (
               <EmptyState
                 icon={<Search />}

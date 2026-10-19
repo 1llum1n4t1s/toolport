@@ -1,4 +1,4 @@
-import { msg, Trans, translate, useI18n, type SourceMessage } from "@/lib/i18n";
+import { msg, translate, useI18n, type SourceMessage } from "@/lib/i18n";
 import { referenceProvider } from "@/lib/secretRefs";
 import { toastError } from "@/lib/toast";
 import { isPersonalSync } from "@/lib/personalSync";
@@ -27,6 +27,8 @@ import { serverFailureLabel } from "@/lib/serverHealth";
 import { errorHeadline, shortenUrls } from "@/lib/errors";
 import { toast } from "sonner";
 import type { ProbeResult, Registry, ServerEntry } from "@/lib/types";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { LazySecretsDialog as SecretsDialog } from "@/components/LazySecretsDialog";
@@ -64,12 +66,20 @@ function statusOf(enabled: boolean, health?: ProbeResult): Status {
   return "error";
 }
 
-const STATUS_TEXT: Record<Status, string> = {
-  disabled: "text-muted-foreground",
-  checking: "text-muted-foreground",
-  connected: "text-muted-foreground",
-  "needs-auth": "text-warning",
-  error: "text-destructive",
+/** The status chip variant: one status color per row, on the chip only. */
+const STATUS_BADGE: Record<Status, "off" | "success" | "warning" | "destructive"> = {
+  disabled: "off",
+  checking: "off",
+  connected: "success",
+  "needs-auth": "warning",
+  error: "destructive",
+};
+
+/** The shared transport names; the GTK rows use the same words. */
+const TRANSPORT_LABELS: Record<string, SourceMessage> = {
+  stdio: msg("Local stdio"),
+  http: msg("Remote HTTP"),
+  sse: msg("Remote SSE"),
 };
 
 const STATUS_ARIA_LABEL: Record<Status, SourceMessage> = {
@@ -85,6 +95,10 @@ type DetailTab = (typeof DETAIL_TABS)[number];
 
 const PANEL =
   "flex flex-col gap-2.5 rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/** One segment of a segmented control: the selected one is raised (spec 13). */
+const SEGMENT =
+  "inline-flex h-7 items-center rounded-md border px-3 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const ACTION =
   "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -195,7 +209,7 @@ export function RegistryServerRow({
                     value0: missingPlainLaunch.map((input) => input.label).join(", "),
                   })
                 : translate("Disabled · check launch setup")
-              : translate("Disabled");
+              : translate("Off");
 
   // Next free "Name (N)" for the duplicate-for-another-account action.
   const existingNames = new Set(registry?.servers.map((s) => s.name.toLowerCase()) ?? []);
@@ -209,62 +223,64 @@ export function RegistryServerRow({
 
   const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 
+  // Where it comes from, how it runs and where its keys live: the row's second line.
+  const origin = isTeam
+    ? translate("Team")
+    : `${
+        personalSync
+          ? server.syncLocalOnly
+            ? translate("This machine only")
+            : registry?.team?.personalSyncState?.conflicts?.[
+                  server.teamOriginalId ?? server.id
+                ]
+              ? translate("Sync conflict")
+              : server.teamEnableReview === true
+                ? translate("Needs review")
+                : translate("Synced")
+          : translate("Personal")
+      }${
+        server.source?.startsWith("imported:")
+          ? ` · ${t("from {client}", { client: server.source.slice("imported:".length) })}`
+          : ""
+      }`;
+  const meta = [
+    origin,
+    TRANSPORT_LABELS[server.transport]
+      ? translate(TRANSPORT_LABELS[server.transport])
+      : server.transport,
+    providers.length > 0 &&
+      t("Keys from {providers}", { providers: providers.join(", ") }),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
-    <div className="border-b border-border/60 last:border-b-0">
+    <div className="border-b border-border last:border-b-0">
       {/* Mouse users can click anywhere on the row to expand. Keyboard and screen
           reader users use the chevron button at the end. The row itself is not a
           button, so the toggle and Authenticate controls aren't nested inside one. */}
       <div
         onClick={() => setExpanded((v) => !v)}
-        className="flex cursor-pointer items-center gap-3 px-1 py-3 transition-colors hover:bg-accent/40"
+        className="flex min-h-14 cursor-pointer items-center gap-3 px-4 py-2.5 transition-colors hover:bg-foreground/[0.04]"
       >
-        <span className="flex items-center" onClick={stop}>
-          <Switch
-            checked={enabled}
-            disabled={busy}
-            onCheckedChange={onToggle}
-            aria-label={t("Toggle {value1}", { value1: server.name })}
-          />
-        </span>
-
         <ServerLogo name={server.name} transport={server.transport} size={28} />
 
-        <span title={server.name} className="min-w-0 flex-1 truncate text-sm font-[550]">
-          {server.name}
-          {providers.length > 0 && (
-            <span className="ml-2 text-meta font-normal text-muted-foreground">
-              {t("Keys from {providers}", { providers: providers.join(", ") })}
-            </span>
-          )}
+        <span className="min-w-0 flex-1">
+          <span title={server.name} className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-sm font-semibold">{server.name}</span>
+            {isTeam && (
+              <Users
+                className="size-3.5 shrink-0 text-muted-foreground"
+                aria-hidden="true"
+              />
+            )}
+          </span>
+          <span title={meta} className="block truncate text-meta text-muted-foreground">
+            {meta}
+          </span>
         </span>
 
-        {isTeam ? (
-          <span className="hidden shrink-0 items-center gap-1 rounded bg-info/15 px-1.5 py-0.5 text-xs font-medium text-info md:inline-flex">
-            <Trans
-              message={msg("{value1}Team")}
-              values={{ value1: <Users className="size-3" aria-hidden="true" /> }}
-            />
-          </span>
-        ) : (
-          <span className="hidden max-w-40 shrink-0 truncate rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground md:inline">
-            {personalSync
-              ? server.syncLocalOnly
-                ? translate("This machine only")
-                : registry?.team?.personalSyncState?.conflicts?.[
-                      server.teamOriginalId ?? server.id
-                    ]
-                  ? translate("Sync conflict")
-                  : server.teamEnableReview === true
-                    ? translate("Needs review")
-                    : translate("Synced")
-              : translate("Personal")}
-            {server.source?.startsWith("imported:")
-              ? ` · ${t("from {client}", { client: server.source.slice("imported:".length) })}`
-              : ""}
-          </span>
-        )}
-
-        <span className="ml-auto flex shrink-0 items-center gap-2.5">
+        <span className="ml-auto flex shrink-0 items-center gap-2">
           <span
             role="status"
             aria-label={
@@ -288,15 +304,12 @@ export function RegistryServerRow({
                 onSaved={onRegistryChange}
                 onChanged={onReprobe}
                 trigger={
-                  <button
-                    onClick={stop}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-warning/40 px-2.5 py-1 text-xs text-warning transition-colors hover:bg-warning/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-warning"
-                  >
-                    <LogIn className="size-3.5" />
+                  <Button variant="outline" size="sm" onClick={stop}>
+                    <LogIn />
                     {health?.authTarget === "service_credential"
                       ? translate("Edit service key")
                       : translate("Sign in")}
-                  </button>
+                  </Button>
                 }
               />
             </>
@@ -335,6 +348,14 @@ export function RegistryServerRow({
               </button>
             </span>
           )}
+          <span className="flex items-center" onClick={stop}>
+            <Switch
+              checked={enabled}
+              disabled={busy}
+              onCheckedChange={onToggle}
+              aria-label={t("Toggle {value1}", { value1: server.name })}
+            />
+          </span>
           <button
             type="button"
             title={
@@ -352,7 +373,7 @@ export function RegistryServerRow({
                 ? t("Hide {value1} details", { value1: server.name })
                 : t("Show {value1} details", { value1: server.name })
             }
-            className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <ChevronDown
               className={`size-4 transition-transform ${expanded ? "rotate-180" : ""}`}
@@ -363,17 +384,17 @@ export function RegistryServerRow({
       </div>
 
       {!enabled && server.teamRouteRemoved && (
-        <p className="px-3.5 pb-2 pl-12 text-meta text-muted-foreground">
+        <p className="pr-4 pb-2.5 pl-14 text-meta text-muted-foreground">
           {translate("Removed or disabled by the team. Your personal server stays off.")}
         </p>
       )}
 
       {expanded && (
-        <div className="flex flex-col gap-2.5 px-3.5 pt-0.5 pb-3 pl-12">
+        <div className="flex flex-col gap-2.5 pt-0.5 pr-4 pb-3 pl-14">
           <div
             role="tablist"
             aria-label={translate("{value0} details", { value0: server.name })}
-            className="flex gap-1 border-b pb-2"
+            className="flex w-fit gap-0.5 rounded-md border bg-muted/40 p-0.5"
           >
             {DETAIL_TABS.map((tab) => (
               <button
@@ -386,7 +407,11 @@ export function RegistryServerRow({
                 aria-selected={detailTab === tab}
                 aria-controls={panelId(tab)}
                 tabIndex={detailTab === tab ? 0 : -1}
-                className={ACTION}
+                className={`${SEGMENT} ${
+                  detailTab === tab
+                    ? "border-border bg-background font-semibold text-foreground shadow-sm"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
                 onClick={() => setDetailTab(tab)}
                 onKeyDown={(event) => onTabKeyDown(event, tab)}
               >
@@ -609,15 +634,14 @@ function StatusLabel({
   error: string | null;
 }) {
   const text = (
-    <span
+    <Badge
       aria-hidden="true"
-      className={`inline-flex items-center gap-1.5 text-meta whitespace-nowrap ${STATUS_TEXT[status]}`}
+      variant={STATUS_BADGE[status]}
+      className="max-w-56 font-medium"
     >
-      <span
-        className={`size-[7px] shrink-0 rounded-full ${status === "connected" ? "bg-success" : status === "needs-auth" ? "bg-warning" : status === "error" ? "bg-destructive" : "bg-muted-foreground/60"}`}
-      />
-      {label}
-    </span>
+      <span className="size-2 shrink-0 rounded-full bg-current" />
+      <span className="truncate">{label}</span>
+    </Badge>
   );
   if (status === "error" && error) {
     return (

@@ -178,8 +178,8 @@ function ClientRow({
   registry: Registry | null;
   importCount: number;
   onSelect: () => void;
-  /** A full-width line, a tile in the Available grid, or one profile in the Claude Code group. */
-  variant?: "line" | "tile" | "profile";
+  /** A row in a section's row group, or one profile in a Claude Code or Codex group. */
+  variant?: "line" | "profile";
 }) {
   const { t } = useI18n();
   const status = statusOf(client);
@@ -190,16 +190,10 @@ function ClientRow({
     <button
       type="button"
       onClick={onSelect}
-      className={`grid min-h-14 w-full items-center gap-3 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
+      className={`grid min-h-14 w-full items-center gap-3 border-b border-border py-2.5 text-left transition-colors last:border-b-0 hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
         profile
-          ? "grid-cols-[minmax(0,1fr)_16px] border-b border-border/60 py-2.5 pr-1 pl-11 last:border-b-0 sm:grid-cols-[minmax(0,1fr)_auto_16px]"
-          : "grid-cols-[28px_minmax(0,1fr)_16px] sm:grid-cols-[28px_minmax(0,1fr)_auto_16px]"
-      } ${
-        variant === "tile"
-          ? "rounded-lg border border-border/70 px-3 py-2.5"
-          : variant === "line"
-            ? "border-b border-border/60 px-1 py-2.5 last:border-b-0"
-            : ""
+          ? "grid-cols-[minmax(0,1fr)_16px] pr-4 pl-14 sm:grid-cols-[minmax(0,1fr)_auto_16px]"
+          : "grid-cols-[28px_minmax(0,1fr)_16px] px-4 sm:grid-cols-[28px_minmax(0,1fr)_auto_16px]"
       }`}
     >
       {!profile && <ClientLogo id={client.id} name={client.name} size={28} />}
@@ -337,8 +331,8 @@ function ProfileGroup({
     />
   );
   const copiesNote = copies.length > 0 && (
-    <div className="border-t border-border/60">
-      <div className="flex items-center gap-3 py-2.5 pr-1 pl-11">
+    <div className="border-t border-border">
+      <div className="flex items-center gap-3 py-2.5 pr-4 pl-14">
         <p className="min-w-0 flex-1 text-meta text-muted-foreground">
           {t(
             "Also found {folder}: the same account as {command}. Claude Code only reads it when CLAUDE_CONFIG_DIR points there, as some background tools do.",
@@ -357,13 +351,13 @@ function ProfileGroup({
           {copiesShown ? t("Hide") : t("Show")}
         </Button>
       </div>
-      {copiesShown && <div className="border-t border-border/60">{copies.map(row)}</div>}
+      {copiesShown && <div className="border-t border-border">{copies.map(row)}</div>}
     </div>
   );
   if (shown.length === 1) {
     // One real profile and its copies: an ordinary row, with the note under it.
     return (
-      <div className="border-b border-border/60 last:border-b-0">
+      <div className="border-b border-border last:border-b-0">
         <ClientRow
           client={shown[0]}
           registry={registry}
@@ -375,7 +369,7 @@ function ProfileGroup({
     );
   }
   return (
-    <div className="border-b border-border/60 last:border-b-0">
+    <div className="border-b border-border last:border-b-0">
       <button
         type="button"
         onClick={() => setOpen(!open)}
@@ -384,7 +378,7 @@ function ProfileGroup({
           product === "codex" ? msg("Codex profiles") : msg("Claude Code profiles"),
         )}
         aria-describedby={summaryId}
-        className="grid min-h-14 w-full grid-cols-[28px_minmax(0,1fr)_16px] items-center gap-3 px-1 py-2.5 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+        className="grid min-h-14 w-full grid-cols-[28px_minmax(0,1fr)_16px] items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <ClientLogo id={product} name={PRODUCT_NAMES[product]} size={28} />
         <span className="min-w-0">
@@ -412,7 +406,7 @@ function ProfileGroup({
         />
       </button>
       {open && (
-        <div className="border-t border-border/60 bg-muted/20">
+        <div className="border-t border-border bg-muted/20">
           {shown.map(row)}
           {copiesNote}
         </div>
@@ -533,7 +527,7 @@ export function ClientsView({
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-5">
+    <div className="flex w-full flex-col gap-6">
       {sessionError && (
         <ErrorCallout
           title={translate("Client session history could not be read.")}
@@ -572,32 +566,25 @@ export function ClientsView({
       )}
 
       {availableCount > 0 && (
-        <section className="@container">
+        <section>
           <SectionHeader count={availableCount}>
             {t("Available to connect")}
           </SectionHeader>
           <p className="mb-2 text-meta text-muted-foreground">
             {t("Select an installed client to connect it or review its configuration.")}
           </p>
-          {availableGroups.length > 0 && (
-            <div className="toolport-list mb-2.5">
-              {availableGroups.map((group) => group.element)}
-            </div>
-          )}
-          {availableRows.length > 0 && (
-            <div className="grid gap-2.5 @2xl:grid-cols-2">
-              {availableRows.map((client) => (
-                <ClientRow
-                  key={client.id}
-                  client={client}
-                  registry={registry}
-                  importCount={importableServers(client, registry).length}
-                  onSelect={() => onSelectClient(client.id)}
-                  variant="tile"
-                />
-              ))}
-            </div>
-          )}
+          <div className="toolport-list">
+            {availableGroups.map((group) => group.element)}
+            {availableRows.map((client) => (
+              <ClientRow
+                key={client.id}
+                client={client}
+                registry={registry}
+                importCount={importableServers(client, registry).length}
+                onSelect={() => onSelectClient(client.id)}
+              />
+            ))}
+          </div>
         </section>
       )}
 
@@ -651,7 +638,7 @@ export function ClientsView({
               {sessions.map((client) => (
                 <div
                   key={trustedClientName(client)}
-                  className="border-b border-border/60 px-1 py-3 last:border-b-0"
+                  className="border-b border-border px-4 py-2.5 last:border-b-0"
                 >
                   <p
                     className="truncate text-sm font-medium"

@@ -65,6 +65,7 @@ import { PendingApprovals } from "@/components/PendingApprovals";
 import { TeamPairingDialog } from "@/components/TeamPairingDialog";
 import { QuarantineAlert } from "@/components/QuarantineAlert";
 import { RegistryServerRow } from "@/components/RegistryServerRow";
+import { SectionHeader } from "@/components/ui/section-header";
 import { LazyServerDialog as ServerDialog } from "@/components/LazyServerDialog";
 import { ImportReviewDialog } from "@/components/ImportReviewDialog";
 
@@ -1181,7 +1182,7 @@ function App() {
                         }
                       />
                     ) : (
-                      <div className="flex flex-col gap-5">
+                      <div className="flex flex-col gap-6">
                         {backendReachable &&
                           (attentionCount > 0 ? (
                             <ServerNextAction
@@ -1197,7 +1198,32 @@ function App() {
                               disabled={servers.length - enabledCount}
                             />
                           ))}
-                        <div className="toolport-list">{visible.map(serverRow)}</div>
+                        {/* Turned-off servers get their own group, as in the GTK shell. */}
+                        {[
+                          {
+                            title: t("Servers"),
+                            rows: visible.filter(
+                              (server) => registry && isEnabled(registry, server.id),
+                            ),
+                          },
+                          {
+                            title: t("Turned off"),
+                            rows: visible.filter(
+                              (server) => !registry || !isEnabled(registry, server.id),
+                            ),
+                          },
+                        ]
+                          .filter((group) => group.rows.length > 0)
+                          .map((group) => (
+                            <section key={group.title}>
+                              <SectionHeader count={group.rows.length}>
+                                {group.title}
+                              </SectionHeader>
+                              <div className="toolport-list">
+                                {group.rows.map(serverRow)}
+                              </div>
+                            </section>
+                          ))}
                       </div>
                     )}
                   </Suspense>
