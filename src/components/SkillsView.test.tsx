@@ -246,6 +246,29 @@ describe("SkillsView", () => {
     expect(within(list).queryByRole("button", { name: /pdf/ })).not.toBeInTheDocument();
   });
 
+  it("keeps the keyboard column named when the pointer leaves", async () => {
+    renderView();
+    const list = await screen.findByRole("region", { name: "Skills" });
+    const header = within(list).getByRole("button", {
+      name: "Show only skills Codex finds",
+    });
+    await userEvent.click(header);
+    await userEvent.unhover(header);
+    expect(header).toHaveFocus();
+    expect(within(list).getByText("Codex", { exact: true })).toBeVisible();
+    const dot = within(
+      within(list).getByRole("button", { name: /screenshot/ }),
+    ).getByRole("img", { name: "Cursor: On" });
+    await userEvent.hover(dot);
+    expect(
+      within(list).getByText(
+        (_, el) => el?.textContent === "Cursor: On via ~/.agents/skills",
+      ),
+    ).toBeVisible();
+    await userEvent.unhover(dot);
+    expect(within(list).getByText("Codex", { exact: true })).toBeVisible();
+  });
+
   it("keeps a short agent name to 8 characters", () => {
     expect(shortAgentName("Claude Code")).toBe("Claude");
     expect(shortAgentName("Copilot CLI")).toBe("Copilot");

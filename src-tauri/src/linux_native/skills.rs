@@ -153,6 +153,8 @@ struct Pane {
     cells: Rc<RefCell<HashMap<String, Vec<gtk::Widget>>>>,
     /// The header row's note naming the hovered column.
     hint: Rc<RefCell<Option<gtk::Label>>>,
+    hovered: Rc<RefCell<Option<(String, String, Option<String>)>>>,
+    focused: Rc<RefCell<Option<(String, String)>>>,
 }
 
 /// A write to run off the main thread, bound to the project that was open when it was asked
@@ -682,11 +684,53 @@ impl Pane {
         }
     }
 
-    /// Highlight one agent's column and name it in the header row, or clear both.
+    /// Pointer hover takes precedence over keyboard focus; leaving it restores the focused
+    /// header's name and column instead of erasing a still-active keyboard hint.
     fn hover_column(&self, agent: &str, name: &str, detail: Option<&str>, on: bool) {
-        if let Some(cells) = self.cells.borrow().get(agent) {
+        if on {
+            self.hovered.replace(Some((
+                agent.into(),
+                name.into(),
+                detail.map(str::to_string),
+            )));
+        } else if self
+            .hovered
+            .borrow()
+            .as_ref()
+            .is_some_and(|(id, _, _)| id == agent)
+        {
+            self.hovered.replace(None);
+        }
+        self.update_column();
+    }
+
+    fn focus_column(&self, agent: &str, name: &str, on: bool) {
+        if on {
+            self.focused.replace(Some((agent.into(), name.into())));
+        } else if self
+            .focused
+            .borrow()
+            .as_ref()
+            .is_some_and(|(id, _)| id == agent)
+        {
+            self.focused.replace(None);
+        }
+        self.update_column();
+    }
+
+    fn update_column(&self) {
+        let shown = self.hovered.borrow().clone().or_else(|| {
+            self.focused
+                .borrow()
+                .clone()
+                .map(|(id, name)| (id, name, None))
+        });
+        for (id, cells) in self.cells.borrow().iter() {
             for cell in cells {
-                if on {
+                if shown
+                    .as_ref()
+                    .is_some_and(|(selected, _, _)| selected == id)
+                {
                     cell.add_css_class("toolport-skill-col-hl");
                 } else {
                     cell.remove_css_class("toolport-skill-col-hl");
@@ -694,7 +738,7 @@ impl Pane {
             }
         }
         if let Some(hint) = self.hint.borrow().as_ref() {
-            if on {
+            if let Some((_, name, detail)) = shown.as_ref() {
                 let name = gtk::glib::markup_escape_text(name);
                 hint.set_markup(&match detail {
                     Some(detail) => {
@@ -703,7 +747,7 @@ impl Pane {
                     None => format!("<b>{name}</b>"),
                 });
             }
-            hint.set_visible(on);
+            hint.set_visible(shown.is_some());
         }
     }
 
@@ -789,6 +833,8 @@ impl Pane {
                 column: Rc::new(Cell::new(NARROW_COLUMN)),
                 cells: Rc::default(),
                 hint: Rc::default(),
+                hovered: Rc::default(),
+                focused: Rc::default(),
             },
             layout,
         )
@@ -1674,6 +1720,8 @@ impl SkillsPage {
     fn render_head(&self, pane: &Pane, agents: &[&Agent], label: &str, size_column: bool) {
         clear_box(&pane.head);
         pane.cells.borrow_mut().clear();
+        pane.hovered.replace(None);
+        pane.focused.replace(None);
         pane.column.set(pane.fitting_column(agents.len()));
         let title_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
         title_box.set_hexpand(true);
@@ -1759,9 +1807,9 @@ impl SkillsPage {
             pane.track_cell(agent, &button, None);
             let watch = gtk::EventControllerFocus::new();
             let (p, id, name) = (pane.clone(), agent.id.clone(), agent.name.clone());
-            watch.connect_enter(move |_| p.hover_column(&id, &name, None, true));
+            watch.connect_enter(move |_| p.focus_column(&id, &name, true));
             let (p, id, name) = (pane.clone(), agent.id.clone(), agent.name.clone());
-            watch.connect_leave(move |_| p.hover_column(&id, &name, None, false));
+            watch.connect_leave(move |_| p.focus_column(&id, &name, false));
             button.add_controller(watch);
             self.offer_focus(&format!("column:{}", agent.id), &button);
             pane.head.append(&button);

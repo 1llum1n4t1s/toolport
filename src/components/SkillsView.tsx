@@ -287,6 +287,7 @@ function AgentHeader({
   column,
   hover,
   onHover,
+  onHeaderFocus,
   skills = false,
 }: {
   agents: SkillAgent[];
@@ -296,6 +297,7 @@ function AgentHeader({
   column: number;
   hover: ColumnHover;
   onHover: (hover: ColumnHover) => void;
+  onHeaderFocus: (focus: ColumnHover) => void;
   /** The Skills list keeps what an agent finds, switched off or not, so it can go back on. */
   skills?: boolean;
 }) {
@@ -330,8 +332,8 @@ function AgentHeader({
                 onClick={() => onFocus(focus === agent.id ? null : agent.id)}
                 onMouseEnter={() => onHover({ agent: agent.id })}
                 onMouseLeave={() => onHover(null)}
-                onFocus={() => onHover({ agent: agent.id })}
-                onBlur={() => onHover(null)}
+                onFocus={() => onHeaderFocus({ agent: agent.id })}
+                onBlur={() => onHeaderFocus(null)}
                 className={cn(
                   "relative flex flex-col items-center justify-center gap-1 rounded-md text-xs text-muted-foreground transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
                   wide ? "py-1.5" : "h-8",
@@ -1372,7 +1374,9 @@ export function SkillsView() {
     [tab, inv, skillAgents],
   );
   const [gridRef, column] = useColumnWidth(columnAgents.length);
-  const [hover, setHover] = useState<ColumnHover>(null);
+  const [pointerHover, setHover] = useState<ColumnHover>(null);
+  const [keyboardColumn, setKeyboardColumn] = useState<ColumnHover>(null);
+  const hover = pointerHover ?? keyboardColumn;
 
   const visibleSkills = useMemo(() => {
     if (!inv) return [];
@@ -1552,6 +1556,7 @@ export function SkillsView() {
     // An agent filter from one tab can name an agent the other tab has no column for.
     setFocus(null);
     setHover(null);
+    setKeyboardColumn(null);
     setTab(next);
   }
   function onTabKey(event: ReactKeyboardEvent<HTMLButtonElement>) {
@@ -1797,6 +1802,7 @@ export function SkillsView() {
             column={column}
             hover={hover}
             onHover={setHover}
+            onHeaderFocus={setKeyboardColumn}
             skills
           />
           {groups.length === 0 ? (
@@ -1930,6 +1936,7 @@ export function SkillsView() {
             column={column}
             hover={hover}
             onHover={setHover}
+            onHeaderFocus={setKeyboardColumn}
           />
           {scopes.length === 0 ? (
             <p className="py-10 text-center text-sm text-muted-foreground">
