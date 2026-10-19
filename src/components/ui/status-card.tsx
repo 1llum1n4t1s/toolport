@@ -119,12 +119,13 @@ export function ErrorCallout({
     onRetry || onViewLog || actions ? (
       <>
         {onViewLog && (
-          <Button variant="ghost" size="sm" onClick={onViewLog}>
+          <Button type="button" variant="ghost" size="sm" onClick={onViewLog}>
             <FileText /> {t("View log")}
           </Button>
         )}
         {onRetry && (
           <Button
+            type="button"
             variant="outline"
             size="sm"
             onClick={onRetry}

@@ -27,19 +27,23 @@ describe("list states", () => {
   it("keeps retries distinct from empty content and exposes both recovery actions", () => {
     const retry = vi.fn();
     const log = vi.fn();
+    const submit = vi.fn((event) => event.preventDefault());
     render(
-      <ErrorCallout
-        title="Could not load"
-        cause="Offline"
-        onRetry={retry}
-        onViewLog={log}
-      />,
+      <form onSubmit={submit}>
+        <ErrorCallout
+          title="Could not load"
+          cause="Offline"
+          onRetry={retry}
+          onViewLog={log}
+        />
+      </form>,
     );
     expect(screen.getByRole("alert")).toHaveTextContent("Offline");
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     fireEvent.click(screen.getByRole("button", { name: "View log" }));
     expect(retry).toHaveBeenCalledOnce();
     expect(log).toHaveBeenCalledOnce();
+    expect(submit).not.toHaveBeenCalled();
   });
 
   it("offers a working action inside an empty row group", () => {
