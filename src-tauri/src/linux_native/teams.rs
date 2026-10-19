@@ -360,13 +360,13 @@ impl TeamsPage {
         sign_in.set_halign(gtk::Align::Start);
 
         self.content.append(&sign_in);
-        self.content.append(
-            &gtk::Label::builder()
-                .label(format!("{} {}", trf("Free: {people} person, 1 device. No card required.", &[("people", &crate::teams_plan::FREE_SEATS.to_string())]), trf("Pro is ${monthly}/month or ${annual}/year for one person on unlimited devices. Try it free for 14 days, no card.", &[("monthly", "5"), ("annual", "48")])))
-                .wrap(true)
-                .xalign(0.0)
-                .build(),
-        );
+        let pricing = gtk::Label::builder().wrap(true).xalign(0.0).build();
+        l10n::bind_label_with(&pricing, || {
+            format!("{} {}",
+            trf("Free: {people} person, 1 device. No card required.", &[("people", &crate::teams_plan::FREE_SEATS.to_string())]),
+            trf("Pro is ${monthly}/month or ${annual}/year for one person on unlimited devices. Try it free for 14 days, no card.", &[("monthly", "5"), ("annual", "48")]))
+        });
+        self.content.append(&pricing);
         let group = gtk::Box::new(gtk::Orientation::Vertical, 10);
         group.set_margin_top(16);
         let detail = l10n::label(msg("If your browser cannot open Toolport, copy the manual code shown after approving this device."));
@@ -407,7 +407,7 @@ impl TeamsPage {
         });
         group.append(&button);
         let manual = gtk::Expander::builder()
-            .label(tr("Use a manual code"))
+            .label_widget(&l10n::label(msg("Use a manual code")))
             .expanded(false)
             .child(&group)
             .build();
