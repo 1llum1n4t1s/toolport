@@ -12579,7 +12579,10 @@ fn error_callout(title: &'static str, cause: &str, retry: impl Fn() + 'static) -
     button.connect_clicked(move |_| retry());
     actions.append(&button);
     layout.append(&actions);
-    let bin = adw::BreakpointBin::new();
+    let bin = adw::BreakpointBin::builder()
+        .width_request(280)
+        .height_request(1)
+        .build();
     bin.set_child(Some(&layout));
     let breakpoint =
         adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 560px").unwrap());
@@ -12594,7 +12597,9 @@ fn error_callout(title: &'static str, cause: &str, retry: impl Fn() + 'static) -
         wide.append(&buttons);
     });
     bin.add_breakpoint(breakpoint);
-    card.append(&bin);
+    let frame = skills::IssueFrame::new(&bin, &layout);
+    frame.set_width_request(320);
+    card.append(&frame);
     card
 }
 
@@ -12736,6 +12741,47 @@ mod tests {
                 .unwrap()
                 .emit_clicked();
             assert!(clicked.get());
+            let app = adw::Application::builder()
+                .application_id("com.tsout.Toolport.StateSizingTest")
+                .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+                .build();
+            app.register(gtk::gio::Cancellable::NONE).unwrap();
+            let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            body.append(&card);
+            let window = adw::ApplicationWindow::builder()
+                .application(&app)
+                .default_width(500)
+                .default_height(400)
+                .resizable(false)
+                .content(&body)
+                .build();
+            window.add_css_class("toolport-native");
+            theme::ThemeController::new().attach(&window);
+            window.present();
+            gtk::glib::timeout_future(std::time::Duration::from_millis(250)).await;
+            let retry = actions
+                .iter()
+                .find(|button| button.label().as_deref() == Some("Retry"))
+                .unwrap();
+            let bounds = retry.compute_bounds(&card).unwrap();
+            assert!(
+                bounds.y() + bounds.height() <= card.height() as f32,
+                "narrow recovery action clipped: {:?} in {}",
+                bounds,
+                card.height()
+            );
+            // GtkWidget::height excludes CSS padding; compare the painted button's
+            // bounds with its clipping ancestor instead of assuming a control height.
+            let adaptive = retry.ancestor(adw::BreakpointBin::static_type()).unwrap();
+            let bounds = retry.compute_bounds(&adaptive).unwrap();
+            assert!(bounds.height() > 0.0);
+            assert!(
+                bounds.y() >= 0.0 && bounds.y() + bounds.height() <= adaptive.height() as f32,
+                "recovery button extends beyond breakpoint allocation: {:?} in {}",
+                bounds,
+                adaptive.height()
+            );
+            window.close();
             let loading = skeleton_rows();
             assert_eq!(loading.opacity(), 0.0);
             gtk::glib::timeout_future(std::time::Duration::from_millis(320)).await;

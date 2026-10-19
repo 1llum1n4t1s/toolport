@@ -151,7 +151,7 @@ function PinnedPrerequisites({
       </div>
       {pins.length === 0 ? (
         <EmptyState
-          title={translate("Tools always included")}
+          title={translate("Nothing here yet")}
           framed={false}
           description={translate(
             "None yet. In Servers, open a server's Tools tab and pin tools your agent needs every time, such as sign-in or a required lookup. They will be included even when they do not match the search.",

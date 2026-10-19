@@ -383,6 +383,12 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
             }
             credential_choices.push((item.name.clone(), env.key, choice));
         }
+        let error_chip = l10n::label(crate::i18n::msg("Error"));
+        error_chip.add_css_class("toolport-badge");
+        error_chip.add_css_class("error");
+        error_chip.set_valign(gtk::Align::Center);
+        error_chip.set_visible(false);
+        row.add_suffix(&error_chip);
         rows.append(&row);
         let row_error = gtk::Label::builder()
             .wrap(true)
@@ -397,7 +403,9 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
         if credential_rows.first_child().is_some() {
             rows.append(&settings);
         }
-        selected.push((check, row, spinner, item.key, item.name, row_error));
+        selected.push((
+            check, row, spinner, item.key, item.name, row_error, error_chip,
+        ));
     }
     body.append(&rows);
     body.append(&missing_reason);
@@ -467,8 +475,8 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
         }
         let chosen = selected
             .iter()
-            .filter(|(check, _, _, _, _, _)| check.is_active())
-            .map(|(_, _, _, key, _, _)| key.clone())
+            .filter(|(check, _, _, _, _, _, _)| check.is_active())
+            .map(|(_, _, _, key, _, _, _)| key.clone())
             .collect::<Vec<_>>();
         let mut choices =
             std::collections::BTreeMap::<String, std::collections::BTreeMap<String, bool>>::new();
@@ -483,8 +491,9 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
         busy.set(true);
         button.set_sensitive(false);
         cancel.set_sensitive(false);
-        for (check, _row, spinner, _, _, row_error) in selected.iter() {
+        for (check, _row, spinner, _, _, row_error, error_chip) in selected.iter() {
             row_error.set_visible(false);
+            error_chip.set_visible(false);
             check.set_sensitive(false);
             spinner.set_visible(check.is_active());
             spinner.set_spinning(check.is_active());
@@ -515,7 +524,7 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
             for (name, key, choice) in credential_choices.iter() {
                 choice.set_sensitive(
                     !key.starts_with("__")
-                        && selected.iter().any(|(_, row, _, _, server, _)| {
+                        && selected.iter().any(|(_, row, _, _, server, _, _)| {
                             server == name
                                 && !row
                                     .subtitle()
@@ -525,7 +534,7 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
             }
             cancel.set_sensitive(true);
             button.set_sensitive(true);
-            for (check, row, spinner, _, _, row_error) in selected.iter() {
+            for (check, row, spinner, _, _, row_error, _) in selected.iter() {
                 row_error.set_visible(false);
                 check.set_sensitive(
                     !row.subtitle()
@@ -635,21 +644,16 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
                     feedback.add_css_class("error");
                     l10n::bind_text(&button, "Retry");
                     refresh_confirm();
-                    for (_, row, _, _, name, row_error) in selected.iter() {
+                    let mut has_row_error = false;
+                    for (_, _, _, _, name, row_error, error_chip) in selected.iter() {
                         if error.contains(name) {
-                            let chip = gtk::Label::new(Some(&crate::i18n::tr("Error")));
-                            chip.set_halign(gtk::Align::Start);
-                            chip.add_css_class("toolport-badge");
-                            chip.add_css_class("error");
-                            chip.set_widget_name("toolport-review-error-chip");
-                            if !row.has_css_class("toolport-review-error") {
-                                row.add_suffix(&chip);
-                            }
+                            has_row_error = true;
+                            error_chip.set_visible(true);
                             row_error.set_label(&error);
                             row_error.set_visible(true);
-                            row.add_css_class("toolport-review-error");
                         }
                     }
+                    feedback.set_visible(!has_row_error);
                 }
             }
         });

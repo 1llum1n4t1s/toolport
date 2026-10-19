@@ -72,7 +72,7 @@ gtk::glib::wrapper! {
 }
 
 impl IssueFrame {
-    fn new(bin: &adw::BreakpointBin, content: &impl IsA<gtk::Widget>) -> Self {
+    pub(super) fn new(bin: &adw::BreakpointBin, content: &impl IsA<gtk::Widget>) -> Self {
         use gtk::subclass::prelude::*;
         let frame: Self = gtk::glib::Object::new();
         bin.set_parent(&frame);

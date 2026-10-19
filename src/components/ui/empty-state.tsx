@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Inbox } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -7,7 +8,7 @@ import { cn } from "@/lib/utils";
  * a state that already sits inside one (a dialog list, a settings group).
  */
 export function EmptyState({
-  icon,
+  icon = <Inbox />,
   title,
   description,
   action,
