@@ -480,7 +480,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
               <SelectTrigger
                 aria-label={translate("Access")}
                 size="sm"
-                className="w-auto max-w-full min-w-52"
+                className="w-auto max-w-full min-w-[min(13rem,100%)]"
               >
                 <SelectValue />
               </SelectTrigger>

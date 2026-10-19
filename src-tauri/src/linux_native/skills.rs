@@ -2610,10 +2610,13 @@ impl SkillsPage {
             .borrow_mut()
             .insert(slot.clone(), button.clone().upcast());
         let focused = self.focused_choice.clone();
+        let popover_ref = popover.downgrade();
         check.connect_toggled(move |check| {
             // The write redraws the pane; focus goes back to this menu button.
             focused.replace(Some(slot.clone()));
-            popover.popdown();
+            if let Some(popover) = popover_ref.upgrade() {
+                popover.popdown();
+            }
             set(if check.is_active() {
                 Wanted::NameOnly
             } else {
@@ -2886,6 +2889,7 @@ impl SkillsPage {
             }
             let slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             slot.set_size_request(44, -1);
+            slot.set_hexpand(false);
             slot.set_halign(gtk::Align::End);
             if rule.agents.contains_key(&agent.id) {
                 slot.append(&lock(&crate::i18n::tr("No switch Toolport can write")));
