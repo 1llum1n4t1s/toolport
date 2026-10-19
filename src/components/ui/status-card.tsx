@@ -1,3 +1,5 @@
+import { openGatewayLog } from "@/lib/api";
+import { toastError } from "@/lib/toast";
 import type { ReactNode } from "react";
 import { FileText, RotateCw, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -64,7 +66,9 @@ export function StatusCard({
         {icon}
       </div>
       <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] gap-x-2 @max-[560px]:grid-cols-1">
-        <p className="col-start-1 row-start-1 text-sm font-semibold break-words">{title}</p>
+        <p className="col-start-1 row-start-1 text-sm font-semibold break-words">
+          {title}
+        </p>
         {actions && (
           <div className="col-start-2 row-start-1 flex flex-wrap items-start gap-2 @max-[560px]:order-last @max-[560px]:col-start-1 @max-[560px]:row-start-auto @max-[560px]:mt-3">
             {actions}
@@ -92,7 +96,7 @@ export function ErrorCallout({
   retryLabel,
   retryAriaLabel,
   retrying = false,
-  onViewLog,
+  onViewLog = () => void openGatewayLog().catch((e: unknown) => toastError(String(e))),
   actions,
   children,
   className,

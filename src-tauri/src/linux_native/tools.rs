@@ -135,7 +135,15 @@ impl ServerToolsPanel {
             return;
         }
         let server_id = self.server_id.clone();
-        self.set_status(&crate::i18n::tr("Connecting to server…"));
+        self.set_status("");
+        if self.last_load.borrow().is_none() {
+            for list in [&self.tools, &self.resources, &self.prompts] {
+                while let Some(child) = list.first_child() {
+                    list.remove(&child);
+                }
+                list.append(&super::skeleton_rows());
+            }
+        }
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
             let result = gtk::gio::spawn_blocking(move || {
@@ -325,6 +333,22 @@ impl ServerToolsPanel {
     }
 
     fn show_error(&self, error: &str) {
+        if self.last_load.borrow().is_none() {
+            for list in [&self.tools, &self.resources, &self.prompts] {
+                while let Some(child) = list.first_child() {
+                    list.remove(&child);
+                }
+                let page = self.clone();
+                list.append(&super::error_callout(
+                    crate::i18n::msg("Tools"),
+                    error,
+                    move || page.refresh(),
+                ));
+            }
+            self.feedback.set_visible(false);
+            return;
+        }
+
         self.set_status(&crate::i18n::trf(
             "Tools error: {value0}",
             &[("value0", error)],
@@ -337,12 +361,18 @@ fn capability_list() -> gtk::Box {
     gtk::Box::new(gtk::Orientation::Vertical, 10)
 }
 
-fn empty_capability(message: &str) -> gtk::Label {
-    gtk::Label::builder()
-        .label(message)
-        .halign(gtk::Align::Start)
-        .css_classes(["toolport-muted"])
-        .build()
+fn empty_capability(message: &str) -> gtk::Box {
+    let card = super::state_card(
+        "view-list-symbolic",
+        crate::i18n::msg("Nothing here yet"),
+        "",
+        false,
+    );
+    card.last_child()
+        .and_downcast::<gtk::Label>()
+        .unwrap()
+        .set_label(message);
+    card
 }
 
 /// GtkLabel implements `lines` as a negative Pango layout height, and Pango

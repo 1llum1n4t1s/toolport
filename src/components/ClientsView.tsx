@@ -1,3 +1,4 @@
+import { ErrorCallout } from "@/components/ui/status-card";
 import { msg, Trans, translate, useI18n } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { trustedClientName, clientIdentityTooltip } from "@/lib/clientIdentity";
@@ -401,23 +402,26 @@ export function ClientsView({
   clients,
   registry,
   loading = false,
+  error,
   onSelectClient,
   onChanged,
 }: {
   clients: DetectedClient[];
   registry: Registry | null;
   loading?: boolean;
+  error?: string | null;
   onSelectClient: (id: string) => void;
   onChanged?: () => Promise<void>;
 }) {
   const { t, locale } = useI18n();
   const [showMissing, setShowMissing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [sessionRetry, setSessionRetry] = useState(0);
   const refresh = async () => {
-    if (!onChanged) return;
+    setSessionRetry((value) => value + 1);
     setRefreshing(true);
     try {
-      await onChanged();
+      await onChanged?.();
     } finally {
       setRefreshing(false);
     }
@@ -440,7 +444,7 @@ export function ClientsView({
     return () => {
       current = false;
     };
-  }, [clients]);
+  }, [clients, sessionRetry]);
   const sorted = sortClients(clients);
   const present = sorted.filter((client) => statusOf(client) !== "missing");
   const missing = sorted.filter((client) => statusOf(client) === "missing");
@@ -469,6 +473,11 @@ export function ClientsView({
     return <SkeletonRows label={t("Loading AI clients")} />;
   }
 
+  if (error)
+    return (
+      <ErrorCallout title={t("Clients")} cause={error} onRetry={() => void refresh()} />
+    );
+
   if (!onChanged && clients.length === 0 && sessions.length === 0 && !sessionError) {
     return (
       <EmptyState
@@ -485,9 +494,10 @@ export function ClientsView({
   return (
     <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-5">
       {sessionError && (
-        <p role="status" className="text-meta text-muted-foreground">
-          {translate("Client session history could not be read.")}
-        </p>
+        <ErrorCallout
+          title={translate("Client session history could not be read.")}
+          onRetry={() => void refresh()}
+        />
       )}
       {present.length === 0 && (
         <EmptyState

@@ -1,3 +1,4 @@
+import { toastError } from "@/lib/toast";
 import { Trans, msg, translate, useI18n, type SourceMessage } from "@/lib/i18n";
 import { secretReferenceReview } from "@/lib/secretRefs";
 import { PersonalSyncView } from "./PersonalSyncView";
@@ -35,7 +36,8 @@ import { serverFailureLabel } from "@/lib/serverHealth";
 import type { TeamSyncStatus } from "@/lib/api";
 import { RuleStateBadge } from "@/components/RuleStateBadge";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
+import { SkeletonRows } from "@/components/ui/skeleton";
+import { ErrorCallout } from "@/components/ui/status-card";
 import {
   teamConnect,
   teamAccountLink,
@@ -596,11 +598,7 @@ export function TeamsView({
           <Users className="size-5 text-muted-foreground" />
           <h2 className="text-base font-semibold">{tr("Toolport Teams")}</h2>
         </div>
-        <div className="flex flex-col gap-2" aria-label={tr("Loading Toolport Teams")}>
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-14 w-full rounded-lg" />
-          ))}
-        </div>
+        <SkeletonRows label={tr("Loading Toolport Teams")} />
       </div>
     );
   }
@@ -622,10 +620,19 @@ export function TeamsView({
       </div>
 
       {(error || team?.accountStatusError) && (
-        <Callout variant="danger" className="mb-4">
-          {(typeof error === "object" && error ? tr(error.key) : error) ||
-            team?.accountStatusError}
-        </Callout>
+        <ErrorCallout
+          className="mb-4"
+          title={tr("Sync")}
+          cause={
+            (typeof error === "object" && error ? tr(error.key) : error) ||
+            team?.accountStatusError
+          }
+          onRetry={() =>
+            void getRegistry()
+              .then(onRegistryChange)
+              .catch((e: unknown) => toastError(String(e)))
+          }
+        />
       )}
       {skipNote && (
         <Callout variant="warning" className="mb-4 whitespace-pre-line">

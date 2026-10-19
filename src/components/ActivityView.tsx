@@ -65,7 +65,6 @@ import {
   openGatewayLog,
   type SecurityEvent,
 } from "@/lib/api";
-import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { ErrorCallout, StatusCard } from "@/components/ui/status-card";
@@ -2236,7 +2235,9 @@ export function ActivityView({
           )}
           onRetry={retryLoads}
           retryAriaLabel={tr("Retry activity log")}
-          onViewLog={() => void openGatewayLog().catch((e: unknown) => toastError(String(e)))}
+          onViewLog={() =>
+            void openGatewayLog().catch((e: unknown) => toastError(String(e)))
+          }
         />
       </div>
     );
@@ -2433,10 +2434,7 @@ export function ActivityView({
                         setErrorsOnly(false);
                       }}
                     >
-                      <Trans
-                        message="{value1} Clear filter"
-                        values={{ value1: <X /> }}
-                      />
+                      <Trans message="{value1} Clear filter" values={{ value1: <X /> }} />
                     </Button>
                   )
                 }

@@ -706,7 +706,9 @@ fn build_window(
     narrow.add_setter(&split, "show-content", Some(&true.to_value()));
     window.add_breakpoint(narrow);
 
-    window.set_content(Some(&alerts));
+    let toasts = adw::ToastOverlay::new();
+    toasts.set_child(Some(&alerts));
+    window.set_content(Some(&toasts));
     io::track_hidden_memory(&window);
     theme.attach(&window);
     let state = state::RegistryController::new(move |snapshot| {
@@ -2130,20 +2132,29 @@ impl ServerPage {
                 *self.last_snapshot.borrow_mut() = None;
                 self.reset_summary();
                 l10n::bind_text(&self.section_title, "Servers");
-                self.list.append(&state_card("network-server-symbolic", crate::i18n::msg("Toolport is ready for setup"), crate::i18n::msg("Use Add server for a custom endpoint or open Catalog for a curated starting point. Valid servers turn on. Missing setup inputs stay off."), false));
+                self.list.append(&self.empty_servers(crate::i18n::msg("Toolport is ready for setup"), crate::i18n::msg("Use Add server for a custom endpoint or open Catalog for a curated starting point. Valid servers turn on. Missing setup inputs stay off.")));
             }
             state::RegistryState::Unavailable => {
                 self.clear_server_list();
                 *self.last_snapshot.borrow_mut() = None;
                 self.server_count.set_visible(false);
+                self.posture.set_visible(false);
                 self.section_title
                     .set_label(&crate::i18n::tr("Servers unavailable"));
-                self.list.append(&state_card("dialog-warning-symbolic", crate::i18n::msg("Configuration could not be displayed"), crate::i18n::msg("Toolport left the registry untouched. Open the app again to inspect or recover it."), true));
+                let page = self.clone();
+                self.list.append(&error_callout(crate::i18n::msg("Configuration could not be displayed"), &crate::i18n::tr("Toolport left the registry untouched. Open the app again to inspect or recover it."), move || {
+                    let page = page.clone();
+                    gtk::glib::spawn_future_local(async move {
+                        let state = gtk::gio::spawn_blocking(|| state::load_read_only(crate::registry::resolved_path().as_deref())).await;
+                        if let Ok(state) = state { page.render(state); }
+                    });
+                }));
             }
             state::RegistryState::NewerVersion(message) => {
                 self.clear_server_list();
                 *self.last_snapshot.borrow_mut() = None;
                 self.server_count.set_visible(false);
+                self.posture.set_visible(false);
                 self.section_title
                     .set_label(&crate::i18n::tr("Servers unavailable"));
                 self.list.append(&state_card_formatted(
@@ -2155,6 +2166,19 @@ impl ServerPage {
                 ));
             }
         }
+    }
+
+    fn empty_servers(&self, title: &'static str, body: &'static str) -> gtk::Box {
+        let card = state_card("network-server-symbolic", title, body, false);
+        let page = self.clone();
+        state_action(&card, crate::i18n::msg("Add server"), move || {
+            open_server_editor(None, page.clone());
+        });
+        let app = self.app.clone();
+        state_action(&card, crate::i18n::msg("Browse catalog"), move || {
+            app.activate_action("show-catalog", None)
+        });
+        card
     }
 
     fn clear_server_list(&self) {
@@ -2210,13 +2234,11 @@ impl ServerPage {
             self.server_count.set_visible(false);
             self.clear_server_list();
             self.posture.set_visible(false);
-            self.list.append(&state_card(
-                "network-server-symbolic",
+            self.list.append(&self.empty_servers(
                 crate::i18n::msg("No servers yet"),
                 crate::i18n::msg(
                     "Use Add server to connect your first local command or remote endpoint.",
                 ),
-                false,
             ));
             return;
         }
@@ -2296,6 +2318,10 @@ impl ServerPage {
             crate::i18n::msg("Try a different server name or transport."),
             false,
         );
+        let search = self.search.clone();
+        state_action(&no_matches, crate::i18n::msg("Clear search"), move || {
+            search.set_text("")
+        });
         self.list.append(&no_matches);
         *self.no_matches.borrow_mut() = Some(no_matches);
         self.apply_filter();
@@ -2479,6 +2505,11 @@ impl ServerPage {
     }
 
     fn show_confirmation(&self, message: &str) {
+        if show_toast(&self.list, message) {
+            self.cancel_feedback_timer();
+            self.feedback.set_visible(false);
+            return;
+        }
         self.show_feedback(message, false);
         let feedback = self.feedback.clone();
         let feedback_timer = self.feedback_timer.clone();
@@ -2797,7 +2828,9 @@ impl ClientPage {
         }
         self.refresh_button.set_sensitive(false);
         self.import_button.set_sensitive(false);
-        self.show_progress(&crate::i18n::tr("Scanning local client configurations…"));
+        if self.list.first_child().is_none() {
+            self.list.append(&skeleton_rows());
+        }
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
             let result = gtk::gio::spawn_blocking(state::detect_client_views).await;
@@ -2850,12 +2883,17 @@ impl ClientPage {
             .filter(|client| !client.app_present && !client.config_exists)
             .collect::<Vec<_>>();
         if installed.is_empty() {
-            self.list.append(&state_card(
+            let card = state_card(
                 "computer-symbolic",
                 crate::i18n::msg("No supported clients detected"),
                 crate::i18n::msg("Install or open a supported AI client, then scan again."),
                 false,
-            ));
+            );
+            let page = self.clone();
+            state_action(&card, crate::i18n::msg("Scan again"), move || {
+                page.refresh()
+            });
+            self.list.append(&card);
         }
         // Several Claude Code profiles share one entry; it sits with the connected clients
         // when any of its profiles is connected.
@@ -3027,12 +3065,21 @@ impl ClientPage {
     }
 
     fn show_error(&self, error: &str) {
+        while let Some(child) = self.list.first_child() {
+            self.list.remove(&child);
+        }
+        let page = self.clone();
+        self.list.append(&error_callout(
+            crate::i18n::msg("Clients"),
+            error,
+            move || page.refresh(),
+        ));
         self.pending_confirmation.borrow_mut().take();
         self.cancel_feedback_timer();
-        self.feedback.set_label(error);
+        self.feedback.set_label("");
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
-        self.feedback.set_visible(true);
+        self.feedback.set_visible(false);
     }
 
     fn show_progress(&self, message: &str) {
@@ -3044,6 +3091,11 @@ impl ClientPage {
     }
 
     fn show_confirmation(&self, message: &str) {
+        if show_toast(&self.list, message) {
+            self.cancel_feedback_timer();
+            self.feedback.set_visible(false);
+            return;
+        }
         self.cancel_feedback_timer();
         self.feedback.set_label(message);
         self.feedback.remove_css_class("error");
@@ -4482,12 +4534,17 @@ impl ActivityPage {
             }
             return;
         }
+        if self.last_snapshot.borrow().is_none() {
+            while let Some(child) = self.list.first_child() {
+                self.list.remove(&child);
+            }
+            self.list.append(&skeleton_rows());
+        }
         if announce || self.last_snapshot.borrow().is_none() {
             self.refresh_button.set_sensitive(false);
-            self.feedback
-                .set_label(&crate::i18n::tr("Loading retained activity…"));
+            self.feedback.set_label("");
             self.feedback.remove_css_class("error");
-            self.feedback.set_visible(true);
+            self.feedback.set_visible(false);
         }
         let mut revision_generation =
             crate::observability_controller::activity_revision_generation();
@@ -5025,12 +5082,15 @@ impl ActivityPage {
             self.clear_recent_rows();
             self.filter_count.set_label("");
             self.show_more_calls.set_visible(false);
-            self.list.append(&state_card(
+            let card = state_card(
                 "view-list-symbolic",
                 crate::i18n::msg("No activity yet"),
                 crate::i18n::msg("Calls and approval outcomes will appear here with their timing."),
                 false,
-            ));
+            );
+            let page = self.clone();
+            state_action(&card, crate::i18n::msg("Refresh"), move || page.refresh());
+            self.list.append(&card);
             return;
         }
         let server = self.selected_filter_server();
@@ -5041,12 +5101,19 @@ impl ActivityPage {
             self.filter_count
                 .set_label(&crate::i18n::tr("0 matching rows"));
             self.show_more_calls.set_visible(false);
-            self.list.append(&state_card(
+            let card = state_card(
                 "edit-find-symbolic",
                 crate::i18n::msg("No matching activity"),
                 crate::i18n::msg("Nothing saved matches the current filter."),
                 false,
-            ));
+            );
+            let page = self.clone();
+            state_action(&card, crate::i18n::msg("Clear filter"), move || {
+                page.filter_server.set_selected(0);
+                page.errors_only.set_active(false);
+                page.render_recent();
+            });
+            self.list.append(&card);
             return;
         }
         let match_count = filtered.len();
@@ -5155,6 +5222,19 @@ impl ActivityPage {
     }
 
     fn show_error(&self, error: &str) {
+        if self.last_snapshot.borrow().is_none() {
+            while let Some(child) = self.list.first_child() {
+                self.list.remove(&child);
+            }
+            let page = self.clone();
+            self.list.append(&error_callout(
+                crate::i18n::msg("Couldn't load activity"),
+                error,
+                move || page.refresh(),
+            ));
+            self.feedback.set_visible(false);
+            return;
+        }
         // A failed refresh over real rows must never read as "all clear": keep
         // the last loaded data on screen and say it is stale.
         if self.last_snapshot.borrow().is_some() {
@@ -7781,6 +7861,7 @@ fn build_content(
     page.append(&posture);
 
     let list = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    list.append(&skeleton_rows());
     page.append(&list);
 
     scroller.set_child(Some(&page));
@@ -8059,6 +8140,16 @@ fn share_setup(page: ServerPage) {
         check.set_active(true);
         list.append(&check);
         checks.push((id.clone(), check));
+    }
+    if servers.is_empty() {
+        list.append(&state_card(
+            "network-server-symbolic",
+            crate::i18n::msg("No servers yet"),
+            crate::i18n::msg(
+                "Use Add server to connect your first local command or remote endpoint.",
+            ),
+            false,
+        ));
     }
     let checks = std::rc::Rc::new(checks);
     {
@@ -12393,6 +12484,120 @@ fn confirm_remove_server(server_id: &str, server_name: &str, page: ServerPage) {
     dialog.present();
 }
 
+fn show_toast(widget: &impl IsA<gtk::Widget>, message: &str) -> bool {
+    let Some(root) = widget.root() else {
+        return false;
+    };
+    let Some(window) = root.downcast_ref::<adw::ApplicationWindow>() else {
+        return false;
+    };
+    let Some(overlay) = window.content().and_downcast::<adw::ToastOverlay>() else {
+        return false;
+    };
+    let toast = adw::Toast::new(message);
+    toast.set_timeout(4);
+    overlay.add_toast(toast);
+    true
+}
+
+fn state_action(card: &gtk::Box, label: &'static str, action: impl Fn() + 'static) {
+    let actions = card
+        .last_child()
+        .and_downcast::<gtk::FlowBox>()
+        .unwrap_or_else(|| {
+            let actions = gtk::FlowBox::builder()
+                .selection_mode(gtk::SelectionMode::None)
+                .min_children_per_line(1)
+                .max_children_per_line(2)
+                .row_spacing(8)
+                .column_spacing(8)
+                .halign(gtk::Align::Center)
+                .build();
+            card.append(&actions);
+            actions
+        });
+    let button = l10n::button(label);
+    button.add_css_class("toolport-secondary-action");
+    button.connect_clicked(move |_| action());
+    actions.insert(&button, -1);
+}
+
+fn skeleton_rows() -> gtk::Box {
+    let group = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    group.add_css_class("toolport-skeleton-group");
+    group.set_opacity(0.0);
+    for _ in 0..3 {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        row.add_css_class("toolport-skeleton");
+        group.append(&row);
+    }
+    let weak = group.downgrade();
+    gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+        if let Some(group) = weak.upgrade() {
+            group.set_opacity(1.0);
+        }
+    });
+    group
+}
+
+fn error_callout(title: &'static str, cause: &str, retry: impl Fn() + 'static) -> gtk::Box {
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    card.add_css_class("toolport-error-callout");
+    let layout = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let icon = gtk::Image::from_icon_name("dialog-warning-symbolic");
+    icon.set_pixel_size(18);
+    icon.set_size_request(32, 32);
+    icon.set_valign(gtk::Align::Start);
+    icon.add_css_class("toolport-error-tile");
+    layout.append(&icon);
+    let copy = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    copy.set_hexpand(true);
+    let heading = l10n::label(title);
+    heading.set_xalign(0.0);
+    heading.set_wrap(true);
+    heading.add_css_class("heading");
+    copy.append(&heading);
+    let detail = gtk::Label::builder()
+        .label(cause)
+        .wrap(true)
+        .xalign(0.0)
+        .selectable(true)
+        .css_classes(["toolport-muted"])
+        .build();
+    copy.append(&detail);
+    layout.append(&copy);
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.set_valign(gtk::Align::Start);
+    let log = l10n::button(crate::i18n::msg("View log"));
+    log.add_css_class("flat");
+    log.connect_clicked(|_| {
+        let _ = crate::diagnostics_controller::open_gateway_log();
+    });
+    actions.append(&log);
+    let button = l10n::button(crate::i18n::msg("Retry"));
+    button.add_css_class("toolport-secondary-action");
+    button.connect_clicked(move |_| retry());
+    actions.append(&button);
+    layout.append(&actions);
+    let bin = adw::BreakpointBin::new();
+    bin.set_child(Some(&layout));
+    let breakpoint =
+        adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 560px").unwrap());
+    let (wide, narrow, buttons) = (layout.clone(), copy.clone(), actions.clone());
+    breakpoint.connect_apply(move |_| {
+        wide.remove(&buttons);
+        narrow.append(&buttons);
+    });
+    let (wide, narrow, buttons) = (layout.clone(), copy.clone(), actions.clone());
+    breakpoint.connect_unapply(move |_| {
+        narrow.remove(&buttons);
+        wide.append(&buttons);
+    });
+    bin.add_breakpoint(breakpoint);
+    card.append(&bin);
+    card
+}
+
 fn state_card(icon_name: &str, title: &'static str, body: &'static str, error: bool) -> gtk::Box {
     let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
     card.add_css_class("toolport-state-card");
@@ -12445,6 +12650,100 @@ fn state_card_formatted(
 
 #[cfg(test)]
 mod tests {
+    /// Manual synthetic visual fixture. Run only in omabox with a request file;
+    /// deleting that file ends the fixture. Uses the production state widgets.
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b6_state_visual_gallery() {
+        use super::*;
+        let Ok(request) = std::env::var("TOOLPORT_STATE_GALLERY") else {
+            return;
+        };
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.StateFixture")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .title("Toolport states")
+            .default_width(1024)
+            .default_height(700)
+            .build();
+        window.add_css_class("toolport-native");
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let body = page_body(16);
+        root.append(&page_header::PageHeader::new(crate::i18n::msg("Servers"), "").root);
+        root.append(&body);
+        let overlay = adw::ToastOverlay::new();
+        overlay.set_child(Some(&root));
+        window.set_content(Some(&overlay));
+        theme::ThemeController::new().attach(&window);
+        window.present();
+        gtk::glib::MainContext::default().block_on(async {
+            let mut previous = String::new();
+            while let Ok(value) = std::fs::read_to_string(&request) {
+                if value != previous {
+                    while let Some(child) = body.first_child() { body.remove(&child); }
+                    let state = value.trim();
+                    if state == "loading" { body.append(&skeleton_rows()); }
+                    else if state == "error" {
+                        body.append(&error_callout(crate::i18n::msg("Servers unavailable"), &crate::i18n::tr("Toolport left the registry untouched. Open the app again to inspect or recover it."), || {}));
+                    } else {
+                        let card = state_card("network-server-symbolic", crate::i18n::msg("No servers yet"), crate::i18n::msg("Use Add server to connect your first local command or remote endpoint."), false);
+                        state_action(&card, crate::i18n::msg("Add server"), || {});
+                        body.append(&card);
+                        if state == "toast" { show_toast(&body, &crate::i18n::tr("Path copied")); }
+                    }
+                    previous = value;
+                }
+                gtk::glib::timeout_future(std::time::Duration::from_millis(60)).await;
+            }
+        });
+        window.close();
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b6_state_widgets_recover_and_delay_loading() {
+        use super::*;
+        adw::init().unwrap();
+        gtk::glib::MainContext::default().block_on(async {
+            let clicked = std::rc::Rc::new(std::cell::Cell::new(false));
+            let called = clicked.clone();
+            let card = error_callout(
+                crate::i18n::msg("Servers unavailable"),
+                "Synthetic read failure",
+                move || called.set(true),
+            );
+            fn buttons(widget: &gtk::Widget, found: &mut Vec<gtk::Button>) {
+                if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+                    found.push(button.clone());
+                }
+                let mut child = widget.first_child();
+                while let Some(widget) = child {
+                    child = widget.next_sibling();
+                    buttons(&widget, found);
+                }
+            }
+            let mut actions = Vec::new();
+            buttons(card.upcast_ref(), &mut actions);
+            assert_eq!(actions.len(), 2);
+            actions
+                .iter()
+                .find(|button| button.label().as_deref() == Some("Retry"))
+                .unwrap()
+                .emit_clicked();
+            assert!(clicked.get());
+            let loading = skeleton_rows();
+            assert_eq!(loading.opacity(), 0.0);
+            gtk::glib::timeout_future(std::time::Duration::from_millis(320)).await;
+            assert_eq!(loading.opacity(), 1.0);
+            assert_eq!(loading.observe_children().n_items(), 3);
+        });
+    }
+
     #[test]
     fn immediate_shutdown_drains_allow_save_without_polling_future() {
         use super::*;

@@ -111,7 +111,12 @@ export function Onboarding({
 
   const steps = [
     welcome,
-    <AddServers key="add" onBrowseCatalog={onBrowseCatalog} onNext={() => setStep(2)} />,
+    <AddServers
+      key="add"
+      onBrowseCatalog={onBrowseCatalog}
+      onNext={() => setStep(2)}
+      onSkip={() => setStep(3)}
+    />,
     connect,
     done,
   ];
@@ -527,9 +532,11 @@ export function JoinTeam({
 function AddServers({
   onBrowseCatalog,
   onNext,
+  onSkip,
 }: {
   onBrowseCatalog: () => void;
   onNext: () => void;
+  onSkip: () => void;
 }) {
   const { t } = useI18n();
   return (
@@ -551,7 +558,7 @@ function AddServers({
           <Store className="size-4" /> {t("Browse the full catalog")}{" "}
         </Button>
       </div>
-      <Button variant="ghost" onClick={onNext} className="self-start">
+      <Button variant="ghost" onClick={onSkip} className="self-start">
         {translate("I'll add servers later")}
         <ArrowRight className="size-4" />
       </Button>

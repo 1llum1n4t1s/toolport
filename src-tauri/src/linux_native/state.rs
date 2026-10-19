@@ -849,7 +849,7 @@ pub(super) fn display_transport(transport: &str) -> String {
     }
 }
 
-fn load_read_only(path: Option<&Path>) -> RegistryState {
+pub(super) fn load_read_only(path: Option<&Path>) -> RegistryState {
     let Some(path) = path else {
         return RegistryState::Unavailable;
     };

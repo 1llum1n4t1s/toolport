@@ -4114,6 +4114,7 @@ fn update_tray_tooltip(app: &AppHandle) {
         .map(|b| b.list().len())
         .unwrap_or(0);
     if let Some(menu) = app.try_state::<TrayMenuState>() {
+        let _ = menu.pending_approvals.set_enabled(pending > 0);
         let _ = menu.pending_approvals.set_text(trf(
             "Pending approvals ({count})",
             &[("count", &pending.to_string())],

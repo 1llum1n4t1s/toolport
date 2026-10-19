@@ -40,6 +40,10 @@ import type {
 } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { pickIconSrc } from "@/lib/icons";
+import { SkeletonRows } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorCallout } from "@/components/ui/status-card";
+import { openGatewayLog } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -326,11 +330,7 @@ function looksLikeAuthError(message: string): boolean {
 /** Inline "connecting…" line shared by the resource/prompt panels. */
 function Connecting({ label }: { label?: string }) {
   const { t } = useI18n();
-  return (
-    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-      <Loader2 className="size-4 animate-spin" /> {label ?? t("Connecting to server…")}
-    </div>
-  );
+  return <SkeletonRows label={label ?? t("Connecting to server…")} />;
 }
 
 /** Copy-to-clipboard button with a brief confirmation, for raw result / JSON blocks. */
@@ -437,21 +437,14 @@ function ResourcesPanel({ serverId }: { serverId: string }) {
   if (loading) return <Connecting />;
   if (error)
     return (
-      <div className="flex flex-col gap-3">
-        <Callout variant="danger">{error}</Callout>
-        <div>
-          <Button size="sm" variant="outline" onClick={retryList}>
-            {t("Retry")}
-          </Button>
-        </div>
-      </div>
+      <ErrorCallout
+        title={t("Connecting to server…")}
+        cause={error}
+        onRetry={retryList}
+      />
     );
   if (!resources || resources.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        {t("This server advertises no resources.")}
-      </p>
-    );
+    return <EmptyState title={t("This server advertises no resources.")} />;
   }
 
   return (
@@ -590,21 +583,14 @@ function PromptsPanel({ serverId }: { serverId: string }) {
   if (loading) return <Connecting />;
   if (error)
     return (
-      <div className="flex flex-col gap-3">
-        <Callout variant="danger">{error}</Callout>
-        <div>
-          <Button size="sm" variant="outline" onClick={retryList}>
-            {t("Retry")}
-          </Button>
-        </div>
-      </div>
+      <ErrorCallout
+        title={t("Connecting to server…")}
+        cause={error}
+        onRetry={retryList}
+      />
     );
   if (!prompts || prompts.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        {t("This server advertises no prompts.")}
-      </p>
-    );
+    return <EmptyState title={t("This server advertises no prompts.")} />;
   }
 
   return (
@@ -709,6 +695,7 @@ export function ServerToolsPanel({
   const [policyBusy, setPolicyBusy] = useState(false);
   const [tools, setTools] = useState<McpTool[] | null>(null);
   const [loadingTools, setLoadingTools] = useState(false);
+  const [toolsReload, setToolsReload] = useState(0);
   const [toolsError, setToolsError] = useState<string | null>(null);
   const [selectedTool, setSelectedTool] = useState<string | null>(null);
   const [toolFilter, setToolFilter] = useState("");
@@ -775,7 +762,7 @@ export function ServerToolsPanel({
     return () => {
       alive = false;
     };
-  }, [serverId, defaultAccessKey, overrideVersion]);
+  }, [serverId, defaultAccessKey, overrideVersion, toolsReload]);
 
   const tool = useMemo(
     () => tools?.find((t) => t.name === selectedTool) ?? null,
@@ -1008,11 +995,7 @@ export function ServerToolsPanel({
 
       {tab === "tools" && (
         <>
-          {loadingTools && (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" /> {t("Connecting to server…")}
-            </div>
-          )}
+          {loadingTools && <SkeletonRows label={t("Connecting to server…")} />}
 
           {toolsError &&
             (looksLikeAuthError(toolsError) ? (
@@ -1036,14 +1019,19 @@ export function ServerToolsPanel({
                 </p>
               </Callout>
             ) : (
-              <Callout variant="danger">{toolsError}</Callout>
+              <ErrorCallout
+                title={t("Tools")}
+                cause={toolsError}
+                onRetry={() => setToolsReload((value) => value + 1)}
+                onViewLog={() =>
+                  void openGatewayLog().catch((e: unknown) => toastError(String(e)))
+                }
+              />
             ))}
 
           {/* Server connected but exposes no tools at all. */}
           {!loadingTools && !toolsError && tools && tools.length === 0 && (
-            <p className="text-sm text-muted-foreground">
-              {t("This server advertises no tools.")}
-            </p>
+            <EmptyState title={t("This server advertises no tools.")} />
           )}
 
           {/* Argument form for the selected tool */}
@@ -1190,7 +1178,7 @@ export function ServerToolsPanel({
                 </div>
               )}
               {filteredTools.length === 0 ? (
-                <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-3 py-6 text-center">
+                <div className="flex flex-col items-center gap-2 rounded-xl border bg-card px-4 py-8 text-center">
                   <p className="text-sm text-muted-foreground">
                     {t('No tools match "{filter}".', { filter: toolFilter.trim() })}
                   </p>

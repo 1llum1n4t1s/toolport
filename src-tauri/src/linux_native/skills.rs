@@ -1451,6 +1451,10 @@ impl SkillsPage {
     }
 
     fn show_feedback(&self, message: &str, error: bool) {
+        if !error && !message.is_empty() && super::show_toast(&self.feedback, message) {
+            self.feedback.set_label("");
+            return;
+        }
         if let Some(timer) = self.feedback_timer.borrow_mut().take() {
             timer.remove();
         }

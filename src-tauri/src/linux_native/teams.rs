@@ -5,6 +5,15 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
+// Older paired registries have no account snapshot. Null deliberately produces
+// the existing unknown/free state until a successful sync supplies one.
+fn account_status(team: &crate::registry::TeamConnection) -> &serde_json::Value {
+    team.unknown_fields
+        .get("accountStatus")
+        .filter(|value| value.is_object())
+        .unwrap_or(&serde_json::Value::Null)
+}
+
 const SYNC_DESTINATIONS: &[&str] = &[msg("Every machine"), msg("This machine")];
 
 #[derive(Clone)]
@@ -24,6 +33,7 @@ pub(super) struct TeamsPage {
     plan_badge: gtk::Label,
     intro: gtk::Label,
     feedback: gtk::Label,
+    errors: gtk::Box,
     busy: Rc<Cell<bool>>,
     refresh_generation: Rc<Cell<u64>>,
     refresh_running: Rc<Cell<bool>>,
@@ -84,6 +94,8 @@ impl TeamsPage {
             .build();
         feedback.set_visible(false);
         page.append(&feedback);
+        let errors = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        page.append(&errors);
         let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
         page.append(&content);
         scroller.set_child(Some(&super::form_column(&page)));
@@ -97,6 +109,7 @@ impl TeamsPage {
             plan_badge,
             intro,
             feedback,
+            errors,
             busy: Rc::new(Cell::new(false)),
             refresh_generation: Rc::new(Cell::new(0)),
             refresh_running: Rc::new(Cell::new(false)),
@@ -122,6 +135,9 @@ impl TeamsPage {
             .set(self.refresh_generation.get().wrapping_add(1));
         if self.refresh_running.replace(true) {
             return;
+        }
+        while let Some(child) = self.errors.first_child() {
+            self.errors.remove(&child);
         }
         self.feedback.set_label(&tr("Loading sync status…"));
         self.server_page.reprobe_if_stale();
@@ -257,7 +273,7 @@ impl TeamsPage {
                     .team
                     .as_ref()
                     .map(|t| crate::personal_sync::status_lines(
-                        &t.unknown_fields["accountStatus"],
+                        account_status(t),
                         self.sync_state.borrow().last_synced_at
                     ))
             ),
@@ -341,6 +357,7 @@ impl TeamsPage {
         }
         let sign_in = l10n::button("Sign in to sync");
         sign_in.add_css_class("suggested-action");
+        sign_in.set_halign(gtk::Align::Start);
 
         self.content.append(&sign_in);
         self.content.append(
@@ -385,7 +402,13 @@ impl TeamsPage {
             )
         });
         group.append(&button);
-        self.content.append(&group);
+        let manual = gtk::Expander::builder()
+            .label(tr("Use a manual code"))
+            .expanded(false)
+            .child(&group)
+            .build();
+        manual.add_css_class("toolport-settings-group");
+        self.content.append(&manual);
     }
 
     fn render_connected(
@@ -1312,6 +1335,15 @@ impl TeamsPage {
     }
 
     fn show_error(&self, error: &str) {
+        while let Some(child) = self.errors.first_child() {
+            self.errors.remove(&child);
+        }
+        let page = self.clone();
+        self.errors
+            .append(&super::error_callout(msg("Sync"), error, move || {
+                page.refresh()
+            }));
+
         let now = std::time::Instant::now();
         let mut last = self.action_error.borrow_mut();
         // Re-showing the same error keeps its original deadline.
@@ -1327,6 +1359,7 @@ impl TeamsPage {
         self.feedback.set_visible(true);
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
+        self.feedback.set_visible(false);
     }
 }
 
@@ -2342,6 +2375,26 @@ fn source_formatted_label(
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn paired_registry_without_valid_account_status_has_safe_fallback() {
+        for status in [
+            None,
+            Some(serde_json::json!(false)),
+            Some(serde_json::json!("bad")),
+            Some(serde_json::json!([])),
+        ] {
+            let mut value = serde_json::json!({"teamId":"fixture", "role":"member", "serverUrl":"https://example.invalid"});
+            if let Some(status) = status {
+                value["accountStatus"] = status;
+            }
+            let team = serde_json::from_value(value).unwrap();
+            assert!(super::account_status(&team).is_null());
+            let _ = crate::personal_sync::status_lines(super::account_status(&team), None);
+        }
+        let team = serde_json::from_value(serde_json::json!({"teamId":"fixture", "role":"member", "serverUrl":"https://example.invalid", "accountStatus":{"plan":"pro"}})).unwrap();
+        assert_eq!(super::account_status(&team)["plan"], "pro");
+    }
+
     #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn review_rows_use_the_supplied_snapshot_even_when_disk_is_unreadable() {

@@ -438,11 +438,13 @@ impl CatalogPage {
     fn load_popular(&self) {
         let generation = self.request_generation.get().wrapping_add(1);
         self.request_generation.set(generation);
-        self.feedback
-            .set_label(&crate::i18n::tr("Loading curated servers…"));
+        if self.list.first_child().is_none() {
+            self.list.append(&super::skeleton_rows());
+        }
+        self.feedback.set_label("");
         self.feedback.remove_css_class("error");
         self.feedback.remove_css_class("success");
-        self.feedback.set_visible(true);
+        self.feedback.set_visible(false);
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
             let result = gtk::gio::spawn_blocking(move || {
@@ -493,12 +495,19 @@ impl CatalogPage {
             self.list.remove(&child);
         }
         if entries.is_empty() {
-            self.list.append(&super::state_card(
+            let card = super::state_card(
                 "edit-find-symbolic",
                 crate::i18n::msg("No matching servers"),
                 crate::i18n::msg("Try a broader name or capability."),
                 false,
-            ));
+            );
+            let search = self.search.clone();
+            let page = self.clone();
+            super::state_action(&card, crate::i18n::msg("Clear search"), move || {
+                search.set_text("");
+                page.load_popular();
+            });
+            self.list.append(&card);
             return;
         }
         for entry in entries {
@@ -508,6 +517,17 @@ impl CatalogPage {
     }
 
     fn show_error(&self, error: &str) {
+        while let Some(child) = self.list.first_child() {
+            self.list.remove(&child);
+        }
+        // A retry must rebuild even when it returns the same entries as before.
+        self.rendered.borrow_mut().take();
+        let page = self.clone();
+        self.list.append(&super::error_callout(
+            crate::i18n::msg("Catalog couldn't load"),
+            error,
+            move || page.load_popular(),
+        ));
         self.pending_notice.borrow_mut().take();
         // Cancel any success timer first. Otherwise a confirmation shown moments
         // ago fires its four-second hide and takes this error off screen with it.
@@ -521,10 +541,14 @@ impl CatalogPage {
         );
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
-        self.feedback.set_visible(true);
+        self.feedback.set_visible(false);
     }
 
     fn show_success(&self, message: &str) {
+        if super::show_toast(&self.list, message) {
+            self.feedback.set_visible(false);
+            return;
+        }
         if let Some(timer) = self.feedback_timer.borrow_mut().take() {
             timer.remove();
         }

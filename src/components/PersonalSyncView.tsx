@@ -18,6 +18,7 @@ import { openExternal } from "@/lib/openUrl";
 import { visibleExecutionText as visibleText } from "@/lib/visibleExecutionText";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { ErrorCallout } from "./ui/status-card";
 import { Callout } from "./Callout";
 import { ServerLogo } from "./ServerLogo";
 
@@ -208,7 +209,13 @@ export function PersonalSyncView({
     };
   }, [pending, onRegistryChange]);
   const team = registry.team;
-  const status = team?.accountStatus;
+  const status =
+    team?.accountStatus &&
+    typeof team.accountStatus === "object" &&
+    !Array.isArray(team.accountStatus) &&
+    typeof team.accountStatus.plan === "string"
+      ? team.accountStatus
+      : undefined;
   const sync = team?.personalSyncState;
   // The sidebar badge counts these, so name them here and point to where the
   // review happens.
@@ -282,9 +289,15 @@ export function PersonalSyncView({
         </p>
       )}
       {(error || sync?.error || team?.accountStatusError) && (
-        <Callout variant="danger">
-          <p role="alert">{error || sync?.error || team?.accountStatusError}</p>
-        </Callout>
+        <ErrorCallout
+          title={t("Sync")}
+          cause={error || sync?.error || team?.accountStatusError}
+          onRetry={() =>
+            void run(async () => {
+              onRegistryChange(await getRegistry());
+            })
+          }
+        />
       )}
       {Object.entries(sync?.warnings ?? {}).map(([id, warning]) => (
         <Callout key={id} variant="warning">

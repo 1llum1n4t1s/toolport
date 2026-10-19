@@ -108,10 +108,10 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
             .application(app)
             .title(crate::i18n::tr("Toolport setup"))
             .default_width(660)
-            .default_height(600)
+            .default_height(1)
             .modal(true)
             .transient_for(parent)
-            .resizable(true)
+            .resizable(false)
             .build();
         l10n::bind_window_title(&widget, "Toolport setup");
         widget
@@ -133,6 +133,7 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
     root.append(&header);
 
     let stack = gtk::Stack::builder()
+        .vhomogeneous(false)
         .transition_type(gtk::StackTransitionType::SlideLeftRight)
         .transition_duration(180)
         .vexpand(true)
@@ -204,21 +205,22 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
     let add_feedback = feedback_label(&crate::i18n::tr(
         "Review a client or browse the catalog when you are ready.",
     ));
+    add_feedback.set_visible(false);
     add.append(&add_feedback);
-    let import = l10n::button("Review and connect clients");
-    import.add_css_class("toolport-secondary-action");
+    let import = l10n::button("Review and connect your clients");
+    import.add_css_class("suggested-action");
     add.append(&import);
     let add_nav = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let back_add = l10n::button("Back");
     back_add.add_css_class("flat");
     add_nav.append(&back_add);
-    let catalog = l10n::button("Browse full catalog");
+    let catalog = l10n::button("Browse the full catalog");
     catalog.add_css_class("toolport-secondary-action");
     catalog.set_hexpand(true);
     catalog.set_halign(gtk::Align::End);
     add_nav.append(&catalog);
-    let continue_add = l10n::button("Connect a client");
-    continue_add.add_css_class("suggested-action");
+    let continue_add = l10n::button("I'll add servers later");
+    continue_add.add_css_class("flat");
     add_nav.append(&continue_add);
     add.append(&add_nav);
     stack.add_named(&scroll_page(add), Some("add"));
@@ -298,11 +300,10 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
     let stack_for_back_add = stack.clone();
     back_add.connect_clicked(move |_| stack_for_back_add.set_visible_child_name("welcome"));
     let stack_for_continue = stack.clone();
-    let list_for_continue = connect_list.clone();
-    let feedback_for_continue = connect_feedback.clone();
+    let summary_for_skip = summary.clone();
     continue_add.connect_clicked(move |_| {
-        load_clients(&list_for_continue, &feedback_for_continue);
-        stack_for_continue.set_visible_child_name("connect");
+        refresh_summary(&summary_for_skip);
+        stack_for_continue.set_visible_child_name("done");
     });
     let app_for_catalog = app.clone();
     let window_for_catalog = window.clone();
@@ -978,6 +979,8 @@ fn wizard_page(title: &'static str, subtitle: &'static str) -> gtk::Box {
 
 fn scroll_page(page: gtk::Box) -> gtk::ScrolledWindow {
     gtk::ScrolledWindow::builder()
+        .propagate_natural_height(true)
+        .max_content_height(640)
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vexpand(true)
         .child(&page)

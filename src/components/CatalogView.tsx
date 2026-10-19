@@ -387,7 +387,7 @@ function CatalogCard({
     ? [entry.command, ...entry.args].join(" ")
     : (entry.url ?? "");
   return (
-    <div className="flex min-h-14 items-center gap-3 px-4 py-3 transition-colors hover:bg-foreground/4">
+    <div className="flex h-14 items-center gap-3 px-4 transition-colors hover:bg-foreground/4">
       <ServerLogo name={entry.name} transport={entry.transport} size={28} />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex min-w-0 items-center gap-2">
@@ -403,12 +403,12 @@ function CatalogCard({
           )}
           <Provenance entry={entry} />
         </div>
-        <p className="truncate text-meta text-muted-foreground" title={entry.description}>
+        <p
+          className="truncate text-meta text-muted-foreground"
+          title={`${entry.description} · ${target}`}
+        >
           {entry.description}
         </p>
-        <code title={target} className="truncate font-mono text-meta text-muted-foreground">
-          {target}
-        </code>
       </div>
       <div className="shrink-0">
         {added ? (

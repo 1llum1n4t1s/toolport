@@ -1103,107 +1103,104 @@ function App() {
           )}
 
           <PageHeaderActionsSlot value={headerActionsSlot}>
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="p-3 sm:p-6">
-              <ErrorBoundary
-                resetKey={`${view}:${selectedClient?.id ?? ""}`}
-                fallback={(err, retry) => <ViewCrash error={err} onRetry={retry} />}
-              >
-                <Suspense
-                  fallback={
-                    <SkeletonRows label={t("Loading…")} />
-                  }
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="p-3 sm:p-6">
+                <ErrorBoundary
+                  resetKey={`${view}:${selectedClient?.id ?? ""}`}
+                  fallback={(err, retry) => <ViewCrash error={err} onRetry={retry} />}
                 >
-                  {view === "clients" ? (
-                    selectedClient ? (
-                      <ClientDetail
-                        client={selectedClient}
+                  <Suspense fallback={<SkeletonRows label={t("Loading…")} />}>
+                    {view === "clients" ? (
+                      selectedClient ? (
+                        <ClientDetail
+                          client={selectedClient}
+                          registry={registry}
+                          onChanged={load}
+                          onRegistryChange={applyRegistryChange}
+                        />
+                      ) : (
+                        <ClientsView
+                          clients={clients}
+                          registry={registry}
+                          loading={loading}
+                          error={error}
+                          onSelectClient={selectClient}
+                          onChanged={load}
+                        />
+                      )
+                    ) : view === "skills" ? (
+                      <SkillsView />
+                    ) : view === "activity" ? (
+                      <ActivityView
+                        refreshKey={activityKey}
                         registry={registry}
-                        onChanged={load}
+                        onReviewQuarantine={() => {
+                          setSettingsPage("safety");
+                          setView("settings");
+                        }}
+                      />
+                    ) : view === "catalog" ? (
+                      <CatalogView registry={registry} onAdded={applyRegistryChange} />
+                    ) : view === "teams" ? (
+                      <TeamsView
+                        registry={registry}
+                        onRegistryChange={applyRegistryChange}
+                        health={health}
+                        onReprobe={() => void reprobeAfterMutation().catch(() => {})}
+                        onOpenServers={() => selectView("servers")}
+                      />
+                    ) : view === "settings" ? (
+                      <SettingsView
+                        page={settingsPage}
+                        pendingCount={pendingCount}
+                        registry={registry}
                         onRegistryChange={applyRegistryChange}
                       />
-                    ) : (
-                      <ClientsView
-                        clients={clients}
-                        registry={registry}
-                        loading={loading}
-                        onSelectClient={selectClient}
-                        onChanged={load}
+                    ) : loading && registry === null ? (
+                      <SkeletonRows label={t("Loading servers… ")} />
+                    ) : error ? (
+                      <ErrorState message={error} onRetry={() => load(true)} />
+                    ) : servers.length === 0 ? (
+                      <ServersEmptyState
+                        importable={importable}
+                        onImport={handleImport}
+                        onBrowseCatalog={() => selectView("catalog")}
                       />
-                    )
-                  ) : view === "skills" ? (
-                    <SkillsView />
-                  ) : view === "activity" ? (
-                    <ActivityView
-                      refreshKey={activityKey}
-                      registry={registry}
-                      onReviewQuarantine={() => {
-                        setSettingsPage("safety");
-                        setView("settings");
-                      }}
-                    />
-                  ) : view === "catalog" ? (
-                    <CatalogView registry={registry} onAdded={applyRegistryChange} />
-                  ) : view === "teams" ? (
-                    <TeamsView
-                      registry={registry}
-                      onRegistryChange={applyRegistryChange}
-                      health={health}
-                      onReprobe={() => void reprobeAfterMutation().catch(() => {})}
-                      onOpenServers={() => selectView("servers")}
-                    />
-                  ) : view === "settings" ? (
-                    <SettingsView
-                      page={settingsPage}
-                      pendingCount={pendingCount}
-                      registry={registry}
-                      onRegistryChange={applyRegistryChange}
-                    />
-                  ) : loading && registry === null ? (
-                    <SkeletonRows label={t("Loading servers")} />
-                  ) : error ? (
-                    <ErrorState message={error} onRetry={() => load(true)} />
-                  ) : servers.length === 0 ? (
-                    <ServersEmptyState
-                      importable={importable}
-                      onImport={handleImport}
-                      onBrowseCatalog={() => selectView("catalog")}
-                    />
-                  ) : visible.length === 0 ? (
-                    <SharedEmptyState
-                      icon={<Search />}
-                      title={t('No servers match "{query}".', { query })}
-                      description={t("Try a different server name or transport.")}
-                      action={
-                        <Button variant="outline" onClick={() => setQuery("")}>
-                          <X /> {t("Clear search")}
-                        </Button>
-                      }
-                    />
-                  ) : (
-                    <div className="flex flex-col gap-5">
-                      {backendReachable &&
-                        (attentionCount > 0 ? (
-                          <ServerNextAction
-                            authServers={authAttention}
-                            errorServers={errorAttention}
-                          />
-                        ) : (
-                          <ServerPosture
-                            probing={probing}
-                            enabled={enabledCount}
-                            checked={checkedCount}
-                            connected={connectedCount}
-                            disabled={servers.length - enabledCount}
-                          />
-                        ))}
-                      <div className="toolport-list">{visible.map(serverRow)}</div>
-                    </div>
-                  )}
-                </Suspense>
-              </ErrorBoundary>
-            </div>
-          </ScrollArea>
+                    ) : visible.length === 0 ? (
+                      <SharedEmptyState
+                        icon={<Search />}
+                        title={t('No servers match "{query}".', { query })}
+                        description={t("Try a different server name or transport.")}
+                        action={
+                          <Button variant="outline" onClick={() => setQuery("")}>
+                            <X /> {t("Clear search")}
+                          </Button>
+                        }
+                      />
+                    ) : (
+                      <div className="flex flex-col gap-5">
+                        {backendReachable &&
+                          (attentionCount > 0 ? (
+                            <ServerNextAction
+                              authServers={authAttention}
+                              errorServers={errorAttention}
+                            />
+                          ) : (
+                            <ServerPosture
+                              probing={probing}
+                              enabled={enabledCount}
+                              checked={checkedCount}
+                              connected={connectedCount}
+                              disabled={servers.length - enabledCount}
+                            />
+                          ))}
+                        <div className="toolport-list">{visible.map(serverRow)}</div>
+                      </div>
+                    )}
+                  </Suspense>
+                </ErrorBoundary>
+              </div>
+            </ScrollArea>
           </PageHeaderActionsSlot>
         </main>
         <AddClientLocationDialog

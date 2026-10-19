@@ -6,6 +6,8 @@ import {
   getClientLocationTypes,
   type ClientLocationType,
 } from "@/lib/api";
+import { SkeletonRows } from "@/components/ui/skeleton";
+import { ErrorCallout } from "@/components/ui/status-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -33,11 +35,14 @@ export function AddClientLocationDialog({
   const [folder, setFolder] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
     if (!open) return;
     let current = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the previous dialog error as the client-type request starts.
     setError(null);
+    setLoading(true);
     getClientLocationTypes()
       .then((rows) => {
         if (current) setTypes(rows);
@@ -47,11 +52,14 @@ export function AddClientLocationDialog({
           setError(
             translate("Could not load client types. Close this dialog and try again."),
           );
+      })
+      .finally(() => {
+        if (current) setLoading(false);
       });
     return () => {
       current = false;
     };
-  }, [open]);
+  }, [open, retry]);
   const selected = types.find((type) => type.id === clientType);
   return (
     <Dialog
@@ -69,6 +77,7 @@ export function AddClientLocationDialog({
             )}
           </DialogDescription>
         </DialogHeader>
+        {loading && <SkeletonRows label={t("Loading…")} />}
         <form
           className="flex flex-col gap-4"
           onSubmit={async (event) => {
@@ -123,9 +132,11 @@ export function AddClientLocationDialog({
             </p>
           )}
           {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
+            <ErrorCallout
+              title={t("Add client location")}
+              cause={error}
+              onRetry={() => setRetry((value) => value + 1)}
+            />
           )}
           <Button type="submit" disabled={saving || !folder.trim() || !selected}>
             {saving ? t("Adding…") : t("Add location")}

@@ -66,9 +66,9 @@ describe("ClientsView", () => {
   it("reports session history read failures", async () => {
     vi.mocked(getClientSessions).mockRejectedValueOnce(new Error("failed"));
     render(<ClientsView clients={[]} registry={null} onSelectClient={vi.fn()} />);
-    expect(await screen.findByRole("status")).toHaveTextContent(
-      "Client session history could not be read.",
-    );
+    expect(
+      await screen.findByText("Client session history could not be read."),
+    ).toBeInTheDocument();
   });
   it("groups connected clients before clients available to connect", () => {
     render(

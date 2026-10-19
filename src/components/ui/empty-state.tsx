@@ -39,10 +39,16 @@ export function EmptyState({
       <div className="space-y-1">
         <p className="text-sm font-semibold">{title}</p>
         {description && (
-          <p className="mx-auto max-w-md text-meta text-muted-foreground">{description}</p>
+          <p className="mx-auto max-w-md text-meta text-muted-foreground">
+            {description}
+          </p>
         )}
       </div>
-      {action && <div className="mt-1 flex flex-wrap items-center justify-center gap-2">{action}</div>}
+      {action && (
+        <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
+          {action}
+        </div>
+      )}
     </div>
   );
 }

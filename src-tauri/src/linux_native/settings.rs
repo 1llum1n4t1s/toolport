@@ -35,6 +35,7 @@ pub(super) struct SettingsPage {
     bridge: super::http_bridge::BridgeController,
     broker: crate::approval_broker::ApprovalBroker,
     feedback: gtk::Label,
+    errors: gtk::Box,
     posture: gtk::Label,
     safety_level: gtk::DropDown,
     safety_floor: Rc<Cell<crate::registry::SafetyLevel>>,
@@ -146,9 +147,26 @@ impl SettingsPage {
                 slot.borrow_mut().replace(timer);
             });
         }
+        feedback.connect_notify_local(Some("label"), |label, _| {
+            let weak = label.downgrade();
+            let text = label.label().to_string();
+            gtk::glib::idle_add_local_once(move || {
+                if let Some(label) = weak.upgrade() {
+                    if !text.is_empty()
+                        && label.label() == text
+                        && label.has_css_class("success")
+                        && super::show_toast(&label, &text)
+                    {
+                        label.set_visible(false);
+                    }
+                }
+            });
+        });
         feedback.set_label("");
         feedback.set_visible(false);
         page.append(&feedback);
+        let errors = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        page.append(&errors);
 
         // Security posture in one line, before the individual switches, so the
         // overall stance is legible without reading every toggle.
@@ -806,6 +824,7 @@ l10n::bind_dialog_heading(&error_dialog, msg("Could not start data removal"));
             bridge,
             broker,
             feedback,
+            errors,
             posture,
             safety_level,
             safety_floor: Rc::new(Cell::new(crate::registry::SafetyLevel::Off)),
@@ -2008,9 +2027,23 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
             return;
         }
         let generation = self.mutation_generation.get();
+        while let Some(child) = self.errors.first_child() {
+            self.errors.remove(&child);
+        }
         self.refresh_button.set_sensitive(false);
         if announce {
-            self.set_status(&tr("Loading settings…"));
+            for list in [
+                &self.pinned_list,
+                &self.http_client_list,
+                &self.access_list,
+                &self.folder_list,
+                &self.quarantine_list,
+                &self.allowed_list,
+            ] {
+                if list.first_child().is_none() {
+                    list.append(&super::skeleton_rows());
+                }
+            }
         }
         let page = self.clone();
         let broker = self.broker.clone();
@@ -2215,8 +2248,18 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
     }
 
     fn show_error(&self, error: &str) {
+        while let Some(child) = self.errors.first_child() {
+            self.errors.remove(&child);
+        }
+        let page = self.clone();
+        self.errors
+            .append(&super::error_callout(msg("Settings"), error, move || {
+                page.refresh_with_feedback(true)
+            }));
+
         self.set_status(&trf("Settings error: {error}", &[("error", (error))]));
         self.feedback.add_css_class("error");
+        self.feedback.set_visible(false);
     }
 
     fn render_quarantine(&self, entries: Result<Vec<QuarantinedTool>, String>) {
@@ -2226,23 +2269,10 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
         let entries = match entries {
             Ok(entries) => entries,
             Err(error) => {
-                let row = gtk::Box::new(gtk::Orientation::Vertical, 0);
-                row.add_css_class("toolport-setting-row");
-                row.append(&source_formatted_label(
-                    msg("Blocked-tool state is unknown: {error}"),
-                    &[("error", &(error).to_string())],
-                    gtk::Label::builder()
-                        .label(trf(
-                            "Blocked-tool state is unknown: {error}",
-                            &[("error", &(error).to_string())],
-                        ))
-                        .halign(gtk::Align::Fill)
-                        .xalign(0.0)
-                        .wrap(true)
-                        .hexpand(true)
-                        .css_classes(["error"])
-                        .build(),
-                ));
+                let page = self.clone();
+                let row = super::error_callout(msg("Quarantined tools"), &error, move || {
+                    page.refresh_with_feedback(true)
+                });
                 self.quarantine_list.append(&row);
                 if let Some(section) = self.quarantine_list.parent() {
                     section.set_visible(true);
@@ -2475,6 +2505,8 @@ fn open_access_tool_scope(
     content.append(&feedback);
     let tool_list = gtk::Box::new(gtk::Orientation::Vertical, 0);
     tool_list.add_css_class("toolport-settings-group");
+    tool_list.append(&super::skeleton_rows());
+    feedback.set_visible(false);
     content.append(&tool_list);
     let scroller = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -2492,8 +2524,13 @@ fn open_access_tool_scope(
     let selections_for_save = selections.clone();
     let page_for_save = page.clone();
     let window_for_save = window.clone();
-    let server_id = server.id;
+    let server_id = server.id.clone();
     let server_id_for_save = server_id.clone();
+    let retry_window = window.clone();
+    let retry_page = page.clone();
+    let retry_server = server.clone();
+    let retry_profile = profile_id.clone();
+    let retry_scope = current_scope.clone();
     save.connect_clicked(move |button| {
         button.set_sensitive(false);
         let selections = selections_for_save.borrow();
@@ -2533,10 +2570,24 @@ fn open_access_tool_scope(
     gtk::glib::spawn_future_local(async move {
         let result =
             gtk::gio::spawn_blocking(move || crate::playground::list_tools(&server_id)).await;
+        while let Some(child) = tool_list.first_child() {
+            tool_list.remove(&child);
+        }
+        let retry = move || {
+            retry_window.close();
+            open_access_tool_scope(
+                retry_server.clone(),
+                retry_profile.clone(),
+                retry_scope.clone(),
+                retry_page.clone(),
+            );
+        };
         match result {
             Ok(Ok(tools)) => {
                 if tools.is_empty() {
-                    feedback.set_label(&tr("This server does not advertise any tools."));
+                    tool_list.append(&empty_state(&tr(
+                        "This server does not advertise any tools.",
+                    )));
                     return;
                 }
                 for tool in tools {
@@ -2568,16 +2619,14 @@ fn open_access_tool_scope(
                 save.set_sensitive(!selections_for_load.borrow().is_empty());
             }
             Ok(Err(error)) => {
-                l10n::bind_formatted_label(
-                    &feedback,
-                    msg("Could not load tools: {error}"),
-                    &[("error", &(error).to_string())],
-                );
-                feedback.add_css_class("error");
+                tool_list.append(&super::error_callout(msg("Tools"), &error, retry));
             }
             Err(_) => {
-                feedback.set_label(&tr("The server tool read stopped unexpectedly."));
-                feedback.add_css_class("error");
+                tool_list.append(&super::error_callout(
+                    msg("Tools"),
+                    &tr("The server tool read stopped unexpectedly."),
+                    retry,
+                ));
             }
         }
     });
@@ -3176,19 +3225,10 @@ pub(super) fn set_switch(switch: &gtk::Switch, on: bool) {
 }
 
 fn empty_state(text: &str) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    row.add_css_class("toolport-setting-row");
-    row.append(
-        &gtk::Label::builder()
-            .label(text)
-            .halign(gtk::Align::Fill)
-            .xalign(0.0)
-            .wrap(true)
-            .hexpand(true)
-            .css_classes(["toolport-muted"])
-            .build(),
-    );
-    row
+    let card = super::state_card("view-list-symbolic", msg("Nothing here yet"), "", false);
+    let detail = card.last_child().and_downcast::<gtk::Label>().unwrap();
+    detail.set_label(text);
+    card
 }
 
 fn setting_switch_row(title: &'static str, description: &'static str) -> (gtk::Box, gtk::Switch) {
