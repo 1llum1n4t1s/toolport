@@ -436,13 +436,7 @@ function ResourcesPanel({ serverId }: { serverId: string }) {
 
   if (loading) return <Connecting />;
   if (error)
-    return (
-      <ErrorCallout
-        title={t("Connecting to server…")}
-        cause={error}
-        onRetry={retryList}
-      />
-    );
+    return <ErrorCallout title={t("Resources")} cause={error} onRetry={retryList} />;
   if (!resources || resources.length === 0) {
     return <EmptyState title={t("This server advertises no resources.")} />;
   }
@@ -582,13 +576,7 @@ function PromptsPanel({ serverId }: { serverId: string }) {
 
   if (loading) return <Connecting />;
   if (error)
-    return (
-      <ErrorCallout
-        title={t("Connecting to server…")}
-        cause={error}
-        onRetry={retryList}
-      />
-    );
+    return <ErrorCallout title={t("Prompts")} cause={error} onRetry={retryList} />;
   if (!prompts || prompts.length === 0) {
     return <EmptyState title={t("This server advertises no prompts.")} />;
   }

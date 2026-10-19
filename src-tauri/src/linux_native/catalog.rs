@@ -841,10 +841,11 @@ fn catalog_card(
                         )));
                         page.refresh();
                     }
-                    Ok(Err(error)) => page.show_error(&error),
-                    Err(_) => {
-                        page.show_error(&crate::i18n::tr("the add operation stopped unexpectedly"))
-                    }
+                    Ok(Err(error)) => page.show_suggestion_message(&error, true),
+                    Err(_) => page.show_suggestion_message(
+                        &crate::i18n::tr("the add operation stopped unexpectedly"),
+                        true,
+                    ),
                 }
             });
         });

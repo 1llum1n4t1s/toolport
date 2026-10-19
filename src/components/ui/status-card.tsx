@@ -128,7 +128,7 @@ export function ErrorCallout({
             type="button"
             variant="outline"
             size="sm"
-            onClick={onRetry}
+            onClick={() => onRetry()}
             disabled={retrying}
             aria-label={retryAriaLabel}
           >

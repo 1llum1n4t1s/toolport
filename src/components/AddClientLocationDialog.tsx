@@ -34,6 +34,7 @@ export function AddClientLocationDialog({
   const [clientType, setClientType] = useState("claude-code");
   const [folder, setFolder] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [errorSource, setErrorSource] = useState<"load" | "submit" | null>(null);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [retry, setRetry] = useState(0);
@@ -42,16 +43,17 @@ export function AddClientLocationDialog({
     let current = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear the previous dialog error as the client-type request starts.
     setError(null);
+    setErrorSource(null);
     setLoading(true);
     getClientLocationTypes()
       .then((rows) => {
         if (current) setTypes(rows);
       })
       .catch(() => {
-        if (current)
-          setError(
-            translate("Could not load client types. Close this dialog and try again."),
-          );
+        if (current) {
+          setErrorSource("load");
+          setError(translate("Could not load client types."));
+        }
       })
       .finally(() => {
         if (current) setLoading(false);
@@ -84,12 +86,14 @@ export function AddClientLocationDialog({
             event.preventDefault();
             setSaving(true);
             setError(null);
+            setErrorSource(null);
             try {
               const id = await addClientLocation(clientType, folder);
               await onAdded(id);
               setFolder("");
               onOpenChange(false);
             } catch (error) {
+              setErrorSource("submit");
               setError(error instanceof Error ? error.message : String(error));
             } finally {
               setSaving(false);
@@ -135,7 +139,9 @@ export function AddClientLocationDialog({
             <ErrorCallout
               title={t("Add client location")}
               cause={error}
-              onRetry={() => setRetry((value) => value + 1)}
+              onRetry={
+                errorSource === "load" ? () => setRetry((value) => value + 1) : undefined
+              }
             />
           )}
           <Button type="submit" disabled={saving || !folder.trim() || !selected}>

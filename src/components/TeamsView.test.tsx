@@ -649,6 +649,28 @@ describe("Sync setup", () => {
       screen.queryByRole("button", { name: /Share selected/ }),
     ).not.toBeInTheDocument();
   });
+  it("retries persisted personal sync errors before reloading the registry", async () => {
+    const solo = structuredClone(registry);
+    solo.team!.accountStatus = {
+      personalSync: true,
+      plan: "pro",
+      deviceId: "fixture",
+      canReceiveConfig: true,
+      trialActive: false,
+      trialEndsAt: null,
+      freeSyncGraceEndsAt: null,
+      reason: null,
+    };
+    solo.team!.personalSyncState = { error: "Network offline" };
+    api.teamSync.mockResolvedValue(solo);
+    api.getRegistry.mockResolvedValue(solo);
+    const changed = vi.fn();
+    render(<TeamsView registry={solo} onRegistryChange={changed} />);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(changed).toHaveBeenCalledWith(solo));
+    expect(api.teamSync).toHaveBeenCalledOnce();
+    expect(api.getRegistry).toHaveBeenCalledOnce();
+  });
   it("shows per-server publish errors and asks which local servers to sync", async () => {
     const personal = structuredClone(registry);
     personal.team!.accountStatus = {

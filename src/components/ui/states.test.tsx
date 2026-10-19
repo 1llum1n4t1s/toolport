@@ -41,7 +41,7 @@ describe("list states", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Offline");
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     fireEvent.click(screen.getByRole("button", { name: "View log" }));
-    expect(retry).toHaveBeenCalledOnce();
+    expect(retry).toHaveBeenCalledExactlyOnceWith();
     expect(log).toHaveBeenCalledOnce();
     expect(submit).not.toHaveBeenCalled();
   });

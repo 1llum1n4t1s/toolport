@@ -1,4 +1,3 @@
-import { toastError } from "@/lib/toast";
 import { Trans, msg, translate, useI18n, type SourceMessage } from "@/lib/i18n";
 import { secretReferenceReview } from "@/lib/secretRefs";
 import { PersonalSyncView } from "./PersonalSyncView";
@@ -628,9 +627,7 @@ export function TeamsView({
             team?.accountStatusError
           }
           onRetry={() =>
-            void getRegistry()
-              .then(onRegistryChange)
-              .catch((e: unknown) => toastError(String(e)))
+            void run("retry", async () => onRegistryChange(await getRegistry()))
           }
         />
       )}

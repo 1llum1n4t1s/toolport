@@ -198,13 +198,13 @@ impl ServerToolsPanel {
             self.prompts.append(&prompt_row(prompt, self.clone()));
         }
         if resource_count == 0 {
-            self.resources.append(&empty_capability(&crate::i18n::tr(
+            self.resources.append(&empty_capability(crate::i18n::msg(
                 "No resources advertised",
             )));
         }
         if prompt_count == 0 {
             self.prompts
-                .append(&empty_capability(&crate::i18n::tr("No prompts advertised")));
+                .append(&empty_capability(crate::i18n::msg("No prompts advertised")));
         }
         *self.last_load.borrow_mut() = Some((capabilities, policy));
         self.render_tools();
@@ -258,7 +258,7 @@ impl ServerToolsPanel {
         }
         if capabilities.tools.is_empty() {
             self.tools
-                .append(&empty_capability(&crate::i18n::tr("No tools advertised")));
+                .append(&empty_capability(crate::i18n::msg("No tools advertised")));
             return;
         }
         let query = self.tool_filter.text().to_lowercase();
@@ -290,7 +290,7 @@ impl ServerToolsPanel {
             ));
         }
         if shown == 0 {
-            self.tools.append(&empty_capability(&crate::i18n::tr(
+            self.tools.append(&empty_capability(crate::i18n::msg(
                 "No tool matches the filter",
             )));
         }
@@ -361,18 +361,13 @@ fn capability_list() -> gtk::Box {
     gtk::Box::new(gtk::Orientation::Vertical, 10)
 }
 
-fn empty_capability(message: &str) -> gtk::Box {
-    let card = super::state_card(
+fn empty_capability(message: &'static str) -> gtk::Box {
+    super::state_card(
         "view-list-symbolic",
         crate::i18n::msg("Nothing here yet"),
-        "",
+        message,
         false,
-    );
-    card.last_child()
-        .and_downcast::<gtk::Label>()
-        .unwrap()
-        .set_label(message);
-    card
+    )
 }
 
 /// GtkLabel implements `lines` as a negative Pango layout height, and Pango

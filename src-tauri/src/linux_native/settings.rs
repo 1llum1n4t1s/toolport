@@ -2027,9 +2027,6 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
             return;
         }
         let generation = self.mutation_generation.get();
-        while let Some(child) = self.errors.first_child() {
-            self.errors.remove(&child);
-        }
         self.refresh_button.set_sensitive(false);
         if announce {
             for list in [
@@ -2086,6 +2083,9 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
                         page.refresh_button.set_sensitive(true);
                         return;
                     }
+                    while let Some(child) = page.errors.first_child() {
+                        page.errors.remove(&child);
+                    }
                     page.render_access_sets(access_registry);
                     page.render_settings(settings);
                     page.render_restart_advice(restart_advice);
@@ -2104,7 +2104,7 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
                     page.render_folder_routing(folder_routing);
                     page.render_http_clients(http_clients);
                     page.render_pinned_prerequisites(pinned);
-                    if announce {
+                    if announce && !page.feedback.has_css_class("error") {
                         // Clearing, not announcing: the load succeeding is not
                         // news, and a green "up to date" bar stacked above the
                         // red approval-gates warning competed with it.
@@ -2114,11 +2114,11 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
                 }
                 Ok(Err(error)) => {
                     page.refreshing.set(false);
-                    page.show_error(&error);
+                    page.show_read_error(&error);
                 }
                 Err(_) => {
                     page.refreshing.set(false);
-                    page.show_error(&tr("the settings read stopped unexpectedly"));
+                    page.show_read_error(&tr("the settings read stopped unexpectedly"));
                 }
             }
         });
@@ -2247,7 +2247,22 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
         self.feedback.remove_css_class("success");
     }
 
-    fn show_error(&self, error: &str) {
+    fn show_read_error(&self, error: &str) {
+        for list in [
+            &self.pinned_list,
+            &self.http_client_list,
+            &self.access_list,
+            &self.folder_list,
+            &self.quarantine_list,
+            &self.allowed_list,
+        ] {
+            if let Some(child) = list
+                .first_child()
+                .filter(|child| child.has_css_class("toolport-skeleton-group"))
+            {
+                list.remove(&child);
+            }
+        }
         while let Some(child) = self.errors.first_child() {
             self.errors.remove(&child);
         }
@@ -2256,10 +2271,12 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
             .append(&super::error_callout(msg("Settings"), error, move || {
                 page.refresh_with_feedback(true)
             }));
+    }
 
-        self.set_status(&trf("Settings error: {error}", &[("error", (error))]));
+    fn show_error(&self, error: &str) {
+        self.set_status(&trf("Settings error: {error}", &[("error", error)]));
         self.feedback.add_css_class("error");
-        self.feedback.set_visible(false);
+        self.feedback.set_visible(true);
     }
 
     fn render_quarantine(&self, entries: Result<Vec<QuarantinedTool>, String>) {
@@ -3357,6 +3374,37 @@ fn source_formatted_label(
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b6_recovery_refresh_preserves_mutation_error() {
+        let _data = crate::registry::DataDirTestEnv::new("b6-settings-errors");
+        crate::registry::save(&crate::registry::Registry::default()).unwrap();
+        adw::init().unwrap();
+        let page = SettingsPage::new(
+            super::super::http_bridge::BridgeController::default(),
+            crate::approval_broker::start_native(),
+        );
+        page.show_read_error("Temporary read failure");
+        page.show_error("Fixture save failed");
+        page.refresh();
+        assert!(page.feedback.label().contains("Fixture save failed"));
+        gtk::glib::MainContext::default().block_on(async {
+            for _ in 0..100 {
+                if !page.refreshing.get() {
+                    break;
+                }
+                gtk::glib::timeout_future(std::time::Duration::from_millis(20)).await;
+            }
+        });
+        assert!(!page.refreshing.get());
+        assert!(
+            page.errors.first_child().is_none(),
+            "successful recovery should clear read error only"
+        );
+        assert!(page.feedback.is_visible());
+        assert!(page.feedback.label().contains("Fixture save failed"));
+    }
+
     #[test]
     fn settings_pages_match_the_sidebar_order() {
         assert_eq!(

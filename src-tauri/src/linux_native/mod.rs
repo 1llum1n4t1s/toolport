@@ -2839,12 +2839,12 @@ impl ClientPage {
             page.import_button.set_sensitive(true);
             match result {
                 Ok(Ok(snapshot)) => page.render(snapshot),
-                Ok(Err(error)) => page.show_error(&crate::i18n::trf(
+                Ok(Err(error)) => page.show_scan_error(&crate::i18n::trf(
                     "Could not scan clients: {value0}",
                     &[("value0", &error.to_string())],
                 )),
                 Err(_) => {
-                    page.show_error(&crate::i18n::tr("The client scan stopped unexpectedly."))
+                    page.show_scan_error(&crate::i18n::tr("The client scan stopped unexpectedly."))
                 }
             }
         });
@@ -3064,7 +3064,7 @@ impl ClientPage {
         }
     }
 
-    fn show_error(&self, error: &str) {
+    fn show_scan_error(&self, error: &str) {
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
@@ -3080,6 +3080,15 @@ impl ClientPage {
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
         self.feedback.set_visible(false);
+    }
+
+    fn show_error(&self, error: &str) {
+        self.pending_confirmation.borrow_mut().take();
+        self.cancel_feedback_timer();
+        self.feedback.set_label(error);
+        self.feedback.remove_css_class("success");
+        self.feedback.add_css_class("error");
+        self.feedback.set_visible(true);
     }
 
     fn show_progress(&self, message: &str) {
@@ -5233,23 +5242,16 @@ impl ActivityPage {
                 move || page.refresh(),
             ));
             self.feedback.set_visible(false);
+            l10n::bind_label(&self.security_status_title, "Protection state unavailable");
+            l10n::bind_label(
+                &self.security_status_detail,
+                "Retry Activity to check saved reviews.",
+            );
             return;
         }
         // A failed refresh over real rows must never read as "all clear": keep
         // the last loaded data on screen and say it is stale.
-        if self.last_snapshot.borrow().is_some() {
-            l10n::bind_formatted_label(&self.feedback, "Could not refresh; showing the last loaded activity. Retry with the refresh button. ({value0})", &[("value0", error)]);
-        } else {
-            l10n::bind_formatted_label(
-                &self.feedback,
-                "Could not load activity: {value0}",
-                &[("value0", error)],
-            );
-            self.security_status_title
-                .set_label(&crate::i18n::tr("Protection state unavailable"));
-            self.security_status_detail
-                .set_label(&crate::i18n::tr("Retry Activity to check saved reviews."));
-        }
+        l10n::bind_formatted_label(&self.feedback, "Could not refresh; showing the last loaded activity. Retry with the refresh button. ({value0})", &[("value0", error)]);
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
         self.feedback.set_visible(true);

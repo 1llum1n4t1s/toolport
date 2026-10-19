@@ -436,7 +436,20 @@ fn fit_page(window: &adw::ApplicationWindow, stack: &gtk::Stack) {
             .and_then(|viewport| viewport.child())
             .unwrap_or(content);
         let (_, natural, _, _) = content.measure(gtk::Orientation::Vertical, 660);
-        let height = (natural + 48).clamp(280, 740);
+        // GTK4 exposes monitor geometry, not work area. Leave room for the panel
+        // and outer window margins; the page scroller handles the remaining content.
+        let available = window
+            .surface()
+            .and_then(|surface| surface.display().monitor_at_surface(&surface))
+            .or_else(|| {
+                gtk::prelude::WidgetExt::display(window)
+                    .monitors()
+                    .item(0)
+                    .and_downcast::<gtk::gdk::Monitor>()
+            })
+            .map(|monitor| (monitor.geometry().height() - 64).max(1))
+            .unwrap_or(740);
+        let height = (natural + 48).clamp(280, 740).min(available);
         window.set_size_request(660, height);
         window.set_default_size(660, height);
     }
@@ -1190,6 +1203,12 @@ mod tests {
                 window.height(),
                 window.default_height(),
                 window.height_request()
+            );
+            let surface = window.surface().unwrap();
+            let monitor = surface.display().monitor_at_surface(&surface).unwrap();
+            assert!(
+                window.height() <= monitor.geometry().height() - 64,
+                "onboarding must leave room for the panel and window margins"
             );
             assert!(click(window.upcast_ref(), "Back"));
             gtk::glib::timeout_future(std::time::Duration::from_millis(250)).await;

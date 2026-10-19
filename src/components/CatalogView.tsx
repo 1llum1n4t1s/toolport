@@ -404,10 +404,11 @@ function CatalogCard({
           <Provenance entry={entry} />
         </div>
         <p
-          className="truncate text-meta text-muted-foreground"
+          className="flex min-w-0 gap-2 text-meta text-muted-foreground"
           title={`${entry.description} · ${target}`}
         >
-          {entry.description}
+          <span className="min-w-0 flex-1 truncate">{entry.description}</span>
+          <span className="max-w-1/2 shrink-0 truncate font-mono">{target}</span>
         </p>
       </div>
       <div className="shrink-0">

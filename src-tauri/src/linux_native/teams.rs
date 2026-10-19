@@ -1074,8 +1074,8 @@ impl TeamsPage {
             button.set_sensitive(true);
             match result {
                 Ok(Ok(outcome)) => page.absorb_sync_result(outcome),
-                Ok(Err(error)) => page.show_error(&error),
-                Err(_) => page.show_error(&tr("the team sync stopped unexpectedly")),
+                Ok(Err(error)) => page.show_sync_error(&error, &button),
+                Err(_) => page.show_sync_error(&tr("the team sync stopped unexpectedly"), &button),
             }
         });
     }
@@ -1336,6 +1336,18 @@ impl TeamsPage {
         } else {
             self.feedback.remove_css_class("error");
         }
+    }
+
+    fn show_sync_error(&self, error: &str, button: &gtk::Button) {
+        self.show_error(error);
+        while let Some(child) = self.errors.first_child() {
+            self.errors.remove(&child);
+        }
+        let (page, button) = (self.clone(), button.clone());
+        self.errors
+            .append(&super::error_callout(msg("Sync"), error, move || {
+                page.sync(button.clone())
+            }));
     }
 
     fn show_error(&self, error: &str) {

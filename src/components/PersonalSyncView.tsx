@@ -294,6 +294,8 @@ export function PersonalSyncView({
           cause={error || sync?.error || team?.accountStatusError}
           onRetry={() =>
             void run(async () => {
+              if (sync?.signInRequired) await reconnectSync();
+              else if (sync?.error || team?.accountStatusError) await teamSync();
               onRegistryChange(await getRegistry());
             })
           }

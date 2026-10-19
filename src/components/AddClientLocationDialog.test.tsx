@@ -8,6 +8,8 @@ vi.mock("@/lib/api", () => ({
   getClientLocationTypes: vi.fn(),
 }));
 beforeEach(() => {
+  vi.mocked(addClientLocation).mockClear();
+  vi.mocked(getClientLocationTypes).mockClear();
   vi.mocked(getClientLocationTypes).mockResolvedValue([
     { id: "claude-code", name: "Claude Code", configFile: ".claude.json" },
     { id: "codex", name: "Codex", configFile: "config.toml" },
@@ -38,4 +40,16 @@ it("keeps the folder for correction after a validation failure", async () => {
     "Choose an existing client config folder",
   );
   expect(screen.getByLabelText("Config folder")).toHaveValue("/missing");
+});
+it("retries type loading without submitting, and hides Retry for submission errors", async () => {
+  vi.mocked(getClientLocationTypes).mockRejectedValueOnce(new Error("Offline"));
+  vi.mocked(addClientLocation).mockRejectedValue(new Error("Cannot save location"));
+  render(<AddClientLocationDialog open onOpenChange={vi.fn()} onAdded={vi.fn()} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Retry" }));
+  await screen.findByRole("option", { name: "Claude Code" });
+  expect(addClientLocation).not.toHaveBeenCalled();
+  await userEvent.type(screen.getByLabelText("Config folder"), "/fixture");
+  await userEvent.click(screen.getByRole("button", { name: "Add location" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Cannot save location");
+  expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
 });
