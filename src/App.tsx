@@ -1164,6 +1164,7 @@ function App() {
                       <ServersEmptyState
                         importable={importable}
                         onImport={handleImport}
+                        onAddServer={() => setAddServerOpen(true)}
                         onBrowseCatalog={() => selectView("catalog")}
                       />
                     ) : visible.length === 0 ? (
@@ -1476,10 +1477,12 @@ function ServerNextAction({
 function ServersEmptyState({
   importable,
   onImport,
+  onAddServer,
   onBrowseCatalog,
 }: {
   importable: number;
   onImport: () => void;
+  onAddServer: () => void;
   onBrowseCatalog: () => void;
 }) {
   const { t } = useI18n();
@@ -1501,15 +1504,20 @@ function ServersEmptyState({
           : t("Browse the catalog to add one, or import servers from a client.")
       }
       action={
-        importable > 0 ? (
-          <Button variant="outline" onClick={onImport}>
-            <Download /> {t("Import")} {importable} {t("from clients")}
+        <>
+          <Button variant="outline" onClick={onAddServer}>
+            <Plus /> {t("Add server")}
           </Button>
-        ) : (
-          <Button variant="outline" onClick={onBrowseCatalog}>
-            <Store /> {t("Browse catalog")}
-          </Button>
-        )
+          {importable > 0 ? (
+            <Button variant="outline" onClick={onImport}>
+              <Download /> {t("Import")} {importable} {t("from clients")}
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={onBrowseCatalog}>
+              <Store /> {t("Browse catalog")}
+            </Button>
+          )}
+        </>
       }
     />
   );

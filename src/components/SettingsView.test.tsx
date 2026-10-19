@@ -167,7 +167,7 @@ describe("SettingsView tool loading", () => {
     await user.click(githubToggle);
     expect(screen.getByRole("dialog")).toHaveAccessibleName("Choose tools for GitHub");
 
-    expect(screen.getByText("Loading tools…")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Loading tools…" })).toBeInTheDocument();
 
     // Open Slack while GitHub is still pending (request B starts).
     await user.keyboard("{Escape}");
@@ -179,14 +179,14 @@ describe("SettingsView tool loading", () => {
     );
 
     // Slack is now the visible expanded server.
-    expect(screen.getByText("Loading tools…")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Loading tools…" })).toBeInTheDocument();
 
     // Resolve GitHub first.
     githubRequest.resolve([{ name: "repo-search" }]);
 
     // Slack should still be loading because loading is tracked per server.
     await waitFor(() => {
-      expect(screen.getByText("Loading tools…")).toBeInTheDocument();
+      expect(screen.getByRole("status", { name: "Loading tools…" })).toBeInTheDocument();
     });
 
     // Resolve Slack afterwards.
@@ -195,7 +195,9 @@ describe("SettingsView tool loading", () => {
     expect(await screen.findByText("send-message")).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(screen.queryByText("Loading tools…")).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("status", { name: "Loading tools…" }),
+      ).not.toBeInTheDocument();
     });
   });
 });

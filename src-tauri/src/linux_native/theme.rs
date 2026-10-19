@@ -1259,6 +1259,7 @@ button.toolport-catalog-action {{
 }}
 .toolport-state-card.error .toolport-state-icon {{ color: @toolport_error; }}
 
+.toolport-manual-code {{ background: @toolport_card; border: 1px solid @toolport_border; border-radius: 12px; padding: 16px; }}
 .toolport-error-callout {{ background: @toolport_card; border: 1px solid @toolport_border; border-left: 3px solid @toolport_error; border-radius: 12px; padding: 16px; }}
 .toolport-error-tile {{ background: alpha(@toolport_error, 0.12); color: @toolport_error; border-radius: 8px; }}
 .toolport-inline-error {{ font-size: 13px; color: @toolport_error; }}

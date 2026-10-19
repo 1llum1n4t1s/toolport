@@ -18,6 +18,6 @@ it("skips adding servers directly to the setup review", () => {
     />,
   );
   fireEvent.click(screen.getByRole("button", { name: /I'll add servers later/ }));
-  expect(screen.getAllByText("Setup started").length).toBeGreaterThan(0);
+  expect(screen.getByRole("dialog")).toHaveAccessibleName("Setup started");
   expect(screen.queryByText("Connect a client")).not.toBeInTheDocument();
 });

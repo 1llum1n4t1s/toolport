@@ -55,7 +55,9 @@ describe("Onboarding dialog accessibility", () => {
     await user.click(screen.getByRole("button", { name: /Set up MCP servers/ }));
     expect(screen.getByRole("dialog")).toHaveAccessibleName("Add your first servers");
 
-    await user.click(screen.getByRole("button", { name: /I'll add servers later/ }));
+    await user.click(
+      screen.getByRole("button", { name: /Review and connect your clients/ }),
+    );
     expect(screen.getByRole("dialog")).toHaveAccessibleName("Connect a client");
 
     // Done: the name tracks the live verification state, then settles on success.

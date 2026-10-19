@@ -362,14 +362,18 @@ impl TeamsPage {
         self.content.append(&sign_in);
         self.content.append(
             &gtk::Label::builder()
-                .label(crate::teams_plan::pro_line())
+                .label(format!("{} {}", trf("Free: {people} person, 1 device. No card required.", &[("people", &crate::teams_plan::FREE_SEATS.to_string())]), trf("Pro is ${monthly}/month or ${annual}/year for one person on unlimited devices. Try it free for 14 days, no card.", &[("monthly", "5"), ("annual", "48")])))
                 .wrap(true)
                 .xalign(0.0)
                 .build(),
         );
         let group = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        group.add_css_class("toolport-settings-group");
-        group.append(&super::section_heading(crate::i18n::msg("Use a manual code"), crate::i18n::msg("If your browser cannot open Toolport, copy the manual code shown after approving this device.")));
+        group.set_margin_top(16);
+        let detail = l10n::label(msg("If your browser cannot open Toolport, copy the manual code shown after approving this device."));
+        detail.set_wrap(true);
+        detail.set_xalign(0.0);
+        detail.add_css_class("toolport-muted");
+        group.append(&detail);
         let url = gtk::Entry::builder()
             .text(crate::teams::HOSTED_TEAMS_URL)
             .build();
@@ -407,7 +411,7 @@ impl TeamsPage {
             .expanded(false)
             .child(&group)
             .build();
-        manual.add_css_class("toolport-settings-group");
+        manual.add_css_class("toolport-manual-code");
         self.content.append(&manual);
     }
 
