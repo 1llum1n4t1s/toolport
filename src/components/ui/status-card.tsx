@@ -90,6 +90,7 @@ export function ErrorCallout({
   cause,
   onRetry,
   retryLabel,
+  retryAriaLabel,
   retrying = false,
   onViewLog,
   actions,
@@ -100,6 +101,8 @@ export function ErrorCallout({
   cause?: ReactNode;
   onRetry?: () => void;
   retryLabel?: ReactNode;
+  /** Accessible name for Retry when several retries share a page. */
+  retryAriaLabel?: string;
   retrying?: boolean;
   onViewLog?: () => void;
   /** Extra buttons, placed after View log and Retry. */
@@ -117,7 +120,13 @@ export function ErrorCallout({
           </Button>
         )}
         {onRetry && (
-          <Button variant="outline" size="sm" onClick={onRetry} disabled={retrying}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRetry}
+            disabled={retrying}
+            aria-label={retryAriaLabel}
+          >
             <RotateCw className={retrying ? "animate-spin" : undefined} />
             {retryLabel ?? t("Retry")}
           </Button>

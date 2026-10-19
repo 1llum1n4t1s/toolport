@@ -18,6 +18,7 @@ import {
   Download,
   Fingerprint,
   History,
+  RefreshCw,
   ScrollText,
   Search,
   Share2,
@@ -61,8 +62,13 @@ import {
   getSearchTraces,
   getSecurityEvents,
   getToolIdentities,
+  openGatewayLog,
   type SecurityEvent,
 } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { SkeletonRows } from "@/components/ui/skeleton";
+import { ErrorCallout, StatusCard } from "@/components/ui/status-card";
 import type {
   AuditEntry,
   AuditStats,
@@ -268,28 +274,26 @@ function SecurityLoadNotice({
 function AuditStaleNotice({ onRetry }: { onRetry: () => void }) {
   const { t: tr } = useI18n();
   return (
-    <div
+    <StatusCard
       role="alert"
-      className="mb-4 flex items-center gap-3 toolport-alert border-warning bg-warning/8 px-4 py-2.5 text-meta"
-    >
-      <AlertTriangle className="size-4 shrink-0 text-warning" />
-      <span className="text-muted-foreground">
-        <span className="block font-semibold text-foreground">
-          {tr("Activity may be out of date.")}
-        </span>{" "}
-        {tr(
-          "Showing the last calls Toolport read successfully; the latest refresh failed.",
-        )}
-      </span>
-      <button
-        type="button"
-        onClick={onRetry}
-        aria-label={tr("Retry activity log")}
-        className="ml-auto shrink-0 rounded-md border px-2.5 py-1 font-medium text-foreground transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-      >
-        {tr("Retry")}
-      </button>
-    </div>
+      variant="warning"
+      icon={<AlertTriangle />}
+      title={tr("Activity may be out of date.")}
+      detail={tr(
+        "Showing the last calls Toolport read successfully; the latest refresh failed.",
+      )}
+      actions={
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onRetry}
+          aria-label={tr("Retry activity log")}
+        >
+          {tr("Retry")}
+        </Button>
+      }
+      className="mb-4"
+    />
   );
 }
 
@@ -1349,16 +1353,13 @@ function DiscoveryRow({ t }: { t: SearchTrace }) {
 /** Loading placeholder for a self-contained Activity panel, shown only while its
  * first fetch is in flight (never once real rows exist — a live refresh should not
  * flash this over last-known data). */
-function PanelLoadingNotice({ label, icon: Icon }: { label: string; icon: LucideIcon }) {
+function PanelLoadingNotice({ label }: { label: string; icon?: LucideIcon }) {
   const { t: tr } = useI18n();
   return (
-    <div
-      role="status"
-      className="mb-6 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-4 text-meta text-muted-foreground"
-    >
-      <Icon className="size-4 shrink-0" />
-      <span>{tr("Loading {value1}…", { value1: label.toLowerCase() })}</span>
-    </div>
+    <SkeletonRows
+      className="mb-6"
+      label={tr("Loading {value1}…", { value1: label.toLowerCase() })}
+    />
   );
 }
 
@@ -1368,26 +1369,13 @@ function PanelLoadingNotice({ label, icon: Icon }: { label: string; icon: Lucide
 function PanelErrorNotice({ label, onRetry }: { label: string; onRetry: () => void }) {
   const { t: tr } = useI18n();
   return (
-    <div
-      role="alert"
-      className="mb-6 flex items-center gap-3 toolport-alert border-warning bg-warning/8 p-4 text-meta"
-    >
-      <AlertTriangle className="size-4 shrink-0 text-warning" />
-      <span className="text-muted-foreground">
-        <span className="block font-semibold text-foreground">
-          {tr("Couldn't load {label}.", { label: label.toLocaleLowerCase() })}
-        </span>{" "}
-        {tr("This isn't necessarily empty — Toolport couldn't check.")}
-      </span>
-      <button
-        type="button"
-        onClick={onRetry}
-        aria-label={tr("Retry loading {value1}", { value1: label.toLowerCase() })}
-        className="ml-auto shrink-0 rounded-md border px-2.5 py-1 font-medium text-foreground transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-      >
-        {tr("Retry")}
-      </button>
-    </div>
+    <ErrorCallout
+      className="mb-6"
+      title={tr("Couldn't load {label}.", { label: label.toLocaleLowerCase() })}
+      cause={tr("This isn't necessarily empty — Toolport couldn't check.")}
+      onRetry={onRetry}
+      retryAriaLabel={tr("Retry loading {value1}", { value1: label.toLowerCase() })}
+    />
   );
 }
 
@@ -2232,9 +2220,7 @@ export function ActivityView({
     return (
       <div>
         {banner}
-        <div className="flex items-center justify-center py-24 text-sm text-muted-foreground">
-          {tr("Loading activity…")}
-        </div>
+        <SkeletonRows label={tr("Loading activity…")} />
       </div>
     );
   }
@@ -2243,25 +2229,15 @@ export function ActivityView({
     return (
       <div>
         {banner}
-        <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
-          <AlertTriangle className="size-10 text-destructive" />
-          <div>
-            <p className="font-medium">{tr("Couldn't load activity")}</p>
-            <p className="max-w-md text-sm text-muted-foreground">
-              {tr(
-                "Toolport couldn't reach the gateway or read the audit log. This is not an empty log, if the gateway isn't running, start it and refresh.",
-              )}
-            </p>
-            <button
-              type="button"
-              onClick={retryLoads}
-              aria-label={tr("Retry activity log")}
-              className="mt-3 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-            >
-              {tr("Retry")}
-            </button>
-          </div>
-        </div>
+        <ErrorCallout
+          title={tr("Couldn't load activity")}
+          cause={tr(
+            "Toolport couldn't reach the gateway or read the audit log. This is not an empty log, if the gateway isn't running, start it and refresh.",
+          )}
+          onRetry={retryLoads}
+          retryAriaLabel={tr("Retry activity log")}
+          onViewLog={() => void openGatewayLog().catch((e: unknown) => toastError(String(e)))}
+        />
       </div>
     );
   }
@@ -2272,29 +2248,39 @@ export function ActivityView({
     return (
       <div>
         {banner}
-        <div className="flex items-center justify-center py-24 text-sm text-destructive">
-          {tr("Activity status is unavailable. Retry the activity log.")}
-        </div>
+        <ErrorCallout
+          title={tr("Activity status is unavailable. Retry the activity log.")}
+          onRetry={retryLoads}
+          retryAriaLabel={tr("Retry activity log")}
+        />
       </div>
     );
   }
 
   if (entries.length === 0 && auditLoadStatus === "stale") {
+    // One card: the stale notice already says the refresh failed and offers Retry.
     return (
       <div>
         {banner}
-        <AuditStaleNotice onRetry={retryLoads} />
-        <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
-          <AlertTriangle className="size-10 text-warning" />
-          <div>
-            <p className="font-medium">{tr("No current activity status")}</p>
-            <p className="max-w-md text-sm text-muted-foreground">
-              {tr(
-                "The last successful read found no calls, but the latest refresh failed, so Toolport can't verify that the log is still empty.",
-              )}
-            </p>
-          </div>
-        </div>
+        <StatusCard
+          role="alert"
+          variant="warning"
+          icon={<AlertTriangle />}
+          title={tr("No current activity status")}
+          detail={tr(
+            "The last successful read found no calls, but the latest refresh failed, so Toolport can't verify that the log is still empty.",
+          )}
+          actions={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={retryLoads}
+              aria-label={tr("Retry activity log")}
+            >
+              {tr("Retry")}
+            </Button>
+          }
+        />
       </div>
     );
   }
@@ -2303,17 +2289,18 @@ export function ActivityView({
     return (
       <div>
         {banner}
-        <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
-          <ScrollText className="size-10 text-muted-foreground" />
-          <div>
-            <p className="font-medium">{tr("No activity yet")}</p>
-            <p className="max-w-md text-sm text-muted-foreground">
-              {tr(
-                "Calls and approval outcomes appear here. Call totals and error rates count tools that ran.",
-              )}
-            </p>
-          </div>
-        </div>
+        <EmptyState
+          icon={<ScrollText />}
+          title={tr("No activity yet")}
+          description={tr(
+            "Calls and approval outcomes appear here. Call totals and error rates count tools that ran.",
+          )}
+          action={
+            <Button variant="outline" onClick={retryLoads}>
+              <RefreshCw /> {tr("Refresh")}
+            </Button>
+          }
+        />
       </div>
     );
   }
@@ -2428,29 +2415,32 @@ export function ActivityView({
 
           <div className="flex flex-col gap-1">
             {visible.length === 0 ? (
-              <div className="flex flex-col items-center gap-2 py-12 text-center">
-                <p className="text-sm text-muted-foreground">
-                  {errorsOnly && !serverFilter
+              <EmptyState
+                icon={<Search />}
+                title={
+                  errorsOnly && !serverFilter
                     ? tr("No errors in the last {value1} calls.", {
                         value1: entries.length,
                       })
-                    : tr("No calls match this filter.")}
-                </p>
-                {(serverFilter || errorsOnly) && (
-                  <button
-                    onClick={() => {
-                      setServerFilter("");
-                      setErrorsOnly(false);
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  >
-                    <Trans
-                      message="{value1} Clear filter"
-                      values={{ value1: <X className="size-3.5" /> }}
-                    />
-                  </button>
-                )}
-              </div>
+                    : tr("No calls match this filter.")
+                }
+                action={
+                  (serverFilter || errorsOnly) && (
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setServerFilter("");
+                        setErrorsOnly(false);
+                      }}
+                    >
+                      <Trans
+                        message="{value1} Clear filter"
+                        values={{ value1: <X /> }}
+                      />
+                    </Button>
+                  )
+                }
+              />
             ) : (
               stableListKeys(visible, (e) => `${e.ts}-${e.server}-${e.tool}`).map(
                 (key, i) => <CallRow key={key} e={visible[i]} />,
