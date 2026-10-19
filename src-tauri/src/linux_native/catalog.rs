@@ -512,10 +512,12 @@ impl CatalogPage {
             self.list.append(&card);
             return;
         }
+        // One row group, like React's catalog list (spec 9).
+        let rows = super::row_group();
         for entry in entries {
-            self.list
-                .append(&catalog_card(entry, &existing, self.clone()));
+            rows.append(&catalog_card(entry, &existing, self.clone()));
         }
+        self.list.append(&rows);
     }
 
     fn show_error(&self, error: &str) {
@@ -641,7 +643,7 @@ fn suggestion_row(
         let add = l10n::button("Add");
         add.set_size_request(72, -1);
         add.set_valign(gtk::Align::Center);
-        add.add_css_class("suggested-action");
+        add.add_css_class("toolport-secondary-action");
         add.add_css_class("toolport-catalog-action");
         let entry_for_add = entry.clone();
         add.connect_clicked(move |button| {
@@ -725,6 +727,7 @@ fn catalog_card(
     let card = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     card.add_css_class("toolport-card");
     let icon = super::branding::server_logo(&entry.name, &entry.transport);
+    icon.set_valign(gtk::Align::Center);
     card.append(&icon);
     let copy = gtk::Box::new(gtk::Orientation::Vertical, 3);
     copy.set_hexpand(true);
@@ -818,7 +821,7 @@ fn catalog_card(
         action_slot.append(&added);
     } else {
         let add = l10n::button("Add");
-        add.add_css_class("suggested-action");
+        add.add_css_class("toolport-secondary-action");
         add.add_css_class("toolport-catalog-action");
         add.set_valign(gtk::Align::Center);
         add.set_size_request(72, -1);

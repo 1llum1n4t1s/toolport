@@ -707,6 +707,7 @@ fn open_exposure_editor(
         .default_width(560)
         .default_height(420)
         .build();
+    super::close_on_escape(&window);
     let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
     root.set_margin_top(18);
     root.set_margin_bottom(18);
@@ -779,7 +780,7 @@ fn open_exposure_editor(
     actions.set_halign(gtk::Align::End);
     let cancel = l10n::button("Cancel");
     let reset = l10n::button("Reset to original");
-    reset.add_css_class("destructive-action");
+    reset.add_css_class("toolport-destructive");
     reset.set_sensitive(current.is_some());
     reset.set_tooltip_text(Some(&crate::i18n::tr(
         "Remove the override so clients see the server's original name and description",
@@ -1208,6 +1209,7 @@ fn open_json_action(
         .modal(true)
         .default_width(560)
         .build();
+    super::close_on_escape(&dialog);
     let shell = gtk::Box::new(gtk::Orientation::Vertical, 0);
     // The window title was set but never shown, because nothing here drew a
     // header bar the way the result dialog does.
@@ -1474,6 +1476,7 @@ fn show_output(page: &ServerToolsPanel, title: &str, value: serde_json::Value) {
         .default_width(720)
         .default_height(560)
         .build();
+    super::close_on_escape(&dialog);
     let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
