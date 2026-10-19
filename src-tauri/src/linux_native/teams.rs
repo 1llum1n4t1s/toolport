@@ -349,14 +349,18 @@ impl TeamsPage {
     }
 
     fn show_sync_status(&self, registry: &crate::registry::Registry) {
-        if !crate::personal_sync::is_personal(registry) {
-            self.render_sync_status();
-            return;
-        }
         let recent_error = self.action_error.borrow().as_ref().and_then(|error| {
             (error.at.elapsed() < std::time::Duration::from_secs(30))
                 .then(|| (error.message.clone(), error.retry.clone()))
         });
+        if !crate::personal_sync::is_personal(registry) {
+            self.render_sync_status();
+            // The status line stays; a failed sync or read keeps its Retry callout.
+            if let Some((error, Some(retry))) = recent_error {
+                self.show_callout(&error, retry);
+            }
+            return;
+        }
         if let Some((error, retry)) = recent_error {
             // Replay with the original Retry so a sync failure still retries the sync.
             self.show_failure(&error, retry);
@@ -1411,6 +1415,13 @@ impl TeamsPage {
         };
         // The callout carries the error, so the inline line stays hidden.
         self.feedback.set_visible(false);
+        self.show_callout(error, retry);
+    }
+
+    fn show_callout(&self, error: &str, retry: ErrorRetry) {
+        while let Some(child) = self.errors.first_child() {
+            self.errors.remove(&child);
+        }
         let page = self.clone();
         self.errors.append(&super::error_callout(
             msg("Sync"),
@@ -2509,6 +2520,26 @@ mod tests {
         assert_eq!(retry_kind(&page), Some("refresh"));
         page.clear_action_error(|retry| matches!(retry, Some(super::ErrorRetry::Refresh)));
         assert_eq!(retry_kind(&page), None);
+
+        // A shared team keeps its status line and still replays the sync callout.
+        let team = crate::registry::Registry {
+            team: Some(
+                serde_json::from_value(serde_json::json!({
+                    "teamId":"fixture", "role":"admin", "serverUrl":"http://127.0.0.1:1"
+                }))
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        assert!(!crate::personal_sync::is_personal(&team));
+        page.show_sync_error("Team sync failed", &button);
+        while let Some(child) = page.errors.first_child() {
+            page.errors.remove(&child);
+        }
+        page.show_sync_status(&team);
+        assert!(page.errors.first_child().is_some());
+        assert!(page.feedback.is_visible());
+        assert_eq!(retry_kind(&page), Some("sync"));
     }
 
     #[test]
