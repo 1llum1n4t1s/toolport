@@ -210,8 +210,7 @@ pub(super) struct SkillsPage {
     /// The detail pane's state controls by agent, to give focus back after a write redraws them.
     controls: Rc<RefCell<HashMap<String, gtk::Widget>>>,
     last_control: Rc<RefCell<Option<String>>>,
-    /// A control in an agent row other than its switch that was just used (`agent#menu`), so a
-    /// redraw puts focus back there rather than on the switch.
+    /// The last activated control slot (`agent` for its switch, `agent#menu` for its menu).
     focused_choice: Rc<RefCell<Option<String>>>,
     /// The control a click is about to redraw (a group header, a column filter), so the redrawn
     /// copy gets keyboard focus back.
@@ -772,7 +771,8 @@ impl Pane {
                     None => format!("<b>{name}</b>"),
                 });
             }
-            hint.set_visible(shown.is_some());
+            // Keep the single-line hint allocated: hover must not move the cell below it.
+            hint.set_opacity(if shown.is_some() { 1.0 } else { 0.0 });
         }
     }
 
@@ -1748,7 +1748,7 @@ impl SkillsPage {
         let title_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
         title_box.set_hexpand(true);
         let hint = one_line("", &["caption", "toolport-muted"]);
-        hint.set_visible(false);
+        hint.set_opacity(0.0);
         title_box.append(&hint);
         pane.hint.replace(Some(hint));
         let title = section(label);
@@ -2421,18 +2421,20 @@ impl SkillsPage {
         restore_scroll(&pane.detail_scroll, scroll);
         // A write redraws the pane; put focus back on the control the user just used.
         if let Some(agent) = self.last_control.borrow_mut().take() {
-            let choice = self
-                .focused_choice
-                .borrow()
-                .clone()
-                .filter(|key| key.starts_with(&format!("{agent}#")));
-            let controls = self.controls.borrow();
-            if let Some(control) = choice
-                .and_then(|key| controls.get(&key))
-                .or_else(|| controls.get(&agent))
-            {
-                control.grab_focus();
-            }
+            self.restore_agent_control(&agent);
+        }
+    }
+
+    fn restore_agent_control(&self, agent: &str) {
+        let choice = self.focused_choice.borrow();
+        let controls = self.controls.borrow();
+        if let Some(control) = choice
+            .as_ref()
+            .filter(|key| *key == agent || key.starts_with(&format!("{agent}#")))
+            .and_then(|key| controls.get(key))
+            .or_else(|| controls.get(agent))
+        {
+            control.grab_focus();
         }
     }
 
@@ -2562,7 +2564,10 @@ impl SkillsPage {
         self.controls
             .borrow_mut()
             .insert(agent.id.clone(), switch.clone().upcast());
+        let focused = self.focused_choice.clone();
+        let slot = agent.id.clone();
         switch.connect_state_set(move |_, active| {
+            focused.replace(Some(slot.clone()));
             set(if active { Wanted::On } else { Wanted::Off });
             gtk::glib::Propagation::Proceed
         });
@@ -3352,6 +3357,138 @@ mod tests {
             by_pattern: false,
         };
         assert_eq!(dot_detail(Some(&state)), "Off in config.toml");
+    }
+
+    fn regression_agent() -> Agent {
+        Agent {
+            id: "claude-code".into(),
+            name: "Claude Code".into(),
+            supports_skills: true,
+            verified: true,
+            can_toggle: true,
+            name_only: true,
+            switch_note: String::new(),
+            roots: vec![],
+            rules_note: None,
+            rule_locations: vec![],
+        }
+    }
+
+    #[test]
+    #[ignore = "requires GTK; explicitly run in the isolated omabox session"]
+    fn column_hover_and_focus_preserve_header_height() {
+        gtk::init().expect("this regression runs inside omabox");
+        let _lock = crate::registry::data_dir_test_lock();
+        let scratch = std::env::temp_dir().join(format!(
+            "toolport-column_hover_and_focus_preserve_header_height-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _data = crate::registry::DataDirOverride::set(&scratch);
+        let app = adw::Application::builder().build();
+        let page = SkillsPage::new(&app);
+        let agent = regression_agent();
+        for pane in [&page.skills, &page.rules] {
+            page.render_head(pane, &[&agent], "SKILL", false);
+            for column in [NARROW_COLUMN, WIDE_COLUMN] {
+                for cell in pane.cells.borrow().values().flatten() {
+                    cell.set_width_request(column);
+                }
+                let height = || pane.head.measure(gtk::Orientation::Vertical, 640);
+                let before = height();
+                for _ in 0..10 {
+                    pane.hover_column(&agent.id, &agent.name, Some("Off in settings.json"), true);
+                    assert_eq!(height(), before, "hover must not resize the header");
+                    pane.focus_column(&agent.id, &agent.name, true);
+                    pane.hover_column(&agent.id, &agent.name, None, false);
+                    assert_eq!(height(), before, "keyboard hint must not resize the header");
+                    pane.focus_column(&agent.id, &agent.name, false);
+                    assert_eq!(height(), before, "leaving must not resize the header");
+                }
+            }
+        }
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires GTK; explicitly run in the isolated omabox session"]
+    fn menu_then_switch_then_switch_restores_latest_control() {
+        gtk::init().expect("this regression runs inside omabox");
+        let _lock = crate::registry::data_dir_test_lock();
+        let scratch = std::env::temp_dir().join(format!(
+            "toolport-menu_then_switch_then_switch_restores_latest_control-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _data = crate::registry::DataDirOverride::set(&scratch);
+        let app = adw::Application::builder().build();
+        let page = SkillsPage::new(&app);
+        let agent = regression_agent();
+        let skill: Skill = serde_json::from_value(serde_json::json!({
+            "key": "synthetic", "name": "synthetic", "description": "", "descriptionChars": 0,
+            "path": "", "folder": "", "source": "yours", "sourceNote": "", "editable": false,
+            "sizeBytes": 0, "lines": 0, "modifiedSecs": null, "gitRepo": null,
+            "links": [], "states": {}, "preview": ""
+        }))
+        .unwrap();
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let seen = writes.clone();
+        let set: Rc<dyn Fn(Wanted)> = Rc::new(move |wanted| seen.borrow_mut().push(wanted));
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let window = gtk::Window::builder().child(&row).build();
+        let menu = page.name_only_menu(&agent, false, set.clone());
+        row.append(&menu);
+        let switch = page.state_switch(&agent, &skill, true, set.clone());
+        row.append(&switch);
+        // Exercise the actual menu callback, without writing to any real client config.
+        let content = menu
+            .popover()
+            .unwrap()
+            .child()
+            .unwrap()
+            .downcast::<gtk::Box>()
+            .unwrap();
+        let check = content
+            .first_child()
+            .unwrap()
+            .next_sibling()
+            .unwrap()
+            .downcast::<gtk::CheckButton>()
+            .unwrap();
+        check.set_active(true);
+        assert_eq!(
+            page.focused_choice.borrow().as_deref(),
+            Some("claude-code#menu")
+        );
+        page.restore_agent_control(&agent.id);
+        switch.grab_focus();
+        // Each write rebuilds the switch, as render_skill_detail does after a scan.
+        let mut current = switch;
+        for active in [false, true] {
+            current.emit_by_name::<bool>("state-set", &[&active]);
+            assert_eq!(
+                page.focused_choice.borrow().as_deref(),
+                Some(agent.id.as_str())
+            );
+            row.remove(&current);
+            current = page.state_switch(&agent, &skill, active, set.clone());
+            row.append(&current);
+            page.restore_agent_control(&agent.id);
+            assert!(
+                gtk::prelude::RootExt::focus(&window).as_ref() == Some(current.upcast_ref()),
+                "redraw must restore the switch, not the old menu"
+            );
+            assert!(
+                !menu.is_active(),
+                "the second activation must not open the menu"
+            );
+        }
+        assert_eq!(
+            *writes.borrow(),
+            vec![Wanted::NameOnly, Wanted::Off, Wanted::On]
+        );
+        window.close();
+        std::fs::remove_dir_all(&scratch).unwrap();
     }
 
     #[test]
