@@ -8058,21 +8058,111 @@ fn request_pairing(origin: String, team: String, page: ServerPage) {
 /// it includes, then copy a link, copy the JSON, or save it to a file. All
 /// three paths export the same secret-free document.
 fn share_setup(page: ServerPage) {
-    let Some(parent) = page.app.active_window() else {
+    let servers = page.last_snapshot.borrow().as_ref().map(|snapshot| {
+        snapshot
+            .servers
+            .iter()
+            .map(|server| (server.id.clone(), server.name.clone()))
+            .collect()
+    });
+    if let Some(servers) = servers {
+        share_setup_loaded(page, servers);
+        return;
+    }
+    let Some(parent) = page
+        .list
+        .root()
+        .and_downcast::<gtk::Window>()
+        .or_else(|| page.app.active_window().map(|window| window.upcast()))
+    else {
         return;
     };
-    let servers: Vec<(String, String)> = page
-        .last_snapshot
-        .borrow()
-        .as_ref()
-        .map(|snapshot| {
-            snapshot
-                .servers
-                .iter()
-                .map(|server| (server.id.clone(), server.name.clone()))
-                .collect()
+    let window = adw::Window::builder()
+        .application(&page.app)
+        .transient_for(&parent)
+        .modal(true)
+        .title(crate::i18n::tr("Share this setup"))
+        .default_width(640)
+        .build();
+    l10n::bind_window_title(&window, crate::i18n::msg("Share this setup"));
+    window.add_css_class("toolport-editor");
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let header = adw::HeaderBar::new();
+    let done = l10n::button(crate::i18n::msg("Done"));
+    let closing = window.clone();
+    done.connect_clicked(move |_| closing.close());
+    header.pack_end(&done);
+    root.append(&header);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    body.add_css_class("toolport-editor-body");
+    root.append(&body);
+    window.set_content(Some(&root));
+    load_share_dialog(&window, &body, page);
+    window.present();
+}
+
+fn load_share_dialog(window: &adw::Window, body: &gtk::Box, page: ServerPage) {
+    while let Some(child) = body.first_child() {
+        body.remove(&child);
+    }
+    body.append(&skeleton_rows());
+    let (window, body) = (window.downgrade(), body.downgrade());
+    gtk::glib::spawn_future_local(async move {
+        let result = gtk::gio::spawn_blocking(|| {
+            state::load_read_only(crate::registry::resolved_path().as_deref())
         })
-        .unwrap_or_default();
+        .await;
+        let (Some(window), Some(body)) = (window.upgrade(), body.upgrade()) else {
+            return;
+        };
+        if !window.is_visible() {
+            return;
+        }
+        let error = match result {
+            Ok(state::RegistryState::Ready(snapshot)) => {
+                let servers = snapshot
+                    .servers
+                    .iter()
+                    .map(|server| (server.id.clone(), server.name.clone()))
+                    .collect();
+                window.close();
+                share_setup_loaded(page, servers);
+                return;
+            }
+            Ok(state::RegistryState::FirstRun) => {
+                window.close();
+                share_setup_loaded(page, Vec::new());
+                return;
+            }
+            Ok(state::RegistryState::NewerVersion(message)) => message,
+            _ => crate::i18n::tr("Configuration could not be displayed"),
+        };
+        while let Some(child) = body.first_child() {
+            body.remove(&child);
+        }
+        let (retry_window, retry_body, retry_page) =
+            (window.downgrade(), body.downgrade(), page.clone());
+        body.append(&error_callout(
+            crate::i18n::msg("Servers unavailable"),
+            &error,
+            move || {
+                if let (Some(window), Some(body)) = (retry_window.upgrade(), retry_body.upgrade()) {
+                    load_share_dialog(&window, &body, retry_page.clone());
+                }
+            },
+        ));
+    });
+}
+
+fn share_setup_loaded(page: ServerPage, servers: Vec<(String, String)>) {
+    let Some(parent) = page
+        .list
+        .root()
+        .and_downcast::<gtk::Window>()
+        .or_else(|| page.app.active_window().map(|window| window.upcast()))
+    else {
+        return;
+    };
     let window = {
         let widget = adw::Window::builder()
             .application(&page.app)
@@ -12707,6 +12797,61 @@ mod tests {
             }
         });
         window.close();
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b6_share_unknown_registry_retries_without_claiming_empty() {
+        use super::*;
+        adw::init().unwrap();
+        let data = crate::registry::DataDirTestEnv::new("b6-share-recovery");
+        std::fs::write(data.dir.join("registry.json"), "{broken").unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.ShareStateTest")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let (content, page, _) = build_content(&app, crate::approval_broker::start_native());
+        let parent = adw::ApplicationWindow::builder()
+            .application(&app)
+            .content(&content)
+            .build();
+        parent.present();
+        share_setup(page);
+        fn widgets(widget: &gtk::Widget, found: &mut Vec<gtk::Widget>) {
+            found.push(widget.clone());
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+                widgets(&widget, found);
+            }
+        }
+        gtk::glib::MainContext::default().block_on(async {
+            let mut retry = None;
+            for _ in 0..100 {
+                let mut all = Vec::new();
+                for window in app.windows() { if window.title().as_deref() == Some("Share this setup") { widgets(window.upcast_ref(), &mut all); } }
+                assert!(!all.iter().filter_map(|widget| widget.downcast_ref::<gtk::Label>()).any(|label| label.label() == "No servers yet"));
+                retry = all.iter().filter_map(|widget| widget.downcast_ref::<gtk::Button>()).find(|button| button.label().as_deref() == Some("Retry")).cloned();
+                if retry.is_some() { break; }
+                gtk::glib::timeout_future(std::time::Duration::from_millis(20)).await;
+            }
+            let retry = retry.expect("Share should show recovery actions for an unknown registry");
+            let mut registry = crate::registry::Registry::default();
+            registry.servers.push(serde_json::from_value(serde_json::json!({"id":"fixture", "name":"Fixture share server", "transport":"stdio", "command":"fixture-only", "enabled":true})).unwrap());
+            std::fs::write(data.dir.join("registry.json"), serde_json::to_vec(&registry).unwrap()).unwrap();
+            retry.emit_clicked();
+            let mut recovered = false;
+            for _ in 0..100 {
+                let mut all = Vec::new();
+                for window in app.windows() { if window.title().as_deref() == Some("Share this setup") { widgets(window.upcast_ref(), &mut all); } }
+                recovered = all.iter().filter_map(|widget| widget.downcast_ref::<gtk::CheckButton>()).any(|button| button.label().as_deref() == Some("Fixture share server"));
+                if recovered { break; }
+                gtk::glib::timeout_future(std::time::Duration::from_millis(20)).await;
+            }
+            assert!(recovered, "Retry should replace the error with the loaded share form");
+            for window in app.windows() { window.close(); }
+        });
     }
 
     #[test]
