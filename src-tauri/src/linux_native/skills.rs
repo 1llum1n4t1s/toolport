@@ -14,6 +14,7 @@ use adw::prelude::*;
 // page, must contribute their content height to the scrolling list at every width.
 mod issue_frame {
     use adw::prelude::*;
+    use gtk::glib;
     use gtk::subclass::prelude::*;
     use std::cell::OnceCell;
 
@@ -65,7 +66,7 @@ mod issue_frame {
 }
 
 gtk::glib::wrapper! {
-    pub(super) struct IssueFrame(ObjectSubclass<issue_frame::Frame>)
+    pub struct IssueFrame(ObjectSubclass<issue_frame::Frame>)
         @extends gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
