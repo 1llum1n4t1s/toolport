@@ -52,7 +52,21 @@ pub(super) struct TeamsPage {
     sync_line: Rc<RefCell<Option<gtk::Label>>>,
     /// The last failed action. Polls redraw the status line every few seconds,
     /// so without this an error vanished before anyone could read it.
-    action_error: Rc<RefCell<Option<(String, std::time::Instant)>>>,
+    action_error: Rc<RefCell<Option<ActionError>>>,
+}
+
+/// What Retry reruns. Failures without one (validation, a declined join, a
+/// failed save) show as plain inline feedback instead of a callout.
+#[derive(Clone)]
+enum ErrorRetry {
+    Refresh,
+    Sync(gtk::Button),
+}
+
+struct ActionError {
+    message: String,
+    at: std::time::Instant,
+    retry: Option<ErrorRetry>,
 }
 
 impl TeamsPage {
@@ -153,9 +167,15 @@ impl TeamsPage {
                     continue;
                 }
                 match result {
-                    Ok(Ok(snapshot)) => page.render_snapshot(snapshot),
-                    Ok(Err(error)) => page.show_error(&error),
-                    Err(_) => page.show_error(&tr("the team status read stopped unexpectedly")),
+                    Ok(Ok(snapshot)) => {
+                        page.clear_action_error(|retry| matches!(retry, Some(ErrorRetry::Refresh)));
+                        page.render_snapshot(snapshot)
+                    }
+                    Ok(Err(error)) => page.show_failure(&error, Some(ErrorRetry::Refresh)),
+                    Err(_) => page.show_failure(
+                        &tr("the team status read stopped unexpectedly"),
+                        Some(ErrorRetry::Refresh),
+                    ),
                 }
                 break;
             }
@@ -333,11 +353,13 @@ impl TeamsPage {
             self.render_sync_status();
             return;
         }
-        let recent_error = self.action_error.borrow().as_ref().and_then(|(error, at)| {
-            (at.elapsed() < std::time::Duration::from_secs(30)).then(|| error.clone())
+        let recent_error = self.action_error.borrow().as_ref().and_then(|error| {
+            (error.at.elapsed() < std::time::Duration::from_secs(30))
+                .then(|| (error.message.clone(), error.retry.clone()))
         });
-        if let Some(error) = recent_error {
-            self.show_error(&error);
+        if let Some((error, retry)) = recent_error {
+            // Replay with the original Retry so a sync failure still retries the sync.
+            self.show_failure(&error, retry);
             return;
         }
         // The status line under the title says it; the banner only carries errors.
@@ -1086,6 +1108,7 @@ impl TeamsPage {
     /// state because `refresh` renders asynchronously and would otherwise
     /// overwrite whatever is set here.
     fn absorb_sync_result(&self, result: crate::teams::SyncResult) {
+        self.clear_action_error(|retry| matches!(retry, Some(ErrorRetry::Sync(_))));
         match result {
             crate::teams::SyncResult::Removed => {
                 let message = tr("You were removed from the team. Its shared servers and this machine's team token have been cleared.");
@@ -1338,44 +1361,65 @@ impl TeamsPage {
         }
     }
 
-    fn show_sync_error(&self, error: &str, button: &gtk::Button) {
-        self.show_error(error);
-        while let Some(child) = self.errors.first_child() {
-            self.errors.remove(&child);
+    /// Forget the last failure once the action it came from has succeeded.
+    fn clear_action_error(&self, from: impl Fn(Option<&ErrorRetry>) -> bool) {
+        let mut last = self.action_error.borrow_mut();
+        if last
+            .as_ref()
+            .is_some_and(|error| from(error.retry.as_ref()))
+        {
+            *last = None;
         }
-        let (page, button) = (self.clone(), button.clone());
-        self.errors
-            .append(&super::error_callout(msg("Sync"), error, move || {
-                page.sync(button.clone())
-            }));
+    }
+
+    fn show_sync_error(&self, error: &str, button: &gtk::Button) {
+        self.show_failure(error, Some(ErrorRetry::Sync(button.clone())));
     }
 
     fn show_error(&self, error: &str) {
+        self.show_failure(error, None);
+    }
+
+    fn show_failure(&self, error: &str, retry: Option<ErrorRetry>) {
         while let Some(child) = self.errors.first_child() {
             self.errors.remove(&child);
         }
-        let page = self.clone();
-        self.errors
-            .append(&super::error_callout(msg("Sync"), error, move || {
-                page.refresh()
-            }));
-
         let now = std::time::Instant::now();
         let mut last = self.action_error.borrow_mut();
         // Re-showing the same error keeps its original deadline.
-        if last.as_ref().is_none_or(|(previous, _)| previous != error) {
-            *last = Some((error.to_string(), now));
+        if last
+            .as_ref()
+            .is_none_or(|previous| previous.message != error)
+        {
+            *last = Some(ActionError {
+                message: error.to_string(),
+                at: now,
+                retry: retry.clone(),
+            });
         }
         drop(last);
-        l10n::bind_formatted_label(
-            &self.feedback,
-            msg("Sync error: {error}"),
-            &[("error", (error))],
-        );
-        self.feedback.set_visible(true);
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
+        let Some(retry) = retry else {
+            l10n::bind_formatted_label(
+                &self.feedback,
+                msg("Sync error: {error}"),
+                &[("error", (error))],
+            );
+            self.feedback.set_visible(true);
+            return;
+        };
+        // The callout carries the error, so the inline line stays hidden.
         self.feedback.set_visible(false);
+        let page = self.clone();
+        self.errors.append(&super::error_callout(
+            msg("Sync"),
+            error,
+            move || match &retry {
+                ErrorRetry::Refresh => page.refresh(),
+                ErrorRetry::Sync(button) => page.sync(button.clone()),
+            },
+        ));
     }
 }
 
@@ -2409,6 +2453,62 @@ mod tests {
         }
         let team = serde_json::from_value(serde_json::json!({"teamId":"fixture", "role":"member", "serverUrl":"https://example.invalid", "accountStatus":{"plan":"pro"}})).unwrap();
         assert_eq!(super::account_status(&team)["plan"], "pro");
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b6_sync_errors_keep_their_retry_and_validation_stays_inline() {
+        adw::init().unwrap();
+        let _data = crate::registry::DataDirTestEnv::new("gtk-teams-error-retry");
+        let app = adw::Application::builder()
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let (_, servers, _) =
+            super::super::build_content(&app, crate::approval_broker::start_native());
+        let page = super::TeamsPage::new(&app, servers);
+        let registry = crate::registry::Registry {
+            team: Some(serde_json::from_value(serde_json::json!({"teamId":"solo","role":"admin","serverUrl":"http://127.0.0.1:1","accountStatus":{"personalSync":true,"plan":"pro","canReceiveConfig":true},"personalSyncState":{"initialized":true}})).unwrap()),
+            ..Default::default()
+        };
+        assert!(crate::personal_sync::is_personal(&registry));
+        page.render(registry.clone());
+        let retry_kind = |page: &super::TeamsPage| {
+            page.action_error
+                .borrow()
+                .as_ref()
+                .map(|error| match error.retry {
+                    None => "inline",
+                    Some(super::ErrorRetry::Refresh) => "refresh",
+                    Some(super::ErrorRetry::Sync(_)) => "sync",
+                })
+        };
+
+        // Validation: plain inline feedback, no Retry callout, also after a redraw.
+        page.show_error("Enter the sync service URL and manual code");
+        assert!(page.errors.first_child().is_none());
+        assert!(page.feedback.is_visible());
+        assert!(page.feedback.text().contains("Enter the sync service URL"));
+        page.show_sync_status(&registry);
+        assert!(page.errors.first_child().is_none());
+        assert_eq!(retry_kind(&page), Some("inline"));
+
+        // A sync failure replayed by the watcher or a page switch still retries the sync.
+        let button = gtk::Button::new();
+        page.show_sync_error("Network offline", &button);
+        assert!(page.errors.first_child().is_some());
+        assert!(!page.feedback.is_visible());
+        page.show_sync_status(&registry);
+        assert!(page.errors.first_child().is_some());
+        assert_eq!(retry_kind(&page), Some("sync"));
+
+        // A successful reread clears a read failure but not a sync failure.
+        page.clear_action_error(|retry| matches!(retry, Some(super::ErrorRetry::Refresh)));
+        assert_eq!(retry_kind(&page), Some("sync"));
+        page.show_failure("registry unreadable", Some(super::ErrorRetry::Refresh));
+        assert_eq!(retry_kind(&page), Some("refresh"));
+        page.clear_action_error(|retry| matches!(retry, Some(super::ErrorRetry::Refresh)));
+        assert_eq!(retry_kind(&page), None);
     }
 
     #[test]

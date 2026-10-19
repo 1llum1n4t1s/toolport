@@ -833,7 +833,7 @@
   "Toolport has no automatic fix for this one.": "O Toolport não tem correção automática para isso.",
   "Toolport is ready for setup": "Toolport está pronto para configuração",
   "Toolport is still running": "Toolport ainda está em execução",
-  "Toolport left the registry untouched. Open the app again to inspect or recover it.": "Toolport deixou o registro intacto. Abra o aplicativo novamente para inspecioná-lo ou recuperá-lo.",
+  "Toolport couldn't read the registry and didn't change it. Fix or restore the file, then retry.": "O Toolport não conseguiu ler o registro e não o alterou. Corrija ou restaure o arquivo e tente novamente.",
   "Toolport manages {value0} server for {value2} connected client.": "O Toolport gerencia {value0} servidor para {value2} cliente conectado.",
   "Toolport manages {value0} server for {value2} connected clients.": "O Toolport gerencia {value0} servidor para {value2} clientes conectados.",
   "Toolport manages {value0} servers for {value2} connected client.": "O Toolport gerencia {value0} servidores para {value2} cliente conectado.",

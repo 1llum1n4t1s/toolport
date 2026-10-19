@@ -146,6 +146,8 @@ export function TeamsView({
   const [memberName, setMemberName] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<TeamsFeedback | null>(null);
+  // Which action threw. Only a failed sync gets the Retry callout.
+  const [errorFrom, setErrorFrom] = useState<string | null>(null);
   const [notice, setNotice] = useState<TeamsFeedback | null>(null);
   const [skipNote, setSkipNote] = useState<
     string | { review: number; blocked: number } | null
@@ -252,12 +254,14 @@ export function TeamsView({
   async function run(label: string, fn: () => Promise<void>) {
     setBusy(label);
     setError(null);
+    setErrorFrom(null);
     setNotice(null);
     setSkipNote(null);
     try {
       await fn();
     } catch (e) {
       setError(String(e));
+      setErrorFrom(label);
     } finally {
       setBusy(null);
     }
@@ -618,17 +622,23 @@ export function TeamsView({
         <h2 className="text-base font-semibold">{tr("Toolport Teams")}</h2>
       </div>
 
-      {(error || team?.accountStatusError) && (
+      {error && errorFrom !== "sync" && (
+        <p role="alert" className="mb-4 text-sm text-destructive">
+          {typeof error === "object" ? tr(error.key) : error}
+        </p>
+      )}
+      {((errorFrom === "sync" && error) || team?.accountStatusError) && (
         <ErrorCallout
           className="mb-4"
           title={tr("Sync")}
           cause={
-            (typeof error === "object" && error ? tr(error.key) : error) ||
-            team?.accountStatusError
+            (errorFrom === "sync" && error
+              ? typeof error === "object"
+                ? tr(error.key)
+                : error
+              : null) || team?.accountStatusError
           }
-          onRetry={() =>
-            void run("retry", async () => onRegistryChange(await getRegistry()))
-          }
+          onRetry={() => void onSync()}
         />
       )}
       {skipNote && (

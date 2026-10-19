@@ -2038,7 +2038,7 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
                 &self.allowed_list,
             ] {
                 if list.first_child().is_none() {
-                    list.append(&super::skeleton_rows());
+                    list.append(&super::skeleton_rows(crate::i18n::msg("Loading…")));
                 }
             }
         }
@@ -2522,7 +2522,7 @@ fn open_access_tool_scope(
     content.append(&feedback);
     let tool_list = gtk::Box::new(gtk::Orientation::Vertical, 0);
     tool_list.add_css_class("toolport-settings-group");
-    tool_list.append(&super::skeleton_rows());
+    tool_list.append(&super::skeleton_rows(crate::i18n::msg("Loading tools…")));
     feedback.set_visible(false);
     content.append(&tool_list);
     let scroller = gtk::ScrolledWindow::builder()
@@ -3243,6 +3243,8 @@ pub(super) fn set_switch(switch: &gtk::Switch, on: bool) {
 
 fn empty_state(text: &str) -> gtk::Box {
     let card = super::state_card("view-list-symbolic", msg("Nothing here yet"), "", false);
+    // These lists are already row groups; the card drops its own frame inside one.
+    card.add_css_class("frameless");
     let detail = card.last_child().and_downcast::<gtk::Label>().unwrap();
     detail.set_label(text);
     card

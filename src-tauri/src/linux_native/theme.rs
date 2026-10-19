@@ -1246,11 +1246,16 @@ button.toolport-catalog-action {{
 }}
 
 .toolport-state-card {{
-  min-height: 180px;
-  padding: 28px;
+  padding: 40px 24px;
   border: 1px solid @toolport_border;
   border-radius: 12px;
   background-color: @toolport_card;
+}}
+/* A state that already sits inside a row group, like React's framed={{false}}. */
+.toolport-state-card.frameless {{
+  border: none;
+  border-radius: 0;
+  background-color: transparent;
 }}
 
 .toolport-state-icon {{ color: @toolport_text_secondary; }}

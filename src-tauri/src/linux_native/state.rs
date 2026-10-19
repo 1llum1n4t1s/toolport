@@ -654,7 +654,8 @@ pub(super) struct ProfileView {
 pub(super) enum RegistryState {
     Ready(RegistrySnapshot),
     FirstRun,
-    Unavailable,
+    /// The registry exists but could not be read or parsed. Carries the cause.
+    Unavailable(String),
     /// A newer Toolport wrote the registry. Carries the message to show.
     NewerVersion(String),
 }
@@ -851,7 +852,7 @@ pub(super) fn display_transport(transport: &str) -> String {
 
 pub(super) fn load_read_only(path: Option<&Path>) -> RegistryState {
     let Some(path) = path else {
-        return RegistryState::Unavailable;
+        return RegistryState::Unavailable("Could not resolve registry path".into());
     };
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -860,7 +861,7 @@ pub(super) fn load_read_only(path: Option<&Path>) -> RegistryState {
         }
         Err(error) => {
             eprintln!("toolport-gtk: could not read registry: {error}");
-            return RegistryState::Unavailable;
+            return RegistryState::Unavailable(error.to_string());
         }
     };
     match registry::parse_registry_contents(&contents) {
@@ -871,7 +872,7 @@ pub(super) fn load_read_only(path: Option<&Path>) -> RegistryState {
         }
         Err(error) => {
             eprintln!("toolport-gtk: could not parse registry: {error}");
-            RegistryState::Unavailable
+            RegistryState::Unavailable(error)
         }
     }
 }
@@ -921,6 +922,10 @@ impl RegistryController {
     /// registry must not stall the window.
     fn reload_in_background(controller: &Rc<Self>) {
         controller.reader.refresh();
+    }
+
+    pub(super) fn reload(self: &Rc<Self>) {
+        Self::reload_in_background(self);
     }
 
     fn start_monitors(self: &Rc<Self>) {
@@ -1445,7 +1450,10 @@ mod tests {
             std::process::id()
         ));
         std::fs::write(&invalid, b"{ invalid").unwrap();
-        assert_eq!(load_read_only(Some(&invalid)), RegistryState::Unavailable);
+        assert!(matches!(
+            load_read_only(Some(&invalid)),
+            RegistryState::Unavailable(cause) if !cause.is_empty()
+        ));
         let _ = std::fs::remove_file(invalid);
     }
 

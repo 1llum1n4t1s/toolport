@@ -711,6 +711,7 @@ fn build_window(
     window.set_content(Some(&toasts));
     io::track_hidden_memory(&window);
     theme.attach(&window);
+    let page_for_reload = server_page.clone();
     let state = state::RegistryController::new(move |snapshot| {
         // Team joins the sidebar the moment the registry says this install is
         // paired, without a relaunch.
@@ -757,6 +758,12 @@ fn build_window(
             );
         }
     });
+    let controller = std::rc::Rc::downgrade(&state);
+    *page_for_reload.registry_reload.borrow_mut() = Some(std::rc::Rc::new(move || {
+        if let Some(controller) = controller.upgrade() {
+            controller.reload();
+        }
+    }));
     state.attach(&window);
     approval_page.attach(&window);
     teams_page.attach_background_sync(&window);
@@ -2093,7 +2100,12 @@ struct ServerPage {
     /// group needs-attention servers first, and decides when a server is
     /// launched to check it.
     health: std::rc::Rc<std::cell::RefCell<health::HealthCache>>,
+    /// Rereads the registry through the window's controller, so Retry also
+    /// refreshes the sidebar and the startup recovery notice.
+    registry_reload: std::rc::Rc<std::cell::RefCell<Option<RegistryReload>>>,
 }
+
+type RegistryReload = std::rc::Rc<dyn Fn()>;
 
 #[derive(Clone)]
 struct HealthRow {
@@ -2112,6 +2124,26 @@ impl ServerPage {
     fn reprobe_after_auth_change(&self, server_id: &str) {
         self.health.borrow_mut().invalidate(server_id);
         self.probe_servers(health::ProbeReason::ConfigChanged);
+    }
+
+    /// Retry for an unreadable registry. Without a window controller (tests),
+    /// read it directly.
+    fn reload_registry(&self) {
+        let reload = self.registry_reload.borrow().clone();
+        if let Some(reload) = reload {
+            reload();
+            return;
+        }
+        let page = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            let state = gtk::gio::spawn_blocking(|| {
+                state::load_read_only(crate::registry::resolved_path().as_deref())
+            })
+            .await;
+            if let Ok(state) = state {
+                page.render(state);
+            }
+        });
     }
 
     fn reprobe_if_stale(&self) {
@@ -2134,20 +2166,15 @@ impl ServerPage {
                 l10n::bind_text(&self.section_title, "Servers");
                 self.list.append(&self.empty_servers(crate::i18n::msg("Toolport is ready for setup"), crate::i18n::msg("Use Add server for a custom endpoint or open Catalog for a curated starting point. Valid servers turn on. Missing setup inputs stay off.")));
             }
-            state::RegistryState::Unavailable => {
+            state::RegistryState::Unavailable(cause) => {
                 self.clear_server_list();
                 *self.last_snapshot.borrow_mut() = None;
                 self.server_count.set_visible(false);
                 self.posture.set_visible(false);
-                self.section_title
-                    .set_label(&crate::i18n::tr("Servers unavailable"));
+                l10n::bind_text(&self.section_title, "Servers unavailable");
                 let page = self.clone();
-                self.list.append(&error_callout(crate::i18n::msg("Configuration could not be displayed"), &crate::i18n::tr("Toolport left the registry untouched. Open the app again to inspect or recover it."), move || {
-                    let page = page.clone();
-                    gtk::glib::spawn_future_local(async move {
-                        let state = gtk::gio::spawn_blocking(|| state::load_read_only(crate::registry::resolved_path().as_deref())).await;
-                        if let Ok(state) = state { page.render(state); }
-                    });
+                self.list.append(&registry_error_callout(&cause, move || {
+                    page.reload_registry()
                 }));
             }
             state::RegistryState::NewerVersion(message) => {
@@ -2560,6 +2587,8 @@ struct ClientPage {
     import_button: gtk::Button,
     refresh_button: gtk::Button,
     scanning: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Set by the first successful scan. Later scan failures keep the list.
+    loaded: std::rc::Rc<std::cell::Cell<bool>>,
     profiles: std::rc::Rc<std::cell::RefCell<Vec<state::ProfileView>>>,
     pending_confirmation: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     feedback_timer: std::rc::Rc<std::cell::RefCell<Option<gtk::glib::SourceId>>>,
@@ -2626,6 +2655,7 @@ impl ClientPage {
             import_button,
             refresh_button,
             scanning: std::rc::Rc::new(std::cell::Cell::new(false)),
+            loaded: std::rc::Rc::new(std::cell::Cell::new(false)),
             profiles: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             pending_confirmation: std::rc::Rc::new(std::cell::RefCell::new(None)),
             feedback_timer: std::rc::Rc::new(std::cell::RefCell::new(None)),
@@ -2829,7 +2859,8 @@ impl ClientPage {
         self.refresh_button.set_sensitive(false);
         self.import_button.set_sensitive(false);
         if self.list.first_child().is_none() {
-            self.list.append(&skeleton_rows());
+            self.list
+                .append(&skeleton_rows(crate::i18n::msg("Loading AI clients")));
         }
         let page = self.clone();
         gtk::glib::spawn_future_local(async move {
@@ -2839,18 +2870,23 @@ impl ClientPage {
             page.import_button.set_sensitive(true);
             match result {
                 Ok(Ok(snapshot)) => page.render(snapshot),
-                Ok(Err(error)) => page.show_scan_error(&crate::i18n::trf(
-                    "Could not scan clients: {value0}",
-                    &[("value0", &error.to_string())],
-                )),
+                Ok(Err(error)) => page.show_scan_error(
+                    &crate::i18n::trf(
+                        "Could not scan clients: {value0}",
+                        &[("value0", &error.to_string())],
+                    ),
+                    &error.to_string(),
+                ),
                 Err(_) => {
-                    page.show_scan_error(&crate::i18n::tr("The client scan stopped unexpectedly."))
+                    let error = crate::i18n::tr("The client scan stopped unexpectedly.");
+                    page.show_scan_error(&error, &error)
                 }
             }
         });
     }
 
     fn render(&self, snapshot: state::ClientSnapshot) {
+        self.loaded.set(true);
         *self.profiles.borrow_mut() = snapshot.profiles;
         let sessions = snapshot.sessions;
         let clients = snapshot.clients;
@@ -3064,7 +3100,17 @@ impl ClientPage {
         }
     }
 
-    fn show_scan_error(&self, error: &str) {
+    /// `error` titles the first-load callout; `cause` goes in the rescan toast.
+    fn show_scan_error(&self, error: &str, cause: &str) {
+        if self.loaded.get() {
+            // A failed rescan must not blow away a working list, matching React.
+            let message = crate::i18n::trf("Couldn't refresh: {value1}", &[("value1", cause)]);
+            if show_toast(&self.list, &message) {
+                return;
+            }
+            self.show_error(&message);
+            return;
+        }
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
@@ -4547,7 +4593,8 @@ impl ActivityPage {
             while let Some(child) = self.list.first_child() {
                 self.list.remove(&child);
             }
-            self.list.append(&skeleton_rows());
+            self.list
+                .append(&skeleton_rows(crate::i18n::msg("Loading activity…")));
         }
         if announce || self.last_snapshot.borrow().is_none() {
             self.refresh_button.set_sensitive(false);
@@ -7863,7 +7910,7 @@ fn build_content(
     page.append(&posture);
 
     let list = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    list.append(&skeleton_rows());
+    list.append(&skeleton_rows(crate::i18n::msg("Loading servers… ")));
     page.append(&list);
 
     scroller.set_child(Some(&page));
@@ -7888,6 +7935,7 @@ fn build_content(
             no_matches: std::rc::Rc::new(std::cell::RefCell::new(None)),
             off_heading: std::rc::Rc::new(std::cell::RefCell::new(None)),
             health: std::rc::Rc::new(std::cell::RefCell::new(health::HealthCache::default())),
+            registry_reload: Default::default(),
         },
     );
     let page_for_check = server_page.1.clone();
@@ -8107,7 +8155,7 @@ fn load_share_dialog(window: &adw::Window, body: &gtk::Box, page: ServerPage) {
     while let Some(child) = body.first_child() {
         body.remove(&child);
     }
-    body.append(&skeleton_rows());
+    body.append(&skeleton_rows(crate::i18n::msg("Loading servers… ")));
     let (window, body) = (window.downgrade(), body.downgrade());
     gtk::glib::spawn_future_local(async move {
         let result = gtk::gio::spawn_blocking(|| {
@@ -12586,10 +12634,18 @@ fn show_toast(widget: &impl IsA<gtk::Widget>, message: &str) -> bool {
     let Some(overlay) = window.content().and_downcast::<adw::ToastOverlay>() else {
         return false;
     };
-    let toast = adw::Toast::new(message);
-    toast.set_timeout(4);
-    overlay.add_toast(toast);
+    overlay.add_toast(plain_toast(message));
     true
+}
+
+/// Toast titles are Pango markup by default since libadwaita 1.4. Messages carry
+/// names and errors (R&D, a<b), so they are always shown as plain text.
+fn plain_toast(message: &str) -> adw::Toast {
+    adw::Toast::builder()
+        .title(message)
+        .use_markup(false)
+        .timeout(4)
+        .build()
 }
 
 fn state_action(card: &gtk::Box, label: &'static str, action: impl Fn() + 'static) {
@@ -12612,10 +12668,21 @@ fn state_action(card: &gtk::Box, label: &'static str, action: impl Fn() + 'stati
     button.add_css_class("toolport-secondary-action");
     button.connect_clicked(move |_| action());
     actions.insert(&button, -1);
+    // FlowBoxChild is focusable by default, which would add a second Tab stop
+    // before each button. The button alone takes focus.
+    if let Some(child) = button.parent() {
+        child.set_focusable(false);
+    }
 }
 
-fn skeleton_rows() -> gtk::Box {
-    let group = gtk::Box::new(gtk::Orientation::Vertical, 0);
+/// Three skeleton rows announced as a status with `label`, matching React's SkeletonRows.
+fn skeleton_rows(label: &'static str) -> gtk::Box {
+    let group = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .accessible_role(gtk::AccessibleRole::Status)
+        .build();
+    l10n::bind_accessible_label(&group, label);
+    group.update_state(&[gtk::accessible::State::Busy(true)]);
     group.add_css_class("toolport-skeleton-group");
     group.set_opacity(0.0);
     for _ in 0..3 {
@@ -12633,7 +12700,66 @@ fn skeleton_rows() -> gtk::Box {
 }
 
 fn error_callout(title: &'static str, cause: &str, retry: impl Fn() + 'static) -> gtk::Box {
-    let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let detail = gtk::Label::new(Some(cause));
+    error_callout_with(
+        title,
+        detail,
+        crate::i18n::msg("View log"),
+        || {
+            let _ = crate::diagnostics_controller::open_gateway_log();
+        },
+        retry,
+    )
+}
+
+/// The Servers state for a registry that exists but can't be read. The gateway
+/// log doesn't record this, so the tertiary action opens the data folder.
+fn registry_error_callout(cause: &str, retry: impl Fn() + 'static) -> gtk::Box {
+    let detail = gtk::Label::new(None);
+    let cause = cause.to_owned();
+    l10n::bind_label_with(&detail, move || {
+        format!(
+            "{}\n{cause}",
+            crate::i18n::lookup(crate::i18n::msg(
+                "Toolport couldn't read the registry and didn't change it. Fix or restore the file, then retry."
+            ))
+        )
+    });
+    let card = error_callout_with(
+        crate::i18n::msg("Configuration could not be displayed"),
+        detail.clone(),
+        crate::i18n::msg("Open data folder"),
+        move || {
+            let detail = detail.downgrade();
+            gtk::glib::spawn_future_local(async move {
+                let opened =
+                    gtk::gio::spawn_blocking(crate::diagnostics_controller::open_data_dir).await;
+                if !matches!(opened, Ok(Ok(()))) {
+                    if let Some(detail) = detail.upgrade() {
+                        show_toast(&detail, &crate::i18n::tr("Couldn't open data folder"));
+                    }
+                }
+            });
+        },
+        retry,
+    );
+    card
+}
+
+fn error_callout_with(
+    title: &'static str,
+    detail: gtk::Label,
+    tertiary: &'static str,
+    tertiary_action: impl Fn() + 'static,
+    retry: impl Fn() + 'static,
+) -> gtk::Box {
+    // Announced like React's role="alert" ErrorCallout.
+    let card = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .accessible_role(gtk::AccessibleRole::Alert)
+        .build();
+    l10n::bind_accessible_label(&card, title);
+    card.update_property(&[gtk::accessible::Property::Description(&detail.text())]);
     card.add_css_class("toolport-error-callout");
     let layout = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let icon = gtk::Image::from_icon_name("dialog-warning-symbolic");
@@ -12649,22 +12775,17 @@ fn error_callout(title: &'static str, cause: &str, retry: impl Fn() + 'static) -
     heading.set_wrap(true);
     heading.add_css_class("heading");
     copy.append(&heading);
-    let detail = gtk::Label::builder()
-        .label(cause)
-        .wrap(true)
-        .xalign(0.0)
-        .selectable(true)
-        .css_classes(["toolport-muted"])
-        .build();
+    detail.set_wrap(true);
+    detail.set_xalign(0.0);
+    detail.set_selectable(true);
+    detail.add_css_class("toolport-muted");
     copy.append(&detail);
     layout.append(&copy);
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     actions.set_valign(gtk::Align::Start);
-    let log = l10n::button(crate::i18n::msg("View log"));
+    let log = l10n::button(tertiary);
     log.add_css_class("flat");
-    log.connect_clicked(|_| {
-        let _ = crate::diagnostics_controller::open_gateway_log();
-    });
+    log.connect_clicked(move |_| tertiary_action());
     actions.append(&log);
     let button = l10n::button(crate::i18n::msg("Retry"));
     button.add_css_class("toolport-secondary-action");
@@ -12696,7 +12817,12 @@ fn error_callout(title: &'static str, cause: &str, retry: impl Fn() + 'static) -
 }
 
 fn state_card(icon_name: &str, title: &'static str, body: &'static str, error: bool) -> gtk::Box {
-    let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    // role="status" like React's EmptyState.
+    let card = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .accessible_role(gtk::AccessibleRole::Status)
+        .build();
     card.add_css_class("toolport-state-card");
     if error {
         card.add_css_class("error");
@@ -12784,14 +12910,16 @@ mod tests {
                 if value != previous {
                     while let Some(child) = body.first_child() { body.remove(&child); }
                     let state = value.trim();
-                    if state == "loading" { body.append(&skeleton_rows()); }
+                    if state == "loading" { body.append(&skeleton_rows(crate::i18n::msg("Loading servers… "))); }
                     else if state == "error" {
-                        body.append(&error_callout(crate::i18n::msg("Servers unavailable"), &crate::i18n::tr("Toolport left the registry untouched. Open the app again to inspect or recover it."), || {}));
+                        body.append(&registry_error_callout("expected value at line 1 column 1", || {}));
                     } else {
                         let card = state_card("network-server-symbolic", crate::i18n::msg("No servers yet"), crate::i18n::msg("Use Add server to connect your first local command or remote endpoint."), false);
                         state_action(&card, crate::i18n::msg("Add server"), || {});
                         body.append(&card);
                         if state == "toast" { show_toast(&body, &crate::i18n::tr("Path copied")); }
+                        // Markup characters in a name must show as typed.
+                        if state == "toast-markup" { show_toast(&body, &crate::i18n::trf("Authenticated {value0}", &[("value0", "R&D <team> a<b")])); }
                     }
                     previous = value;
                 }
@@ -12929,12 +13057,177 @@ mod tests {
                 adaptive.height()
             );
             window.close();
-            let loading = skeleton_rows();
+            let loading = skeleton_rows(crate::i18n::msg("Loading servers… "));
             assert_eq!(loading.opacity(), 0.0);
             gtk::glib::timeout_future(std::time::Duration::from_millis(320)).await;
             assert_eq!(loading.opacity(), 1.0);
             assert_eq!(loading.observe_children().n_items(), 3);
         });
+    }
+
+    fn all_widgets(widget: &gtk::Widget, found: &mut Vec<gtk::Widget>) {
+        found.push(widget.clone());
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            all_widgets(&widget, found);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b6_state_roles_plain_toasts_and_single_tab_stops() {
+        use super::*;
+        adw::init().unwrap();
+        let toast = plain_toast("R&D <b>a<b");
+        assert!(
+            !toast.uses_markup(),
+            "toast text must not be parsed as markup"
+        );
+        assert_eq!(toast.title().as_deref(), Some("R&D <b>a<b"));
+        assert_eq!(toast.timeout(), 4);
+
+        let loading = skeleton_rows(crate::i18n::msg("Loading AI clients"));
+        assert_eq!(loading.accessible_role(), gtk::AccessibleRole::Status);
+        let callout = error_callout(crate::i18n::msg("Clients"), "Synthetic cause", || {});
+        assert_eq!(callout.accessible_role(), gtk::AccessibleRole::Alert);
+        let card = state_card(
+            "network-server-symbolic",
+            crate::i18n::msg("No servers yet"),
+            crate::i18n::msg(
+                "Use Add server to connect your first local command or remote endpoint.",
+            ),
+            false,
+        );
+        assert_eq!(card.accessible_role(), gtk::AccessibleRole::Status);
+
+        // The suspected extra Tab stop: a FlowBoxChild takes focus by default.
+        assert!(gtk::FlowBoxChild::new().is_focusable());
+        state_action(&card, crate::i18n::msg("Add server"), || {});
+        state_action(&card, crate::i18n::msg("Clear search"), || {});
+        let actions = card.last_child().and_downcast::<gtk::FlowBox>().unwrap();
+        let mut count = 0;
+        let mut child = actions.first_child();
+        while let Some(wrapper) = child {
+            assert!(!wrapper.is_focusable(), "only the button should take focus");
+            assert!(wrapper.first_child().unwrap().is_focusable());
+            count += 1;
+            child = wrapper.next_sibling();
+        }
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b6_unreadable_registry_shows_cause_and_retries_through_controller() {
+        use super::*;
+        adw::init().unwrap();
+        let _data = crate::registry::DataDirTestEnv::new("b6-registry-retry");
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.RegistryRetryTest")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let (_, page, _) = build_content(&app, crate::approval_broker::start_native());
+        let reloads = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counted = reloads.clone();
+        *page.registry_reload.borrow_mut() =
+            Some(std::rc::Rc::new(move || counted.set(counted.get() + 1)));
+        page.render(state::RegistryState::Unavailable(
+            "expected value at line 1 column 1".into(),
+        ));
+        let mut all = Vec::new();
+        all_widgets(page.list.upcast_ref(), &mut all);
+        let labels: Vec<String> = all
+            .iter()
+            .filter_map(|widget| widget.downcast_ref::<gtk::Label>())
+            .map(|label| label.text().to_string())
+            .collect();
+        assert!(labels
+            .iter()
+            .any(|text| text == "Configuration could not be displayed"));
+        assert!(labels.iter().any(|text| text
+            .starts_with("Toolport couldn't read the registry and didn't change it.")
+            && text.ends_with("expected value at line 1 column 1")));
+        assert!(!labels
+            .iter()
+            .any(|text| text.contains("Open the app again")));
+        let buttons: Vec<gtk::Button> = all
+            .iter()
+            .filter_map(|widget| widget.downcast_ref::<gtk::Button>().cloned())
+            .collect();
+        assert!(buttons
+            .iter()
+            .any(|button| button.label().as_deref() == Some("Open data folder")));
+        assert!(!buttons
+            .iter()
+            .any(|button| button.label().as_deref() == Some("View log")));
+        buttons
+            .iter()
+            .find(|button| button.label().as_deref() == Some("Retry"))
+            .unwrap()
+            .emit_clicked();
+        assert_eq!(
+            reloads.get(),
+            1,
+            "Retry must reload through the registry controller"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b6_failed_client_rescan_keeps_the_loaded_list() {
+        use super::*;
+        adw::init().unwrap();
+        let _data = crate::registry::DataDirTestEnv::new("b6-client-rescan");
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.ClientRescanTest")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let (_, server_page, _) = build_content(&app, crate::approval_broker::start_native());
+        let first = ClientPage::new(&app, server_page.clone());
+        first.show_scan_error("Could not scan clients: first", "first");
+        let callout = first.list.first_child().unwrap();
+        assert!(
+            callout.has_css_class("toolport-error-callout"),
+            "nothing loaded yet"
+        );
+
+        let clients = ClientPage::new(&app, server_page);
+        gtk::glib::MainContext::default().block_on(async {
+            clients.refresh();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while clients.scanning.get() && std::time::Instant::now() < deadline {
+                gtk::glib::timeout_future(std::time::Duration::from_millis(10)).await;
+            }
+        });
+        assert!(clients.loaded.get(), "the scan must finish");
+        let before: Vec<gtk::Widget> = {
+            let mut found = Vec::new();
+            let mut child = clients.list.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+                found.push(widget);
+            }
+            found
+        };
+        assert!(!before.is_empty());
+        clients.show_scan_error("Could not scan clients: boom", "boom");
+        let mut after = Vec::new();
+        let mut child = clients.list.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            after.push(widget);
+        }
+        assert_eq!(before, after, "a failed rescan must keep the loaded rows");
+        assert!(after
+            .iter()
+            .all(|widget| !widget.has_css_class("toolport-error-callout")));
+        // No toast overlay in this fixture, so the inline line carries it.
+        assert!(clients.feedback.is_visible());
+        assert_eq!(clients.feedback.text(), "Couldn't refresh: boom");
+        clients.cancel_feedback_timer();
     }
 
     #[test]
@@ -13529,6 +13822,7 @@ mod tests {
             no_matches: Default::default(),
             off_heading: Default::default(),
             health: Default::default(),
+            registry_reload: Default::default(),
         };
         let clients = ClientPage::new(&app, server_page);
         let fixture_clients = [
@@ -13692,6 +13986,7 @@ mod tests {
             no_matches: Default::default(),
             off_heading: Default::default(),
             health: Default::default(),
+            registry_reload: Default::default(),
         };
         let clients = ClientPage::new(&app, server_page);
         clients.render(state::ClientSnapshot { clients: Vec::new(), profiles: Vec::new(), sessions_error: false, sessions: vec![serde_json::json!({
@@ -13789,6 +14084,7 @@ mod tests {
             no_matches: Default::default(),
             off_heading: Default::default(),
             health: Default::default(),
+            registry_reload: Default::default(),
         };
         let page = ClientPage::new(&app, server_page);
         let mut client = state::ClientView {

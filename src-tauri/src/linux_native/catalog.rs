@@ -439,7 +439,9 @@ impl CatalogPage {
         let generation = self.request_generation.get().wrapping_add(1);
         self.request_generation.set(generation);
         if self.list.first_child().is_none() {
-            self.list.append(&super::skeleton_rows());
+            self.list.append(&super::skeleton_rows(crate::i18n::msg(
+                "Loading curated servers…",
+            )));
         }
         self.feedback.set_label("");
         self.feedback.remove_css_class("error");
@@ -517,18 +519,24 @@ impl CatalogPage {
     }
 
     fn show_error(&self, error: &str) {
-        while let Some(child) = self.list.first_child() {
-            self.list.remove(&child);
+        // A refresh that fails after a load (say, the reread after an add) keeps
+        // the loaded catalog and reports the failure inline.
+        let keep_list = self.rendered.borrow().is_some();
+        if !keep_list {
+            while let Some(child) = self.list.first_child() {
+                self.list.remove(&child);
+            }
+            let page = self.clone();
+            self.list.append(&super::error_callout(
+                crate::i18n::msg("Catalog couldn't load"),
+                error,
+                move || page.load_popular(),
+            ));
         }
-        // A retry must rebuild even when it returns the same entries as before.
-        self.rendered.borrow_mut().take();
-        let page = self.clone();
-        self.list.append(&super::error_callout(
-            crate::i18n::msg("Catalog couldn't load"),
-            error,
-            move || page.load_popular(),
-        ));
-        self.pending_notice.borrow_mut().take();
+        if let Some(notice) = self.pending_notice.borrow_mut().take() {
+            // The add itself succeeded; say so even though the reread failed.
+            super::show_toast(&self.list, &notice);
+        }
         // Cancel any success timer first. Otherwise a confirmation shown moments
         // ago fires its four-second hide and takes this error off screen with it.
         if let Some(timer) = self.feedback_timer.borrow_mut().take() {
@@ -541,7 +549,8 @@ impl CatalogPage {
         );
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
-        self.feedback.set_visible(false);
+        // The callout carries the error on a first load; otherwise this line does.
+        self.feedback.set_visible(keep_list);
     }
 
     fn show_success(&self, message: &str) {
@@ -916,6 +925,45 @@ mod tests {
 
     #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b6_failed_reread_keeps_the_loaded_catalog() {
+        adw::init().unwrap();
+        let _data = crate::registry::DataDirTestEnv::new("catalog-reread");
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.CatalogRereadFixture")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+        let (_, server_page, _) =
+            super::super::build_content(&app, crate::approval_broker::start_native());
+        let page = CatalogPage::new(server_page);
+        // Nothing loaded: the callout replaces the list.
+        page.show_error("first load failed");
+        assert!(page
+            .list
+            .first_child()
+            .unwrap()
+            .has_css_class("toolport-error-callout"));
+        let entries: Vec<_> = crate::catalog::popular().into_iter().take(3).collect();
+        let names: Vec<String> = entries.iter().map(|entry| entry.name.clone()).collect();
+        page.render(entries, HashSet::new());
+        page.pending_notice.replace(Some("Added fixture.".into()));
+        page.show_error("registry unreadable");
+        let shown = labels(&page.list);
+        for name in &names {
+            assert!(shown.contains(name), "{name} must stay listed");
+        }
+        assert!(!page
+            .list
+            .first_child()
+            .unwrap()
+            .has_css_class("toolport-error-callout"));
+        assert!(page.feedback.is_visible());
+        assert!(page.feedback.text().contains("registry unreadable"));
+        assert!(page.pending_notice.borrow().is_none());
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn catalog_outage_and_installed_states() {
         adw::init().unwrap();
         let app = adw::Application::builder()
@@ -939,6 +987,7 @@ mod tests {
             no_matches: Default::default(),
             off_heading: Default::default(),
             health: Default::default(),
+            registry_reload: Default::default(),
         };
         let page = CatalogPage::new(server_page);
         let window = adw::ApplicationWindow::builder()

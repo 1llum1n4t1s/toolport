@@ -141,7 +141,9 @@ impl ServerToolsPanel {
                 while let Some(child) = list.first_child() {
                     list.remove(&child);
                 }
-                list.append(&super::skeleton_rows());
+                list.append(&super::skeleton_rows(crate::i18n::msg(
+                    "Connecting to server…",
+                )));
             }
         }
         let page = self.clone();

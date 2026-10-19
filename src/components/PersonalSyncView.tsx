@@ -174,6 +174,8 @@ export function PersonalSyncView({
 }) {
   const { t } = useI18n();
   const [error, setError] = useState<string | null>(null);
+  // Only a failed sync or sign-in gets the Retry callout; other errors stay inline.
+  const [syncFailed, setSyncFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [url, setUrl] = useState(HOSTED_TEAMS_URL);
   const [code, setCode] = useState("");
@@ -268,13 +270,15 @@ export function PersonalSyncView({
     !!lastSynced &&
     !Object.keys(sync?.pending ?? {}).length;
   const statusLine = lastSynced ? `${summary} · ${lastSynced}` : summary;
-  async function run(work: () => Promise<void>) {
+  async function run(work: () => Promise<void>, { sync = false } = {}) {
     setBusy(true);
     setError(null);
+    setSyncFailed(false);
     try {
       await work();
     } catch (e) {
       setError(String(e));
+      setSyncFailed(sync);
     } finally {
       setBusy(false);
     }
@@ -288,16 +292,24 @@ export function PersonalSyncView({
           )}
         </p>
       )}
-      {(error || sync?.error || team?.accountStatusError) && (
+      {error && !syncFailed && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      {((syncFailed && error) || sync?.error || team?.accountStatusError) && (
         <ErrorCallout
           title={t("Sync")}
-          cause={error || sync?.error || team?.accountStatusError}
+          cause={(syncFailed && error) || sync?.error || team?.accountStatusError}
           onRetry={() =>
-            void run(async () => {
-              if (sync?.signInRequired) await reconnectSync();
-              else if (sync?.error || team?.accountStatusError) await teamSync();
-              onRegistryChange(await getRegistry());
-            })
+            void run(
+              async () => {
+                if (sync?.signInRequired) await reconnectSync();
+                else await teamSync();
+                onRegistryChange(await getRegistry());
+              },
+              { sync: true },
+            )
           }
         />
       )}
@@ -386,17 +398,23 @@ export function PersonalSyncView({
             </p>
             {sync?.signInRequired ? (
               // Sync cannot succeed without sign-in.
-              <Button disabled={busy} onClick={() => void run(() => reconnectSync())}>
+              <Button
+                disabled={busy}
+                onClick={() => void run(() => reconnectSync(), { sync: true })}
+              >
                 {t("Sign in")}
               </Button>
             ) : (
               <Button
                 disabled={busy}
                 onClick={() =>
-                  void run(async () => {
-                    await teamSync();
-                    onRegistryChange(await getRegistry());
-                  })
+                  void run(
+                    async () => {
+                      await teamSync();
+                      onRegistryChange(await getRegistry());
+                    },
+                    { sync: true },
+                  )
                 }
               >
                 {t("Sync now")}
