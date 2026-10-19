@@ -350,7 +350,11 @@ describe("SkillsView", () => {
     await userEvent.click(
       within(dialog).getByRole("button", { name: "Link to working-agreements.md" }),
     );
-    expect(fixSkillIssue).toHaveBeenCalledWith("rules-missing", null);
+    expect(fixSkillIssue).toHaveBeenCalledWith(
+      "rules-missing",
+      "rules-missing:00000004",
+      null,
+    );
   });
 
   it("keeps the switch and rescans when a client refuses the write", async () => {
