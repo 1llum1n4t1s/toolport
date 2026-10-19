@@ -4067,10 +4067,7 @@ fn read_client(def: &ClientDef) -> DetectedClient {
                 .map(|location| location.name.clone())
                 .unwrap_or_else(|| def.name.to_string()),
             uses_connectors: def.uses_connectors,
-            location_removable: def
-                .location
-                .as_ref()
-                .is_some_and(|row| row.manual || locations::automatic_path_is_missing(row)),
+            location_removable: def.location.as_ref().is_some_and(locations::forgettable),
             discovery: def.discovery,
             config_path,
             config_exists,
@@ -4310,7 +4307,13 @@ fn detect_clients_for_display_in(
         failures.extend(repoint.failed);
     }
     for def in &definitions {
-        if let Some(location) = &def.location {
+        // A launcher home is found again on each refresh while its launcher exists, and
+        // saved only once Toolport changes its config.
+        if let Some(location) = def
+            .location
+            .as_ref()
+            .filter(|location| !locations::is_launcher_home(location))
+        {
             if let Err(error) = locations::remember(location) {
                 failures.insert(def.client_id().to_string(), error);
             }

@@ -4,6 +4,8 @@
 //! that starts each one and, for Claude Code, the account signed in to it.
 use super::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// What tells one Claude Code profile, or one Codex home, apart from the others on this
 /// machine.
@@ -311,12 +313,7 @@ pub(super) fn launchers_of(
             else {
                 continue;
             };
-            let small_file = std::fs::metadata(&path)
-                .is_ok_and(|meta| meta.is_file() && meta.len() <= LAUNCHER_READ_LIMIT);
-            if !small_file {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let Some(text) = launcher_text(&path, LAUNCHER_READ_LIMIT) else {
                 continue;
             };
             if let Some(folder) = script_config_dir(tool, &text, home) {
@@ -325,11 +322,7 @@ pub(super) fn launchers_of(
         }
     }
     for rc in [".bashrc", ".zshrc", ".bash_aliases"] {
-        let rc = home.join(rc);
-        if !std::fs::metadata(&rc).is_ok_and(|meta| meta.is_file() && meta.len() <= RC_READ_LIMIT) {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(&rc) else {
+        let Some(text) = launcher_text(&home.join(rc), RC_READ_LIMIT) else {
             continue;
         };
         for line in text.lines() {
@@ -341,6 +334,47 @@ pub(super) fn launchers_of(
     found.sort();
     found.dedup();
     found
+}
+
+/// Launcher candidates read so far, by path, with the size and modification time they
+/// had. A Clients refresh lists launchers several times, for both Claude Code and Codex;
+/// only files that changed since are read again. Files that set neither variable keep no
+/// text.
+type LauncherTexts = HashMap<PathBuf, (u64, std::time::SystemTime, Option<Arc<str>>)>;
+static LAUNCHER_TEXTS: std::sync::Mutex<Option<LauncherTexts>> = std::sync::Mutex::new(None);
+/// More cached files than this means a bin folder full of small programs; start over.
+const LAUNCHER_CACHE_LIMIT: usize = 4096;
+
+/// The text of an ordinary file of at most `limit` bytes, if it mentions a variable a
+/// launcher sets.
+fn launcher_text(path: &Path, limit: u64) -> Option<Arc<str>> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > limit {
+        return None;
+    }
+    let modified = meta.modified().ok()?;
+    let mut cache = LAUNCHER_TEXTS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some((len, time, text)) = cache.get(path) {
+        if *len == meta.len() && *time == modified {
+            return text.clone();
+        }
+    }
+    let text = std::fs::read_to_string(path)
+        .ok()
+        .filter(|text| {
+            [CLAUDE, CODEX]
+                .iter()
+                .any(|tool| text.contains(tool.variable))
+        })
+        .map(Arc::from);
+    if cache.len() >= LAUNCHER_CACHE_LIMIT {
+        cache.clear();
+    }
+    cache.insert(path.to_path_buf(), (meta.len(), modified, text.clone()));
+    text
 }
 
 /// A launcher script: it assigns the config variable on a line of its own (or right

@@ -67,10 +67,7 @@ pub fn remove_client_location(id: &str) -> Result<(), String> {
     let store = store_path()?;
     let _lock = crate::registry::lock_at(&store)?;
     let mut rows = saved()?;
-    if !rows
-        .iter()
-        .any(|row| row.id == id && (row.manual || automatic_path_is_missing(row)))
-    {
+    if !rows.iter().any(|row| row.id == id && forgettable(row)) {
         return Err(
             "Only manually added or missing automatic client locations can be removed".into(),
         );
@@ -377,16 +374,33 @@ fn codex_automatic_path_is_missing(root: &Path, row: &ClientLocation) -> bool {
     let Some(folder) = row.config_path.parent() else {
         return false;
     };
-    if codex_relative_of(root, folder).is_none()
-        || row
-            .config_path
-            .file_name()
-            .is_none_or(|name| name != "config.toml")
+    let Some(relative) = codex_relative_of(root, folder) else {
+        return false;
+    };
+    if row
+        .config_path
+        .file_name()
+        .is_none_or(|name| name != "config.toml")
     {
         return false;
     }
     match std::fs::symlink_metadata(folder) {
-        Err(error) => return error.kind() == std::io::ErrorKind::NotFound && root.is_dir(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // `Codex-Work/.codex` is only missing if `Codex-Work` is gone too, or is
+            // still an ordinary folder in home. A link there could lead a write outside.
+            let Some((outer, _)) = relative.split_once('/') else {
+                return root.is_dir();
+            };
+            return match std::fs::symlink_metadata(root.join(outer)) {
+                Err(error) => error.kind() == std::io::ErrorKind::NotFound && root.is_dir(),
+                Ok(meta) if meta.is_dir() => std::fs::canonicalize(root)
+                    .ok()
+                    .zip(std::fs::canonicalize(root.join(outer)).ok())
+                    .is_some_and(|(root, real)| real == root.join(outer)),
+                Ok(_) => false,
+            };
+        }
+        Err(_) => return false,
         Ok(meta) if !meta.is_dir() => return false,
         Ok(_) => {}
     }
@@ -440,6 +454,48 @@ fn automatic_codex(home: &Path, launchers: &[(String, PathBuf)]) -> Vec<ClientLo
             })
         })
         .collect()
+}
+
+/// A Codex home found through a launcher, such as `~/Codex-Work/.codex`, rather than
+/// beside `~/.codex`. Discovery lists it only while a launcher sets `CODEX_HOME` to it,
+/// so it is not saved just for being listed.
+pub(super) fn is_launcher_home(row: &ClientLocation) -> bool {
+    !row.manual
+        && row.client_type == "codex"
+        && row
+            .id
+            .strip_prefix("codex@")
+            .and_then(codex_relative)
+            .is_some_and(|relative| relative.contains('/'))
+}
+
+/// A launcher home that was saved because Toolport changed its config, and that no
+/// launcher points at any more. It stays listed so it can be disconnected, then forgotten.
+fn launcher_is_gone(row: &ClientLocation) -> bool {
+    if !is_launcher_home(row) {
+        return false;
+    }
+    let (Some(root), Some(folder)) = (
+        home(),
+        row.config_path
+            .parent()
+            .and_then(|folder| std::fs::canonicalize(folder).ok()),
+    ) else {
+        return false;
+    };
+    !super::claude_profiles::launchers_of(
+        super::claude_profiles::CODEX,
+        &root,
+        &super::claude_profiles::user_path_dirs(),
+    )
+    .iter()
+    .any(|(_, dir)| *dir == folder)
+}
+
+/// Saved locations Toolport can forget: ones added by hand, automatic ones whose folder
+/// is gone, and launcher homes whose launcher is gone.
+pub(super) fn forgettable(row: &ClientLocation) -> bool {
+    row.manual || automatic_path_is_missing(row) || launcher_is_gone(row)
 }
 
 /// Whether a Codex home outside the saved list is one automatic discovery lists.
@@ -992,6 +1048,107 @@ mod tests {
             assert!(validate(&row).is_err());
             assert!(lookup("codex@Codex-Work%2F.codex").is_none());
         }
+    }
+
+    #[test]
+    fn launcher_homes_are_listed_while_their_launcher_exists() {
+        let _data = crate::registry::DataDirTestEnv::new("codex-launcher-home");
+        let root = TempFolder::new();
+        let home = std::fs::canonicalize(root.path()).unwrap();
+        let _home = TestHome::set(&home);
+        codex_home(&home, ".codex2");
+        codex_home(&home, "Codex-Work/.codex");
+        codex_home(&home, "Codex-Becca/.codex");
+        std::fs::create_dir_all(home.join(".local/bin")).unwrap();
+        for name in ["work", "becca"] {
+            std::fs::write(
+                home.join(format!(".local/bin/codex-{name}")),
+                format!(
+                    "#!/bin/bash\nexport CODEX_HOME=\"$HOME/Codex-{}/.codex\"\nexec codex \"$@\"\n",
+                    if name == "work" { "Work" } else { "Becca" }
+                ),
+            )
+            .unwrap();
+        }
+        let ids = |rows: &[super::super::DetectedClient]| -> Vec<String> {
+            rows.iter()
+                .filter(|row| row.id.starts_with("codex@"))
+                .map(|row| row.id.clone())
+                .collect()
+        };
+        let rows = super::super::detect_clients_for_display_in(
+            super::super::machine_defs(true),
+            crate::registry::load().unwrap(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&rows),
+            [
+                "codex@.codex2",
+                "codex@Codex-Becca%2F.codex",
+                "codex@Codex-Work%2F.codex"
+            ]
+        );
+        // Listing saves the sibling folder but not the launcher homes.
+        let saved_ids: Vec<_> = saved().unwrap().into_iter().map(|row| row.id).collect();
+        assert_eq!(saved_ids, ["codex@.codex2"]);
+        assert!(rows.iter().all(|row| !row.location_removable));
+
+        // Changing a launcher home's config saves it, as it does for any location.
+        let work = lookup("codex@Codex-Work%2F.codex").unwrap();
+        assert!(is_launcher_home(&work));
+        assert!(!is_launcher_home(&lookup("codex@.codex2").unwrap()));
+        remember(&work).unwrap();
+
+        // Without its launcher, an unsaved home is no longer listed or writable, and a
+        // saved one stays listed so it can be disconnected and forgotten.
+        std::fs::remove_file(home.join(".local/bin/codex-becca")).unwrap();
+        std::fs::remove_file(home.join(".local/bin/codex-work")).unwrap();
+        assert!(lookup("codex@Codex-Becca%2F.codex").is_none());
+        let rows = super::super::detect_clients_for_display_in(
+            super::super::machine_defs(true),
+            crate::registry::load().unwrap(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(ids(&rows), ["codex@.codex2", "codex@Codex-Work%2F.codex"]);
+        let work_row = rows
+            .iter()
+            .find(|row| row.id == "codex@Codex-Work%2F.codex")
+            .unwrap();
+        assert!(work_row.location_removable);
+        remove_client_location("codex@Codex-Work%2F.codex").unwrap();
+        assert!(lookup("codex@Codex-Work%2F.codex").is_none());
+        assert!(home.join("Codex-Work/.codex/config.toml").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_launcher_home_behind_a_linked_folder_is_not_missing() {
+        let _data = crate::registry::DataDirTestEnv::new("codex-missing-link");
+        let root = TempFolder::new();
+        let home = std::fs::canonicalize(root.path()).unwrap();
+        let _home = TestHome::set(&home);
+        let row = ClientLocation {
+            id: "codex@Codex-Work%2F.codex".into(),
+            manual: false,
+            client_type: "codex".into(),
+            name: "Codex (Codex-Work)".into(),
+            config_path: home.join("Codex-Work/.codex/config.toml"),
+        };
+        // Both folders gone, or the outer one still an ordinary folder: missing.
+        assert!(automatic_path_is_missing(&row));
+        std::fs::create_dir(home.join("Codex-Work")).unwrap();
+        assert!(automatic_path_is_missing(&row));
+        std::fs::remove_dir(home.join("Codex-Work")).unwrap();
+        // The outer folder replaced by a link to a place without `.codex`: not missing,
+        // so nothing is written through it.
+        let outside = TempFolder::new();
+        std::os::unix::fs::symlink(outside.path(), home.join("Codex-Work")).unwrap();
+        assert!(!automatic_path_is_missing(&row));
+        assert!(validate(&row).is_err());
+        assert!(!outside.path().join(".codex").exists());
     }
 
     #[test]
