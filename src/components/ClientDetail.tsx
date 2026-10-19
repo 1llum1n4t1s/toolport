@@ -362,8 +362,9 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
   return (
     <div className="flex flex-col gap-5">
       {/* Connection: the one thing that actually matters in a client. */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
+      {/* The title keeps at least 240px; when the actions don't fit beside it they wrap below. */}
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+        <div className="min-w-0 flex-1 basis-60">
           {customized ? (
             <Badge variant="warning" className="mb-1">
               <Trans
@@ -443,7 +444,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
             </p>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex max-w-full flex-wrap items-center gap-2">
           {client.locationRemovable && (
             <ConfirmDialog
               trigger={
@@ -476,7 +477,11 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
                 setProfile(value === "@default-access" ? "" : value)
               }
             >
-              <SelectTrigger aria-label={translate("Access")} size="sm" className="w-52">
+              <SelectTrigger
+                aria-label={translate("Access")}
+                size="sm"
+                className="w-auto max-w-full min-w-[min(13rem,100%)]"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

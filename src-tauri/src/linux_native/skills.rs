@@ -10,6 +10,82 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
+// BreakpointBin intentionally has no child-based minimum size. Issue cards, unlike a whole
+// page, must contribute their content height to the scrolling list at every width.
+mod issue_frame {
+    use adw::prelude::*;
+    use gtk::glib;
+    use gtk::subclass::prelude::*;
+    use std::cell::OnceCell;
+
+    #[derive(Default)]
+    pub struct Frame {
+        pub bin: OnceCell<adw::BreakpointBin>,
+        pub content: OnceCell<gtk::Widget>,
+    }
+
+    #[gtk::glib::object_subclass]
+    impl ObjectSubclass for Frame {
+        const NAME: &'static str = "ToolportSkillIssueFrame";
+        type Type = super::IssueFrame;
+        type ParentType = gtk::Widget;
+    }
+    impl ObjectImpl for Frame {
+        fn dispose(&self) {
+            if let Some(bin) = self.bin.get() {
+                bin.unparent();
+            }
+        }
+    }
+    impl WidgetImpl for Frame {
+        fn request_mode(&self) -> gtk::SizeRequestMode {
+            gtk::SizeRequestMode::HeightForWidth
+        }
+        fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            let Some(content) = self.content.get() else {
+                return (0, 0, -1, -1);
+            };
+            let (min, nat, _, _) = content.measure(orientation, for_size);
+            if orientation == gtk::Orientation::Horizontal {
+                (280, nat.max(280), -1, -1)
+            } else {
+                (min, nat, -1, -1)
+            }
+        }
+        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            if let Some(bin) = self.bin.get() {
+                bin.allocate(width, height, baseline, None);
+            }
+        }
+        fn snapshot(&self, snapshot: &gtk::Snapshot) {
+            if let Some(bin) = self.bin.get() {
+                self.obj().snapshot_child(bin, snapshot);
+            }
+        }
+    }
+}
+
+gtk::glib::wrapper! {
+    pub struct IssueFrame(ObjectSubclass<issue_frame::Frame>)
+        @extends gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+}
+
+impl IssueFrame {
+    fn new(bin: &adw::BreakpointBin, content: &impl IsA<gtk::Widget>) -> Self {
+        use gtk::subclass::prelude::*;
+        let frame: Self = gtk::glib::Object::new();
+        bin.set_parent(&frame);
+        frame.imp().bin.set(bin.clone()).expect("new issue frame");
+        frame
+            .imp()
+            .content
+            .set(content.clone().upcast())
+            .expect("new issue content");
+        frame
+    }
+}
+
 const SOURCE_ORDER: [Source; 7] = [
     Source::Yours,
     Source::Account,
@@ -22,8 +98,12 @@ const SOURCE_ORDER: [Source; 7] = [
 const ISSUE_SKILL_LIMIT: usize = 12;
 /// The collapsed-group key for dismissed Needs a look items.
 const DISMISSED_KEY: &str = "issues:dismissed";
-/// Width of one agent's status column, shared by the header logos and the row dots.
-const COLUMN: i32 = 28;
+/// Width of one agent's status column, shared by the header logos and the row dots: wide
+/// enough for a short name under the logo when the list has room, logos only when it doesn't.
+const WIDE_COLUMN: i32 = 56;
+const NARROW_COLUMN: i32 = 32;
+/// What a row keeps for the name and description before the columns widen.
+const NAME_ROOM: f64 = 360.0;
 const SIZE_COLUMN: i32 = 64;
 const DETAIL_WIDTH: i32 = 380;
 /// Below this page width the detail pane moves under the list, as the React view does.
@@ -54,6 +134,9 @@ enum RowKind {
 }
 
 /// One list-and-detail tab (Skills or Rules).
+/// Agent id, display name and optional per-dot detail for the hovered column.
+type HoveredColumn = (String, String, Option<String>);
+
 #[derive(Clone)]
 struct Pane {
     banner: gtk::Box,
@@ -67,6 +150,14 @@ struct Pane {
     separator: gtk::Separator,
     /// Source strings for the two panes' accessible names, read again on a language change.
     names: (&'static str, &'static str),
+    /// The column width the list was last drawn with.
+    column: Rc<Cell<i32>>,
+    /// Every header button and dot by agent, to highlight a hovered or focused column.
+    cells: Rc<RefCell<HashMap<String, Vec<gtk::Widget>>>>,
+    /// The header row's note naming the hovered column.
+    hint: Rc<RefCell<Option<gtk::Label>>>,
+    hovered: Rc<RefCell<Option<HoveredColumn>>>,
+    focused: Rc<RefCell<Option<(String, String)>>>,
 }
 
 /// A write to run off the main thread, bound to the project that was open when it was asked
@@ -87,6 +178,9 @@ pub(super) struct SkillsPage {
     issues_list: gtk::Box,
     issues_side: gtk::Box,
     search: gtk::SearchEntry,
+    agent_filter: gtk::DropDown,
+    filter_ids: Rc<RefCell<Vec<String>>>,
+    syncing_filter: Rc<Cell<bool>>,
     feedback: gtk::Label,
     /// Hides a success message after a few seconds; errors stay until the next action.
     feedback_timer: Rc<RefCell<Option<gtk::glib::SourceId>>>,
@@ -116,8 +210,7 @@ pub(super) struct SkillsPage {
     /// The detail pane's state controls by agent, to give focus back after a write redraws them.
     controls: Rc<RefCell<HashMap<String, gtk::Widget>>>,
     last_control: Rc<RefCell<Option<String>>>,
-    /// The On / Name only / Off button that last had keyboard focus (`agent#value`), so a
-    /// redraw puts focus back where the arrow keys left it, not on the saved state.
+    /// The last activated control slot (`agent` for its switch, `agent#menu` for its menu).
     focused_choice: Rc<RefCell<Option<String>>>,
     /// The control a click is about to redraw (a group header, a column filter), so the redrawn
     /// copy gets keyboard focus back.
@@ -221,6 +314,94 @@ fn icon_badge(icon: &str, text: &str, class: &str) -> gtk::Box {
     chip
 }
 
+/// The status chip for one agent: the legend's word and color, with the same mark as the React
+/// view's `SkillStateChip`. Never pressable. `label` overrides the word (rules say "Loaded").
+fn state_chip(state: Option<State>, label: Option<&str>) -> gtk::Box {
+    let chip = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    chip.set_valign(gtk::Align::Center);
+    chip.set_hexpand(false);
+    chip.add_css_class("toolport-badge");
+    chip.add_css_class("caption");
+    chip.add_css_class(match state {
+        Some(State::On) => "success",
+        Some(State::NameOnly) => "partial",
+        Some(State::Shadowed) => "warning",
+        Some(State::Broken) => "error",
+        _ => "off",
+    });
+    match state {
+        Some(State::Off) | Some(State::Broken) => {
+            let image = gtk::Image::from_icon_name(if state == Some(State::Off) {
+                "action-unavailable-symbolic"
+            } else {
+                "dialog-warning-symbolic"
+            });
+            image.set_pixel_size(12);
+            chip.append(&image);
+        }
+        Some(state) => {
+            let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            dot.set_valign(gtk::Align::Center);
+            dot.add_css_class("toolport-chip-dot");
+            dot.add_css_class(match state {
+                State::NameOnly => "name-only",
+                State::Shadowed => "ring",
+                _ => "on",
+            });
+            chip.append(&dot);
+        }
+        None => {
+            let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            dot.set_valign(gtk::Align::Center);
+            dot.add_css_class("toolport-chip-dot");
+            dot.add_css_class("none");
+            chip.append(&dot);
+        }
+    }
+    let text = label.map_or_else(|| state_label(state), str::to_string);
+    chip.append(&gtk::Label::new(Some(&text)));
+    chip
+}
+
+/// Up to 8 characters of an agent's name for under its column logo ("Claude", "Copilot"),
+/// matching the React view's `shortAgentName`.
+fn short_agent_name(name: &str) -> String {
+    let mut short = name.trim();
+    if let Some(stripped) = short
+        .strip_suffix(" CLI")
+        .or_else(|| short.strip_suffix(" cli"))
+    {
+        short = stripped.trim_end();
+    }
+    if short.chars().count() > 8 {
+        short = short.split_whitespace().next().unwrap_or(short);
+    }
+    if short.chars().count() > 8 {
+        let mut cut: String = short.chars().take(7).collect();
+        cut.push('…');
+        cut
+    } else {
+        short.to_string()
+    }
+}
+
+/// What the grid header says about a hovered dot. `via` is a folder for On and a sentence for
+/// the other states ("Off in config.toml"), so only On gets "via". Matches React's `dotDetail`.
+fn dot_detail(state: Option<&crate::skills::SkillState>) -> String {
+    let Some(at) = state else {
+        return state_label(None);
+    };
+    let label = state_label(Some(at.state));
+    match at.state {
+        State::On => crate::i18n::trf(
+            "{state} via {path}",
+            &[("state", &label), ("path", &at.via)],
+        ),
+        State::NameOnly => format!("{label} · {}", at.via),
+        _ => at.via.clone(),
+    }
+}
+
 fn logo(id: &str, size: i32) -> gtk::Image {
     let image = branding::client_logo(id);
     image.set_pixel_size(size);
@@ -231,11 +412,33 @@ fn logo(id: &str, size: i32) -> gtk::Image {
 fn logo_tile(id: &str) -> gtk::CenterBox {
     let tile = gtk::CenterBox::new();
     tile.add_css_class("toolport-skill-logo");
-    tile.set_size_request(32, 32);
+    tile.set_size_request(28, 28);
     tile.set_hexpand(false);
-    tile.set_valign(gtk::Align::Start);
+    tile.set_valign(gtk::Align::Center);
     tile.set_center_widget(Some(&logo(id, 20)));
     tile
+}
+
+/// The control slot of an agent Toolport can't change: a lock that says why. Focusable so
+/// keyboard users get the tooltip; it is a fact, not a control.
+fn lock(reason: &str) -> gtk::Box {
+    let lock = gtk::Box::builder()
+        .accessible_role(gtk::AccessibleRole::Img)
+        .focusable(true)
+        .halign(gtk::Align::End)
+        .valign(gtk::Align::Center)
+        .hexpand(true)
+        .css_classes(["toolport-lock"])
+        .build();
+    lock.set_size_request(28, 28);
+    lock.set_tooltip_text(Some(reason));
+    lock.update_property(&[gtk::accessible::Property::Label(reason)]);
+    let image = gtk::Image::from_icon_name("changes-prevent-symbolic");
+    image.set_pixel_size(12);
+    image.set_hexpand(true);
+    image.set_halign(gtk::Align::Center);
+    lock.append(&image);
+    lock
 }
 
 /// A rounded square holding an icon, the way the mockup heads details and issues.
@@ -348,7 +551,7 @@ fn state_label(state: Option<State>) -> String {
 }
 
 /// One cell of the agent matrix. Shape and color both carry the state, as in the React view.
-fn state_dot(state: Option<State>, tooltip: &str) -> gtk::CenterBox {
+fn state_dot(state: Option<State>, tooltip: &str, width: i32) -> gtk::CenterBox {
     // Named like the React view's role="img" dots; the legend's dots sit beside their own label.
     let cell = gtk::CenterBox::builder()
         .accessible_role(if tooltip.is_empty() {
@@ -357,8 +560,9 @@ fn state_dot(state: Option<State>, tooltip: &str) -> gtk::CenterBox {
             gtk::AccessibleRole::Img
         })
         .build();
-    cell.set_size_request(COLUMN, 20);
-    cell.set_valign(gtk::Align::Center);
+    cell.set_size_request(width, 20);
+    cell.add_css_class("toolport-skill-cell");
+    cell.set_valign(gtk::Align::Fill);
     cell.set_hexpand(false);
     if !tooltip.is_empty() {
         cell.set_tooltip_text(Some(tooltip));
@@ -409,7 +613,9 @@ fn legend() -> gtk::Box {
         (None, l10n::label("Not loaded")),
     ] {
         let item = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        item.append(&state_dot(state, ""));
+        let dot = state_dot(state, "", 28);
+        dot.set_valign(gtk::Align::Center);
+        item.append(&dot);
         label.add_css_class("caption");
         label.add_css_class("toolport-muted");
         item.append(&label);
@@ -469,7 +675,123 @@ fn stack_when_narrow(
     narrow.add_setter(side, "width-request", Some(&(-1).to_value()));
 }
 
+/// Keep the model object stable during a selection notification. Replacing it on every
+/// render queues another selected notification, which redraws again without yielding to input.
+fn sync_agent_filter(filter: &gtk::DropDown, names: &[String], selected: u32) {
+    let same_model = filter
+        .model()
+        .and_downcast::<gtk::StringList>()
+        .is_some_and(|model| {
+            model.n_items() as usize == names.len()
+                && names.iter().enumerate().all(|(index, name)| {
+                    model.string(index as u32).as_deref() == Some(name.as_str())
+                })
+        });
+    if !same_model {
+        filter.set_model(Some(&gtk::StringList::new(
+            &names.iter().map(String::as_str).collect::<Vec<_>>(),
+        )));
+    }
+    if filter.selected() != selected {
+        filter.set_selected(selected);
+    }
+}
+
 impl Pane {
+    /// The column width that fits `count` agents in the list's current width.
+    fn fitting_column(&self, count: usize) -> i32 {
+        let width = self.scroll.hadjustment().page_size();
+        if width - f64::from(WIDE_COLUMN) * count as f64 >= NAME_ROOM {
+            WIDE_COLUMN
+        } else {
+            NARROW_COLUMN
+        }
+    }
+
+    /// Pointer hover takes precedence over keyboard focus; leaving it restores the focused
+    /// header's name and column instead of erasing a still-active keyboard hint.
+    fn hover_column(&self, agent: &str, name: &str, detail: Option<&str>, on: bool) {
+        if on {
+            self.hovered.replace(Some((
+                agent.into(),
+                name.into(),
+                detail.map(str::to_string),
+            )));
+        } else if self
+            .hovered
+            .borrow()
+            .as_ref()
+            .is_some_and(|(id, _, _)| id == agent)
+        {
+            self.hovered.replace(None);
+        }
+        self.update_column();
+    }
+
+    fn focus_column(&self, agent: &str, name: &str, on: bool) {
+        if on {
+            self.focused.replace(Some((agent.into(), name.into())));
+        } else if self
+            .focused
+            .borrow()
+            .as_ref()
+            .is_some_and(|(id, _)| id == agent)
+        {
+            self.focused.replace(None);
+        }
+        self.update_column();
+    }
+
+    fn update_column(&self) {
+        let shown = self.hovered.borrow().clone().or_else(|| {
+            self.focused
+                .borrow()
+                .clone()
+                .map(|(id, name)| (id, name, None))
+        });
+        for (id, cells) in self.cells.borrow().iter() {
+            for cell in cells {
+                if shown
+                    .as_ref()
+                    .is_some_and(|(selected, _, _)| selected == id)
+                {
+                    cell.add_css_class("toolport-skill-col-hl");
+                } else {
+                    cell.remove_css_class("toolport-skill-col-hl");
+                }
+            }
+        }
+        if let Some(hint) = self.hint.borrow().as_ref() {
+            if let Some((_, name, detail)) = shown.as_ref() {
+                let name = gtk::glib::markup_escape_text(name);
+                hint.set_markup(&match detail {
+                    Some(detail) => {
+                        format!("<b>{name}</b>: {}", gtk::glib::markup_escape_text(detail))
+                    }
+                    None => format!("<b>{name}</b>"),
+                });
+            }
+            // Keep the single-line hint allocated: hover must not move the cell below it.
+            hint.set_opacity(if shown.is_some() { 1.0 } else { 0.0 });
+        }
+    }
+
+    /// Note `cell` as part of `agent`'s column and highlight the column while the pointer is on it.
+    fn track_cell(&self, agent: &Agent, cell: &impl IsA<gtk::Widget>, detail: Option<String>) {
+        self.cells
+            .borrow_mut()
+            .entry(agent.id.clone())
+            .or_default()
+            .push(cell.clone().upcast());
+        let motion = gtk::EventControllerMotion::new();
+        let (pane, id, name) = (self.clone(), agent.id.clone(), agent.name.clone());
+        let shown = detail.clone();
+        motion.connect_enter(move |_, _, _| pane.hover_column(&id, &name, shown.as_deref(), true));
+        let (pane, id, name) = (self.clone(), agent.id.clone(), agent.name.clone());
+        motion.connect_leave(move |_| pane.hover_column(&id, &name, None, false));
+        cell.add_controller(motion);
+    }
+
     /// In a narrow window, stack the detail pane under the list instead of beside it.
     fn stack_when_narrow(&self, narrow: &adw::Breakpoint) {
         stack_when_narrow(narrow, &self.layout, &self.separator, &self.detail_scroll);
@@ -533,6 +855,11 @@ impl Pane {
                 layout: layout.clone(),
                 separator,
                 names: (list_name, detail_name),
+                column: Rc::new(Cell::new(NARROW_COLUMN)),
+                cells: Rc::default(),
+                hint: Rc::default(),
+                hovered: Rc::default(),
+                focused: Rc::default(),
             },
             layout,
         )
@@ -555,9 +882,7 @@ impl SkillsPage {
 
         // Tabs on the left, project/search/refresh on the right, over one bottom rule.
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        bar.add_css_class("toolport-skill-tabbar");
-        // Keep the bar's height when Needs a look hides the search box.
-        bar.set_height_request(46);
+
         let tab_box = gtk::Box::new(gtk::Orientation::Horizontal, 18);
         tab_box.set_hexpand(true);
         tab_box.set_valign(gtk::Align::End);
@@ -586,7 +911,6 @@ impl SkillsPage {
             tab_box.append(&button);
             tabs.push((tab, button, count));
         }
-        bar.append(&tab_box);
 
         // Room for "Global only" before a long project name is shortened in the middle.
         let project_label = gtk::Label::builder()
@@ -642,13 +966,23 @@ impl SkillsPage {
             .valign(gtk::Align::Center)
             .css_classes(["toolport-search"])
             .build();
+        let agent_filter = gtk::DropDown::from_strings(&[]);
+        agent_filter.set_valign(gtk::Align::Center);
+        agent_filter.set_tooltip_text(Some(&crate::i18n::tr("Filter by agent")));
+        agent_filter.update_property(&[gtk::accessible::Property::Label(&crate::i18n::tr(
+            "Filter by agent",
+        ))]);
+        bar.append(&agent_filter);
         bar.append(&search);
         let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
         refresh_button.set_valign(gtk::Align::Center);
         refresh_button.set_tooltip_text(Some(&crate::i18n::tr("Scan again")));
         l10n::bind_tooltip(&refresh_button, "Scan again");
         bar.append(&refresh_button);
-        top.append(&bar);
+        let toolbar = super::page_header::HeaderWrap::new(&tab_box, &bar);
+        toolbar.add_css_class("toolport-skill-tabbar");
+        toolbar.set_height_request(46);
+        top.append(&toolbar);
 
         let feedback = gtk::Label::builder()
             .halign(gtk::Align::Fill)
@@ -789,6 +1123,9 @@ impl SkillsPage {
             issues_list,
             issues_side,
             search,
+            agent_filter,
+            filter_ids: Rc::default(),
+            syncing_filter: Rc::default(),
             feedback,
             feedback_timer: Rc::default(),
             project_label,
@@ -838,6 +1175,35 @@ impl SkillsPage {
         if let Some((_, first, _)) = page.tabs.first() {
             first.set_active(true);
         }
+        {
+            let page_ref = page.clone();
+            page.agent_filter.connect_selected_notify(move |filter| {
+                if page_ref.syncing_filter.get() {
+                    return;
+                }
+                let id = page_ref
+                    .filter_ids
+                    .borrow()
+                    .get(filter.selected() as usize)
+                    .cloned()
+                    .filter(|id| !id.is_empty());
+                page_ref.focus.replace(id);
+                page_ref.render();
+            });
+        }
+        for pane in [&page.skills, &page.rules] {
+            let page_ref = page.clone();
+            let pane_ref = pane.clone();
+            pane.scroll.hadjustment().connect_changed(move |_| {
+                let count = pane_ref.cells.borrow().len();
+                if count > 0 && pane_ref.fitting_column(count) != pane_ref.column.get() {
+                    // Set before scheduling, so allocation changes queue only one redraw.
+                    pane_ref.column.set(pane_ref.fitting_column(count));
+                    let page = page_ref.clone();
+                    gtk::glib::idle_add_local_once(move || page.render());
+                }
+            });
+        }
         page.connect_list(&page.skills, true);
         page.connect_list(&page.rules, false);
         {
@@ -885,6 +1251,10 @@ impl SkillsPage {
     /// Text set from code rather than bound to one source string, after a language change.
     /// Issue titles, notes and states come from the scan, so a visible page scans again.
     fn retranslate(&self) {
+        let filter_label = crate::i18n::tr("Filter by agent");
+        self.agent_filter.set_tooltip_text(Some(&filter_label));
+        self.agent_filter
+            .update_property(&[gtk::accessible::Property::Label(&filter_label)]);
         for pane in [&self.skills, &self.rules] {
             pane.list
                 .update_property(&[gtk::accessible::Property::Label(&crate::i18n::lookup(
@@ -1224,6 +1594,23 @@ impl SkillsPage {
                 label.remove_css_class("warning");
             }
         }
+        self.syncing_filter.set(true);
+        let mut ids = vec![String::new()];
+        let mut names = vec![crate::i18n::tr("All agents")];
+        for agent in &inv.agents {
+            if self.tab.get() == Tab::Rules || agent.supports_skills {
+                ids.push(agent.id.clone());
+                names.push(agent.name.clone());
+            }
+        }
+        let selected = ids
+            .iter()
+            .position(|id| Some(id.as_str()) == self.focus.borrow().as_deref())
+            .unwrap_or(0) as u32;
+        sync_agent_filter(&self.agent_filter, &names, selected);
+        self.filter_ids.replace(ids);
+        self.agent_filter.set_visible(self.tab.get() != Tab::Issues);
+        self.syncing_filter.set(false);
         let needle = self.search.text().trim().to_lowercase();
         match self.tab.get() {
             Tab::Skills => self.render_skills(inv, &needle),
@@ -1354,9 +1741,20 @@ impl SkillsPage {
     /// The "SKILL … logos" row. Clicking a logo shows only what that agent loads.
     fn render_head(&self, pane: &Pane, agents: &[&Agent], label: &str, size_column: bool) {
         clear_box(&pane.head);
+        pane.cells.borrow_mut().clear();
+        pane.hovered.replace(None);
+        pane.focused.replace(None);
+        pane.column.set(pane.fitting_column(agents.len()));
+        let title_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        title_box.set_hexpand(true);
+        let hint = one_line("", &["caption", "toolport-muted"]);
+        hint.set_opacity(0.0);
+        title_box.append(&hint);
+        pane.hint.replace(Some(hint));
         let title = section(label);
         title.set_valign(gtk::Align::End);
-        pane.head.append(&title);
+        title_box.append(&title);
+        pane.head.append(&title_box);
         if size_column {
             let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             spacer.set_size_request(SIZE_COLUMN, 1);
@@ -1365,8 +1763,8 @@ impl SkillsPage {
         let focus = self.focus.borrow().clone();
         for agent in agents {
             let overlay = gtk::Overlay::new();
-            overlay.set_size_request(COLUMN, 22);
-            let image = logo(&agent.id, 18);
+            overlay.set_size_request(pane.column.get(), 22);
+            let image = logo(&agent.id, 20);
             image.set_halign(gtk::Align::Center);
             image.set_valign(gtk::Align::Center);
             overlay.set_child(Some(&image));
@@ -1377,9 +1775,21 @@ impl SkillsPage {
                 pip.set_valign(gtk::Align::Start);
                 overlay.add_overlay(&pip);
             }
+            let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            column.append(&overlay);
+            if pane.column.get() == WIDE_COLUMN {
+                column.append(
+                    &gtk::Label::builder()
+                        .label(short_agent_name(&agent.name))
+                        .ellipsize(gtk::pango::EllipsizeMode::End)
+                        .max_width_chars(8)
+                        .css_classes(["toolport-skill-col-name"])
+                        .build(),
+                );
+            }
             let button = gtk::Button::builder()
-                .child(&overlay)
-                .width_request(COLUMN)
+                .child(&column)
+                .width_request(pane.column.get())
                 .css_classes(["flat", "toolport-skill-col"])
                 .tooltip_text(if agent.verified {
                     agent.name.clone()
@@ -1402,7 +1812,7 @@ impl SkillsPage {
             button.update_state(&[gtk::accessible::State::Pressed(tristate(pressed))]);
             match &focus {
                 Some(id) if *id == agent.id => button.add_css_class("selected"),
-                Some(_) => button.set_opacity(0.4),
+                Some(_) => {}
                 None => {}
             }
             let page = self.clone();
@@ -1416,6 +1826,13 @@ impl SkillsPage {
                 page.focus.replace(next);
                 page.render_keeping_focus(format!("column:{id}"));
             });
+            pane.track_cell(agent, &button, None);
+            let watch = gtk::EventControllerFocus::new();
+            let (p, id, name) = (pane.clone(), agent.id.clone(), agent.name.clone());
+            watch.connect_enter(move |_| p.focus_column(&id, &name, true));
+            let (p, id, name) = (pane.clone(), agent.id.clone(), agent.name.clone());
+            watch.connect_leave(move |_| p.focus_column(&id, &name, false));
+            button.add_controller(watch);
             self.offer_focus(&format!("column:{}", agent.id), &button);
             pane.head.append(&button);
         }
@@ -1548,6 +1965,7 @@ impl SkillsPage {
         content.add_css_class("toolport-skill-row");
         let copy = gtk::Box::new(gtk::Orientation::Vertical, 2);
         copy.set_hexpand(true);
+        copy.add_css_class("toolport-skill-row-copy");
         let name = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let title = one_line(&skill.name, &["toolport-skill-name"]);
         title.set_hexpand(false);
@@ -1582,20 +2000,21 @@ impl SkillsPage {
             .css_classes(["toolport-muted", "caption", "numeric"])
             .build();
         content.append(&size);
+        let pane = &self.skills;
         let dots = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let focus = self.focus.borrow();
         for agent in agents {
-            let state = skill.states.get(&agent.id).map(|s| s.state);
+            let saved = skill.states.get(&agent.id);
+            let state = saved.map(|s| s.state);
+            let detail = dot_detail(saved);
             let dot = state_dot(
                 state,
                 &crate::i18n::trf(
                     "{client}: {state}",
                     &[("client", &agent.name), ("state", &state_label(state))],
                 ),
+                pane.column.get(),
             );
-            if focus.as_ref().is_some_and(|id| *id != agent.id) {
-                dot.set_opacity(0.35);
-            }
+            pane.track_cell(agent, &dot, Some(detail));
             dots.append(&dot);
         }
         content.append(&dots);
@@ -1835,13 +2254,13 @@ impl SkillsPage {
                 icon_badge(
                     "media-playlist-shuffle-symbolic",
                     &crate::i18n::trf("git repo: {name}", &[("name", repo)]),
-                    "",
+                    "off",
                 )
                 .upcast(),
             );
         }
         if !skill.editable && !broken {
-            badges.push(badge(&crate::i18n::tr("Read only"), "").upcast());
+            badges.push(badge(&crate::i18n::tr("Read only"), "off").upcast());
         }
         pane.detail
             .append(&self.detail_header("starred-symbolic", &skill.name, &badges));
@@ -2002,31 +2421,37 @@ impl SkillsPage {
         restore_scroll(&pane.detail_scroll, scroll);
         // A write redraws the pane; put focus back on the control the user just used.
         if let Some(agent) = self.last_control.borrow_mut().take() {
-            let choice = self
-                .focused_choice
-                .borrow()
-                .clone()
-                .filter(|key| key.starts_with(&format!("{agent}#")));
-            let controls = self.controls.borrow();
-            if let Some(control) = choice
-                .and_then(|key| controls.get(&key))
-                .or_else(|| controls.get(&agent))
-            {
-                control.grab_focus();
-            }
+            self.restore_agent_control(&agent);
         }
     }
 
+    fn restore_agent_control(&self, agent: &str) {
+        let choice = self.focused_choice.borrow();
+        let controls = self.controls.borrow();
+        if let Some(control) = choice
+            .as_ref()
+            .filter(|key| *key == agent || key.starts_with(&format!("{agent}#")))
+            .and_then(|key| controls.get(key))
+            .or_else(|| controls.get(agent))
+        {
+            control.grab_focus();
+        }
+    }
+
+    /// One row of a skill's Agents list: logo, where it loads from, the status chip and one
+    /// 44px control slot (a switch, a lock, or nothing), plus Claude Code's ⋯ menu for "Name
+    /// only". The same layout as the React view's `AgentStateRow`.
     fn agent_row(&self, agent: &Agent, skill: &Skill) -> gtk::Box {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         row.add_css_class("toolport-skill-agent");
         row.append(&logo_tile(&agent.id));
         let copy = gtk::Box::new(gtk::Orientation::Vertical, 2);
         copy.set_hexpand(true);
-        let name = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        copy.set_valign(gtk::Align::Center);
+        let name = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         name.append(&heading(&agent.name));
         if !agent.verified {
-            let docs = badge(&crate::i18n::tr("from docs"), "disabled");
+            let docs = badge(&crate::i18n::tr("from docs"), "off");
             docs.set_tooltip_text(Some(&crate::i18n::tr(
                 "Folders come from this client's docs, not a check on this machine",
             )));
@@ -2034,10 +2459,25 @@ impl SkillsPage {
         }
         copy.append(&name);
         let state = skill.states.get(&agent.id);
-        let via = muted(&state.map_or_else(
+        let current = state.map(|s| s.state);
+        let switchable = matches!(
+            current,
+            Some(State::On) | Some(State::NameOnly) | Some(State::Off)
+        );
+        let reason = state.and_then(|s| s.read_only_reason.as_deref());
+        let writable = agent.can_toggle && reason.is_none();
+        let read_only = switchable && !writable;
+        let mut where_text = state.map_or_else(
             || crate::i18n::tr("Not in any folder it reads"),
             |s| s.via.clone(),
-        ));
+        );
+        if read_only {
+            where_text = format!(
+                "{where_text} · {}",
+                crate::i18n::tr("No switch Toolport can write")
+            );
+        }
+        let via = muted(&where_text);
         via.add_css_class("caption");
         copy.append(&via);
         if let Some(reason) = state.and_then(|s| s.read_only_reason.as_deref()) {
@@ -2046,153 +2486,77 @@ impl SkillsPage {
             copy.append(&reason);
         }
         row.append(&copy);
-        let control = self.state_control(agent, skill);
-        control.set_valign(gtk::Align::Center);
-        row.append(&control);
+        row.append(&state_chip(current, None));
+        let set = self.state_setter(agent, skill);
+        if switchable && writable && agent.name_only {
+            row.append(&self.name_only_menu(agent, current == Some(State::NameOnly), set.clone()));
+        }
+        let slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        slot.set_size_request(44, -1);
+        slot.set_hexpand(false);
+        slot.set_halign(gtk::Align::End);
+        slot.set_valign(gtk::Align::Center);
+        if switchable && writable {
+            let switch = self.state_switch(agent, skill, current != Some(State::Off), set);
+            switch.set_hexpand(true);
+            switch.set_halign(gtk::Align::End);
+            slot.append(&switch);
+        } else if read_only {
+            slot.append(&lock(reason.unwrap_or(&agent.switch_note)));
+        }
+        row.append(&slot);
         row
     }
 
-    fn state_control(&self, agent: &Agent, skill: &Skill) -> gtk::Widget {
-        let current = skill.states.get(&agent.id).map(|s| s.state);
-        let Some(current) = current else {
-            let label = muted(&state_label(None));
-            label.set_wrap(false);
-            label.set_halign(gtk::Align::End);
-            label.add_css_class("caption");
-            return label.upcast();
-        };
-        match current {
-            State::Broken => return badge(&state_label(Some(current)), "error").upcast(),
-            State::Shadowed => {
-                return badge(&state_label(Some(current)), "approval-warning").upcast()
-            }
-            _ => {}
-        }
-        if let Some(reason) = skill
-            .states
-            .get(&agent.id)
-            .and_then(|s| s.read_only_reason.as_deref())
-        {
-            let pill = badge(&crate::i18n::tr("Read only"), "disabled");
-            pill.set_tooltip_text(Some(reason));
-            return pill.upcast();
-        }
-        if !agent.can_toggle {
-            let pill = icon_badge(
-                if current == State::Off {
-                    "action-unavailable-symbolic"
-                } else {
-                    "media-record-symbolic"
-                },
-                &state_label(Some(current)),
-                if current == State::Off {
-                    "disabled"
-                } else {
-                    "success"
-                },
-            );
-            pill.set_tooltip_text(Some(&agent.switch_note));
-            return pill.upcast();
-        }
-        let set = {
-            let page = self.clone();
-            let agent_id = agent.id.clone();
-            let agent_name = agent.name.clone();
-            let key = skill.key.clone();
-            let skill_name = skill.name.clone();
-            move |wanted: Wanted| {
-                let success = match wanted {
-                    Wanted::Off => crate::i18n::trf(
-                        "Turned off {skill} in {client}",
-                        &[("skill", &skill_name), ("client", &agent_name)],
-                    ),
-                    Wanted::NameOnly => crate::i18n::trf(
-                        "{client} now lists {skill} by name only",
-                        &[("skill", &skill_name), ("client", &agent_name)],
-                    ),
-                    Wanted::On => crate::i18n::trf(
-                        "Turned on {skill} in {client}",
-                        &[("skill", &skill_name), ("client", &agent_name)],
-                    ),
-                };
-                page.last_control.replace(Some(agent_id.clone()));
-                let agent_id = agent_id.clone();
-                let key = key.clone();
-                let failed = titled(crate::i18n::trf(
-                    "Couldn't change {skill} in {client}",
+    /// Writes one agent's state for this skill, reporting the result on the page.
+    fn state_setter(&self, agent: &Agent, skill: &Skill) -> Rc<dyn Fn(Wanted)> {
+        let page = self.clone();
+        let agent_id = agent.id.clone();
+        let agent_name = agent.name.clone();
+        let key = skill.key.clone();
+        let skill_name = skill.name.clone();
+        Rc::new(move |wanted: Wanted| {
+            let success = match wanted {
+                Wanted::Off => crate::i18n::trf(
+                    "Turned off {skill} in {client}",
                     &[("skill", &skill_name), ("client", &agent_name)],
-                ));
-                page.mutate(success, move |project| {
-                    crate::skills::set_skill_state(&agent_id, &key, wanted, project.as_deref())
-                        .map_err(failed)
-                });
-            }
-        };
-        if agent.name_only {
-            // On / Name only / Off as one segmented control, like the React radio group.
-            let group = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-            group.add_css_class("linked");
-            group.add_css_class("toolport-skill-segments");
-            group.update_property(&[gtk::accessible::Property::Label(&crate::i18n::trf(
-                "{skill} in {client}",
-                &[("skill", &skill.name), ("client", &agent.name)],
-            ))]);
-            let set = Rc::new(set);
-            let mut first: Option<gtk::ToggleButton> = None;
-            for (wanted, state, title) in [
-                (Wanted::On, State::On, crate::i18n::tr("On")),
-                (
-                    Wanted::NameOnly,
-                    State::NameOnly,
-                    crate::i18n::tr("Name only"),
                 ),
-                (Wanted::Off, State::Off, crate::i18n::tr("Off")),
-            ] {
-                let button = gtk::ToggleButton::builder()
-                    .label(title)
-                    .active(current == state)
-                    .css_classes(["caption"])
-                    .build();
-                if let Some(first) = &first {
-                    button.set_group(Some(first));
-                } else {
-                    first = Some(button.clone());
-                    self.controls
-                        .borrow_mut()
-                        .insert(agent.id.clone(), button.clone().upcast());
-                }
-                if current == state {
-                    self.controls
-                        .borrow_mut()
-                        .insert(agent.id.clone(), button.clone().upcast());
-                }
-                let slot = format!("{}#{}", agent.id, state_label(Some(state)));
-                self.controls
-                    .borrow_mut()
-                    .insert(slot.clone(), button.clone().upcast());
-                let watch = gtk::EventControllerFocus::new();
-                let focused = self.focused_choice.clone();
-                watch.connect_enter(move |_| {
-                    focused.replace(Some(slot.clone()));
-                });
-                button.add_controller(watch);
-                let set = set.clone();
-                // Clicking back to the saved state still writes: an earlier click may be queued.
-                button.connect_toggled(move |button| {
-                    if button.is_active() {
-                        set(wanted);
-                    }
-                });
-                group.append(&button);
-            }
-            return group.upcast();
-        }
+                Wanted::NameOnly => crate::i18n::trf(
+                    "{client} now lists {skill} by name only",
+                    &[("skill", &skill_name), ("client", &agent_name)],
+                ),
+                Wanted::On => crate::i18n::trf(
+                    "Turned on {skill} in {client}",
+                    &[("skill", &skill_name), ("client", &agent_name)],
+                ),
+            };
+            page.last_control.replace(Some(agent_id.clone()));
+            let agent_id = agent_id.clone();
+            let key = key.clone();
+            let failed = titled(crate::i18n::trf(
+                "Couldn't change {skill} in {client}",
+                &[("skill", &skill_name), ("client", &agent_name)],
+            ));
+            page.mutate(success, move |project| {
+                crate::skills::set_skill_state(&agent_id, &key, wanted, project.as_deref())
+                    .map_err(failed)
+            });
+        })
+    }
+
+    fn state_switch(
+        &self,
+        agent: &Agent,
+        skill: &Skill,
+        active: bool,
+        set: Rc<dyn Fn(Wanted)>,
+    ) -> gtk::Switch {
         let name = crate::i18n::trf(
             "Load {skill} in {client}",
             &[("skill", &skill.name), ("client", &agent.name)],
         );
         let switch = gtk::Switch::builder()
-            .active(current != State::Off)
+            .active(active)
             .valign(gtk::Align::Center)
             .tooltip_text(&name)
             .build();
@@ -2200,11 +2564,71 @@ impl SkillsPage {
         self.controls
             .borrow_mut()
             .insert(agent.id.clone(), switch.clone().upcast());
+        let focused = self.focused_choice.clone();
+        let slot = agent.id.clone();
         switch.connect_state_set(move |_, active| {
+            focused.replace(Some(slot.clone()));
             set(if active { Wanted::On } else { Wanted::Off });
             gtk::glib::Propagation::Proceed
         });
-        switch.upcast()
+        switch
+    }
+
+    /// Claude Code's third state: a small ⋯ menu with one checked item, beside its switch.
+    fn name_only_menu(
+        &self,
+        agent: &Agent,
+        name_only: bool,
+        set: Rc<dyn Fn(Wanted)>,
+    ) -> gtk::MenuButton {
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        content.set_margin_top(6);
+        content.set_margin_bottom(6);
+        content.set_margin_start(6);
+        content.set_margin_end(6);
+        content.set_width_request(260);
+        let title = section(&agent.name);
+        title.set_margin_start(6);
+        content.append(&title);
+        let check = gtk::CheckButton::builder()
+            .label(crate::i18n::tr("Load name and description only"))
+            .active(name_only)
+            .build();
+        content.append(&check);
+        let note = muted(&agent.switch_note);
+        note.add_css_class("caption");
+        note.set_margin_start(6);
+        note.set_max_width_chars(36);
+        content.append(&note);
+        let popover = gtk::Popover::builder().child(&content).build();
+        let label = crate::i18n::trf("More options for {client}", &[("client", &agent.name)]);
+        let button = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .popover(&popover)
+            .valign(gtk::Align::Center)
+            .tooltip_text(&label)
+            .css_classes(["flat", "toolport-row-more"])
+            .build();
+        button.update_property(&[gtk::accessible::Property::Label(&label)]);
+        let slot = format!("{}#menu", agent.id);
+        self.controls
+            .borrow_mut()
+            .insert(slot.clone(), button.clone().upcast());
+        let focused = self.focused_choice.clone();
+        let popover_ref = popover.downgrade();
+        check.connect_toggled(move |check| {
+            // The write redraws the pane; focus goes back to this menu button.
+            focused.replace(Some(slot.clone()));
+            if let Some(popover) = popover_ref.upgrade() {
+                popover.popdown();
+            }
+            set(if check.is_active() {
+                Wanted::NameOnly
+            } else {
+                Wanted::On
+            });
+        });
+        button
     }
 
     fn render_rules(&self, inv: &Inventory, needle: &str) {
@@ -2288,16 +2712,22 @@ impl SkillsPage {
         content.add_css_class("toolport-skill-row");
         let copy = gtk::Box::new(gtk::Orientation::Vertical, 2);
         copy.set_hexpand(true);
+        copy.add_css_class("toolport-skill-row-copy");
         copy.append(&one_line(&rule.name, &["toolport-skill-name"]));
         copy.append(&one_line(
             &rule.path,
             &["toolport-muted", "caption", "monospace"],
         ));
         content.append(&copy);
+        let pane = &self.rules;
         let dots = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let focus = self.focus.borrow();
         for agent in agents {
             let loaded = rule.agents.contains_key(&agent.id);
+            let detail = if loaded {
+                crate::i18n::tr("Loaded")
+            } else {
+                crate::i18n::tr("Not loaded")
+            };
             let dot = state_dot(
                 loaded.then_some(State::On),
                 &crate::i18n::trf(
@@ -2314,10 +2744,9 @@ impl SkillsPage {
                         ),
                     ],
                 ),
+                pane.column.get(),
             );
-            if focus.as_ref().is_some_and(|id| *id != agent.id) {
-                dot.set_opacity(0.35);
-            }
+            pane.track_cell(agent, &dot, Some(detail));
             dots.append(&dot);
         }
         content.append(&dots);
@@ -2343,7 +2772,7 @@ impl SkillsPage {
             } else {
                 crate::i18n::tr("Global")
             },
-            "",
+            "off",
         );
         pane.detail.append(&self.detail_header(
             "text-x-generic-symbolic",
@@ -2434,11 +2863,7 @@ impl SkillsPage {
                         copy.append(&line);
                     }
                     row.append(&copy);
-                    let loaded = icon_badge(
-                        "media-record-symbolic",
-                        &crate::i18n::tr("Loaded"),
-                        "success",
-                    );
+                    let loaded = state_chip(Some(State::On), Some(&crate::i18n::tr("Loaded")));
                     loaded.set_valign(gtk::Align::Start);
                     row.append(&loaded);
                 }
@@ -2462,14 +2887,19 @@ impl SkillsPage {
                     note.add_css_class("caption");
                     copy.append(&note);
                     row.append(&copy);
-                    let state = muted(&crate::i18n::tr("Not loaded"));
-                    state.set_wrap(false);
-                    state.set_hexpand(false);
+                    let state = state_chip(None, Some(&crate::i18n::tr("Not loaded")));
                     state.set_valign(gtk::Align::Start);
-                    state.add_css_class("caption");
                     row.append(&state);
                 }
             }
+            let slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            slot.set_size_request(44, -1);
+            slot.set_hexpand(false);
+            slot.set_halign(gtk::Align::End);
+            if rule.agents.contains_key(&agent.id) {
+                slot.append(&lock(&crate::i18n::tr("No switch Toolport can write")));
+            }
+            row.append(&slot);
             list.append(&row);
         }
         pane.detail.append(&list);
@@ -2561,7 +2991,7 @@ impl SkillsPage {
         self.issues_side.append(&note);
     }
 
-    fn issue_card(&self, inv: &Inventory, issue: &Issue) -> gtk::Box {
+    fn issue_card(&self, inv: &Inventory, issue: &Issue) -> IssueFrame {
         let card = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         card.add_css_class("toolport-skill-issue");
         let (icon, class) = match issue.level.as_str() {
@@ -2569,6 +2999,11 @@ impl SkillsPage {
             "warn" => ("dialog-warning-symbolic", "warning"),
             _ => ("dialog-information-symbolic", "info"),
         };
+        card.add_css_class(match class {
+            "error" => "toolport-issue-error",
+            "warning" => "toolport-issue-warning",
+            _ => "toolport-issue-info",
+        });
         card.append(&tile(icon, class, 32));
         let copy = gtk::Box::new(gtk::Orientation::Vertical, 6);
         copy.set_hexpand(true);
@@ -2608,10 +3043,12 @@ impl SkillsPage {
             });
         }
         self.offer_focus(&format!("issue:{}", issue.fingerprint), &dismiss);
-        top.append(&dismiss);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        actions.set_valign(gtk::Align::Start);
+        actions.append(&dismiss);
         if let Some(label) = issue.fix_label.as_ref().filter(|_| !issue.dismissed) {
             let button = gtk::Button::with_label(label);
-            button.add_css_class("suggested-action");
+            button.add_css_class("toolport-secondary-action");
             button.set_valign(gtk::Align::Start);
             button.set_sensitive(!self.busy.get());
             let page = self.clone();
@@ -2620,8 +3057,9 @@ impl SkillsPage {
             let title = issue.title.clone();
             let label = label.clone();
             button.connect_clicked(move |_| page.confirm_fix(&id, &fingerprint, &title, &label));
-            top.append(&button);
+            actions.append(&button);
         }
+        top.append(&actions);
         copy.append(&top);
         copy.append(&muted(&issue.detail));
         let logos = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -2685,8 +3123,31 @@ impl SkillsPage {
         if chips.first_child().is_some() {
             copy.append(&chips);
         }
+        let narrow = adw::Breakpoint::new(
+            adw::BreakpointCondition::parse("max-width: 560px").expect("static issue breakpoint"),
+        );
+        let (a, t, c) = (actions.clone(), top.clone(), copy.clone());
+        narrow.connect_apply(move |_| {
+            t.remove(&a);
+            a.set_halign(gtk::Align::Start);
+            c.append(&a);
+        });
+        let (a, t, c) = (actions.clone(), top.clone(), copy.clone());
+        narrow.connect_unapply(move |_| {
+            c.remove(&a);
+            a.set_halign(gtk::Align::End);
+            t.append(&a);
+        });
         card.append(&copy);
-        card
+        let adaptive = adw::BreakpointBin::builder()
+            .child(&card)
+            .width_request(280)
+            // IssueFrame supplies the measured content height; the bin still requires an
+            // explicit minimum for its breakpoint allocation contract.
+            .height_request(1)
+            .build();
+        adaptive.add_breakpoint(narrow);
+        IssueFrame::new(&adaptive, &card)
     }
 
     /// Jump from a Needs a look chip to that skill on the Skills tab.
@@ -2850,14 +3311,15 @@ fn agent_summary(inv: &Inventory, agent: &Agent) -> gtk::Box {
             "error",
         )
     } else if agent.supports_skills {
-        let label = badge(
-            &if agent.can_toggle {
-                crate::i18n::tr("Own switch")
-            } else {
-                crate::i18n::tr("No switch")
-            },
-            "",
-        );
+        // A fact about the agent, not a button: plain secondary text.
+        let label = muted(&if agent.can_toggle {
+            crate::i18n::tr("Own switch")
+        } else {
+            crate::i18n::tr("No switch")
+        });
+        label.set_wrap(false);
+        label.set_hexpand(false);
+        label.add_css_class("caption");
         label.set_tooltip_text(Some(&agent.switch_note));
         label
     } else {
@@ -2866,4 +3328,201 @@ fn agent_summary(inv: &Inventory, agent: &Agent) -> gtk::Box {
     status.set_valign(gtk::Align::Center);
     row.append(&status);
     row
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_column_names_match_the_react_labels() {
+        for (name, short) in [
+            ("Claude Code", "Claude"),
+            ("Copilot CLI", "Copilot"),
+            ("OpenCode", "OpenCode"),
+            ("LongAgentName", "LongAge…"),
+            ("代理智能体名称很长测试", "代理智能体名称…"),
+        ] {
+            assert_eq!(short_agent_name(name), short);
+        }
+    }
+
+    #[test]
+    fn dot_hint_keeps_non_path_explanations() {
+        let state = crate::skills::SkillState {
+            state: State::Off,
+            via: "Off in config.toml".into(),
+            switch_name: None,
+            read_only_reason: None,
+            by_pattern: false,
+        };
+        assert_eq!(dot_detail(Some(&state)), "Off in config.toml");
+    }
+
+    fn regression_agent() -> Agent {
+        Agent {
+            id: "claude-code".into(),
+            name: "Claude Code".into(),
+            supports_skills: true,
+            verified: true,
+            can_toggle: true,
+            name_only: true,
+            switch_note: String::new(),
+            roots: vec![],
+            rules_note: None,
+            rule_locations: vec![],
+        }
+    }
+
+    #[test]
+    #[ignore = "requires GTK; explicitly run in the isolated omabox session"]
+    fn column_hover_and_focus_preserve_header_height() {
+        gtk::init().expect("this regression runs inside omabox");
+        let _lock = crate::registry::data_dir_test_lock();
+        let scratch = std::env::temp_dir().join(format!(
+            "toolport-column_hover_and_focus_preserve_header_height-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _data = crate::registry::DataDirOverride::set(&scratch);
+        let app = adw::Application::builder().build();
+        let page = SkillsPage::new(&app);
+        let agent = regression_agent();
+        for pane in [&page.skills, &page.rules] {
+            page.render_head(pane, &[&agent], "SKILL", false);
+            for column in [NARROW_COLUMN, WIDE_COLUMN] {
+                for cell in pane.cells.borrow().values().flatten() {
+                    cell.set_width_request(column);
+                }
+                let height = || pane.head.measure(gtk::Orientation::Vertical, 640);
+                let before = height();
+                for _ in 0..10 {
+                    pane.hover_column(&agent.id, &agent.name, Some("Off in settings.json"), true);
+                    assert_eq!(height(), before, "hover must not resize the header");
+                    pane.focus_column(&agent.id, &agent.name, true);
+                    pane.hover_column(&agent.id, &agent.name, None, false);
+                    assert_eq!(height(), before, "keyboard hint must not resize the header");
+                    pane.focus_column(&agent.id, &agent.name, false);
+                    assert_eq!(height(), before, "leaving must not resize the header");
+                }
+            }
+        }
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires GTK; explicitly run in the isolated omabox session"]
+    fn menu_then_switch_then_switch_restores_latest_control() {
+        gtk::init().expect("this regression runs inside omabox");
+        let _lock = crate::registry::data_dir_test_lock();
+        let scratch = std::env::temp_dir().join(format!(
+            "toolport-menu_then_switch_then_switch_restores_latest_control-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _data = crate::registry::DataDirOverride::set(&scratch);
+        let app = adw::Application::builder().build();
+        let page = SkillsPage::new(&app);
+        let agent = regression_agent();
+        let skill: Skill = serde_json::from_value(serde_json::json!({
+            "key": "synthetic", "name": "synthetic", "description": "", "descriptionChars": 0,
+            "path": "", "folder": "", "source": "yours", "sourceNote": "", "editable": false,
+            "sizeBytes": 0, "lines": 0, "modifiedSecs": null, "gitRepo": null,
+            "links": [], "states": {}, "preview": ""
+        }))
+        .unwrap();
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let seen = writes.clone();
+        let set: Rc<dyn Fn(Wanted)> = Rc::new(move |wanted| seen.borrow_mut().push(wanted));
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let window = gtk::Window::builder().child(&row).build();
+        let menu = page.name_only_menu(&agent, false, set.clone());
+        row.append(&menu);
+        let switch = page.state_switch(&agent, &skill, true, set.clone());
+        row.append(&switch);
+        // Exercise the actual menu callback, without writing to any real client config.
+        let content = menu
+            .popover()
+            .unwrap()
+            .child()
+            .unwrap()
+            .downcast::<gtk::Box>()
+            .unwrap();
+        let check = content
+            .first_child()
+            .unwrap()
+            .next_sibling()
+            .unwrap()
+            .downcast::<gtk::CheckButton>()
+            .unwrap();
+        check.set_active(true);
+        assert_eq!(
+            page.focused_choice.borrow().as_deref(),
+            Some("claude-code#menu")
+        );
+        page.restore_agent_control(&agent.id);
+        switch.grab_focus();
+        // Each write rebuilds the switch, as render_skill_detail does after a scan.
+        let mut current = switch;
+        for active in [false, true] {
+            current.emit_by_name::<bool>("state-set", &[&active]);
+            assert_eq!(
+                page.focused_choice.borrow().as_deref(),
+                Some(agent.id.as_str())
+            );
+            row.remove(&current);
+            current = page.state_switch(&agent, &skill, active, set.clone());
+            row.append(&current);
+            page.restore_agent_control(&agent.id);
+            assert!(
+                gtk::prelude::RootExt::focus(&window).as_ref() == Some(current.upcast_ref()),
+                "redraw must restore the switch, not the old menu"
+            );
+            assert!(
+                !menu.is_active(),
+                "the second activation must not open the menu"
+            );
+        }
+        assert_eq!(
+            *writes.borrow(),
+            vec![Wanted::NameOnly, Wanted::Off, Wanted::On]
+        );
+        window.close();
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires GTK; explicitly run in the isolated omabox session"]
+    fn agent_filter_redraw_does_not_requeue_selection() {
+        gtk::init().expect("this regression runs inside omabox");
+        let names = vec![
+            "All agents".to_string(),
+            "Claude".to_string(),
+            "Codex".to_string(),
+        ];
+        let filter = gtk::DropDown::from_strings(&[]);
+        sync_agent_filter(&filter, &names, 0);
+        let original = filter.model().unwrap();
+        let calls = Rc::new(Cell::new(0));
+        let seen = calls.clone();
+        filter.connect_selected_notify(move |filter| {
+            seen.set(seen.get() + 1);
+            // Bound the failure case instead of letting a regression hang the test runner.
+            if seen.get() < 4 {
+                sync_agent_filter(filter, &names, filter.selected());
+            }
+        });
+        filter.set_selected(2);
+        let context = gtk::glib::MainContext::default();
+        while context.pending() {
+            context.iteration(false);
+        }
+        assert_eq!(filter.selected(), 2);
+        assert_eq!(filter.model().unwrap(), original);
+        assert_eq!(
+            calls.get(),
+            1,
+            "one user selection must produce one notification"
+        );
+    }
 }

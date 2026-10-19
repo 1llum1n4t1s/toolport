@@ -762,6 +762,30 @@ try {
   await expect(
     page.getByRole("heading", { name: "Claude Code (claude2)", exact: true }),
   ).toBeVisible();
+  // Column hints must not move the grid when entered by pointer or keyboard.
+  for (const width of [1440, 1024]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${baseURL}/fixtures/`);
+    await page.getByRole("button", { name: "Skills", exact: true }).click();
+    const skills = page.getByRole("region", { name: "Skills", exact: true });
+    const agent = skills.getByRole("button", { name: "Show only skills Codex finds" });
+    const header = agent.locator("../..");
+    await page.evaluate(() => document.fonts.ready);
+    const height = (await header.boundingBox()).height;
+    await agent.hover();
+    expect((await header.boundingBox()).height).toBe(height);
+    const dot = skills
+      .getByRole("button", { name: /screenshot/ })
+      .getByRole("img", { name: "Codex: Off" });
+    await dot.hover();
+    expect((await header.boundingBox()).height).toBe(height);
+    await page.mouse.move(0, 0);
+    await agent.focus();
+    expect((await header.boundingBox()).height).toBe(height);
+    await page.screenshot({
+      path: path.join(output, `skills-column-focus-${width}.png`),
+    });
+  }
   await page.setViewportSize({ width: 1240, height: 900 });
   await page.goto(`${baseURL}/fixtures/?logos`);
   await expect(page.getByText("Dark logo fixture")).toBeVisible();

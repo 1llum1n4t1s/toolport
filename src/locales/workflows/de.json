@@ -400,5 +400,11 @@
   "Dismissed": "Ausgeblendet",
   "Back if anything about them changes": "Kommen zurück, sobald sich daran etwas ändert",
   "Show only skills {client} finds": "Nur Skills zeigen, die {client} findet",
-  "Only the links to it are removed, so no client loads it. Its folder at {path} stays where it is.": "Nur die Verknüpfungen darauf werden entfernt, damit kein Client es lädt. Sein Ordner unter {path} bleibt, wo er ist."
+  "Only the links to it are removed, so no client loads it. Its folder at {path} stays where it is.": "Nur die Verknüpfungen darauf werden entfernt, damit kein Client es lädt. Sein Ordner unter {path} bleibt, wo er ist.",
+  "More options for {client}": "Weitere Optionen für {client}",
+  "Load name and description only": "Nur Name und Beschreibung laden",
+  "No switch Toolport can write": "Kein Schalter, den Toolport setzen kann",
+  "Filter by agent": "Nach Agent filtern",
+  "All agents": "Alle Agenten",
+  "{state} via {path}": "{state} über {path}"
 }
