@@ -134,6 +134,9 @@ enum RowKind {
 }
 
 /// One list-and-detail tab (Skills or Rules).
+/// Agent id, display name and optional per-dot detail for the hovered column.
+type HoveredColumn = (String, String, Option<String>);
+
 #[derive(Clone)]
 struct Pane {
     banner: gtk::Box,
@@ -153,7 +156,7 @@ struct Pane {
     cells: Rc<RefCell<HashMap<String, Vec<gtk::Widget>>>>,
     /// The header row's note naming the hovered column.
     hint: Rc<RefCell<Option<gtk::Label>>>,
-    hovered: Rc<RefCell<Option<(String, String, Option<String>)>>>,
+    hovered: Rc<RefCell<Option<HoveredColumn>>>,
     focused: Rc<RefCell<Option<(String, String)>>>,
 }
 
