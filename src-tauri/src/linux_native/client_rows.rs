@@ -1,15 +1,64 @@
 //! Rows on the Clients page: one line per client with its controls on the right, and
-//! Claude Code profiles grouped under one entry when a machine has several.
+//! Claude Code profiles or Codex homes grouped under one entry when a machine has several.
 
 use super::*;
 
 /// How a row is drawn: a full-width line, a tile in the two-column Available grid, or one
-/// profile inside the Claude Code group.
+/// profile inside a Claude Code or Codex group.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum RowStyle {
     Line,
     Tile,
     Profile,
+}
+
+/// Clients that list one row per profile under a shared entry.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ProfileProduct {
+    ClaudeCode,
+    Codex,
+}
+
+impl ProfileProduct {
+    pub(super) const ALL: [Self; 2] = [Self::ClaudeCode, Self::Codex];
+
+    pub(super) fn of(client: &state::ClientView) -> Self {
+        if client.id == "codex" || client.id.starts_with("codex@") {
+            Self::Codex
+        } else {
+            Self::ClaudeCode
+        }
+    }
+
+    fn client_id(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "claude-code",
+            Self::Codex => "codex",
+        }
+    }
+
+    /// A product name, not translated.
+    fn name(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
+        }
+    }
+
+    fn group_label(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => crate::i18n::msg("Claude Code profiles"),
+            Self::Codex => crate::i18n::msg("Codex profiles"),
+        }
+    }
+
+    /// Whether this group shows its profiles. Kept across rescans.
+    fn open(self, page: &ClientPage) -> &std::rc::Rc<std::cell::Cell<bool>> {
+        match self {
+            Self::ClaudeCode => &page.claude_open,
+            Self::Codex => &page.codex_open,
+        }
+    }
 }
 
 /// Minimum tile width: two tiles share a line only when both get at least this much.
@@ -203,8 +252,11 @@ pub(super) fn client_row(
         .claude_profile
         .as_ref()
         .filter(|_| style == RowStyle::Profile);
-    // An unreadable profile has no account to show, signed in or not.
-    let account_badge = profile.filter(|_| !client.config_error);
+    // An unreadable profile has no account to show, signed in or not. Codex keeps its
+    // account next to its tokens, so it is never read.
+    let account_badge = profile.filter(|_| {
+        !client.config_error && ProfileProduct::of(client) == ProfileProduct::ClaudeCode
+    });
     let name = gtk::Label::builder()
         .label(match profile {
             Some(profile) => profile
@@ -368,9 +420,14 @@ fn remove_location_button(client: &state::ClientView, page: ClientPage) -> gtk::
     remove
 }
 
-/// Claude Code's profiles under one entry. Copies of the default profile (same account in
-/// `~/.claude`, read only through CLAUDE_CONFIG_DIR) sit behind a note instead of a row.
-pub(super) fn claude_group(profiles: &[&state::ClientView], page: ClientPage) -> gtk::Box {
+/// A client's profiles under one entry: Claude Code profiles or Codex homes. Copies of the
+/// default Claude Code profile (same account in `~/.claude`, read only through
+/// CLAUDE_CONFIG_DIR) sit behind a note instead of a row.
+pub(super) fn profile_group(
+    product: ProfileProduct,
+    profiles: &[&state::ClientView],
+    page: ClientPage,
+) -> gtk::Box {
     let group = gtk::Box::new(gtk::Orientation::Vertical, 0);
     group.add_css_class("toolport-client-group");
     let (copies, mut shown): (Vec<&state::ClientView>, Vec<&state::ClientView>) =
@@ -403,15 +460,14 @@ pub(super) fn claude_group(profiles: &[&state::ClientView], page: ClientPage) ->
         .count();
 
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    let icon = branding::client_logo("claude-code");
+    let icon = branding::client_logo(product.client_id());
     icon.set_valign(gtk::Align::Center);
     header.append(&icon);
     let copy = gtk::Box::new(gtk::Orientation::Vertical, 2);
     copy.set_hexpand(true);
     copy.set_valign(gtk::Align::Center);
     let title = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    // A product name, not translated.
-    let name = gtk::Label::new(Some("Claude Code"));
+    let name = gtk::Label::new(Some(product.name()));
     name.add_css_class("heading");
     name.set_xalign(0.0);
     title.append(&name);
@@ -440,7 +496,8 @@ pub(super) fn claude_group(profiles: &[&state::ClientView], page: ClientPage) ->
     detail.add_css_class("caption");
     copy.append(&detail);
     header.append(&copy);
-    let chevron = gtk::Image::from_icon_name(if page.claude_open.get() {
+    let open = product.open(&page).clone();
+    let chevron = gtk::Image::from_icon_name(if open.get() {
         "pan-down-symbolic"
     } else {
         "pan-end-symbolic"
@@ -453,12 +510,10 @@ pub(super) fn claude_group(profiles: &[&state::ClientView], page: ClientPage) ->
         .css_classes(["flat", "toolport-client-group-toggle"])
         .build();
     toggle.update_property(&[
-        gtk::accessible::Property::Label(&crate::i18n::tr("Claude Code profiles")),
+        gtk::accessible::Property::Label(&crate::i18n::tr(product.group_label())),
         gtk::accessible::Property::Description(&detail.text()),
     ]);
-    toggle.update_state(&[gtk::accessible::State::Expanded(Some(
-        page.claude_open.get(),
-    ))]);
+    toggle.update_state(&[gtk::accessible::State::Expanded(Some(open.get()))]);
     let header_card = gtk::Box::new(gtk::Orientation::Vertical, 0);
     header_card.add_css_class("toolport-card");
     header_card.add_css_class("toolport-client-row");
@@ -474,23 +529,22 @@ pub(super) fn claude_group(profiles: &[&state::ClientView], page: ClientPage) ->
     }
     let revealer = gtk::Revealer::builder()
         .child(&rows)
-        .reveal_child(page.claude_open.get())
+        .reveal_child(open.get())
         .transition_type(gtk::RevealerTransitionType::SlideDown)
         .transition_duration(150)
         .build();
     group.append(&revealer);
     {
-        let page = page.clone();
         toggle.connect_clicked(move |toggle| {
-            let open = !page.claude_open.get();
-            page.claude_open.set(open);
-            revealer.set_reveal_child(open);
-            chevron.set_icon_name(Some(if open {
+            let shown = !open.get();
+            open.set(shown);
+            revealer.set_reveal_child(shown);
+            chevron.set_icon_name(Some(if shown {
                 "pan-down-symbolic"
             } else {
                 "pan-end-symbolic"
             }));
-            toggle.update_state(&[gtk::accessible::State::Expanded(Some(open))]);
+            toggle.update_state(&[gtk::accessible::State::Expanded(Some(shown))]);
         });
     }
     group

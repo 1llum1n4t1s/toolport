@@ -2594,6 +2594,8 @@ struct ClientPage {
     feedback_timer: std::rc::Rc<std::cell::RefCell<Option<gtk::glib::SourceId>>>,
     /// Whether the Claude Code group shows its profiles. Kept across rescans.
     claude_open: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Whether the Codex group shows its homes. Kept across rescans.
+    codex_open: std::rc::Rc<std::cell::Cell<bool>>,
     /// Whether copies of the default Claude Code profile are listed as rows.
     claude_copies_shown: std::rc::Rc<std::cell::Cell<bool>>,
 }
@@ -2660,6 +2662,7 @@ impl ClientPage {
             pending_confirmation: std::rc::Rc::new(std::cell::RefCell::new(None)),
             feedback_timer: std::rc::Rc::new(std::cell::RefCell::new(None)),
             claude_open: std::rc::Rc::new(std::cell::Cell::new(true)),
+            codex_open: std::rc::Rc::new(std::cell::Cell::new(true)),
             claude_copies_shown: std::rc::Rc::new(std::cell::Cell::new(false)),
         };
         let page_for_add = client_page.clone();
@@ -2931,20 +2934,46 @@ impl ClientPage {
             });
             self.list.append(&card);
         }
-        // Several Claude Code profiles share one entry; it sits with the connected clients
-        // when any of its profiles is connected.
-        let claude: Vec<&state::ClientView> = installed
-            .iter()
-            .filter(|client| client.claude_profile.is_some())
-            .copied()
+        // Several Claude Code profiles, or several Codex homes, share one entry; it sits
+        // with the connected clients when any of its profiles is connected.
+        struct Group<'a> {
+            product: client_rows::ProfileProduct,
+            profiles: Vec<&'a state::ClientView>,
+            shown: usize,
+            connected: bool,
+        }
+        let groups: Vec<Group> = client_rows::ProfileProduct::ALL
+            .into_iter()
+            .filter_map(|product| {
+                let profiles: Vec<&state::ClientView> = installed
+                    .iter()
+                    .filter(|client| {
+                        client.claude_profile.is_some()
+                            && client_rows::ProfileProduct::of(client) == product
+                    })
+                    .copied()
+                    .collect();
+                let shown: Vec<&&state::ClientView> = profiles
+                    .iter()
+                    .filter(|client| {
+                        client
+                            .claude_profile
+                            .as_ref()
+                            .is_some_and(|profile| profile.same_as.is_none())
+                    })
+                    .collect();
+                let connected = shown
+                    .iter()
+                    .any(|client| client.gateway_state == state::ClientGatewayState::Connected);
+                let shown = shown.len();
+                (shown > 0).then_some(Group {
+                    product,
+                    profiles,
+                    shown,
+                    connected,
+                })
+            })
             .collect();
-        let claude_connected = claude.iter().any(|client| {
-            client.gateway_state == state::ClientGatewayState::Connected
-                && client
-                    .claude_profile
-                    .as_ref()
-                    .is_some_and(|profile| profile.same_as.is_none())
-        });
         let connected_rows: Vec<&state::ClientView> = connected_clients
             .iter()
             .filter(|client| client.claude_profile.is_none())
@@ -2955,23 +2984,18 @@ impl ClientPage {
             .filter(|client| client.claude_profile.is_none())
             .copied()
             .collect();
-        let claude_shown = claude
-            .iter()
-            .filter(|client| {
-                client
-                    .claude_profile
-                    .as_ref()
-                    .is_some_and(|profile| profile.same_as.is_none())
-            })
-            .count();
         if !connected_clients.is_empty() {
             self.list.append(&client_section_title(
                 crate::i18n::msg("Connected to Toolport"),
                 connected_clients.len(),
             ));
             let rows = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            if claude_connected {
-                rows.append(&client_rows::claude_group(&claude, self.clone()));
+            for group in groups.iter().filter(|group| group.connected) {
+                rows.append(&client_rows::profile_group(
+                    group.product,
+                    &group.profiles,
+                    self.clone(),
+                ));
             }
             for client in &connected_rows {
                 rows.append(&client_rows::client_row(
@@ -2982,16 +3006,23 @@ impl ClientPage {
             }
             self.list.append(&rows);
         }
-        let available_count =
-            available_rows.len() + if claude_connected { 0 } else { claude_shown };
+        let available_count = available_rows.len()
+            + groups
+                .iter()
+                .filter(|group| !group.connected)
+                .map(|group| group.shown)
+                .sum::<usize>();
         if available_count > 0 {
             self.list.append(&client_section_title(
                 crate::i18n::msg("Available to connect"),
                 available_count,
             ));
-            if !claude.is_empty() && !claude_connected {
-                self.list
-                    .append(&client_rows::claude_group(&claude, self.clone()));
+            for group in groups.iter().filter(|group| !group.connected) {
+                self.list.append(&client_rows::profile_group(
+                    group.product,
+                    &group.profiles,
+                    self.clone(),
+                ));
             }
             if !available_rows.is_empty() {
                 self.list
@@ -14261,7 +14292,7 @@ mod tests {
             location_removable: false,
             claude_profile: None,
         };
-        use client_rows::{client_row, RowStyle};
+        use client_rows::{client_row, profile_group, ProfileProduct, RowStyle};
         let parts = |row: &gtk::Box, with_logo: bool| {
             let line = row.first_child().unwrap();
             let copy = if with_logo {
@@ -14370,6 +14401,60 @@ mod tests {
             .unwrap();
         assert_eq!(name.text(), "Claude Code (claude2)");
         assert!(name.next_sibling().is_none());
+
+        // A Codex home is named by its command, with no account badge: Codex keeps the
+        // account next to its tokens.
+        client.id = "codex@Codex-Work%2F.codex".into();
+        client.name = "Codex (Codex-Work)".into();
+        client.claude_profile = Some(crate::clients::ClaudeProfile {
+            command: Some("codex-work".into()),
+            account: None,
+            folder: "~/Codex-Work/.codex".into(),
+            last_used_ms: None,
+            same_as: None,
+        });
+        let row = client_row(&client, page.clone(), RowStyle::Profile);
+        let (title, detail, _) = parts(&row, false);
+        let command = title
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::Label>()
+            .unwrap();
+        assert_eq!(command.text(), "codex-work");
+        assert!(command.next_sibling().is_none());
+        assert_eq!(detail.text(), "~/Codex-Work/.codex");
+        let mut main = client.clone();
+        main.id = "codex".into();
+        main.name = "Codex".into();
+        main.gateway_state = state::ClientGatewayState::Connected;
+        if let Some(profile) = main.claude_profile.as_mut() {
+            profile.command = Some("codex".into());
+            profile.folder = "~/.codex".into();
+        }
+        assert_eq!(ProfileProduct::of(&main), ProfileProduct::Codex);
+        let group = profile_group(ProfileProduct::Codex, &[&client, &main], page.clone());
+        let mut labels = Vec::new();
+        let mut stack = vec![group.upcast::<gtk::Widget>()];
+        while let Some(widget) = stack.pop() {
+            if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+                labels.push(label.text().to_string());
+            }
+            let mut child = widget.first_child();
+            while let Some(next) = child {
+                child = next.next_sibling();
+                stack.push(next);
+            }
+        }
+        assert!(labels.iter().any(|text| text == "Codex"), "{labels:?}");
+        assert!(labels.iter().any(|text| text == "2 profiles"), "{labels:?}");
+        assert!(
+            labels.iter().any(|text| text == "1 of 2 connected"),
+            "{labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|text| text.contains("claude.ai")),
+            "{labels:?}"
+        );
     }
 
     #[test]

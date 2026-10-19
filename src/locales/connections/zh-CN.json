@@ -1048,6 +1048,7 @@
   "{value0} profiles": "{value0} 个配置方案",
   "{connected} of {total} connected": "已连接 {connected}/{total} 个",
   "Claude Code profiles": "Claude Code 配置方案",
+  "Codex profiles": "Codex 配置方案",
   "No claude.ai sign-in": "未登录 claude.ai",
   "Also found {folder}: the same account as {command}. Claude Code only reads it when CLAUDE_CONFIG_DIR points there, as some background tools do.": "还找到了 {folder}：与 {command} 是同一账户。只有 CLAUDE_CONFIG_DIR 指向这里时 Claude Code 才会读取它，一些后台工具会这样做。",
   "Show": "显示",

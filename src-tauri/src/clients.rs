@@ -919,10 +919,12 @@ fn try_claude_code_config_paths() -> Result<Vec<PathBuf>, String> {
 /// Name-first, shallow discovery. Symlink directories are excluded so automatic
 /// discovery never follows a profile outside home. Config contents are not read.
 pub(crate) fn claude_profile_name(name: &str) -> bool {
-    if name == ".claude" {
-        return true;
-    }
-    let Some(suffix) = name.strip_prefix(".claude") else {
+    name == ".claude" || profile_folder_name(name, ".claude")
+}
+
+/// `<base>2`, `<base>-work`: another profile folder beside `<base>`, not a backup of one.
+pub(crate) fn profile_folder_name(name: &str, base: &str) -> bool {
+    let Some(suffix) = name.strip_prefix(base) else {
         return false;
     };
     if !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()) {

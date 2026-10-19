@@ -214,8 +214,9 @@ function ClientRow({
               {client.name}
             </span>
           )}
-          {/* An unreadable profile has no account to show, signed in or not. */}
-          {profile && status !== "error" && (
+          {/* An unreadable profile has no account to show, signed in or not. Codex
+              keeps its account next to its tokens, so it is never read. */}
+          {profile && status !== "error" && profileProduct(client) === "claude-code" && (
             <Badge variant="secondary" className="min-w-0 max-w-64 font-normal">
               <span className="truncate">
                 {profile.account ?? t("No claude.ai sign-in")}
@@ -257,33 +258,53 @@ function ClientRow({
   );
 }
 
-/** A product name, not translated. */
-const CLAUDE_CODE = "Claude Code";
+/** Clients that list one row per profile under a shared entry. */
+type ProfileProduct = "claude-code" | "codex";
 
-/** Whether the group is open and its copies shown. Kept across visits to a client's
+function profileProduct(client: DetectedClient): ProfileProduct {
+  return client.id === "codex" || client.id.startsWith("codex@")
+    ? "codex"
+    : "claude-code";
+}
+
+/** Product names, not translated. */
+const PRODUCT_NAMES: Record<ProfileProduct, string> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+};
+
+/** Whether each group is open and its copies shown. Kept across visits to a client's
  * detail page and moves between sections, as the GTK page keeps it. */
-const claudeGroupView = { open: true, copiesShown: false };
+const profileGroupView: Record<ProfileProduct, { open: boolean; copiesShown: boolean }> =
+  {
+    "claude-code": { open: true, copiesShown: false },
+    codex: { open: true, copiesShown: false },
+  };
 
-/** Claude Code's profiles under one entry. Copies of the default profile (same account
- * in `~/.claude`, read only through CLAUDE_CONFIG_DIR) sit behind a note. */
-function ClaudeGroup({
+/** A client's profiles under one entry: Claude Code profiles or Codex homes. Copies of
+ * the default Claude Code profile (same account in `~/.claude`, read only through
+ * CLAUDE_CONFIG_DIR) sit behind a note. */
+function ProfileGroup({
+  product,
   profiles,
   registry,
   onSelectClient,
 }: {
+  product: ProfileProduct;
   profiles: DetectedClient[];
   registry: Registry | null;
   onSelectClient: (id: string) => void;
 }) {
   const { t } = useI18n();
-  const [open, setOpenState] = useState(() => claudeGroupView.open);
-  const [copiesShown, setCopiesShownState] = useState(() => claudeGroupView.copiesShown);
+  const view = profileGroupView[product];
+  const [open, setOpenState] = useState(() => view.open);
+  const [copiesShown, setCopiesShownState] = useState(() => view.copiesShown);
   const setOpen = (value: boolean) => {
-    claudeGroupView.open = value;
+    view.open = value;
     setOpenState(value);
   };
   const setCopiesShown = (value: boolean) => {
-    claudeGroupView.copiesShown = value;
+    view.copiesShown = value;
     setCopiesShownState(value);
   };
   const summaryId = useId();
@@ -359,14 +380,16 @@ function ClaudeGroup({
         type="button"
         onClick={() => setOpen(!open)}
         aria-expanded={open}
-        aria-label={t("Claude Code profiles")}
+        aria-label={t(
+          product === "codex" ? msg("Codex profiles") : msg("Claude Code profiles"),
+        )}
         aria-describedby={summaryId}
         className="grid min-h-14 w-full grid-cols-[28px_minmax(0,1fr)_16px] items-center gap-3 px-1 py-2.5 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
       >
-        <ClientLogo id="claude-code" name={CLAUDE_CODE} size={28} />
+        <ClientLogo id={product} name={PRODUCT_NAMES[product]} size={28} />
         <span className="min-w-0">
           <span className="flex items-center gap-1.5">
-            <span className="truncate text-sm font-medium">{CLAUDE_CODE}</span>
+            <span className="truncate text-sm font-medium">{PRODUCT_NAMES[product]}</span>
             <Badge variant="secondary" className="font-normal">
               {t(
                 shown.length === 1 ? msg("{value0} profile") : msg("{value0} profiles"),
@@ -450,18 +473,36 @@ export function ClientsView({
   const missing = sorted.filter((client) => statusOf(client) === "missing");
   const connected = present.filter((client) => statusOf(client) === "connected");
   const available = present.filter((client) => statusOf(client) !== "connected");
-  // Several Claude Code profiles share one entry; it sits with the connected clients
-  // when any of its profiles is connected.
-  const claude = present.filter((client) => client.claudeProfile);
-  const claudeShown = claude.filter((client) => !client.claudeProfile?.sameAs);
-  const claudeConnected = claudeShown.some((client) => statusOf(client) === "connected");
+  // Several Claude Code profiles, or several Codex homes, share one entry; it sits with
+  // the connected clients when any of its profiles is connected.
+  const groups = (["claude-code", "codex"] as const)
+    .map((product) => {
+      const profiles = present.filter(
+        (client) => client.claudeProfile && profileProduct(client) === product,
+      );
+      const shown = profiles.filter((client) => !client.claudeProfile?.sameAs);
+      return {
+        product,
+        shown: shown.length,
+        connected: shown.some((client) => statusOf(client) === "connected"),
+        element: (
+          <ProfileGroup
+            key={product}
+            product={product}
+            profiles={profiles}
+            registry={registry}
+            onSelectClient={onSelectClient}
+          />
+        ),
+      };
+    })
+    .filter((group) => group.shown > 0);
+  const connectedGroups = groups.filter((group) => group.connected);
+  const availableGroups = groups.filter((group) => !group.connected);
   const connectedRows = connected.filter((client) => !client.claudeProfile);
   const availableRows = available.filter((client) => !client.claudeProfile);
   const availableCount =
-    availableRows.length + (claudeConnected ? 0 : claudeShown.length);
-  const claudeGroup = claude.length > 0 && (
-    <ClaudeGroup profiles={claude} registry={registry} onSelectClient={onSelectClient} />
-  );
+    availableRows.length + availableGroups.reduce((sum, group) => sum + group.shown, 0);
 
   const refreshAction = onChanged && (
     <Button variant="outline" disabled={refreshing} onClick={() => void refresh()}>
@@ -516,7 +557,7 @@ export function ClientsView({
             {translate("Connected to Toolport")}
           </SectionHeader>
           <div className="toolport-list">
-            {claudeConnected && claudeGroup}
+            {connectedGroups.map((group) => group.element)}
             {connectedRows.map((client) => (
               <ClientRow
                 key={client.id}
@@ -538,8 +579,10 @@ export function ClientsView({
           <p className="mb-2 text-meta text-muted-foreground">
             {t("Select an installed client to connect it or review its configuration.")}
           </p>
-          {!claudeConnected && claudeGroup && (
-            <div className="toolport-list mb-2.5">{claudeGroup}</div>
+          {availableGroups.length > 0 && (
+            <div className="toolport-list mb-2.5">
+              {availableGroups.map((group) => group.element)}
+            </div>
           )}
           {availableRows.length > 0 && (
             <div className="grid gap-2.5 @2xl:grid-cols-2">
