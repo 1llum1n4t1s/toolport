@@ -190,7 +190,7 @@ function ClientRow({
     <button
       type="button"
       onClick={onSelect}
-      className={`grid min-h-14 w-full items-center gap-3 border-b border-border py-2.5 text-left transition-colors last:border-b-0 hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
+      className={`grid min-h-14 w-full items-center gap-3 border-b border-border py-3 text-left transition-colors last:border-b-0 hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
         profile
           ? "grid-cols-[minmax(0,1fr)_16px] pr-4 pl-14 sm:grid-cols-[minmax(0,1fr)_auto_16px]"
           : "grid-cols-[28px_minmax(0,1fr)_16px] px-4 sm:grid-cols-[28px_minmax(0,1fr)_auto_16px]"
@@ -332,7 +332,7 @@ function ProfileGroup({
   );
   const copiesNote = copies.length > 0 && (
     <div className="border-t border-border">
-      <div className="flex items-center gap-3 py-2.5 pr-4 pl-14">
+      <div className="flex items-center gap-3 py-3 pr-4 pl-14">
         <p className="min-w-0 flex-1 text-meta text-muted-foreground">
           {t(
             "Also found {folder}: the same account as {command}. Claude Code only reads it when CLAUDE_CONFIG_DIR points there, as some background tools do.",
@@ -378,7 +378,7 @@ function ProfileGroup({
           product === "codex" ? msg("Codex profiles") : msg("Claude Code profiles"),
         )}
         aria-describedby={summaryId}
-        className="grid min-h-14 w-full grid-cols-[28px_minmax(0,1fr)_16px] items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+        className="grid min-h-14 w-full grid-cols-[28px_minmax(0,1fr)_16px] items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <ClientLogo id={product} name={PRODUCT_NAMES[product]} size={28} />
         <span className="min-w-0">
@@ -638,7 +638,7 @@ export function ClientsView({
               {sessions.map((client) => (
                 <div
                   key={trustedClientName(client)}
-                  className="border-b border-border px-4 py-2.5 last:border-b-0"
+                  className="border-b border-border px-4 py-3 last:border-b-0"
                 >
                   <p
                     className="truncate text-sm font-medium"

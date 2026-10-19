@@ -816,7 +816,7 @@ function CallRow({ e }: { e: AuditEntry }) {
       className={`border-b border-border text-sm last:border-b-0 ${e.kind === "internal" ? "bg-muted/30" : ""}`}
     >
       <div
-        className={`flex min-h-14 items-center gap-3 px-4 py-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:outline-none ${
+        className={`flex min-h-14 items-center gap-3 px-4 py-3 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:outline-none ${
           hasDetail ? "cursor-pointer hover:bg-foreground/[0.04]" : ""
         }`}
         role={hasDetail ? "button" : undefined}

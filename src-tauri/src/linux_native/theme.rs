@@ -1563,7 +1563,7 @@ button.toolport-destructive:hover {{ background-color: alpha(@toolport_error, 0.
 }}
 .toolport-row-group .toolport-card {{
   min-height: 32px;
-  padding: 10px 16px;
+  padding: 12px 16px;
   border: none;
   border-top: 1px solid @toolport_border;
   border-radius: 0;

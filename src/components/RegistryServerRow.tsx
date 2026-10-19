@@ -261,7 +261,7 @@ export function RegistryServerRow({
           button, so the toggle and Authenticate controls aren't nested inside one. */}
       <div
         onClick={() => setExpanded((v) => !v)}
-        className="flex min-h-14 cursor-pointer items-center gap-3 px-4 py-2.5 transition-colors hover:bg-foreground/[0.04]"
+        className="flex min-h-14 cursor-pointer items-center gap-3 px-4 py-3 transition-colors hover:bg-foreground/[0.04]"
       >
         <ServerLogo name={server.name} transport={server.transport} size={28} />
 
