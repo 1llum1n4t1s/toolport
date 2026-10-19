@@ -761,6 +761,11 @@ try {
   await expect(claudeGroup).toContainText("3 profiles");
   await expect(claudeGroup).toContainText("1 of 3 connected");
   await expect(page.getByText(/^Also found ~\/\.claude:/)).toBeVisible();
+  const codexGroup = page.getByRole("button", { name: "Codex profiles", exact: true });
+  await expect(codexGroup).toHaveAttribute("aria-expanded", "true");
+  await expect(codexGroup).toContainText("3 profiles");
+  await expect(codexGroup).toContainText("1 of 3 connected");
+  await expect(page.getByRole("button", { name: /^codex-work/ })).toBeVisible();
   await page.screenshot({ path: path.join(output, "clients-claude-profiles.png") });
   await page.getByRole("button", { name: "Show", exact: true }).click();
   await expect(

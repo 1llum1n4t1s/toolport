@@ -36,6 +36,11 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ### Added
 
+- Codex homes started by your own launchers or aliases, such as
+  `~/Codex-Work/.codex`, and folders like `~/.codex2` are found automatically
+  and grouped under one Codex entry on the Clients page, with the command that
+  starts each one. See
+  [Supported clients](https://github.com/btsouth/toolport/blob/main/docs/clients.md#several-codex-homes).
 - DeepSeek Harness (`dsh`) as a supported client. Connect adds the gateway to
   dsh's home patch layer, `~/.dsh/cordis.patch.yml` (or under `DSH_HOME`), so it
   is available in every dsh profile. Toolport edits only its own entry, so

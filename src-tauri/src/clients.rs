@@ -919,10 +919,12 @@ fn try_claude_code_config_paths() -> Result<Vec<PathBuf>, String> {
 /// Name-first, shallow discovery. Symlink directories are excluded so automatic
 /// discovery never follows a profile outside home. Config contents are not read.
 pub(crate) fn claude_profile_name(name: &str) -> bool {
-    if name == ".claude" {
-        return true;
-    }
-    let Some(suffix) = name.strip_prefix(".claude") else {
+    name == ".claude" || profile_folder_name(name, ".claude")
+}
+
+/// `<base>2`, `<base>-work`: another profile folder beside `<base>`, not a backup of one.
+pub(crate) fn profile_folder_name(name: &str, base: &str) -> bool {
+    let Some(suffix) = name.strip_prefix(base) else {
         return false;
     };
     if !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -4065,10 +4067,7 @@ fn read_client(def: &ClientDef) -> DetectedClient {
                 .map(|location| location.name.clone())
                 .unwrap_or_else(|| def.name.to_string()),
             uses_connectors: def.uses_connectors,
-            location_removable: def
-                .location
-                .as_ref()
-                .is_some_and(|row| row.manual || locations::automatic_path_is_missing(row)),
+            location_removable: def.location.as_ref().is_some_and(locations::forgettable),
             discovery: def.discovery,
             config_path,
             config_exists,
@@ -4308,7 +4307,13 @@ fn detect_clients_for_display_in(
         failures.extend(repoint.failed);
     }
     for def in &definitions {
-        if let Some(location) = &def.location {
+        // A launcher home is found again on each refresh while its launcher exists, and
+        // saved only once Toolport changes its config.
+        if let Some(location) = def
+            .location
+            .as_ref()
+            .filter(|location| !locations::is_launcher_home(location))
+        {
             if let Err(error) = locations::remember(location) {
                 failures.insert(def.client_id().to_string(), error);
             }

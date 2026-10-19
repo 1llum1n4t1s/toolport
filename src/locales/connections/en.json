@@ -1048,6 +1048,7 @@
   "{value0} profiles": "{value0} profiles",
   "{connected} of {total} connected": "{connected} of {total} connected",
   "Claude Code profiles": "Claude Code profiles",
+  "Codex profiles": "Codex profiles",
   "No claude.ai sign-in": "No claude.ai sign-in",
   "Also found {folder}: the same account as {command}. Claude Code only reads it when CLAUDE_CONFIG_DIR points there, as some background tools do.": "Also found {folder}: the same account as {command}. Claude Code only reads it when CLAUDE_CONFIG_DIR points there, as some background tools do.",
   "Show": "Show",

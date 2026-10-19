@@ -91,7 +91,8 @@ const registry: Registry = {
   clientScopes: { codex: "" },
 };
 const pagesTruth = new URLSearchParams(location.search).has("pages-truth");
-// Several Claude Code profiles plus a copy of the default, for the grouped Clients page.
+// Several Claude Code profiles plus a copy of the default, and several Codex homes, for
+// the grouped Clients page.
 const claudeProfiles = new URLSearchParams(location.search).has("claude-profiles");
 const fixtureClient = (
   id: string,
@@ -152,6 +153,38 @@ const claudeProfileClients = [
       folder: "~/.claude",
       lastUsedMs: Date.now() - 60_000,
       sameAs: "claude-code",
+    },
+  }),
+  fixtureClient("codex", "Codex", {
+    configPath: "/fixture/.codex/config.toml",
+    gatewayInstalled: true,
+    entryState: "managed",
+    claudeProfile: {
+      command: "codex",
+      account: null,
+      folder: "~/.codex",
+      lastUsedMs: Date.now() - 600_000,
+      sameAs: null,
+    },
+  }),
+  fixtureClient("codex@Codex-Work%2F.codex", "Codex (Codex-Work)", {
+    configPath: "/fixture/Codex-Work/.codex/config.toml",
+    claudeProfile: {
+      command: "codex-work",
+      account: null,
+      folder: "~/Codex-Work/.codex",
+      lastUsedMs: Date.now() - 2 * 86_400_000,
+      sameAs: null,
+    },
+  }),
+  fixtureClient("codex@Codex-Second%2F.codex", "Codex (Codex-Second)", {
+    configPath: "/fixture/Codex-Second/.codex/config.toml",
+    claudeProfile: {
+      command: "codex-second",
+      account: null,
+      folder: "~/Codex-Second/.codex",
+      lastUsedMs: Date.now() - 16 * 86_400_000,
+      sameAs: null,
     },
   }),
   fixtureClient("cursor", "Cursor", { gatewayInstalled: true, entryState: "managed" }),
@@ -950,7 +983,11 @@ mockIPC(
             },
             error: null,
           },
-        ];
+        ].filter(
+          // The Codex home in the profile set replaces the plain Codex row.
+          (client, index, all) =>
+            all.findIndex((other) => other.id === client.id) === index,
+        );
       case "team_sync_status":
         return { state: "offline", lastSuccessMs: 1791504000000 };
       case "team_sync":

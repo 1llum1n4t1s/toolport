@@ -1048,6 +1048,7 @@
   "{value0} profiles": "{value0} 個のプロファイル",
   "{connected} of {total} connected": "{total} 個中 {connected} 個が接続済み",
   "Claude Code profiles": "Claude Code のプロファイル",
+  "Codex profiles": "Codex のプロファイル",
   "No claude.ai sign-in": "claude.ai にサインインしていません",
   "Also found {folder}: the same account as {command}. Claude Code only reads it when CLAUDE_CONFIG_DIR points there, as some background tools do.": "{folder} も見つかりました: {command} と同じアカウントです。Claude Code がこれを読み込むのは CLAUDE_CONFIG_DIR がここを指しているときだけで、一部のバックグラウンドツールがそうしています。",
   "Show": "表示",

@@ -284,6 +284,74 @@ describe("ClientsView", () => {
     ).toHaveTextContent("0 of 2 connected");
   });
 
+  it("lists Codex homes in their own group, apart from Claude Code profiles", async () => {
+    const codex = (
+      id: string,
+      command: string | null,
+      folder: string,
+      connected = false,
+    ) =>
+      client({
+        id,
+        name: id === "codex" ? "Codex" : `Codex (${folder})`,
+        configPath: `/home/me/${folder.slice(2)}/config.toml`,
+        gatewayInstalled: connected,
+        entryState: connected ? "managed" : "absent",
+        claudeProfile: { command, account: null, folder, lastUsedMs: null, sameAs: null },
+      });
+    const onSelectClient = vi.fn();
+    render(
+      <ClientsView
+        clients={[
+          codex("codex", "codex", "~/.codex", true),
+          codex("codex@Codex-Work%2F.codex", "codex-work", "~/Codex-Work/.codex"),
+          codex("codex@.codex2", null, "~/.codex2"),
+          client({
+            id: "claude-code",
+            name: "Claude Code",
+            claudeProfile: {
+              command: "claude",
+              account: "me@work.example",
+              folder: "~/.claude.json",
+              lastUsedMs: null,
+              sameAs: null,
+            },
+          }),
+          client({
+            id: "claude-code@claude2",
+            name: "Claude Code (claude2)",
+            claudeProfile: {
+              command: "claude2",
+              account: null,
+              folder: "~/.claude2",
+              lastUsedMs: null,
+              sameAs: null,
+            },
+          }),
+        ]}
+        registry={null}
+        onSelectClient={onSelectClient}
+      />,
+    );
+
+    const group = screen.getByRole("button", { name: "Codex profiles" });
+    expect(group).toHaveTextContent("3 profiles");
+    expect(group).toHaveTextContent("1 of 3 connected");
+    // Connected Codex sits with the connected clients; Claude Code waits to connect.
+    expect(screen.getByText("Connected to Toolport").closest("section")).toContainElement(
+      group,
+    );
+    expect(screen.getByText("Available to connect").closest("section")).toContainElement(
+      screen.getByRole("button", { name: "Claude Code profiles" }),
+    );
+    // Codex has no account to show; Claude Code profiles still show theirs.
+    expect(screen.queryAllByText("No claude.ai sign-in")).toHaveLength(1);
+    expect(screen.getByText("me@work.example")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("codex-work"));
+    expect(onSelectClient).toHaveBeenCalledWith("codex@Codex-Work%2F.codex");
+    expect(screen.getByText("~/.codex2")).toBeInTheDocument();
+  });
+
   it("describes each client by its servers and discovery, with the config path on hover", () => {
     render(
       <ClientsView

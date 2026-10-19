@@ -71,6 +71,20 @@ written by background tools that set `CLAUDE_CONFIG_DIR=~/.claude`. Claude Code
 itself does not read it, so it is listed behind a note instead of as its own
 profile. Show lists it if you want to connect it anyway.
 
+### Several Codex homes
+
+Codex keeps each account in its own `CODEX_HOME`. Toolport finds folders beside
+`~/.codex`, such as `~/.codex2`, and `.codex` folders one level below home that a
+launcher script or alias sets `CODEX_HOME` to, such as `~/Codex-Work/.codex`.
+Only homes that already have a `config.toml` are listed; add any other with
+**Add client location**. Like Claude Code profiles, they are listed under one
+Codex entry with the command that starts each and when it was last used. The
+account isn't shown, because Codex keeps it next to its sign-in tokens.
+
+A home found through a launcher stays listed while the launcher exists. If you
+remove the launcher after connecting that home, it stays until you disconnect and
+remove it.
+
 ### Auggie CLI setup
 
 Toolport manages Auggie's user settings at `~/.augment/settings.json`
