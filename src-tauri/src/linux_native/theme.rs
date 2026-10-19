@@ -1479,8 +1479,8 @@ levelbar.toolport-skill-meter.over block.filled {{ background-color: @toolport_w
 button.toolport-skill-chip {{ min-height: 0; min-width: 0; padding: 3px 8px; }}
 button.toolport-skill-chip:hover {{ background-color: alpha(@toolport_fg, 0.13); }}
 .toolport-fix-paths {{
-  background-color: alpha(@toolport_fg, 0.07);
-  border-radius: 6px;
+  background-color: @toolport_card;
+  border-radius: 8px;
   padding: 8px 12px;
   margin-top: 4px;
 }}

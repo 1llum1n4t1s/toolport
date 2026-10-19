@@ -3254,8 +3254,13 @@ fn restore_scroll(scroll: &gtk::ScrolledWindow, value: f64) {
 }
 
 fn path_value(path: &str) -> gtk::Label {
+    // A path broken across lines must not gain a hyphen that isn't in it.
     gtk::Label::builder()
-        .label(path)
+        .label(format!(
+            "<span insert_hyphens=\"false\">{}</span>",
+            gtk::glib::markup_escape_text(path)
+        ))
+        .use_markup(true)
         .halign(gtk::Align::Fill)
         .xalign(0.0)
         .wrap(true)
