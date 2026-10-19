@@ -157,8 +157,9 @@ which copy wins in each agent and marks the other as **another copy wins**.
   as `~/.copilot/copilot-instructions.md` or `~/.gemini/GEMINI.md`. The confirmation
   lists every link. Toolport never replaces a file that's already there, skips a path
   an agent with rules also reads, and only links to a file without `@import` lines,
-  since most agents skip those. To undo, delete the link. On Windows, making links
-  needs Developer Mode.
+  since most agents skip those. Each Claude Code profile gets its own link, and
+  Hermes's `SOUL.md` is never shared, because it is Hermes's persona. To undo, delete
+  the link. On Windows, making links needs Developer Mode.
 
 Every fix asks for confirmation first, and does nothing if the item changed after
 you looked, so check it again. **Dismiss** hides an item you're fine with.
