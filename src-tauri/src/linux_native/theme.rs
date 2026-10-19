@@ -1377,6 +1377,8 @@ list.toolport-skill-list > row.toolport-skill-group-row:hover {{ background: non
 .toolport-chip-dot.none {{ min-width: 4px; min-height: 4px; }}
 .toolport-chip-dot.ring {{ background-color: transparent; border: 1px solid currentColor; }}
 .toolport-lock:focus-visible {{ outline: 2px solid alpha(@toolport_accent, 0.50); outline-offset: 2px; }}
+.toolport-skill-issue button.toolport-secondary-action {{ background-color: @toolport_raised; border: 1px solid @toolport_border; }}
+.toolport-skill-issue button.toolport-secondary-action:hover {{ background-color: @toolport_card; }}
 .toolport-skill-issue.toolport-issue-warning {{ border-left: 3px solid @toolport_warning; }}
 .toolport-skill-issue.toolport-issue-error {{ border-left: 3px solid @toolport_error; }}
 .toolport-skill-name {{ font-weight: 600; }}
