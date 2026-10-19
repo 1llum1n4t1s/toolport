@@ -45,13 +45,6 @@ impl ProfileProduct {
         }
     }
 
-    fn group_label(self) -> &'static str {
-        match self {
-            Self::ClaudeCode => crate::i18n::msg("Claude Code profiles"),
-            Self::Codex => crate::i18n::msg("Codex profiles"),
-        }
-    }
-
     /// Whether this group shows its profiles. Kept across rescans.
     fn open(self, page: &ClientPage) -> &std::rc::Rc<std::cell::Cell<bool>> {
         match self {
@@ -510,7 +503,11 @@ pub(super) fn profile_group(
         .css_classes(["flat", "toolport-client-group-toggle"])
         .build();
     toggle.update_property(&[
-        gtk::accessible::Property::Label(&crate::i18n::tr(product.group_label())),
+        gtk::accessible::Property::Label(&crate::i18n::tr(if product == ProfileProduct::Codex {
+            "Codex profiles"
+        } else {
+            "Claude Code profiles"
+        })),
         gtk::accessible::Property::Description(&detail.text()),
     ]);
     toggle.update_state(&[gtk::accessible::State::Expanded(Some(open.get()))]);

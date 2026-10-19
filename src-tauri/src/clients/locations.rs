@@ -291,12 +291,16 @@ fn codex_key(relative: &str) -> String {
         .collect()
 }
 
-/// The home-relative folder of an automatic Codex ID: one or two plain folder names.
+/// The home-relative folder of an automatic Codex ID: a `.codex2`-style folder in home,
+/// or a `.codex` (or `.codex2`-style) folder one level down, such as `Codex-Work/.codex`.
+/// Any other key names a manual location or something that is not Toolport's.
 fn codex_relative(key: &str) -> Option<String> {
     let relative = decode_key(key)?;
     let parts: Vec<&str> = relative.split('/').collect();
+    let leaf = parts.last()?;
     (codex_key(&relative) == key
         && parts.len() <= 2
+        && (codex_sibling_name(leaf) || (parts.len() == 2 && *leaf == ".codex"))
         && parts.iter().all(|part| {
             !part.is_empty()
                 && *part != "."
@@ -403,8 +407,9 @@ fn codex_automatic_path_is_safe_folder(root: &Path, folder: &Path) -> bool {
 }
 
 /// Codex homes found without being added: `~/.codex2`-style folders beside `~/.codex`,
-/// and folders below home that the user's own launchers set `CODEX_HOME` to, such as
-/// `~/Codex-Work/.codex`. Only homes that already have a `config.toml` are listed.
+/// and `.codex` folders one level below home that the user's own launchers set
+/// `CODEX_HOME` to, such as `~/Codex-Work/.codex`. Only homes that already have a
+/// `config.toml` are listed; anything else is added by hand.
 fn automatic_codex(home: &Path, launchers: &[(String, PathBuf)]) -> Vec<ClientLocation> {
     let mut relatives: Vec<String> = std::fs::read_dir(home)
         .into_iter()
@@ -445,8 +450,7 @@ fn codex_lookup(id: &str, key: &str) -> Option<ClientLocation> {
     if !codex_automatic_path_is_safe(&root, &config_path) {
         return None;
     }
-    let sibling = !relative.contains('/') && codex_sibling_name(&relative);
-    if !sibling {
+    if relative.contains('/') {
         let folder = std::fs::canonicalize(config_path.parent()?).ok()?;
         let launchers = super::claude_profiles::launchers_of(
             super::claude_profiles::CODEX,
@@ -880,6 +884,8 @@ mod tests {
         // Backups, folders nothing points at, and homes without a config stay out.
         codex_home(&home, ".codex-bak");
         codex_home(&home, "Codex-Unused/.codex");
+        // A launcher home not named .codex is added by hand, not found.
+        let plain = codex_home(&home, "codex-plain");
         let empty = codex_folder(&home, "Codex-Empty/.codex");
         std::fs::create_dir_all(&empty).unwrap();
         // Deeper than two levels, outside home, or reached through a link: not automatic.
@@ -895,6 +901,7 @@ mod tests {
             ("codex-work".to_string(), work.clone()),
             ("codex-second".to_string(), second.clone()),
             ("codex-empty".to_string(), empty),
+            ("codex-plain".to_string(), plain),
             ("codex-deep".to_string(), deep),
             ("codex-outside".to_string(), outside_home),
         ];
@@ -939,10 +946,16 @@ mod tests {
             "Codex-Work/.codex",
             "a%5C.codex",
             "x%0A",
+            "personal",
+            "Codex-Work",
+            ".codex",
+            "Codex-Work%2Fcodex",
         ] {
             assert_eq!(codex_relative(key), None, "{key}");
         }
         assert_eq!(generated_id_type("codex@..%2F.codex"), None);
+        // A backup folder named like a manual location is not an automatic one.
+        assert_eq!(generated_id_type("codex@personal"), None);
     }
 
     #[test]
