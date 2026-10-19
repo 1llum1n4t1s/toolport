@@ -2842,7 +2842,11 @@ impl SkillsPage {
             "warn" => ("dialog-warning-symbolic", "warning"),
             _ => ("dialog-information-symbolic", "info"),
         };
-        card.add_css_class(class);
+        card.add_css_class(match class {
+            "error" => "toolport-issue-error",
+            "warning" => "toolport-issue-warning",
+            _ => "toolport-issue-info",
+        });
         card.append(&tile(icon, class, 32));
         let copy = gtk::Box::new(gtk::Orientation::Vertical, 6);
         copy.set_hexpand(true);
