@@ -4173,7 +4173,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         app,
         "tray_approvals",
         trf("Pending approvals ({count})", &[("count", "0")]),
-        true,
+        false,
         None::<&str>,
     )?;
     let check_updates = MenuItem::with_id(
@@ -4239,6 +4239,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         builder = builder.icon(icon);
     }
     builder.build(app)?;
+    update_tray_tooltip(app);
     Ok(())
 }
 
