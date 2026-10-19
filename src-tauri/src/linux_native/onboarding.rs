@@ -416,6 +416,7 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
             Err(_) => detected_for_load
                 .set_label(&crate::i18n::tr("Client detection stopped unexpectedly.")),
         }
+        refit_current_page(&detected_for_load);
     });
     fit_page(&window, &stack);
     window.present();
@@ -423,9 +424,40 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
 
 fn fit_page(window: &adw::ApplicationWindow, stack: &gtk::Stack) {
     if let Some(page) = stack.visible_child() {
-        let (_, natural, _, _) = page.measure(gtk::Orientation::Vertical, 660);
-        window.set_default_size(660, (natural + 48).clamp(280, 740));
+        // Measure the page body, since a scroller can keep its previous natural
+        // request after asynchronous rows arrive. The explicit minimum also makes
+        // a mapped non-resizable window follow the new content size.
+        let content = page
+            .downcast_ref::<gtk::ScrolledWindow>()
+            .and_then(|scroll| scroll.child())
+            .unwrap_or(page);
+        let content = content
+            .downcast_ref::<gtk::Viewport>()
+            .and_then(|viewport| viewport.child())
+            .unwrap_or(content);
+        let (_, natural, _, _) = content.measure(gtk::Orientation::Vertical, 660);
+        let height = (natural + 48).clamp(280, 740);
+        window.set_size_request(660, height);
+        window.set_default_size(660, height);
     }
+}
+
+fn refit_current_page(widget: &impl IsA<gtk::Widget>) {
+    let Some(window) = widget.root().and_downcast::<adw::ApplicationWindow>() else {
+        return;
+    };
+    let Some(stack) = widget
+        .ancestor(gtk::Stack::static_type())
+        .and_downcast::<gtk::Stack>()
+    else {
+        return;
+    };
+    let (window, stack) = (window.downgrade(), stack.downgrade());
+    gtk::glib::idle_add_local_once(move || {
+        if let (Some(window), Some(stack)) = (window.upgrade(), stack.upgrade()) {
+            fit_page(&window, &stack);
+        }
+    });
 }
 
 fn load_clients(list: &gtk::Box, feedback: &gtk::Label) {
@@ -443,6 +475,7 @@ fn load_clients(list: &gtk::Box, feedback: &gtk::Label) {
             Ok(Err(error)) => show_error(&feedback, &error),
             Err(_) => show_error(&feedback, "the client scan stopped unexpectedly"),
         }
+        refit_current_page(&list);
     });
 }
 
@@ -1045,6 +1078,7 @@ fn feedback_label(text: &str) -> gtk::Label {
 fn show_success(label: &gtk::Label, text: &str) {
     label.set_label(text);
     label.set_visible(true);
+    refit_current_page(label);
     label.remove_css_class("error");
     label.add_css_class("success");
 }
@@ -1052,6 +1086,7 @@ fn show_success(label: &gtk::Label, text: &str) {
 fn show_error(label: &gtk::Label, text: &str) {
     l10n::bind_formatted_label(label, "Could not continue: {value0}", &[("value0", text)]);
     label.set_visible(true);
+    refit_current_page(label);
     label.remove_css_class("success");
     label.add_css_class("error");
 }
@@ -1063,7 +1098,13 @@ mod tests {
     fn b6_onboarding_fits_content_and_skip_opens_review() {
         use adw::prelude::*;
         adw::init().unwrap();
-        let _data = crate::registry::DataDirTestEnv::new("b6-onboarding-size");
+        let data = crate::registry::DataDirTestEnv::new("b6-onboarding-size");
+        for i in 0..8 {
+            let folder = data.dir.join(format!("client-{i}"));
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join(".claude.json"), r#"{"mcpServers":{}}"#).unwrap();
+            crate::clients::add_client_location("claude-code", &folder.to_string_lossy()).unwrap();
+        }
         let app = adw::Application::builder()
             .application_id("com.tsout.Toolport.OnboardingTest")
             .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
@@ -1072,6 +1113,9 @@ mod tests {
         let parent = adw::ApplicationWindow::builder().application(&app).build();
         super::present(&app, &parent);
         fn click(widget: &gtk::Widget, label: &str) -> bool {
+            if !widget.is_mapped() {
+                return false;
+            }
             if let Some(button) = widget.downcast_ref::<gtk::Button>() {
                 if button.label().as_deref() == Some(label) {
                     button.emit_clicked();
@@ -1082,6 +1126,25 @@ mod tests {
             while let Some(widget) = child {
                 child = widget.next_sibling();
                 if click(&widget, label) {
+                    return true;
+                }
+            }
+            false
+        }
+        fn scan_finished(widget: &gtk::Widget) -> bool {
+            if !widget.is_mapped() {
+                return false;
+            }
+            if widget
+                .downcast_ref::<gtk::Label>()
+                .is_some_and(|label| label.label().starts_with("Found "))
+            {
+                return true;
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+                if scan_finished(&widget) {
                     return true;
                 }
             }
@@ -1105,6 +1168,34 @@ mod tests {
                 window.height() >= 280 && window.height() < 500,
                 "add step height {}",
                 window.height()
+            );
+            assert!(click(
+                window.upcast_ref(),
+                "Review and connect your clients"
+            ));
+            // Wait for the actual scan result and its configure, not a guessed IO duration.
+            for _ in 0..100 {
+                if scan_finished(window.upcast_ref()) && window.height() > 400 {
+                    break;
+                }
+                gtk::glib::timeout_future(std::time::Duration::from_millis(50)).await;
+            }
+            assert!(
+                scan_finished(window.upcast_ref()),
+                "client scan never completed"
+            );
+            assert!(
+                window.height() > 400 && window.height() <= 740,
+                "loaded client step stayed at {} (default {}, minimum {})",
+                window.height(),
+                window.default_height(),
+                window.height_request()
+            );
+            assert!(click(window.upcast_ref(), "Back"));
+            gtk::glib::timeout_future(std::time::Duration::from_millis(250)).await;
+            assert!(
+                window.height() < 500,
+                "returning to Add should shrink the window"
             );
             assert!(click(window.upcast_ref(), "I'll add servers later"));
             gtk::glib::timeout_future(std::time::Duration::from_millis(250)).await;
