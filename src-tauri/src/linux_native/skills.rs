@@ -3063,6 +3063,9 @@ impl SkillsPage {
         let adaptive = adw::BreakpointBin::builder()
             .child(&card)
             .width_request(280)
+            // IssueFrame supplies the measured content height; the bin still requires an
+            // explicit minimum for its breakpoint allocation contract.
+            .height_request(1)
             .build();
         adaptive.add_breakpoint(narrow);
         IssueFrame::new(&adaptive, &card)
