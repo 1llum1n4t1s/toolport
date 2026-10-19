@@ -1370,6 +1370,7 @@ list.toolport-skill-list > row:selected {{ background-color: alpha(@toolport_acc
 list.toolport-skill-list > row.toolport-skill-group-row:hover {{ background: none; }}
 .toolport-skill-row {{ padding: 0 8px; }}
 .toolport-skill-row-copy {{ padding: 12px 0; }}
+.toolport-skill-col-name {{ font-size: 12px; }}
 .toolport-skill-col-hl {{ background-color: alpha(@toolport_accent, 0.08); }}
 .toolport-chip-dot {{ min-width: 8px; min-height: 8px; border-radius: 999px; background-color: currentColor; }}
 .toolport-chip-dot.name-only {{ background-image: linear-gradient(90deg, currentColor 50%, transparent 50%); background-color: transparent; border: 1px solid currentColor; }}

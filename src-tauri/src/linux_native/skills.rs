@@ -10,6 +10,81 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
+// BreakpointBin intentionally has no child-based minimum size. Issue cards, unlike a whole
+// page, must contribute their content height to the scrolling list at every width.
+mod issue_frame {
+    use adw::prelude::*;
+    use gtk::subclass::prelude::*;
+    use std::cell::OnceCell;
+
+    #[derive(Default)]
+    pub struct Frame {
+        pub bin: OnceCell<adw::BreakpointBin>,
+        pub content: OnceCell<gtk::Widget>,
+    }
+
+    #[gtk::glib::object_subclass]
+    impl ObjectSubclass for Frame {
+        const NAME: &'static str = "ToolportSkillIssueFrame";
+        type Type = super::IssueFrame;
+        type ParentType = gtk::Widget;
+    }
+    impl ObjectImpl for Frame {
+        fn dispose(&self) {
+            if let Some(bin) = self.bin.get() {
+                bin.unparent();
+            }
+        }
+    }
+    impl WidgetImpl for Frame {
+        fn request_mode(&self) -> gtk::SizeRequestMode {
+            gtk::SizeRequestMode::HeightForWidth
+        }
+        fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            let Some(content) = self.content.get() else {
+                return (0, 0, -1, -1);
+            };
+            let (min, nat, _, _) = content.measure(orientation, for_size);
+            if orientation == gtk::Orientation::Horizontal {
+                (280, nat.max(280), -1, -1)
+            } else {
+                (min, nat, -1, -1)
+            }
+        }
+        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            if let Some(bin) = self.bin.get() {
+                bin.allocate(width, height, baseline, None);
+            }
+        }
+        fn snapshot(&self, snapshot: &gtk::Snapshot) {
+            if let Some(bin) = self.bin.get() {
+                self.obj().snapshot_child(bin, snapshot);
+            }
+        }
+    }
+}
+
+gtk::glib::wrapper! {
+    pub(super) struct IssueFrame(ObjectSubclass<issue_frame::Frame>)
+        @extends gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+}
+
+impl IssueFrame {
+    fn new(bin: &adw::BreakpointBin, content: &impl IsA<gtk::Widget>) -> Self {
+        use gtk::subclass::prelude::*;
+        let frame: Self = gtk::glib::Object::new();
+        bin.set_parent(&frame);
+        frame.imp().bin.set(bin.clone()).expect("new issue frame");
+        frame
+            .imp()
+            .content
+            .set(content.clone().upcast())
+            .expect("new issue content");
+        frame
+    }
+}
+
 const SOURCE_ORDER: [Source; 7] = [
     Source::Yours,
     Source::Account,
@@ -735,9 +810,7 @@ impl SkillsPage {
 
         // Tabs on the left, project/search/refresh on the right, over one bottom rule.
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        bar.add_css_class("toolport-skill-tabbar");
-        // Keep the bar's height when Needs a look hides the search box.
-        bar.set_height_request(46);
+
         let tab_box = gtk::Box::new(gtk::Orientation::Horizontal, 18);
         tab_box.set_hexpand(true);
         tab_box.set_valign(gtk::Align::End);
@@ -766,7 +839,6 @@ impl SkillsPage {
             tab_box.append(&button);
             tabs.push((tab, button, count));
         }
-        bar.append(&tab_box);
 
         // Room for "Global only" before a long project name is shortened in the middle.
         let project_label = gtk::Label::builder()
@@ -835,7 +907,10 @@ impl SkillsPage {
         refresh_button.set_tooltip_text(Some(&crate::i18n::tr("Scan again")));
         l10n::bind_tooltip(&refresh_button, "Scan again");
         bar.append(&refresh_button);
-        top.append(&bar);
+        let toolbar = super::page_header::HeaderWrap::new(&tab_box, &bar);
+        toolbar.add_css_class("toolport-skill-tabbar");
+        toolbar.set_height_request(46);
+        top.append(&toolbar);
 
         let feedback = gtk::Label::builder()
             .halign(gtk::Align::Fill)
@@ -1635,7 +1710,9 @@ impl SkillsPage {
                 column.append(
                     &gtk::Label::builder()
                         .label(short_agent_name(&agent.name))
-                        .css_classes(["caption"])
+                        .ellipsize(gtk::pango::EllipsizeMode::End)
+                        .max_width_chars(8)
+                        .css_classes(["toolport-skill-col-name"])
                         .build(),
                 );
             }
@@ -2834,7 +2911,7 @@ impl SkillsPage {
         self.issues_side.append(&note);
     }
 
-    fn issue_card(&self, inv: &Inventory, issue: &Issue) -> adw::BreakpointBin {
+    fn issue_card(&self, inv: &Inventory, issue: &Issue) -> IssueFrame {
         let card = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         card.add_css_class("toolport-skill-issue");
         let (icon, class) = match issue.level.as_str() {
@@ -2985,10 +3062,9 @@ impl SkillsPage {
         let adaptive = adw::BreakpointBin::builder()
             .child(&card)
             .width_request(280)
-            .height_request(80)
             .build();
         adaptive.add_breakpoint(narrow);
-        adaptive
+        IssueFrame::new(&adaptive, &card)
     }
 
     /// Jump from a Needs a look chip to that skill on the Skills tab.

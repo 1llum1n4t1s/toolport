@@ -161,7 +161,7 @@ glib::wrapper! {
 }
 
 impl HeaderWrap {
-    fn new(title: &impl IsA<gtk::Widget>, actions: &impl IsA<gtk::Widget>) -> Self {
+    pub(super) fn new(title: &impl IsA<gtk::Widget>, actions: &impl IsA<gtk::Widget>) -> Self {
         let wrap: Self = glib::Object::new();
         title.set_parent(&wrap);
         actions.set_parent(&wrap);
