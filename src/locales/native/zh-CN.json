@@ -1171,5 +1171,11 @@
   "nanobot skills": "nanobot 技能",
   "Uses agents.defaults.disabledSkills in nanobot's config.json.": "使用 nanobot 的 config.json 中的 agents.defaults.disabledSkills。",
   "From a nanobot package": "来自 nanobot 软件包",
-  "Toolport cannot verify this skill's Reasonix identifier. Use Reasonix to switch it on or off.": "Toolport 无法验证此技能的 Reasonix 标识符。请在 Reasonix 中启用或停用。"
+  "Toolport cannot verify this skill's Reasonix identifier. Use Reasonix to switch it on or off.": "Toolport 无法验证此技能的 Reasonix 标识符。请在 Reasonix 中启用或停用。",
+  "Toolport can't link them to your rules, because your rules files use @import lines that most clients skip.": "你的规则文件使用了大多数客户端会跳过的 @import 行，因此 Toolport 无法把它们链接到你的规则。",
+  "Link to {file}": "链接到 {file}",
+  "Toolport makes each file below a link to {file}, so these clients read the same rules. It doesn't change any file that already exists. To undo, delete the link.": "Toolport 会把下面每个文件做成指向 {file} 的链接，让这些客户端读取同样的规则。不会更改任何已存在的文件。要撤销，删除该链接即可。",
+  "{file} already exists, so Toolport left it alone.": "{file} 已存在，所以 Toolport 没有动它。",
+  "Windows lets apps make links only with Developer Mode on. Turn it on in Settings, or link the files by hand.": "Windows 只允许在开启开发者模式时由应用创建链接。请在设置中开启，或手动链接这些文件。",
+  "Couldn't link {file}: {error}": "无法链接 {file}：{error}"
 }

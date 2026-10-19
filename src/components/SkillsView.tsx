@@ -1150,9 +1150,24 @@ function IssueCard({
                 </Button>
               }
               title={issue.fixLabel}
-              description={t(
-                "Toolport backs up any config file before it changes it, and never deletes a skill folder.",
-              )}
+              contentClassName={issue.fixPaths?.length ? "sm:max-w-md" : undefined}
+              description={
+                issue.fixPaths?.length ? (
+                  <div className="space-y-2">
+                    <p>{issue.fixNote}</p>
+                    <ul className="space-y-1 rounded-md bg-muted px-3 py-2 font-mono text-xs break-all text-foreground">
+                      {issue.fixPaths.map((path) => (
+                        <li key={path}>{path}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  (issue.fixNote ??
+                  t(
+                    "Toolport backs up any config file before it changes it, and never deletes a skill folder.",
+                  ))
+                )
+              }
               confirmLabel={issue.fixLabel}
               onConfirm={onFix}
             />

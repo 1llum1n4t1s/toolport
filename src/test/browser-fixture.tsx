@@ -606,6 +606,24 @@ if (connectedImportFixture) {
 } else localStorage.setItem("toolport.onboarded", "1");
 
 let skills = skillsFixture();
+if (new URLSearchParams(location.search).has("rules-link")) {
+  skills.issues.push({
+    id: "rules-missing",
+    level: "info",
+    title: "OpenCode gets no global rules",
+    detail:
+      "Your global rules files reach other clients but not these. Project files such as AGENTS.md still apply inside a project.",
+    agents: ["opencode"],
+    skills: [],
+    skillNames: [],
+    fixLabel: "Link to working-agreements.md",
+    fixNote:
+      "Toolport makes each file below a link to ~/.agents/working-agreements.md, so these clients read the same rules. It doesn't change any file that already exists. To undo, delete the link.",
+    fixPaths: ["~/.config/opencode/AGENTS.md"],
+    fingerprint: "rules-missing:00000004",
+    dismissed: false,
+  });
+}
 mockIPC(
   (command, payload) => {
     const args: Record<string, unknown> =

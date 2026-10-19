@@ -85,6 +85,9 @@ impl Writer for TestWriter {
         self.trashed.borrow_mut().push(path.into());
         std::fs::remove_dir_all(path).map_err(|e| e.to_string())
     }
+    fn link(&self, target: &Path, path: &Path) -> Result<(), String> {
+        DiskWriter.link(target, path)
+    }
 }
 
 fn all(_: &str) -> bool {
@@ -583,6 +586,234 @@ fn codex_override_file_hides_agents_md() {
     let inv = scan(&home.env(), &only(&["codex"]), None);
     assert!(inv.rules.iter().any(|r| r.name == "AGENTS.override.md"));
     assert!(!inv.rules.iter().any(|r| r.name == "AGENTS.md"));
+}
+
+fn missing_rules(inv: &Inventory) -> Option<&Issue> {
+    inv.issues.iter().find(|i| i.id == "rules-missing")
+}
+
+#[test]
+fn missing_rules_fix_links_the_plain_file_most_clients_read() {
+    let home = Home::new();
+    let agreements = home.write(".agents/working-agreements.md", "# Working agreements\n");
+    let instructions = home.write(
+        ".agents/claude-instructions.md",
+        &format!("@{}\n\n# Delegation\n", agreements.display()),
+    );
+    home.link(".claude/CLAUDE.md", &instructions);
+    home.link(".codex/AGENTS.md", &agreements);
+    home.write(".hermes/SOUL.md", "Be kind.\n");
+    let env = home.env();
+    let present = only(&[
+        "claude-code",
+        "codex",
+        "grok",
+        "hermes",
+        "github-copilot-cli",
+        "gemini-cli",
+        "antigravity",
+    ]);
+    let inv = scan(&env, &present, None);
+
+    let issue = missing_rules(&inv).unwrap();
+    assert_eq!(
+        issue.agents,
+        vec![
+            "github-copilot-cli".to_string(),
+            "gemini-cli".to_string(),
+            "antigravity".to_string()
+        ]
+    );
+    // Antigravity reads Gemini CLI's GEMINI.md, so that one link covers both.
+    // claude-instructions.md reaches Grok too, but it is mostly an import Grok skips.
+    assert_eq!(
+        issue.fix_label.as_deref(),
+        Some("Link to working-agreements.md")
+    );
+    assert!(issue
+        .fix_note
+        .as_deref()
+        .unwrap()
+        .contains("~/.agents/working-agreements.md"));
+    assert_eq!(
+        issue.fix_paths,
+        vec![
+            "~/.copilot/copilot-instructions.md".to_string(),
+            "~/.gemini/GEMINI.md".to_string()
+        ]
+    );
+
+    assert_eq!(
+        apply_fix(&env, &inv, "rules-missing", &TestWriter::default()),
+        Ok(2)
+    );
+    for rel in [".copilot/copilot-instructions.md", ".gemini/GEMINI.md"] {
+        assert_eq!(std::fs::read_link(home.path(rel)).unwrap(), agreements);
+    }
+    let after = scan(&env, &present, None);
+    assert!(missing_rules(&after).is_none());
+    let wa = after
+        .rules
+        .iter()
+        .find(|r| r.name == "working-agreements.md")
+        .unwrap();
+    assert_eq!(
+        wa.agents["github-copilot-cli"]
+            .iter()
+            .map(|c| c.kind.as_str())
+            .collect::<Vec<_>>(),
+        vec!["file", "link"]
+    );
+}
+
+#[test]
+fn missing_rules_fix_never_replaces_a_file_or_feeds_a_client_twice() {
+    let home = Home::new();
+    home.write(".codex/AGENTS.md", "# Rules\n");
+    // OpenCode has its own rules, so its CLAUDE.md fallback stays unread.
+    home.write(".config/opencode/AGENTS.md", "# OpenCode\n");
+    std::fs::create_dir_all(home.path(".copilot")).unwrap();
+    home.link(".copilot/copilot-instructions.md", &home.path("gone.md"));
+    let env = home.env();
+    let present = only(&[
+        "claude-code",
+        "codex",
+        "grok",
+        "opencode",
+        "github-copilot-cli",
+    ]);
+    let inv = scan(&env, &present, None);
+    let issue = missing_rules(&inv).unwrap();
+    assert_eq!(
+        issue.agents,
+        vec![
+            "claude-code".to_string(),
+            "github-copilot-cli".to_string(),
+            "grok".to_string()
+        ]
+    );
+    // Grok reads ~/.claude/CLAUDE.md, so Claude Code's link covers it. The dangling link at
+    // Copilot's path stays as it is.
+    assert_eq!(issue.fix_paths, vec!["~/.claude/CLAUDE.md".to_string()]);
+
+    // A file appears at the path after the scan: the fix plans again, finds a plan that
+    // differs from the one shown, and makes nothing.
+    home.write(".claude/CLAUDE.md", "mine\n");
+    assert!(
+        apply_fix(&env, &inv, "rules-missing", &TestWriter::default())
+            .unwrap_err()
+            .contains("changed since you looked")
+    );
+    assert_eq!(home.read(".claude/CLAUDE.md"), "mine\n");
+    assert!(home.path(".grok/AGENTS.md").symlink_metadata().is_err());
+    assert!(DiskWriter
+        .link(
+            &home.path(".codex/AGENTS.md"),
+            &home.path(".claude/CLAUDE.md")
+        )
+        .unwrap_err()
+        .contains("already exists"));
+    assert_eq!(home.read(".claude/CLAUDE.md"), "mine\n");
+}
+
+#[test]
+fn missing_rules_fix_never_shares_a_persona_file() {
+    let home = Home::new();
+    home.write("notes.md", "# Notes\n");
+    home.write(".codex/AGENTS.md", "@~/notes.md\n");
+    home.write(".hermes/SOUL.md", "Be kind.\n");
+    let env = home.env();
+    let inv = scan(
+        &env,
+        &only(&["codex", "hermes", "github-copilot-cli"]),
+        None,
+    );
+    let issue = missing_rules(&inv).unwrap();
+    assert_eq!(issue.agents, vec!["github-copilot-cli".to_string()]);
+    // SOUL.md is the only plain file, but it is Hermes's persona.
+    assert_eq!(issue.fix_label, None);
+    assert!(issue.fix_paths.is_empty());
+}
+
+#[test]
+fn a_persona_file_alone_does_not_blame_imports() {
+    let home = Home::new();
+    home.write(".hermes/SOUL.md", "Be kind.\n");
+    let env = home.env();
+    let inv = scan(&env, &only(&["codex", "hermes"]), None);
+    let issue = missing_rules(&inv).unwrap();
+    assert_eq!(issue.agents, vec!["codex".to_string()]);
+    assert_eq!(issue.fix_label, None);
+    assert!(!issue.detail.contains("@import"));
+}
+
+#[test]
+fn missing_rules_fix_plans_each_claude_code_profile_in_its_own_folder() {
+    let home = Home::new();
+    home.write(".claude/CLAUDE.md", "# Work\n");
+    home.write(".claude2/settings.json", "{}\n");
+    let mut env = home.env();
+    env.claude_profiles = claude_profile_dirs(&home.root, &env.claude);
+    let inv = scan(&env, &only(&["claude-code"]), None);
+    let issue = missing_rules(&inv).unwrap();
+    assert_eq!(issue.agents, vec!["claude-code@claude2".to_string()]);
+    assert_eq!(issue.fix_paths, vec!["~/.claude2/CLAUDE.md".to_string()]);
+    assert_eq!(
+        apply_fix(&env, &inv, "rules-missing", &TestWriter::default()),
+        Ok(1)
+    );
+    assert_eq!(
+        std::fs::read_link(home.path(".claude2/CLAUDE.md")).unwrap(),
+        home.path(".claude/CLAUDE.md")
+    );
+    assert!(missing_rules(&scan(&env, &only(&["claude-code"]), None)).is_none());
+}
+
+#[test]
+fn missing_rules_fix_fingerprint_covers_the_plan() {
+    let home = Home::new();
+    home.write(".codex/AGENTS.md", "# Rules\n");
+    std::fs::create_dir_all(home.path(".copilot")).unwrap();
+    home.link(".copilot/copilot-instructions.md", &home.path("gone.md"));
+    let env = home.env();
+    let present = only(&["codex", "github-copilot-cli", "gemini-cli"]);
+    let before = missing_rules(&scan(&env, &present, None)).unwrap().clone();
+    assert_eq!(before.fix_paths, vec!["~/.gemini/GEMINI.md".to_string()]);
+    // Removing the dangling link adds Copilot to the plan, so the fix shown is stale.
+    std::fs::remove_file(home.path(".copilot/copilot-instructions.md")).unwrap();
+    let after = missing_rules(&scan(&env, &present, None)).unwrap().clone();
+    assert_eq!(after.agents, before.agents);
+    assert_ne!(after.fingerprint, before.fingerprint);
+}
+
+#[test]
+fn missing_rules_fix_skips_a_path_a_client_with_rules_already_reads() {
+    let home = Home::new();
+    // Grok has rules and also reads ~/.claude/CLAUDE.md, so linking it would change Grok.
+    home.write(".grok/AGENTS.md", "# Grok\n");
+    let env = home.env();
+    let inv = scan(&env, &only(&["claude-code", "grok"]), None);
+    let issue = missing_rules(&inv).unwrap();
+    assert_eq!(issue.agents, vec!["claude-code".to_string()]);
+    assert_eq!(issue.fix_label, None);
+    assert!(issue.fix_paths.is_empty());
+}
+
+#[test]
+fn missing_rules_fix_is_not_offered_when_every_rules_file_imports() {
+    let home = Home::new();
+    home.write("notes.md", "# Notes\n");
+    home.write(".codex/AGENTS.md", "@~/notes.md\n");
+    let env = home.env();
+    let inv = scan(&env, &only(&["codex", "github-copilot-cli"]), None);
+    let issue = missing_rules(&inv).unwrap();
+    assert_eq!(issue.fix_label, None);
+    assert!(issue.detail.contains("@import"));
+    assert!(apply_fix(&env, &inv, "rules-missing", &TestWriter::default()).is_err());
+    assert!(home
+        .path(".copilot/copilot-instructions.md")
+        .symlink_metadata()
+        .is_err());
 }
 
 #[test]

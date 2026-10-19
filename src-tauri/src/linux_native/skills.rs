@@ -3059,11 +3059,9 @@ impl SkillsPage {
             button.set_valign(gtk::Align::Start);
             button.set_sensitive(!self.busy.get());
             let page = self.clone();
-            let id = issue.id.clone();
-            let fingerprint = issue.fingerprint.clone();
-            let title = issue.title.clone();
+            let issue = issue.clone();
             let label = label.clone();
-            button.connect_clicked(move |_| page.confirm_fix(&id, &fingerprint, &title, &label));
+            button.connect_clicked(move |_| page.confirm_fix(&issue, &label));
             actions.append(&button);
         }
         top.append(&actions);
@@ -3175,7 +3173,7 @@ impl SkillsPage {
         self.select_tab(Tab::Skills);
     }
 
-    fn confirm_fix(&self, id: &str, fingerprint: &str, title: &str, label: &str) {
+    fn confirm_fix(&self, issue: &Issue, label: &str) {
         let Some(parent) = self.app.active_window() else {
             return;
         };
@@ -3183,14 +3181,30 @@ impl SkillsPage {
         let dialog = adw::MessageDialog::new(
             Some(&parent),
             Some(label),
-            Some(&crate::i18n::tr(
+            Some(
+                &issue
+                    .fix_note
+                    .clone()
+                    .unwrap_or_else(|| {
+                        crate::i18n::tr(
+                            "Toolport backs up any config file before it changes it, and never deletes a skill folder.",
+                        )
+                    }),
+            ),
+        );
+        // A fix's own note arrives already translated by the scan.
+        if issue.fix_note.is_none() {
+            l10n::bind_dialog_body(
+                &dialog,
                 "Toolport backs up any config file before it changes it, and never deletes a skill folder.",
-            )),
-        );
-        l10n::bind_dialog_body(
-            &dialog,
-            "Toolport backs up any config file before it changes it, and never deletes a skill folder.",
-        );
+            );
+        }
+        if !issue.fix_paths.is_empty() {
+            let paths = path_value(&issue.fix_paths.join("\n"));
+            paths.add_css_class("caption");
+            paths.add_css_class("toolport-fix-paths");
+            dialog.set_extra_child(Some(&paths));
+        }
         dialog.add_response("cancel", &crate::i18n::tr("Cancel"));
         l10n::bind_dialog_response(&dialog, "cancel", "Cancel");
         dialog.add_response("fix", label);
@@ -3198,9 +3212,9 @@ impl SkillsPage {
         dialog.set_default_response(Some("cancel"));
         dialog.set_response_appearance("fix", adw::ResponseAppearance::Suggested);
         let page = self.clone();
-        let id = id.to_string();
-        let fingerprint = fingerprint.to_string();
-        let success = crate::i18n::trf("Fixed: {title}", &[("title", title)]);
+        let id = issue.id.clone();
+        let fingerprint = issue.fingerprint.clone();
+        let success = crate::i18n::trf("Fixed: {title}", &[("title", &issue.title)]);
         dialog.connect_response(None, move |dialog, response| {
             if response == "fix" {
                 let id = id.clone();
@@ -3240,8 +3254,13 @@ fn restore_scroll(scroll: &gtk::ScrolledWindow, value: f64) {
 }
 
 fn path_value(path: &str) -> gtk::Label {
+    // A path broken across lines must not gain a hyphen that isn't in it.
     gtk::Label::builder()
-        .label(path)
+        .label(format!(
+            "<span insert_hyphens=\"false\">{}</span>",
+            gtk::glib::markup_escape_text(path)
+        ))
+        .use_markup(true)
         .halign(gtk::Align::Fill)
         .xalign(0.0)
         .wrap(true)

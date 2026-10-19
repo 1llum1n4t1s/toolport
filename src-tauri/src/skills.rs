@@ -537,10 +537,16 @@ struct AgentDef {
     project_rules: &'static [&'static str],
     /// Shown when the client keeps rules somewhere Toolport cannot read (app settings, cloud).
     rules_note: Option<&'static str>,
+    /// Where the "no global rules" fix puts a link to your shared rules file.
+    rules_link: fn(&Env) -> Option<PathBuf>,
 }
 
 fn no_rules(_: &Env) -> Vec<RuleSource> {
     Vec::new()
+}
+
+fn no_link(_: &Env) -> Option<PathBuf> {
+    None
 }
 
 /// Enabled plugin skill folders under a plugin cache laid out as
@@ -648,6 +654,23 @@ fn first_of(files: Vec<PathBuf>, imports: bool) -> Vec<RuleSource> {
         .collect()
 }
 
+thread_local! {
+    /// Links the rules-link planner treats as already made, so a client's rule list shows
+    /// whether the client would read one. Empty except while planning.
+    static PLANNED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Planned links directly in `dir` that `keep` accepts and `files` doesn't list yet.
+fn add_planned(files: &mut Vec<PathBuf>, dir: &Path, keep: impl Fn(&Path) -> bool) {
+    PLANNED.with(|planned| {
+        for link in planned.borrow().iter() {
+            if link.parent() == Some(dir) && keep(link) && !files.contains(link) {
+                files.push(link.clone());
+            }
+        }
+    });
+}
+
 /// The files in `dir` with one of `names`, matched by the name on disk so a case-insensitive
 /// disk doesn't list one file twice.
 fn named_files(dir: &Path, names: &[&str]) -> Vec<PathBuf> {
@@ -659,6 +682,11 @@ fn named_files(dir: &Path, names: &[&str]) -> Vec<PathBuf> {
         .map(|e| e.path())
         .filter(|p| p.is_file())
         .collect();
+    add_planned(&mut files, dir, |p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| names.contains(&n))
+    });
     files.sort();
     files
 }
@@ -837,6 +865,7 @@ fn agent_defs() -> Vec<AgentDef> {
             },
             project_rules: &["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"],
             rules_note: None,
+            rules_link: |env| Some(env.claude.join("CLAUDE.md")),
         },
         AgentDef {
             id: "codex",
@@ -864,6 +893,7 @@ fn agent_defs() -> Vec<AgentDef> {
             rules: |env| first_of(vec![env.codex.join("AGENTS.override.md"), env.codex.join("AGENTS.md")], false),
             project_rules: AGENTS_MD,
             rules_note: None,
+            rules_link: |env| Some(env.codex.join("AGENTS.md")),
         },
         AgentDef {
             id: "cursor",
@@ -886,6 +916,7 @@ fn agent_defs() -> Vec<AgentDef> {
             rules: no_rules,
             project_rules: &["AGENTS.md", "CLAUDE.md", ".cursorrules"],
             rules_note: Some(msg("Cursor keeps your user rules in its app settings, not in a file.")),
+            rules_link: no_link,
         },
         AgentDef {
             id: "github-copilot-cli",
@@ -912,6 +943,7 @@ fn agent_defs() -> Vec<AgentDef> {
             },
             project_rules: &["AGENTS.md", "CLAUDE.md", ".github/copilot-instructions.md"],
             rules_note: None,
+            rules_link: |env| Some(env.copilot.join("copilot-instructions.md")),
         },
         AgentDef {
             id: "opencode",
@@ -940,6 +972,7 @@ fn agent_defs() -> Vec<AgentDef> {
             },
             project_rules: AGENTS_MD,
             rules_note: None,
+            rules_link: |env| Some(env.opencode.join("AGENTS.md")),
         },
         AgentDef {
             id: "grok",
@@ -974,6 +1007,7 @@ fn agent_defs() -> Vec<AgentDef> {
             },
             project_rules: &["AGENTS.md", "CLAUDE.md"],
             rules_note: None,
+            rules_link: |env| Some(env.grok.join("AGENTS.md")),
         },
         AgentDef {
             id: "hermes",
@@ -991,6 +1025,7 @@ fn agent_defs() -> Vec<AgentDef> {
             rules: |env| vec![RuleSource::file(env.hermes.join("SOUL.md"), false)],
             project_rules: &[],
             rules_note: Some(msg("Hermes's SOUL.md is its persona file, so keep your shared rules out of it.")),
+            rules_link: no_link,
         },
         AgentDef {
             id: "gemini-cli",
@@ -1009,6 +1044,8 @@ fn agent_defs() -> Vec<AgentDef> {
             rules: |env| next_to_link(gemini_context_names(env).iter().map(|n| env.gemini.join(n)).collect()),
             project_rules: &["GEMINI.md"],
             rules_note: None,
+            // The first context file name Gemini CLI is set to read.
+            rules_link: |env| gemini_context_names(env).first().map(|name| env.gemini.join(name)),
         },
         docs_agent(
             "antigravity",
@@ -1538,6 +1575,7 @@ fn docs_agent(
         rules,
         project_rules,
         rules_note: None,
+        rules_link: no_link,
     }
 }
 
@@ -1587,6 +1625,11 @@ fn md_files(dir: &Path) -> Vec<PathBuf> {
                 && p.is_file()
         })
         .collect();
+    add_planned(&mut files, dir, |p| {
+        p.extension()
+            .and_then(|x| x.to_str())
+            .is_some_and(|x| x == "md" || x == "mdc")
+    });
     files.sort();
     files
 }
@@ -1743,6 +1786,12 @@ pub struct Issue {
     /// Display names for `skills`, without repeats.
     pub skill_names: Vec<String>,
     pub fix_label: Option<String>,
+    /// What the fix will do, for its confirmation. Empty uses the general note.
+    #[serde(default)]
+    pub fix_note: Option<String>,
+    /// Paths the fix will create, listed in its confirmation.
+    #[serde(default)]
+    pub fix_paths: Vec<String>,
     /// Stable for as long as the issue covers the same skills and clients, so a dismissal
     /// lasts until something about the problem changes.
     #[serde(default)]
@@ -4192,10 +4241,167 @@ fn issue(
         skills,
         skill_names: Vec::new(),
         fix_label,
+        fix_note: None,
+        fix_paths: Vec::new(),
         fingerprint: String::new(),
         dismissed: false,
         subject: Vec::new(),
     }
+}
+
+/// Clients that read global rules files but have none.
+fn without_rules(agents: &[Agent], rules: &[RuleFile]) -> Vec<String> {
+    let with_rules: BTreeSet<&str> = rules
+        .iter()
+        .filter(|r| r.scope == "global")
+        .flat_map(|r| r.agents.keys().map(String::as_str))
+        .collect();
+    agents
+        .iter()
+        .filter(|a| {
+            a.supports_skills
+                && a.verified
+                && a.rules_note.is_none()
+                && !a.rule_locations.is_empty()
+                && !with_rules.contains(a.id.as_str())
+        })
+        .map(|a| a.id.clone())
+        .collect()
+}
+
+/// Links that give clients with no global rules the rules file most clients already read.
+#[derive(Debug, PartialEq)]
+struct RulesLinks {
+    /// The real rules file every new link points at.
+    source: PathBuf,
+    /// Its file name, for the fix button.
+    name: String,
+    /// Where each new link goes. A client that reads another client's new link gets none.
+    links: Vec<PathBuf>,
+}
+
+#[derive(Debug, PartialEq)]
+enum NoLinks {
+    /// Every rules file imports others, which a linked client that skips imports wouldn't get.
+    OnlyImports,
+    /// Nothing to link, or every place a link would go is taken.
+    Nothing,
+}
+
+fn rules_links(env: &Env, agents: &[Agent], rules: &[RuleFile]) -> Result<RulesLinks, NoLinks> {
+    let without = without_rules(agents, rules);
+    let global: Vec<&RuleFile> = rules.iter().filter(|r| r.scope == "global").collect();
+    if without.is_empty() || global.is_empty() {
+        return Err(NoLinks::Nothing);
+    }
+    // Files read by a client whose rules file is something else (Hermes's SOUL.md is its
+    // persona) are never shared.
+    let noted: BTreeSet<&str> = agents
+        .iter()
+        .filter(|a| a.rules_note.is_some())
+        .map(|a| a.id.as_str())
+        .collect();
+    // A file made of @import lines gives a client that skips imports nothing, so only plain
+    // files qualify. The one most clients already read wins; ties keep the first by path.
+    let mut best: Option<&RuleFile> = None;
+    let mut skipped_imports = false;
+    for rule in &global {
+        if rule.agents.keys().any(|id| noted.contains(id.as_str())) {
+            continue;
+        }
+        let real = Path::new(&rule.key);
+        let Some(text) = read_text(real) else {
+            continue;
+        };
+        let imports_any = imports(&text, real.parent().unwrap_or(Path::new("/")), &env.home)
+            .iter()
+            .any(|p| p.is_file());
+        if text.trim().is_empty() || imports_any {
+            skipped_imports |= imports_any;
+            continue;
+        }
+        if best.is_none_or(|b| rule.agents.len() > b.agents.len()) {
+            best = Some(rule);
+        }
+    }
+    let Some(source) = best else {
+        return Err(if skipped_imports {
+            NoLinks::OnlyImports
+        } else {
+            NoLinks::Nothing
+        });
+    };
+    // Each Claude Code profile is its own client with its own folder, as on the page.
+    let present: BTreeSet<&str> = agents.iter().map(|a| a.id.as_str()).collect();
+    let clients: Vec<Instance> = instances(env, &|id| present.contains(id))
+        .into_iter()
+        .filter(|i| present.contains(i.id.as_str()))
+        .collect();
+    // The paths each client would read once `planned` links exist. Rule lists name only
+    // files that exist (plus the place to start one), so the planned links are treated as
+    // made. A fallback counts only while nothing before it exists, as in `scan_rules`.
+    let reads = |client: &Instance, planned: &[PathBuf]| -> Vec<PathBuf> {
+        /// Clears the planned links even if a rules list panics.
+        struct Planning;
+        impl Drop for Planning {
+            fn drop(&mut self) {
+                PLANNED.with(|p| p.borrow_mut().clear());
+            }
+        }
+        PLANNED.with(|p| *p.borrow_mut() = planned.to_vec());
+        let planning = Planning;
+        let rules = (client.def.rules)(&client.env);
+        drop(planning);
+        let mut loaded_any = false;
+        let mut out = Vec::new();
+        for source in rules {
+            if source.fallback && loaded_any {
+                continue;
+            }
+            loaded_any |= source.path.is_file() || planned.contains(&source.path);
+            out.push(source.path);
+        }
+        out
+    };
+    let without_set: BTreeSet<&str> = without.iter().map(String::as_str).collect();
+    let has_rules: BTreeSet<&str> = global
+        .iter()
+        .flat_map(|r| r.agents.keys().map(String::as_str))
+        .collect();
+    let mut links: Vec<PathBuf> = Vec::new();
+    for client in clients
+        .iter()
+        .filter(|c| without_set.contains(c.id.as_str()))
+    {
+        // Already covered by a link made for another client (Claude Code's CLAUDE.md feeds Grok).
+        if reads(client, &links).iter().any(|p| links.contains(p)) {
+            continue;
+        }
+        let Some(link) = (client.def.rules_link)(&client.env) else {
+            continue;
+        };
+        // Never replace anything, not even an empty file or a dangling link.
+        if link.symlink_metadata().is_ok() {
+            continue;
+        }
+        // A client that already has rules and also reads this path would change too.
+        let changes_others = clients.iter().any(|c| {
+            has_rules.contains(c.id.as_str())
+                && reads(c, std::slice::from_ref(&link)).contains(&link)
+        });
+        if changes_others {
+            continue;
+        }
+        links.push(link);
+    }
+    if links.is_empty() {
+        return Err(NoLinks::Nothing);
+    }
+    Ok(RulesLinks {
+        source: PathBuf::from(&source.key),
+        name: source.name.clone(),
+        links,
+    })
 }
 
 fn find_issues(
@@ -4550,26 +4756,17 @@ fn find_issues(
             None,
         ));
     }
-    let with_rules: BTreeSet<&str> = rules
-        .iter()
-        .filter(|r| r.scope == "global")
-        .flat_map(|r| r.agents.keys().map(String::as_str))
-        .collect();
-    let without: Vec<String> = agents
-        .iter()
-        .filter(|a| {
-            a.supports_skills
-                && a.verified
-                && a.rules_note.is_none()
-                && !a.rule_locations.is_empty()
-                && !with_rules.contains(a.id.as_str())
-        })
-        .map(|a| a.id.clone())
-        .collect();
-    if !without.is_empty() && !with_rules.is_empty() {
+    let without = without_rules(agents, rules);
+    if !without.is_empty() && rules.iter().any(|r| r.scope == "global") {
         let clients = agent_names(agents, &without);
         let values = [("clients", clients.as_str())];
-        issues.push(issue(
+        let mut detail = tr("Your global rules files reach other clients but not these. Project files such as AGENTS.md still apply inside a project.");
+        let links = rules_links(env, agents, rules);
+        if let Err(NoLinks::OnlyImports) = links {
+            detail.push(' ');
+            detail.push_str(&tr("Toolport can't link them to your rules, because your rules files use @import lines that most clients skip."));
+        }
+        let mut found = issue(
             "rules-missing",
             "info",
             if without.len() == 1 {
@@ -4577,11 +4774,25 @@ fn find_issues(
             } else {
                 trf("{clients} get no global rules", &values)
             },
-            tr("Your global rules files reach other clients but not these. Project files such as AGENTS.md still apply inside a project."),
+            detail,
             without,
             Vec::new(),
             None,
-        ));
+        );
+        if let Ok(links) = links {
+            let file = env.display(&links.source);
+            found.fix_label = Some(trf("Link to {file}", &[("file", &links.name)]));
+            found.fix_note = Some(trf(
+                "Toolport makes each file below a link to {file}, so these clients read the same rules. It doesn't change any file that already exists. To undo, delete the link.",
+                &[("file", &file)],
+            ));
+            found.fix_paths = links.links.iter().map(|p| env.display(p)).collect();
+            // A different plan is a different problem: the fix makes only what was shown.
+            found.subject = std::iter::once(links.source.display().to_string())
+                .chain(links.links.iter().map(|p| p.display().to_string()))
+                .collect();
+        }
+        issues.push(found);
     }
 
     // Keys stay the stable ids fixes act on; names are what people read.
@@ -4631,6 +4842,8 @@ pub trait Writer {
     fn remove_link(&self, path: &Path) -> Result<(), String>;
     /// Move a skill folder to the system trash, where the user can restore it.
     fn trash(&self, path: &Path) -> Result<(), String>;
+    /// Make `path` a link to the file `target`. Fails if anything is already at `path`.
+    fn link(&self, target: &Path, path: &Path) -> Result<(), String>;
 }
 
 pub struct DiskWriter;
@@ -4659,6 +4872,33 @@ impl Writer for DiskWriter {
     }
     fn trash(&self, path: &Path) -> Result<(), String> {
         trash::delete(path).map_err(|e| e.to_string())
+    }
+    fn link(&self, target: &Path, path: &Path) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        // Creating a link fails when the path exists, so nothing there is ever replaced.
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, path);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(target, path);
+        made.map_err(|e| {
+            let file = path.display().to_string();
+            match e.kind() {
+                std::io::ErrorKind::AlreadyExists => trf(
+                    "{file} already exists, so Toolport left it alone.",
+                    &[("file", &file)],
+                ),
+                // ERROR_PRIVILEGE_NOT_HELD: links need Developer Mode or an admin.
+                _ if cfg!(windows) && e.raw_os_error() == Some(1314) => tr(
+                    "Windows lets apps make links only with Developer Mode on. Turn it on in Settings, or link the files by hand.",
+                ),
+                _ => trf(
+                    "Couldn't link {file}: {error}",
+                    &[("file", &file), ("error", &e.to_string())],
+                ),
+            }
+        })
     }
 }
 
@@ -4880,6 +5120,9 @@ impl Writer for BackupOnce<'_> {
     }
     fn trash(&self, path: &Path) -> Result<(), String> {
         self.inner.trash(path)
+    }
+    fn link(&self, target: &Path, path: &Path) -> Result<(), String> {
+        self.inner.link(target, path)
     }
 }
 
@@ -5115,6 +5358,34 @@ pub fn apply_fix(
                 writer.write(&path, &doc.to_string())?;
             }
             Ok(removed)
+        }
+        "rules-missing" => {
+            // Planned again from what is on disk now; the link itself refuses an existing path.
+            let plan = rules_links(env, &inventory.agents, &inventory.rules)
+                .map_err(|_| tr("Toolport has no automatic fix for this one."))?;
+            let shown = inventory
+                .issues
+                .iter()
+                .find(|i| i.id == "rules-missing")
+                .map(|i| i.fix_paths.clone())
+                .unwrap_or_default();
+            let planned: Vec<String> = plan.links.iter().map(|p| env.display(p)).collect();
+            if planned != shown {
+                return Err(tr(
+                    "That problem changed since you looked. Check it again, then fix it.",
+                ));
+            }
+            let mut done = 0;
+            let mut first_error = None;
+            for link in &plan.links {
+                match writer.link(&plan.source, link) {
+                    Ok(()) => done += 1,
+                    Err(e) => {
+                        first_error.get_or_insert(e);
+                    }
+                }
+            }
+            first_error.map_or(Ok(done), Err)
         }
         _ => Err(tr("Toolport has no automatic fix for this one.")),
     }
