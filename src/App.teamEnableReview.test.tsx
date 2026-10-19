@@ -216,7 +216,11 @@ describe("team enable review dialog", () => {
     await userEvent.click(enable);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(toggle).toHaveAttribute("aria-checked", "true");
+    // Enabling moves the row from Turned off to Servers, replacing its switch.
+    expect(screen.getByRole("switch", { name: "Toggle Team tool" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
     expect(setServerEnabled).toHaveBeenLastCalledWith(
       "default",
       "team-tool",
