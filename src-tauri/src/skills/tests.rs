@@ -736,6 +736,18 @@ fn missing_rules_fix_never_shares_a_persona_file() {
 }
 
 #[test]
+fn a_persona_file_alone_does_not_blame_imports() {
+    let home = Home::new();
+    home.write(".hermes/SOUL.md", "Be kind.\n");
+    let env = home.env();
+    let inv = scan(&env, &only(&["codex", "hermes"]), None);
+    let issue = missing_rules(&inv).unwrap();
+    assert_eq!(issue.agents, vec!["codex".to_string()]);
+    assert_eq!(issue.fix_label, None);
+    assert!(!issue.detail.contains("@import"));
+}
+
+#[test]
 fn missing_rules_fix_plans_each_claude_code_profile_in_its_own_folder() {
     let home = Home::new();
     home.write(".claude/CLAUDE.md", "# Work\n");

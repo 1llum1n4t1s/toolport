@@ -4304,6 +4304,7 @@ fn rules_links(env: &Env, agents: &[Agent], rules: &[RuleFile]) -> Result<RulesL
     // A file made of @import lines gives a client that skips imports nothing, so only plain
     // files qualify. The one most clients already read wins; ties keep the first by path.
     let mut best: Option<&RuleFile> = None;
+    let mut skipped_imports = false;
     for rule in &global {
         if rule.agents.keys().any(|id| noted.contains(id.as_str())) {
             continue;
@@ -4316,6 +4317,7 @@ fn rules_links(env: &Env, agents: &[Agent], rules: &[RuleFile]) -> Result<RulesL
             .iter()
             .any(|p| p.is_file());
         if text.trim().is_empty() || imports_any {
+            skipped_imports |= imports_any;
             continue;
         }
         if best.is_none_or(|b| rule.agents.len() > b.agents.len()) {
@@ -4323,7 +4325,11 @@ fn rules_links(env: &Env, agents: &[Agent], rules: &[RuleFile]) -> Result<RulesL
         }
     }
     let Some(source) = best else {
-        return Err(NoLinks::OnlyImports);
+        return Err(if skipped_imports {
+            NoLinks::OnlyImports
+        } else {
+            NoLinks::Nothing
+        });
     };
     // Each Claude Code profile is its own client with its own folder, as on the page.
     let present: BTreeSet<&str> = agents.iter().map(|a| a.id.as_str()).collect();
