@@ -673,6 +673,28 @@ fn stack_when_narrow(
     narrow.add_setter(side, "width-request", Some(&(-1).to_value()));
 }
 
+/// Keep the model object stable during a selection notification. Replacing it on every
+/// render queues another selected notification, which redraws again without yielding to input.
+fn sync_agent_filter(filter: &gtk::DropDown, names: &[String], selected: u32) {
+    let same_model = filter
+        .model()
+        .and_downcast::<gtk::StringList>()
+        .is_some_and(|model| {
+            model.n_items() as usize == names.len()
+                && names.iter().enumerate().all(|(index, name)| {
+                    model.string(index as u32).as_deref() == Some(name.as_str())
+                })
+        });
+    if !same_model {
+        filter.set_model(Some(&gtk::StringList::new(
+            &names.iter().map(String::as_str).collect::<Vec<_>>(),
+        )));
+    }
+    if filter.selected() != selected {
+        filter.set_selected(selected);
+    }
+}
+
 impl Pane {
     /// The column width that fits `count` agents in the list's current width.
     fn fitting_column(&self, count: usize) -> i32 {
@@ -1578,14 +1600,11 @@ impl SkillsPage {
                 names.push(agent.name.clone());
             }
         }
-        self.agent_filter.set_model(Some(&gtk::StringList::new(
-            &names.iter().map(String::as_str).collect::<Vec<_>>(),
-        )));
-        self.agent_filter.set_selected(
-            ids.iter()
-                .position(|id| Some(id.as_str()) == self.focus.borrow().as_deref())
-                .unwrap_or(0) as u32,
-        );
+        let selected = ids
+            .iter()
+            .position(|id| Some(id.as_str()) == self.focus.borrow().as_deref())
+            .unwrap_or(0) as u32;
+        sync_agent_filter(&self.agent_filter, &names, selected);
         self.filter_ids.replace(ids);
         self.agent_filter.set_visible(self.tab.get() != Tab::Issues);
         self.syncing_filter.set(false);
@@ -3326,5 +3345,40 @@ mod tests {
             by_pattern: false,
         };
         assert_eq!(dot_detail(Some(&state)), "Off in config.toml");
+    }
+
+    #[test]
+    #[ignore = "requires GTK; explicitly run in the isolated omabox session"]
+    fn agent_filter_redraw_does_not_requeue_selection() {
+        gtk::init().expect("this regression runs inside omabox");
+        let names = vec![
+            "All agents".to_string(),
+            "Claude".to_string(),
+            "Codex".to_string(),
+        ];
+        let filter = gtk::DropDown::from_strings(&[]);
+        sync_agent_filter(&filter, &names, 0);
+        let original = filter.model().unwrap();
+        let calls = Rc::new(Cell::new(0));
+        let seen = calls.clone();
+        filter.connect_selected_notify(move |filter| {
+            seen.set(seen.get() + 1);
+            // Bound the failure case instead of letting a regression hang the test runner.
+            if seen.get() < 4 {
+                sync_agent_filter(filter, &names, filter.selected());
+            }
+        });
+        filter.set_selected(2);
+        let context = gtk::glib::MainContext::default();
+        while context.pending() {
+            context.iteration(false);
+        }
+        assert_eq!(filter.selected(), 2);
+        assert_eq!(filter.model().unwrap(), original);
+        assert_eq!(
+            calls.get(),
+            1,
+            "one user selection must produce one notification"
+        );
     }
 }
