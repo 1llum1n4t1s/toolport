@@ -363,7 +363,7 @@ impl TeamsPage {
         }
         if let Some((error, retry)) = recent_error {
             // Replay with the original Retry so a sync failure still retries the sync.
-            self.show_failure(&error, retry);
+            self.present_failure(&error, retry);
             return;
         }
         // The status line under the title says it; the banner only carries errors.
@@ -1385,23 +1385,20 @@ impl TeamsPage {
     }
 
     fn show_failure(&self, error: &str, retry: Option<ErrorRetry>) {
+        // A new failure starts its own 30 seconds, even when the message repeats.
+        *self.action_error.borrow_mut() = Some(ActionError {
+            message: error.to_string(),
+            at: std::time::Instant::now(),
+            retry: retry.clone(),
+        });
+        self.present_failure(error, retry);
+    }
+
+    /// Show a failure without restarting its deadline, for redraws that replay it.
+    fn present_failure(&self, error: &str, retry: Option<ErrorRetry>) {
         while let Some(child) = self.errors.first_child() {
             self.errors.remove(&child);
         }
-        let now = std::time::Instant::now();
-        let mut last = self.action_error.borrow_mut();
-        // Re-showing the same error keeps its original deadline.
-        if last
-            .as_ref()
-            .is_none_or(|previous| previous.message != error)
-        {
-            *last = Some(ActionError {
-                message: error.to_string(),
-                at: now,
-                retry: retry.clone(),
-            });
-        }
-        drop(last);
         self.feedback.remove_css_class("success");
         self.feedback.add_css_class("error");
         let Some(retry) = retry else {
@@ -2512,6 +2509,28 @@ mod tests {
         page.show_sync_status(&registry);
         assert!(page.errors.first_child().is_some());
         assert_eq!(retry_kind(&page), Some("sync"));
+
+        // The same failure again, after the first expired, gets its own 30 seconds.
+        if let Some(error) = page.action_error.borrow_mut().as_mut() {
+            error.at -= std::time::Duration::from_secs(40);
+        }
+        while let Some(child) = page.errors.first_child() {
+            page.errors.remove(&child);
+        }
+        page.show_sync_status(&registry);
+        assert!(
+            page.errors.first_child().is_none(),
+            "an expired failure is not replayed"
+        );
+        page.show_sync_error("Network offline", &button);
+        while let Some(child) = page.errors.first_child() {
+            page.errors.remove(&child);
+        }
+        page.show_sync_status(&registry);
+        assert!(
+            page.errors.first_child().is_some(),
+            "a repeated failure is replayed"
+        );
 
         // A successful reread clears a read failure but not a sync failure.
         page.clear_action_error(|retry| matches!(retry, Some(super::ErrorRetry::Refresh)));
