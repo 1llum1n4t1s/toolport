@@ -859,9 +859,11 @@ function App() {
                 ? selectedClient
                   ? translate("MCP client")
                   : translate("Manage Toolport in your installed AI tools")
-                : loading || !registry
-                  ? translate("Loading…")
-                  : translate("One gateway in front of every MCP server you run");
+                : error
+                  ? translate("Servers unavailable")
+                  : loading || !registry
+                    ? translate("Loading…")
+                    : translate("One gateway in front of every MCP server you run");
 
   const serverRow = (server: ServerEntry) => (
     <RegistryServerRow

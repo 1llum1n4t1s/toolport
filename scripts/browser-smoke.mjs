@@ -499,10 +499,7 @@ try {
   await expect(page.getByText("NoteKit", { exact: true }).last()).toBeVisible();
   expect((await page.evaluate(() => window.toolportFixture)).missing).toEqual([]);
   await page.goto(`${baseURL}/fixtures/?setup=1`);
-  await page
-    .locator('[data-slot="empty-state"]')
-    .getByRole("button", { name: "Browse catalog", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Browse catalog", exact: true }).first().click();
   await page.getByRole("button", { name: "Add", exact: true }).first().click();
   await page.getByRole("button", { name: "Servers", exact: true }).click();
   await expect(
@@ -512,6 +509,14 @@ try {
     animations: "disabled",
     path: path.join(output, "setup-catalog-add.png"),
   });
+  await page.goto(`${baseURL}/fixtures/?visual-state=empty`);
+  const empty = page.locator('[data-slot="empty-state"]');
+  await empty.getByRole("button", { name: "Add server", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await empty.getByRole("button", { name: "Browse catalog", exact: true }).click();
+  await expect(page.getByText("NoteKit", { exact: true }).last()).toBeVisible();
+
   expect((await page.evaluate(() => window.toolportFixture)).missing).toEqual([]);
   await page.goto(`${baseURL}/fixtures/?sessions&approvals`);
   const unknownApproval = page.getByRole("alertdialog");
