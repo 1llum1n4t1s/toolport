@@ -618,8 +618,13 @@ fn missing_rules_fix_links_the_plain_file_most_clients_read() {
     let issue = missing_rules(&inv).unwrap();
     assert_eq!(
         issue.agents,
-        vec!["github-copilot-cli".to_string(), "gemini-cli".to_string()]
+        vec![
+            "github-copilot-cli".to_string(),
+            "gemini-cli".to_string(),
+            "antigravity".to_string()
+        ]
     );
+    // Antigravity reads Gemini CLI's GEMINI.md, so that one link covers both.
     // claude-instructions.md reaches Grok too, but it is mostly an import Grok skips.
     assert_eq!(
         issue.fix_label.as_deref(),

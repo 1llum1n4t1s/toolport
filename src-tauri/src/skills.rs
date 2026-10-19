@@ -654,6 +654,28 @@ fn first_of(files: Vec<PathBuf>, imports: bool) -> Vec<RuleSource> {
         .collect()
 }
 
+thread_local! {
+    /// Links the rules-link planner treats as already made, so a client's rule list shows
+    /// whether the client would read one. Empty except while planning.
+    static PLANNED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Planned links directly in `dir` that `keep` accepts and `files` doesn't list yet.
+fn add_planned(files: &mut Vec<PathBuf>, dir: &Path, keep: impl Fn(&Path) -> bool) {
+    PLANNED.with(|planned| {
+        for link in planned.borrow().iter() {
+            if link.parent() == Some(dir) && keep(link) && !files.contains(link) {
+                files.push(link.clone());
+            }
+        }
+    });
+}
+
+/// A file that exists, or a link the planner treats as made.
+fn exists_or_planned(path: &Path) -> bool {
+    path.is_file() || PLANNED.with(|planned| planned.borrow().iter().any(|p| p == path))
+}
+
 /// The files in `dir` with one of `names`, matched by the name on disk so a case-insensitive
 /// disk doesn't list one file twice.
 fn named_files(dir: &Path, names: &[&str]) -> Vec<PathBuf> {
@@ -665,6 +687,11 @@ fn named_files(dir: &Path, names: &[&str]) -> Vec<PathBuf> {
         .map(|e| e.path())
         .filter(|p| p.is_file())
         .collect();
+    add_planned(&mut files, dir, |p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| names.contains(&n))
+    });
     files.sort();
     files
 }
@@ -1603,6 +1630,11 @@ fn md_files(dir: &Path) -> Vec<PathBuf> {
                 && p.is_file()
         })
         .collect();
+    add_planned(&mut files, dir, |p| {
+        p.extension()
+            .and_then(|x| x.to_str())
+            .is_some_and(|x| x == "md" || x == "mdc")
+    });
     files.sort();
     files
 }
@@ -4293,18 +4325,22 @@ fn rules_links(env: &Env, agents: &[Agent], rules: &[RuleFile]) -> Result<RulesL
         .into_iter()
         .filter(|d| present.contains(d.id))
         .collect();
-    // The paths each client reads now, or would read once created. A fallback counts only
-    // while nothing before it exists, as in `scan_rules`.
-    let reads = |def: &AgentDef| -> Vec<PathBuf> {
+    // The paths each client would read once `planned` links exist. Rule lists name only
+    // files that exist (plus the place to start one), so the planned links are treated as
+    // made. A fallback counts only while nothing before it exists, as in `scan_rules`.
+    let reads = |def: &AgentDef, planned: &[PathBuf]| -> Vec<PathBuf> {
+        PLANNED.with(|p| *p.borrow_mut() = planned.to_vec());
+        let rules = (def.rules)(env);
         let mut loaded_any = false;
         let mut out = Vec::new();
-        for source in (def.rules)(env) {
+        for source in rules {
             if source.fallback && loaded_any {
                 continue;
             }
-            loaded_any |= source.path.is_file();
+            loaded_any |= exists_or_planned(&source.path);
             out.push(source.path);
         }
+        PLANNED.with(|p| p.borrow_mut().clear());
         out
     };
     let without_set: BTreeSet<&str> = without.iter().map(String::as_str).collect();
@@ -4314,9 +4350,8 @@ fn rules_links(env: &Env, agents: &[Agent], rules: &[RuleFile]) -> Result<RulesL
         .collect();
     let mut links: Vec<PathBuf> = Vec::new();
     for def in defs.iter().filter(|d| without_set.contains(d.id)) {
-        let own = reads(def);
         // Already covered by a link made for another client (Claude Code's CLAUDE.md feeds Grok).
-        if own.iter().any(|p| links.contains(p)) {
+        if reads(def, &links).iter().any(|p| links.contains(p)) {
             continue;
         }
         let Some(link) = (def.rules_link)(env) else {
@@ -4327,9 +4362,9 @@ fn rules_links(env: &Env, agents: &[Agent], rules: &[RuleFile]) -> Result<RulesL
             continue;
         }
         // A client that already has rules and also reads this path would change too.
-        let changes_others = defs
-            .iter()
-            .any(|d| has_rules.contains(d.id) && reads(d).contains(&link));
+        let changes_others = defs.iter().any(|d| {
+            has_rules.contains(d.id) && reads(d, std::slice::from_ref(&link)).contains(&link)
+        });
         if changes_others {
             continue;
         }
