@@ -199,6 +199,7 @@
   "Arguments changed on another machine and could not be matched to the secret values saved here. Toolport kept this machine's arguments. Check them before enabling.": "Los argumentos cambiaron en otra máquina y no pudieron coincidir con los valores secretos guardados aquí. Toolport mantuvo los argumentos de esta máquina. Compruébalos antes de habilitarlos.",
   "Arguments changed:": "Los argumentos cambiaron:",
   "Arguments must be a JSON object.": "Los argumentos deben ser un objeto JSON.",
+  "Ask every time": "Preguntar siempre",
   "asks before calls from shared or registry servers": "pregunta antes de llamadas desde servidores compartidos o de registro",
   "Authenticate": "autenticar",
   "Authenticated": "Autenticado",

@@ -276,6 +276,21 @@ impl ApprovalBroker {
             .collect()
     }
 
+    /// Park a call with no gateway behind it, so native shell tests can drive a card.
+    #[cfg(all(test, target_os = "linux", feature = "gtk-desktop"))]
+    pub(crate) fn park_for_test(
+        &self,
+        view: PendingView,
+    ) -> std::sync::mpsc::Receiver<ApprovalDecision> {
+        let (decide, decision) = channel();
+        self.inner
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(view.id.clone(), Waiter { view, decide });
+        decision
+    }
+
     /// Whether a key is in the ephemeral session allowlist.
     fn session_contains(&self, key: &str) -> bool {
         self.inner

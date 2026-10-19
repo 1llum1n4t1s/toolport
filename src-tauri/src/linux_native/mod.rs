@@ -7590,15 +7590,21 @@ fn approval_card(
     deny.connect_clicked(move |_| deny_page.decide(&deny_id, false));
     actions.append(&deny);
 
+    // Picking how long to remember only sets the choice. Approve still sends
+    // the decision, so opening this menu can never approve a call by itself.
+    let scope = std::rc::Rc::new(std::cell::Cell::new("once"));
     if view.tool_fingerprint.is_some()
         && view.url_elicitation.is_none()
         && view.pii_release.is_none()
     {
+        const CHOICES: [(&str, &str); 3] = [
+            (crate::i18n::msg("Ask every time"), "once"),
+            (crate::i18n::msg("Allow for this session"), "session"),
+            (crate::i18n::msg("Always allow this tool"), "always"),
+        ];
         let remember = gtk::MenuButton::builder()
-            .label(crate::i18n::tr("Remember approval"))
-            .tooltip_text(crate::i18n::tr(
-                "Approve this definition without asking again",
-            ))
+            .label(crate::i18n::tr("Ask every time"))
+            .tooltip_text(crate::i18n::tr("Skip next time?"))
             .build();
         remember.add_css_class("toolport-secondary-action");
         let popover = toolport_menu_popover();
@@ -7607,17 +7613,40 @@ fn approval_card(
         choices.set_margin_bottom(6);
         choices.set_margin_start(6);
         choices.set_margin_end(6);
-        for (label, scope) in [
-            (crate::i18n::msg("For this session"), "session"),
-            (crate::i18n::msg("Always for this definition"), "always"),
-        ] {
-            let choice = toolport_menu_source_button(label);
-            let id = view.id.clone();
-            let page = page.clone();
+        let checks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        for (index, (label, value)) in CHOICES.into_iter().enumerate() {
+            let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+            content.append(&{
+                let widget = gtk::Label::builder()
+                    .label(label)
+                    .halign(gtk::Align::Start)
+                    .xalign(0.0)
+                    .hexpand(true)
+                    .build();
+                l10n::bind_label(&widget, label);
+                widget
+            });
+            let check = gtk::Image::builder()
+                .icon_name("object-select-symbolic")
+                .css_classes(["toolport-menu-check"])
+                .visible(index == 0)
+                .build();
+            content.append(&check);
+            checks.borrow_mut().push(check);
+            let choice = gtk::Button::builder()
+                .child(&content)
+                .css_classes(["flat", "toolport-menu-item"])
+                .build();
+            let scope = scope.clone();
+            let checks = checks.clone();
             let remember = remember.clone();
             choice.connect_clicked(move |_| {
+                scope.set(value);
+                for (other, check) in checks.borrow().iter().enumerate() {
+                    check.set_visible(other == index);
+                }
+                remember.set_label(&crate::i18n::lookup(label));
                 remember.popdown();
-                page.approve_with_scope(&id, scope);
             });
             choices.append(&choice);
         }
@@ -7629,11 +7658,14 @@ fn approval_card(
     let approve = l10n::button(if view.url_elicitation.is_some() {
         crate::i18n::msg("Continue")
     } else {
-        crate::i18n::msg("Approve once")
+        crate::i18n::msg("Approve")
     });
     approve.add_css_class("suggested-action");
     let approve_id = view.id;
-    approve.connect_clicked(move |_| page.decide(&approve_id, true));
+    approve.connect_clicked(move |_| match scope.get() {
+        "once" => page.decide(&approve_id, true),
+        scope => page.approve_with_scope(&approve_id, scope),
+    });
     actions.append(&approve);
     card.append(&actions);
     (card, deadline)
@@ -13142,6 +13174,128 @@ mod tests {
         let stop = main_loop.clone();
         gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(180), move || stop.quit());
         main_loop.run();
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn approval_remember_choice_waits_for_approve() {
+        use super::*;
+        let _data = crate::registry::DataDirTestEnv::new("gtk-approval-remember");
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let broker = crate::approval_broker::start_native();
+        let page = ApprovalPage::new(&app, broker.clone());
+        let view = crate::approval_broker::PendingView {
+            id: "remember".into(),
+            client: None,
+            client_name: "Codex".into(),
+            client_label: None,
+            server: "github".into(),
+            tool: "delete_issue".into(),
+            tool_fingerprint: Some("v2:abc".into()),
+            reason: crate::approval::ApprovalReason::Destructive,
+            arguments: serde_json::json!({"issue": 42}),
+            url_elicitation: None,
+            pii_release: None,
+            deadline_ms: epoch_ms() + 120_000,
+        };
+        let decision = broker.park_for_test(view.clone());
+        let (card, _) = approval_card(view, page);
+        if std::env::var_os("TOOLPORT_APPROVAL_VISUAL").is_some() {
+            card.set_margin_top(20);
+            card.set_margin_bottom(20);
+            card.set_margin_start(20);
+            card.set_margin_end(20);
+            let window = adw::ApplicationWindow::builder()
+                .application(&app)
+                .title("Toolport approval fixture")
+                .default_width(720)
+                .default_height(420)
+                .content(&card)
+                .build();
+            let theme = theme::ThemeController::new();
+            theme.attach(&window);
+            window.present();
+            let main_loop = gtk::glib::MainLoop::new(None, false);
+            let stop = main_loop.clone();
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(240), move || {
+                stop.quit()
+            });
+            let watch = broker.clone();
+            let done = main_loop.clone();
+            gtk::glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+                if watch.list().is_empty() {
+                    eprintln!(
+                        "approval decided: session allow {:?}",
+                        watch.session_allowed()
+                    );
+                    done.quit();
+                    return gtk::glib::ControlFlow::Break;
+                }
+                gtk::glib::ControlFlow::Continue
+            });
+            main_loop.run();
+            return;
+        }
+        fn button(widget: &gtk::Widget, text: &str) -> Option<gtk::Button> {
+            if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+                let mut labels = Vec::new();
+                let mut child = button.first_child();
+                while let Some(w) = child {
+                    if let Some(label) = w.downcast_ref::<gtk::Label>() {
+                        labels.push(label.text().to_string());
+                    }
+                    let mut inner = w.first_child();
+                    while let Some(i) = inner {
+                        if let Some(label) = i.downcast_ref::<gtk::Label>() {
+                            labels.push(label.text().to_string());
+                        }
+                        inner = i.next_sibling();
+                    }
+                    child = w.next_sibling();
+                }
+                if button.label().as_deref() == Some(text) || labels.iter().any(|l| l == text) {
+                    return Some(button.clone());
+                }
+            }
+            if let Some(menu) = widget.downcast_ref::<gtk::MenuButton>() {
+                if let Some(found) = menu.popover().and_then(|p| button(p.upcast_ref(), text)) {
+                    return Some(found);
+                }
+            }
+            let mut child = widget.first_child();
+            while let Some(w) = child {
+                if let Some(found) = button(&w, text) {
+                    return Some(found);
+                }
+                child = w.next_sibling();
+            }
+            None
+        }
+
+        button(card.upcast_ref(), "Allow for this session")
+            .expect("session choice")
+            .emit_clicked();
+        assert_eq!(broker.list().len(), 1, "choosing must not resolve the call");
+        assert!(decision.try_recv().is_err());
+        assert!(broker.session_allowed().is_empty());
+
+        button(card.upcast_ref(), "Approve")
+            .expect("approve button")
+            .emit_clicked();
+        assert_eq!(
+            decision
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap(),
+            crate::approval::ApprovalDecision::Approved
+        );
+        assert!(broker.list().is_empty());
+        let key = crate::approval::fingerprint_allow_key("github", "delete_issue", "v2:abc");
+        assert_eq!(broker.session_allowed(), vec![key.clone()]);
+        assert!(!crate::registry::load().unwrap().is_tool_allowed(&key));
     }
 
     #[test]
