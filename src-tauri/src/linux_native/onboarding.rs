@@ -278,6 +278,14 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
     stack.add_named(&scroll_page(done), Some("done"));
     root.append(&stack);
     window.set_content(Some(&root));
+    // GtkWindow uses a scroller's minimum request on a non-resizable window.
+    // Resize explicitly to the visible page's natural height on every step.
+    let resize_window = window.downgrade();
+    stack.connect_visible_child_notify(move |stack| {
+        if let Some(window) = resize_window.upgrade() {
+            fit_page(&window, stack);
+        }
+    });
 
     let window_for_skip = window.clone();
     let feedback_for_skip = welcome_feedback.clone();
@@ -409,7 +417,15 @@ fn present(app: &adw::Application, parent: &adw::ApplicationWindow) {
                 .set_label(&crate::i18n::tr("Client detection stopped unexpectedly.")),
         }
     });
+    fit_page(&window, &stack);
     window.present();
+}
+
+fn fit_page(window: &adw::ApplicationWindow, stack: &gtk::Stack) {
+    if let Some(page) = stack.visible_child() {
+        let (_, natural, _, _) = page.measure(gtk::Orientation::Vertical, 660);
+        window.set_default_size(660, (natural + 48).clamp(280, 740));
+    }
 }
 
 fn load_clients(list: &gtk::Box, feedback: &gtk::Label) {
@@ -1042,6 +1058,70 @@ fn show_error(label: &gtk::Label, text: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b6_onboarding_fits_content_and_skip_opens_review() {
+        use adw::prelude::*;
+        adw::init().unwrap();
+        let _data = crate::registry::DataDirTestEnv::new("b6-onboarding-size");
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.OnboardingTest")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let parent = adw::ApplicationWindow::builder().application(&app).build();
+        super::present(&app, &parent);
+        fn click(widget: &gtk::Widget, label: &str) -> bool {
+            if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+                if button.label().as_deref() == Some(label) {
+                    button.emit_clicked();
+                    return true;
+                }
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+                if click(&widget, label) {
+                    return true;
+                }
+            }
+            false
+        }
+        gtk::glib::MainContext::default().block_on(async {
+            gtk::glib::timeout_future(std::time::Duration::from_millis(250)).await;
+            let window = app
+                .windows()
+                .into_iter()
+                .find(|window| window.widget_name() == "toolport-onboarding")
+                .unwrap();
+            assert!(
+                window.height() > 400,
+                "welcome clipped at {}",
+                window.height()
+            );
+            assert!(click(window.upcast_ref(), "Set up MCP servers"));
+            gtk::glib::timeout_future(std::time::Duration::from_millis(250)).await;
+            assert!(
+                window.height() >= 280 && window.height() < 500,
+                "add step height {}",
+                window.height()
+            );
+            assert!(click(window.upcast_ref(), "I'll add servers later"));
+            gtk::glib::timeout_future(std::time::Duration::from_millis(250)).await;
+            let root = window
+                .clone()
+                .downcast::<adw::ApplicationWindow>()
+                .unwrap()
+                .content()
+                .unwrap()
+                .downcast::<gtk::Box>()
+                .unwrap();
+            let stack = root.last_child().unwrap().downcast::<gtk::Stack>().unwrap();
+            assert_eq!(stack.visible_child_name().as_deref(), Some("done"));
+            window.close();
+        });
+    }
+
     use super::*;
 
     #[test]

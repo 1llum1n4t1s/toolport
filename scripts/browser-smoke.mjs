@@ -231,7 +231,7 @@ try {
         .every((element) => element.getBoundingClientRect().right <= window.innerWidth),
     ),
   ).toBe(true);
-  await page.getByRole("button", { name: "Add server", exact: true }).click();
+  await page.getByRole("button", { name: "Add server", exact: true }).first().click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText("Give the server a name.", { exact: true })).toHaveCount(
     0,
@@ -349,8 +349,12 @@ try {
         await expect(page.getByText("7 trial days left", { exact: true })).toBeVisible();
       if (scenario === "grace")
         await expect(page.getByText(/Every device keeps syncing until/)).toBeVisible();
-      if (scenario === "blocked")
-        await expect(page.getByRole("alert")).toHaveText("Sync is paused on this device");
+      if (scenario === "blocked") {
+        const error = page.getByRole("alert");
+        await expect(error).toContainText("Sync is paused on this device");
+        await expect(error.getByRole("button", { name: "Retry" })).toBeVisible();
+        await expect(error.getByRole("button", { name: "View log" })).toBeVisible();
+      }
     }
     await page.screenshot({ path: path.join(output, `personal-sync-${scenario}.png`) });
     expect((await page.evaluate(() => window.toolportFixture)).missing).toEqual([]);
@@ -455,7 +459,7 @@ try {
     expect((await page.evaluate(() => window.toolportFixture)).missing).toEqual([]);
   }
   await page.goto(`${baseURL}/fixtures/?setup=1`);
-  await page.getByRole("button", { name: "Add server", exact: true }).click();
+  await page.getByRole("button", { name: "Add server", exact: true }).first().click();
   await page.getByLabel("Name", { exact: true }).fill("Manual notes");
   await page.getByLabel("Command", { exact: true }).fill("fixture-manual");
   await page
@@ -469,7 +473,7 @@ try {
     animations: "disabled",
     path: path.join(output, "setup-manual-add.png"),
   });
-  await page.getByRole("button", { name: "Add server", exact: true }).click();
+  await page.getByRole("button", { name: "Add server", exact: true }).first().click();
   await page.getByRole("button", { name: "Paste from client config" }).click();
   await page.locator("textarea").fill(
     JSON.stringify({
@@ -495,7 +499,10 @@ try {
   await expect(page.getByText("NoteKit", { exact: true }).last()).toBeVisible();
   expect((await page.evaluate(() => window.toolportFixture)).missing).toEqual([]);
   await page.goto(`${baseURL}/fixtures/?setup=1`);
-  await page.getByRole("button", { name: "Browse catalog", exact: true }).click();
+  await page
+    .locator('[data-slot="empty-state"]')
+    .getByRole("button", { name: "Browse catalog", exact: true })
+    .click();
   await page.getByRole("button", { name: "Add", exact: true }).first().click();
   await page.getByRole("button", { name: "Servers", exact: true }).click();
   await expect(
