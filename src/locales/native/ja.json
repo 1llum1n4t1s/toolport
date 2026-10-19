@@ -1171,5 +1171,11 @@
   "nanobot skills": "nanobot のスキル",
   "Uses agents.defaults.disabledSkills in nanobot's config.json.": "nanobot の config.json にある agents.defaults.disabledSkills を使います。",
   "From a nanobot package": "nanobot パッケージ由来",
-  "Toolport cannot verify this skill's Reasonix identifier. Use Reasonix to switch it on or off.": "Toolport はこのスキルの Reasonix 識別子を確認できません。Reasonix で有効または無効にしてください。"
+  "Toolport cannot verify this skill's Reasonix identifier. Use Reasonix to switch it on or off.": "Toolport はこのスキルの Reasonix 識別子を確認できません。Reasonix で有効または無効にしてください。",
+  "Toolport can't link them to your rules, because your rules files use @import lines that most clients skip.": "ルールファイルが多くのクライアントで読み飛ばされる @import 行を使っているため、Toolport はこれらをルールにリンクできません。",
+  "Link to {file}": "{file} にリンク",
+  "Toolport makes each file below a link to {file}, so these clients read the same rules. It doesn't change any file that already exists. To undo, delete the link.": "Toolport は下の各ファイルを {file} へのリンクにし、これらのクライアントが同じルールを読むようにします。既存のファイルは変更しません。元に戻すにはリンクを削除してください。",
+  "{file} already exists, so Toolport left it alone.": "{file} はすでに存在するため、Toolport は変更しませんでした。",
+  "Windows lets apps make links only with Developer Mode on. Turn it on in Settings, or link the files by hand.": "Windows では開発者モードがオンのときだけアプリがリンクを作成できます。設定でオンにするか、手動でファイルをリンクしてください。",
+  "Couldn't link {file}: {error}": "{file} をリンクできませんでした: {error}"
 }

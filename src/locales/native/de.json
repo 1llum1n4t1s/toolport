@@ -1171,5 +1171,11 @@
   "nanobot skills": "nanobot-Skills",
   "Uses agents.defaults.disabledSkills in nanobot's config.json.": "Verwendet agents.defaults.disabledSkills in der config.json von nanobot.",
   "From a nanobot package": "Aus einem nanobot-Paket",
-  "Toolport cannot verify this skill's Reasonix identifier. Use Reasonix to switch it on or off.": "Toolport kann den Reasonix-Bezeichner dieser Fähigkeit nicht überprüfen. Schalte sie in Reasonix ein oder aus."
+  "Toolport cannot verify this skill's Reasonix identifier. Use Reasonix to switch it on or off.": "Toolport kann den Reasonix-Bezeichner dieser Fähigkeit nicht überprüfen. Schalte sie in Reasonix ein oder aus.",
+  "Toolport can't link them to your rules, because your rules files use @import lines that most clients skip.": "Toolport kann sie nicht mit deinen Regeln verknüpfen, weil deine Regeldateien @import-Zeilen nutzen, die die meisten Clients überspringen.",
+  "Link to {file}": "Mit {file} verknüpfen",
+  "Toolport makes each file below a link to {file}, so these clients read the same rules. It doesn't change any file that already exists. To undo, delete the link.": "Toolport macht jede Datei unten zu einer Verknüpfung auf {file}, damit diese Clients dieselben Regeln lesen. Vorhandene Dateien werden nicht geändert. Zum Rückgängigmachen lösche die Verknüpfung.",
+  "{file} already exists, so Toolport left it alone.": "{file} existiert bereits, daher hat Toolport es nicht angefasst.",
+  "Windows lets apps make links only with Developer Mode on. Turn it on in Settings, or link the files by hand.": "Windows erlaubt Apps Verknüpfungen nur mit aktiviertem Entwicklermodus. Aktiviere ihn in den Einstellungen oder verknüpfe die Dateien von Hand.",
+  "Couldn't link {file}: {error}": "{file} konnte nicht verknüpft werden: {error}"
 }

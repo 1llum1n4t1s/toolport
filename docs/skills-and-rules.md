@@ -152,7 +152,13 @@ which copy wins in each agent and marks the other as **another copy wins**.
 - Skills left in an old claude.ai sync folder.
 - Skills from a system package, where edits are replaced on update.
 - Agents that read your rules file but skip its `@import` lines.
-- Agents that get no global rules file.
+- Agents that get no global rules file. **Link to** gives them the rules file most
+  of your agents already read, by making a link at each agent's own rules path, such
+  as `~/.copilot/copilot-instructions.md` or `~/.gemini/GEMINI.md`. The confirmation
+  lists every link. Toolport never replaces a file that's already there, skips a path
+  an agent with rules also reads, and only links to a file without `@import` lines,
+  since most agents skip those. To undo, delete the link. On Windows, making links
+  needs Developer Mode.
 
 Every fix asks for confirmation first, and does nothing if the item changed after
 you looked, so check it again. **Dismiss** hides an item you're fine with.

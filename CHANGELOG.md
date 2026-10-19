@@ -36,6 +36,9 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ### Added
 
+- Agents that get no global rules file can be linked, from Needs a look, to the
+  rules file your other agents already read, so one file reaches every agent.
+  Toolport lists each link before making it and never replaces an existing file.
 - Codex homes started by your own launchers or aliases, such as
   `~/Codex-Work/.codex`, and folders like `~/.codex2` are found automatically
   and grouped under one Codex entry on the Clients page, with the command that

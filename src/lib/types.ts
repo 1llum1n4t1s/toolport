@@ -930,6 +930,10 @@ export interface SkillIssue {
   /** Display names for `skills`, without repeats. */
   skillNames: string[];
   fixLabel: string | null;
+  /** What the fix will do, for its confirmation. Null uses the general note. */
+  fixNote?: string | null;
+  /** Paths the fix will create, listed in its confirmation. */
+  fixPaths?: string[];
   /** Stays the same while the issue covers the same skills and clients. */
   fingerprint: string;
   /** The user said this one is fine; it returns when something about it changes. */

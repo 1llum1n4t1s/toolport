@@ -312,6 +312,47 @@ describe("SkillsView", () => {
     );
   });
 
+  it("lists the links a rules fix will make before making them", async () => {
+    const inv = skillsFixture();
+    vi.mocked(skillsInventory).mockResolvedValue({
+      ...inv,
+      issues: [
+        {
+          id: "rules-missing",
+          level: "info",
+          title: "OpenCode gets no global rules",
+          detail: "Your global rules files reach other clients but not these.",
+          agents: ["opencode"],
+          skills: [],
+          skillNames: [],
+          fixLabel: "Link to working-agreements.md",
+          fixNote:
+            "Toolport makes each file below a link to ~/.agents/working-agreements.md.",
+          fixPaths: ["~/.config/opencode/AGENTS.md"],
+          fingerprint: "rules-missing:00000004",
+          dismissed: false,
+        },
+      ],
+    });
+    renderView();
+    await userEvent.click(await screen.findByRole("tab", { name: /Needs a look/ }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Link to working-agreements.md" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveAccessibleDescription(
+      /link to ~\/\.agents\/working-agreements\.md/,
+    );
+    expect(within(dialog).getByText("~/.config/opencode/AGENTS.md")).toBeInTheDocument();
+    expect(
+      within(dialog).queryByText(/never deletes a skill folder/),
+    ).not.toBeInTheDocument();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Link to working-agreements.md" }),
+    );
+    expect(fixSkillIssue).toHaveBeenCalledWith("rules-missing", null);
+  });
+
   it("keeps the switch and rescans when a client refuses the write", async () => {
     vi.mocked(setSkillState).mockRejectedValueOnce(
       new Error("permissions isn't in a shape"),

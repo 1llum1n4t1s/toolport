@@ -1478,6 +1478,12 @@ levelbar.toolport-skill-meter.over block.filled {{ background-color: @toolport_w
 .toolport-skill-chip.logo {{ padding: 0; }}
 button.toolport-skill-chip {{ min-height: 0; min-width: 0; padding: 3px 8px; }}
 button.toolport-skill-chip:hover {{ background-color: alpha(@toolport_fg, 0.13); }}
+.toolport-fix-paths {{
+  background-color: alpha(@toolport_fg, 0.07);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-top: 4px;
+}}
 .toolport-skill-segments button {{ padding: 2px 9px; min-height: 24px; }}
 
 /* Sync page: one amber block for everything that needs a decision. */

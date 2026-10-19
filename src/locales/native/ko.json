@@ -1171,5 +1171,11 @@
   "nanobot skills": "nanobot 스킬",
   "Uses agents.defaults.disabledSkills in nanobot's config.json.": "nanobot의 config.json에서 agents.defaults.disabledSkills를 사용합니다.",
   "From a nanobot package": "nanobot 패키지에서 제공",
-  "Toolport cannot verify this skill's Reasonix identifier. Use Reasonix to switch it on or off.": "Toolport에서 이 스킬의 Reasonix 식별자를 확인할 수 없습니다. Reasonix에서 켜거나 끄세요."
+  "Toolport cannot verify this skill's Reasonix identifier. Use Reasonix to switch it on or off.": "Toolport에서 이 스킬의 Reasonix 식별자를 확인할 수 없습니다. Reasonix에서 켜거나 끄세요.",
+  "Toolport can't link them to your rules, because your rules files use @import lines that most clients skip.": "규칙 파일이 대부분의 클라이언트가 건너뛰는 @import 줄을 사용하므로 Toolport가 이 클라이언트들을 규칙에 연결할 수 없습니다.",
+  "Link to {file}": "{file}에 연결",
+  "Toolport makes each file below a link to {file}, so these clients read the same rules. It doesn't change any file that already exists. To undo, delete the link.": "Toolport가 아래 각 파일을 {file}에 대한 링크로 만들어 이 클라이언트들이 같은 규칙을 읽게 합니다. 이미 있는 파일은 바꾸지 않습니다. 되돌리려면 링크를 삭제하세요.",
+  "{file} already exists, so Toolport left it alone.": "{file}이(가) 이미 있어서 Toolport가 건드리지 않았습니다.",
+  "Windows lets apps make links only with Developer Mode on. Turn it on in Settings, or link the files by hand.": "Windows에서는 개발자 모드가 켜져 있을 때만 앱이 링크를 만들 수 있습니다. 설정에서 켜거나 파일을 직접 연결하세요.",
+  "Couldn't link {file}: {error}": "{file}을(를) 연결하지 못했습니다: {error}"
 }
