@@ -1281,6 +1281,7 @@ function App() {
                           busy={busyId === selectedServer.id}
                           health={health[selectedServer.id]}
                           onToggle={(en) => handleToggle(selectedServer.id, en)}
+                          onSwitchRef={registerServerSwitch}
                           onRemove={() =>
                             handleRemove(selectedServer.id, selectedServer.name)
                           }

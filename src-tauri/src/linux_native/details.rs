@@ -464,62 +464,11 @@ pub(super) fn client(client: &state::ClientView, page: &ClientPage) {
         let copy = gtk::Box::new(gtk::Orientation::Vertical, 8);
         copy.append(&heading("Discovery mode"));
         copy.append(&text(&client_rows::discovery_summary(client).1, false));
-        let modes = [None, Some("lazy"), Some("grouped"), Some("full")];
-        let mode = gtk::DropDown::from_strings(&[
-            &crate::i18n::tr("Auto"),
-            &crate::i18n::tr("Lazy · search"),
-            &crate::i18n::tr("Grouped · per-server"),
-            &crate::i18n::tr("Full · every tool"),
-        ]);
-        bound_dropdown(&mode);
-        mode.set_selected(
-            modes
-                .iter()
-                .position(|m| *m == client.discovery_mode.as_deref())
-                .unwrap_or(0) as u32,
+        let mode = discovery_picker(
+            client,
+            page,
+            crate::registry_controller::set_client_discovery,
         );
-        mode.set_sensitive(writable);
-        mode.set_valign(gtk::Align::Start);
-        mode.update_property(&[gtk::accessible::Property::Label(&crate::i18n::tr(
-            "Discovery mode",
-        ))]);
-        let c = client.clone();
-        let p = page.clone();
-        mode.connect_selected_notify(move |control| {
-            let Some(mode) = modes.get(control.selected() as usize).copied() else {
-                return;
-            };
-            control.set_sensitive(false);
-            let id = c.id.clone();
-            let name = c.name.clone();
-            let p = p.clone();
-            let control = control.clone();
-            gtk::glib::spawn_future_local(async move {
-                let result = gtk::gio::spawn_blocking(move || {
-                    crate::registry_controller::set_client_discovery(&id, mode)
-                })
-                .await;
-                match result {
-                    Ok(Ok(_)) => {
-                        p.show_confirmation(&crate::i18n::trf(
-                            "Updated discovery for {value0}.",
-                            &[("value0", &name)],
-                        ));
-                        p.refresh();
-                    }
-                    Ok(Err(e)) => {
-                        control.set_sensitive(true);
-                        p.show_error(&e);
-                    }
-                    Err(_) => {
-                        control.set_sensitive(true);
-                        p.show_error(&crate::i18n::tr(
-                            "the discovery update stopped unexpectedly",
-                        ));
-                    }
-                }
-            });
-        });
         let discovery = row_group();
         let row = gtk::Box::new(gtk::Orientation::Vertical, 0);
         row.add_css_class("toolport-card");
@@ -566,6 +515,81 @@ pub(super) fn client(client: &state::ClientView, page: &ClientPage) {
         .build();
     root.append(&scroll);
     page.details.push(&client.id, &root);
+}
+
+fn discovery_picker(
+    client: &state::ClientView,
+    page: &ClientPage,
+    write: fn(&str, Option<&str>) -> Result<crate::registry::Registry, String>,
+) -> gtk::DropDown {
+    let modes = [None, Some("lazy"), Some("grouped"), Some("full")];
+    let mode = gtk::DropDown::from_strings(&[
+        &crate::i18n::tr("Auto"),
+        &crate::i18n::tr("Lazy · search"),
+        &crate::i18n::tr("Grouped · per-server"),
+        &crate::i18n::tr("Full · every tool"),
+    ]);
+    bound_dropdown(&mode);
+    mode.set_selected(
+        modes
+            .iter()
+            .position(|m| *m == client.discovery_mode.as_deref())
+            .unwrap_or(0) as u32,
+    );
+    mode.set_sensitive(!client.config_error);
+    mode.set_valign(gtk::Align::Start);
+    mode.update_property(&[gtk::accessible::Property::Label(&crate::i18n::tr(
+        "Discovery mode",
+    ))]);
+    let updating = Rc::new(std::cell::Cell::new(false));
+    let persisted = Rc::new(std::cell::Cell::new(mode.selected()));
+    let c = client.clone();
+    let p = page.clone();
+    mode.connect_selected_notify(move |control| {
+        if updating.replace(true) {
+            return;
+        }
+        let Some(mode) = modes.get(control.selected() as usize).copied() else {
+            updating.set(false);
+            return;
+        };
+        control.set_sensitive(false);
+        let id = c.id.clone();
+        let name = c.name.clone();
+        let p = p.clone();
+        let control = control.clone();
+        let updating = updating.clone();
+        let persisted = persisted.clone();
+        gtk::glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(move || write(&id, mode)).await;
+            match result {
+                Ok(Ok(_)) => {
+                    persisted.set(control.selected());
+                    updating.set(false);
+                    p.show_confirmation(&crate::i18n::trf(
+                        "Updated discovery for {value0}.",
+                        &[("value0", &name)],
+                    ));
+                    p.refresh();
+                }
+                Ok(Err(e)) => {
+                    control.set_selected(persisted.get());
+                    updating.set(false);
+                    control.set_sensitive(true);
+                    p.show_error(&e);
+                }
+                Err(_) => {
+                    control.set_selected(persisted.get());
+                    updating.set(false);
+                    control.set_sensitive(true);
+                    p.show_error(&crate::i18n::tr(
+                        "the discovery update stopped unexpectedly",
+                    ));
+                }
+            }
+        });
+    });
+    mode
 }
 
 fn refresh_reachable(
@@ -1151,6 +1175,59 @@ mod tests {
         assert!(
             registry.client_scopes.is_empty(),
             "discovery does not rewrite access"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b5_rejected_discovery_restores_saved_mode_without_another_write() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static WRITES: AtomicUsize = AtomicUsize::new(0);
+        fn reject(id: &str, mode: Option<&str>) -> Result<crate::registry::Registry, String> {
+            assert_eq!(id, "codex@work");
+            assert_eq!(mode, Some("full"));
+            WRITES.fetch_add(1, Ordering::SeqCst);
+            Err("Synthetic rejected discovery write".into())
+        }
+        let _data = crate::registry::DataDirTestEnv::new("b5-discovery-failure");
+        crate::registry_controller::set_client_discovery("codex@work", Some("lazy")).unwrap();
+        let before = std::fs::read(crate::registry::registry_path().unwrap()).unwrap();
+        let app = app();
+        let (_, servers, _) = build_content(&app, crate::approval_broker::start_native());
+        let page = ClientPage::new(&app, servers);
+        let mut selected = fixture_client("codex@work");
+        selected.discovery_mode = Some("lazy".into());
+        let mode = discovery_picker(&selected, &page, reject);
+        WRITES.store(0, Ordering::SeqCst);
+        assert_eq!(mode.selected(), 1);
+        mode.set_selected(3);
+        let context = gtk::glib::MainContext::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !mode.is_sensitive() && std::time::Instant::now() < deadline {
+            while context.pending() {
+                context.iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(mode.is_sensitive());
+        assert_eq!(page.feedback.text(), "Synthetic rejected discovery write");
+        assert!(page.feedback.has_css_class("error"));
+        assert_eq!(
+            mode.selected(),
+            1,
+            "picker shows persisted Lazy after rejection"
+        );
+        while context.pending() {
+            context.iteration(false);
+        }
+        assert_eq!(
+            WRITES.load(Ordering::SeqCst),
+            1,
+            "rollback never starts a second write"
+        );
+        assert_eq!(
+            std::fs::read(crate::registry::registry_path().unwrap()).unwrap(),
+            before
         );
     }
 

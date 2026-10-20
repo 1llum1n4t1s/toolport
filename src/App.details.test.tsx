@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 import type { DetectedClient, Registry } from "@/lib/types";
@@ -8,6 +8,7 @@ const getRegistry = vi.fn();
 const detectClients = vi.fn();
 const takeRegistryRecoveryNotice = vi.fn();
 const uninstallGateway = vi.fn();
+const setServerEnabled = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),
@@ -26,7 +27,7 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   removeServer: vi.fn(),
   setAllEnabled: vi.fn(),
   setSecret: vi.fn(),
-  setServerEnabled: vi.fn(),
+  setServerEnabled: (...a: unknown[]) => setServerEnabled(...a),
   takeRegistryRecoveryNotice: (...a: unknown[]) => takeRegistryRecoveryNotice(...a),
   teamSyncWait: vi.fn(),
   testServer: vi.fn(),
@@ -138,6 +139,45 @@ describe("pushed detail navigation", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Show Files details" })).toHaveFocus(),
     );
+  });
+
+  it("restores the live detail switch after reviewed enable failure, cancel and success", async () => {
+    const user = userEvent.setup();
+    const registry = registryWithServer();
+    registry.servers[0].source = "team:work";
+    getRegistry.mockResolvedValue(registry);
+    const enabled = structuredClone(registry);
+    enabled.profiles[0].enabledServerIds = ["files"];
+    setServerEnabled
+      .mockRejectedValueOnce(new Error("Definition needs review"))
+      .mockResolvedValueOnce(enabled);
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Show Files details" }));
+    const toggle = screen.getByRole("switch", { name: "Toggle Files" });
+    toggle.focus();
+    await user.keyboard(" ");
+    let dialog = within(await screen.findByRole("dialog"));
+    await waitFor(() =>
+      expect(dialog.getByRole("button", { name: "Enable" })).toBeEnabled(),
+    );
+    await user.click(dialog.getByRole("button", { name: "Enable" }));
+    expect(await dialog.findByRole("alert")).toHaveTextContent("Definition needs review");
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    await user.click(dialog.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Toggle Files" })).toHaveFocus(),
+    );
+    await user.keyboard(" ");
+    dialog = within(await screen.findByRole("dialog"));
+    await waitFor(() =>
+      expect(dialog.getByRole("button", { name: "Enable" })).toBeEnabled(),
+    );
+    await user.click(dialog.getByRole("button", { name: "Enable" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    const live = screen.getByRole("switch", { name: "Toggle Files" });
+    expect(live).toHaveAttribute("aria-checked", "true");
+    await waitFor(() => expect(live).toHaveFocus());
+    expect(live).toBeInTheDocument();
   });
 
   it("refreshes a selected server and gives a safe missing state after removal", async () => {
