@@ -669,7 +669,7 @@ fn client_imports(
     let keys = servers
         .iter()
         .filter(|s| !imported_names.contains(&s.name.to_lowercase()))
-        .map(|s| crate::clients::import_dedupe_key(&s.name, s.command.as_deref(), &s.args))
+        .map(|s| ImportSelection::new(&detected.id, s))
         .collect::<Vec<_>>();
     import.set_sensitive(writable && !keys.is_empty());
     let p = page.clone();
@@ -738,11 +738,7 @@ fn client_imports(
         import.add_css_class("toolport-secondary-action");
         import.set_halign(gtk::Align::End);
         import.set_sensitive(writable && !imported);
-        let key = crate::clients::import_dedupe_key(
-            &server.name,
-            server.command.as_deref(),
-            &server.args,
-        );
+        let key = ImportSelection::new(&detected.id, server);
         let p = page.clone();
         import.connect_clicked(move |_| review_imports(&p, vec![key.clone()]));
         row.append(&page_header::HeaderWrap::new(&copy, &import));
@@ -751,16 +747,69 @@ fn client_imports(
     body.append(&group);
 }
 
-fn review_imports(page: &ClientPage, keys: Vec<String>) {
+#[derive(Clone)]
+struct ImportSelection {
+    client_id: String,
+    name: String,
+    transport: String,
+    command: Option<String>,
+    args: Vec<String>,
+    url: Option<String>,
+}
+
+impl ImportSelection {
+    fn new(client_id: &str, server: &crate::clients::McpServer) -> Self {
+        Self {
+            client_id: client_id.into(),
+            name: server.name.clone(),
+            transport: server.transport.clone(),
+            command: server.command.as_ref().map(|c| {
+                if crate::registry::arg_looks_secret(c) {
+                    "<command>".into()
+                } else {
+                    c.clone()
+                }
+            }),
+            args: crate::import_credentials::shown_args(&server.args),
+            url: server
+                .url
+                .as_deref()
+                .map(crate::import_credentials::shown_url),
+        }
+    }
+    fn matches(&self, item: &crate::registry_controller::ClientImportCandidate) -> bool {
+        self.client_id == item.client_id
+            && self.name == item.name
+            && self.transport == item.transport
+            && self.command == item.command
+            && self.args == item.args
+            && self.url == item.url
+    }
+}
+
+fn selected_imports(
+    keys: &[ImportSelection],
+    items: Vec<crate::registry_controller::ClientImportCandidate>,
+) -> Result<Vec<crate::registry_controller::ClientImportCandidate>, String> {
+    keys.iter()
+        .map(|key| {
+            items
+                .iter()
+                .find(|item| key.matches(item))
+                .cloned()
+                .ok_or_else(|| {
+                    crate::i18n::tr("Server changed. Refresh the client and review again.")
+                })
+        })
+        .collect()
+}
+
+fn review_imports(page: &ClientPage, keys: Vec<ImportSelection>) {
     let page = page.clone();
     gtk::glib::spawn_future_local(async move {
         match gtk::gio::spawn_blocking(move || {
-            crate::registry_controller::preview_client_imports().map(|items| {
-                items
-                    .into_iter()
-                    .filter(|item| keys.contains(&item.key))
-                    .collect::<Vec<_>>()
-            })
+            crate::registry_controller::preview_client_imports()
+                .and_then(|items| selected_imports(&keys, items))
         })
         .await
         {
@@ -775,6 +824,43 @@ fn review_imports(page: &ClientPage, keys: Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn b5_import_selection_rejects_other_profiles_and_changed_definitions() {
+        let server = crate::clients::McpServer {
+            name: "Notes".into(),
+            transport: "stdio".into(),
+            command: Some("notes".into()),
+            args: vec![],
+            url: None,
+            env_keys: vec![],
+        };
+        let selection = ImportSelection::new("claude:work", &server);
+        let candidate = crate::registry_controller::ClientImportCandidate {
+            client_id: "claude:work".into(),
+            key: "notes".into(),
+            name: "Notes".into(),
+            transport: "stdio".into(),
+            command: Some("notes".into()),
+            args: vec![],
+            url: None,
+            credentials: vec![],
+            unsupported: None,
+        };
+        assert!(
+            selected_imports(std::slice::from_ref(&selection), vec![candidate.clone()]).is_ok()
+        );
+        let mut other = candidate.clone();
+        other.client_id = "claude:personal".into();
+        assert!(selected_imports(std::slice::from_ref(&selection), vec![other]).is_err());
+        let mut changed = candidate.clone();
+        changed.args.push("--changed".into());
+        assert!(selected_imports(
+            std::slice::from_ref(&selection),
+            vec![candidate, changed.clone()]
+        )
+        .is_ok());
+        assert!(selected_imports(&[selection], vec![changed]).is_err());
+    }
     fn widgets(root: &gtk::Widget) -> Vec<gtk::Widget> {
         let mut all = vec![root.clone()];
         let mut child = root.first_child();
@@ -1072,7 +1158,11 @@ mod tests {
     #[ignore = "interactive visual fixture; run in omabox with TOOLPORT_B5_VIEW"]
     fn b5_details_visual_fixture() {
         let _data = crate::registry::DataDirTestEnv::new("b5-visual");
-        let app = app();
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.B5DetailsTest")
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
         let view = std::env::var("TOOLPORT_B5_VIEW").unwrap_or_else(|_| "server-overview".into());
         let width = std::env::var("TOOLPORT_B5_WIDTH")
             .ok()

@@ -11,6 +11,7 @@ use crate::registry::{self, ManagedEntry, Registry, ServerEntry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientImportCandidate {
+    pub client_id: String,
     pub key: String,
     pub name: String,
     pub transport: String,
@@ -525,6 +526,7 @@ pub fn preview_client_imports() -> Result<Vec<ClientImportCandidate>, String> {
                 Err(error) => (Vec::new(), Some(error)),
             };
             Ok(ClientImportCandidate {
+                client_id: client.id.clone(),
                 credentials,
                 unsupported,
                 key: clients::import_dedupe_key(
