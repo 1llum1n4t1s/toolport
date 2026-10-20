@@ -3609,13 +3609,13 @@ mod tests {
     #[test]
     fn scoped_import_commits_the_second_clients_reviewed_definition_and_credentials() {
         let fixture = MoveFixture::new(&Registry::default());
-        std::fs::write(fixture.claude(), r#"{"mcpServers":{"shared":{"command":"shared-mcp","env":{"API_KEY":"synthetic-first-origin"}}}}"#).unwrap();
+        std::fs::write(fixture.claude(), r#"{"mcpServers":{"shared":{"command":"shared-mcp","env":{"API_KEY":"synthetic-second-origin"}}}}"#).unwrap();
         std::fs::write(
             fixture.codex(),
             r#"[mcp_servers.shared]
 command = "shared-mcp"
 [mcp_servers.shared.env]
-API_KEY = "synthetic-second-origin"
+API_KEY = "synthetic-first-origin"
 "#,
         )
         .unwrap();
@@ -3630,11 +3630,11 @@ API_KEY = "synthetic-second-origin"
                 .find(|item| item.name == "shared")
                 .unwrap()
                 .client_id,
-            "claude-code"
+            "codex"
         );
-        let second = preview_client_imports_for("codex").unwrap();
+        let second = preview_client_imports_for("claude-code").unwrap();
         let item = second.iter().find(|item| item.name == "shared").unwrap();
-        assert_eq!(item.client_id, "codex");
+        assert_eq!(item.client_id, "claude-code");
         assert!(item
             .credentials
             .iter()
@@ -3652,7 +3652,7 @@ API_KEY = "synthetic-second-origin"
             .iter()
             .find(|server| server.name == "shared")
             .unwrap();
-        assert_eq!(imported.source.as_deref(), Some("imported:codex"));
+        assert_eq!(imported.source.as_deref(), Some("imported:claude-code"));
         assert_eq!(
             crate::secrets::get_vault_secret_result(&imported.id, "API_KEY")
                 .unwrap()
@@ -3660,7 +3660,7 @@ API_KEY = "synthetic-second-origin"
             Some("synthetic-second-origin")
         );
         assert!(
-            preview_client_imports_for("claude-code")
+            preview_client_imports_for("codex")
                 .unwrap()
                 .iter()
                 .all(|item| item.name != "shared"),
@@ -3668,7 +3668,7 @@ API_KEY = "synthetic-second-origin"
         );
         assert!(std::fs::read_to_string(fixture.claude())
             .unwrap()
-            .contains("synthetic-first-origin"));
+            .contains("synthetic-second-origin"));
     }
 
     #[test]

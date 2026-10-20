@@ -204,7 +204,7 @@ describe("pushed detail navigation", () => {
     expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
     expect(screen.queryByText("Couldn't reach the backend")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Back to servers" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Back to servers" })).toHaveLength(2);
   });
 
   it("targets the selected client instance and refreshes detail after disconnect", async () => {

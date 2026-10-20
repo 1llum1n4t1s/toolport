@@ -2003,8 +2003,6 @@ fn start_quarantine_watch(
     );
 }
 
-// Keep the native navigation widgets and their shared page state together.
-#[allow(clippy::too_many_arguments)]
 fn install_server_tools_action(app: &adw::Application, server_page: &ServerPage) {
     let tools_action = gtk::gio::SimpleAction::new("show-server-tools", None);
     let page_for_tools = server_page.clone();
@@ -2045,6 +2043,8 @@ fn install_server_tools_action(app: &adw::Application, server_page: &ServerPage)
     app.add_action(&tools_action);
 }
 
+// Keep the native navigation widgets and their shared page state together.
+#[allow(clippy::too_many_arguments)]
 fn show_native_page(
     split: &adw::NavigationSplitView,
     stack: &gtk::Stack,
