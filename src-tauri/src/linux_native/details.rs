@@ -763,9 +763,11 @@ fn render_reachable(root: &gtk::Box, client: &state::ClientView, names: &[String
         .max_children_per_line(3)
         .row_spacing(16)
         .column_spacing(12)
-        .halign(gtk::Align::Fill)
+        .halign(gtk::Align::Center)
         .build();
-    flow.add_css_class("toolport-gateway-flow");
+    let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    frame.add_css_class("toolport-gateway-flow");
+    frame.append(&flow);
     let client_step = gtk::Box::new(gtk::Orientation::Vertical, 8);
     client_step.set_halign(gtk::Align::Center);
     let logo = branding::client_logo(&client.id);
@@ -807,7 +809,7 @@ fn render_reachable(root: &gtk::Box, client: &state::ClientView, names: &[String
     }
     targets.append(&list);
     flow.insert(&targets, -1);
-    root.append(&flow);
+    root.append(&frame);
 }
 
 fn client_imports(

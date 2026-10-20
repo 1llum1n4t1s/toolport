@@ -1037,7 +1037,7 @@ button.toolport-activity-filter {{
   background-color: @toolport_card;
   padding: 20px 16px;
 }}
-.toolport-gateway-flow > flowboxchild {{ padding: 0; }}
+.toolport-gateway-flow flowboxchild {{ padding: 0; }}
 
 .toolport-details-expander {{
   padding: 11px 14px;
