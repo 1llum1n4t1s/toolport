@@ -3333,7 +3333,14 @@ pub(super) fn close_on_escape(window: &impl IsA<gtk::Window>) {
     let keys = gtk::EventControllerKey::new();
     let closing = window.as_ref().downgrade();
     keys.connect_key_pressed(move |_, key, _, modifiers| {
-        if key == gtk::gdk::Key::Escape && modifiers.is_empty() {
+        let held = modifiers
+            & (gtk::gdk::ModifierType::SHIFT_MASK
+                | gtk::gdk::ModifierType::CONTROL_MASK
+                | gtk::gdk::ModifierType::ALT_MASK
+                | gtk::gdk::ModifierType::SUPER_MASK
+                | gtk::gdk::ModifierType::HYPER_MASK
+                | gtk::gdk::ModifierType::META_MASK);
+        if key == gtk::gdk::Key::Escape && held.is_empty() {
             if let Some(window) = closing.upgrade() {
                 window.close();
                 return gtk::glib::Propagation::Stop;
@@ -16419,6 +16426,38 @@ mod tests {
             ],
         );
         assert!(!handled && !closed.get(), "other keys pass through");
+        let held: bool = keys.emit_by_name(
+            "key-pressed",
+            &[
+                &gtk::gdk::Key::Escape.into_glib(),
+                &0u32,
+                &(gtk::gdk::ModifierType::SHIFT_MASK | gtk::gdk::ModifierType::LOCK_MASK),
+            ],
+        );
+        assert!(
+            !held && !closed.get(),
+            "accelerator modifiers prevent closing"
+        );
+        let handled: bool = keys.emit_by_name(
+            "key-pressed",
+            &[
+                &gtk::gdk::Key::Escape.into_glib(),
+                &0u32,
+                &gtk::gdk::ModifierType::LOCK_MASK,
+            ],
+        );
+        assert!(
+            handled && closed.get(),
+            "Caps Lock does not prevent Esc closing"
+        );
+        let plain = adw::Window::new();
+        close_on_escape(&plain);
+        plain.present();
+        let controllers = plain.observe_controllers();
+        let keys = (0..controllers.n_items())
+            .filter_map(|index| controllers.item(index))
+            .find_map(|item| item.downcast::<gtk::EventControllerKey>().ok())
+            .unwrap();
         let handled: bool = keys.emit_by_name(
             "key-pressed",
             &[
@@ -16427,7 +16466,7 @@ mod tests {
                 &gtk::gdk::ModifierType::empty(),
             ],
         );
-        assert!(handled && closed.get(), "Esc closes the sheet");
+        assert!(handled && !plain.get_visible(), "plain Esc still closes");
     }
 
     #[test]
