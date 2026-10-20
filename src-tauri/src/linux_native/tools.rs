@@ -1790,7 +1790,10 @@ mod tests {
             failed_switch.is_active(),
             "a rejected policy write restores the old state"
         );
-        assert!(failed_panel.feedback.has_css_class("error"));
+        assert_eq!(
+            failed_panel.tools.first_child().unwrap().accessible_role(),
+            gtk::AccessibleRole::Alert
+        );
         assert_eq!(
             crate::registry::load().unwrap().servers[0].disabled_tools,
             vec!["read"]

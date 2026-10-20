@@ -520,7 +520,12 @@ pub(super) fn client(client: &state::ClientView, page: &ClientPage) {
                 }
             });
         });
-        body.append(&page_header::HeaderWrap::new(&copy, &mode));
+        let discovery = row_group();
+        let row = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        row.add_css_class("toolport-card");
+        row.append(&page_header::HeaderWrap::new(&copy, &mode));
+        discovery.append(&row);
+        body.append(&discovery);
     }
     if !customized && (client.app_present || client.config_exists) {
         let reachable = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -652,6 +657,7 @@ fn client_imports(
             .any(|s| !imported_names.contains(&s.name.to_lowercase()))
     {
         let warning = text(&crate::i18n::trf("{client} is already connected to Toolport. Import on its own leaves a copy here too, so these tools load twice, once directly and once through the gateway. Use {review} to avoid that.", &[("client", &detected.name), ("review", &crate::i18n::tr("Review and connect"))]), false);
+        warning.add_css_class("toolport-feedback");
         warning.add_css_class("warning");
         body.append(&warning);
     }
@@ -1234,6 +1240,14 @@ mod tests {
             }
             super::client(&selected, &clients);
         }
+        let close = gtk::gio::SimpleAction::new("close-fixture", None);
+        let close_window = window.downgrade();
+        close.connect_activate(move |_, _| {
+            if let Some(window) = close_window.upgrade() {
+                window.close();
+            }
+        });
+        app.add_action(&close);
         window.present();
         let main_loop = gtk::glib::MainLoop::new(None, false);
         let stop = main_loop.clone();
