@@ -6,6 +6,17 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ## [Unreleased]
 
+## [2.3.0] - Unreleased
+
+Toolport 2.3 gives Servers, Clients and Skills a consistent layout, clearer
+controls and full detail pages in both desktop apps. Connect six new clients,
+find your extra Codex homes automatically, and link missing global rules files
+to the file your other agents already share.
+
+This release is for manual installation. Existing 1.24.x installs stay on their
+current update track. Choose your platform from the
+[release downloads](https://github.com/btsouth/toolport/releases).
+
 ### Fixed
 
 - Keep uncertain Reasonix skill identifiers read-only in both apps instead of
@@ -91,6 +102,11 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ### Changed
 
+- Refreshed both desktop apps with opaque surfaces, clearer secondary text,
+  consistent status chips and shared page headers. Servers and clients open
+  full detail pages with Back, and GTK now includes client access, discovery,
+  reviewed imports and gateway previews. Skills use clearer agent controls,
+  column labels and issue cards.
 - Claude Code's Auto discovery now lists every tool (Full) for catalogs up to 800
   tools, up from 120, and searches (Lazy) only above that. Full hands Claude Code
   the same list it gets without Toolport, so its own tool search works as usual.
