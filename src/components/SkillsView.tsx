@@ -1188,7 +1188,7 @@ function IssueCard({
                 issue.fixPaths?.length ? (
                   <div className="space-y-2">
                     <p>{issue.fixNote}</p>
-                    <ul className="space-y-1 rounded-md bg-muted px-3 py-2 font-mono text-xs break-all text-foreground">
+                    <ul className="space-y-1 rounded-md bg-muted px-3 py-2 font-mono text-xs break-words text-foreground">
                       {issue.fixPaths.map((path) => (
                         <li key={path}>{path}</li>
                       ))}
@@ -1699,7 +1699,7 @@ export function SkillsView() {
           {project && (
             <>
               <DropdownMenuSeparator />
-              <div className="px-2 py-1.5 font-mono text-meta break-all text-muted-foreground">
+              <div className="px-2 py-1.5 font-mono text-meta break-words text-muted-foreground">
                 {project}
               </div>
             </>

@@ -1024,7 +1024,7 @@ impl SkillsPage {
         let project_path = gtk::Label::builder()
             .xalign(0.0)
             .wrap(true)
-            .wrap_mode(gtk::pango::WrapMode::Char)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
             .max_width_chars(36)
             .css_classes(["monospace", "caption", "toolport-muted"])
             .margin_start(10)
@@ -3458,7 +3458,8 @@ fn restore_scroll(scroll: &gtk::ScrolledWindow, value: f64) {
 }
 
 fn path_value(path: &str) -> gtk::Label {
-    // A path broken across lines must not gain a hyphen that isn't in it.
+    // A path broken across lines must not gain a hyphen that isn't in it, and breaks at its
+    // slashes and dashes before splitting a word.
     gtk::Label::builder()
         .label(format!(
             "<span insert_hyphens=\"false\">{}</span>",
@@ -3468,7 +3469,7 @@ fn path_value(path: &str) -> gtk::Label {
         .halign(gtk::Align::Fill)
         .xalign(0.0)
         .wrap(true)
-        .wrap_mode(gtk::pango::WrapMode::Char)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
         .selectable(true)
         .css_classes(["monospace"])
         .build()
