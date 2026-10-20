@@ -1483,10 +1483,12 @@ mod tests {
             .content(&stack)
             .build();
         window.present();
-        let mut registry = crate::registry::Registry::default();
-        registry.servers = vec![serde_json::from_value(serde_json::json!({
-            "id":"new-onboarding", "name":"New from onboarding", "transport":"stdio", "command":"/home/sbx/bin/mock-mcp-server", "args":[], "env":[], "enabled":true
-        })).unwrap()];
+        let mut registry = crate::registry::Registry {
+            servers: vec![serde_json::from_value(serde_json::json!({
+                "id":"new-onboarding", "name":"New from onboarding", "transport":"stdio", "command":"/home/sbx/bin/mock-mcp-server", "args":[], "env":[], "enabled":true
+            })).unwrap()],
+            ..Default::default()
+        };
         let gateway = serde_json::from_value(serde_json::json!({
             "id":"toolport", "name":"Toolport", "transport":"stdio", "command":"toolport-gateway", "args":[], "env":[], "enabled":true
         })).unwrap();
