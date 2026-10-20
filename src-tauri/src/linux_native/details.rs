@@ -633,9 +633,6 @@ fn refresh_reachable(
             return;
         }
         while let Some(child) = reachable.last_child() {
-            if child == reachable.first_child().unwrap() {
-                break;
-            }
             reachable.remove(&child);
         }
         match result {
@@ -1358,6 +1355,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(find_class(root.upcast_ref(), "toolport-gateway-flow").is_some());
+        assert!(find_class(root.upcast_ref(), "toolport-skeleton-group").is_none());
         let labels = widgets(root.upcast_ref())
             .into_iter()
             .filter_map(|w| w.downcast::<gtk::Label>().ok())
@@ -1385,6 +1383,36 @@ mod tests {
             2
         );
         assert!(find_class(connected.upcast_ref(), "toolport-gateway-flow").is_none());
+        let lock = std::path::PathBuf::from(format!(
+            "{}.lock",
+            crate::registry::registry_path().unwrap().display()
+        ));
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::create_dir(&lock).unwrap();
+        refresh_reachable(
+            &root,
+            Some("work".into()),
+            Rc::new(std::cell::Cell::new(0)),
+            client,
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while find_class(root.upcast_ref(), "toolport-skeleton-group").is_some()
+            && std::time::Instant::now() < deadline
+        {
+            while context.pending() {
+                context.iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            find_class(root.upcast_ref(), "toolport-skeleton-group").is_none(),
+            "loading cleared after registry read failure"
+        );
+        assert!(widgets(root.upcast_ref())
+            .iter()
+            .filter_map(|w| w.downcast_ref::<gtk::Label>())
+            .any(|l| l.text() == "Servers unavailable"));
+        std::fs::remove_dir(lock).unwrap();
     }
 
     /// Deterministic, synthetic detail screens for the cross-theme capture matrix.
