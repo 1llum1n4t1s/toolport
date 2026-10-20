@@ -751,11 +751,13 @@ fn client_imports(
     imported_names: &[String],
     selected_scope: Rc<RefCell<Option<String>>>,
 ) {
+    let mut seen = std::collections::HashSet::new();
     let servers = detected
         .servers
         .iter()
         .filter(|s| !crate::clients::detected_is_gateway(s))
         .chain(detected.plugin_servers.iter())
+        .filter(|server| seen.insert(server.name.to_lowercase()))
         .collect::<Vec<_>>();
     if servers.is_empty() {
         return;
@@ -797,6 +799,12 @@ fn client_imports(
         .map(|s| ImportSelection::new(&detected.id, s))
         .collect::<Vec<_>>();
     import.set_sensitive(writable && !keys.is_empty());
+    import.set_visible(!keys.is_empty());
+    import.set_label(&crate::i18n::trf(
+        "{value1}Import all ({value2})",
+        &[("value1", ""), ("value2", &keys.len().to_string())],
+    ));
+    let all_imported = keys.is_empty();
     let p = page.clone();
     import.connect_clicked(move |_| review_imports(&p, keys.clone()));
     all.append(&import);
@@ -849,7 +857,11 @@ fn client_imports(
             .iter()
             .any(|plugin| std::ptr::eq(plugin, server))
         {
-            copy.append(&heading("Plugin"));
+            let badge = text(&crate::i18n::tr("plugin"), false);
+            badge.add_css_class("toolport-badge");
+            badge.add_css_class("off");
+            badge.set_halign(gtk::Align::Start);
+            copy.append(&badge);
         }
         let imported = imported_names.contains(&server.name.to_lowercase());
         let import = l10n::button(if imported { "in Toolport" } else { "Import" });
@@ -863,6 +875,30 @@ fn client_imports(
         group.append(&row);
     }
     body.append(&group);
+    if all_imported {
+        body.append(&text(
+            &crate::i18n::trf(
+                "{value1}Everything here is already in Toolport. Manage it under{value2}{value3}",
+                &[
+                    ("value1", ""),
+                    ("value2", " "),
+                    ("value3", &crate::i18n::tr("Servers")),
+                ],
+            ),
+            false,
+        ));
+        let servers = gtk::Button::with_label(&crate::i18n::trf(
+            "All servers {value1}",
+            &[("value1", "→")],
+        ));
+        servers.add_css_class("toolport-secondary-action");
+        servers.set_halign(gtk::Align::Start);
+        let app = page.app.clone();
+        servers.connect_clicked(move |_| {
+            gtk::prelude::ActionGroupExt::activate_action(&app, "show-servers", None)
+        });
+        body.append(&servers);
+    }
 }
 
 #[derive(Clone)]
