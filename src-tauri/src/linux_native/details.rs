@@ -1364,6 +1364,96 @@ mod tests {
     }
     #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b5_credential_save_reprobes_unchanged_detail_without_refresh() {
+        let _data = crate::registry::DataDirTestEnv::new("b5-credential-refresh");
+        let app = app();
+        let registry = crate::registry::update(|registry| {
+            registry.servers = vec![serde_json::from_value(serde_json::json!({
+                "id": "b5-credential", "name": "Credential fixture", "transport": "stdio",
+                "command": "/home/sbx/bin/mock-mcp-server", "args": [], "env": [], "enabled": true
+            }))
+            .unwrap()];
+            Ok(())
+        })
+        .unwrap()
+        .0;
+        let snapshot = state::RegistrySnapshot::from_registry(registry.clone());
+        let (root, page, _) = build_content(&app, crate::approval_broker::start_native());
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .content(&root)
+            .build();
+        let old = crate::server_runtime::ProbeResult {
+            server_id: "b5-credential".into(),
+            ok: false,
+            tool_count: 0,
+            error: Some("Old credential failure".into()),
+            auth_required: false,
+            failure: None,
+            auth_target: None,
+        };
+        let now = std::time::Instant::now();
+        let ticket = page
+            .health
+            .borrow_mut()
+            .plan(
+                &[("b5-credential", snapshot.servers[0].probe_fingerprint)],
+                health::ProbeReason::ConfigChanged,
+                now,
+            )
+            .remove(0);
+        page.health.borrow_mut().complete(&ticket, old, now);
+        page.render(state::RegistryState::Ready(snapshot.clone()));
+        window.present();
+        server_details_for_test(&snapshot.servers[0], &page);
+        assert!(
+            widgets(&page.details.stack.child_by_name("detail").unwrap())
+                .iter()
+                .filter_map(|w| w.downcast_ref::<gtk::Label>())
+                .any(|l| l.text() == "Old credential failure")
+        );
+        let editor = adw::Window::new();
+        finish_credential_update(
+            Ok(Ok(registry)),
+            "b5-credential",
+            &page,
+            &editor,
+            &gtk::Label::new(None),
+            &gtk::Button::new(),
+            "Updated",
+        );
+        assert!(
+            page.health.borrow().is_checking("b5-credential"),
+            "credential completion schedules a probe even with an identical registry"
+        );
+        let context = gtk::glib::MainContext::default();
+        let deadline = now + std::time::Duration::from_secs(10);
+        while page.health.borrow().is_checking("b5-credential")
+            && std::time::Instant::now() < deadline
+        {
+            while context.pending() {
+                context.iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            page.health
+                .borrow()
+                .result("b5-credential")
+                .is_some_and(|p| p.ok),
+            "the replacement probe succeeds without manual Refresh"
+        );
+        assert!(
+            !widgets(&page.details.stack.child_by_name("detail").unwrap())
+                .iter()
+                .filter_map(|w| w.downcast_ref::<gtk::Label>())
+                .any(|l| l.is_visible() && l.text() == "Old credential failure")
+        );
+        window.close();
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn b5_same_detail_refresh_preserves_external_focus() {
         let _data = crate::registry::DataDirTestEnv::new("b5-external-focus");
         let app = app();

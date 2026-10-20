@@ -11297,6 +11297,9 @@ fn finish_credential_update(
             page.render(state::RegistryState::Ready(
                 state::RegistrySnapshot::from_registry(registry),
             ));
+            // Replacing a stored value can leave the registry snapshot identical,
+            // in which case render deliberately skips rebuilding and probing.
+            page.probe_servers(health::ProbeReason::ConfigChanged);
             page.show_confirmation(&crate::i18n::trf(
                 "{value0} credential",
                 &[("value0", action)],
