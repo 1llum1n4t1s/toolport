@@ -14221,124 +14221,210 @@ mod tests {
             .application_id("com.tsout.Toolport.SessionFixture")
             .build();
         app.register(None::<&gtk::gio::Cancellable>).unwrap();
-        let broker = crate::approval_broker::start_native();
-        let approval = ApprovalPage::new(&app, broker);
-        let view = crate::approval_broker::PendingView {
-            id: "fixture-approval".into(),
-            client: None,
-            client_name: "Unknown app (via Cursor)".into(),
-            client_label: Some("kt 1".into()),
-            server: "team-slack".into(),
-            tool: "delete_issue".into(),
-            tool_fingerprint: None,
-            reason: crate::approval::ApprovalReason::Destructive,
-            arguments: serde_json::json!({"issue":42}),
-            url_elicitation: None,
-            pii_release: None,
-            deadline_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64
-                + 120_000,
-        };
-        let (card, _) = approval_card(view, approval);
-        let mut activity = call("team-slack", false);
-        activity.client = Some("Unknown app (via Cursor)".into());
-        activity.client_label = Some("kt 1".into());
-        activity.tool = "delete_issue".into();
-        activity.duration_ms = Some(120);
-        activity.dispatch_ms = Some(3);
-        activity.cold = Some(false);
-        activity.failure_kind = Some("downstream_failure".into());
-        activity.run_id = Some("0123456789abcdef0123456789abcdef".into());
-        let server_page = ServerPage {
-            details: Default::default(),
-            app: app.clone(),
-            share_requests: Default::default(),
-            server_count: gtk::Label::new(None),
-            section_title: gtk::Label::new(None),
-            posture: gtk::Label::new(None),
-            search: gtk::SearchEntry::new(),
-            feedback: gtk::Label::new(None),
-            list: gtk::Box::new(gtk::Orientation::Vertical, 0),
-            last_snapshot: Default::default(),
-            feedback_timer: Default::default(),
-            health_rows: Default::default(),
-            rows: Default::default(),
-            no_matches: Default::default(),
-            off_heading: Default::default(),
-            health: Default::default(),
-            registry_reload: Default::default(),
-        };
-        let clients = ClientPage::new(&app, server_page);
-        clients.render(state::ClientSnapshot { clients: Vec::new(), profiles: Vec::new(), sessions_error: false, sessions: vec![serde_json::json!({
-            "clientName":"Unknown app (via Cursor)", "clientLabel":"kt 1", "phase":"close",
+        for canonical in ["Unknown app (via Cursor)", "Cursor", "Unknown client"] {
+            let broker = crate::approval_broker::start_native();
+            let approval = ApprovalPage::new(&app, broker);
+            let view = crate::approval_broker::PendingView {
+                id: "fixture-approval".into(),
+                client: None,
+                client_name: canonical.into(),
+                client_label: Some("kt 1".into()),
+                server: "team-slack".into(),
+                tool: "delete_issue".into(),
+                tool_fingerprint: None,
+                reason: crate::approval::ApprovalReason::Destructive,
+                arguments: serde_json::json!({"issue":42}),
+                url_elicitation: None,
+                pii_release: None,
+                deadline_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64
+                    + 120_000,
+            };
+            let (card, _) = approval_card(view, approval);
+            let mut activity = call("team-slack", false);
+            activity.client = Some(canonical.into());
+            activity.client_label = Some("kt 1".into());
+            activity.tool = "delete_issue".into();
+            activity.duration_ms = Some(120);
+            activity.dispatch_ms = Some(3);
+            activity.cold = Some(false);
+            activity.failure_kind = Some("downstream_failure".into());
+            activity.run_id = Some("0123456789abcdef0123456789abcdef".into());
+            let server_page = ServerPage {
+                details: Default::default(),
+                app: app.clone(),
+                share_requests: Default::default(),
+                server_count: gtk::Label::new(None),
+                section_title: gtk::Label::new(None),
+                posture: gtk::Label::new(None),
+                search: gtk::SearchEntry::new(),
+                feedback: gtk::Label::new(None),
+                list: gtk::Box::new(gtk::Orientation::Vertical, 0),
+                last_snapshot: Default::default(),
+                feedback_timer: Default::default(),
+                health_rows: Default::default(),
+                rows: Default::default(),
+                no_matches: Default::default(),
+                off_heading: Default::default(),
+                health: Default::default(),
+                registry_reload: Default::default(),
+            };
+            let clients = ClientPage::new(&app, server_page);
+            clients.render(state::ClientSnapshot { clients: Vec::new(), profiles: Vec::new(), sessions_error: false, sessions: vec![serde_json::json!({
+            "clientName":canonical, "clientLabel":"kt 1", "phase":"close",
             "toolsListCount":3, "listChangedCount":1, "firstCatalogSize":4, "contentChanged":true,
         })] });
-        clients
-            .list
-            .parent()
-            .unwrap()
-            .downcast::<gtk::Box>()
-            .unwrap()
-            .remove(&clients.list);
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 18);
-        root.set_margin_top(24);
-        root.set_margin_bottom(24);
-        root.set_margin_start(24);
-        root.set_margin_end(24);
-        for (title, widget) in [
-            ("Approval required", card.upcast::<gtk::Widget>()),
-            ("Activity", activity_card(&activity).upcast()),
-            ("Clients", clients.list.clone().upcast()),
-        ] {
-            root.append(
-                &gtk::Label::builder()
-                    .label(title)
-                    .halign(gtk::Align::Start)
-                    .css_classes(["title-2"])
-                    .build(),
-            );
-            root.append(&widget);
-        }
-        fn labels(widget: &gtk::Widget, out: &mut Vec<String>) {
-            if let Some(label) = widget.downcast_ref::<gtk::Label>() {
-                out.push(label.text().to_string());
-            }
-            let mut child = widget.first_child();
-            while let Some(w) = child {
-                labels(&w, out);
-                child = w.next_sibling();
-            }
-        }
-        let mut text = Vec::new();
-        labels(root.upcast_ref(), &mut text);
-        assert!(text.iter().any(|t| t == "Unknown app (via Cursor)"));
-        assert!(text.iter().any(|t| t == "Reports itself as: kt 1"));
-        assert!(text.iter().any(|t| t.contains("dispatch 3 ms")));
-        assert!(
-            text.iter()
-                .position(|t| t.contains("Unknown app (via Cursor)"))
+            let recent = clients
+                .list
+                .last_child()
                 .unwrap()
-                < text.iter().position(|t| t.contains("kt 1")).unwrap()
-        );
-        if std::env::var_os("TOOLPORT_F3_VISUAL").is_some() {
-            let window = adw::ApplicationWindow::builder()
-                .application(&app)
-                .title("Toolport session observability")
-                .default_width(1040)
-                .default_height(860)
-                .content(&root)
-                .build();
-            let theme = theme::ThemeController::new();
-            theme.attach(&window);
-            window.present();
-            let main_loop = gtk::glib::MainLoop::new(None, false);
-            let stop = main_loop.clone();
-            gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(45), move || {
-                stop.quit()
-            });
-            main_loop.run();
+                .downcast::<gtk::Expander>()
+                .unwrap();
+            assert!(!recent.is_expanded(), "recent activity starts collapsed");
+            let recent_heading = recent
+                .label_widget()
+                .unwrap()
+                .downcast::<gtk::Label>()
+                .unwrap();
+            assert_eq!(recent_heading.text(), "Recent client activity · 1");
+            recent.set_expanded(true);
+            assert!(recent.is_expanded());
+            let activity_widget = activity_card(&activity);
+            let root = gtk::Box::new(gtk::Orientation::Vertical, 18);
+            root.set_margin_top(24);
+            root.set_margin_bottom(24);
+            root.set_margin_start(24);
+            root.set_margin_end(24);
+            for (title, widget) in [
+                ("Approval required", card.clone().upcast::<gtk::Widget>()),
+                ("Activity", activity_widget.clone().upcast()),
+                ("Clients", clients.root.clone().upcast()),
+            ] {
+                root.append(
+                    &gtk::Label::builder()
+                        .label(title)
+                        .halign(gtk::Align::Start)
+                        .css_classes(["title-2"])
+                        .build(),
+                );
+                root.append(&widget);
+            }
+            fn labels(widget: &gtk::Widget, out: &mut Vec<String>) {
+                if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+                    out.push(label.text().to_string());
+                }
+                let mut child = widget.first_child();
+                while let Some(w) = child {
+                    labels(&w, out);
+                    child = w.next_sibling();
+                }
+            }
+            let texts = |widget: &gtk::Widget| {
+                let mut text = Vec::new();
+                labels(widget, &mut text);
+                text
+            };
+            let reported_only = canonical == "Unknown client";
+            let displayed = if reported_only {
+                "kt 1 (reported)"
+            } else {
+                canonical
+            };
+            let approval_text = texts(card.upcast_ref());
+            let requester = format!("{displayed} wants to run this · destructive tool");
+            let requester_pos = approval_text
+                .iter()
+                .position(|t| t == &requester)
+                .expect("approval requester and reason");
+            if reported_only {
+                assert!(!approval_text.iter().any(|t| t == "Reports itself as: kt 1"));
+                assert!(!approval_text.iter().any(|t| t.contains("Unknown client")));
+            } else {
+                let report_pos = approval_text
+                    .iter()
+                    .position(|t| t == "Reports itself as: kt 1")
+                    .expect("separate self-reported approval label");
+                assert!(
+                    requester_pos < report_pos,
+                    "canonical requester precedes its reported label"
+                );
+            }
+            let activity_copy = activity_widget
+                .first_child()
+                .unwrap()
+                .next_sibling()
+                .unwrap();
+            let activity_detail = activity_copy
+                .first_child()
+                .unwrap()
+                .next_sibling()
+                .unwrap()
+                .downcast::<gtk::Label>()
+                .unwrap();
+            let identity = if reported_only {
+                displayed.to_owned()
+            } else {
+                format!("{canonical} (reports \"kt 1\")")
+            };
+            let detail = activity_detail.text();
+            assert!(
+                detail.starts_with(&format!("{identity} · ")),
+                "activity identity: {detail}"
+            );
+            assert!(
+                detail.ends_with(" · downstream failure · 120 ms"),
+                "activity timing: {detail}"
+            );
+            assert_eq!(
+                activity_detail.tooltip_text().as_deref(),
+                Some("\nRun: 0123456789abcdef0123456789abcdef\nWarm catalog\nDispatch: 3 ms")
+            );
+            let session_row = recent.child().unwrap().first_child().unwrap();
+            let session_name = session_row
+                .first_child()
+                .unwrap()
+                .downcast::<gtk::Label>()
+                .unwrap();
+            assert_eq!(session_name.text(), displayed, "client activity identity");
+            assert_eq!(
+                session_name.tooltip_text().as_deref(),
+                Some("1 recorded sessions. Reports itself as: kt 1")
+            );
+            let session_detail = session_name
+                .next_sibling()
+                .unwrap()
+                .downcast::<gtk::Label>()
+                .unwrap();
+            assert_eq!(
+                session_detail.text(),
+                "Last active time unavailable · Last saw 4 tools"
+            );
+            assert!(
+                session_detail.next_sibling().is_none(),
+                "identity precedes the session summary"
+            );
+            if canonical == "Unknown app (via Cursor)"
+                && std::env::var_os("TOOLPORT_F3_VISUAL").is_some()
+            {
+                let window = adw::ApplicationWindow::builder()
+                    .application(&app)
+                    .title("Toolport session observability")
+                    .default_width(1040)
+                    .default_height(860)
+                    .content(&root)
+                    .build();
+                let theme = theme::ThemeController::new();
+                theme.attach(&window);
+                window.present();
+                let main_loop = gtk::glib::MainLoop::new(None, false);
+                let stop = main_loop.clone();
+                gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(45), move || {
+                    stop.quit()
+                });
+                main_loop.run();
+            }
         }
     }
 
@@ -14655,13 +14741,20 @@ mod tests {
             provider.selected(),
             (crate::secret_refs::PROVIDERS.len() - 1) as u32
         );
-        let test = controls
+        // The caption follows the action box; locate the actual labeled control.
+        let actions = controls
             .last_child()
             .unwrap()
+            .prev_sibling()
+            .unwrap()
+            .downcast::<gtk::Box>()
+            .unwrap();
+        let test = actions
             .first_child()
             .unwrap()
             .downcast::<gtk::Button>()
             .unwrap();
+        assert_eq!(test.label().as_deref(), Some("Test"));
         test.emit_clicked();
         let context = gtk::glib::MainContext::default();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
