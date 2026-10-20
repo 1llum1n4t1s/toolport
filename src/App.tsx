@@ -1350,13 +1350,9 @@ function App() {
         onCloseAutoFocus={(event) => {
           const trigger = enableReviewTrigger.current;
           enableReviewTrigger.current = null;
-          // Radix can return to the original trigger on cancel/failure. On a
-          // successful enable it was replaced when the row changed groups.
-          if (
-            trigger &&
-            !trigger.node.isConnected &&
-            document.activeElement === document.body
-          ) {
+          // This controlled dialog has no Radix trigger. Return to the current
+          // switch on cancel or success, provided focus has not moved elsewhere.
+          if (trigger && document.activeElement === document.body) {
             const current = serverSwitches.current.get(trigger.id);
             if (current) {
               event.preventDefault();
