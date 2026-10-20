@@ -238,8 +238,32 @@ const WIDE_COLUMN = 56;
 const NARROW_COLUMN = 32;
 /** What a row keeps for the skill's name and description before columns widen. */
 const NAME_ROOM = 360;
+/** The least a skill's name and description keep beside the columns. */
+const NAME_MIN = 200;
+/** The size beside a skill's dots. */
+const SIZE_COLUMN = 64;
+
+/**
+ * Whether the Skills and Rules lists fit beside the detail pane with `count` agent columns at
+ * their narrowest. Below it the detail pane moves under the list; the fixed 980px step alone
+ * squeezed the names out with many agents. The GTK shell's `side_by_side_width` matches.
+ */
+function sideBySide(width: number, count: number): boolean {
+  return (
+    width >= Math.max(981, 16 + NAME_MIN + SIZE_COLUMN + count * NARROW_COLUMN + 24 + 380)
+  );
+}
+/** The split layout's classes, for the grid and its detail pane. */
+const SPLIT_GRID = "grid-cols-[minmax(0,1fr)_minmax(320px,380px)]";
+const SPLIT_ASIDE =
+  "sticky top-0 max-h-[calc(100vh-9rem)] self-start overflow-y-auto border-l pl-6";
 
 function useColumnWidth(count: number): [(node: HTMLElement | null) => void, number] {
+  const [ref, width] = useWidth();
+  return [ref, width - count * WIDE_COLUMN >= NAME_ROOM ? WIDE_COLUMN : NARROW_COLUMN];
+}
+
+function useWidth(): [(node: HTMLElement | null) => void, number] {
   const [width, setWidth] = useState(0);
   const observer = useRef<ResizeObserver | null>(null);
   const ref = useCallback((node: HTMLElement | null) => {
@@ -251,7 +275,7 @@ function useColumnWidth(count: number): [(node: HTMLElement | null) => void, num
     observer.current = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
     observer.current.observe(node);
   }, []);
-  return [ref, width - count * WIDE_COLUMN >= NAME_ROOM ? WIDE_COLUMN : NARROW_COLUMN];
+  return [ref, width];
 }
 
 function Legend() {
@@ -1438,6 +1462,9 @@ export function SkillsView() {
   const needle = query.trim().toLowerCase();
   const columnAgents = tab === "rules" ? scopedAgents : skillAgents;
   const [gridRef, column] = useColumnWidth(columnAgents.length);
+  const [panelRef, panelWidth] = useWidth();
+  // One step for both tabs, like the GTK shell, so switching tabs never moves the detail pane.
+  const split = sideBySide(panelWidth, Math.max(skillAgents.length, scopedAgents.length));
   const [pointerHover, setHover] = useState<ColumnHover>(null);
   const [keyboardColumn, setKeyboardColumn] = useState<ColumnHover>(null);
   const hover = pointerHover ?? keyboardColumn;
@@ -1876,7 +1903,7 @@ export function SkillsView() {
       items: visibleSkills.filter((s) => s.source === source),
     })).filter((g) => g.items.length > 0);
     body = (
-      <div className="grid gap-6 @min-[981px]:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
+      <div className={cn("grid gap-6", split && SPLIT_GRID)}>
         <section ref={gridRef} aria-label={t("Skills")} className="min-w-0">
           {banner}
           <AgentHeader
@@ -1987,7 +2014,7 @@ export function SkillsView() {
         </section>
         <aside
           aria-label={t("Skill details")}
-          className="min-w-0 @min-[981px]:sticky @min-[981px]:top-0 @min-[981px]:max-h-[calc(100vh-9rem)] @min-[981px]:self-start @min-[981px]:overflow-y-auto @min-[981px]:border-l @min-[981px]:pl-6"
+          className={cn("min-w-0", split && SPLIT_ASIDE)}
         >
           {skill ? (
             <SkillDetail
@@ -2010,7 +2037,7 @@ export function SkillsView() {
       .map((scope) => ({ scope, items: visibleRules.filter((r) => r.scope === scope) }))
       .filter((g) => g.items.length > 0);
     body = (
-      <div className="grid gap-6 @min-[981px]:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
+      <div className={cn("grid gap-6", split && SPLIT_GRID)}>
         <section ref={gridRef} aria-label={t("Rules")} className="min-w-0">
           {banner}
           <AgentHeader
@@ -2101,7 +2128,7 @@ export function SkillsView() {
         </section>
         <aside
           aria-label={t("Rules file details")}
-          className="min-w-0 @min-[981px]:sticky @min-[981px]:top-0 @min-[981px]:max-h-[calc(100vh-9rem)] @min-[981px]:self-start @min-[981px]:overflow-y-auto @min-[981px]:border-l @min-[981px]:pl-6"
+          className={cn("min-w-0", split && SPLIT_ASIDE)}
         >
           {rule ? (
             <RuleDetail rule={rule} agents={scopedAgents} project={project} />
@@ -2179,6 +2206,7 @@ export function SkillsView() {
     <div className="flex flex-col gap-4">
       {header}
       <div
+        ref={panelRef}
         role="tabpanel"
         className="@container"
         id={`skills-panel-${tab}`}
