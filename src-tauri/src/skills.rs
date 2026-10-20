@@ -3573,14 +3573,12 @@ pub fn scan(env: &Env, present: &dyn Fn(&str) -> bool, project: Option<&Path>) -
         if def.id == "openhands" {
             disabled.off_paths.extend(openhands_disabled_paths(env));
         }
-        if def.switch == Switch::CodexConfig {
-            if !disabled.stale_paths.is_empty() {
-                stale_codex.push((
-                    inst.id.clone(),
-                    codex_config_path(env),
-                    disabled.stale_paths.clone(),
-                ));
-            }
+        if def.switch == Switch::CodexConfig && !disabled.stale_paths.is_empty() {
+            stale_codex.push((
+                inst.id.clone(),
+                codex_config_path(env),
+                disabled.stale_paths.clone(),
+            ));
         }
 
         let openclaw_trusted = if def.id == "openclaw" {
