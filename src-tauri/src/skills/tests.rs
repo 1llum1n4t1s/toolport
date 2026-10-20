@@ -4322,7 +4322,10 @@ fn stale_codex_entries_are_reported_and_fixed_per_home() {
         vec!["codex@.codex2"]
     );
     let writer = TestWriter::default();
-    assert_eq!(apply_fix(&env, &inv, "codex-stale@.codex2", &writer).unwrap(), 1);
+    assert_eq!(
+        apply_fix(&env, &inv, "codex-stale@.codex2", &writer).unwrap(),
+        1
+    );
     assert_eq!(home.read(".codex/config.toml"), config);
     assert!(!home.read(".codex2/config.toml").contains("enabled = false"));
     assert_eq!(apply_fix(&env, &inv, "codex-stale", &writer).unwrap(), 1);

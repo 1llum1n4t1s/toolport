@@ -5504,7 +5504,7 @@ pub fn apply_fix(
                 removed = before - arr.len();
             }
             if removed > 0 {
-                writer.backup("codex", &path)?;
+                writer.backup(&inst.id, &path)?;
                 writer.write(&path, &doc.to_string())?;
             }
             Ok(removed)
