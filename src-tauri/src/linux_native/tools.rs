@@ -1760,7 +1760,6 @@ mod tests {
         crate::i18n::set_language("en").unwrap();
         let app = adw::Application::builder()
             .application_id("com.tsout.Toolport.B5BadgeTest")
-            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
             .build();
         app.register(gtk::gio::Cancellable::NONE).unwrap();
         let panel = ServerToolsPanel::new(&app, "fixture");
