@@ -31,14 +31,16 @@ impl DetailHost {
             .stack
             .child_by_name("list")
             .and_then(|list| find_named(&list, &format!("detail-open:{id}")));
-        if let Some(target) = target {
-            target.grab_focus();
-        } else if let Some(focus) = self.focus.borrow().as_ref().and_then(|weak| weak.upgrade()) {
-            if focus.root().is_some() {
-                focus.grab_focus();
-            } else {
-                self.stack.child_focus(gtk::DirectionType::TabForward);
-            }
+        let restored = target.is_some_and(|target| target.grab_focus())
+            || self
+                .focus
+                .borrow()
+                .as_ref()
+                .and_then(|weak| weak.upgrade())
+                .filter(|focus| focus.root().is_some())
+                .is_some_and(|focus| focus.grab_focus());
+        if !restored {
+            self.stack.child_focus(gtk::DirectionType::TabForward);
         }
         if let Some(detail) = self.stack.child_by_name("detail") {
             self.stack.remove(&detail);
@@ -1128,6 +1130,9 @@ mod tests {
         );
         page.render(snapshot(vec![first]));
         assert!(page.details.selected.borrow().is_none());
+        let focus = gtk::prelude::GtkWindowExt::focus(&window)
+            .expect("missing client returns focus to live list");
+        assert!(focus.is_ancestor(&page.details.stack.child_by_name("list").unwrap()));
         assert_eq!(app.windows().len(), 1, "details stay in the main window");
         window.close();
     }
