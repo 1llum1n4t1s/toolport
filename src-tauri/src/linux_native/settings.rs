@@ -517,7 +517,7 @@ impl SettingsPage {
         endpoint_copy.append(&endpoint_status);
         endpoint.append(&endpoint_copy);
         let endpoint_button = l10n::button("Start");
-        endpoint_button.add_css_class("toolport-secondary-action");
+        endpoint_button.add_css_class("suggested-action");
         let endpoint_actions = action_wrap();
         let copy_endpoint = l10n::button("Copy URL");
         copy_endpoint.add_css_class("toolport-secondary-action");
@@ -3414,6 +3414,106 @@ fn help_action_row(title: &'static str, detail: &'static str, action: &gtk::Butt
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn endpoint_action_style_tracks_status_and_live_language() {
+        let _data = crate::registry::DataDirTestEnv::new("endpoint-action-style");
+        crate::registry::save(&crate::registry::Registry::default()).unwrap();
+        adw::init().unwrap();
+        crate::i18n::set_language("en").unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.EndpointStyleTest")
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let bridge = super::super::http_bridge::BridgeController::default();
+        let page = SettingsPage::new(bridge.clone(), crate::approval_broker::start_native());
+        page.select_page(4);
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .title("Toolport endpoint style fixture")
+            .default_width(1024)
+            .default_height(700)
+            .content(&page.root)
+            .build();
+        let theme = super::super::theme::ThemeController::new();
+        theme.attach(&window);
+        window.present();
+        let assert_action = |running: bool, label: &str| {
+            let button = &page.endpoint_button;
+            assert_eq!(button.label().as_deref(), Some(label));
+            assert!(button.is_visible() && button.is_sensitive());
+            assert_eq!(button.has_css_class("suggested-action"), !running);
+            assert_eq!(button.has_css_class("toolport-destructive"), running);
+            assert!(
+                !button.has_css_class("toolport-secondary-action"),
+                "secondary fill must never override the primary endpoint action"
+            );
+            assert!(
+                !button.has_css_class("destructive-action"),
+                "Stop is a destructive trigger, not a filled confirmation"
+            );
+            assert!(
+                !bridge.status().running,
+                "status fixtures never start an endpoint"
+            );
+        };
+        let stopped = || crate::http_bridge::HttpBridgeStatus::new(None, None);
+        let running = || {
+            crate::http_bridge::HttpBridgeStatus::new(
+                Some(54321),
+                Some("synthetic-fixture-token".into()),
+            )
+        };
+        assert_action(false, "Start");
+        page.render_endpoint(stopped());
+        assert_action(false, "Start");
+        page.render_endpoint(running());
+        assert_action(true, "Stop");
+        crate::i18n::set_language("fr").unwrap();
+        l10n::refresh_bindings();
+        assert_action(true, "Arrêter");
+        page.render_endpoint(stopped());
+        assert_action(false, "Commencer");
+        crate::i18n::set_language("en").unwrap();
+        l10n::refresh_bindings();
+        assert_action(false, "Start");
+        if std::env::var_os("TOOLPORT_ENDPOINT_STYLE_VISUAL").is_some() {
+            // Capture both styles without invoking the endpoint lifecycle or real calls.
+            for (name, running) in [("fixture-running", true), ("fixture-stopped", false)] {
+                let action = gtk::gio::SimpleAction::new(name, None);
+                let target = page.clone();
+                action.connect_activate(move |_, _| {
+                    target.render_endpoint(crate::http_bridge::HttpBridgeStatus::new(
+                        running.then_some(54321),
+                        None,
+                    ))
+                });
+                app.add_action(&action);
+            }
+            let action = gtk::gio::SimpleAction::new("close-fixture", None);
+            let target = window.downgrade();
+            action.connect_activate(move |_, _| {
+                if let Some(window) = target.upgrade() {
+                    window.close();
+                }
+            });
+            app.add_action(&action);
+            let loop_ = gtk::glib::MainLoop::new(None, false);
+            let stop = loop_.clone();
+            window.connect_close_request(move |_| {
+                stop.quit();
+                gtk::glib::Propagation::Proceed
+            });
+            let stop = loop_.clone();
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(120), move || {
+                stop.quit()
+            });
+            window.present();
+            loop_.run();
+        }
+        window.close();
+    }
+
     #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn b6_recovery_refresh_preserves_mutation_error() {
