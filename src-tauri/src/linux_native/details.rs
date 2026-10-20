@@ -1246,9 +1246,23 @@ mod tests {
         ] {
             assert!(labels.iter().any(|s| s == title), "missing {title}");
         }
+        let detail = page.details.stack.child_by_name("detail").unwrap();
+        let toggle = widgets(&detail)
+            .into_iter()
+            .find_map(|w| w.downcast::<gtk::Switch>().ok())
+            .unwrap();
+        toggle.grab_focus();
         let mut changed = snapshot.clone();
         changed.servers[0].cwd = Some("/fixture/updated".into());
         page.render(state::RegistryState::Ready(changed));
+        let detail = page.details.stack.child_by_name("detail").unwrap();
+        assert!(
+            widgets(&detail)
+                .iter()
+                .filter_map(|w| w.downcast_ref::<gtk::Switch>())
+                .any(|switch| switch.is_focus()),
+            "live detail switch retains focus across refresh"
+        );
         assert!(
             widgets(&page.details.stack.child_by_name("detail").unwrap())
                 .iter()
