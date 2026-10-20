@@ -708,23 +708,16 @@ fn client_imports(
         name.remove_css_class("toolport-muted");
         name.add_css_class("heading");
         copy.append(&name);
-        let target = server
+        let shown = ImportSelection::new(&detected.id, server);
+        let target = shown
             .command
-            .clone()
             .map(|command| {
-                let mask = crate::registry::secret_arg_mask(&server.args);
                 std::iter::once(command)
-                    .chain(server.args.iter().zip(mask).map(|(arg, secret)| {
-                        if secret {
-                            "<redacted>".into()
-                        } else {
-                            arg.clone()
-                        }
-                    }))
+                    .chain(shown.args)
                     .collect::<Vec<_>>()
                     .join(" ")
             })
-            .unwrap_or_else(|| server.url.clone().unwrap_or_default());
+            .unwrap_or_else(|| shown.url.unwrap_or_default());
         copy.append(&text(&target, true));
         if detected
             .plugin_servers
@@ -852,6 +845,14 @@ mod tests {
         let mut other = candidate.clone();
         other.client_id = "claude:personal".into();
         assert!(selected_imports(std::slice::from_ref(&selection), vec![other]).is_err());
+        let secret = crate::clients::McpServer {
+            args: vec!["--token".into(), "private-value".into()],
+            url: Some("https://example.test/?token=private-value".into()),
+            ..server
+        };
+        let shown = ImportSelection::new("claude:work", &secret);
+        assert!(!shown.args.join(" ").contains("private-value"));
+        assert!(!shown.url.unwrap().contains("private-value"));
         let mut changed = candidate.clone();
         changed.args.push("--changed".into());
         assert!(selected_imports(
