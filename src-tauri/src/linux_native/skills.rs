@@ -1994,9 +1994,10 @@ impl SkillsPage {
                 &gtk::Label::builder()
                     .label(if wide { short.as_str() } else { "" })
                     .ellipsize(gtk::pango::EllipsizeMode::End)
-                    // Fills the column instead of asking for its own width.
+                    // Fills the button the column width sets instead of asking for its own
+                    // width. No hexpand: it would spread to the button and pull the logo
+                    // off its dots.
                     .max_width_chars(1)
-                    .hexpand(true)
                     .css_classes(["toolport-skill-col-name"])
                     .build(),
             );
@@ -3984,6 +3985,14 @@ mod tests {
                 pane.bin.borrow().is_some(),
                 "the list measures the page, not itself"
             );
+            let agent = regression_agent();
+            page.render_head(pane, &[&agent], "SKILL", true);
+            for cell in pane.cells.borrow().values().flatten() {
+                assert!(
+                    !cell.compute_expand(gtk::Orientation::Horizontal),
+                    "a header logo must stay over its dots"
+                );
+            }
         }
         std::fs::remove_dir_all(&scratch).unwrap();
     }
