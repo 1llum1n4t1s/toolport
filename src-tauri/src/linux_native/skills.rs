@@ -110,6 +110,16 @@ const DETAIL_WIDTH: i32 = 380;
 const LIST_MARGINS: i32 = 36;
 /// Below this page width the detail pane moves under the list, as the React view does.
 const NARROW: &str = "max-width: 980px";
+/// The least a skill's name and description keep beside the columns.
+const NAME_MIN: i32 = 200;
+
+/// The page width the Skills and Rules lists need beside the detail pane with `count` agent
+/// columns at their narrowest. Below it the detail pane moves under the list; the fixed 980px
+/// step alone left a list with many agents wider than the window.
+fn side_by_side_width(count: usize) -> i32 {
+    let columns = NARROW_COLUMN * i32::try_from(count).unwrap_or(i32::MAX / NARROW_COLUMN);
+    (LIST_MARGINS + 16 + NAME_MIN + SIZE_COLUMN + columns + DETAIL_WIDTH + 1).max(981)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
@@ -162,6 +172,8 @@ struct Pane {
     focused: Rc<RefCell<Option<(String, String)>>>,
     /// The page's breakpoint bin, whose width is what the list really has.
     bin: Rc<RefCell<Option<adw::BreakpointBin>>>,
+    /// How many agent columns the list was last drawn with.
+    agents: Rc<Cell<usize>>,
 }
 
 /// A write to run off the main thread, bound to the project that was open when it was asked
@@ -171,6 +183,8 @@ type Write = Box<dyn FnOnce() -> Result<(Inventory, String), String> + Send>;
 #[derive(Clone)]
 pub(super) struct SkillsPage {
     pub(super) root: gtk::Box,
+    /// Stacks the Skills and Rules lists below the width their columns need.
+    grid_narrow: adw::Breakpoint,
     /// `loading`, `error`, `empty` or `content`.
     screens: gtk::Stack,
     failed_body: gtk::Label,
@@ -924,6 +938,7 @@ impl Pane {
                 hovered: Rc::default(),
                 focused: Rc::default(),
                 bin: Rc::default(),
+                agents: Rc::default(),
             },
             layout,
         )
@@ -1118,6 +1133,13 @@ impl SkillsPage {
         );
         skills.stack_when_narrow(&narrow);
         rules.stack_when_narrow(&narrow);
+        // The lists stack sooner when they have many agents; the Needs a look tab keeps 980px.
+        let grid_narrow = adw::Breakpoint::new(
+            adw::BreakpointCondition::parse(&format!("max-width: {}px", side_by_side_width(0) - 1))
+                .expect("a max-width condition is valid"),
+        );
+        skills.stack_when_narrow(&grid_narrow);
+        rules.stack_when_narrow(&grid_narrow);
         stack_when_narrow(
             &narrow,
             &issues_layout,
@@ -1146,6 +1168,9 @@ impl SkillsPage {
             .hexpand(true)
             .vexpand(true)
             .build();
+        // The bin applies the last matching breakpoint, so the wider grid step goes first and
+        // the 980px step, which also stacks the lists, wins below it.
+        adaptive.add_breakpoint(grid_narrow.clone());
         adaptive.add_breakpoint(narrow);
         for pane in [&skills, &rules] {
             pane.bin.replace(Some(adaptive.clone()));
@@ -1198,6 +1223,7 @@ impl SkillsPage {
         root.append(&screens);
 
         let page = Self {
+            grid_narrow,
             root,
             screens,
             failed_body,
@@ -1910,6 +1936,15 @@ impl SkillsPage {
         pane.cells.borrow_mut().clear();
         pane.hovered.replace(None);
         pane.focused.replace(None);
+        pane.agents.set(agents.len());
+        let needed = side_by_side_width(self.skills.agents.get().max(self.rules.agents.get()));
+        if let Ok(condition) =
+            adw::BreakpointCondition::parse(&format!("max-width: {}px", needed - 1))
+        {
+            if self.grid_narrow.condition().map(|c| c.to_string()) != Some(condition.to_string()) {
+                self.grid_narrow.set_condition(Some(&condition));
+            }
+        }
         pane.column.set(pane.fitting_column(agents.len()));
         let title_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
         title_box.set_hexpand(true);
