@@ -1619,6 +1619,7 @@ mod tests {
             registry.servers = ["GitHub", "Filesystem", "Calendar"].into_iter().enumerate().map(|(i, name)| serde_json::from_value(serde_json::json!({
                 "id":format!("fixture-{i}"), "name":name, "transport":"stdio", "command":if view == "server-error" && i == 0 { "/fixture/unavailable-server" } else { "/home/sbx/bin/mock-mcp-server" }, "args":[], "env":[], "enabled":true
             })).unwrap()).collect();
+            registry.servers[0].disabled_tools = vec!["add".into()];
             registry.profiles.push(serde_json::from_value(serde_json::json!({"id":"scope-work", "name":"Work projects with a deliberately long access name", "enabledServerIds":["fixture-0"]})).unwrap());
             Ok(())
         }).unwrap().0;
