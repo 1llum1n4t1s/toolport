@@ -347,59 +347,58 @@ function AgentHeader({
           </span>
         </span>
         <span className="flex shrink-0">
-          {agents.map((agent, index) => (
-            // No tooltip: the line above names the hovered column, and a tooltip
-            // trails the pointer across the logos as a second name.
-            <button
-              key={agent.id}
-              type="button"
-              aria-pressed={focus === agent.id}
-              aria-label={
-                skills
-                  ? t("Show only skills {client} finds", { client: agent.name })
-                  : t("Show only what {client} loads", { client: agent.name })
-              }
-              onClick={() => onFocus(focus === agent.id ? null : agent.id)}
-              onMouseEnter={() =>
-                onHover({
-                  agent: agent.id,
-                  detail: agent.verified
-                    ? undefined
-                    : t("folders from its docs, not checked on this machine"),
-                })
-              }
-              onMouseLeave={() => onHover(null)}
-              onFocus={() => onHeaderFocus({ agent: agent.id })}
-              onBlur={() => onHeaderFocus(null)}
-              className={cn(
-                "relative flex flex-col items-center justify-center gap-1 rounded-md py-1.5 text-xs text-muted-foreground transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
-                hover?.agent === agent.id && "bg-primary/8 text-foreground",
-                focus === agent.id &&
-                  "bg-primary/12 text-foreground ring-1 ring-primary/60",
-              )}
-              style={{ width: column }}
-            >
-              <ClientLogo id={agent.id} name={agent.name} size={20} />
-              {/* Always there, empty when only logos fit, so the header keeps its height. */}
-              <span
-                aria-hidden={!wide}
+          {agents.map((agent, index) => {
+            const note = agent.verified
+              ? undefined
+              : t("folders from its docs, not checked on this machine");
+            return (
+              // No tooltip: the line above names the hovered or focused column, and a
+              // tooltip trails the pointer across the logos as a second name.
+              <button
+                key={agent.id}
+                type="button"
+                aria-pressed={focus === agent.id}
+                aria-label={
+                  skills
+                    ? t("Show only skills {client} finds", { client: agent.name })
+                    : t("Show only what {client} loads", { client: agent.name })
+                }
+                aria-description={note}
+                onClick={() => onFocus(focus === agent.id ? null : agent.id)}
+                onMouseEnter={() => onHover({ agent: agent.id, detail: note })}
+                onMouseLeave={() => onHover(null)}
+                onFocus={() => onHeaderFocus({ agent: agent.id, detail: note })}
+                onBlur={() => onHeaderFocus(null)}
                 className={cn(
-                  "max-w-full truncate px-0.5 leading-none",
-                  !wide && "invisible",
+                  "relative flex flex-col items-center justify-center gap-1 rounded-md py-1.5 text-xs text-muted-foreground transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
+                  hover?.agent === agent.id && "bg-primary/8 text-foreground",
+                  focus === agent.id &&
+                    "bg-primary/12 text-foreground ring-1 ring-primary/60",
                 )}
+                style={{ width: column }}
               >
-                {wide ? names[index] : "\u00a0"}
-              </span>
-              {!agent.verified && (
+                <ClientLogo id={agent.id} name={agent.name} size={20} />
+                {/* Always there, empty when only logos fit, so the header keeps its height. */}
                 <span
+                  aria-hidden={!wide}
                   className={cn(
-                    "absolute size-1.5 rounded-full bg-primary",
-                    wide ? "top-1 right-2" : "top-0.5 right-0.5",
+                    "max-w-full truncate px-0.5 leading-none",
+                    !wide && "invisible",
                   )}
-                />
-              )}
-            </button>
-          ))}
+                >
+                  {wide ? names[index] : "\u00a0"}
+                </span>
+                {!agent.verified && (
+                  <span
+                    className={cn(
+                      "absolute size-1.5 rounded-full bg-primary",
+                      wide ? "top-1 right-2" : "top-0.5 right-0.5",
+                    )}
+                  />
+                )}
+              </button>
+            );
+          })}
         </span>
       </div>
     </div>

@@ -169,11 +169,9 @@ struct Pane {
     /// The header row's note naming the hovered column.
     hint: Rc<RefCell<Option<gtk::Label>>>,
     hovered: Rc<RefCell<Option<HoveredColumn>>>,
-    focused: Rc<RefCell<Option<(String, String)>>>,
+    focused: Rc<RefCell<Option<HoveredColumn>>>,
     /// The page's breakpoint bin, whose width is what the list really has.
     bin: Rc<RefCell<Option<adw::BreakpointBin>>>,
-    /// How many agent columns the list was last drawn with.
-    agents: Rc<Cell<usize>>,
 }
 
 /// A write to run off the main thread, bound to the project that was open when it was asked
@@ -799,14 +797,15 @@ impl Pane {
         self.update_column();
     }
 
-    fn focus_column(&self, agent: &str, name: &str, on: bool) {
+    fn focus_column(&self, agent: &str, name: &str, detail: Option<&str>, on: bool) {
         if on {
-            self.focused.replace(Some((agent.into(), name.into())));
+            self.focused
+                .replace(Some((agent.into(), name.into(), detail.map(Into::into))));
         } else if self
             .focused
             .borrow()
             .as_ref()
-            .is_some_and(|(id, _)| id == agent)
+            .is_some_and(|(id, _, _)| id == agent)
         {
             self.focused.replace(None);
         }
@@ -814,12 +813,11 @@ impl Pane {
     }
 
     fn update_column(&self) {
-        let shown = self.hovered.borrow().clone().or_else(|| {
-            self.focused
-                .borrow()
-                .clone()
-                .map(|(id, name)| (id, name, None))
-        });
+        let shown = self
+            .hovered
+            .borrow()
+            .clone()
+            .or_else(|| self.focused.borrow().clone());
         for (id, cells) in self.cells.borrow().iter() {
             for cell in cells {
                 if shown
@@ -946,7 +944,6 @@ impl Pane {
                 hovered: Rc::default(),
                 focused: Rc::default(),
                 bin: Rc::default(),
-                agents: Rc::default(),
             },
             layout,
         )
@@ -1939,13 +1936,21 @@ impl SkillsPage {
     }
 
     /// The "SKILL … logos" row. Clicking a logo shows only what that agent loads.
-    fn render_head(&self, pane: &Pane, agents: &[&Agent], label: &str, size_column: bool) {
+    /// `all` is how many agents the Rules tab lists, every one the Skills tab can: both tabs
+    /// stack at the same width, so switching between them never moves the detail pane.
+    fn render_head(
+        &self,
+        pane: &Pane,
+        agents: &[&Agent],
+        all: usize,
+        label: &str,
+        size_column: bool,
+    ) {
         clear_box(&pane.head);
         pane.cells.borrow_mut().clear();
         pane.hovered.replace(None);
         pane.focused.replace(None);
-        pane.agents.set(agents.len());
-        let needed = side_by_side_width(self.skills.agents.get().max(self.rules.agents.get()));
+        let needed = side_by_side_width(all.max(agents.len()));
         if let Ok(condition) =
             adw::BreakpointCondition::parse(&format!("max-width: {}px", needed - 1))
         {
@@ -2016,6 +2021,11 @@ impl SkillsPage {
             } else {
                 crate::i18n::trf("Show only what {client} loads", &values)
             })]);
+            let note = (!agent.verified)
+                .then(|| crate::i18n::tr("folders from its docs, not checked on this machine"));
+            if let Some(note) = &note {
+                button.update_property(&[gtk::accessible::Property::Description(note)]);
+            }
             let pressed = focus.as_deref() == Some(agent.id.as_str());
             button.update_state(&[gtk::accessible::State::Pressed(tristate(pressed))]);
             match &focus {
@@ -2034,14 +2044,12 @@ impl SkillsPage {
                 page.focus.replace(next);
                 page.render_keeping_focus(format!("column:{id}"));
             });
-            let note = (!agent.verified)
-                .then(|| crate::i18n::tr("folders from its docs, not checked on this machine"));
-            pane.track_cell(agent, &button, note);
+            pane.track_cell(agent, &button, note.clone());
             let watch = gtk::EventControllerFocus::new();
             let (p, id, name) = (pane.clone(), agent.id.clone(), agent.name.clone());
-            watch.connect_enter(move |_| p.focus_column(&id, &name, true));
+            watch.connect_enter(move |_| p.focus_column(&id, &name, note.as_deref(), true));
             let (p, id, name) = (pane.clone(), agent.id.clone(), agent.name.clone());
-            watch.connect_leave(move |_| p.focus_column(&id, &name, false));
+            watch.connect_leave(move |_| p.focus_column(&id, &name, None, false));
             button.add_controller(watch);
             self.offer_focus(&format!("column:{}", agent.id), &button);
             pane.head.append(&button);
@@ -2095,7 +2103,8 @@ impl SkillsPage {
         let pane = &self.skills;
         self.render_banner(pane, inv);
         let agents = self.scoped_skill_agents(inv);
-        self.render_head(pane, &agents, &crate::i18n::tr("Skill"), true);
+        let all = self.scoped_agents(inv).len();
+        self.render_head(pane, &agents, all, &crate::i18n::tr("Skill"), true);
         let visible = self.visible_skills(inv, needle);
         // With nothing picked, the first row shown: groups in page order, collapsed ones skipped.
         let open = |source: Source| {
@@ -2845,7 +2854,13 @@ impl SkillsPage {
         let pane = &self.rules;
         self.render_banner(pane, inv);
         let agents = self.scoped_agents(inv);
-        self.render_head(pane, &agents, &crate::i18n::tr("Rules file"), false);
+        self.render_head(
+            pane,
+            &agents,
+            agents.len(),
+            &crate::i18n::tr("Rules file"),
+            false,
+        );
         let visible = self.visible_rules(inv, needle);
         let current = self.current_rule(&visible).map(|r| r.key.clone());
 
@@ -3900,13 +3915,18 @@ mod tests {
         let page = SkillsPage::new(&app);
         let agent = regression_agent();
         for pane in [&page.skills, &page.rules] {
-            page.render_head(pane, &[&agent], "SKILL", false);
+            page.render_head(pane, &[&agent], 1, "SKILL", false);
             for column in [NARROW_COLUMN, WIDE_COLUMN] {
                 for cell in pane.cells.borrow().values().flatten() {
                     cell.set_width_request(column);
                 }
-                let height = || pane.head.measure(gtk::Orientation::Vertical, 640);
-                let width = || pane.head.measure(gtk::Orientation::Horizontal, -1);
+                // The list column holds the hover line and the header, so both count.
+                let list = pane
+                    .head
+                    .parent()
+                    .expect("the header sits in the list column");
+                let height = || list.measure(gtk::Orientation::Vertical, 640);
+                let width = || list.measure(gtk::Orientation::Horizontal, -1);
                 let before = height();
                 let wide_before = width();
                 for _ in 0..10 {
@@ -3932,12 +3952,18 @@ mod tests {
                     assert!(pane.cells.borrow()[&agent.id]
                         .iter()
                         .all(|cell| cell.has_css_class("toolport-skill-col-hl")));
-                    pane.focus_column(&agent.id, &agent.name, true);
+                    pane.focus_column(&agent.id, &agent.name, None, true);
                     pane.hover_column(&agent.id, &agent.name, None, false);
                     assert_eq!(height(), before, "keyboard hint must not resize the header");
                     assert_eq!(hint.text(), "Claude Code");
                     assert_eq!(hint.opacity(), 1.0);
-                    pane.focus_column(&agent.id, &agent.name, false);
+                    pane.focus_column(&agent.id, &agent.name, Some("not checked"), true);
+                    assert_eq!(
+                        hint.text(),
+                        "Claude Code: not checked",
+                        "keyboard focus shows the same note as hover"
+                    );
+                    pane.focus_column(&agent.id, &agent.name, None, false);
                     assert_eq!(height(), before, "leaving must not resize the header");
                     assert_eq!(hint.opacity(), 0.0);
                     assert!(
@@ -3987,7 +4013,7 @@ mod tests {
                 "the list measures the page, not itself"
             );
             let agent = regression_agent();
-            page.render_head(pane, &[&agent], "SKILL", true);
+            page.render_head(pane, &[&agent], 1, "SKILL", true);
             for cell in pane.cells.borrow().values().flatten() {
                 assert!(
                     !cell.compute_expand(gtk::Orientation::Horizontal),
