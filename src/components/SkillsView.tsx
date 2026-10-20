@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -328,6 +329,7 @@ function AgentHeader({
   const wide = column >= WIDE_COLUMN;
   const names = columnNames(agents.map((agent) => agent.name));
   const hovered = hover ? agents.find((agent) => agent.id === hover.agent) : undefined;
+  const noteId = useId();
   return (
     <div>
       {/* The hovered column on a line of its own across the list, so it stays readable with
@@ -363,7 +365,7 @@ function AgentHeader({
                     ? t("Show only skills {client} finds", { client: agent.name })
                     : t("Show only what {client} loads", { client: agent.name })
                 }
-                aria-description={note}
+                aria-describedby={note ? `${noteId}-${index}` : undefined}
                 onClick={() => onFocus(focus === agent.id ? null : agent.id)}
                 onMouseEnter={() => onHover({ agent: agent.id, detail: note })}
                 onMouseLeave={() => onHover(null)}
@@ -388,6 +390,11 @@ function AgentHeader({
                 >
                   {wide ? names[index] : "\u00a0"}
                 </span>
+                {note && (
+                  <span id={`${noteId}-${index}`} className="sr-only">
+                    {note}
+                  </span>
+                )}
                 {!agent.verified && (
                   <span
                     className={cn(

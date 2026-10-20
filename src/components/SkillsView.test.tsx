@@ -333,8 +333,7 @@ describe("SkillsView", () => {
     const header = within(list).getByRole("button", {
       name: "Show only skills Grok finds",
     });
-    expect(header).toHaveAttribute(
-      "aria-description",
+    expect(header).toHaveAccessibleDescription(
       "folders from its docs, not checked on this machine",
     );
     act(() => header.focus());
