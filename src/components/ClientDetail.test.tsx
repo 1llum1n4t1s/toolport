@@ -112,6 +112,7 @@ it("imports the reviewed definition when another client has the same server name
   await userEvent.click(screen.getByRole("button", { name: /^Import$/ }));
   await userEvent.click(screen.getByRole("button", { name: /^Import 1 server$/ }));
   await waitFor(() => expect(importServers).toHaveBeenCalledWith(["reviewed-client"]));
+  expect(previewImportServers).toHaveBeenCalledWith("claude-desktop");
 });
 
 it("uses bulk review storage choices and leaves unsupported servers unchecked", async () => {

@@ -561,6 +561,7 @@ function App() {
   function selectServer(id: string, tab: "overview" | "tools" = "overview") {
     detailReturnFocus.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setDetailError(null);
     setSelectedServerId(id);
     setToolsServerId(tab === "tools" ? id : null);
     setView("servers");
@@ -585,6 +586,7 @@ function App() {
   function selectClient(id: string) {
     detailReturnFocus.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setDetailError(null);
     setSelectedClientId(id);
     setView("clients");
   }
@@ -720,7 +722,7 @@ function App() {
     ),
   ).size;
   const selectedServer = selectedServerId
-    ? registry?.servers.find((s) => s.id === selectedServerId)
+    ? servers.find((s) => s.id === selectedServerId)
     : undefined;
   const selectedClient = selectedClientId
     ? clients.find((c) => c.id === selectedClientId)
@@ -819,8 +821,10 @@ function App() {
     try {
       applyRegistryChange(await removeServer(serverId));
       toast.success(translate('Removed "{value1}"', { value1: name }));
+      return true;
     } catch (e) {
       toastError(translate("Couldn't remove: {value1}", { value1: String(e) }));
+      return false;
     } finally {
       setBusyId(null);
     }
@@ -1215,9 +1219,17 @@ function App() {
                           onRetry={() => load(true)}
                         />
                       ) : selectedClientId && !selectedClient ? (
-                        <ErrorState
-                          message={t("Client is no longer available")}
-                          onRetry={() => backFromDetail("clients")}
+                        <SharedEmptyState
+                          icon={<ServerOff />}
+                          title={t("Client is no longer available")}
+                          action={
+                            <Button
+                              variant="outline"
+                              onClick={() => backFromDetail("clients")}
+                            >
+                              {t("Back to clients")}
+                            </Button>
+                          }
                         />
                       ) : selectedClient ? (
                         <ClientDetail
@@ -1282,16 +1294,27 @@ function App() {
                           health={health[selectedServer.id]}
                           onToggle={(en) => handleToggle(selectedServer.id, en)}
                           onSwitchRef={registerServerSwitch}
-                          onRemove={() =>
-                            handleRemove(selectedServer.id, selectedServer.name)
-                          }
+                          onRemove={async () => {
+                            if (
+                              await handleRemove(selectedServer.id, selectedServer.name)
+                            )
+                              backFromDetail("servers");
+                          }}
                           onRegistryChange={applyRegistryChange}
                           onReprobe={() => void reprobeAfterMutation().catch(() => {})}
                         />
                       ) : (
-                        <ErrorState
-                          message={t("Server is no longer available")}
-                          onRetry={() => backFromDetail("servers")}
+                        <SharedEmptyState
+                          icon={<ServerOff />}
+                          title={t("Server is no longer available")}
+                          action={
+                            <Button
+                              variant="outline"
+                              onClick={() => backFromDetail("servers")}
+                            >
+                              {t("Back to servers")}
+                            </Button>
+                          }
                         />
                       )
                     ) : loading && registry === null ? (
@@ -1404,8 +1427,9 @@ function App() {
               setShowOnboarding(false);
               selectView("servers");
               const id =
-                registry?.servers.find((server) => isEnabled(registry, server.id))?.id ??
-                registry?.servers[0]?.id ??
+                servers.find((server) => !!registry && isEnabled(registry, server.id))
+                  ?.id ??
+                servers[0]?.id ??
                 null;
               if (id) selectServer(id, "tools");
             }}

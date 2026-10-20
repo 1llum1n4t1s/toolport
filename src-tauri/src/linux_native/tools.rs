@@ -382,13 +382,15 @@ fn one_paragraph(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn state_badge(text: &str) -> gtk::Label {
-    gtk::Label::builder()
+fn state_badge(text: &'static str) -> gtk::Label {
+    let badge = gtk::Label::builder()
         .label(text)
         .css_classes(["toolport-badge", "caption"])
         .halign(gtk::Align::Start)
         .valign(gtk::Align::Center)
-        .build()
+        .build();
+    l10n::bind_text(&badge, text);
+    badge
 }
 
 fn insert_state_badge(badges: &gtk::FlowBox, badge: &gtk::Label) {
@@ -454,15 +456,15 @@ fn tool_row(
         .row_spacing(4)
         .halign(gtk::Align::Start)
         .build();
-    let pinned_badge = state_badge("Pinned");
+    let pinned_badge = state_badge(crate::i18n::msg("Pinned"));
     pinned_badge.set_visible(pinned);
     insert_state_badge(&badges, &pinned_badge);
-    let renamed_badge = state_badge("Renamed");
+    let renamed_badge = state_badge(crate::i18n::msg("Renamed"));
     renamed_badge.set_visible(exposure_override.is_some());
     insert_state_badge(&badges, &renamed_badge);
     for (hint, label) in [
-        ("readOnlyHint", "Read-only"),
-        ("destructiveHint", "Destructive"),
+        ("readOnlyHint", crate::i18n::msg("Read-only")),
+        ("destructiveHint", crate::i18n::msg("Destructive")),
     ] {
         if tool
             .pointer(&format!("/annotations/{hint}"))
@@ -472,7 +474,11 @@ fn tool_row(
             badges.insert(&state_badge(label), -1);
         }
     }
-    let enabled_badge = state_badge(if enabled { "On" } else { "Off" });
+    let enabled_badge = state_badge(if enabled {
+        crate::i18n::msg("On")
+    } else {
+        crate::i18n::msg("Off")
+    });
     l10n::bind_text(
         &enabled_badge,
         if enabled {
@@ -494,9 +500,9 @@ fn tool_row(
                 .and_then(serde_json::Value::as_str)
                 == Some("quarantined")
             {
-                "Quarantined"
+                crate::i18n::msg("Quarantined")
             } else {
-                "Quarantine unknown"
+                crate::i18n::msg("Quarantine unknown")
             },
         );
         badge.add_css_class("warning");
@@ -1745,6 +1751,83 @@ mod tests {
             Ok(Some(serde_json::json!(1.5)))
         );
     }
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b5_static_tool_badges_retranslate_live_without_touching_user_names() {
+        use super::*;
+        adw::init().unwrap();
+        let _data = crate::registry::DataDirTestEnv::new("b5-badge-language");
+        crate::i18n::set_language("en").unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.B5BadgeTest")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let panel = ServerToolsPanel::new(&app, "fixture");
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        let row = |state: &str| {
+            tool_row(
+                serde_json::json!({"name":"Quarantined", "description":"User description", "toolportQuarantine":state, "annotations":{"readOnlyHint":true,"destructiveHint":true}}),
+                true,
+                true,
+                None,
+                panel.clone(),
+            )
+        };
+        let quarantined = row("quarantined");
+        let unknown = row("unknown");
+        let clear = row("clear");
+        for r in [&quarantined, &unknown, &clear] {
+            root.append(r);
+        }
+        let renamed = state_badge(crate::i18n::msg("Renamed"));
+        root.append(&renamed);
+        fn labels(w: &gtk::Widget) -> Vec<gtk::Label> {
+            let mut out = w
+                .downcast_ref::<gtk::Label>()
+                .cloned()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let mut child = w.first_child();
+            while let Some(c) = child {
+                out.extend(labels(&c));
+                child = c.next_sibling();
+            }
+            out
+        }
+        let warning = |w: &gtk::Box| {
+            labels(w.upcast_ref())
+                .into_iter()
+                .filter(|l| l.has_css_class("warning"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(warning(&quarantined)[0].text(), "Quarantined");
+        assert_eq!(warning(&unknown)[0].text(), "Quarantine unknown");
+        assert!(warning(&clear).is_empty());
+        crate::i18n::set_language("fr").unwrap();
+        l10n::refresh_bindings();
+        assert_eq!(warning(&quarantined)[0].text(), "Mis en quarantaine");
+        assert_eq!(warning(&unknown)[0].text(), "Quarantaine inconnue");
+        assert!(warning(&clear).is_empty());
+        assert_eq!(renamed.text(), "Renommé");
+        let text = labels(quarantined.upcast_ref())
+            .into_iter()
+            .map(|l| l.text().to_string())
+            .collect::<Vec<_>>();
+        for expected in [
+            "Quarantined",
+            "Épinglé",
+            "Lecture seule",
+            "Destructeur",
+            "Activé",
+        ] {
+            assert!(text.iter().any(|t| t == expected), "{expected}: {text:?}");
+        }
+        crate::i18n::set_language("en").unwrap();
+        l10n::refresh_bindings();
+        assert_eq!(warning(&quarantined)[0].text(), "Quarantined");
+    }
+
     #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn b5_tool_switch_saves_exact_policy_and_rolls_back_failed_writes() {

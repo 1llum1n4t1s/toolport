@@ -699,6 +699,7 @@ impl RegistrySnapshot {
         let servers = registry
             .servers
             .iter()
+            .filter(|server| !crate::clients::is_gateway_server(server))
             .map(|server| {
                 let enabled = registry.server_enabled(&server.id);
                 ServerView {

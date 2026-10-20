@@ -1024,7 +1024,11 @@ fn review_imports(page: &ClientPage, keys: Vec<ImportSelection>) {
     let page = page.clone();
     gtk::glib::spawn_future_local(async move {
         match gtk::gio::spawn_blocking(move || {
-            crate::registry_controller::preview_client_imports()
+            let id = keys.first().ok_or("Nothing selected")?.client_id.clone();
+            if keys.iter().any(|key| key.client_id != id) {
+                return Err("Review imports from one client at a time.".into());
+            }
+            crate::registry_controller::preview_client_imports_for(&id)
                 .and_then(|items| selected_imports(&keys, items))
         })
         .await
@@ -1449,6 +1453,110 @@ mod tests {
                 .filter_map(|w| w.downcast_ref::<gtk::Label>())
                 .any(|l| l.is_visible() && l.text() == "Old credential failure")
         );
+        window.close();
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b5_onboarding_tools_activates_servers_and_loads_new_snapshot_safely() {
+        let data = crate::registry::DataDirTestEnv::new("b5-onboarding-tools");
+        let app = app();
+        let (root, page, _) = build_content(&app, crate::approval_broker::start_native());
+        page.render(state::RegistryState::Ready(
+            state::RegistrySnapshot::from_registry(crate::registry::Registry::default()),
+        ));
+        let stack = gtk::Stack::new();
+        stack.add_named(&root, Some("servers"));
+        stack.add_named(&gtk::Label::new(Some("Another main page")), Some("other"));
+        stack.set_visible_child_name("other");
+        let action = gtk::gio::SimpleAction::new("show-servers", None);
+        let target = stack.clone();
+        let target_page = page.clone();
+        action.connect_activate(move |_, _| {
+            target_page.details.back();
+            target.set_visible_child_name("servers");
+        });
+        app.add_action(&action);
+        install_server_tools_action(&app, &page);
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .content(&stack)
+            .build();
+        window.present();
+        let mut registry = crate::registry::Registry::default();
+        registry.servers = vec![serde_json::from_value(serde_json::json!({
+            "id":"new-onboarding", "name":"New from onboarding", "transport":"stdio", "command":"/home/sbx/bin/mock-mcp-server", "args":[], "env":[], "enabled":true
+        })).unwrap()];
+        let gateway = serde_json::from_value(serde_json::json!({
+            "id":"toolport", "name":"Toolport", "transport":"stdio", "command":"toolport-gateway", "args":[], "env":[], "enabled":true
+        })).unwrap();
+        registry.servers.insert(0, gateway);
+        // The main page still holds the empty pre-onboarding snapshot.
+        crate::registry::save(&registry).unwrap();
+        gtk::prelude::ActionGroupExt::activate_action(&app, "show-server-tools", None);
+        assert_eq!(stack.visible_child_name().as_deref(), Some("servers"));
+        let context = gtk::glib::MainContext::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while page.details.selected.borrow().is_none() && std::time::Instant::now() < deadline {
+            while context.pending() {
+                context.iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            page.details.selected.borrow().as_deref(),
+            Some("new-onboarding")
+        );
+        assert!(page.details.tools.get());
+        assert_eq!(app.windows().len(), 1);
+        registry.servers.retain(|server| server.id == "toolport");
+        crate::registry::save(&registry).unwrap();
+        stack.set_visible_child_name("other");
+        gtk::prelude::ActionGroupExt::activate_action(&app, "show-server-tools", None);
+        while context.pending() {
+            context.iteration(false);
+        }
+        // Drain the actual async load, not merely the synchronous navigation.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while page
+            .last_snapshot
+            .borrow()
+            .as_ref()
+            .is_some_and(|s| !s.servers.is_empty())
+            && std::time::Instant::now() < deadline
+        {
+            while context.pending() {
+                context.iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(page.details.selected.borrow().is_none());
+        assert_eq!(stack.visible_child_name().as_deref(), Some("servers"));
+        assert!(
+            page.last_snapshot
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .servers
+                .is_empty(),
+            "gateway-only snapshot has no manageable destination"
+        );
+        page.feedback.set_text("");
+        std::fs::write(data.dir.join("registry.json"), "broken registry").unwrap();
+        gtk::prelude::ActionGroupExt::activate_action(&app, "show-server-tools", None);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while page.feedback.text().is_empty() && std::time::Instant::now() < deadline {
+            while context.pending() {
+                context.iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(page.details.selected.borrow().is_none());
+        assert!(
+            !page.feedback.text().is_empty(),
+            "actual async load failure stays visible"
+        );
+        assert!(page.feedback.is_visible());
         window.close();
     }
 

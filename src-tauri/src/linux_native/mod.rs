@@ -1093,40 +1093,7 @@ fn build_sidebar(
         .halign(gtk::Align::Start)
         .build();
 
-    let tools_action = gtk::gio::SimpleAction::new("show-server-tools", None);
-    let page_for_tools = server_page.clone();
-    tools_action.connect_activate(move |_, _| {
-        let page = page_for_tools.clone();
-        gtk::glib::spawn_future_local(async move {
-            // Onboarding may have just added the first server. Read the current
-            // registry rather than the Servers page's pre-onboarding snapshot.
-            let result = gtk::gio::spawn_blocking(|| {
-                crate::registry::load().map(state::RegistrySnapshot::from_registry)
-            })
-            .await;
-            match result {
-                Ok(Ok(snapshot)) => {
-                    let server = snapshot
-                        .servers
-                        .iter()
-                        .find(|server| server.enabled)
-                        .or_else(|| snapshot.servers.first())
-                        .cloned();
-                    page.render(state::RegistryState::Ready(snapshot));
-                    if let Some(server) = server {
-                        open_server_details(&server, &page, true);
-                    } else {
-                        page.show_confirmation(&crate::i18n::tr("Add a server to try its tools."));
-                    }
-                }
-                Ok(Err(error)) => page.restore_after_error(&error),
-                Err(_) => page.restore_after_error(&crate::i18n::tr(
-                    "Could not load server tools: the operation stopped",
-                )),
-            }
-        });
-    });
-    app.add_action(&tools_action);
+    install_server_tools_action(app, &server_page);
     let mut buttons = Vec::new();
     let mut team_button = None;
     for &(target, label, icon) in NAV_SECTIONS {
@@ -2038,6 +2005,46 @@ fn start_quarantine_watch(
 
 // Keep the native navigation widgets and their shared page state together.
 #[allow(clippy::too_many_arguments)]
+fn install_server_tools_action(app: &adw::Application, server_page: &ServerPage) {
+    let tools_action = gtk::gio::SimpleAction::new("show-server-tools", None);
+    let page_for_tools = server_page.clone();
+    tools_action.connect_activate(move |_, _| {
+        let page = page_for_tools.clone();
+        // Main-page navigation clears old detail state, so activate it before
+        // loading and pushing the newly added server from onboarding.
+        gtk::prelude::ActionGroupExt::activate_action(&page.app, "show-servers", None);
+        gtk::glib::spawn_future_local(async move {
+            // Onboarding may have just added the first server. Read the current
+            // registry rather than the Servers page's pre-onboarding snapshot.
+            let result = gtk::gio::spawn_blocking(|| {
+                crate::registry::load().map(state::RegistrySnapshot::from_registry)
+            })
+            .await;
+            match result {
+                Ok(Ok(snapshot)) => {
+                    let server = snapshot
+                        .servers
+                        .iter()
+                        .find(|server| server.enabled)
+                        .or_else(|| snapshot.servers.first())
+                        .cloned();
+                    page.render(state::RegistryState::Ready(snapshot));
+                    if let Some(server) = server {
+                        open_server_details(&server, &page, true);
+                    } else {
+                        page.show_confirmation(&crate::i18n::tr("Add a server to try its tools."));
+                    }
+                }
+                Ok(Err(error)) => page.restore_after_error(&error),
+                Err(_) => page.restore_after_error(&crate::i18n::tr(
+                    "Could not load server tools: the operation stopped",
+                )),
+            }
+        });
+    });
+    app.add_action(&tools_action);
+}
+
 fn show_native_page(
     split: &adw::NavigationSplitView,
     stack: &gtk::Stack,

@@ -9,6 +9,7 @@ const detectClients = vi.fn();
 const takeRegistryRecoveryNotice = vi.fn();
 const uninstallGateway = vi.fn();
 const setServerEnabled = vi.fn();
+const removeServer = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),
@@ -24,7 +25,7 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   probeServers: vi.fn(() => Promise.resolve([])),
   uninstallGateway: (...a: unknown[]) => uninstallGateway(...a),
   recentClientActivity: vi.fn(() => Promise.resolve([])),
-  removeServer: vi.fn(),
+  removeServer: (...a: unknown[]) => removeServer(...a),
   setAllEnabled: vi.fn(),
   setSecret: vi.fn(),
   setServerEnabled: (...a: unknown[]) => setServerEnabled(...a),
@@ -51,13 +52,21 @@ vi.mock("@/lib/theme", () => ({
 vi.mock("@/components/AppSidebar", () => ({
   AppSidebar: ({
     onSelectView,
+    onReplayOnboarding,
   }: {
     onSelectView: (view: "clients" | "servers") => void;
+    onReplayOnboarding: () => void;
   }) => (
     <nav>
       <button onClick={() => onSelectView("clients")}>Clients</button>
       <button onClick={() => onSelectView("servers")}>Servers</button>
+      <button onClick={onReplayOnboarding}>Replay onboarding</button>
     </nav>
+  ),
+}));
+vi.mock("@/components/Onboarding", () => ({
+  Onboarding: ({ onOpenTools }: { onOpenTools: () => void }) => (
+    <button onClick={onOpenTools}>Open onboarding tools</button>
   ),
 }));
 vi.mock("@/components/PendingApprovals", () => ({ PendingApprovals: () => null }));
@@ -193,6 +202,9 @@ describe("pushed detail navigation", () => {
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     expect(await screen.findByText("Server is no longer available")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Couldn't reach the backend")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to servers" })).toBeInTheDocument();
   });
 
   it("targets the selected client instance and refreshes detail after disconnect", async () => {
@@ -250,6 +262,8 @@ describe("pushed detail navigation", () => {
       await user.click(screen.getByRole("button", { name: "Refresh" }));
     });
     expect(await screen.findByText("Client is no longer available")).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't reach the backend")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Servers" }));
     expect(
       await screen.findByRole("heading", { level: 1, name: "Servers" }),
@@ -258,4 +272,120 @@ describe("pushed detail navigation", () => {
       screen.queryByRole("button", { name: "Back to clients" }),
     ).not.toBeInTheDocument();
   });
+  it.each(["servers", "clients"] as const)(
+    "opens %s detail after a list refresh error without reusing hidden error",
+    async (view) => {
+      const user = userEvent.setup();
+      const selected = profileClient("codex@work");
+      detectClients.mockResolvedValue([selected]);
+      render(<App />);
+      if (view === "clients")
+        await user.click(screen.getByRole("button", { name: "Clients" }));
+      const selector =
+        view === "servers"
+          ? '[data-detail-open="files"]'
+          : `[data-client-id="${selected.id}"]`;
+      await waitFor(() => expect(document.querySelector(selector)).toBeInTheDocument());
+      (view === "servers" ? getRegistry : detectClients).mockRejectedValueOnce(
+        new Error("list refresh failed"),
+      );
+      await user.click(screen.getByRole("button", { name: "Refresh" }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled(),
+      );
+      await user.click(document.querySelector<HTMLButtonElement>(selector)!);
+      expect(
+        await screen.findByRole("button", {
+          name: view === "servers" ? "Edit" : "Disconnect",
+        }),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("Couldn't reach the backend")).not.toBeInTheDocument();
+      // A failure after opening detail must still hide stale mutation controls.
+      (view === "servers" ? getRegistry : detectClients).mockRejectedValueOnce(
+        new Error("detail refresh failed"),
+      );
+      await user.click(screen.getByRole("button", { name: "Refresh" }));
+      expect(
+        await screen.findByText("Error: detail refresh failed", { exact: true }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", {
+          name: view === "servers" ? "Edit" : "Disconnect",
+        }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it("keeps a failed removal in detail and returns to the list with focus only after success", async () => {
+    const user = userEvent.setup();
+    const empty = { ...registryWithServer(), servers: [] };
+    removeServer
+      .mockRejectedValueOnce(new Error("remove denied"))
+      .mockResolvedValueOnce(empty);
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Show Files details" }));
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Remove" }),
+    );
+    await waitFor(() => expect(removeServer).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("heading", { level: 1, name: "Files" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Remove" }),
+    );
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Servers" }),
+    ).toBeInTheDocument();
+    expect(removeServer).toHaveBeenLastCalledWith("files");
+    expect(screen.queryByText("Server is no longer available")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(document.querySelector("main")).toContainElement(
+        document.activeElement as HTMLElement,
+      ),
+    );
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it.each([true, false])(
+    "onboarding tools excludes a first enabled gateway, valid server present=%s",
+    async (hasServer) => {
+      const user = userEvent.setup();
+      const registry = registryWithServer();
+      const gateway = {
+        ...registry.servers[0],
+        id: "gateway",
+        name: "Toolport",
+        command: "toolport-gateway",
+      };
+      registry.servers = hasServer ? [gateway, ...registry.servers] : [gateway];
+      registry.profiles[0].enabledServerIds = ["gateway", "files"];
+      getRegistry.mockResolvedValue(registry);
+      render(<App />);
+      await screen.findByRole("heading", { level: 1, name: "Servers" });
+      await user.click(screen.getByRole("button", { name: "Replay onboarding" }));
+      await user.click(
+        await screen.findByRole("button", { name: "Open onboarding tools" }),
+      );
+      expect(
+        screen.queryByRole("heading", { level: 1, name: "Toolport" }),
+      ).not.toBeInTheDocument();
+      if (hasServer) {
+        expect(
+          await screen.findByRole("heading", { level: 1, name: "Files" }),
+        ).toBeInTheDocument();
+        expect(screen.getByRole("tab", { name: "Tools" })).toHaveAttribute(
+          "aria-selected",
+          "true",
+        );
+      } else {
+        expect(
+          screen.getByRole("heading", { level: 1, name: "Servers" }),
+        ).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+      }
+    },
+  );
 });

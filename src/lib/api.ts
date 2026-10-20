@@ -936,8 +936,10 @@ export function importServers(
 }
 
 /** Preview every detected-client server the bulk import would add. */
-export function previewImportServers(): Promise<ImportItem[]> {
-  return invoke<ImportItem[]>("preview_import_servers");
+export function previewImportServers(clientId?: string): Promise<ImportItem[]> {
+  return clientId
+    ? invoke<ImportItem[]>("preview_import_servers", { clientId })
+    : invoke<ImportItem[]>("preview_import_servers");
 }
 
 /** Parse a pasted config snippet (JSON/TOML/YAML/CLI), auto-detecting format. */

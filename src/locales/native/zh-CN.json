@@ -1184,5 +1184,8 @@
   "Not connected": "未连接",
   "Restart the client afterward.": "之后请重启客户端。",
   "Plugin": "插件",
-  "in Toolport": "已在 Toolport 中"
+  "in Toolport": "已在 Toolport 中",
+  "Pinned": "已固定",
+  "Renamed": "已重命名",
+  "Read-only": "只读"
 }

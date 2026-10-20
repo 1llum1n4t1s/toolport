@@ -278,7 +278,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
 
   async function reviewServers(servers: McpServer[]) {
     try {
-      const preview = await previewImportServers();
+      const preview = await previewImportServers(client.id);
       const items = servers.map((server) =>
         preview.find(
           (item) =>

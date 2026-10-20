@@ -1184,5 +1184,8 @@
   "Not connected": "Sin conectar",
   "Restart the client afterward.": "Después, reinicia el cliente.",
   "Plugin": "Complemento",
-  "in Toolport": "en Toolport"
+  "in Toolport": "en Toolport",
+  "Pinned": "Fijada",
+  "Renamed": "Renombrada",
+  "Read-only": "Solo lectura"
 }

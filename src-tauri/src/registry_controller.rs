@@ -493,9 +493,44 @@ pub(crate) fn selected_servers_to_import(
     Ok(picked)
 }
 
+// Scoped keys bind the selected origin and the complete reviewed definition,
+// including credential values that are intentionally absent from the UI.
+fn scoped_import_key(
+    client_id: &str,
+    server: &ServerEntry,
+    definition: Option<&serde_json::Value>,
+) -> Result<String, String> {
+    let reviewed = serde_json::to_string(&(server, definition)).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "client-import:{}",
+        serde_json::to_string(&(
+            client_id,
+            clients::import_dedupe_key(&server.name, server.command.as_deref(), &server.args),
+            registry::sha256_hex(&reviewed)
+        ))
+        .map_err(|e| e.to_string())?
+    ))
+}
+
+pub fn preview_client_imports_for(client_id: &str) -> Result<Vec<ClientImportCandidate>, String> {
+    preview_client_imports_scoped(Some(client_id))
+}
+
 pub fn preview_client_imports() -> Result<Vec<ClientImportCandidate>, String> {
+    preview_client_imports_scoped(None)
+}
+
+fn preview_client_imports_scoped(
+    client_id: Option<&str>,
+) -> Result<Vec<ClientImportCandidate>, String> {
     let registry = read_registry_exact_or_default()?;
-    let detected = clients::detect_clients();
+    let mut detected = clients::detect_clients();
+    if let Some(id) = client_id {
+        detected.retain(|client| client.id == id);
+        if detected.is_empty() {
+            return Err("Missing import client".into());
+        }
+    }
     servers_to_import(&detected, &registry)
         .into_iter()
         .map(|server| {
@@ -506,6 +541,11 @@ pub fn preview_client_imports() -> Result<Vec<ClientImportCandidate>, String> {
                 })
                 .ok_or("Missing import client")?;
             let definition = clients::import_definition(client, &server.name)?;
+            let key = if client_id.is_some() {
+                scoped_import_key(&client.id, &server, definition.as_ref())?
+            } else {
+                clients::import_dedupe_key(&server.name, server.command.as_deref(), &server.args)
+            };
             let (credentials, unsupported) = match crate::import_credentials::Import::prepare(
                 server.clone(),
                 definition.as_ref(),
@@ -529,11 +569,7 @@ pub fn preview_client_imports() -> Result<Vec<ClientImportCandidate>, String> {
                 client_id: client.id.clone(),
                 credentials,
                 unsupported,
-                key: clients::import_dedupe_key(
-                    &server.name,
-                    server.command.as_deref(),
-                    &server.args,
-                ),
+                key,
                 name: server.name,
                 transport: server.transport,
                 command: server.command.map(|c| {
@@ -583,12 +619,37 @@ pub fn import_client_servers_inputs(
     choices: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, bool>>,
     inputs: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
 ) -> Result<(Registry, usize), String> {
-    let detected = clients::detect_clients();
-    let selected = selected
+    let mut detected = clients::detect_clients();
+    let scoped = selected
+        .iter()
+        .filter_map(|key| {
+            key.strip_prefix("client-import:").map(|json| {
+                serde_json::from_str::<(String, String, String)>(json)
+                    .map_err(|_| "Invalid reviewed import key".to_string())
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if !scoped.is_empty()
+        && (scoped.len() != selected.len() || scoped.iter().any(|item| item.0 != scoped[0].0))
+    {
+        return Err("Review imports from one client at a time.".into());
+    }
+    if let Some((client_id, _, _)) = scoped.first() {
+        detected.retain(|client| client.id == *client_id);
+    }
+    let reviewed = selected
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
+    let selected = if scoped.is_empty() {
+        reviewed.clone()
+    } else {
+        scoped.iter().map(|item| item.1.clone()).collect()
+    };
     let current = read_registry_exact_or_default()?;
     let servers = selected_servers_to_import(&detected, &current, Some(&selected))?;
+    if !scoped.is_empty() && servers.len() != selected.len() {
+        return Err("Server changed. Refresh the client and review again.".into());
+    }
     let mut prepared = Vec::new();
     for entry in servers {
         let client_id = entry
@@ -601,6 +662,11 @@ pub fn import_client_servers_inputs(
             .find(|c| c.id == client_id)
             .ok_or("Missing import client")?;
         let definition = clients::import_definition(client, &entry.name)?;
+        if !scoped.is_empty()
+            && !reviewed.contains(&scoped_import_key(client_id, &entry, definition.as_ref())?)
+        {
+            return Err("Server changed. Refresh the client and review again.".into());
+        }
         let name = entry.name.clone();
         match crate::import_credentials::Import::prepare_with_choices(
             entry,
@@ -3540,6 +3606,103 @@ mod tests {
             assert!(has_client_secret(&id).unwrap());
         });
     }
+    #[test]
+    fn scoped_import_commits_the_second_clients_reviewed_definition_and_credentials() {
+        let fixture = MoveFixture::new(&Registry::default());
+        std::fs::write(fixture.claude(), r#"{"mcpServers":{"shared":{"command":"shared-mcp","env":{"API_KEY":"synthetic-first-origin"}}}}"#).unwrap();
+        std::fs::write(
+            fixture.codex(),
+            r#"[mcp_servers.shared]
+command = "shared-mcp"
+[mcp_servers.shared.env]
+API_KEY = "synthetic-second-origin"
+"#,
+        )
+        .unwrap();
+        let global = preview_client_imports().unwrap();
+        assert_eq!(
+            global.iter().filter(|item| item.name == "shared").count(),
+            1
+        );
+        assert_eq!(
+            global
+                .iter()
+                .find(|item| item.name == "shared")
+                .unwrap()
+                .client_id,
+            "claude-code"
+        );
+        let second = preview_client_imports_for("codex").unwrap();
+        let item = second.iter().find(|item| item.name == "shared").unwrap();
+        assert_eq!(item.client_id, "codex");
+        assert!(item
+            .credentials
+            .iter()
+            .any(|c| c.key == "API_KEY" && c.secret && c.present));
+        assert!(!item.key.contains("synthetic-second-origin"));
+        let (registry, added) = import_client_servers_inputs(
+            vec![item.key.clone()],
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(added, 1);
+        let imported = registry
+            .servers
+            .iter()
+            .find(|server| server.name == "shared")
+            .unwrap();
+        assert_eq!(imported.source.as_deref(), Some("imported:codex"));
+        assert_eq!(
+            crate::secrets::get_vault_secret_result(&imported.id, "API_KEY")
+                .unwrap()
+                .as_deref(),
+            Some("synthetic-second-origin")
+        );
+        assert!(
+            preview_client_imports_for("claude-code")
+                .unwrap()
+                .iter()
+                .all(|item| item.name != "shared"),
+            "registry dedupe still applies across clients"
+        );
+        assert!(std::fs::read_to_string(fixture.claude())
+            .unwrap()
+            .contains("synthetic-first-origin"));
+    }
+
+    #[test]
+    fn scoped_import_rejects_changed_hidden_credentials_and_mixed_client_reviews() {
+        let fixture = MoveFixture::new(&Registry::default());
+        let config = |value: &str| {
+            serde_json::json!({"mcpServers":{"shared":{"command":"shared-mcp","env":{"API_KEY":value}}}}).to_string()
+        };
+        std::fs::write(fixture.claude(), config("synthetic-reviewed")).unwrap();
+        std::fs::write(
+            fixture.codex(),
+            "[mcp_servers.shared]\ncommand = \"shared-mcp\"\n",
+        )
+        .unwrap();
+        let first = preview_client_imports_for("claude-code")
+            .unwrap()
+            .into_iter()
+            .find(|i| i.name == "shared")
+            .unwrap();
+        let second = preview_client_imports_for("codex")
+            .unwrap()
+            .into_iter()
+            .find(|i| i.name == "shared")
+            .unwrap();
+        assert!(import_client_servers(vec![first.key.clone(), second.key])
+            .unwrap_err()
+            .contains("one client"));
+        std::fs::write(fixture.claude(), config("synthetic-changed")).unwrap();
+        assert!(import_client_servers(vec![first.key])
+            .unwrap_err()
+            .contains("Server changed"));
+        assert!(read_registry_exact().unwrap().servers.is_empty());
+    }
+
     #[test]
     fn reviewed_bulk_import_shows_unsupported_and_uses_storage_choices() {
         let fixture = MoveFixture::new(&Registry::default());

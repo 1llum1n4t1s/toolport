@@ -1184,5 +1184,8 @@
   "Not connected": "연결되지 않음",
   "Restart the client afterward.": "그런 다음 클라이언트를 다시 시작하세요.",
   "Plugin": "플러그인",
-  "in Toolport": "Toolport에 있음"
+  "in Toolport": "Toolport에 있음",
+  "Pinned": "고정됨",
+  "Renamed": "이름 변경됨",
+  "Read-only": "읽기 전용"
 }
