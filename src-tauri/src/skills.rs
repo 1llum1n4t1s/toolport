@@ -225,7 +225,7 @@ impl Env {
             .unwrap_or_else(|| codewhale_config(&home, &env.codewhale, explicit_home));
         env.openclaw = crate::clients::openclaw::dirs(&home, &trimmed);
         env.claude_profiles = claude_profile_dirs(&home, &env.claude);
-        env.use_clients(&crate::clients::detect_clients());
+        env.use_clients(&crate::clients::detect_clients_for_skills());
         Some(env)
     }
 

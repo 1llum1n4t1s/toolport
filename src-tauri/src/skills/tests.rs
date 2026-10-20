@@ -4357,3 +4357,53 @@ fn default_claude_profile_maps_to_skills_folder_without_alias_columns() {
     assert_eq!(inv.rules[0].path, "~/.claude/CLAUDE.md");
     assert!(inv.rules[0].agents.contains_key("claude-code"));
 }
+
+#[test]
+fn skills_discovers_unsaved_profiles_before_clients_without_adopting_configs() {
+    let home = Home::new();
+    let _data = crate::registry::DataDirTestEnv::new("skills-unsaved-profiles");
+    let _home = crate::clients::TestHome::set(&home.root);
+    let claude = r#"{"mcpServers":{"toolport":{"command":"/old/toolport-gateway","args":[]}}}"#;
+    home.write(".claude.json", claude);
+    home.write(".claude2/.claude.json", claude);
+    home.write(".codex/config.toml", "# main\n");
+    home.write(".codex2/config.toml", "# second\n");
+    home.skill(
+        ".codex2/skills/second",
+        "second-home",
+        "Only the second Codex home",
+    );
+    let data_dir = crate::registry::conduit_dir().unwrap();
+    let locations = data_dir.join("client-locations.json");
+    assert!(!locations.exists());
+    let clients = crate::clients::detect_clients_for_skills();
+    let mut env = home.env();
+    env.use_clients(&clients);
+    let inv = scan(&env, &|id| env.detected_agents.contains(id), None);
+    assert_eq!(
+        inv.agents
+            .iter()
+            .filter(|a| a.id.starts_with("claude-code") && a.connected)
+            .count(),
+        2
+    );
+    assert_eq!(
+        inv.agents
+            .iter()
+            .filter(|a| a.id.starts_with("codex"))
+            .count(),
+        2
+    );
+    assert!(skill(&inv, "second-home")
+        .states
+        .keys()
+        .any(|id| id.starts_with("codex@")));
+    assert_eq!(home.read(".claude.json"), claude);
+    assert_eq!(home.read(".claude2/.claude.json"), claude);
+    assert_eq!(home.read(".codex/config.toml"), "# main\n");
+    assert_eq!(home.read(".codex2/config.toml"), "# second\n");
+    assert!(
+        !locations.exists(),
+        "Skills must not remember or adopt client locations"
+    );
+}
