@@ -1223,9 +1223,28 @@ mod tests {
         );
         page.render(snapshot(vec![first]));
         assert!(page.details.selected.borrow().is_none());
+        let context = gtk::glib::MainContext::default();
+        while context.pending() {
+            context.iteration(false);
+        }
         let focus = gtk::prelude::GtkWindowExt::focus(&window)
             .expect("missing client returns focus to live list");
-        assert!(focus.is_ancestor(&page.details.stack.child_by_name("list").unwrap()));
+        let mut ancestry = Vec::new();
+        let mut current = Some(focus.clone());
+        while let Some(widget) = current {
+            ancestry.push(format!(
+                "{}:{} visible={} child_visible={}",
+                widget.type_().name(),
+                widget.widget_name(),
+                widget.is_visible(),
+                widget.is_child_visible()
+            ));
+            current = widget.parent();
+        }
+        assert!(
+            focus.is_ancestor(&page.details.stack.child_by_name("list").unwrap()),
+            "missing focus ancestry: {ancestry:?}"
+        );
         assert_eq!(app.windows().len(), 1, "details stay in the main window");
         window.close();
     }
