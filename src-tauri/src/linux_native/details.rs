@@ -176,13 +176,13 @@ fn formatted_message(
         values.extend(
             translated
                 .iter()
-                .map(|(key, source)| (key.clone(), crate::i18n::tr(source))),
+                .map(|(key, source)| (key.clone(), crate::i18n::lookup(source))),
         );
         let refs = values
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str()))
             .collect::<Vec<_>>();
-        crate::i18n::trf(source, &refs)
+        crate::i18n::format_message(source, &refs)
     });
     label
 }
