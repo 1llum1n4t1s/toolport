@@ -371,7 +371,7 @@
   "no rules files": "no rules files",
   "skips @import {path}": "skips @import {path}",
   "{client} now lists {skill} by name only": "{client} now lists {skill} by name only",
-  "{client}: folders from its docs, not checked on this machine": "{client}: folders from its docs, not checked on this machine",
+  "folders from its docs, not checked on this machine": "folders from its docs, not checked on this machine",
   "{count} broken": "{count} broken",
   "{count} name only": "{count} name only",
   "{count} of {cap} characters": "{count} of {cap} characters",

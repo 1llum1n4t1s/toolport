@@ -1359,6 +1359,7 @@ button.toolport-skill-tab:checked {{
   border-bottom: 1px solid @toolport_border;
   padding: 0 8px 6px 8px;
 }}
+.toolport-skill-hint {{ padding: 0 8px 4px 8px; min-height: 16px; }}
 .toolport-skill-head button.toolport-skill-col {{
   padding: 2px 0;
   margin: 0;

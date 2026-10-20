@@ -371,7 +371,7 @@
   "no rules files": "규칙 파일 없음",
   "skips @import {path}": "@import {path} 건너뜀",
   "{client} now lists {skill} by name only": "{client}에서 이제 {skill}을(를) 이름만 표시합니다",
-  "{client}: folders from its docs, not checked on this machine": "{client}: 폴더 정보는 문서 기준이며 이 컴퓨터에서 확인하지 않았습니다",
+  "folders from its docs, not checked on this machine": "폴더 정보는 문서 기준이며 이 컴퓨터에서 확인하지 않았습니다",
   "{count} broken": "{count}개 깨짐",
   "{count} name only": "이름만 {count}",
   "{count} of {cap} characters": "{cap}자 중 {count}자",

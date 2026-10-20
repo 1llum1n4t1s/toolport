@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -16,7 +16,7 @@ import { applySkillState, skillsFixture } from "@/test/skills-fixture";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { toastError } from "@/lib/toast";
 import { SKILLS_REFRESH_EVENT, SKILLS_SEARCH_EVENT } from "@/lib/shortcuts";
-import { shortAgentName } from "@/lib/agentNames";
+import { columnNames, shortAgentName } from "@/lib/agentNames";
 import { SkillsView } from "./SkillsView";
 
 vi.mock("@/lib/api", () => ({
@@ -324,6 +324,27 @@ describe("SkillsView", () => {
     expect(within(list).queryByRole("button", { name: /pdf/ })).not.toBeInTheDocument();
   });
 
+  it("tells keyboard and screen reader users an agent's folders weren't checked", async () => {
+    const inv = skillsFixture();
+    inv.agents = inv.agents.map((a) => (a.id === "grok" ? { ...a, verified: false } : a));
+    vi.mocked(skillsInventory).mockResolvedValue(inv);
+    renderView();
+    const list = await screen.findByRole("region", { name: "Skills" });
+    const header = within(list).getByRole("button", {
+      name: "Show only skills Grok finds",
+    });
+    expect(header).toHaveAccessibleDescription(
+      "folders from its docs, not checked on this machine",
+    );
+    act(() => header.focus());
+    expect(
+      within(list).getByText(
+        (_, el) =>
+          el?.textContent === "Grok: folders from its docs, not checked on this machine",
+      ),
+    ).toBeVisible();
+  });
+
   it("keeps the keyboard column named when the pointer leaves", async () => {
     renderView();
     const list = await screen.findByRole("region", { name: "Skills" });
@@ -352,6 +373,23 @@ describe("SkillsView", () => {
     expect(shortAgentName("Copilot CLI")).toBe("Copilot");
     expect(shortAgentName("OpenCode")).toBe("OpenCode");
     expect(shortAgentName("Antigravity")).toBe("Antigra…");
+    expect(
+      columnNames([
+        "Claude Code (claude)",
+        "Claude Code (claude2)",
+        "Codex (codex)",
+        "Codex (codex-becca)",
+        "Cursor",
+        "Command Code",
+      ]),
+    ).toEqual(["claude", "claude2", "codex", "becca", "Cursor", "Command"]);
+    expect(
+      columnNames(["Claude Code (claude)", "Codex (codex-work)", "Copilot CLI"]),
+    ).toEqual(["Claude", "Codex", "Copilot"]);
+    expect(columnNames(["Codex (codex-second-account)", "Codex (codex)"])).toEqual([
+      "second-…",
+      "codex",
+    ]);
   });
 
   it("shows how each agent reaches a rules file, including skipped imports", async () => {
