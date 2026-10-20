@@ -3794,6 +3794,8 @@ mod tests {
         let theme = super::super::theme::ThemeController::new();
         theme.attach(&window);
         window.present();
+        // Mapping the page starts a scan of the real HOME; drop its result so these cards stay.
+        page.generation.set(page.generation.get().wrapping_add(1));
         page.tabs[2].1.grab_focus();
         settle();
         // Adjustment changes queue viewport allocation. Drive it before reading
