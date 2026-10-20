@@ -386,8 +386,22 @@ fn state_badge(text: &str) -> gtk::Label {
     gtk::Label::builder()
         .label(text)
         .css_classes(["toolport-badge", "caption"])
+        .halign(gtk::Align::Start)
         .valign(gtk::Align::Center)
         .build()
+}
+
+fn insert_state_badge(badges: &gtk::FlowBox, badge: &gtk::Label) {
+    badges.insert(badge, -1);
+    // FlowBox's wrapper must hide with its label or it reserves an empty column.
+    let child = badge.parent().unwrap();
+    child.set_visible(badge.is_visible());
+    let child = child.downgrade();
+    badge.connect_visible_notify(move |badge| {
+        if let Some(child) = child.upgrade() {
+            child.set_visible(badge.is_visible());
+        }
+    });
 }
 
 fn tool_row(
@@ -438,13 +452,14 @@ fn tool_row(
         .max_children_per_line(5)
         .column_spacing(4)
         .row_spacing(4)
+        .halign(gtk::Align::Start)
         .build();
     let pinned_badge = state_badge("Pinned");
     pinned_badge.set_visible(pinned);
-    badges.insert(&pinned_badge, -1);
+    insert_state_badge(&badges, &pinned_badge);
     let renamed_badge = state_badge("Renamed");
     renamed_badge.set_visible(exposure_override.is_some());
-    badges.insert(&renamed_badge, -1);
+    insert_state_badge(&badges, &renamed_badge);
     for (hint, label) in [
         ("readOnlyHint", "Read-only"),
         ("destructiveHint", "Destructive"),
