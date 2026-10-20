@@ -1542,7 +1542,10 @@ mod tests {
             "gateway-only snapshot has no manageable destination"
         );
         page.feedback.set_text("");
-        std::fs::write(data.dir.join("registry.json"), "broken registry").unwrap();
+        // Parse errors intentionally recover backups. A directory gives the
+        // loader a genuine I/O failure without bypassing that recovery contract.
+        std::fs::remove_file(data.dir.join("registry.json")).unwrap();
+        std::fs::create_dir(data.dir.join("registry.json")).unwrap();
         gtk::prelude::ActionGroupExt::activate_action(&app, "show-server-tools", None);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while page.feedback.text().is_empty() && std::time::Instant::now() < deadline {

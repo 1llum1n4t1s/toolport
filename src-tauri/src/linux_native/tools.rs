@@ -1826,6 +1826,51 @@ mod tests {
         crate::i18n::set_language("en").unwrap();
         l10n::refresh_bindings();
         assert_eq!(warning(&quarantined)[0].text(), "Quarantined");
+        if std::env::var_os("TOOLPORT_B5_BADGE_CAPTURE").is_some() {
+            root.set_margin_top(24);
+            root.set_margin_bottom(24);
+            root.set_margin_start(24);
+            root.set_margin_end(24);
+            let window = adw::ApplicationWindow::builder()
+                .application(&app)
+                .title("Toolport B5 badge fixture")
+                .content(&root)
+                .default_width(1440)
+                .default_height(900)
+                .build();
+            window.add_css_class("toolport-native");
+            let theme = super::super::theme::ThemeController::new();
+            theme.attach(&window);
+            for (action_name, language) in [("capture-french", "fr"), ("capture-english", "en")] {
+                let action = gtk::gio::SimpleAction::new(action_name, None);
+                action.connect_activate(move |_, _| {
+                    crate::i18n::set_language(language).unwrap();
+                    l10n::refresh_bindings();
+                });
+                app.add_action(&action);
+            }
+            let close = gtk::gio::SimpleAction::new("close-fixture", None);
+            let target = window.downgrade();
+            close.connect_activate(move |_, _| {
+                if let Some(w) = target.upgrade() {
+                    w.close();
+                }
+            });
+            app.add_action(&close);
+            let main_loop = gtk::glib::MainLoop::new(None, false);
+            let stop = main_loop.clone();
+            window.connect_close_request(move |_| {
+                stop.quit();
+                gtk::glib::Propagation::Proceed
+            });
+            let stop = main_loop.clone();
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(120), move || {
+                stop.quit()
+            });
+            window.present();
+            main_loop.run();
+            window.close();
+        }
     }
 
     #[test]
