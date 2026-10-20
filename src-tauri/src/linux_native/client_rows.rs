@@ -333,6 +333,7 @@ pub(super) fn client_row(
             // A repeated row action is secondary; the page has no primary (spec 5).
             let connect = l10n::button("Connect");
             connect.add_css_class("toolport-secondary-action");
+            connect.set_sensitive(client.app_present && !client.config_error);
             let client_for_connect = client.clone();
             let page_for_connect = page.clone();
             connect.connect_clicked(move |_| {

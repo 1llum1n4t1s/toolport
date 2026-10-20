@@ -327,7 +327,7 @@ pub(super) fn client(client: &state::ClientView, page: &ClientPage) {
     actions.set_valign(gtk::Align::Center);
     let connected = client.gateway_state == state::ClientGatewayState::Connected;
     let customized = client.gateway_state == state::ClientGatewayState::Customized;
-    let writable = !client.config_error && (client.app_present || client.config_exists);
+    let writable = !client.config_error;
     let profiles = page.profiles.borrow().clone();
     let names = profiles.iter().map(|p| p.name.as_str()).collect::<Vec<_>>();
     let scope = gtk::DropDown::from_strings(&names);
@@ -389,7 +389,9 @@ pub(super) fn client(client: &state::ClientView, page: &ClientPage) {
     } else {
         "suggested-action"
     });
-    action.set_sensitive(writable);
+    action.set_sensitive(
+        writable && (connected || customized || client.legacy_bearer_argv || client.app_present),
+    );
     let c = client.clone();
     let p = page.clone();
     let scope_for_connect = selected_scope.clone();
@@ -520,42 +522,18 @@ pub(super) fn client(client: &state::ClientView, page: &ClientPage) {
         });
         body.append(&page_header::HeaderWrap::new(&copy, &mode));
     }
-    if connected && !customized {
+    if !customized && (client.app_present || client.config_exists) {
         let reachable = gtk::Box::new(gtk::Orientation::Vertical, 8);
         reachable.append(&heading("Servers it can reach"));
-        reachable.append(&skeleton_rows("Loading servers… "));
         body.append(&reachable);
-        let scope = client.scope_id.clone();
-        gtk::glib::spawn_future_local(async move {
-            let result = gtk::gio::spawn_blocking(move || {
-                let registry = crate::registry::load()?;
-                let default_scope = registry.default_access_id();
-                let scope = scope
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(&default_scope);
-                Ok::<_, String>(
-                    registry
-                        .servers
-                        .iter()
-                        .filter(|s| registry.is_enabled(scope, &s.id))
-                        .map(|s| s.name.clone())
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .await;
-            while let Some(child) = reachable.last_child() {
-                if child == reachable.first_child().unwrap() {
-                    break;
-                }
-                reachable.remove(&child);
-            }
-            match result {
-                Ok(Ok(names)) if !names.is_empty() => for name in names { reachable.append(&text(&name, false)); },
-                Ok(Ok(_)) => reachable.append(&text(&crate::i18n::tr("No enabled servers in this access set yet. Turn servers on in Servers and include them under Settings > Advanced."), false)),
-                _ => reachable.append(&text(&crate::i18n::tr("Servers unavailable"), false)),
-            }
-        });
+        let revision = Rc::new(std::cell::Cell::new(0));
+        refresh_reachable(&reachable, client.scope_id.clone(), revision.clone());
+        if !connected {
+            let selected = selected_scope.clone();
+            scope.connect_selected_notify(move |_| {
+                refresh_reachable(&reachable, selected.borrow().clone(), revision.clone())
+            });
+        }
     } else if !client.app_present && !client.config_exists {
         body.append(&text(
             &crate::i18n::tr("not installed on this machine"),
@@ -583,6 +561,56 @@ pub(super) fn client(client: &state::ClientView, page: &ClientPage) {
         .build();
     root.append(&scroll);
     page.details.push(&client.id, &root);
+}
+
+fn refresh_reachable(
+    reachable: &gtk::Box,
+    scope: Option<String>,
+    revision: Rc<std::cell::Cell<u64>>,
+) {
+    let request = revision.get() + 1;
+    revision.set(request);
+    while let Some(child) = reachable.last_child() {
+        if child == reachable.first_child().unwrap() {
+            break;
+        }
+        reachable.remove(&child);
+    }
+    reachable.append(&skeleton_rows("Loading servers… "));
+    let reachable = reachable.clone();
+    gtk::glib::spawn_future_local(async move {
+        let result = gtk::gio::spawn_blocking(move || {
+            let registry = crate::registry::load()?;
+            let default_scope = registry.default_access_id();
+            let scope = scope
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&default_scope);
+            Ok::<_, String>(
+                registry
+                    .servers
+                    .iter()
+                    .filter(|s| registry.is_enabled(scope, &s.id))
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .await;
+        if revision.get() != request {
+            return;
+        }
+        while let Some(child) = reachable.last_child() {
+            if child == reachable.first_child().unwrap() {
+                break;
+            }
+            reachable.remove(&child);
+        }
+        match result {
+            Ok(Ok(names)) if !names.is_empty() => for name in names { reachable.append(&text(&name, false)); },
+            Ok(Ok(_)) => reachable.append(&text(&crate::i18n::tr("No enabled servers in this access set yet. Turn servers on in Servers and include them under Settings > Advanced."), false)),
+            _ => reachable.append(&text(&crate::i18n::tr("Servers unavailable"), false)),
+        }
+    });
 }
 
 fn client_imports(
