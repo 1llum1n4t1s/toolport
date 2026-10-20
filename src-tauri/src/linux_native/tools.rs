@@ -458,6 +458,14 @@ fn tool_row(
         }
     }
     let enabled_badge = state_badge(if enabled { "On" } else { "Off" });
+    l10n::bind_text(
+        &enabled_badge,
+        if enabled {
+            crate::i18n::msg("On")
+        } else {
+            crate::i18n::msg("Off")
+        },
+    );
     enabled_badge.add_css_class(if enabled { "success" } else { "off" });
     badges.insert(&enabled_badge, -1);
     if tool
@@ -503,23 +511,12 @@ fn tool_row(
     run.set_valign(gtk::Align::Center);
     run.set_sensitive(enabled);
 
-    // A compact icon toggle rather than a GtkSwitch: same single click, but the
-    // switch was the tallest widget in the row and set the row height.
-    let visibility = gtk::ToggleButton::builder()
-        .icon_name(if enabled {
-            "view-reveal-symbolic"
-        } else {
-            "view-conceal-symbolic"
-        })
-        .active(!enabled)
+    let visibility = gtk::Switch::builder()
+        .active(enabled)
         .valign(gtk::Align::Center)
-        .tooltip_text(crate::i18n::tr(if enabled {
-            "Exposed to clients. Hide it."
-        } else {
-            "Hidden from clients. Expose it."
-        }))
-        .css_classes(["flat"])
         .build();
+    visibility.update_property(&[gtk::accessible::Property::Label(&name)]);
+    set_visibility_look(&visibility, enabled);
     // Reverting a failed write re-enters this handler, so the guard keeps the
     // revert from being treated as a fresh toggle.
     let reverting = Rc::new(Cell::new(false));
@@ -527,14 +524,14 @@ fn tool_row(
     let name_for_visibility = name.clone();
     let run_for_visibility = run.clone();
     let badge_for_visibility = enabled_badge.clone();
-    visibility.connect_toggled(move |button| {
+    visibility.connect_active_notify(move |button| {
         if reverting.get() {
             return;
         }
         let Some(server_id) = page_for_visibility.selected_server_id() else {
             return;
         };
-        let enabled = !button.is_active();
+        let enabled = button.is_active();
         button.set_sensitive(false);
         let page = page_for_visibility.clone();
         let name = name_for_visibility.clone();
@@ -571,13 +568,13 @@ fn tool_row(
                     // The registry rejected the change, so the control must not
                     // keep claiming it happened.
                     reverting.set(true);
-                    button.set_active(enabled);
+                    button.set_active(!enabled);
                     reverting.set(false);
                     page.show_error(&error);
                 }
                 Err(_) => {
                     reverting.set(true);
-                    button.set_active(enabled);
+                    button.set_active(!enabled);
                     reverting.set(false);
                     page.show_error(&crate::i18n::tr(
                         "the tool visibility update stopped unexpectedly",
@@ -684,12 +681,7 @@ fn pin_label(pinned: bool) -> &'static str {
     }
 }
 
-fn set_visibility_look(button: &gtk::ToggleButton, enabled: bool) {
-    button.set_icon_name(if enabled {
-        "view-reveal-symbolic"
-    } else {
-        "view-conceal-symbolic"
-    });
+fn set_visibility_look(button: &gtk::Switch, enabled: bool) {
     button.set_tooltip_text(Some(&if enabled {
         crate::i18n::tr("Exposed to clients. Hide it.")
     } else {
@@ -1736,6 +1728,72 @@ mod tests {
         assert_eq!(
             form_field_value(&number, "1.5"),
             Ok(Some(serde_json::json!(1.5)))
+        );
+    }
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b5_tool_switch_saves_exact_policy_and_rolls_back_failed_writes() {
+        use super::*;
+        adw::init().unwrap();
+        let _data = crate::registry::DataDirTestEnv::new("b5-tool-switch");
+        crate::registry::update(|registry| {
+            registry.servers.push(serde_json::from_value(serde_json::json!({
+                "id":"selected", "name":"Selected", "transport":"stdio", "command":"fixture", "args":[], "env":[]
+            })).unwrap());
+            Ok(())
+        }).unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.B5ToolSwitchTest")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let panel = ServerToolsPanel::new(&app, "selected");
+        let tool = serde_json::json!({"name":"read", "description":"Read a record", "toolportQuarantine":"clear"});
+        let row = tool_row(tool.clone(), true, false, None, panel.clone());
+        fn find_switch(root: &gtk::Widget) -> Option<gtk::Switch> {
+            if let Some(switch) = root.downcast_ref::<gtk::Switch>() {
+                return Some(switch.clone());
+            }
+            let mut child = root.first_child();
+            while let Some(widget) = child {
+                if let Some(switch) = find_switch(&widget) {
+                    return Some(switch);
+                }
+                child = widget.next_sibling();
+            }
+            None
+        }
+        fn settle(switch: &gtk::Switch) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let context = gtk::glib::MainContext::default();
+            while !switch.is_sensitive() && std::time::Instant::now() < deadline {
+                while context.pending() {
+                    context.iteration(false);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(switch.is_sensitive(), "policy update completed");
+        }
+        let switch = find_switch(row.upcast_ref()).unwrap();
+        assert!(switch.is_active());
+        switch.set_active(false);
+        settle(&switch);
+        assert!(!switch.is_active());
+        let registry = crate::registry::load().unwrap();
+        assert_eq!(registry.servers[0].disabled_tools, vec!["read"]);
+        let failed_panel = ServerToolsPanel::new(&app, "missing");
+        let failed_row = tool_row(tool, true, false, None, failed_panel.clone());
+        let failed_switch = find_switch(failed_row.upcast_ref()).unwrap();
+        failed_switch.set_active(false);
+        settle(&failed_switch);
+        assert!(
+            failed_switch.is_active(),
+            "a rejected policy write restores the old state"
+        );
+        assert!(failed_panel.feedback.has_css_class("error"));
+        assert_eq!(
+            crate::registry::load().unwrap().servers[0].disabled_tools,
+            vec!["read"]
         );
     }
 }

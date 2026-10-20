@@ -1198,7 +1198,10 @@ function App() {
           )}
 
           <PageHeaderActionsSlot value={headerActionsSlot}>
-            <ScrollArea className="min-h-0 flex-1">
+            <ScrollArea
+              key={`${view}:${selectedServerId ?? selectedClientId ?? ""}`}
+              className="min-h-0 flex-1"
+            >
               <div className="p-3 sm:p-6">
                 <ErrorBoundary
                   resetKey={`${view}:${selectedClient?.id ?? ""}`}

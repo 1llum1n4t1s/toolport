@@ -112,6 +112,10 @@ describe("pushed detail navigation", () => {
     const user = userEvent.setup();
     render(<App />);
     const open = await screen.findByRole("button", { name: "Show Files details" });
+    const listViewport = document.querySelector<HTMLElement>(
+      'main [data-slot="scroll-area-viewport"]',
+    )!;
+    listViewport.scrollTop = 400;
     open.focus();
     await user.keyboard("{Enter}");
     expect(
@@ -120,6 +124,10 @@ describe("pushed detail navigation", () => {
     expect(
       screen.queryByRole("button", { name: /Browse catalog/ }),
     ).not.toBeInTheDocument();
+    expect(
+      document.querySelector<HTMLElement>('main [data-slot="scroll-area-viewport"]')
+        ?.scrollTop,
+    ).toBe(0);
     expect(screen.getByRole("tab", { name: "Overview" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Remove" }));
     expect(screen.getByRole("dialog")).toBeInTheDocument();
