@@ -371,7 +371,6 @@
   "no rules files": "无规则文件",
   "skips @import {path}": "跳过 @import {path}",
   "{client} now lists {skill} by name only": "{client} 现在仅按名称列出 {skill}",
-  "{client}: folders from its docs, not checked on this machine": "{client}：文件夹来自其文档，未在本机上核实",
   "folders from its docs, not checked on this machine": "文件夹来自其文档，未在本机上核实",
   "{count} broken": "{count} 个已损坏",
   "{count} name only": "{count} 个仅名称",
