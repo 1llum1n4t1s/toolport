@@ -1061,6 +1061,192 @@ mod tests {
         );
     }
 
+    /// Deterministic, synthetic detail screens for the cross-theme capture matrix.
+    #[test]
+    #[ignore = "interactive visual fixture; run in omabox with TOOLPORT_B5_VIEW"]
+    fn b5_details_visual_fixture() {
+        let _data = crate::registry::DataDirTestEnv::new("b5-visual");
+        let app = app();
+        let view = std::env::var("TOOLPORT_B5_VIEW").unwrap_or_else(|_| "server-overview".into());
+        let width = std::env::var("TOOLPORT_B5_WIDTH")
+            .ok()
+            .and_then(|s| s.parse::<i32>().ok())
+            .unwrap_or(1440);
+        let registry = crate::registry::update(|registry| {
+            registry.servers = ["GitHub", "Filesystem", "Calendar"].into_iter().enumerate().map(|(i, name)| serde_json::from_value(serde_json::json!({
+                "id":format!("fixture-{i}"), "name":name, "transport":"stdio", "command":if view == "server-error" && i == 0 { "/fixture/unavailable-server" } else { "/home/sbx/bin/mock-mcp-server" }, "args":[], "env":[], "enabled":true
+            })).unwrap()).collect();
+            registry.profiles.push(serde_json::from_value(serde_json::json!({"id":"scope-work", "name":"Work projects with a deliberately long access name", "enabledServerIds":["fixture-0"]})).unwrap());
+            Ok(())
+        }).unwrap().0;
+        let (servers_root, servers, _) =
+            build_content(&app, crate::approval_broker::start_native());
+        servers.render(state::RegistryState::Ready(
+            state::RegistrySnapshot::from_registry(registry),
+        ));
+        let clients = ClientPage::new(&app, servers.clone());
+        let stack = gtk::Stack::new();
+        stack.set_vexpand(true);
+        stack.add_named(&servers_root, Some("servers"));
+        stack.add_named(&clients.root, Some("clients"));
+        let split = adw::NavigationSplitView::new();
+        split.add_css_class("toolport-shell");
+        split.set_min_sidebar_width(220.0);
+        split.set_max_sidebar_width(280.0);
+        let (sidebar, _, _) = build_sidebar(
+            &app,
+            &split,
+            &stack,
+            servers.clone(),
+            clients.clone(),
+            ActivityPage::new(&app),
+            CatalogPage::new(servers.clone()),
+            TeamsPage::new(&app, servers.clone()),
+            SettingsPage::new(
+                http_bridge::BridgeController::default(),
+                crate::approval_broker::start_native(),
+            ),
+            false,
+        );
+        split.set_sidebar(Some(&adw::NavigationPage::new(&sidebar, "Navigation")));
+        split.set_content(Some(&adw::NavigationPage::new(&stack, "Toolport")));
+        split.set_show_content(true);
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .title("Toolport B5 fixture")
+            .default_width(width)
+            .default_height(900)
+            .content(&split)
+            .build();
+        window.add_css_class("toolport-native");
+        let theme = theme::ThemeController::new();
+        theme.attach(&window);
+        if view.starts_with("server") {
+            let mut server = servers.last_snapshot.borrow().as_ref().unwrap().servers[0].clone();
+            if view == "server-long" {
+                server.name = "A long server title for projects, accounts and a workspace with a lengthy name".into();
+            }
+            if view == "server-error" {
+                server.command = Some("/fixture/unavailable-server".into());
+            }
+            super::server(
+                &server,
+                &servers,
+                view != "server-overview" && view != "server-long" && view != "server-error",
+            );
+            if view == "server-error" {
+                update_server_log(&servers, &server.id, Some("Could not start the server: executable not found. Check the command and working directory, then retry."));
+            }
+            if view == "server-resources" || view == "server-prompts" {
+                for widget in widgets(servers_root.upcast_ref()) {
+                    if let Some(stack) = widget.downcast_ref::<gtk::Stack>() {
+                        let tab = if view == "server-resources" {
+                            "resources"
+                        } else {
+                            "prompts"
+                        };
+                        if stack.child_by_name(tab).is_some() {
+                            stack.set_visible_child_name(tab);
+                        }
+                    }
+                }
+            }
+        } else {
+            let (id, name) = match view.as_str() {
+                "client-claude-profile" => ("claude-code@work", "Claude Code (Work)"),
+                "client-codex-home" => ("codex@work", "Codex (Work)"),
+                "client-customized" => ("vscode", "VS Code"),
+                "client-unreadable" => ("zed", "Zed"),
+                "client-absent" => ("goose", "Goose"),
+                "client-available" => ("opencode", "OpenCode"),
+                _ => ("cursor", "Cursor"),
+            };
+            let mut selected = fixture_client(id);
+            selected.name = name.into();
+            selected.gateway_state = if view == "client-customized" {
+                state::ClientGatewayState::Customized
+            } else if matches!(
+                view.as_str(),
+                "client-connected"
+                    | "client-claude-profile"
+                    | "client-disconnect"
+                    | "client-access"
+                    | "client-discovery"
+            ) {
+                state::ClientGatewayState::Connected
+            } else {
+                state::ClientGatewayState::Disconnected
+            };
+            selected.config_error = view == "client-unreadable";
+            if view == "client-absent" {
+                selected.app_present = false;
+                selected.config_exists = false;
+            }
+            selected.location_removable = false;
+            selected.scope_id = Some("scope-work".into());
+            selected.scope_name = Some("Work projects with a deliberately long access name".into());
+            selected.detected = Some(state::ClientDetailData(crate::clients::DetectedClient {
+                id: id.into(),
+                name: name.into(),
+                config_path: format!("/home/sbx/{id}/config.json"),
+                app_present: selected.app_present,
+                config_exists: selected.config_exists,
+                uses_connectors: false,
+                location_removable: false,
+                discovery: crate::clients::discovery_capabilities(id),
+                servers: vec![crate::clients::McpServer {
+                    name: "Local notes".into(),
+                    transport: "stdio".into(),
+                    command: Some("notes-mcp".into()),
+                    args: vec![],
+                    env_keys: vec![],
+                    url: None,
+                }],
+                plugin_servers: vec![],
+                gateway_installed: selected.gateway_state
+                    != state::ClientGatewayState::Disconnected,
+                entry_state: if view == "client-customized" {
+                    crate::clients::GatewayEntryState::Customized
+                } else if selected.gateway_state == state::ClientGatewayState::Connected {
+                    crate::clients::GatewayEntryState::Managed
+                } else {
+                    crate::clients::GatewayEntryState::Absent
+                },
+                error: selected
+                    .config_error
+                    .then(|| "Synthetic unreadable config".into()),
+                claude_profile: None,
+            }));
+            clients.render(snapshot(vec![selected.clone()]));
+            stack.set_visible_child_name("clients");
+            for widget in widgets(sidebar.upcast_ref()) {
+                if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+                    let is_clients = widgets(button.upcast_ref())
+                        .iter()
+                        .filter_map(|w| w.downcast_ref::<gtk::Label>())
+                        .any(|l| l.text() == "Clients");
+                    if is_clients {
+                        button.add_css_class("selected");
+                    } else {
+                        button.remove_css_class("selected");
+                    }
+                }
+            }
+            super::client(&selected, &clients);
+        }
+        window.present();
+        let main_loop = gtk::glib::MainLoop::new(None, false);
+        let stop = main_loop.clone();
+        window.connect_close_request(move |_| {
+            stop.quit();
+            gtk::glib::Propagation::Proceed
+        });
+        let stop = main_loop.clone();
+        gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(120), move || stop.quit());
+        main_loop.run();
+        window.close();
+    }
+
     fn server_details_for_test(server: &state::ServerView, page: &ServerPage) {
         super::server(server, page, false);
     }
