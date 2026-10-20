@@ -151,6 +151,42 @@ fn text(value: &str, mono: bool) -> gtk::Label {
     label
 }
 
+fn message(source: &'static str) -> gtk::Label {
+    let label = text("", false);
+    l10n::bind_label(&label, source);
+    label
+}
+
+fn formatted_message(
+    source: &'static str,
+    values: &[(&str, &str)],
+    translated: &[(&str, &'static str)],
+) -> gtk::Label {
+    let values = values
+        .iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect::<Vec<_>>();
+    let translated = translated
+        .iter()
+        .map(|(key, value)| (key.to_string(), *value))
+        .collect::<Vec<_>>();
+    let label = text("", false);
+    l10n::bind_label_with(&label, move || {
+        let mut values = values.clone();
+        values.extend(
+            translated
+                .iter()
+                .map(|(key, source)| (key.clone(), crate::i18n::tr(source))),
+        );
+        let refs = values
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect::<Vec<_>>();
+        crate::i18n::trf(source, &refs)
+    });
+    label
+}
+
 pub(super) fn server(server: &state::ServerView, page: &ServerPage, show_tools: bool) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let tools = ServerToolsPanel::new(&page.app, &server.id);
@@ -349,7 +385,7 @@ pub(super) fn client(client: &state::ClientView, page: &ClientPage) {
             .get(control.selected() as usize)
             .map(|p| p.id.clone());
     });
-    actions.append(&text(&crate::i18n::tr("Access"), false));
+    actions.append(&message("Access"));
     actions.append(&scope);
     if connected && !customized {
         let apply = l10n::button("Apply");
@@ -458,15 +494,20 @@ pub(super) fn client(client: &state::ClientView, page: &ClientPage) {
         }
     }
     if customized {
-        body.append(&text(&crate::i18n::tr("Toolport is leaving your hand-edited gateway entry as-is. Reset it only if you want Toolport to manage the entry."), false));
+        body.append(&message("Toolport is leaving your hand-edited gateway entry as-is. Reset it only if you want Toolport to manage the entry."));
     }
     if client.legacy_bearer_argv {
-        body.append(&text(&crate::i18n::tr("This older HTTP connection exposes a bearer credential in process arguments. Review migration to stdio; it stays unchanged until you confirm."), false));
+        body.append(&message("This older HTTP connection exposes a bearer credential in process arguments. Review migration to stdio; it stays unchanged until you confirm."));
     }
     if !customized {
         let copy = gtk::Box::new(gtk::Orientation::Vertical, 8);
         copy.append(&heading("Discovery mode"));
-        copy.append(&text(&client_rows::discovery_summary(client).1, false));
+        let summary = text("", false);
+        let discovery_client = client.clone();
+        l10n::bind_label_with(&summary, move || {
+            client_rows::discovery_summary(&discovery_client).1
+        });
+        copy.append(&summary);
         let mode = discovery_picker(
             client,
             page,
@@ -503,8 +544,8 @@ pub(super) fn client(client: &state::ClientView, page: &ClientPage) {
         }
     }
     if client.uses_connectors {
-        body.append(&text(&crate::i18n::tr("Uses account connectors"), false));
-        body.append(&text(&crate::i18n::trf("Those live in {value1}'s Customize → Connectors and sync to your account, outside the local config files Toolport reads. Connecting Toolport adds a local gateway entry so your Toolport-managed servers appear in {value2} too.", &[("value1", &client.name), ("value2", &client.name)]), false));
+        body.append(&message("Uses account connectors"));
+        body.append(&formatted_message("Those live in {value1}'s Customize → Connectors and sync to your account, outside the local config files Toolport reads. Connecting Toolport adds a local gateway entry so your Toolport-managed servers appear in {value2} too.", &[("value1", &client.name), ("value2", &client.name)], &[]));
     }
     if let Some(detected) = &client.detected {
         client_imports(
@@ -538,6 +579,15 @@ fn discovery_picker(
         &crate::i18n::tr("Full · every tool"),
     ]);
     bound_dropdown(&mode);
+    l10n::bind_dropdown_choices(
+        &mode,
+        &[
+            "Auto",
+            "Lazy · search",
+            "Grouped · per-server",
+            "Full · every tool",
+        ],
+    );
     mode.set_selected(
         modes
             .iter()
@@ -554,7 +604,7 @@ fn discovery_picker(
     let c = client.clone();
     let p = page.clone();
     mode.connect_selected_notify(move |control| {
-        if updating.replace(true) {
+        if l10n::dropdown_rebinding(control) || updating.replace(true) {
             return;
         }
         let Some(mode) = modes.get(control.selected() as usize).copied() else {
@@ -639,7 +689,7 @@ fn refresh_reachable(
         }
         match result {
             Ok(Ok(names)) => render_reachable(&reachable, &client, &names),
-            _ => reachable.append(&text(&crate::i18n::tr("Servers unavailable"), false)),
+            _ => reachable.append(&message("Servers unavailable")),
         }
     });
 }
@@ -666,25 +716,31 @@ fn render_reachable(root: &gtk::Box, client: &state::ClientView, names: &[String
     if client.gateway_state == state::ClientGatewayState::Connected {
         root.append(&heading("Servers it can reach"));
         if names.is_empty() {
-            root.append(&text(&crate::i18n::tr("No enabled servers in this access set yet. Turn servers on in Servers and include them under Settings > Advanced."), false));
+            root.append(&message("No enabled servers in this access set yet. Turn servers on in Servers and include them under Settings > Advanced."));
         } else {
             root.append(&server_chips(names));
         }
         return;
     }
     if names.is_empty() {
-        root.append(&text(&crate::i18n::trf("Connect {value1}, then enable servers under{value2}{value3} and they'll all route through Toolport, no per-client setup.", &[("value1", &client.name), ("value2", " "), ("value3", &crate::i18n::tr("Servers"))]), false));
+        root.append(&formatted_message("Connect {value1}, then enable servers under{value2}{value3} and they'll all route through Toolport, no per-client setup.", &[("value1", &client.name), ("value2", " ")], &[("value3", "Servers")]));
         return;
     }
-    let count = crate::i18n::trf(
-        if names.len() == 1 {
-            "{value1} managed server"
-        } else {
-            "{value1} managed servers"
-        },
-        &[("value1", &names.len().to_string())],
-    );
-    root.append(&text(&crate::i18n::trf("Connect {value1} once and it reaches your{value2}{value3}{value4}through one gateway, no re-wiring per project. Your keys stay in your keychain.", &[("value1", &client.name), ("value2", " "), ("value3", &count), ("value4", " ")]), false));
+    let explanation = text("", false);
+    let name = client.name.clone();
+    let count = names.len();
+    l10n::bind_label_with(&explanation, move || {
+        let count = crate::i18n::trf(
+            if count == 1 {
+                "{value1} managed server"
+            } else {
+                "{value1} managed servers"
+            },
+            &[("value1", &count.to_string())],
+        );
+        crate::i18n::trf("Connect {value1} once and it reaches your{value2}{value3}{value4}through one gateway, no re-wiring per project. Your keys stay in your keychain.", &[("value1", &name), ("value2", " "), ("value3", &count), ("value4", " ")])
+    });
+    root.append(&explanation);
     let flow = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .homogeneous(false)
@@ -712,12 +768,10 @@ fn render_reachable(root: &gtk::Box, client: &state::ClientView, names: &[String
     let logo = branding::toolport_mark();
     logo.set_pixel_size(48);
     gateway.append(&logo);
-    gateway.append(&text(
-        &crate::i18n::trf(
-            "Toolport {value1}",
-            &[("value1", &crate::i18n::tr("gateway"))],
-        ),
-        false,
+    gateway.append(&formatted_message(
+        "Toolport {value1}",
+        &[],
+        &[("value1", "gateway")],
     ));
     gateway_step.append(&gateway);
     flow.insert(&gateway_step, -1);
@@ -730,12 +784,10 @@ fn render_reachable(root: &gtk::Box, client: &state::ClientView, names: &[String
         list.append(&chip);
     }
     if names.len() > 4 {
-        list.append(&text(
-            &crate::i18n::trf(
-                "+{value1} more",
-                &[("value1", &(names.len() - 4).to_string())],
-            ),
-            false,
+        list.append(&formatted_message(
+            "+{value1} more",
+            &[("value1", &(names.len() - 4).to_string())],
+            &[],
         ));
     }
     targets.append(&list);
@@ -764,18 +816,14 @@ fn client_imports(
     }
     body.append(&heading("Import into Toolport"));
     let explanation = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    explanation.append(&text(
-        &crate::i18n::trf(
-            "{value1} copies a server into Toolport; {value2} keeps its own copy.",
-            &[
-                ("value1", &crate::i18n::tr("Import")),
-                ("value2", &detected.name),
-            ],
-        ),
-        false,
+    explanation.append(&formatted_message(
+        "{value1} copies a server into Toolport; {value2} keeps its own copy.",
+        &[("value2", &detected.name)],
+        &[("value1", "Import")],
     ));
-    explanation.append(&text(&crate::i18n::trf("{review} copies it, then removes it from {client}'s config so the gateway is the only source (plugin servers stay). The cutover that actually saves context.", &[("review", &crate::i18n::tr("Review and connect")), ("client", &detected.name)]), false));
-    let how = gtk::Expander::new(Some(&crate::i18n::tr("How importing works")));
+    explanation.append(&formatted_message("{review} copies it, then removes it from {client}'s config so the gateway is the only source (plugin servers stay). The cutover that actually saves context.", &[("client", &detected.name)], &[("review", "Review and connect")]));
+    let how = gtk::Expander::new(None);
+    how.set_label_widget(Some(&message("How importing works")));
     how.set_child(Some(&explanation));
     body.append(&how);
     if detected.gateway_installed
@@ -783,12 +831,12 @@ fn client_imports(
             .iter()
             .any(|s| !imported_names.contains(&s.name.to_lowercase()))
     {
-        let warning = text(&crate::i18n::trf("{client} is already connected to Toolport. Import on its own leaves a copy here too, so these tools load twice, once directly and once through the gateway. Use {review} to avoid that.", &[("client", &detected.name), ("review", &crate::i18n::tr("Review and connect"))]), false);
+        let warning = formatted_message("{client} is already connected to Toolport. Import on its own leaves a copy here too, so these tools load twice, once directly and once through the gateway. Use {review} to avoid that.", &[("client", &detected.name)], &[("review", "Review and connect")]);
         warning.add_css_class("toolport-feedback");
         warning.add_css_class("warning");
         body.append(&warning);
     }
-    body.append(&text(&crate::i18n::tr("Review each command and URL. Values are saved using your keychain choices. Missing inputs stay off."), false));
+    body.append(&message("Review each command and URL. Values are saved using your keychain choices. Missing inputs stay off."));
     let all = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let import = l10n::button("Import all");
     import.add_css_class("toolport-secondary-action");
@@ -800,10 +848,13 @@ fn client_imports(
         .collect::<Vec<_>>();
     import.set_sensitive(writable && !keys.is_empty());
     import.set_visible(!keys.is_empty());
-    import.set_label(&crate::i18n::trf(
-        "{value1}Import all ({value2})",
-        &[("value1", ""), ("value2", &keys.len().to_string())],
-    ));
+    let count = keys.len();
+    l10n::bind_button_with(&import, move || {
+        crate::i18n::trf(
+            "{value1}Import all ({value2})",
+            &[("value1", ""), ("value2", &count.to_string())],
+        )
+    });
     let all_imported = keys.is_empty();
     let p = page.clone();
     import.connect_clicked(move |_| review_imports(&p, keys.clone()));
@@ -857,7 +908,7 @@ fn client_imports(
             .iter()
             .any(|plugin| std::ptr::eq(plugin, server))
         {
-            let badge = text(&crate::i18n::tr("plugin"), false);
+            let badge = message("plugin");
             badge.add_css_class("toolport-badge");
             badge.add_css_class("off");
             badge.set_halign(gtk::Align::Start);
@@ -876,21 +927,15 @@ fn client_imports(
     }
     body.append(&group);
     if all_imported {
-        body.append(&text(
-            &crate::i18n::trf(
-                "{value1}Everything here is already in Toolport. Manage it under{value2}{value3}",
-                &[
-                    ("value1", ""),
-                    ("value2", " "),
-                    ("value3", &crate::i18n::tr("Servers")),
-                ],
-            ),
-            false,
+        body.append(&formatted_message(
+            "{value1}Everything here is already in Toolport. Manage it under{value2}{value3}",
+            &[("value1", ""), ("value2", " ")],
+            &[("value3", "Servers")],
         ));
-        let servers = gtk::Button::with_label(&crate::i18n::trf(
-            "All servers {value1}",
-            &[("value1", "→")],
-        ));
+        let servers = gtk::Button::new();
+        l10n::bind_button_with(&servers, || {
+            crate::i18n::trf("All servers {value1}", &[("value1", "→")])
+        });
         servers.add_css_class("toolport-secondary-action");
         servers.set_halign(gtk::Align::Start);
         let app = page.app.clone();
@@ -1379,6 +1424,19 @@ mod tests {
             1,
             "rollback never starts a second write"
         );
+        crate::i18n::set_language("fr").unwrap();
+        l10n::refresh_bindings();
+        while context.pending() {
+            context.iteration(false);
+        }
+        assert_eq!(mode.selected(), 1);
+        assert_eq!(
+            WRITES.load(Ordering::SeqCst),
+            1,
+            "retranslation never writes discovery"
+        );
+        crate::i18n::set_language("en").unwrap();
+        l10n::refresh_bindings();
         assert_eq!(
             std::fs::read(crate::registry::registry_path().unwrap()).unwrap(),
             before
@@ -1422,6 +1480,25 @@ mod tests {
         assert!(labels.iter().any(|l| l == "Toolport gateway"));
         assert!(labels.iter().any(|l| l == "Notes"));
         assert!(!labels.iter().any(|l| l == "GitHub"));
+        crate::i18n::set_language("fr").unwrap();
+        l10n::refresh_bindings();
+        let translated = widgets(root.upcast_ref())
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Label>().ok())
+            .map(|l| l.text().to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            !translated
+                .iter()
+                .any(|l| l.contains("keys stay in your keychain")),
+            "gateway explanation retranslates live"
+        );
+        assert!(
+            translated.iter().any(|l| l == "Notes"),
+            "server name stays user data"
+        );
+        crate::i18n::set_language("en").unwrap();
+        l10n::refresh_bindings();
         assert!(
             root.measure(gtk::Orientation::Horizontal, -1).0 <= 756,
             "gateway preview fits narrow content"
