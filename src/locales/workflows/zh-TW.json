@@ -372,6 +372,7 @@
   "skips @import {path}": "略過 @import {path}",
   "{client} now lists {skill} by name only": "{client} 現在僅依名稱列出 {skill}",
   "{client}: folders from its docs, not checked on this machine": "{client}：資料夾來自其文件，未在本機上核實",
+  "folders from its docs, not checked on this machine": "資料夾來自其文件，未在本機上核實",
   "{count} broken": "{count} 個已損壞",
   "{count} name only": "{count} 個僅名稱",
   "{count} of {cap} characters": "{count} / {cap} 個字元",

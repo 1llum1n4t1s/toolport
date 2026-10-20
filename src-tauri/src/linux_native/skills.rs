@@ -106,6 +106,8 @@ const NARROW_COLUMN: i32 = 32;
 const NAME_ROOM: f64 = 360.0;
 const SIZE_COLUMN: i32 = 64;
 const DETAIL_WIDTH: i32 = 380;
+/// The list column's start and end margins.
+const LIST_MARGINS: i32 = 36;
 /// Below this page width the detail pane moves under the list, as the React view does.
 const NARROW: &str = "max-width: 980px";
 
@@ -158,6 +160,8 @@ struct Pane {
     hint: Rc<RefCell<Option<gtk::Label>>>,
     hovered: Rc<RefCell<Option<HoveredColumn>>>,
     focused: Rc<RefCell<Option<(String, String)>>>,
+    /// The page's breakpoint bin, whose width is what the list really has.
+    bin: Rc<RefCell<Option<adw::BreakpointBin>>>,
 }
 
 /// A write to run off the main thread, bound to the project that was open when it was asked
@@ -364,6 +368,51 @@ fn state_chip(state: Option<State>, label: Option<&str>) -> gtk::Box {
     chip
 }
 
+/// The labels under the column logos. Profiles of one client share a logo, so they are named
+/// by their profile ("claude2", "becca" for `Codex (codex-becca)`) instead of all "Claude".
+/// Matches the React view's `columnNames`.
+fn column_names(names: &[&str]) -> Vec<String> {
+    let split = |name: &str| -> (String, Option<String>) {
+        match name
+            .trim()
+            .strip_suffix(')')
+            .and_then(|rest| rest.rsplit_once(" ("))
+        {
+            Some((base, profile)) => (base.trim().to_string(), Some(profile.trim().to_string())),
+            None => (name.trim().to_string(), None),
+        }
+    };
+    let parts: Vec<_> = names.iter().map(|name| split(name)).collect();
+    parts
+        .iter()
+        .map(|(base, profile)| {
+            let shared = parts.iter().filter(|(other, _)| other == base).count() > 1;
+            match profile.as_deref().filter(|_| shared) {
+                Some(profile) => {
+                    let client = base.split_whitespace().next().unwrap_or("").to_lowercase();
+                    let short = profile
+                        .strip_prefix(&format!("{client}-"))
+                        .filter(|rest| !rest.is_empty())
+                        .unwrap_or(profile);
+                    cap(short)
+                }
+                None => short_agent_name(base),
+            }
+        })
+        .collect()
+}
+
+/// At most 8 characters, the last an ellipsis when cut.
+fn cap(text: &str) -> String {
+    if text.chars().count() > 8 {
+        let mut cut: String = text.chars().take(7).collect();
+        cut.push('…');
+        cut
+    } else {
+        text.to_string()
+    }
+}
+
 /// Up to 8 characters of an agent's name for under its column logo ("Claude", "Copilot"),
 /// matching the React view's `shortAgentName`.
 fn short_agent_name(name: &str) -> String {
@@ -377,13 +426,7 @@ fn short_agent_name(name: &str) -> String {
     if short.chars().count() > 8 {
         short = short.split_whitespace().next().unwrap_or(short);
     }
-    if short.chars().count() > 8 {
-        let mut cut: String = short.chars().take(7).collect();
-        cut.push('…');
-        cut
-    } else {
-        short.to_string()
-    }
+    cap(short)
 }
 
 /// What the grid header says about a hovered dot. `via` is a folder for On and a sentence for
@@ -565,8 +608,9 @@ fn state_dot(state: Option<State>, tooltip: &str, width: i32) -> gtk::CenterBox 
     cell.add_css_class("toolport-skill-cell");
     cell.set_valign(gtk::Align::Fill);
     cell.set_hexpand(false);
+    // No tooltip: the header line already names the hovered column and its state, and a
+    // tooltip trails the pointer across the grid as a fading second label.
     if !tooltip.is_empty() {
-        cell.set_tooltip_text(Some(tooltip));
         cell.update_property(&[gtk::accessible::Property::Label(tooltip)]);
     }
     let shape: gtk::Widget = if state == Some(State::Off) {
@@ -695,9 +739,25 @@ fn sync_agent_filter(filter: &gtk::DropDown, names: &[String], selected: u32) {
 }
 
 impl Pane {
+    /// The width the list gets from the page, whatever the list itself asks for. Measuring the
+    /// list's own scroller instead let wide columns that overflow the page keep themselves wide.
+    fn list_width(&self) -> f64 {
+        let bin = self.bin.borrow();
+        let Some(bin) = bin.as_ref().filter(|bin| bin.width() > 0) else {
+            return self.scroll.hadjustment().page_size();
+        };
+        // Stacked: the list has the whole width. Side by side: less the detail pane.
+        let side = if bin.current_breakpoint().is_some() {
+            0
+        } else {
+            DETAIL_WIDTH + 1
+        };
+        f64::from(bin.width() - side - LIST_MARGINS)
+    }
+
     /// The column width that fits `count` agents in the list's current width.
     fn fitting_column(&self, count: usize) -> i32 {
-        let width = self.scroll.hadjustment().page_size();
+        let width = self.list_width();
         if width - f64::from(WIDE_COLUMN) * count as f64 >= NAME_ROOM {
             WIDE_COLUMN
         } else {
@@ -836,9 +896,12 @@ impl Pane {
         detail.update_property(&[gtk::accessible::Property::Label(&crate::i18n::lookup(
             detail_name,
         ))]);
+        // Never expands: a scroller takes hexpand from its content, and an expanding detail pane
+        // split the spare width with the list by content size, moving the divider on every hover.
         let detail_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .width_request(DETAIL_WIDTH)
+            .hexpand(false)
             .vexpand(true)
             .child(&detail)
             .build();
@@ -860,6 +923,7 @@ impl Pane {
                 hint: Rc::default(),
                 hovered: Rc::default(),
                 focused: Rc::default(),
+                bin: Rc::default(),
             },
             layout,
         )
@@ -1034,6 +1098,7 @@ impl SkillsPage {
         let issues_side_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .width_request(DETAIL_WIDTH)
+            .hexpand(false)
             .vexpand(true)
             .child(&issues_side)
             .build();
@@ -1082,6 +1147,9 @@ impl SkillsPage {
             .vexpand(true)
             .build();
         adaptive.add_breakpoint(narrow);
+        for pane in [&skills, &rules] {
+            pane.bin.replace(Some(adaptive.clone()));
+        }
         // The first scan, a scan that failed with nothing to show, and no agents at all each get
         // a whole-page screen, as in the React view.
         let screens = gtk::Stack::builder()
@@ -1846,6 +1914,9 @@ impl SkillsPage {
         let title_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
         title_box.set_hexpand(true);
         let hint = one_line("", &["caption", "toolport-muted"]);
+        // Asks for one character, so a long or short hover note never resizes the header.
+        hint.set_max_width_chars(1);
+        hint.set_hexpand(true);
         hint.set_opacity(0.0);
         title_box.append(&hint);
         pane.hint.replace(Some(hint));
@@ -1859,7 +1930,8 @@ impl SkillsPage {
             pane.head.append(&spacer);
         }
         let focus = self.focus.borrow().clone();
-        for agent in agents {
+        let names = column_names(&agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>());
+        for (agent, short) in agents.iter().zip(names) {
             let overlay = gtk::Overlay::new();
             overlay.set_size_request(pane.column.get(), 22);
             let image = logo(&agent.id, 20);
@@ -1875,28 +1947,25 @@ impl SkillsPage {
             }
             let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
             column.append(&overlay);
-            if pane.column.get() == WIDE_COLUMN {
-                column.append(
-                    &gtk::Label::builder()
-                        .label(short_agent_name(&agent.name))
-                        .ellipsize(gtk::pango::EllipsizeMode::End)
-                        .max_width_chars(8)
-                        .css_classes(["toolport-skill-col-name"])
-                        .build(),
-                );
-            }
+            // The name line is always there, empty when only logos fit, so switching between
+            // the two never changes the header's height.
+            let wide = pane.column.get() == WIDE_COLUMN;
+            column.append(
+                &gtk::Label::builder()
+                    .label(if wide { short.as_str() } else { "" })
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    // Fills the column instead of asking for its own width.
+                    .max_width_chars(1)
+                    .hexpand(true)
+                    .css_classes(["toolport-skill-col-name"])
+                    .build(),
+            );
+            // No tooltip: the line beside SKILL names the hovered column, and a tooltip lags
+            // behind the pointer as a fading second name.
             let button = gtk::Button::builder()
                 .child(&column)
                 .width_request(pane.column.get())
                 .css_classes(["flat", "toolport-skill-col"])
-                .tooltip_text(if agent.verified {
-                    agent.name.clone()
-                } else {
-                    crate::i18n::trf(
-                        "{client}: folders from its docs, not checked on this machine",
-                        &[("client", &agent.name)],
-                    )
-                })
                 .build();
             // On Skills the filter keeps what the agent finds, switched off or not, so it can be
             // switched back on; on Rules it keeps what the agent reads.
@@ -1924,7 +1993,9 @@ impl SkillsPage {
                 page.focus.replace(next);
                 page.render_keeping_focus(format!("column:{id}"));
             });
-            pane.track_cell(agent, &button, None);
+            let note = (!agent.verified)
+                .then(|| crate::i18n::tr("folders from its docs, not checked on this machine"));
+            pane.track_cell(agent, &button, note);
             let watch = gtk::EventControllerFocus::new();
             let (p, id, name) = (pane.clone(), agent.id.clone(), agent.name.clone());
             watch.connect_enter(move |_| p.focus_column(&id, &name, true));
@@ -3793,10 +3864,26 @@ mod tests {
                     cell.set_width_request(column);
                 }
                 let height = || pane.head.measure(gtk::Orientation::Vertical, 640);
+                let width = || pane.head.measure(gtk::Orientation::Horizontal, -1);
                 let before = height();
+                let wide_before = width();
                 for _ in 0..10 {
+                    pane.hover_column(
+                        &agent.id,
+                        &agent.name,
+                        Some(
+                            "On via ~/.claude/skills/a/very/long/folder/that/would/widen/the/list",
+                        ),
+                        true,
+                    );
+                    assert_eq!(
+                        width(),
+                        wide_before,
+                        "a long hover note must not widen the list"
+                    );
                     pane.hover_column(&agent.id, &agent.name, Some("Off in settings.json"), true);
                     assert_eq!(height(), before, "hover must not resize the header");
+                    assert_eq!(width(), wide_before, "hover must not resize the header");
                     let hint = pane.hint.borrow().clone().unwrap();
                     assert_eq!(hint.text(), "Claude Code: Off in settings.json");
                     assert_eq!(hint.opacity(), 1.0);
@@ -3830,6 +3917,60 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires GTK; explicitly run in the isolated omabox session"]
+    fn detail_panes_keep_their_width_whatever_they_show() {
+        gtk::init().expect("this regression runs inside omabox");
+        let _lock = crate::registry::data_dir_test_lock();
+        let scratch = std::env::temp_dir().join(format!(
+            "toolport-detail_panes_keep_their_width-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _data = crate::registry::DataDirOverride::set(&scratch);
+        let app = adw::Application::builder().build();
+        let page = SkillsPage::new(&app);
+        for pane in [&page.skills, &page.rules] {
+            // Detail content that expands must not make the pane share the list's spare width.
+            let wide = gtk::Label::new(Some("~/.agents/skills/find-skills/SKILL.md"));
+            wide.set_hexpand(true);
+            pane.detail.append(&wide);
+            assert!(!pane
+                .detail_scroll
+                .compute_expand(gtk::Orientation::Horizontal));
+            assert!(
+                pane.bin.borrow().is_some(),
+                "the list measures the page, not itself"
+            );
+        }
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn profiles_of_one_client_are_named_by_profile() {
+        assert_eq!(
+            column_names(&[
+                "Claude Code (claude)",
+                "Claude Code (claude2)",
+                "Codex (codex)",
+                "Codex (codex-becca)",
+                "Cursor",
+                "OpenCode",
+                "Command Code",
+            ]),
+            ["claude", "claude2", "codex", "becca", "Cursor", "OpenCode", "Command"]
+        );
+        // One profile keeps the client's name.
+        assert_eq!(
+            column_names(&["Claude Code (claude)", "Codex (codex-work)", "Copilot CLI"]),
+            ["Claude", "Codex", "Copilot"]
+        );
+        assert_eq!(
+            column_names(&["Codex (codex-second-account)", "Codex (codex)"]),
+            ["second-…", "codex"]
+        );
     }
 
     #[test]

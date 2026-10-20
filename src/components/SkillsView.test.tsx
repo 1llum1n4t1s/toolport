@@ -16,7 +16,7 @@ import { applySkillState, skillsFixture } from "@/test/skills-fixture";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { toastError } from "@/lib/toast";
 import { SKILLS_REFRESH_EVENT, SKILLS_SEARCH_EVENT } from "@/lib/shortcuts";
-import { shortAgentName } from "@/lib/agentNames";
+import { columnNames, shortAgentName } from "@/lib/agentNames";
 import { SkillsView } from "./SkillsView";
 
 vi.mock("@/lib/api", () => ({
@@ -352,6 +352,25 @@ describe("SkillsView", () => {
     expect(shortAgentName("Copilot CLI")).toBe("Copilot");
     expect(shortAgentName("OpenCode")).toBe("OpenCode");
     expect(shortAgentName("Antigravity")).toBe("Antigra…");
+    expect(
+      columnNames([
+        "Claude Code (claude)",
+        "Claude Code (claude2)",
+        "Codex (codex)",
+        "Codex (codex-becca)",
+        "Cursor",
+        "Command Code",
+      ]),
+    ).toEqual(["claude", "claude2", "codex", "becca", "Cursor", "Command"]);
+    expect(columnNames(["Claude Code (claude)", "Codex (codex-work)", "Copilot CLI"])).toEqual([
+      "Claude",
+      "Codex",
+      "Copilot",
+    ]);
+    expect(columnNames(["Codex (codex-second-account)", "Codex (codex)"])).toEqual([
+      "second-…",
+      "codex",
+    ]);
   });
 
   it("shows how each agent reaches a rules file, including skipped imports", async () => {

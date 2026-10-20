@@ -372,6 +372,7 @@
   "skips @import {path}": "ignore @import {path}",
   "{client} now lists {skill} by name only": "{client} liste désormais {skill} par son nom seul",
   "{client}: folders from its docs, not checked on this machine": "{client} : dossiers d’après sa doc, non vérifiés sur cette machine",
+  "folders from its docs, not checked on this machine": "dossiers d’après sa doc, non vérifiés sur cette machine",
   "{count} broken": "{count} cassées",
   "{count} name only": "{count} nom seul",
   "{count} of {cap} characters": "{count} sur {cap} caractères",

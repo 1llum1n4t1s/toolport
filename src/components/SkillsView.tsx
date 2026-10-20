@@ -78,7 +78,7 @@ import type {
   SkillsInventory,
   SkillWanted,
 } from "@/lib/types";
-import { shortAgentName } from "@/lib/agentNames";
+import { columnNames } from "@/lib/agentNames";
 import { cn, fmtBytes, fmtTs } from "@/lib/utils";
 
 type Tab = "skills" | "rules" | "issues";
@@ -209,7 +209,6 @@ function StateDot({
     <span
       role="img"
       aria-label={label || undefined}
-      title={label || undefined}
       onMouseEnter={onHover && (() => onHover(true))}
       onMouseLeave={onHover && (() => onHover(false))}
       className={cn(
@@ -303,6 +302,7 @@ function AgentHeader({
 }) {
   const { t } = useI18n();
   const wide = column >= WIDE_COLUMN;
+  const names = columnNames(agents.map((agent) => agent.name));
   const hovered = hover ? agents.find((agent) => agent.id === hover.agent) : undefined;
   return (
     <div className="flex items-end justify-between gap-3 border-b px-2 pb-2">
@@ -318,55 +318,54 @@ function AgentHeader({
         )}
       </span>
       <span className="flex shrink-0">
-        {agents.map((agent) => (
-          <Tooltip key={agent.id}>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                aria-pressed={focus === agent.id}
-                aria-label={
-                  skills
-                    ? t("Show only skills {client} finds", { client: agent.name })
-                    : t("Show only what {client} loads", { client: agent.name })
-                }
-                onClick={() => onFocus(focus === agent.id ? null : agent.id)}
-                onMouseEnter={() => onHover({ agent: agent.id })}
-                onMouseLeave={() => onHover(null)}
-                onFocus={() => onHeaderFocus({ agent: agent.id })}
-                onBlur={() => onHeaderFocus(null)}
+        {agents.map((agent, index) => (
+          // No tooltip: the line beside the label names the hovered column, and a tooltip
+          // trails the pointer across the logos as a second name.
+          <button
+            key={agent.id}
+            type="button"
+            aria-pressed={focus === agent.id}
+            aria-label={
+              skills
+                ? t("Show only skills {client} finds", { client: agent.name })
+                : t("Show only what {client} loads", { client: agent.name })
+            }
+            onClick={() => onFocus(focus === agent.id ? null : agent.id)}
+            onMouseEnter={() =>
+              onHover({
+                agent: agent.id,
+                detail: agent.verified
+                  ? undefined
+                  : t("folders from its docs, not checked on this machine"),
+              })
+            }
+            onMouseLeave={() => onHover(null)}
+            onFocus={() => onHeaderFocus({ agent: agent.id })}
+            onBlur={() => onHeaderFocus(null)}
+            className={cn(
+              "relative flex flex-col items-center justify-center gap-1 rounded-md py-1.5 text-xs text-muted-foreground transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
+              hover?.agent === agent.id && "bg-primary/8 text-foreground",
+              focus === agent.id && "bg-primary/12 text-foreground ring-1 ring-primary/60",
+            )}
+            style={{ width: column }}
+          >
+            <ClientLogo id={agent.id} name={agent.name} size={20} />
+            {/* Always there, empty when only logos fit, so the header keeps its height. */}
+            <span
+              aria-hidden={!wide}
+              className={cn("max-w-full truncate px-0.5 leading-none", !wide && "invisible")}
+            >
+              {wide ? names[index] : "\u00a0"}
+            </span>
+            {!agent.verified && (
+              <span
                 className={cn(
-                  "relative flex flex-col items-center justify-center gap-1 rounded-md text-xs text-muted-foreground transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
-                  wide ? "py-1.5" : "h-8",
-                  hover?.agent === agent.id && "bg-primary/8 text-foreground",
-                  focus === agent.id &&
-                    "bg-primary/12 text-foreground ring-1 ring-primary/60",
+                  "absolute size-1.5 rounded-full bg-primary",
+                  wide ? "top-1 right-2" : "top-0.5 right-0.5",
                 )}
-                style={{ width: column }}
-              >
-                <ClientLogo id={agent.id} name={agent.name} size={20} />
-                {wide && (
-                  <span className="max-w-full truncate px-0.5 leading-none">
-                    {shortAgentName(agent.name)}
-                  </span>
-                )}
-                {!agent.verified && (
-                  <span
-                    className={cn(
-                      "absolute size-1.5 rounded-full bg-primary",
-                      wide ? "top-1 right-2" : "top-0.5 right-0.5",
-                    )}
-                  />
-                )}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {agent.verified
-                ? agent.name
-                : t("{client}: folders from its docs, not checked on this machine", {
-                    client: agent.name,
-                  })}
-            </TooltipContent>
-          </Tooltip>
+              />
+            )}
+          </button>
         ))}
       </span>
     </div>
