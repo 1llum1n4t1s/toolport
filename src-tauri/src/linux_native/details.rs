@@ -397,7 +397,10 @@ pub(super) fn client(client: &state::ClientView, page: &ClientPage) {
             .get(control.selected() as usize)
             .map(|p| p.id.clone());
     });
-    actions.append(&message("Access"));
+    let access_label = message("Access");
+    access_label.set_wrap(false);
+    access_label.set_valign(gtk::Align::Center);
+    actions.append(&access_label);
     actions.append(&scope);
     if connected && !customized {
         let apply = l10n::button("Apply");
