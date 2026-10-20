@@ -202,6 +202,7 @@ pub(super) struct SkillsPage {
     tab: Rc<Cell<Tab>>,
     /// The agent whose column was clicked: the list shows only what it loads.
     focus: Rc<RefCell<Option<String>>>,
+    connected_only: Rc<Cell<bool>>,
     selected_skill: Rc<RefCell<Option<String>>>,
     selected_rule: Rc<RefCell<Option<String>>>,
     collapsed: Rc<RefCell<HashSet<String>>>,
@@ -622,10 +623,6 @@ fn legend() -> gtk::Box {
         row.append(&item);
     }
     row
-}
-
-fn skill_agents(inv: &Inventory) -> Vec<&Agent> {
-    inv.agents.iter().filter(|a| a.supports_skills).collect()
 }
 
 fn project_state_path() -> Option<std::path::PathBuf> {
@@ -1163,6 +1160,7 @@ impl SkillsPage {
             refresh_pending: Rc::default(),
             tab: Rc::new(Cell::new(Tab::Skills)),
             focus: Rc::default(),
+            connected_only: Rc::new(Cell::new(true)),
             selected_skill: Rc::default(),
             selected_rule: Rc::default(),
             // Open on your own skills; the rest are a click away.
@@ -1208,7 +1206,25 @@ impl SkillsPage {
                     .get(filter.selected() as usize)
                     .cloned()
                     .filter(|id| !id.is_empty());
-                page_ref.focus.replace(id);
+                match id.as_deref() {
+                    Some("@connected") => {
+                        page_ref.connected_only.set(true);
+                        page_ref.focus.replace(None);
+                    }
+                    None => {
+                        page_ref.connected_only.set(false);
+                        page_ref.focus.replace(None);
+                    }
+                    Some(agent) => {
+                        let connected = page_ref.inventory.borrow().as_ref().is_some_and(|inv| {
+                            inv.agents.iter().any(|a| a.id == agent && a.connected)
+                        });
+                        if !connected {
+                            page_ref.connected_only.set(false);
+                        }
+                        page_ref.focus.replace(id);
+                    }
+                }
                 page_ref.render();
             });
         }
@@ -1606,12 +1622,22 @@ impl SkillsPage {
             return;
         }
         self.screens.set_visible_child_name("content");
+        let reset_focus = self.focus.borrow().as_deref().is_some_and(|id| {
+            inv.agents.iter().find(|a| a.id == id).is_none_or(|agent| {
+                self.connected_only.get()
+                    && inv.agents.iter().any(|a| a.connected)
+                    && !agent.connected
+            })
+        });
+        if reset_focus {
+            self.focus.replace(None);
+        }
         let counts = [
-            inv.skills
+            self.visible_skills(inv, "")
                 .iter()
                 .filter(|s| s.source != Source::Broken)
                 .count(),
-            inv.rules.len(),
+            self.visible_rules(inv, "").len(),
             inv.issues.iter().filter(|i| !i.dismissed).count(),
         ];
         for ((tab, _, label), count) in self.tabs.iter().zip(counts) {
@@ -1624,17 +1650,27 @@ impl SkillsPage {
         }
         self.syncing_filter.set(true);
         let mut ids = vec![String::new()];
-        let mut names = vec![crate::i18n::tr("All agents")];
+        let mut names = vec![crate::i18n::tr("All detected agents")];
+        if inv.agents.iter().any(|a| a.connected) {
+            ids.insert(0, "@connected".into());
+            names.insert(0, crate::i18n::tr("Connected to Toolport"));
+        }
         for agent in &inv.agents {
             if self.tab.get() == Tab::Rules || agent.supports_skills {
                 ids.push(agent.id.clone());
                 names.push(agent.name.clone());
             }
         }
+        let aggregate = if self.connected_only.get() && inv.agents.iter().any(|a| a.connected) {
+            "@connected"
+        } else {
+            ""
+        };
         let selected = ids
             .iter()
-            .position(|id| Some(id.as_str()) == self.focus.borrow().as_deref())
-            .unwrap_or(0) as u32;
+            .position(|id| id == self.focus.borrow().as_deref().unwrap_or(aggregate))
+            .unwrap_or_else(|| ids.iter().position(String::is_empty).unwrap_or(0))
+            as u32;
         sync_agent_filter(&self.agent_filter, &names, selected);
         self.filter_ids.replace(ids);
         self.agent_filter.set_visible(self.tab.get() != Tab::Issues);
@@ -1689,11 +1725,38 @@ impl SkillsPage {
         }
     }
 
+    fn scoped_agents<'a>(&self, inv: &'a Inventory) -> Vec<&'a Agent> {
+        let connected = self.connected_only.get() && inv.agents.iter().any(|a| a.connected);
+        inv.agents
+            .iter()
+            .filter(|agent| !connected || agent.connected)
+            .collect()
+    }
+
+    fn filtering_agents(&self, inv: &Inventory) -> bool {
+        self.focus.borrow().is_some()
+            || (self.connected_only.get() && inv.agents.iter().any(|a| a.connected))
+    }
+
+    fn scoped_skill_agents<'a>(&self, inv: &'a Inventory) -> Vec<&'a Agent> {
+        self.scoped_agents(inv)
+            .into_iter()
+            .filter(|a| a.supports_skills)
+            .collect()
+    }
+
     fn visible_skills<'a>(&self, inv: &'a Inventory, needle: &str) -> Vec<&'a Skill> {
+        let agents = self.scoped_skill_agents(inv);
         let focus = self.focus.borrow();
         inv.skills
             .iter()
-            .filter(|s| focus.as_ref().is_none_or(|id| s.states.contains_key(id)))
+            .filter(|s| {
+                !self.filtering_agents(inv)
+                    || focus.as_ref().map_or_else(
+                        || agents.iter().any(|a| s.states.contains_key(&a.id)),
+                        |id| s.states.contains_key(id),
+                    )
+            })
             .filter(|s| {
                 needle.is_empty()
                     || s.name.to_lowercase().contains(needle)
@@ -1704,10 +1767,17 @@ impl SkillsPage {
     }
 
     fn visible_rules<'a>(&self, inv: &'a Inventory, needle: &str) -> Vec<&'a RuleFile> {
+        let agents = self.scoped_agents(inv);
         let focus = self.focus.borrow();
         inv.rules
             .iter()
-            .filter(|r| focus.as_ref().is_none_or(|id| r.agents.contains_key(id)))
+            .filter(|r| {
+                !self.filtering_agents(inv)
+                    || focus.as_ref().map_or_else(
+                        || agents.iter().any(|a| r.agents.contains_key(&a.id)),
+                        |id| r.agents.contains_key(id),
+                    )
+            })
             .filter(|r| {
                 needle.is_empty()
                     || r.name.to_lowercase().contains(needle)
@@ -1912,7 +1982,7 @@ impl SkillsPage {
     fn render_skills(&self, inv: &Inventory, needle: &str) {
         let pane = &self.skills;
         self.render_banner(pane, inv);
-        let agents = skill_agents(inv);
+        let agents = self.scoped_skill_agents(inv);
         self.render_head(pane, &agents, &crate::i18n::tr("Skill"), true);
         let visible = self.visible_skills(inv, needle);
         // With nothing picked, the first row shown: groups in page order, collapsed ones skipped.
@@ -2416,7 +2486,7 @@ impl SkillsPage {
         }
         pane.detail.append(&fields);
 
-        let agents = skill_agents(inv);
+        let agents = self.scoped_skill_agents(inv);
         let loaded = agents
             .iter()
             .filter(|a| {
@@ -2662,7 +2732,7 @@ impl SkillsPage {
     fn render_rules(&self, inv: &Inventory, needle: &str) {
         let pane = &self.rules;
         self.render_banner(pane, inv);
-        let agents: Vec<&Agent> = inv.agents.iter().collect();
+        let agents = self.scoped_agents(inv);
         self.render_head(pane, &agents, &crate::i18n::tr("Rules file"), false);
         let visible = self.visible_rules(inv, needle);
         let current = self.current_rule(&visible).map(|r| r.key.clone());
@@ -2837,8 +2907,8 @@ impl SkillsPage {
         }
         pane.detail.append(&fields);
 
-        let loaded = inv
-            .agents
+        let agents = self.scoped_agents(inv);
+        let loaded = agents
             .iter()
             .filter(|a| rule.agents.contains_key(&a.id))
             .count();
@@ -2848,13 +2918,13 @@ impl SkillsPage {
                 "{count} of {total} load it",
                 &[
                     ("count", &loaded.to_string()),
-                    ("total", &inv.agents.len().to_string()),
+                    ("total", &agents.len().to_string()),
                 ],
             ),
         ));
         let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
         list.add_css_class("toolport-skill-agents");
-        for agent in &inv.agents {
+        for agent in agents {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
             row.add_css_class("toolport-skill-agent");
             row.append(&logo_tile(&agent.id));
@@ -3187,6 +3257,7 @@ impl SkillsPage {
         let Some((key, source)) = found else {
             return;
         };
+        self.connected_only.set(false);
         self.search.set_text("");
         self.collapsed.borrow_mut().remove(&source_key(source));
         self.selected_skill.replace(Some(key));
@@ -3408,6 +3479,7 @@ mod tests {
 
     fn regression_agent() -> Agent {
         Agent {
+            connected: false,
             id: "claude-code".into(),
             name: "Claude Code".into(),
             supports_skills: true,
@@ -3419,6 +3491,106 @@ mod tests {
             rules_note: None,
             rule_locations: vec![],
         }
+    }
+
+    #[test]
+    #[ignore = "requires GTK; explicitly run in the isolated omabox session"]
+    fn connected_profile_scope_filters_columns_rows_and_rules() {
+        adw::init().unwrap();
+        let _data = crate::registry::DataDirTestEnv::new("skills-connected-profiles");
+        let app = adw::Application::builder().build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+        let agents: Vec<Agent> = (0..8)
+            .map(|i| Agent {
+                id: format!("{}@{i}", if i < 4 { "claude-code" } else { "codex" }),
+                name: format!("Profile {i}"),
+                connected: matches!(i, 0 | 1 | 4),
+                ..regression_agent()
+            })
+            .collect();
+        let skill: Skill = serde_json::from_value(serde_json::json!({
+            "key": "private", "name": "Private work skill", "description": "", "descriptionChars": 0,
+            "path": "", "folder": "", "source": "yours", "sourceNote": "", "editable": false,
+            "sizeBytes": 0, "lines": 0, "modifiedSecs": null, "gitRepo": null,
+            "links": [], "states": {"codex@5": {"state": "on", "via": "Work profile"}}, "preview": ""
+        })).unwrap();
+        let rule = RuleFile {
+            key: "work-rule".into(),
+            name: "AGENTS.md".into(),
+            path: "Work/AGENTS.md".into(),
+            scope: "global".into(),
+            size_bytes: 10,
+            preview: "Work rules".into(),
+            agents: [("codex@5".into(), vec![])].into(),
+        };
+        let inv = Inventory {
+            agents,
+            skills: vec![skill],
+            rules: vec![rule],
+            issues: vec![],
+            project: None,
+        };
+        let page = SkillsPage::new(&app);
+        page.inventory.replace(Some(inv));
+        page.render();
+        let columns = |pane: &Pane| {
+            let mut count = 0;
+            let mut child = pane.head.first_child();
+            while let Some(widget) = child {
+                if widget.has_css_class("toolport-skill-col") {
+                    count += 1;
+                }
+                child = widget.next_sibling();
+            }
+            count
+        };
+        assert_eq!(columns(&page.skills), 3);
+        assert_eq!(page.agent_filter.selected(), 0);
+        assert_eq!(page.filter_ids.borrow()[0], "@connected");
+        assert!(page
+            .visible_skills(page.inventory.borrow().as_ref().unwrap(), "")
+            .is_empty());
+        page.agent_filter.set_selected(1); // All detected agents, via the real callback.
+        assert_eq!(columns(&page.skills), 8);
+        assert_eq!(
+            page.visible_skills(page.inventory.borrow().as_ref().unwrap(), "")
+                .len(),
+            1
+        );
+        page.select_tab(Tab::Rules);
+        assert_eq!(columns(&page.rules), 8);
+        assert_eq!(
+            page.visible_rules(page.inventory.borrow().as_ref().unwrap(), "")
+                .len(),
+            1
+        );
+        page.agent_filter.set_selected(0);
+        assert_eq!(columns(&page.rules), 3);
+        assert!(page
+            .visible_rules(page.inventory.borrow().as_ref().unwrap(), "")
+            .is_empty());
+        page.select_tab(Tab::Skills);
+        assert_eq!(columns(&page.skills), 3);
+        page.show_skill(&["private".into()], "Private work skill");
+        assert!(
+            !page.connected_only.get(),
+            "issue jump must reveal an unconnected profile's skill"
+        );
+        assert_eq!(
+            page.current_skill(&page.visible_skills(page.inventory.borrow().as_ref().unwrap(), ""))
+                .unwrap()
+                .key,
+            "private"
+        );
+        for agent in &mut page.inventory.borrow_mut().as_mut().unwrap().agents {
+            agent.connected = false;
+        }
+        page.render();
+        assert_eq!(columns(&page.skills), 8);
+        assert_eq!(
+            page.filter_ids.borrow()[page.agent_filter.selected() as usize],
+            ""
+        );
     }
 
     // Separate processes keep GTK window/frame-clock state independent at each size.

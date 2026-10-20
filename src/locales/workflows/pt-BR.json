@@ -406,5 +406,6 @@
   "No switch Toolport can write": "Sem chave que o Toolport possa gravar",
   "Filter by agent": "Filtrar por agente",
   "All agents": "Todos os agentes",
+  "All detected agents": "Todos os agentes detectados",
   "{state} via {path}": "{state} via {path}"
 }

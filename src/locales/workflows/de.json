@@ -406,5 +406,6 @@
   "No switch Toolport can write": "Kein Schalter, den Toolport setzen kann",
   "Filter by agent": "Nach Agent filtern",
   "All agents": "Alle Agenten",
+  "All detected agents": "Alle erkannten Agenten",
   "{state} via {path}": "{state} über {path}"
 }

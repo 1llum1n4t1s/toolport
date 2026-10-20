@@ -406,5 +406,6 @@
   "No switch Toolport can write": "Toolport가 변경할 수 있는 스위치 없음",
   "Filter by agent": "에이전트로 필터",
   "All agents": "모든 에이전트",
+  "All detected agents": "감지된 모든 에이전트",
   "{state} via {path}": "{path} 경유 {state}"
 }

@@ -19,6 +19,10 @@ current update track. Choose your platform from the
 
 ### Fixed
 
+- Skills and Rules start with connected client profiles, with all detected agents
+  available in the same selector. Codex homes now keep separate skills, rules and
+  switches, matching Claude profile handling and the Clients page.
+
 - Keep uncertain Reasonix skill identifiers read-only in both apps instead of
   writing an ineffective disable key. Verify only printable ASCII headers with
   one bare name or no name, rejecting controls, quotes and repeated names.

@@ -406,5 +406,6 @@
   "No switch Toolport can write": "沒有 Toolport 可寫入的開關",
   "Filter by agent": "依智慧體篩選",
   "All agents": "所有智慧體",
+  "All detected agents": "所有偵測到的智慧體",
   "{state} via {path}": "{state}，來自 {path}"
 }

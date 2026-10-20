@@ -1270,7 +1270,8 @@ export function SkillsView() {
   const [project, setProject] = useState<string | null>(readProject);
   const [tab, setTab] = useState<Tab>("skills");
   const [query, setQuery] = useState("");
-  const [focus, setFocus] = useState<string | null>(null);
+  const [pickedAgent, setFocus] = useState<string | null>(null);
+  const [connectedOnly, setConnectedOnly] = useState(true);
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [selectedRule, setSelectedRule] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(
@@ -1378,16 +1379,55 @@ export function SkillsView() {
     setLoading(false);
   }
 
+  const hasConnected = inv?.agents.some((agent) => agent.connected) ?? false;
+  const focus = inv?.agents.some(
+    (agent) =>
+      agent.id === pickedAgent && (!connectedOnly || !hasConnected || agent.connected),
+  )
+    ? pickedAgent
+    : null;
+  const filteringAgents = Boolean(focus || (connectedOnly && hasConnected));
+  const scopedAgents = useMemo(() => {
+    const agents = inv?.agents ?? [];
+    if (connectedOnly) {
+      return agents.some((agent) => agent.connected)
+        ? agents.filter((agent) => agent.connected)
+        : agents;
+    }
+    return agents;
+  }, [inv, connectedOnly]);
   const skillAgents = useMemo(
-    () => inv?.agents.filter((a) => a.supportsSkills) ?? [],
-    [inv],
+    () => scopedAgents.filter((a) => a.supportsSkills),
+    [scopedAgents],
+  );
+  const allColumnAgents = useMemo(
+    () => inv?.agents.filter((a) => tab === "rules" || a.supportsSkills) ?? [],
+    [inv, tab],
+  );
+  const scopedSkills = useMemo(
+    () =>
+      inv?.skills.filter(
+        (skill) =>
+          !filteringAgents ||
+          (focus
+            ? skill.states[focus]
+            : skillAgents.some((agent) => skill.states[agent.id])),
+      ) ?? [],
+    [inv, filteringAgents, skillAgents, focus],
+  );
+  const scopedRules = useMemo(
+    () =>
+      inv?.rules.filter(
+        (rule) =>
+          !filteringAgents ||
+          (focus
+            ? rule.agents[focus]
+            : scopedAgents.some((agent) => rule.agents[agent.id])),
+      ) ?? [],
+    [inv, filteringAgents, scopedAgents, focus],
   );
   const needle = query.trim().toLowerCase();
-  // The agents with a column on this tab, in the Agents list's order.
-  const columnAgents = useMemo(
-    () => (tab === "rules" ? (inv?.agents ?? []) : skillAgents),
-    [tab, inv, skillAgents],
-  );
+  const columnAgents = tab === "rules" ? scopedAgents : skillAgents;
   const [gridRef, column] = useColumnWidth(columnAgents.length);
   const [pointerHover, setHover] = useState<ColumnHover>(null);
   const [keyboardColumn, setKeyboardColumn] = useState<ColumnHover>(null);
@@ -1395,27 +1435,25 @@ export function SkillsView() {
 
   const visibleSkills = useMemo(() => {
     if (!inv) return [];
-    return inv.skills.filter(
+    return scopedSkills.filter(
       (s) =>
-        (!focus || s.states[focus]) &&
-        (!needle ||
-          s.name.toLowerCase().includes(needle) ||
-          s.description.toLowerCase().includes(needle) ||
-          s.path.toLowerCase().includes(needle)),
+        !needle ||
+        s.name.toLowerCase().includes(needle) ||
+        s.description.toLowerCase().includes(needle) ||
+        s.path.toLowerCase().includes(needle),
     );
-  }, [inv, focus, needle]);
+  }, [inv, scopedSkills, needle]);
 
   const visibleRules = useMemo(() => {
     if (!inv) return [];
-    return inv.rules.filter(
+    return scopedRules.filter(
       (r) =>
-        (!focus || r.agents[focus]) &&
-        (!needle ||
-          r.name.toLowerCase().includes(needle) ||
-          r.path.toLowerCase().includes(needle) ||
-          r.preview.toLowerCase().includes(needle)),
+        !needle ||
+        r.name.toLowerCase().includes(needle) ||
+        r.path.toLowerCase().includes(needle) ||
+        r.preview.toLowerCase().includes(needle),
     );
-  }, [inv, focus, needle]);
+  }, [inv, scopedRules, needle]);
 
   // The picked skill while the list still shows it; otherwise the first row shown, in the
   // page's group order with collapsed groups skipped, so the details never describe a hidden row.
@@ -1425,7 +1463,8 @@ export function SkillsView() {
       .map((source) => visibleSkills.find((s) => s.source === source))
       .find(Boolean) ??
     null;
-  const rule = inv?.rules.find((r) => r.key === selectedRule) ?? visibleRules[0] ?? null;
+  const rule =
+    visibleRules.find((r) => r.key === selectedRule) ?? visibleRules[0] ?? null;
 
   function switchProject(next: string | null) {
     if (next === projectRef.current) return;
@@ -1553,6 +1592,7 @@ export function SkillsView() {
     if (!found) return;
     setQuery("");
     setFocus(null);
+    setConnectedOnly(false);
     setSelectedSkill(found.key);
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -1593,14 +1633,14 @@ export function SkillsView() {
     [
       "skills",
       t("Skills"),
-      inv?.skills.filter((s) => s.source !== "broken").length ?? 0,
+      scopedSkills.filter((s) => s.source !== "broken").length,
       false,
     ],
-    ["rules", t("Rules"), inv?.rules.length ?? 0, false],
+    ["rules", t("Rules"), scopedRules.length, false],
     ["issues", t("Needs a look"), activeIssues.length, activeIssues.length > 0],
   ];
 
-  const focusedAgent = columnAgents.find((agent) => agent.id === focus);
+  const focusedAgent = allColumnAgents.find((agent) => agent.id === focus);
   const toolbar = (
     <div className="flex flex-wrap items-center gap-2">
       <DropdownMenu>
@@ -1644,18 +1684,39 @@ export function SkillsView() {
               ) : (
                 <Filter />
               )}
-              <span className="truncate">{focusedAgent?.name ?? t("All agents")}</span>
+              <span className="truncate">
+                {focusedAgent?.name ??
+                  (connectedOnly && hasConnected
+                    ? t("Connected to Toolport")
+                    : t("All detected agents"))}
+              </span>
               <ChevronDown className="text-muted-foreground" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="max-h-96 w-56 overflow-y-auto">
             <DropdownMenuLabel>{t("Filter by agent")}</DropdownMenuLabel>
             <DropdownMenuRadioGroup
-              value={focus ?? ""}
-              onValueChange={(id) => setFocus(id || null)}
+              value={focus ?? (connectedOnly && hasConnected ? "@connected" : "")}
+              onValueChange={(id) => {
+                if (id === "@connected" || !id) {
+                  setConnectedOnly(id === "@connected");
+                  setFocus(null);
+                } else {
+                  if (!inv?.agents.find((agent) => agent.id === id)?.connected)
+                    setConnectedOnly(false);
+                  setFocus(id);
+                }
+              }}
             >
-              <DropdownMenuRadioItem value="">{t("All agents")}</DropdownMenuRadioItem>
-              {columnAgents.map((agent) => (
+              {hasConnected && (
+                <DropdownMenuRadioItem value="@connected">
+                  {t("Connected to Toolport")}
+                </DropdownMenuRadioItem>
+              )}
+              <DropdownMenuRadioItem value="">
+                {t("All detected agents")}
+              </DropdownMenuRadioItem>
+              {allColumnAgents.map((agent) => (
                 <DropdownMenuRadioItem key={agent.id} value={agent.id}>
                   <ClientLogo id={agent.id} name={agent.name} size={16} />
                   {agent.name}
@@ -1944,7 +2005,7 @@ export function SkillsView() {
         <section ref={gridRef} aria-label={t("Rules")} className="min-w-0">
           {banner}
           <AgentHeader
-            agents={inv.agents}
+            agents={scopedAgents}
             focus={focus}
             onFocus={setFocus}
             label={t("Rules file")}
@@ -2002,7 +2063,7 @@ export function SkillsView() {
                         </span>
                       </span>
                       <span className="-my-2 flex shrink-0 self-stretch">
-                        {inv.agents.map((agent) => {
+                        {scopedAgents.map((agent) => {
                           const state = r.agents[agent.id]
                             ? t("Loaded")
                             : t("Not loaded");
@@ -2034,7 +2095,7 @@ export function SkillsView() {
           className="min-w-0 @min-[981px]:sticky @min-[981px]:top-0 @min-[981px]:max-h-[calc(100vh-9rem)] @min-[981px]:self-start @min-[981px]:overflow-y-auto @min-[981px]:border-l @min-[981px]:pl-6"
         >
           {rule ? (
-            <RuleDetail rule={rule} agents={inv.agents} project={project} />
+            <RuleDetail rule={rule} agents={scopedAgents} project={project} />
           ) : (
             <p className="py-10 text-center text-sm text-muted-foreground">
               {t("Pick a rules file to see which agents read it.")}
