@@ -707,6 +707,7 @@ fn open_exposure_editor(
         .default_width(560)
         .default_height(420)
         .build();
+    super::close_on_escape(&window);
     let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
     root.set_margin_top(18);
     root.set_margin_bottom(18);
@@ -779,7 +780,7 @@ fn open_exposure_editor(
     actions.set_halign(gtk::Align::End);
     let cancel = l10n::button("Cancel");
     let reset = l10n::button("Reset to original");
-    reset.add_css_class("destructive-action");
+    reset.add_css_class("toolport-destructive");
     reset.set_sensitive(current.is_some());
     reset.set_tooltip_text(Some(&crate::i18n::tr(
         "Remove the override so clients see the server's original name and description",
@@ -1208,6 +1209,7 @@ fn open_json_action(
         .modal(true)
         .default_width(560)
         .build();
+    super::close_on_escape(&dialog);
     let shell = gtk::Box::new(gtk::Orientation::Vertical, 0);
     // The window title was set but never shown, because nothing here drew a
     // header bar the way the result dialog does.
@@ -1346,6 +1348,11 @@ fn open_json_action(
     // Cancelling mid-call abandons the wait (the server finishes on its own);
     // the completion handler checks this before touching the closed dialog.
     let cancelled = Rc::new(Cell::new(false));
+    let cancelled_on_close = cancelled.clone();
+    dialog.connect_close_request(move |_| {
+        cancelled_on_close.set(true);
+        gtk::glib::Propagation::Proceed
+    });
     let dialog_for_cancel = dialog.clone();
     let cancelled_for_cancel = cancelled.clone();
     cancel.connect_clicked(move |_| {
@@ -1474,6 +1481,7 @@ fn show_output(page: &ServerToolsPanel, title: &str, value: serde_json::Value) {
         .default_width(720)
         .default_height(560)
         .build();
+    super::close_on_escape(&dialog);
     let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
@@ -1514,6 +1522,123 @@ fn show_output(page: &ServerToolsPanel, title: &str, value: serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b4_dismissed_tool_action_does_not_show_a_late_result() {
+        use gtk::glib::translate::IntoGlib;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        fn pump(duration: std::time::Duration) {
+            let main = gtk::glib::MainLoop::new(None, false);
+            let stop = main.clone();
+            gtk::glib::timeout_add_local_once(duration, move || stop.quit());
+            main.run();
+        }
+        fn wait_until(mut ready: impl FnMut() -> bool) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while !ready() && std::time::Instant::now() < deadline {
+                pump(std::time::Duration::from_millis(10));
+            }
+            assert!(ready(), "GTK operation did not complete");
+        }
+        fn window(title: &str) -> Option<gtk::Window> {
+            gtk::Window::list_toplevels()
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
+                .find(|window| window.get_visible() && window.title().as_deref() == Some(title))
+        }
+        fn button(widget: &gtk::Widget, label: &str) -> Option<gtk::Button> {
+            if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+                if button.label().as_deref() == Some(label) {
+                    return Some(button.clone());
+                }
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                if let Some(found) = button(&widget, label) {
+                    return Some(found);
+                }
+                child = widget.next_sibling();
+            }
+            None
+        }
+
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.B4ToolDismissal")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+        let parent = adw::ApplicationWindow::builder()
+            .application(&app)
+            .title("B4 tool dismissal fixture")
+            .build();
+        parent.present();
+        wait_until(|| app.active_window().is_some());
+        let panel = ServerToolsPanel::new(&app, "synthetic-server");
+        for dismissal in ["success", "escape", "cancel", "window-close"] {
+            let (release, gate) = std::sync::mpsc::sync_channel(1);
+            let started = Arc::new(AtomicBool::new(false));
+            let returned = Arc::new(AtomicBool::new(false));
+            let did_start = started.clone();
+            let did_return = returned.clone();
+            open_json_action(
+                &panel,
+                "B4 pending tool",
+                &serde_json::json!({"type": "object"}),
+                move |_, _| {
+                    did_start.store(true, Ordering::SeqCst);
+                    gate.recv_timeout(std::time::Duration::from_secs(3))
+                        .unwrap();
+                    did_return.store(true, Ordering::SeqCst);
+                    Ok(serde_json::json!({"synthetic": "completed"}))
+                },
+            );
+            let dialog = window("B4 pending tool").expect("action dialog");
+            button(dialog.upcast_ref(), "Run").unwrap().emit_clicked();
+            wait_until(|| started.load(Ordering::SeqCst));
+            match dismissal {
+                "escape" => {
+                    let controllers = dialog.observe_controllers();
+                    let keys = (0..controllers.n_items())
+                        .filter_map(|index| controllers.item(index))
+                        .find_map(|item| item.downcast::<gtk::EventControllerKey>().ok())
+                        .unwrap();
+                    let handled: bool = keys.emit_by_name(
+                        "key-pressed",
+                        &[
+                            &gtk::gdk::Key::Escape.into_glib(),
+                            &0u32,
+                            &gtk::gdk::ModifierType::empty(),
+                        ],
+                    );
+                    assert!(handled);
+                }
+                "cancel" => button(dialog.upcast_ref(), "Cancel")
+                    .unwrap()
+                    .emit_clicked(),
+                "window-close" => dialog.close(),
+                _ => {}
+            }
+            if dismissal != "success" {
+                assert!(!dialog.get_visible(), "the pending dialog must close");
+            }
+            release.send(()).unwrap();
+            wait_until(|| returned.load(Ordering::SeqCst));
+            if dismissal == "success" {
+                wait_until(|| window("Tools result").is_some());
+                window("Tools result").unwrap().close();
+            } else {
+                pump(std::time::Duration::from_millis(250));
+                assert!(
+                    window("Tools result").is_none(),
+                    "late result after {dismissal}"
+                );
+            }
+        }
+        parent.close();
+    }
 
     /// A multi-paragraph tool description has to become one paragraph before
     /// the label's two-line cap can bind, because Pango limits lines per

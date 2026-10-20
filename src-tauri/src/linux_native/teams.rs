@@ -533,7 +533,7 @@ impl TeamsPage {
             actions.append(&account_link);
         }
         let leave = l10n::button("Disconnect app");
-        leave.add_css_class("destructive-action");
+        leave.add_css_class("toolport-destructive");
         let page_for_leave = self.clone();
         leave.connect_clicked(move |button| page_for_leave.confirm_leave(button.clone()));
         actions.append(&leave);
@@ -1753,7 +1753,7 @@ fn sync_server_row(
     }
     row.append(&name);
     let choice = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    choice.add_css_class("linked");
+    choice.add_css_class("toolport-segmented");
     choice.add_css_class("toolport-sync-choice");
     choice.set_valign(gtk::Align::Center);
     let every = source_button(

@@ -284,6 +284,52 @@ describe("ClientsView", () => {
     ).toHaveTextContent("0 of 2 connected");
   });
 
+  it("puts each section in one full-width row group, profile groups included", () => {
+    const { container } = render(
+      <ClientsView
+        clients={[
+          client({ id: "cursor", name: "Cursor" }),
+          client({ id: "opencode", name: "OpenCode" }),
+          client({
+            id: "codex",
+            name: "Codex",
+            claudeProfile: {
+              command: "codex",
+              account: null,
+              folder: "~/.codex",
+              lastUsedMs: null,
+              sameAs: null,
+            },
+          }),
+          client({
+            id: "codex@.codex2",
+            name: "Codex (.codex2)",
+            claudeProfile: {
+              command: null,
+              account: null,
+              folder: "~/.codex2",
+              lastUsedMs: null,
+              sameAs: null,
+            },
+          }),
+        ]}
+        registry={null}
+        onSelectClient={vi.fn()}
+      />,
+    );
+    // Clients lines up with the other list pages: no centered column.
+    expect(container.querySelector('[class*="max-w-[1080px]"]')).toBeNull();
+    const groups = container.querySelectorAll(".toolport-list");
+    expect(groups).toHaveLength(1);
+    const group = groups[0];
+    expect(group).toContainElement(
+      screen.getByRole("button", { name: "Codex profiles" }),
+    );
+    expect(group).toContainElement(screen.getByRole("button", { name: /^Cursor/ }));
+    expect(group).toContainElement(screen.getByRole("button", { name: /^OpenCode/ }));
+    expect(container.querySelector(".rounded-lg.border")).toBeNull();
+  });
+
   it("lists Codex homes in their own group, apart from Claude Code profiles", async () => {
     const codex = (
       id: string,

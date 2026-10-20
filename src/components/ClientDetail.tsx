@@ -366,30 +366,25 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
       {/* The title keeps at least 240px; when the actions don't fit beside it they wrap below. */}
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
         <div className="min-w-0 flex-1 basis-60">
+          {/* The same words, case and colors as the Clients list. */}
           {customized ? (
             <Badge variant="warning" className="mb-1">
-              <Trans
-                message={msg("{value1}custom configuration")}
-                values={{ value1: <TriangleAlert className="size-3" /> }}
-              />
+              <TriangleAlert aria-hidden="true" />
+              {t("Custom configuration")}
             </Badge>
           ) : installed ? (
             <Badge variant="success" className="mb-1">
-              <Trans
-                message={msg("{value1}connected")}
-                values={{ value1: <Link2 className="size-3" /> }}
-              />
+              <Link2 aria-hidden="true" />
+              {t("Connected")}
             </Badge>
           ) : present ? (
             <Badge variant="info" className="mb-1">
-              <Trans
-                message={msg("{value1}ready to connect")}
-                values={{ value1: <Monitor className="size-3" /> }}
-              />
+              <Monitor aria-hidden="true" />
+              {t("Ready to connect")}
             </Badge>
           ) : (
-            <Badge variant="outline" className="mb-1 text-muted-foreground">
-              {t("not installed")}
+            <Badge variant="off" className="mb-1">
+              {t("Not installed")}
             </Badge>
           )}
           <p className="truncate font-mono text-meta text-muted-foreground">

@@ -2058,54 +2058,88 @@ export function SettingsView({
           className="settings-page flex flex-col gap-4"
           aria-label={translate("help")}
         >
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(await gatherDiagnostics());
-                  toast.success(
-                    translate("Diagnostics copied, paste them into your bug report"),
-                  );
-                } catch {
-                  toastError(translate("Couldn't copy diagnostics"));
-                }
-              }}
-            >
-              {translate("Copy diagnostics")}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() =>
-                openDataDir().catch(() =>
-                  toastError(translate("Couldn't open data folder")),
-                )
-              }
-            >
-              {translate("Open data folder")}
-            </Button>
+          {/* One row group: each action sits in a row that says what it does. */}
+          <div className="toolport-list">
+            <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
+              <div className="min-w-60 flex-1">
+                <p className="text-sm font-semibold">
+                  {translate("Support and local data")}
+                </p>
+                <p className="text-meta text-muted-foreground">
+                  {translate(
+                    "Diagnostics redact secrets. The data folder contains your registry, audit, and gateway logs.",
+                  )}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(await gatherDiagnostics());
+                      toast.success(
+                        translate("Diagnostics copied, paste them into your bug report"),
+                      );
+                    } catch {
+                      toastError(translate("Couldn't copy diagnostics"));
+                    }
+                  }}
+                >
+                  {translate("Copy diagnostics")}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    openDataDir().catch(() =>
+                      toastError(translate("Couldn't open data folder")),
+                    )
+                  }
+                >
+                  {translate("Open data folder")}
+                </Button>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
+              <div className="min-w-60 flex-1">
+                <p className="text-sm font-semibold">
+                  {translate("Remove Toolport from all clients")}
+                </p>
+                <p className="text-meta text-muted-foreground">
+                  {translate(
+                    "Unchanged configs return to their original bytes. Your edits are preserved and moved entries are restored. Each client result is reported here.",
+                  )}
+                </p>
+              </div>
+              <Button
+                variant="destructive"
+                aria-label={translate("Remove Toolport from all clients")}
+                disabled={removeBusy}
+                onClick={() => setRemoveOpen(true)}
+              >
+                {translate("Remove")}
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+              <div className="min-w-60 flex-1">
+                <p className="text-sm font-semibold">
+                  {translate("Remove Toolport data")}
+                </p>
+                <p className="text-meta text-muted-foreground">
+                  {translate(
+                    "Normal uninstall keeps your data. Remove it only when you no longer need Toolport.",
+                  )}
+                </p>
+              </div>
+              <Button
+                variant="destructive"
+                aria-label={translate("Remove Toolport data")}
+                disabled={purgeBusy}
+                onClick={() => void preparePurge()}
+              >
+                {translate("Remove")}
+              </Button>
+            </div>
           </div>
-          <Button
-            variant="outline"
-            className="self-start text-destructive"
-            disabled={removeBusy}
-            onClick={() => setRemoveOpen(true)}
-          >
-            {translate("Remove Toolport from all clients")}
-          </Button>
-          <p className="text-sm text-muted-foreground">
-            {translate(
-              "Normal uninstall keeps your data. Remove it only when you no longer need Toolport.",
-            )}
-          </p>
-          <Button
-            variant="destructive"
-            className="self-start"
-            disabled={purgeBusy}
-            onClick={() => void preparePurge()}
-          >
-            {translate("Remove Toolport data")}
-          </Button>
           <Dialog
             open={purgePlan !== null}
             onOpenChange={(open) => {
@@ -2133,7 +2167,7 @@ export function SettingsView({
               </p>
               <DialogFooter>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   disabled={purgeBusy}
                   onClick={() => setPurgePlan(null)}
                 >
@@ -2141,6 +2175,7 @@ export function SettingsView({
                 </Button>
                 <Button
                   variant="destructive"
+                  data-confirm=""
                   disabled={purgeBusy}
                   onClick={() => void purge()}
                 >
@@ -2190,7 +2225,7 @@ export function SettingsView({
               </DialogHeader>
               <DialogFooter>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   disabled={removeBusy}
                   onClick={() => setRemoveOpen(false)}
                 >
@@ -2198,6 +2233,7 @@ export function SettingsView({
                 </Button>
                 <Button
                   variant="destructive"
+                  data-confirm=""
                   disabled={removeBusy}
                   onClick={() => void removeAll()}
                 >

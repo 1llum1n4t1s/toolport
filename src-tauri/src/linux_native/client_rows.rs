@@ -3,12 +3,11 @@
 
 use super::*;
 
-/// How a row is drawn: a full-width line, a tile in the two-column Available grid, or one
-/// profile inside a Claude Code or Codex group.
+/// How a row is drawn: a row in a section's row group, or one profile inside a Claude
+/// Code or Codex group.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum RowStyle {
     Line,
-    Tile,
     Profile,
 }
 
@@ -53,9 +52,6 @@ impl ProfileProduct {
         }
     }
 }
-
-/// Minimum tile width: two tiles share a line only when both get at least this much.
-const TILE_WIDTH: i32 = 330;
 
 /// The short discovery summary for a connected client, and the full sentence for its tooltip.
 fn discovery_summary(client: &state::ClientView) -> (String, String) {
@@ -196,7 +192,7 @@ fn client_detail(client: &state::ClientView, style: RowStyle) -> (String, String
     (text, tooltip)
 }
 
-/// "Connected" or "Customized"; an unconnected row's Connect button already says it.
+/// "Connected" or "Customized".
 fn status_badge(client: &state::ClientView) -> gtk::Label {
     let connected = client.gateway_state == state::ClientGatewayState::Connected;
     let badge = l10n::label(if connected {
@@ -219,14 +215,8 @@ pub(super) fn client_row(
     style: RowStyle,
 ) -> gtk::Box {
     let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    card.add_css_class(match style {
-        RowStyle::Tile => "toolport-client-tile",
-        _ => "toolport-card",
-    });
+    card.add_css_class("toolport-card");
     card.add_css_class("toolport-client-row");
-    if style == RowStyle::Tile {
-        card.set_size_request(TILE_WIDTH, -1);
-    }
     if style == RowStyle::Profile {
         card.add_css_class("toolport-client-profile");
     }
@@ -304,11 +294,9 @@ pub(super) fn client_row(
     controls.add_css_class("toolport-client-controls");
     controls.set_valign(gtk::Align::Center);
     controls.set_halign(gtk::Align::End);
-    // In the Claude Code group, connected and unconnected profiles sit together; the
-    // Connect button already says which ones are not connected.
-    if (style == RowStyle::Profile && client.gateway_state == state::ClientGatewayState::Connected)
-        || client.gateway_state == state::ClientGatewayState::Customized
-    {
+    // The status chip, as on React's rows; an unconnected row's Connect button
+    // already says it is not connected.
+    if client.gateway_state != state::ClientGatewayState::Disconnected {
         controls.append(&status_badge(client));
     }
     if client.legacy_bearer_argv {
@@ -322,8 +310,9 @@ pub(super) fn client_row(
     }
     match client.gateway_state {
         state::ClientGatewayState::Disconnected => {
+            // A repeated row action is secondary; the page has no primary (spec 5).
             let connect = l10n::button("Connect");
-            connect.add_css_class("suggested-action");
+            connect.add_css_class("toolport-secondary-action");
             let client_for_connect = client.clone();
             let page_for_connect = page.clone();
             connect.connect_clicked(move |_| {
@@ -608,25 +597,4 @@ fn copies_note(
         l10n::bind_button(toggle, if show { "Hide" } else { "Show" });
     });
     note
-}
-
-/// The Available grid: two tiles per line when there is room, one otherwise.
-pub(super) fn available_grid(clients: &[&state::ClientView], page: &ClientPage) -> gtk::FlowBox {
-    let grid = gtk::FlowBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .homogeneous(true)
-        .min_children_per_line(1)
-        .max_children_per_line(2)
-        .column_spacing(10)
-        .row_spacing(10)
-        .build();
-    grid.add_css_class("toolport-client-grid");
-    for client in clients {
-        let child = gtk::FlowBoxChild::new();
-        // Keyboard focus goes straight to the tile's buttons.
-        child.set_focusable(false);
-        child.set_child(Some(&client_row(client, page.clone(), RowStyle::Tile)));
-        grid.insert(&child, -1);
-    }
-    grid
 }

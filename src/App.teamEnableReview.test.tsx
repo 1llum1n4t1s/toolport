@@ -86,6 +86,65 @@ beforeEach(() => {
   takeRegistryRecoveryNotice.mockResolvedValue(null);
 });
 
+describe("server switch keyboard focus", () => {
+  function personalRegistry(enabled: boolean) {
+    const registry = registryWith(["-y", "old-tool"]);
+    delete registry.team;
+    registry.servers[0].source = "manual";
+    registry.profiles[0].enabledServerIds = enabled ? ["team-tool"] : [];
+    return registry;
+  }
+
+  it("keeps the live switch focused when Space moves its row off and on", async () => {
+    const user = userEvent.setup();
+    getRegistry.mockResolvedValue(personalRegistry(true));
+    setServerEnabled.mockImplementation((_profile, _id, enabled) =>
+      Promise.resolve(personalRegistry(enabled)),
+    );
+    render(<App />);
+    const toggle = await screen.findByRole("switch", { name: "Toggle Team tool" });
+    toggle.focus();
+    for (const checked of ["false", "true"]) {
+      await user.keyboard(" ");
+      await waitFor(() => {
+        const current = screen.getByRole("switch", { name: "Toggle Team tool" });
+        expect(current).toHaveAttribute("aria-checked", checked);
+        expect(current).toHaveFocus();
+      });
+    }
+  });
+
+  it("does not take focus back after the user tabs away during the request", async () => {
+    const user = userEvent.setup();
+    let finish!: (registry: Registry) => void;
+    getRegistry.mockResolvedValue(personalRegistry(true));
+    setServerEnabled.mockImplementation(
+      () =>
+        new Promise<Registry>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(<App />);
+    const toggle = await screen.findByRole("switch", { name: "Toggle Team tool" });
+    toggle.focus();
+    await user.keyboard(" ");
+    expect(toggle).toHaveAttribute("aria-disabled", "true");
+    expect(toggle).toHaveFocus();
+    await user.keyboard(" ");
+    expect(setServerEnabled).toHaveBeenCalledTimes(1);
+    // Shift+Tab leaves the row for a header control that survives the move.
+    await user.tab({ shift: true });
+    const nextFocus = document.activeElement;
+    expect(nextFocus).not.toBe(toggle);
+    await act(async () => finish(personalRegistry(false)));
+    expect(screen.getByRole("switch", { name: "Toggle Team tool" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    expect(document.activeElement).toBe(nextFocus);
+  });
+});
+
 describe("team enable review dialog", () => {
   it("shows all personal execution inputs as escaped text with masked secrets", async () => {
     const registry = registryWith(["-y", "old-tool"]);
@@ -194,6 +253,7 @@ describe("team enable review dialog", () => {
     expect(toggle).toHaveAttribute("aria-checked", "false");
     await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(toggle).toHaveFocus());
     await userEvent.click(toggle);
     expect(within(await screen.findByRole("dialog")).queryByRole("alert")).toBeNull();
   });
@@ -216,7 +276,14 @@ describe("team enable review dialog", () => {
     await userEvent.click(enable);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(toggle).toHaveAttribute("aria-checked", "true");
+    // Enabling moves the row from Turned off to Servers, replacing its switch.
+    expect(screen.getByRole("switch", { name: "Toggle Team tool" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Toggle Team tool" })).toHaveFocus(),
+    );
     expect(setServerEnabled).toHaveBeenLastCalledWith(
       "default",
       "team-tool",

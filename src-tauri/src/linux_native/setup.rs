@@ -84,8 +84,7 @@ pub(super) fn review(
     let confirm = l10n::button(confirm_label);
     confirm.set_widget_name("toolport-setup-confirm");
     confirm.add_css_class("suggested-action");
-    header.pack_start(&cancel);
-    header.pack_end(&confirm);
+    cancel.add_css_class("flat");
     root.append(&header);
     let body = gtk::Box::new(gtk::Orientation::Vertical, 16);
     body.set_margin_top(24);
@@ -436,6 +435,7 @@ l10n::bind_formatted_dialog_body(&prompt, "Enter {value0}. This value is used on
         .hscrollbar_policy(gtk::PolicyType::Never)
         .build();
     root.append(&scroller);
+    root.append(&super::dialog_footer(&[&cancel, &confirm]));
     dialog.set_content(Some(&root));
     let closing = dialog.clone();
     let busy_cancel = busy.clone();

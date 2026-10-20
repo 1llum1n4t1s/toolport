@@ -1199,11 +1199,6 @@ button.toolport-catalog-action {{
   border-radius: 8px;
 }}
 
-.toolport-server-state {{
-  color: @toolport_text_secondary;
-  font-size: 13px;
-}}
-
 .toolport-card switch {{
   margin-left: 2px;
 }}
@@ -1288,13 +1283,6 @@ statuspage.toolport-success image.icon {{ color: @toolport_success; opacity: 1; 
 .toolport-card.toolport-client-row {{ padding: 9px 4px; }}
 .toolport-client-row .toolport-client-logo {{ min-width: 28px; min-height: 28px; }}
 .toolport-card.toolport-client-profile {{ padding-left: 44px; }}
-.toolport-client-tile {{
-  border: 1px solid @toolport_border;
-  border-radius: 12px;
-  padding: 10px 12px;
-  background-color: @toolport_card;
-}}
-.toolport-client-tile:hover {{ background-color: mix(@toolport_card, @toolport_accent, 0.05); }}
 button.toolport-client-group-toggle {{
   padding: 0;
   margin: 0;
@@ -1511,31 +1499,6 @@ button.toolport-skill-chip:hover {{ background-color: alpha(@toolport_fg, 0.13);
   border-bottom: none;
 }}
 
-.toolport-sync-choice {{
-  padding: 2px;
-  border-radius: 8px;
-  background-color: @toolport_card;
-  border: 1px solid @toolport_border;
-}}
-
-.toolport-sync-choice > button {{
-  min-height: 24px;
-  padding: 2px 10px;
-  border-radius: 8px;
-  border: none;
-  background: none;
-  box-shadow: none;
-  font-size: 12px;
-  font-weight: 500;
-  color: @toolport_text_secondary;
-}}
-
-.toolport-sync-choice > button:checked {{
-  background-color: alpha(@toolport_fg, 0.14);
-  color: @toolport_fg;
-  font-weight: 600;
-}}
-
 .toolport-sync-tag {{
   color: @toolport_warning;
 }}
@@ -1571,6 +1534,126 @@ selection {{
 button.suggested-action {{
   background-color: @toolport_accent;
   color: @toolport_bg_dark;
+}}
+
+/* Button levels (spec 5). Secondary: raised fill and a border, for every
+   repeated row action. Destructive trigger: red text on a 12% red tint. Only
+   the final confirm in a dialog is filled red. */
+button.toolport-secondary-action,
+menubutton.toolport-secondary-action > button {{
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  background-color: @toolport_raised;
+  border: 1px solid @toolport_border;
+  box-shadow: none;
+}}
+button.toolport-secondary-action:hover,
+menubutton.toolport-secondary-action > button:hover {{ background-color: mix(@toolport_raised, @toolport_fg, 0.06); }}
+button.toolport-destructive {{
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: @toolport_error;
+  background-color: alpha(@toolport_error, 0.12);
+  border: 1px solid transparent;
+  box-shadow: none;
+}}
+button.toolport-destructive:hover {{ background-color: alpha(@toolport_error, 0.20); }}
+/* Row group (spec 9): one card, rows divided by the border color, no gaps.
+   Rows are two lines: 12px vertical padding at the edges, 16px horizontal. */
+.toolport-row-group {{
+  background-color: @toolport_card;
+  border: 1px solid @toolport_border;
+  border-radius: 12px;
+}}
+.toolport-row-group .toolport-card {{
+  min-height: 32px;
+  padding: 12px 16px;
+  border: none;
+  border-top: 1px solid @toolport_border;
+  border-radius: 0;
+  background-color: transparent;
+}}
+.toolport-row-group > .toolport-card:first-child,
+.toolport-row-group > :first-child > .toolport-card:first-child {{ border-top: none; }}
+.toolport-row-group .toolport-card:hover {{ background-color: alpha(@toolport_fg, 0.04); }}
+.toolport-row-group .toolport-card.toolport-client-profile {{ padding-left: 60px; }}
+expander-widget.toolport-row-group {{ padding: 12px 16px; }}
+
+/* Segmented controls (spec 13): the selected segment has the raised fill, a
+   border and the text color; the others are secondary text. */
+stackswitcher,
+.toolport-segmented {{
+  padding: 2px;
+  border: 1px solid @toolport_border;
+  border-radius: 8px;
+  background-color: alpha(@toolport_fg, 0.04);
+}}
+stackswitcher > button,
+.toolport-segmented > button {{
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  box-shadow: none;
+  color: @toolport_text_secondary;
+  font-weight: 500;
+}}
+stackswitcher > button:hover,
+.toolport-segmented > button:hover {{ color: @toolport_fg; background-color: alpha(@toolport_fg, 0.04); }}
+stackswitcher > button:checked,
+.toolport-segmented > button:checked {{
+  color: @toolport_fg;
+  background-color: @toolport_raised;
+  border-color: @toolport_border;
+  font-weight: 600;
+  box-shadow: 0 1px 2px alpha(black, 0.18);
+}}
+
+/* Inputs (spec 13): 32px, regular text. A dropdown draws its border on its
+   button only, so it is not twice as tall as an entry. */
+.toolport-input,
+.toolport-input > button,
+.toolport-text-area {{ min-height: 32px; }}
+dropdown.toolport-input {{
+  min-height: 0;
+  padding: 0;
+  border: none;
+  background: none;
+}}
+dropdown.toolport-input > button {{
+  min-height: 32px;
+  padding: 0 10px;
+  font-weight: 400;
+}}
+dropdown.toolport-input > button label {{ font-weight: 400; }}
+
+/* Activity rows: a neutral icon tile for the call kind. */
+image.toolport-kind-icon {{
+  min-width: 32px;
+  min-height: 32px;
+  border-radius: 8px;
+  background-color: alpha(@toolport_fg, 0.06);
+  color: @toolport_text_secondary;
+}}
+image.toolport-kind-emblem {{ color: @toolport_text_secondary; }}
+
+/* Sheet header: only the title and the window's close button, drawn as usual. */
+.toolport-editor headerbar windowcontrols button {{
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  background: none;
+}}
+expander-widget.toolport-paste-expander > box > title {{ min-height: 32px; }}
+
+/* Sheet footer (spec 5): Cancel, then the confirm, right-aligned. */
+.toolport-dialog-footer {{
+  padding: 12px 20px;
+  border-top: 1px solid @toolport_border;
 }}
 
 window:backdrop .toolport-card,

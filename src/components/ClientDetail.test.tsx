@@ -196,6 +196,30 @@ describe("ClientDetail customized entry (SOU-406)", () => {
     });
   }
 
+  it("labels the connection in sentence case, as the Clients list does", () => {
+    const view = render(
+      <ClientDetail
+        client={client({ gatewayInstalled: true, entryState: "managed" })}
+        registry={emptyRegistry()}
+        onChanged={() => {}}
+        onRegistryChange={() => {}}
+      />,
+    );
+    const badge = view.container.querySelector('[data-slot="badge"]');
+    expect(badge).toHaveTextContent(/^Connected$/);
+    expect(badge).toHaveAttribute("data-variant", "success");
+    view.unmount();
+    render(
+      <ClientDetail
+        client={customizedClient()}
+        registry={emptyRegistry()}
+        onChanged={() => {}}
+        onRegistryChange={() => {}}
+      />,
+    );
+    expect(screen.getByText("Custom configuration")).toBeInTheDocument();
+  });
+
   it("shows custom configuration badge and Reset to default", () => {
     render(
       <ClientDetail

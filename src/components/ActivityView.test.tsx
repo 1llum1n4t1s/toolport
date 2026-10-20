@@ -544,6 +544,24 @@ describe("ActivityView recent calls", () => {
     expect(screen.getByText(`Run: ${runId}`)).toBeInTheDocument();
   });
 
+  it("gives each call row one status color, on its chip", async () => {
+    const user = userEvent.setup({
+      advanceTimers: (ms) => vi.advanceTimersByTime(ms),
+    });
+    const { container } = render(<ActivityView refreshKey={0} registry={null} />);
+    await act(async () => {});
+    await user.click(screen.getByRole("button", { name: /recent calls/i }));
+    const list = container.querySelector(".toolport-list")!;
+    const chips = [...list.querySelectorAll('[data-slot="badge"]')];
+    expect(chips.map((chip) => chip.textContent)).toEqual(["Failed", "Succeeded"]);
+    expect(chips.map((chip) => chip.getAttribute("data-variant"))).toEqual([
+      "destructive",
+      "success",
+    ]);
+    // The row icons say the call kind and carry no status color.
+    expect(list.querySelector("svg.text-success, svg.text-destructive")).toBeNull();
+  });
+
   it("keeps an expanded error row open across a live-poll refetch", async () => {
     const user = userEvent.setup({
       advanceTimers: (ms) => vi.advanceTimersByTime(ms),

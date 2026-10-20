@@ -600,12 +600,16 @@ impl SettingsPage {
             ),
         ));
 
-        let remove_clients = l10n::button("Remove Toolport from all clients");
-        remove_clients.set_halign(gtk::Align::Start);
-        remove_clients.add_css_class("destructive-action");
-        let purge_data = l10n::button("Remove Toolport data");
-        purge_data.add_css_class("destructive-action");
-        purge_data.set_halign(gtk::Align::Start);
+        // Each removal sits in its own row that says what it does; the button
+        // only says Remove, and its accessible name says what.
+        let remove_clients = l10n::button("Remove");
+        remove_clients.add_css_class("toolport-destructive");
+        remove_clients.set_valign(gtk::Align::Center);
+        l10n::bind_accessible_label(&remove_clients, "Remove Toolport from all clients");
+        let purge_data = l10n::button("Remove");
+        purge_data.add_css_class("toolport-destructive");
+        purge_data.set_valign(gtk::Align::Center);
+        l10n::bind_accessible_label(&purge_data, "Remove Toolport data");
         let purge_root = root.clone();
         purge_data.connect_clicked(move |_| {
             let parent = purge_root.root().and_downcast::<gtk::Window>();
@@ -806,9 +810,21 @@ l10n::bind_dialog_heading(&error_dialog, msg("Could not start data removal"));
             msg("Help and data"),
             msg("Support reports, local files and removing Toolport."),
         );
-        help.append(&diagnostics);
-        help.append(&remove_clients);
-        help.append(&purge_data);
+        let help_rows = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        help_rows.add_css_class("toolport-settings-group");
+        help_rows.add_css_class("toolport-switch-group");
+        help_rows.append(&diagnostics);
+        help_rows.append(&help_action_row(
+            msg("Remove Toolport from all clients"),
+            msg("Unchanged configs return to their original bytes. Your edits are preserved and moved entries are restored. Each client result is reported here."),
+            &remove_clients,
+        ));
+        help_rows.append(&help_action_row(
+            msg("Remove Toolport data"),
+            msg("Normal uninstall keeps your data. Remove it only when you no longer need Toolport."),
+            &purge_data,
+        ));
+        help.append(&help_rows);
         help.append(&removal_results);
         let pages = vec![general, tools, safety_section, access, connections, help];
         for (index, section) in pages.iter().enumerate() {
@@ -1549,7 +1565,7 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
             );
             l10n::bind_button(&self.endpoint_button, msg("Stop"));
             self.endpoint_button.remove_css_class("suggested-action");
-            self.endpoint_button.add_css_class("destructive-action");
+            self.endpoint_button.add_css_class("toolport-destructive");
             self.copy_endpoint.set_sensitive(true);
             self.copy_endpoint_token.set_sensitive(true);
             self.reveal_endpoint_token.set_sensitive(true);
@@ -1562,7 +1578,8 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
         } else {
             self.endpoint_status.set_label(&tr("Stopped"));
             l10n::bind_button(&self.endpoint_button, msg("Start"));
-            self.endpoint_button.remove_css_class("destructive-action");
+            self.endpoint_button
+                .remove_css_class("toolport-destructive");
             self.endpoint_button.add_css_class("suggested-action");
             self.copy_endpoint.set_sensitive(false);
             self.copy_endpoint_token.set_sensitive(false);
@@ -1633,7 +1650,7 @@ l10n::bind_dialog_body(&dialog, msg("Unchanged configs return to their original 
                         "Revoke {value1}",
                         &[("value1", &(client.label).to_string())],
                     ))
-                    .css_classes(["flat", "destructive-action"])
+                    .css_classes(["toolport-destructive"])
                     .build();
                 let id = client.id;
                 let page = self.clone();
@@ -2492,13 +2509,12 @@ fn open_access_tool_scope(
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
     let cancel = l10n::button("Cancel");
-    cancel.add_css_class("toolport-secondary-action");
-    header.pack_start(&cancel);
+    cancel.add_css_class("flat");
     let save = l10n::button("Save");
     save.add_css_class("suggested-action");
     save.set_sensitive(false);
-    header.pack_end(&save);
     root.append(&header);
+    super::close_on_escape(&window);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
     content.add_css_class("toolport-editor-body");
     content.append(&super::editor_intro(
@@ -2531,6 +2547,7 @@ fn open_access_tool_scope(
         .child(&content)
         .build();
     root.append(&scroller);
+    root.append(&super::dialog_footer(&[&cancel, &save]));
     window.set_content(Some(&root));
     let window_for_cancel = window.clone();
     cancel.connect_clicked(move |_| window_for_cancel.close());
@@ -3374,6 +3391,27 @@ fn source_formatted_label(
     l10n::bind_formatted_label(&label, source, values);
     label
 }
+/// A Help and data row: what the action does on the left, its button on the right.
+fn help_action_row(title: &'static str, detail: &'static str, action: &gtk::Button) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    row.add_css_class("toolport-setting-row");
+    let copy = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    copy.set_hexpand(true);
+    let heading = l10n::label(title);
+    heading.set_halign(gtk::Align::Start);
+    heading.add_css_class("heading");
+    copy.append(&heading);
+    let text = l10n::label(detail);
+    text.set_halign(gtk::Align::Fill);
+    text.set_xalign(0.0);
+    text.set_wrap(true);
+    text.add_css_class("toolport-muted");
+    copy.append(&text);
+    row.append(&copy);
+    row.append(action);
+    row
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -3710,10 +3748,15 @@ mod purge_tests {
             .default_height(900)
             .content(&page.root)
             .build();
+        // The button only says Remove; its row's heading says what it removes.
         fn find_button(widget: &gtk::Widget) -> Option<gtk::Button> {
-            if let Some(button) = widget.downcast_ref::<gtk::Button>() {
-                if button.label().as_deref() == Some("Remove Toolport data") {
-                    return Some(button.clone());
+            if widget.has_css_class("toolport-setting-row") {
+                let heading = widget
+                    .first_child()
+                    .and_then(|copy| copy.first_child())
+                    .and_downcast::<gtk::Label>();
+                if heading.is_some_and(|label| label.text() == "Remove Toolport data") {
+                    return widget.last_child().and_downcast::<gtk::Button>();
                 }
             }
             let mut child = widget.first_child();

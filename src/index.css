@@ -235,8 +235,12 @@
     border-top: 1px solid var(--border);
     border-top-right-radius: 0;
   }
+  /* A row group: one card, rows divided by the border color, no gaps. */
   .toolport-list {
-    border-top: 1px solid var(--border);
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background-color: var(--card);
   }
 }
 

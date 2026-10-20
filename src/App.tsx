@@ -6,7 +6,15 @@ import { serverPostureCopy } from "@/lib/serverPosture";
 import { type SettingsSubpage } from "@/lib/settingsPages";
 import { visibleExecutionText } from "@/lib/visibleExecutionText";
 import { isPersonalSync } from "@/lib/personalSync";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   CircleCheck,
@@ -65,6 +73,7 @@ import { PendingApprovals } from "@/components/PendingApprovals";
 import { TeamPairingDialog } from "@/components/TeamPairingDialog";
 import { QuarantineAlert } from "@/components/QuarantineAlert";
 import { RegistryServerRow } from "@/components/RegistryServerRow";
+import { SectionHeader } from "@/components/ui/section-header";
 import { LazyServerDialog as ServerDialog } from "@/components/LazyServerDialog";
 import { ImportReviewDialog } from "@/components/ImportReviewDialog";
 
@@ -166,6 +175,32 @@ function App() {
   // Keyboard shortcuts (SBS-143). The app had none, which for a developer tool means
   // every interaction is mouse-only.
   const searchRef = useRef<HTMLInputElement>(null);
+  const serverSwitches = useRef(new Map<string, HTMLButtonElement>());
+  const movedSwitchFocus = useRef<string | null>(null);
+  const enableReviewTrigger = useRef<{ id: string; node: HTMLButtonElement } | null>(
+    null,
+  );
+  const registerServerSwitch = useCallback(
+    (id: string, node: HTMLButtonElement | null) => {
+      const previous = serverSwitches.current.get(id);
+      if (node) {
+        serverSwitches.current.set(id, node);
+      } else {
+        // Ref cleanup runs before removal. Restore only the control that still
+        // owned focus, never one the user left while its request was pending.
+        if (previous && document.activeElement === previous)
+          movedSwitchFocus.current = id;
+        serverSwitches.current.delete(id);
+      }
+    },
+    [],
+  );
+  useLayoutEffect(() => {
+    const id = movedSwitchFocus.current;
+    movedSwitchFocus.current = null;
+    if (id && document.activeElement === document.body)
+      serverSwitches.current.get(id)?.focus();
+  });
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   // Ctrl+N mounts its own ServerDialog with `autoOpen` rather than reaching into the
   // trigger-based one, so the shortcut needs no changes to ServerDialog's API.
@@ -728,6 +763,9 @@ function App() {
     if (enabled) {
       const server = servers.find((s) => s.id === serverId);
       if (server && needsTeamEnableReview(server)) {
+        const node = serverSwitches.current.get(serverId);
+        enableReviewTrigger.current =
+          node && document.activeElement === node ? { id: serverId, node } : null;
         setEnableReviewError(null);
         setConfirmEnableTeam(server);
         return;
@@ -875,6 +913,7 @@ function App() {
       busy={busyId === server.id}
       health={health[server.id]}
       onToggle={(en) => handleToggle(server.id, en)}
+      onSwitchRef={registerServerSwitch}
       onRemove={() => handleRemove(server.id, server.name)}
       onRegistryChange={applyRegistryChange}
       onReprobe={() => void reprobeAfterMutation().catch(() => {})}
@@ -1181,7 +1220,7 @@ function App() {
                         }
                       />
                     ) : (
-                      <div className="flex flex-col gap-5">
+                      <div className="flex flex-col gap-6">
                         {backendReachable &&
                           (attentionCount > 0 ? (
                             <ServerNextAction
@@ -1197,7 +1236,32 @@ function App() {
                               disabled={servers.length - enabledCount}
                             />
                           ))}
-                        <div className="toolport-list">{visible.map(serverRow)}</div>
+                        {/* Turned-off servers get their own group, as in the GTK shell. */}
+                        {[
+                          {
+                            title: t("Servers"),
+                            rows: visible.filter(
+                              (server) => registry && isEnabled(registry, server.id),
+                            ),
+                          },
+                          {
+                            title: t("Turned off"),
+                            rows: visible.filter(
+                              (server) => !registry || !isEnabled(registry, server.id),
+                            ),
+                          },
+                        ]
+                          .filter((group) => group.rows.length > 0)
+                          .map((group) => (
+                            <section key={group.title}>
+                              <SectionHeader count={group.rows.length}>
+                                {group.title}
+                              </SectionHeader>
+                              <div className="toolport-list">
+                                {group.rows.map(serverRow)}
+                              </div>
+                            </section>
+                          ))}
                       </div>
                     )}
                   </Suspense>
@@ -1283,6 +1347,19 @@ function App() {
       />
       <ConfirmDialog
         open={confirmEnableTeam !== null}
+        onCloseAutoFocus={(event) => {
+          const trigger = enableReviewTrigger.current;
+          enableReviewTrigger.current = null;
+          // This controlled dialog has no Radix trigger. Return to the current
+          // switch on cancel or success, provided focus has not moved elsewhere.
+          if (trigger && document.activeElement === document.body) {
+            const current = serverSwitches.current.get(trigger.id);
+            if (current) {
+              event.preventDefault();
+              current.focus();
+            }
+          }
+        }}
         onOpenChange={(open) => {
           if (!open) {
             setEnableReviewError(null);
