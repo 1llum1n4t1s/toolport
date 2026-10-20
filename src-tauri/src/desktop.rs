@@ -2889,11 +2889,14 @@ struct ImportItem {
 #[tauri::command]
 async fn preview_import_servers(
     _state: State<'_, RegistryState>,
+    client_id: Option<String>,
 ) -> Result<Vec<ImportItem>, String> {
-    let candidates =
-        tauri::async_runtime::spawn_blocking(crate::registry_controller::preview_client_imports)
-            .await
-            .map_err(|_| "Import preview stopped".to_string())??;
+    let candidates = tauri::async_runtime::spawn_blocking(move || match client_id {
+        Some(id) => crate::registry_controller::preview_client_imports_for(&id),
+        None => crate::registry_controller::preview_client_imports(),
+    })
+    .await
+    .map_err(|_| "Import preview stopped".to_string())??;
     Ok(candidates
         .into_iter()
         .map(|server| ImportItem {

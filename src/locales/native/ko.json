@@ -1177,5 +1177,15 @@
   "Toolport makes each file below a link to {file}, so these clients read the same rules. It doesn't change any file that already exists. To undo, delete the link.": "Toolport가 아래 각 파일을 {file}에 대한 링크로 만들어 이 클라이언트들이 같은 규칙을 읽게 합니다. 이미 있는 파일은 바꾸지 않습니다. 되돌리려면 링크를 삭제하세요.",
   "{file} already exists, so Toolport left it alone.": "{file}이(가) 이미 있어서 Toolport가 건드리지 않았습니다.",
   "Windows lets apps make links only with Developer Mode on. Turn it on in Settings, or link the files by hand.": "Windows에서는 개발자 모드가 켜져 있을 때만 앱이 링크를 만들 수 있습니다. 설정에서 켜거나 파일을 직접 연결하세요.",
-  "Couldn't link {file}: {error}": "{file}을(를) 연결하지 못했습니다: {error}"
+  "Couldn't link {file}: {error}": "{file}을(를) 연결하지 못했습니다: {error}",
+  "Apply": "적용",
+  "Could not read this client config. Check its syntax and file permissions.": "클라이언트 설정을 읽을 수 없습니다. 구문과 파일 권한을 확인하세요.",
+  "Import all": "모두 가져오기",
+  "Not connected": "연결되지 않음",
+  "Restart the client afterward.": "그런 다음 클라이언트를 다시 시작하세요.",
+  "Plugin": "플러그인",
+  "in Toolport": "Toolport에 있음",
+  "Pinned": "고정됨",
+  "Renamed": "이름 변경됨",
+  "Read-only": "읽기 전용"
 }

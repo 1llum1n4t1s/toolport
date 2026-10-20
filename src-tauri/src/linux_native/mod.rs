@@ -6,6 +6,7 @@
 mod branding;
 mod catalog;
 mod client_rows;
+mod details;
 mod health;
 mod http_bridge;
 mod i18n;
@@ -1092,40 +1093,7 @@ fn build_sidebar(
         .halign(gtk::Align::Start)
         .build();
 
-    let tools_action = gtk::gio::SimpleAction::new("show-server-tools", None);
-    let page_for_tools = server_page.clone();
-    tools_action.connect_activate(move |_, _| {
-        let page = page_for_tools.clone();
-        gtk::glib::spawn_future_local(async move {
-            // Onboarding may have just added the first server. Read the current
-            // registry rather than the Servers page's pre-onboarding snapshot.
-            let result = gtk::gio::spawn_blocking(|| {
-                crate::registry::load().map(state::RegistrySnapshot::from_registry)
-            })
-            .await;
-            match result {
-                Ok(Ok(snapshot)) => {
-                    let server = snapshot
-                        .servers
-                        .iter()
-                        .find(|server| server.enabled)
-                        .or_else(|| snapshot.servers.first())
-                        .cloned();
-                    page.render(state::RegistryState::Ready(snapshot));
-                    if let Some(server) = server {
-                        open_server_details(&server, &page, true);
-                    } else {
-                        page.show_confirmation(&crate::i18n::tr("Add a server to try its tools."));
-                    }
-                }
-                Ok(Err(error)) => page.restore_after_error(&error),
-                Err(_) => page.restore_after_error(&crate::i18n::tr(
-                    "Could not load server tools: the operation stopped",
-                )),
-            }
-        });
-    });
-    app.add_action(&tools_action);
+    install_server_tools_action(app, &server_page);
     let mut buttons = Vec::new();
     let mut team_button = None;
     for &(target, label, icon) in NAV_SECTIONS {
@@ -2035,6 +2003,46 @@ fn start_quarantine_watch(
     );
 }
 
+fn install_server_tools_action(app: &adw::Application, server_page: &ServerPage) {
+    let tools_action = gtk::gio::SimpleAction::new("show-server-tools", None);
+    let page_for_tools = server_page.clone();
+    tools_action.connect_activate(move |_, _| {
+        let page = page_for_tools.clone();
+        // Main-page navigation clears old detail state, so activate it before
+        // loading and pushing the newly added server from onboarding.
+        gtk::prelude::ActionGroupExt::activate_action(&page.app, "show-servers", None);
+        gtk::glib::spawn_future_local(async move {
+            // Onboarding may have just added the first server. Read the current
+            // registry rather than the Servers page's pre-onboarding snapshot.
+            let result = gtk::gio::spawn_blocking(|| {
+                crate::registry::load().map(state::RegistrySnapshot::from_registry)
+            })
+            .await;
+            match result {
+                Ok(Ok(snapshot)) => {
+                    let server = snapshot
+                        .servers
+                        .iter()
+                        .find(|server| server.enabled)
+                        .or_else(|| snapshot.servers.first())
+                        .cloned();
+                    page.render(state::RegistryState::Ready(snapshot));
+                    if let Some(server) = server {
+                        open_server_details(&server, &page, true);
+                    } else {
+                        page.show_confirmation(&crate::i18n::tr("Add a server to try its tools."));
+                    }
+                }
+                Ok(Err(error)) => page.restore_after_error(&error),
+                Err(_) => page.restore_after_error(&crate::i18n::tr(
+                    "Could not load server tools: the operation stopped",
+                )),
+            }
+        });
+    });
+    app.add_action(&tools_action);
+}
+
 // Keep the native navigation widgets and their shared page state together.
 #[allow(clippy::too_many_arguments)]
 fn show_native_page(
@@ -2049,6 +2057,8 @@ fn show_native_page(
     teams_page: &TeamsPage,
     settings_page: &SettingsPage,
 ) {
+    server_page.details.back();
+    client_page.details.back();
     stack.set_visible_child_name(target);
     split.set_show_content(true);
     for (name, candidate) in buttons {
@@ -2076,6 +2086,7 @@ fn show_native_page(
 
 #[derive(Clone)]
 struct ServerPage {
+    details: details::DetailHost,
     app: adw::Application,
     share_requests: std::rc::Rc<io::RequestGuard>,
     /// Count badge in the Servers group header.
@@ -2156,6 +2167,15 @@ impl ServerPage {
                 }
                 *self.last_snapshot.borrow_mut() = Some(snapshot.clone());
                 self.render_server_list(&snapshot);
+                let selected = self.details.selected.borrow().clone();
+                if let Some(id) = selected {
+                    if let Some(server) = snapshot.servers.iter().find(|s| s.id == id) {
+                        open_server_details(server, self, self.details.tools.get());
+                    } else {
+                        self.details.back();
+                        self.search.grab_focus();
+                    }
+                }
             }
             state::RegistryState::FirstRun => {
                 self.clear_server_list();
@@ -2207,6 +2227,7 @@ impl ServerPage {
     }
 
     fn clear_server_list(&self) {
+        self.details.back();
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
@@ -2520,6 +2541,7 @@ impl ServerPage {
     }
 
     fn apply_probe(&self, server_id: &str, probe: &crate::server_runtime::ProbeResult) {
+        details::update_server_log(self, server_id, probe.error.as_deref());
         for row in self
             .health_rows
             .borrow()
@@ -2610,6 +2632,9 @@ impl ServerPage {
 
 #[derive(Clone)]
 struct ClientPage {
+    details: details::DetailHost,
+    detail_clients: std::rc::Rc<std::cell::RefCell<Vec<state::ClientView>>>,
+    detail_notice: std::rc::Rc<std::cell::RefCell<Option<(String, String)>>>,
     credential_page: ServerPage,
     app: adw::Application,
     root: gtk::Box,
@@ -2674,7 +2699,12 @@ impl ClientPage {
         scroller.set_child(Some(&page));
         root.append(&scroller);
 
+        let details = details::DetailHost::default();
+        details.attach(&root);
         let client_page = Self {
+            details,
+            detail_clients: Default::default(),
+            detail_notice: Default::default(),
             credential_page,
             app: app.clone(),
             root,
@@ -2919,6 +2949,7 @@ impl ClientPage {
         *self.profiles.borrow_mut() = snapshot.profiles;
         let sessions = snapshot.sessions;
         let clients = snapshot.clients;
+        *self.detail_clients.borrow_mut() = clients.clone();
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
@@ -3081,21 +3112,15 @@ impl ClientPage {
             };
             expander.add_css_class("toolport-row-group");
             expander.set_margin_top(16);
-            let names = gtk::Label::builder()
-                .label(
-                    absent
-                        .iter()
-                        .map(|client| client.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" · "),
-                )
-                .halign(gtk::Align::Start)
-                .xalign(0.0)
-                .wrap(true)
-                .margin_top(8)
-                .css_classes(["toolport-muted"])
-                .build();
-            expander.set_child(Some(&names));
+            let rows = row_group();
+            for client in absent {
+                rows.append(&client_rows::client_row(
+                    client,
+                    self.clone(),
+                    client_rows::RowStyle::Line,
+                ));
+            }
+            expander.set_child(Some(&rows));
             self.list.append(&expander);
         }
         if snapshot.sessions_error {
@@ -3166,10 +3191,19 @@ impl ClientPage {
             expander.set_child(Some(&rows));
             self.list.append(&expander);
         }
+        let selected = self.details.selected.borrow().clone();
+        if let Some(id) = selected {
+            if let Some(client) = clients.iter().find(|c| c.id == id) {
+                details::client(client, self);
+            } else {
+                self.details.back();
+            }
+        }
     }
 
     /// `error` titles the first-load callout; `cause` goes in the rescan toast.
     fn show_scan_error(&self, error: &str, cause: &str) {
+        self.details.back();
         if self.loaded.get() {
             // A failed rescan must not blow away a working list, matching React.
             let message = crate::i18n::trf("Couldn't refresh: {value1}", &[("value1", cause)]);
@@ -3197,6 +3231,9 @@ impl ClientPage {
     }
 
     fn show_error(&self, error: &str) {
+        if self.details.selected.borrow().is_some() {
+            show_toast(&self.root, error);
+        }
         self.pending_confirmation.borrow_mut().take();
         self.cancel_feedback_timer();
         self.feedback.set_label(error);
@@ -3236,6 +3273,9 @@ impl ClientPage {
     }
 
     fn refresh_with_confirmation(&self, message: String) {
+        if let Some(id) = self.details.selected.borrow().clone() {
+            *self.detail_notice.borrow_mut() = Some((id, message.clone()));
+        }
         *self.pending_confirmation.borrow_mut() = Some(message);
         self.refresh();
     }
@@ -3496,7 +3536,7 @@ fn confirm_client_migrate(client: &state::ClientView, page: ClientPage) {
         client.gateway_state == state::ClientGatewayState::Customized,
         {
             let page = page.clone();
-            move || page.refresh()
+            move || page.refresh_with_confirmation(crate::i18n::tr("Restart the client afterward."))
         },
         Some(page.credential_page.clone()),
     );
@@ -3632,7 +3672,7 @@ fn connected_client_actions_menu(client: state::ClientView, page: ClientPage) ->
     content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     let disconnect = toolport_menu_source_button(crate::i18n::msg("Disconnect from Toolport"));
-    disconnect.add_css_class("destructive-action");
+    disconnect.add_css_class("toolport-destructive");
     let menu_for_disconnect = menu.clone();
     disconnect.connect_clicked(move |button| {
         menu_for_disconnect.popdown();
@@ -8086,6 +8126,7 @@ fn build_content(
     let server_page = (
         root,
         ServerPage {
+            details: Default::default(),
             app: app.clone(),
             share_requests: Default::default(),
             server_count,
@@ -8106,6 +8147,7 @@ fn build_content(
             registry_reload: Default::default(),
         },
     );
+    server_page.1.details.attach(&server_page.0);
     let page_for_check = server_page.1.clone();
     check_servers
         .connect_clicked(move |_| page_for_check.probe_servers(health::ProbeReason::Refresh));
@@ -9387,65 +9429,19 @@ fn bounded_title(name: &str) -> gtk::Label {
 }
 
 fn open_server_details(server: &state::ServerView, page: &ServerPage, show_tools: bool) {
-    let parent = page.app.active_window();
-    let window = adw::Window::builder()
-        .application(&page.app)
-        .title(&server.name)
-        .default_width(1000)
-        .default_height(760)
-        .modal(true)
-        .build();
-    close_on_escape(&window);
-    window.set_transient_for(parent.as_ref());
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let header = adw::HeaderBar::new();
-    header.set_title_widget(Some(&bounded_title(&server.name)));
-    root.append(&header);
-    let stack = gtk::Stack::new();
-    stack.set_vexpand(true);
-    let overview = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    overview.set_margin_top(20);
-    overview.set_margin_start(20);
-    overview.set_margin_end(20);
-    for text in [&server.name, &server.origin_label, &server.transport] {
-        overview.append(
-            &gtk::Label::builder()
-                .label(text)
-                .xalign(0.0)
-                .ellipsize(gtk::pango::EllipsizeMode::End)
-                .max_width_chars(24)
-                .tooltip_text(text)
-                .build(),
-        );
-    }
-    let tools = ServerToolsPanel::new(&page.app, &server.id);
-    l10n::bind_stack_page_title(
-        &stack.add_titled(&overview, Some("overview"), &crate::i18n::tr("Overview")),
-        "Overview",
-    );
-    l10n::bind_stack_page_title(
-        &stack.add_titled(&tools.root, Some("tools"), &crate::i18n::tr("Tools")),
-        "Tools",
-    );
-    let switcher = gtk::StackSwitcher::new();
-    switcher.set_stack(Some(&stack));
-    switcher.set_halign(gtk::Align::Center);
-    root.append(&switcher);
-    root.append(&stack);
-    let tools_for_tab = tools.clone();
-    stack.connect_visible_child_name_notify(move |stack| {
-        if stack.visible_child_name().as_deref() == Some("tools") {
-            tools_for_tab.refresh();
-        }
-    });
-    if show_tools {
-        stack.set_visible_child_name("tools");
-    }
-    window.set_content(Some(&root));
-    window.present();
+    details::server(server, page, show_tools);
 }
 
 fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -> gtk::Box {
+    server_row(server, profile_id, page, false)
+}
+
+fn server_row(
+    server: &state::ServerView,
+    profile_id: &str,
+    page: ServerPage,
+    detail: bool,
+) -> gtk::Box {
     // Two lines (spec 9): the name, then where it comes from and how it runs. The
     // status chip, the switch and the menu trail on the right.
     let card = gtk::Box::new(gtk::Orientation::Horizontal, 12);
@@ -9455,7 +9451,9 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
 
     let icon = branding::server_logo(&server.name, &server.transport);
     icon.set_valign(gtk::Align::Center);
-    card.append(&icon);
+    if !detail {
+        card.append(&icon);
+    }
 
     let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
     text.set_hexpand(true);
@@ -9466,12 +9464,20 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
         .css_classes(["flat", "heading", "toolport-card-title"])
         .tooltip_text(&server.name)
         .build();
+    details.set_widget_name(&format!("detail-open:{}", server.id));
     let server_for_details = server.clone();
     let page_for_details = page.clone();
     details.connect_clicked(move |_| {
         open_server_details(&server_for_details, &page_for_details, false)
     });
-    text.append(&details);
+    if detail {
+        let title = l10n::label("Connection");
+        title.add_css_class("heading");
+        title.set_xalign(0.0);
+        text.append(&title);
+    } else {
+        text.append(&details);
+    }
     let providers: Vec<String> = server
         .secret_references
         .values()
@@ -9569,46 +9575,9 @@ fn server_card(server: &state::ServerView, profile_id: &str, page: ServerPage) -
         widget
     };
     {
-        let health_for_log = health.clone();
-        let app = page.app.clone();
-        copy_error.connect_clicked(move |_| {
-            let Some(error) = health_for_log.tooltip_text() else {
-                return;
-            };
-            let window = {
-                let widget = adw::Window::builder()
-                    .application(&app)
-                    .title(crate::i18n::tr("Connection log"))
-                    .default_width(640)
-                    .default_height(360)
-                    .modal(true)
-                    .build();
-                close_on_escape(&widget);
-                l10n::bind_window_title(&widget, "Connection log");
-                widget
-            };
-            window.set_transient_for(app.active_window().as_ref());
-            let view = gtk::TextView::builder()
-                .editable(false)
-                .cursor_visible(false)
-                .monospace(true)
-                .wrap_mode(gtk::WrapMode::WordChar)
-                .top_margin(16)
-                .bottom_margin(16)
-                .left_margin(16)
-                .right_margin(16)
-                .build();
-            view.buffer().set_text(&error);
-            let scroller = gtk::ScrolledWindow::builder()
-                .child(&view)
-                .vexpand(true)
-                .build();
-            let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            root.append(&adw::HeaderBar::new());
-            root.append(&scroller);
-            window.set_content(Some(&root));
-            window.present();
-        });
+        let server = server.clone();
+        let page = page.clone();
+        copy_error.connect_clicked(move |_| open_server_details(&server, &page, false));
     }
     let retry = {
         let widget = gtk::Button::builder()
@@ -9896,6 +9865,27 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
         });
         card.append(&toggle);
     }
+    let actions = server_actions(server, page, true);
+    let popover = gtk::Popover::new();
+    popover.add_css_class("toolport-action-menu");
+    popover.add_css_class("toolport-menu");
+    popover.set_child(Some(&actions));
+    let menu = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text(crate::i18n::trf(
+            "Actions for {value0}",
+            &[("value0", &server.name.to_string())],
+        ))
+        .popover(&popover)
+        .css_classes(["flat"])
+        .build();
+    if !detail {
+        card.append(&menu);
+    }
+    card
+}
+
+fn server_actions(server: &state::ServerView, page: ServerPage, include_details: bool) -> gtk::Box {
     let actions = gtk::Box::new(gtk::Orientation::Vertical, 4);
     actions.set_margin_top(6);
     actions.set_margin_bottom(6);
@@ -9919,7 +9909,9 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
     let server_for_tools = server.clone();
     let page_for_tools = page.clone();
     tools.connect_clicked(move |_| open_server_details(&server_for_tools, &page_for_tools, true));
-    actions.append(&tools);
+    if include_details {
+        actions.append(&tools);
+    }
 
     let edit = action_menu_button(crate::i18n::msg("Edit"), "document-edit-symbolic");
     edit.set_sensitive(matches!(
@@ -9983,28 +9975,14 @@ l10n::bind_dialog_response(&dialog, "enable", "Enable");
     actions.append(&credentials);
 
     let remove = action_menu_button(crate::i18n::msg("Remove"), "user-trash-symbolic");
-    remove.add_css_class("destructive-action");
+    remove.add_css_class("toolport-destructive");
     let server_id = server.id.clone();
     let server_name = server.name.clone();
     remove.connect_clicked(move |_| {
         confirm_remove_server(&server_id, &server_name, page.clone());
     });
     actions.append(&remove);
-    let popover = gtk::Popover::new();
-    popover.add_css_class("toolport-action-menu");
-    popover.add_css_class("toolport-menu");
-    popover.set_child(Some(&actions));
-    let menu = gtk::MenuButton::builder()
-        .icon_name("view-more-symbolic")
-        .tooltip_text(crate::i18n::trf(
-            "Actions for {value0}",
-            &[("value0", &server.name.to_string())],
-        ))
-        .popover(&popover)
-        .css_classes(["flat"])
-        .build();
-    card.append(&menu);
-    card
+    actions
 }
 
 /// The one-line explanation of a live auth probe, shown above the credential
@@ -11326,6 +11304,9 @@ fn finish_credential_update(
             page.render(state::RegistryState::Ready(
                 state::RegistrySnapshot::from_registry(registry),
             ));
+            // Replacing a stored value can leave the registry snapshot identical,
+            // in which case render deliberately skips rebuilding and probing.
+            page.probe_servers(health::ProbeReason::ConfigChanged);
             page.show_confirmation(&crate::i18n::trf(
                 "{value0} credential",
                 &[("value0", action)],
@@ -13982,6 +13963,7 @@ mod tests {
         assert!(activity.savings_detail.text().contains("cl100k_base"));
         assert!(!activity.savings_detail.text().contains("bytes/4"));
         let server_page = ServerPage {
+            details: Default::default(),
             app: app.clone(),
             share_requests: Default::default(),
             server_count: gtk::Label::new(None),
@@ -14011,6 +13993,8 @@ mod tests {
         ]
         .into_iter()
         .map(|(id, name, gateway_state)| state::ClientView {
+            detected: None,
+            imported_names: Vec::new(),
             id: id.into(),
             name: name.into(),
             app_present: true,
@@ -14268,6 +14252,7 @@ mod tests {
         activity.failure_kind = Some("downstream_failure".into());
         activity.run_id = Some("0123456789abcdef0123456789abcdef".into());
         let server_page = ServerPage {
+            details: Default::default(),
             app: app.clone(),
             share_requests: Default::default(),
             server_count: gtk::Label::new(None),
@@ -14366,6 +14351,7 @@ mod tests {
             .application_id("com.tsout.Toolport.ClientRowsFixture")
             .build();
         let server_page = ServerPage {
+            details: Default::default(),
             app: app.clone(),
             share_requests: Default::default(),
             server_count: gtk::Label::new(None),
@@ -14385,6 +14371,8 @@ mod tests {
         };
         let page = ClientPage::new(&app, server_page);
         let mut client = state::ClientView {
+            detected: None,
+            imported_names: Vec::new(),
             id: "cursor".into(),
             name: "Cursor".into(),
             app_present: true,
@@ -14579,6 +14567,8 @@ mod tests {
     fn gtk_legacy_reset_preserves_scope_and_uses_one_migration_action() {
         use super::*;
         let mut client = state::ClientView {
+            detected: None,
+            imported_names: Vec::new(),
             id: "cursor".into(),
             name: "Cursor".into(),
             app_present: true,
@@ -16274,6 +16264,7 @@ mod tests {
             .application_id("com.tsout.Toolport.B4ServerRowsFixture")
             .build();
         let page = ServerPage {
+            details: Default::default(),
             app: app.clone(),
             share_requests: Default::default(),
             server_count: gtk::Label::new(None),

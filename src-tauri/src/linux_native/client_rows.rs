@@ -54,7 +54,7 @@ impl ProfileProduct {
 }
 
 /// The short discovery summary for a connected client, and the full sentence for its tooltip.
-fn discovery_summary(client: &state::ClientView) -> (String, String) {
+pub(super) fn discovery_summary(client: &state::ClientView) -> (String, String) {
     let capabilities = crate::clients::discovery_capabilities(&client.id);
     let chosen = client
         .discovery_mode
@@ -193,18 +193,29 @@ fn client_detail(client: &state::ClientView, style: RowStyle) -> (String, String
 }
 
 /// "Connected" or "Customized".
-fn status_badge(client: &state::ClientView) -> gtk::Label {
+pub(super) fn status_badge(client: &state::ClientView) -> gtk::Label {
     let connected = client.gateway_state == state::ClientGatewayState::Connected;
     let badge = l10n::label(if connected {
         crate::i18n::msg("Connected")
-    } else {
+    } else if client.gateway_state == state::ClientGatewayState::Customized {
         crate::i18n::msg("Customized")
+    } else if client.app_present || client.config_exists {
+        crate::i18n::msg("Not connected")
+    } else {
+        crate::i18n::msg("Not installed")
     });
-    let class = if connected { "success" } else { "warning" };
+    let class = if connected {
+        "success"
+    } else if client.gateway_state == state::ClientGatewayState::Customized {
+        "warning"
+    } else {
+        "off"
+    };
     badge.add_css_class("toolport-badge");
     badge.add_css_class("caption");
     badge.add_css_class(class);
     badge.set_valign(gtk::Align::Center);
+    badge.set_halign(gtk::Align::Start);
     badge
 }
 
@@ -272,7 +283,15 @@ pub(super) fn client_row(
         account.set_valign(gtk::Align::Center);
         title.append(&account);
     }
-    copy.append(&title);
+    let open = gtk::Button::builder()
+        .child(&title)
+        .css_classes(["flat", "toolport-card-title"])
+        .build();
+    open.set_widget_name(&format!("detail-open:{}", client.id));
+    let selected = client.clone();
+    let selected_page = page.clone();
+    open.connect_clicked(move |_| details::client(&selected, &selected_page));
+    copy.append(&open);
     let detail = gtk::Label::builder()
         .xalign(0.0)
         .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -292,6 +311,7 @@ pub(super) fn client_row(
 
     let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     controls.add_css_class("toolport-client-controls");
+    controls.set_sensitive(!client.config_error && (client.app_present || client.config_exists));
     controls.set_valign(gtk::Align::Center);
     controls.set_halign(gtk::Align::End);
     // The status chip, as on React's rows; an unconnected row's Connect button
@@ -313,6 +333,7 @@ pub(super) fn client_row(
             // A repeated row action is secondary; the page has no primary (spec 5).
             let connect = l10n::button("Connect");
             connect.add_css_class("toolport-secondary-action");
+            connect.set_sensitive(client.app_present && !client.config_error);
             let client_for_connect = client.clone();
             let page_for_connect = page.clone();
             connect.connect_clicked(move |_| {
@@ -353,7 +374,7 @@ pub(super) fn client_row(
     card
 }
 
-fn remove_location_button(client: &state::ClientView, page: ClientPage) -> gtk::Button {
+pub(super) fn remove_location_button(client: &state::ClientView, page: ClientPage) -> gtk::Button {
     let remove = gtk::Button::from_icon_name("user-trash-symbolic");
     remove.add_css_class("flat");
     remove.set_valign(gtk::Align::Center);

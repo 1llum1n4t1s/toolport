@@ -1060,5 +1060,8 @@
   "{value0} other servers": "{value0} servidores más",
   "{value0} local MCP server": "{value0} servidor MCP local",
   "{value0} local MCP servers": "{value0} servidores MCP locales",
-  "Configuration could not be read safely": "La configuración no se pudo leer de forma segura"
+  "Configuration could not be read safely": "La configuración no se pudo leer de forma segura",
+  "Client is no longer available": "El cliente ya no está disponible",
+  "MCP server": "Servidor MCP",
+  "Server is no longer available": "El servidor ya no está disponible"
 }

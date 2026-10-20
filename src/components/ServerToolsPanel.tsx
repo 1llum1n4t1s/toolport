@@ -1222,16 +1222,16 @@ export function ServerToolsPanel({
                             {t.annotations?.readOnlyHint === true && (
                               <Badge variant="secondary">{translate("read-only")}</Badge>
                             )}
-                            <span className="text-meta text-muted-foreground">
-                              {perToolOff ? translate("Disabled") : translate("Enabled")}
-                            </span>
-                            <span className="text-meta text-muted-foreground">
-                              {t.toolportQuarantine === "quarantined"
-                                ? translate("Quarantined")
-                                : t.toolportQuarantine === "clear"
-                                  ? translate("Not quarantined")
+                            <Badge variant={perToolOff ? "off" : "success"}>
+                              {perToolOff ? translate("Off") : translate("On")}
+                            </Badge>
+                            {t.toolportQuarantine !== "clear" && (
+                              <Badge variant="warning">
+                                {t.toolportQuarantine === "quarantined"
+                                  ? translate("Quarantined")
                                   : translate("Quarantine unknown")}
-                            </span>
+                              </Badge>
+                            )}
                             {!exposed && (
                               <span className="text-meta text-muted-foreground">
                                 {translate("hidden")}

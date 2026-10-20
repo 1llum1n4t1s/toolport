@@ -1285,6 +1285,8 @@ mod tests {
 
         let connected = ClientSnapshot {
             clients: vec![state::ClientView {
+                detected: None,
+                imported_names: Vec::new(),
                 id: "client".into(),
                 name: "Client".into(),
                 app_present: true,

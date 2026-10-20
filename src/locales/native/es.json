@@ -1177,5 +1177,15 @@
   "Toolport makes each file below a link to {file}, so these clients read the same rules. It doesn't change any file that already exists. To undo, delete the link.": "Toolport convierte cada archivo de abajo en un enlace a {file}, para que estos clientes lean las mismas reglas. No cambia ningún archivo que ya exista. Para deshacerlo, borra el enlace.",
   "{file} already exists, so Toolport left it alone.": "{file} ya existe, así que Toolport no lo tocó.",
   "Windows lets apps make links only with Developer Mode on. Turn it on in Settings, or link the files by hand.": "Windows solo deja crear enlaces a las apps con el modo de desarrollador activado. Actívalo en Configuración o enlaza los archivos a mano.",
-  "Couldn't link {file}: {error}": "No se pudo enlazar {file}: {error}"
+  "Couldn't link {file}: {error}": "No se pudo enlazar {file}: {error}",
+  "Apply": "Aplicar",
+  "Could not read this client config. Check its syntax and file permissions.": "No se pudo leer la configuración del cliente. Revisa la sintaxis y los permisos del archivo.",
+  "Import all": "Importar todo",
+  "Not connected": "Sin conectar",
+  "Restart the client afterward.": "Después, reinicia el cliente.",
+  "Plugin": "Complemento",
+  "in Toolport": "en Toolport",
+  "Pinned": "Fijada",
+  "Renamed": "Renombrada",
+  "Read-only": "Solo lectura"
 }

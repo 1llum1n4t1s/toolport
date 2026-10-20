@@ -393,8 +393,25 @@ pub(super) enum ClientGatewayState {
     Disconnected,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Detail inventory stays out of debug logs, just as it did before details existed.
+#[derive(Clone)]
+pub(super) struct ClientDetailData(pub(super) crate::clients::DetectedClient);
+impl std::fmt::Debug for ClientDetailData {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ClientDetailData(<private>)")
+    }
+}
+impl std::ops::Deref for ClientDetailData {
+    type Target = crate::clients::DetectedClient;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct ClientView {
+    pub(super) detected: Option<ClientDetailData>,
+    pub(super) imported_names: Vec<String>,
     pub(super) id: String,
     pub(super) name: String,
     pub(super) app_present: bool,
@@ -424,6 +441,8 @@ pub(super) struct ClientView {
 impl ClientView {
     fn from_detected(client: crate::clients::DetectedClient) -> Self {
         Self {
+            detected: Some(ClientDetailData(client.clone())),
+            imported_names: Vec::new(),
             id: client.id,
             name: client.name,
             app_present: client.app_present,
@@ -565,6 +584,11 @@ pub(super) fn detect_client_views() -> Result<ClientSnapshot, String> {
         .map(ClientView::from_detected)
         .collect::<Vec<_>>();
     for client in &mut clients {
+        client.imported_names = registry
+            .servers
+            .iter()
+            .map(|s| s.name.to_lowercase())
+            .collect();
         client.shared_http = shared_http_clients.contains(&client.id);
         client.scope_id = registry
             .client_scopes
@@ -675,6 +699,7 @@ impl RegistrySnapshot {
         let servers = registry
             .servers
             .iter()
+            .filter(|server| !crate::clients::is_gateway_server(server))
             .map(|server| {
                 let enabled = registry.server_enabled(&server.id);
                 ServerView {

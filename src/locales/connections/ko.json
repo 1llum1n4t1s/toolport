@@ -1060,5 +1060,8 @@
   "{value0} other servers": "다른 서버 {value0}개",
   "{value0} local MCP server": "{value0} 로컬 MCP 서버",
   "{value0} local MCP servers": "{value0} 로컬 MCP 서버",
-  "Configuration could not be read safely": "구성을 안전하게 읽을 수 없습니다."
+  "Configuration could not be read safely": "구성을 안전하게 읽을 수 없습니다.",
+  "Client is no longer available": "클라이언트를 더 이상 사용할 수 없습니다",
+  "MCP server": "MCP 서버",
+  "Server is no longer available": "서버를 더 이상 사용할 수 없습니다"
 }

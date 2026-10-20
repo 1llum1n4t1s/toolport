@@ -1177,5 +1177,15 @@
   "Toolport makes each file below a link to {file}, so these clients read the same rules. It doesn't change any file that already exists. To undo, delete the link.": "Toolport makes each file below a link to {file}, so these clients read the same rules. It doesn't change any file that already exists. To undo, delete the link.",
   "{file} already exists, so Toolport left it alone.": "{file} already exists, so Toolport left it alone.",
   "Windows lets apps make links only with Developer Mode on. Turn it on in Settings, or link the files by hand.": "Windows lets apps make links only with Developer Mode on. Turn it on in Settings, or link the files by hand.",
-  "Couldn't link {file}: {error}": "Couldn't link {file}: {error}"
+  "Couldn't link {file}: {error}": "Couldn't link {file}: {error}",
+  "Apply": "Apply",
+  "Could not read this client config. Check its syntax and file permissions.": "Could not read this client config. Check its syntax and file permissions.",
+  "Import all": "Import all",
+  "Not connected": "Not connected",
+  "Restart the client afterward.": "Restart the client afterward.",
+  "Plugin": "Plugin",
+  "in Toolport": "in Toolport",
+  "Pinned": "Pinned",
+  "Renamed": "Renamed",
+  "Read-only": "Read-only"
 }

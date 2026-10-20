@@ -1060,5 +1060,8 @@
   "{value0} other servers": "他のサーバー {value0} 台",
   "{value0} local MCP server": "{value0} ローカル MCP サーバー",
   "{value0} local MCP servers": "{value0} ローカル MCP サーバー",
-  "Configuration could not be read safely": "構成を安全に読み取ることができませんでした"
+  "Configuration could not be read safely": "構成を安全に読み取ることができませんでした",
+  "Client is no longer available": "クライアントは利用できなくなりました",
+  "MCP server": "MCP サーバー",
+  "Server is no longer available": "サーバーは利用できなくなりました"
 }

@@ -343,6 +343,11 @@ impl PageHeader {
         self.actions.append(widget);
     }
 
+    pub(super) fn add_leading(&self, widget: &impl IsA<gtk::Widget>) {
+        self.leading.append(widget);
+        self.leading.set_visible(true);
+    }
+
     /// Replaces the title with another source message, such as Sync or Team.
     pub(super) fn set_title(&self, source: &'static str) {
         l10n::bind_label(&self.title, source);

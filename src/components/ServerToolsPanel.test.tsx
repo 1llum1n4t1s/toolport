@@ -71,7 +71,7 @@ describe("server Tools panel", () => {
     expect(api.listServerTools).toHaveBeenCalledWith("alpha");
     expect(screen.getByText("read-only")).toBeVisible();
     expect(screen.getByText("destructive")).toBeVisible();
-    expect(screen.getByText("Disabled")).toBeVisible();
+    expect(screen.getByText("Off")).toBeVisible();
     expect(screen.getByText("Quarantined")).toBeVisible();
     expect(screen.queryByText("Pick a server…")).not.toBeInTheDocument();
   });
@@ -118,7 +118,9 @@ describe("server Tools panel", () => {
     await waitFor(() =>
       expect(screen.queryByText("Quarantined")).not.toBeInTheDocument(),
     );
-    expect(screen.getAllByText("Not quarantined")).toHaveLength(2);
+    expect(screen.queryByText("Not quarantined")).not.toBeInTheDocument();
+    expect(screen.getByText("On")).toBeVisible();
+    expect(screen.getByText("Off")).toBeVisible();
   });
 
   it("reports unknown quarantine when the retained state cannot be read", async () => {

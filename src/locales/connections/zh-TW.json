@@ -1060,5 +1060,8 @@
   "{value0} other servers": "{value0} 個其他伺服器",
   "{value0} local MCP server": "{value0} 個本機 MCP 伺服器",
   "{value0} local MCP servers": "{value0} 個本機 MCP 伺服器",
-  "Configuration could not be read safely": "無法安全讀取設定"
+  "Configuration could not be read safely": "無法安全讀取設定",
+  "Client is no longer available": "用戶端已無法使用",
+  "MCP server": "MCP 伺服器",
+  "Server is no longer available": "伺服器已無法使用"
 }

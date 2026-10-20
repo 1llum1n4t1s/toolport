@@ -382,12 +382,28 @@ fn one_paragraph(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn state_badge(text: &str) -> gtk::Label {
-    gtk::Label::builder()
+fn state_badge(text: &'static str) -> gtk::Label {
+    let badge = gtk::Label::builder()
         .label(text)
         .css_classes(["toolport-badge", "caption"])
+        .halign(gtk::Align::Start)
         .valign(gtk::Align::Center)
-        .build()
+        .build();
+    l10n::bind_text(&badge, text);
+    badge
+}
+
+fn insert_state_badge(badges: &gtk::FlowBox, badge: &gtk::Label) {
+    badges.insert(badge, -1);
+    // FlowBox's wrapper must hide with its label or it reserves an empty column.
+    let child = badge.parent().unwrap();
+    child.set_visible(badge.is_visible());
+    let child = child.downgrade();
+    badge.connect_visible_notify(move |badge| {
+        if let Some(child) = child.upgrade() {
+            child.set_visible(badge.is_visible());
+        }
+    });
 }
 
 fn tool_row(
@@ -438,16 +454,17 @@ fn tool_row(
         .max_children_per_line(5)
         .column_spacing(4)
         .row_spacing(4)
+        .halign(gtk::Align::Start)
         .build();
-    let pinned_badge = state_badge("Pinned");
+    let pinned_badge = state_badge(crate::i18n::msg("Pinned"));
     pinned_badge.set_visible(pinned);
-    badges.insert(&pinned_badge, -1);
-    let renamed_badge = state_badge("Renamed");
+    insert_state_badge(&badges, &pinned_badge);
+    let renamed_badge = state_badge(crate::i18n::msg("Renamed"));
     renamed_badge.set_visible(exposure_override.is_some());
-    badges.insert(&renamed_badge, -1);
+    insert_state_badge(&badges, &renamed_badge);
     for (hint, label) in [
-        ("readOnlyHint", "Read-only"),
-        ("destructiveHint", "Destructive"),
+        ("readOnlyHint", crate::i18n::msg("Read-only")),
+        ("destructiveHint", crate::i18n::msg("Destructive")),
     ] {
         if tool
             .pointer(&format!("/annotations/{hint}"))
@@ -457,21 +474,40 @@ fn tool_row(
             badges.insert(&state_badge(label), -1);
         }
     }
-    let enabled_badge = state_badge(if enabled { "Enabled" } else { "Disabled" });
+    let enabled_badge = state_badge(if enabled {
+        crate::i18n::msg("On")
+    } else {
+        crate::i18n::msg("Off")
+    });
+    l10n::bind_text(
+        &enabled_badge,
+        if enabled {
+            crate::i18n::msg("On")
+        } else {
+            crate::i18n::msg("Off")
+        },
+    );
+    enabled_badge.add_css_class(if enabled { "success" } else { "off" });
     badges.insert(&enabled_badge, -1);
-    badges.insert(
-        &state_badge(
-            match tool
+    if tool
+        .get("toolportQuarantine")
+        .and_then(serde_json::Value::as_str)
+        != Some("clear")
+    {
+        let badge = state_badge(
+            if tool
                 .get("toolportQuarantine")
                 .and_then(serde_json::Value::as_str)
+                == Some("quarantined")
             {
-                Some("quarantined") => "Quarantined",
-                Some("clear") => "Not quarantined",
-                _ => "Quarantine unknown",
+                crate::i18n::msg("Quarantined")
+            } else {
+                crate::i18n::msg("Quarantine unknown")
             },
-        ),
-        -1,
-    );
+        );
+        badge.add_css_class("warning");
+        badges.insert(&badge, -1);
+    }
     title.append(&badges);
     copy.append(&title);
 
@@ -496,23 +532,12 @@ fn tool_row(
     run.set_valign(gtk::Align::Center);
     run.set_sensitive(enabled);
 
-    // A compact icon toggle rather than a GtkSwitch: same single click, but the
-    // switch was the tallest widget in the row and set the row height.
-    let visibility = gtk::ToggleButton::builder()
-        .icon_name(if enabled {
-            "view-reveal-symbolic"
-        } else {
-            "view-conceal-symbolic"
-        })
-        .active(!enabled)
+    let visibility = gtk::Switch::builder()
+        .active(enabled)
         .valign(gtk::Align::Center)
-        .tooltip_text(crate::i18n::tr(if enabled {
-            "Exposed to clients. Hide it."
-        } else {
-            "Hidden from clients. Expose it."
-        }))
-        .css_classes(["flat"])
         .build();
+    visibility.update_property(&[gtk::accessible::Property::Label(&name)]);
+    set_visibility_look(&visibility, enabled);
     // Reverting a failed write re-enters this handler, so the guard keeps the
     // revert from being treated as a fresh toggle.
     let reverting = Rc::new(Cell::new(false));
@@ -520,14 +545,14 @@ fn tool_row(
     let name_for_visibility = name.clone();
     let run_for_visibility = run.clone();
     let badge_for_visibility = enabled_badge.clone();
-    visibility.connect_toggled(move |button| {
+    visibility.connect_active_notify(move |button| {
         if reverting.get() {
             return;
         }
         let Some(server_id) = page_for_visibility.selected_server_id() else {
             return;
         };
-        let enabled = !button.is_active();
+        let enabled = button.is_active();
         button.set_sensitive(false);
         let page = page_for_visibility.clone();
         let name = name_for_visibility.clone();
@@ -548,13 +573,15 @@ fn tool_row(
                 Ok(Ok(_)) => {
                     page.remember_tool_enabled(&name, enabled);
                     set_visibility_look(&button, enabled);
+                    badge.remove_css_class(if enabled { "off" } else { "success" });
+                    badge.add_css_class(if enabled { "success" } else { "off" });
                     run.set_sensitive(enabled);
                     l10n::bind_text(
                         &badge,
                         if enabled {
-                            crate::i18n::msg("Enabled")
+                            crate::i18n::msg("On")
                         } else {
-                            crate::i18n::msg("Disabled")
+                            crate::i18n::msg("Off")
                         },
                     );
                 }
@@ -562,13 +589,13 @@ fn tool_row(
                     // The registry rejected the change, so the control must not
                     // keep claiming it happened.
                     reverting.set(true);
-                    button.set_active(enabled);
+                    button.set_active(!enabled);
                     reverting.set(false);
                     page.show_error(&error);
                 }
                 Err(_) => {
                     reverting.set(true);
-                    button.set_active(enabled);
+                    button.set_active(!enabled);
                     reverting.set(false);
                     page.show_error(&crate::i18n::tr(
                         "the tool visibility update stopped unexpectedly",
@@ -675,12 +702,7 @@ fn pin_label(pinned: bool) -> &'static str {
     }
 }
 
-fn set_visibility_look(button: &gtk::ToggleButton, enabled: bool) {
-    button.set_icon_name(if enabled {
-        "view-reveal-symbolic"
-    } else {
-        "view-conceal-symbolic"
-    });
+fn set_visibility_look(button: &gtk::Switch, enabled: bool) {
     button.set_tooltip_text(Some(&if enabled {
         crate::i18n::tr("Exposed to clients. Hide it.")
     } else {
@@ -1727,6 +1749,196 @@ mod tests {
         assert_eq!(
             form_field_value(&number, "1.5"),
             Ok(Some(serde_json::json!(1.5)))
+        );
+    }
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b5_static_tool_badges_retranslate_live_without_touching_user_names() {
+        use super::*;
+        adw::init().unwrap();
+        let _data = crate::registry::DataDirTestEnv::new("b5-badge-language");
+        crate::i18n::set_language("en").unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.B5BadgeTest")
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let panel = ServerToolsPanel::new(&app, "fixture");
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        let row = |state: &str| {
+            tool_row(
+                serde_json::json!({"name":"Quarantined", "description":"User description", "toolportQuarantine":state, "annotations":{"readOnlyHint":true,"destructiveHint":true}}),
+                true,
+                true,
+                None,
+                panel.clone(),
+            )
+        };
+        let quarantined = row("quarantined");
+        let unknown = row("unknown");
+        let clear = row("clear");
+        for r in [&quarantined, &unknown, &clear] {
+            root.append(r);
+        }
+        let renamed = state_badge(crate::i18n::msg("Renamed"));
+        root.append(&renamed);
+        fn labels(w: &gtk::Widget) -> Vec<gtk::Label> {
+            let mut out = w
+                .downcast_ref::<gtk::Label>()
+                .cloned()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let mut child = w.first_child();
+            while let Some(c) = child {
+                out.extend(labels(&c));
+                child = c.next_sibling();
+            }
+            out
+        }
+        let warning = |w: &gtk::Box| {
+            labels(w.upcast_ref())
+                .into_iter()
+                .filter(|l| l.has_css_class("warning"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(warning(&quarantined)[0].text(), "Quarantined");
+        assert_eq!(warning(&unknown)[0].text(), "Quarantine unknown");
+        assert!(warning(&clear).is_empty());
+        crate::i18n::set_language("fr").unwrap();
+        l10n::refresh_bindings();
+        assert_eq!(warning(&quarantined)[0].text(), "Mis en quarantaine");
+        assert_eq!(warning(&unknown)[0].text(), "Quarantaine inconnue");
+        assert!(warning(&clear).is_empty());
+        assert_eq!(renamed.text(), "Renommé");
+        let text = labels(quarantined.upcast_ref())
+            .into_iter()
+            .map(|l| l.text().to_string())
+            .collect::<Vec<_>>();
+        for expected in [
+            "Quarantined",
+            "Épinglé",
+            "Lecture seule",
+            "Destructeur",
+            "Activé",
+        ] {
+            assert!(text.iter().any(|t| t == expected), "{expected}: {text:?}");
+        }
+        crate::i18n::set_language("en").unwrap();
+        l10n::refresh_bindings();
+        assert_eq!(warning(&quarantined)[0].text(), "Quarantined");
+        if std::env::var_os("TOOLPORT_B5_BADGE_CAPTURE").is_some() {
+            root.set_margin_top(24);
+            root.set_margin_bottom(24);
+            root.set_margin_start(24);
+            root.set_margin_end(24);
+            let window = adw::ApplicationWindow::builder()
+                .application(&app)
+                .title("Toolport B5 badge fixture")
+                .content(&root)
+                .default_width(1440)
+                .default_height(900)
+                .build();
+            window.add_css_class("toolport-native");
+            let theme = super::super::theme::ThemeController::new();
+            theme.attach(&window);
+            for (action_name, language) in [("capture-french", "fr"), ("capture-english", "en")] {
+                let action = gtk::gio::SimpleAction::new(action_name, None);
+                action.connect_activate(move |_, _| {
+                    crate::i18n::set_language(language).unwrap();
+                    l10n::refresh_bindings();
+                });
+                app.add_action(&action);
+            }
+            let close = gtk::gio::SimpleAction::new("close-fixture", None);
+            let target = window.downgrade();
+            close.connect_activate(move |_, _| {
+                if let Some(w) = target.upgrade() {
+                    w.close();
+                }
+            });
+            app.add_action(&close);
+            let main_loop = gtk::glib::MainLoop::new(None, false);
+            let stop = main_loop.clone();
+            window.connect_close_request(move |_| {
+                stop.quit();
+                gtk::glib::Propagation::Proceed
+            });
+            let stop = main_loop.clone();
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(120), move || {
+                stop.quit()
+            });
+            window.present();
+            main_loop.run();
+            window.close();
+        }
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b5_tool_switch_saves_exact_policy_and_rolls_back_failed_writes() {
+        use super::*;
+        adw::init().unwrap();
+        let _data = crate::registry::DataDirTestEnv::new("b5-tool-switch");
+        crate::registry::update(|registry| {
+            registry.servers.push(serde_json::from_value(serde_json::json!({
+                "id":"selected", "name":"Selected", "transport":"stdio", "command":"fixture", "args":[], "env":[]
+            })).unwrap());
+            Ok(())
+        }).unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.tsout.Toolport.B5ToolSwitchTest")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(gtk::gio::Cancellable::NONE).unwrap();
+        let panel = ServerToolsPanel::new(&app, "selected");
+        let tool = serde_json::json!({"name":"read", "description":"Read a record", "toolportQuarantine":"clear"});
+        let row = tool_row(tool.clone(), true, false, None, panel.clone());
+        fn find_switch(root: &gtk::Widget) -> Option<gtk::Switch> {
+            if let Some(switch) = root.downcast_ref::<gtk::Switch>() {
+                return Some(switch.clone());
+            }
+            let mut child = root.first_child();
+            while let Some(widget) = child {
+                if let Some(switch) = find_switch(&widget) {
+                    return Some(switch);
+                }
+                child = widget.next_sibling();
+            }
+            None
+        }
+        fn settle(switch: &gtk::Switch) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let context = gtk::glib::MainContext::default();
+            while !switch.is_sensitive() && std::time::Instant::now() < deadline {
+                while context.pending() {
+                    context.iteration(false);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(switch.is_sensitive(), "policy update completed");
+        }
+        let switch = find_switch(row.upcast_ref()).unwrap();
+        assert!(switch.is_active());
+        switch.set_active(false);
+        settle(&switch);
+        assert!(!switch.is_active());
+        let registry = crate::registry::load().unwrap();
+        assert_eq!(registry.servers[0].disabled_tools, vec!["read"]);
+        let failed_panel = ServerToolsPanel::new(&app, "missing");
+        let failed_row = tool_row(tool, true, false, None, failed_panel.clone());
+        let failed_switch = find_switch(failed_row.upcast_ref()).unwrap();
+        failed_switch.set_active(false);
+        settle(&failed_switch);
+        assert!(
+            failed_switch.is_active(),
+            "a rejected policy write restores the old state"
+        );
+        assert_eq!(
+            failed_panel.tools.first_child().unwrap().accessible_role(),
+            gtk::AccessibleRole::Alert
+        );
+        assert_eq!(
+            crate::registry::load().unwrap().servers[0].disabled_tools,
+            vec!["read"]
         );
     }
 }

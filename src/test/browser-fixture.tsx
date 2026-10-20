@@ -112,6 +112,29 @@ const fixtureClient = (
   error: null,
   ...overrides,
 });
+const detailStates = new URLSearchParams(location.search).has("detail-states");
+const detailClients = [
+  fixtureClient("vscode", "VS Code", {
+    gatewayInstalled: true,
+    entryState: "customized",
+  }),
+  fixtureClient("zed", "Zed", {
+    error: "Could not read this client config. Check its syntax and file permissions.",
+  }),
+  fixtureClient("goose", "Goose", { appPresent: false, configExists: false }),
+  fixtureClient("opencode", "OpenCode", {
+    servers: [
+      {
+        name: "Calendar",
+        transport: "stdio",
+        command: "calendar-mcp",
+        args: [],
+        envKeys: [],
+        url: null,
+      },
+    ],
+  }),
+];
 const claudeProfileClients = [
   fixtureClient("claude-code", "Claude Code", {
     configPath: "/fixture/.claude.json",
@@ -964,6 +987,7 @@ mockIPC(
       case "detect_clients":
         return [
           ...fixtureLocations,
+          ...(detailStates ? detailClients : []),
           ...(claudeProfiles ? claudeProfileClients : []),
           ...(args.inspectConfigs && !claudeProfiles
             ? [
