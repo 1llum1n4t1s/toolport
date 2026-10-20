@@ -274,12 +274,32 @@ impl Env {
                     )
                 })
                 .unwrap_or_else(|| client.name.clone());
-            self.profiles.push(Profile {
+            let profile = Profile {
                 id: client.id.clone(),
                 client_type: kind.into(),
                 name,
                 folder,
+            };
+            // The default ~/.claude.json and an explicit ~/.claude/.claude.json
+            // both read ~/.claude/settings.json. One settings root gets one column,
+            // regardless of account metadata; retain a connected identity when possible.
+            let same = self.profiles.iter().position(|other| {
+                other.client_type == profile.client_type
+                    && (other.folder == profile.folder
+                        || canon(&other.folder)
+                            .ok()
+                            .zip(canon(&profile.folder).ok())
+                            .is_some_and(|(a, b)| a == b))
             });
+            if let Some(index) = same {
+                if client.gateway_installed
+                    && !self.connected_agents.contains(&self.profiles[index].id)
+                {
+                    self.profiles[index] = profile;
+                }
+            } else {
+                self.profiles.push(profile);
+            }
         }
     }
 

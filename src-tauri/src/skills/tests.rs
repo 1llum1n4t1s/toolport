@@ -4407,3 +4407,46 @@ fn skills_discovers_unsaved_profiles_before_clients_without_adopting_configs() {
         "Skills must not remember or adopt client locations"
     );
 }
+
+#[test]
+fn claude_configs_sharing_one_skills_folder_have_one_connected_column() {
+    for (main_connected, copy_connected, expected) in [
+        (false, true, "claude-code@claude"),
+        (true, false, "claude-code"),
+        (true, true, "claude-code"),
+        (false, false, "claude-code"),
+    ] {
+        let home = Home::new();
+        home.skill(
+            ".claude/skills/shared",
+            "same-folder",
+            "Shared Claude settings",
+        );
+        let mut env = home.env();
+        env.use_clients(&[
+            detected_profile(&home, "claude-code", ".claude.json", main_connected),
+            detected_profile(
+                &home,
+                "claude-code@claude",
+                ".claude/.claude.json",
+                copy_connected,
+            ),
+        ]);
+        let inv = scan(&env, &only(&["claude-code"]), None);
+        assert_eq!(
+            inv.agents.len(),
+            1,
+            "two MCP configs read the same skill settings"
+        );
+        assert_eq!(inv.agents[0].id, expected);
+        assert_eq!(inv.agents[0].connected, main_connected || copy_connected);
+        assert_eq!(
+            skill(&inv, "same-folder")
+                .states
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![expected]
+        );
+    }
+}
