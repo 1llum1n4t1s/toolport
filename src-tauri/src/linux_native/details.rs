@@ -1328,6 +1328,59 @@ mod tests {
     }
     #[test]
     #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b5_same_detail_refresh_preserves_external_focus() {
+        let _data = crate::registry::DataDirTestEnv::new("b5-external-focus");
+        let app = app();
+        let (_, servers, _) = build_content(&app, crate::approval_broker::start_native());
+        let page = ClientPage::new(&app, servers);
+        let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        frame.append(&page.root);
+        let external = gtk::Button::with_label("External navigation");
+        frame.append(&external);
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .content(&frame)
+            .default_width(1024)
+            .default_height(700)
+            .build();
+        let selected = fixture_client("codex@work");
+        page.render(snapshot(vec![selected.clone()]));
+        window.present();
+        client(&selected, &page);
+        let back = find_class(
+            &page.details.stack.child_by_name("detail").unwrap(),
+            "toolport-page-back",
+        )
+        .unwrap();
+        assert!(back.is_focus(), "initial push focuses Back");
+        external.grab_focus();
+        assert!(external.is_focus());
+        let mut refreshed = selected.clone();
+        refreshed.gateway_state = state::ClientGatewayState::Connected;
+        page.render(snapshot(vec![refreshed]));
+        assert!(
+            external.is_focus(),
+            "same-id detail refresh preserves a still-live external control"
+        );
+        assert!(
+            widgets(&page.details.stack.child_by_name("detail").unwrap())
+                .iter()
+                .filter_map(|w| w.downcast_ref::<gtk::Button>())
+                .any(|button| button.label().as_deref() == Some("Disconnect")),
+            "detail refreshed while external focus stayed put"
+        );
+        page.render(snapshot(vec![]));
+        assert!(page.details.selected.borrow().is_none());
+        let focus = gtk::prelude::GtkWindowExt::focus(&window).unwrap();
+        assert!(
+            focus.is_ancestor(&page.details.stack.child_by_name("list").unwrap()),
+            "missing destination still uses live-list fallback"
+        );
+        window.close();
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
     fn b5_discovery_mutation_targets_only_the_selected_profile() {
         let _data = crate::registry::DataDirTestEnv::new("b5-profile-discovery");
         let app = app();
