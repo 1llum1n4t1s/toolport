@@ -1024,6 +1024,21 @@ button.toolport-activity-filter {{
   text-decoration: underline;
 }}
 
+.toolport-server-chip {{
+  border: 1px solid @toolport_border;
+  border-radius: 6px;
+  background-color: alpha(@toolport_fg, 0.04);
+  color: @toolport_fg;
+  padding: 4px 8px;
+}}
+.toolport-gateway-flow {{
+  border: 1px solid @toolport_border;
+  border-radius: 12px;
+  background-color: @toolport_card;
+  padding: 20px 16px;
+}}
+.toolport-gateway-flow > flowboxchild {{ padding: 0; }}
+
 .toolport-details-expander {{
   padding: 11px 14px;
   border: 1px solid @toolport_border;

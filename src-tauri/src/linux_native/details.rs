@@ -347,6 +347,7 @@ pub(super) fn client(client: &state::ClientView, page: &ClientPage) {
             .get(control.selected() as usize)
             .map(|p| p.id.clone());
     });
+    actions.append(&text(&crate::i18n::tr("Access"), false));
     actions.append(&scope);
     if connected && !customized {
         let apply = l10n::button("Apply");
@@ -476,23 +477,28 @@ pub(super) fn client(client: &state::ClientView, page: &ClientPage) {
         discovery.append(&row);
         body.append(&discovery);
     }
-    if !customized && (client.app_present || client.config_exists) {
-        let reachable = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        reachable.append(&heading("Servers it can reach"));
+    if !customized {
+        let reachable = gtk::Box::new(gtk::Orientation::Vertical, 16);
         body.append(&reachable);
         let revision = Rc::new(std::cell::Cell::new(0));
-        refresh_reachable(&reachable, client.scope_id.clone(), revision.clone());
+        refresh_reachable(
+            &reachable,
+            client.scope_id.clone(),
+            revision.clone(),
+            client.clone(),
+        );
         if !connected {
             let selected = selected_scope.clone();
+            let client = client.clone();
             scope.connect_selected_notify(move |_| {
-                refresh_reachable(&reachable, selected.borrow().clone(), revision.clone())
+                refresh_reachable(
+                    &reachable,
+                    selected.borrow().clone(),
+                    revision.clone(),
+                    client.clone(),
+                )
             });
         }
-    } else if !client.app_present && !client.config_exists {
-        body.append(&text(
-            &crate::i18n::tr("not installed on this machine"),
-            false,
-        ));
     }
     if client.uses_connectors {
         body.append(&text(&crate::i18n::tr("Uses account connectors"), false));
@@ -596,13 +602,11 @@ fn refresh_reachable(
     reachable: &gtk::Box,
     scope: Option<String>,
     revision: Rc<std::cell::Cell<u64>>,
+    client: state::ClientView,
 ) {
     let request = revision.get() + 1;
     revision.set(request);
     while let Some(child) = reachable.last_child() {
-        if child == reachable.first_child().unwrap() {
-            break;
-        }
         reachable.remove(&child);
     }
     reachable.append(&skeleton_rows("Loading servers… "));
@@ -635,11 +639,109 @@ fn refresh_reachable(
             reachable.remove(&child);
         }
         match result {
-            Ok(Ok(names)) if !names.is_empty() => for name in names { reachable.append(&text(&name, false)); },
-            Ok(Ok(_)) => reachable.append(&text(&crate::i18n::tr("No enabled servers in this access set yet. Turn servers on in Servers and include them under Settings > Advanced."), false)),
+            Ok(Ok(names)) => render_reachable(&reachable, &client, &names),
             _ => reachable.append(&text(&crate::i18n::tr("Servers unavailable"), false)),
         }
     });
+}
+
+fn server_chips(names: &[String]) -> gtk::FlowBox {
+    let chips = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .homogeneous(false)
+        .min_children_per_line(1)
+        .max_children_per_line(100)
+        .row_spacing(6)
+        .column_spacing(6)
+        .build();
+    for name in names {
+        let chip = text(name, true);
+        chip.set_halign(gtk::Align::Start);
+        chip.add_css_class("toolport-server-chip");
+        chips.insert(&chip, -1);
+    }
+    chips
+}
+
+fn render_reachable(root: &gtk::Box, client: &state::ClientView, names: &[String]) {
+    if client.gateway_state == state::ClientGatewayState::Connected {
+        root.append(&heading("Servers it can reach"));
+        if names.is_empty() {
+            root.append(&text(&crate::i18n::tr("No enabled servers in this access set yet. Turn servers on in Servers and include them under Settings > Advanced."), false));
+        } else {
+            root.append(&server_chips(names));
+        }
+        return;
+    }
+    if names.is_empty() {
+        root.append(&text(&crate::i18n::trf("Connect {value1}, then enable servers under{value2}{value3} and they'll all route through Toolport, no per-client setup.", &[("value1", &client.name), ("value2", " "), ("value3", &crate::i18n::tr("Servers"))]), false));
+        return;
+    }
+    let count = crate::i18n::trf(
+        if names.len() == 1 {
+            "{value1} managed server"
+        } else {
+            "{value1} managed servers"
+        },
+        &[("value1", &names.len().to_string())],
+    );
+    root.append(&text(&crate::i18n::trf("Connect {value1} once and it reaches your{value2}{value3}{value4}through one gateway, no re-wiring per project. Your keys stay in your keychain.", &[("value1", &client.name), ("value2", " "), ("value3", &count), ("value4", " ")]), false));
+    let flow = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .homogeneous(false)
+        .min_children_per_line(1)
+        .max_children_per_line(3)
+        .row_spacing(16)
+        .column_spacing(12)
+        .halign(gtk::Align::Fill)
+        .build();
+    flow.add_css_class("toolport-gateway-flow");
+    let client_step = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    client_step.set_halign(gtk::Align::Center);
+    let logo = branding::client_logo(&client.id);
+    logo.set_pixel_size(48);
+    client_step.append(&logo);
+    let name = text(&client.name, false);
+    name.set_max_width_chars(20);
+    name.set_justify(gtk::Justification::Center);
+    client_step.append(&name);
+    flow.insert(&client_step, -1);
+    let gateway_step = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    gateway_step.append(&gtk::Image::from_icon_name("go-next-symbolic"));
+    let gateway = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    gateway.set_halign(gtk::Align::Center);
+    let logo = branding::toolport_mark();
+    logo.set_pixel_size(48);
+    gateway.append(&logo);
+    gateway.append(&text(
+        &crate::i18n::trf(
+            "Toolport {value1}",
+            &[("value1", &crate::i18n::tr("gateway"))],
+        ),
+        false,
+    ));
+    gateway_step.append(&gateway);
+    flow.insert(&gateway_step, -1);
+    let targets = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    targets.append(&gtk::Image::from_icon_name("go-next-symbolic"));
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    for name in names.iter().take(4) {
+        let chip = text(name, true);
+        chip.add_css_class("toolport-server-chip");
+        list.append(&chip);
+    }
+    if names.len() > 4 {
+        list.append(&text(
+            &crate::i18n::trf(
+                "+{value1} more",
+                &[("value1", &(names.len() - 4).to_string())],
+            ),
+            false,
+        ));
+    }
+    targets.append(&list);
+    flow.insert(&targets, -1);
+    root.append(&flow);
 }
 
 fn client_imports(
@@ -1229,6 +1331,60 @@ mod tests {
             std::fs::read(crate::registry::registry_path().unwrap()).unwrap(),
             before
         );
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK desktop; run in omabox"]
+    fn b5_gateway_preview_tracks_selected_access_and_connected_chips() {
+        let _data = crate::registry::DataDirTestEnv::new("b5-gateway-preview");
+        let _app = app();
+        crate::registry::update(|r| {
+            r.servers = ["GitHub", "Notes"].into_iter().enumerate().map(|(i, name)| serde_json::from_value(serde_json::json!({"id":format!("server-{i}"),"name":name,"transport":"stdio","command":"fixture","args":[],"env":[],"enabled":true})).unwrap()).collect();
+            r.profiles.push(serde_json::from_value(serde_json::json!({"id":"work","name":"Work","enabledServerIds":["server-1"]})).unwrap());
+            Ok(())
+        }).unwrap();
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 16);
+        let selected = fixture_client("codex@work");
+        let revision = Rc::new(std::cell::Cell::new(0));
+        refresh_reachable(&root, Some("work".into()), revision, selected.clone());
+        let context = gtk::glib::MainContext::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while find_class(root.upcast_ref(), "toolport-gateway-flow").is_none()
+            && std::time::Instant::now() < deadline
+        {
+            while context.pending() {
+                context.iteration(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(find_class(root.upcast_ref(), "toolport-gateway-flow").is_some());
+        let labels = widgets(root.upcast_ref())
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Label>().ok())
+            .map(|l| l.text().to_string())
+            .collect::<Vec<_>>();
+        assert!(labels
+            .iter()
+            .any(|l| l.contains("1 managed server") && l.contains("keys stay in your keychain")));
+        assert!(labels.iter().any(|l| l == "Toolport gateway"));
+        assert!(labels.iter().any(|l| l == "Notes"));
+        assert!(!labels.iter().any(|l| l == "GitHub"));
+        assert!(
+            root.measure(gtk::Orientation::Horizontal, -1).0 <= 756,
+            "gateway preview fits narrow content"
+        );
+        let connected = gtk::Box::new(gtk::Orientation::Vertical, 16);
+        let mut client = selected;
+        client.gateway_state = state::ClientGatewayState::Connected;
+        render_reachable(&connected, &client, &["GitHub".into(), "Notes".into()]);
+        assert_eq!(
+            widgets(connected.upcast_ref())
+                .iter()
+                .filter(|w| w.has_css_class("toolport-server-chip"))
+                .count(),
+            2
+        );
+        assert!(find_class(connected.upcast_ref(), "toolport-gateway-flow").is_none());
     }
 
     /// Deterministic, synthetic detail screens for the cross-theme capture matrix.
