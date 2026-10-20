@@ -770,6 +770,9 @@ impl Pane {
                     }
                     None => format!("<b>{name}</b>"),
                 });
+            } else {
+                // Opacity alone leaves the previous agent name exposed to accessibility.
+                hint.set_text("");
             }
             // Keep the single-line hint allocated: hover must not move the cell below it.
             hint.set_opacity(if shown.is_some() { 1.0 } else { 0.0 });
@@ -1017,14 +1020,13 @@ impl SkillsPage {
         issues_list.set_margin_end(16);
         issues_list.set_margin_top(14);
         issues_list.set_margin_bottom(20);
-        issues_layout.append(
-            &gtk::ScrolledWindow::builder()
-                .hscrollbar_policy(gtk::PolicyType::Never)
-                .hexpand(true)
-                .vexpand(true)
-                .child(&issues_list)
-                .build(),
-        );
+        let issues_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .hexpand(true)
+            .vexpand(true)
+            .child(&issues_list)
+            .build();
+        issues_layout.append(&issues_scroll);
         let issues_separator = gtk::Separator::new(gtk::Orientation::Vertical);
         issues_layout.append(&issues_separator);
         let issues_side = gtk::Box::new(gtk::Orientation::Vertical, 10);
@@ -1039,7 +1041,12 @@ impl SkillsPage {
             .child(&issues_side)
             .build();
         issues_layout.append(&issues_side_scroll);
-        stack.add_named(&issues_layout, Some("issues"));
+        let issues_page_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .child(&issues_layout)
+            .build();
+        stack.add_named(&issues_page_scroll, Some("issues"));
         content.append(&stack);
 
         // A tiled or half-width window gets the stacked layout instead of a clipped one.
@@ -1054,6 +1061,20 @@ impl SkillsPage {
             &issues_layout,
             &issues_separator,
             &issues_side_scroll,
+        );
+        // At stacked widths the cards and By agent belong to one scrolling page.
+        // Never on the inner scrollers lets the real card measurements reach the page.
+        for scroll in [&issues_scroll, &issues_side_scroll] {
+            narrow.add_setter(
+                scroll,
+                "vscrollbar-policy",
+                Some(&gtk::PolicyType::Never.to_value()),
+            );
+        }
+        narrow.add_setter(
+            &issues_page_scroll,
+            "vscrollbar-policy",
+            Some(&gtk::PolicyType::Automatic.to_value()),
         );
         narrow.add_setter(&search, "width-request", Some(&150.to_value()));
         let adaptive = adw::BreakpointBin::builder()
@@ -3400,6 +3421,151 @@ mod tests {
         }
     }
 
+    // Separate processes keep GTK window/frame-clock state independent at each size.
+    #[test]
+    #[ignore = "requires GTK; explicitly run in the isolated omabox session"]
+    fn issues_page_scroll_at_1024() {
+        assert_issues_page_scroll(768);
+    }
+
+    #[test]
+    #[ignore = "requires GTK; explicitly run in the isolated omabox session"]
+    fn issues_page_scroll_at_1120() {
+        assert_issues_page_scroll(864);
+    }
+
+    #[test]
+    #[ignore = "requires GTK; explicitly run in the isolated omabox session"]
+    fn issues_panes_scroll_at_1440() {
+        assert_issues_page_scroll(1184);
+    }
+
+    fn assert_issues_page_scroll(width: i32) {
+        adw::init().unwrap();
+        let _data = crate::registry::DataDirTestEnv::new("issues-page-scroll");
+        let app = adw::Application::builder().build();
+        app.register(None::<&gtk::gio::Cancellable>).unwrap();
+        let issues = (0..6).map(|i| serde_json::json!({
+            "id": format!("issue-{i}"), "level": "warn",
+            "title": "Skills you turned off still load in 3 other clients",
+            "detail": "Review the client configuration and the skill location before changing what each agent loads. ".repeat(3),
+            "agents": ["claude-code"], "skills": [], "skillNames": [],
+            "fixLabel": "Turn off where possible"
+        })).collect::<Vec<_>>();
+        let inv: Inventory = serde_json::from_value(serde_json::json!({
+            "agents": [regression_agent()], "skills": [], "rules": [], "issues": issues, "project": null
+        })).unwrap();
+        let settle = || {
+            let loop_ = gtk::glib::MainLoop::new(None, false);
+            let stop = loop_.clone();
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+                stop.quit()
+            });
+            loop_.run();
+        };
+        let page = SkillsPage::new(&app);
+        page.inventory.replace(Some(inv));
+        page.select_tab(Tab::Issues);
+        let outer = page
+            .stack
+            .child_by_name("issues")
+            .unwrap()
+            .downcast::<gtk::ScrolledWindow>()
+            .unwrap();
+        let inner = page
+            .issues_list
+            .ancestor(gtk::ScrolledWindow::static_type())
+            .unwrap()
+            .downcast::<gtk::ScrolledWindow>()
+            .unwrap();
+        let side = page
+            .issues_side
+            .ancestor(gtk::ScrolledWindow::static_type())
+            .unwrap()
+            .downcast::<gtk::ScrolledWindow>()
+            .unwrap();
+        let window = adw::ApplicationWindow::builder()
+            .application(&app)
+            .default_width(width)
+            .default_height(700)
+            .resizable(false)
+            .content(&page.root)
+            .build();
+        let theme = super::super::theme::ThemeController::new();
+        theme.attach(&window);
+        window.present();
+        page.tabs[2].1.grab_focus();
+        settle();
+        // Adjustment changes queue viewport allocation. Drive it before reading
+        // bounds rather than depending on the compositor's next frame callback.
+        let allocate = || {
+            outer.queue_allocate();
+            outer.allocate(outer.width(), outer.height(), -1, None);
+        };
+        allocate();
+        assert_eq!(
+            page.root.width(),
+            width,
+            "exercise the requested page width"
+        );
+        let narrow = width < 980;
+        assert_eq!(
+            inner.vscrollbar_policy(),
+            if narrow {
+                gtk::PolicyType::Never
+            } else {
+                gtk::PolicyType::Automatic
+            }
+        );
+        assert_eq!(side.vscrollbar_policy(), inner.vscrollbar_policy());
+        assert_eq!(
+            outer.vscrollbar_policy(),
+            if narrow {
+                gtk::PolicyType::Automatic
+            } else {
+                gtk::PolicyType::Never
+            }
+        );
+        let last = page.issues_list.last_child().unwrap();
+        assert!(last.is::<IssueFrame>(), "exercise real issue cards");
+        assert!(last.height() >= last.measure(gtk::Orientation::Vertical, last.width()).0);
+        if narrow {
+            let adj = outer.vadjustment();
+            assert!(
+                adj.upper() > adj.page_size() * 2.0,
+                "cards retain their full measured height"
+            );
+            assert_eq!(
+                inner.vadjustment().upper(),
+                inner.vadjustment().page_size(),
+                "no short inner scroller"
+            );
+            let bounds = last.compute_bounds(&outer).unwrap();
+            adj.set_value(adj.value() + f64::from(bounds.y()));
+            settle();
+            allocate();
+            let bounds = last.compute_bounds(&outer).unwrap();
+            assert!(
+                bounds.y() >= -1.0 && bounds.y() + bounds.height() <= outer.height() as f32 + 1.0,
+                "last card reachable in page scroll: {bounds:?}"
+            );
+            adj.set_value(adj.upper() - adj.page_size());
+            settle();
+            allocate();
+            let bounds = page.issues_side.compute_bounds(&outer).unwrap();
+            assert!(
+                bounds.y() >= 0.0 && bounds.y() + bounds.height() <= outer.height() as f32 + 1.0,
+                "By agent reachable in same scroll"
+            );
+        } else {
+            assert!(
+                inner.vadjustment().upper() > inner.vadjustment().page_size(),
+                "wide cards keep independent scrolling"
+            );
+        }
+        window.destroy();
+    }
+
     #[test]
     #[ignore = "requires GTK; explicitly run in the isolated omabox session"]
     fn b6_toast_confirmation_clears_an_earlier_error_bar() {
@@ -3459,11 +3625,35 @@ mod tests {
                 for _ in 0..10 {
                     pane.hover_column(&agent.id, &agent.name, Some("Off in settings.json"), true);
                     assert_eq!(height(), before, "hover must not resize the header");
+                    let hint = pane.hint.borrow().clone().unwrap();
+                    assert_eq!(hint.text(), "Claude Code: Off in settings.json");
+                    assert_eq!(hint.opacity(), 1.0);
+                    assert!(pane.cells.borrow()[&agent.id]
+                        .iter()
+                        .all(|cell| cell.has_css_class("toolport-skill-col-hl")));
                     pane.focus_column(&agent.id, &agent.name, true);
                     pane.hover_column(&agent.id, &agent.name, None, false);
                     assert_eq!(height(), before, "keyboard hint must not resize the header");
+                    assert_eq!(hint.text(), "Claude Code");
+                    assert_eq!(hint.opacity(), 1.0);
                     pane.focus_column(&agent.id, &agent.name, false);
                     assert_eq!(height(), before, "leaving must not resize the header");
+                    assert_eq!(hint.opacity(), 0.0);
+                    assert!(
+                        hint.text().is_empty(),
+                        "hidden label must expose no stale accessible name"
+                    );
+                    assert!(
+                        hint.label().is_empty(),
+                        "hidden markup must also be cleared"
+                    );
+                    assert!(
+                        hint.is_visible(),
+                        "reserve the row without visibility relayout"
+                    );
+                    assert!(pane.cells.borrow()[&agent.id]
+                        .iter()
+                        .all(|cell| !cell.has_css_class("toolport-skill-col-hl")));
                 }
             }
         }
