@@ -53,6 +53,15 @@ impl DetailHost {
             .root()
             .and_downcast::<gtk::Window>()
             .and_then(|w| gtk::prelude::GtkWindowExt::focus(&w));
+        let same_destination = self.selected.borrow().as_deref() == Some(id);
+        let preserve_external_focus = same_destination
+            && current_focus.as_ref().is_some_and(|focus| {
+                focus.root().is_some()
+                    && self
+                        .stack
+                        .child_by_name("detail")
+                        .is_some_and(|old| !focus.is_ancestor(&old))
+            });
         let previous_path = self.stack.child_by_name("detail").and_then(|old| {
             current_focus
                 .as_ref()
@@ -73,6 +82,9 @@ impl DetailHost {
         }
         self.stack.add_named(root, Some("detail"));
         self.stack.set_visible_child_name("detail");
+        if preserve_external_focus {
+            return;
+        }
         if let Some(focus) = previous_path
             .and_then(|path| follow_focus_path(root.upcast_ref(), &path))
             .filter(|focus| focus.is_sensitive() && focus.is_visible())
