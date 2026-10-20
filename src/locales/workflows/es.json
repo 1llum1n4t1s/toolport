@@ -406,5 +406,6 @@
   "No switch Toolport can write": "Sin interruptor que Toolport pueda modificar",
   "Filter by agent": "Filtrar por agente",
   "All agents": "Todos los agentes",
+  "All detected agents": "Todos los agentes detectados",
   "{state} via {path}": "{state} por {path}"
 }

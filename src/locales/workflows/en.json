@@ -406,5 +406,6 @@
   "No switch Toolport can write": "No switch Toolport can write",
   "Filter by agent": "Filter by agent",
   "All agents": "All agents",
+  "All detected agents": "All detected agents",
   "{state} via {path}": "{state} via {path}"
 }

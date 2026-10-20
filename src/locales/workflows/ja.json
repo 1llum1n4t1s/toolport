@@ -406,5 +406,6 @@
   "No switch Toolport can write": "Toolport で変更できるスイッチはありません",
   "Filter by agent": "エージェントで絞り込む",
   "All agents": "すべてのエージェント",
+  "All detected agents": "検出されたすべてのエージェント",
   "{state} via {path}": "{path} 経由で{state}"
 }
