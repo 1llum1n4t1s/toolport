@@ -115,6 +115,12 @@ try {
   );
   await page.screenshot({ path: path.join(output, "servers.png") });
   await page.getByRole("button", { name: "Show GitHub details", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "GitHub", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Back to servers", exact: true }),
+  ).toBeVisible();
   await page.getByRole("tab", { name: "Tools", exact: true }).click();
   await expect(page.getByText("get_issue", { exact: true })).toBeVisible();
   await expect(page.getByText("read-only", { exact: true })).toBeVisible();
@@ -231,6 +237,10 @@ try {
         .every((element) => element.getBoundingClientRect().right <= window.innerWidth),
     ),
   ).toBe(true);
+  await page.getByRole("button", { name: "Back to servers", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: `Show ${longServer} details`, exact: true }),
+  ).toBeFocused();
   await page.getByRole("button", { name: "Add server", exact: true }).first().click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText("Give the server a name.", { exact: true })).toHaveCount(

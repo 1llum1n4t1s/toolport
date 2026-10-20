@@ -457,21 +457,28 @@ fn tool_row(
             badges.insert(&state_badge(label), -1);
         }
     }
-    let enabled_badge = state_badge(if enabled { "Enabled" } else { "Disabled" });
+    let enabled_badge = state_badge(if enabled { "On" } else { "Off" });
+    enabled_badge.add_css_class(if enabled { "success" } else { "off" });
     badges.insert(&enabled_badge, -1);
-    badges.insert(
-        &state_badge(
-            match tool
+    if tool
+        .get("toolportQuarantine")
+        .and_then(serde_json::Value::as_str)
+        != Some("clear")
+    {
+        let badge = state_badge(
+            if tool
                 .get("toolportQuarantine")
                 .and_then(serde_json::Value::as_str)
+                == Some("quarantined")
             {
-                Some("quarantined") => "Quarantined",
-                Some("clear") => "Not quarantined",
-                _ => "Quarantine unknown",
+                "Quarantined"
+            } else {
+                "Quarantine unknown"
             },
-        ),
-        -1,
-    );
+        );
+        badge.add_css_class("warning");
+        badges.insert(&badge, -1);
+    }
     title.append(&badges);
     copy.append(&title);
 
@@ -548,13 +555,15 @@ fn tool_row(
                 Ok(Ok(_)) => {
                     page.remember_tool_enabled(&name, enabled);
                     set_visibility_look(&button, enabled);
+                    badge.remove_css_class(if enabled { "off" } else { "success" });
+                    badge.add_css_class(if enabled { "success" } else { "off" });
                     run.set_sensitive(enabled);
                     l10n::bind_text(
                         &badge,
                         if enabled {
-                            crate::i18n::msg("Enabled")
+                            crate::i18n::msg("On")
                         } else {
-                            crate::i18n::msg("Disabled")
+                            crate::i18n::msg("Off")
                         },
                     );
                 }

@@ -975,6 +975,7 @@ mod tests {
         app.register(None::<&gtk::gio::Cancellable>).unwrap();
         // Only the catalog is mounted. No broker, registry load or probes run.
         let server_page = super::super::ServerPage {
+            details: Default::default(),
             app: app.clone(),
             share_requests: Default::default(),
             server_count: gtk::Label::new(None),

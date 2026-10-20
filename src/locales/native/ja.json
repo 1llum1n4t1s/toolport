@@ -1177,5 +1177,12 @@
   "Toolport makes each file below a link to {file}, so these clients read the same rules. It doesn't change any file that already exists. To undo, delete the link.": "Toolport は下の各ファイルを {file} へのリンクにし、これらのクライアントが同じルールを読むようにします。既存のファイルは変更しません。元に戻すにはリンクを削除してください。",
   "{file} already exists, so Toolport left it alone.": "{file} はすでに存在するため、Toolport は変更しませんでした。",
   "Windows lets apps make links only with Developer Mode on. Turn it on in Settings, or link the files by hand.": "Windows では開発者モードがオンのときだけアプリがリンクを作成できます。設定でオンにするか、手動でファイルをリンクしてください。",
-  "Couldn't link {file}: {error}": "{file} をリンクできませんでした: {error}"
+  "Couldn't link {file}: {error}": "{file} をリンクできませんでした: {error}",
+  "Apply": "適用",
+  "Could not read this client config. Check its syntax and file permissions.": "クライアント設定を読み取れませんでした。構文とファイルの権限を確認してください。",
+  "Import all": "すべてインポート",
+  "Not connected": "未接続",
+  "Restart the client afterward.": "その後、クライアントを再起動してください。",
+  "Plugin": "プラグイン",
+  "in Toolport": "Toolport に追加済み"
 }

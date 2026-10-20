@@ -475,6 +475,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
             >
               <SelectTrigger
                 aria-label={translate("Access")}
+                disabled={busy || !!client.error}
                 size="sm"
                 className="w-auto max-w-full min-w-[min(13rem,100%)]"
               >
@@ -494,7 +495,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
             </Select>
           )}
           {installed && !customized && profile !== currentScope && (
-            <Button size="sm" onClick={applyScope} disabled={busy}>
+            <Button size="sm" onClick={applyScope} disabled={busy || !!client.error}>
               <Check className="size-4" />
               {translate("Apply access")}
             </Button>
@@ -504,7 +505,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
               open={resetOpen}
               onOpenChange={setResetOpen}
               trigger={
-                <Button size="sm" variant="default" disabled={busy}>
+                <Button size="sm" variant="default" disabled={busy || !!client.error}>
                   <Check className="size-4" />
                   {legacyBearer
                     ? translate(msg("Review migration"))
@@ -538,7 +539,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
           {installed ? (
             <ConfirmDialog
               trigger={
-                <Button size="sm" variant="outline" disabled={busy}>
+                <Button size="sm" variant="outline" disabled={busy || !!client.error}>
                   <Trans
                     message={msg("{value1}Disconnect")}
                     values={{ value1: <Plug className="size-4" /> }}
@@ -564,7 +565,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
               size="sm"
               variant="default"
               onClick={() => setMigrateOpen(true)}
-              disabled={busy || !present}
+              disabled={busy || !present || !!client.error}
             >
               <Trans
                 message={msg("{value1}Connect to Toolport")}
@@ -627,7 +628,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
               size="sm"
               aria-label={translate("Discovery mode")}
               className="w-44 shrink-0"
-              disabled={busy}
+              disabled={busy || !!client.error}
             >
               <SelectValue />
             </SelectTrigger>
@@ -756,7 +757,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
                   variant="ghost"
                   className="h-7 px-2 text-xs"
                   onClick={handleImportAll}
-                  disabled={busy}
+                  disabled={busy || !!client.error}
                 >
                   <Trans
                     message={msg("{value1}Import all ({value2})")}
@@ -828,7 +829,7 @@ export function ClientDetail({ client, registry, onChanged, onRegistryChange }: 
                 server={server}
                 isPlugin={pluginNames.has(server.name.toLowerCase())}
                 imported={importedNames.has(server.name.toLowerCase())}
-                busy={busy}
+                busy={busy || !!client.error}
                 // Same review dialog as "Import all": a per-row import must show the
                 // same shell/private-host warnings before anything is added.
                 onImport={() => void reviewServers([server])}

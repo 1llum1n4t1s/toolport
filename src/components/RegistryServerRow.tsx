@@ -44,6 +44,8 @@ const ServerToolsPanel = lazy(() =>
 
 interface Props {
   openTools?: boolean;
+  detail?: boolean;
+  onOpen?: (tab: "overview" | "tools") => void;
   server: ServerEntry;
   registry: Registry | null;
   enabled: boolean;
@@ -117,13 +119,15 @@ export function RegistryServerRow({
   onRegistryChange,
   onReprobe,
   openTools,
+  detail = false,
+  onOpen,
 }: Props) {
   const { t } = useI18n();
   const switchRef = useCallback(
     (node: HTMLButtonElement | null) => onSwitchRef?.(server.id, node),
     [onSwitchRef, server.id],
   );
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(detail);
   const [detailTab, setDetailTab] = useState<DetailTab>("overview");
   // Tab and panel IDs are per row, so two expanded rows never share them.
   const detailId = useId();
@@ -262,32 +266,48 @@ export function RegistryServerRow({
     .join(" · ");
 
   return (
-    <div className="border-b border-border last:border-b-0">
-      {/* Mouse users can click anywhere on the row to expand. Keyboard and screen
-          reader users use the chevron button at the end. The row itself is not a
-          button, so the toggle and Authenticate controls aren't nested inside one. */}
+    <div
+      data-server-id={server.id}
+      className={
+        detail
+          ? "rounded-xl border border-border bg-card"
+          : "border-b border-border last:border-b-0"
+      }
+    >
+      {/* Row navigation stays separate from the switch and authentication controls. */}
       <div
-        onClick={() => setExpanded((v) => !v)}
+        onClick={
+          detail
+            ? undefined
+            : () => (onOpen ? onOpen("overview") : setExpanded((v) => !v))
+        }
         className="flex min-h-14 cursor-pointer items-center gap-3 px-4 py-3 transition-colors hover:bg-foreground/[0.04]"
       >
-        <ServerLogo name={server.name} transport={server.transport} size={28} />
+        {detail && (
+          <span className="mr-auto text-sm font-semibold">{translate("Connection")}</span>
+        )}
+        {!detail && (
+          <ServerLogo name={server.name} transport={server.transport} size={28} />
+        )}
 
-        <span className="min-w-0 flex-1">
-          <span title={server.name} className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-sm font-semibold">{server.name}</span>
-            {isTeam && (
-              <Users
-                className="size-3.5 shrink-0 text-muted-foreground"
-                aria-hidden="true"
-              />
-            )}
+        {!detail && (
+          <span className="min-w-0 flex-1">
+            <span title={server.name} className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate text-sm font-semibold">{server.name}</span>
+              {isTeam && (
+                <Users
+                  className="size-3.5 shrink-0 text-muted-foreground"
+                  aria-hidden="true"
+                />
+              )}
+            </span>
+            <span title={meta} className="block truncate text-meta text-muted-foreground">
+              {meta}
+            </span>
           </span>
-          <span title={meta} className="block truncate text-meta text-muted-foreground">
-            {meta}
-          </span>
-        </span>
+        )}
 
-        <span className="ml-auto flex shrink-0 items-center gap-2">
+        <span className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
           <span
             role="status"
             aria-label={
@@ -347,8 +367,11 @@ export function RegistryServerRow({
                 className={ACTION}
                 onClick={(e) => {
                   stop(e);
-                  setExpanded(true);
-                  setDetailTab("overview");
+                  if (onOpen && !detail) onOpen("overview");
+                  else {
+                    setExpanded(true);
+                    setDetailTab("overview");
+                  }
                 }}
               >
                 {translate("View log")}
@@ -369,30 +392,34 @@ export function RegistryServerRow({
               aria-label={t("Toggle {value1}", { value1: server.name })}
             />
           </span>
-          <button
-            type="button"
-            title={
-              expanded
-                ? translate("Hide server details")
-                : translate("Show server details")
-            }
-            onClick={(e) => {
-              e.stopPropagation();
-              setExpanded((v) => !v);
-            }}
-            aria-expanded={expanded}
-            aria-label={
-              expanded
-                ? t("Hide {value1} details", { value1: server.name })
-                : t("Show {value1} details", { value1: server.name })
-            }
-            className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            <ChevronDown
-              className={`size-4 transition-transform ${expanded ? "rotate-180" : ""}`}
-              aria-hidden="true"
-            />
-          </button>
+          {!detail && (
+            <button
+              type="button"
+              title={
+                expanded
+                  ? translate("Hide server details")
+                  : translate("Show server details")
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                if (onOpen) onOpen("overview");
+                else setExpanded((v) => !v);
+              }}
+              data-detail-open={server.id}
+              aria-expanded={onOpen ? undefined : expanded}
+              aria-label={
+                expanded
+                  ? t("Hide {value1} details", { value1: server.name })
+                  : t("Show {value1} details", { value1: server.name })
+              }
+              className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <ChevronDown
+                className={`size-4 transition-transform ${expanded ? "rotate-180" : ""}`}
+                aria-hidden="true"
+              />
+            </button>
+          )}
         </span>
       </div>
 
@@ -403,7 +430,13 @@ export function RegistryServerRow({
       )}
 
       {expanded && (
-        <div className="flex flex-col gap-2.5 pt-0.5 pr-4 pb-3 pl-14">
+        <div
+          className={
+            detail
+              ? "flex flex-col gap-6 p-4"
+              : "flex flex-col gap-2.5 pt-0.5 pr-4 pb-3 pl-14"
+          }
+        >
           <div
             role="tablist"
             aria-label={translate("{value0} details", { value0: server.name })}
@@ -467,6 +500,22 @@ export function RegistryServerRow({
               tabIndex={0}
               className={PANEL}
             >
+              {detail && server.cwd && (
+                <code className="block break-all font-mono text-meta text-muted-foreground">
+                  {server.cwd}
+                </code>
+              )}
+              {detail &&
+                server.env
+                  .filter((entry) => !entry.secret && !entry.source)
+                  .map((entry) => (
+                    <code
+                      key={entry.key}
+                      className="block break-all font-mono text-meta text-muted-foreground"
+                    >
+                      {entry.key}={entry.value}
+                    </code>
+                  ))}
               {!!requiredLaunch.length && (
                 <p className="text-meta text-muted-foreground">
                   {t(

@@ -190,6 +190,7 @@ function ClientRow({
     <button
       type="button"
       onClick={onSelect}
+      data-client-id={client.id}
       className={`grid min-h-14 w-full items-center gap-3 border-b border-border py-3 text-left transition-colors last:border-b-0 hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
         profile
           ? "grid-cols-[minmax(0,1fr)_16px] pr-4 pl-14 sm:grid-cols-[minmax(0,1fr)_auto_16px]"

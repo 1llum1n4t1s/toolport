@@ -174,7 +174,7 @@ describe("ClientDetail detection errors", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Couldn't parse config: unexpected token",
     );
-    expect(screen.getByRole("button", { name: /connect to toolport/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /connect to toolport/i })).toBeDisabled();
   });
 });
 

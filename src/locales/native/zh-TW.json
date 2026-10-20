@@ -1177,5 +1177,12 @@
   "Toolport makes each file below a link to {file}, so these clients read the same rules. It doesn't change any file that already exists. To undo, delete the link.": "Toolport 會把下方每個檔案做成指向 {file} 的連結，讓這些用戶端讀取相同的規則。不會變更任何已存在的檔案。要復原，刪除該連結即可。",
   "{file} already exists, so Toolport left it alone.": "{file} 已存在，所以 Toolport 沒有動它。",
   "Windows lets apps make links only with Developer Mode on. Turn it on in Settings, or link the files by hand.": "Windows 只允許在開啟開發人員模式時由應用程式建立連結。請在設定中開啟，或手動連結這些檔案。",
-  "Couldn't link {file}: {error}": "無法連結 {file}：{error}"
+  "Couldn't link {file}: {error}": "無法連結 {file}：{error}",
+  "Apply": "套用",
+  "Could not read this client config. Check its syntax and file permissions.": "無法讀取此用戶端設定。請檢查語法和檔案權限。",
+  "Import all": "全部匯入",
+  "Not connected": "未連線",
+  "Restart the client afterward.": "之後請重新啟動用戶端。",
+  "Plugin": "外掛",
+  "in Toolport": "已在 Toolport 中"
 }

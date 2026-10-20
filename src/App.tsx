@@ -72,6 +72,7 @@ import { PageHeader, PageHeaderActionsSlot } from "@/components/PageHeader";
 import { PendingApprovals } from "@/components/PendingApprovals";
 import { TeamPairingDialog } from "@/components/TeamPairingDialog";
 import { QuarantineAlert } from "@/components/QuarantineAlert";
+import { ServerLogo } from "@/components/ServerLogo";
 import { RegistryServerRow } from "@/components/RegistryServerRow";
 import { SectionHeader } from "@/components/ui/section-header";
 import { LazyServerDialog as ServerDialog } from "@/components/LazyServerDialog";
@@ -141,6 +142,7 @@ function App() {
   const [clients, setClients] = useState<DetectedClient[]>([]);
   const [importPreview, setImportPreview] = useState<ImportItem[] | null>(null);
   const [importing, setImporting] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -152,6 +154,8 @@ function App() {
   const [enableReviewError, setEnableReviewError] = useState<string | null>(null);
   const [readyEnableReview, setReadyEnableReview] = useState<ServerEntry | null>(null);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
+  const detailReturnFocus = useRef<HTMLElement | null>(null);
   const [toolsServerId, setToolsServerId] = useState<string | null>(null);
   const [settingsPage, setSettingsPage] = useState<SettingsSubpage>("general");
   const [pendingCount, setPendingCount] = useState(0);
@@ -336,6 +340,7 @@ function App() {
     async (announce = false) => {
       setLoading(true);
       setError(null);
+      setDetailError(null);
       try {
         const [dc, recovery] = await Promise.all([
           detectClients(viewRef.current === "clients"),
@@ -398,6 +403,7 @@ function App() {
         // After the first successful load, a refresh failure shouldn't blow away a
         // working list. Surface it as a toast and keep what's on screen.
         if (loadedOnce.current) {
+          setDetailError(String(e));
           toastError(translate("Couldn't refresh: {value1}", { value1: String(e) }));
         } else {
           setError(String(e));
@@ -426,10 +432,12 @@ function App() {
         setClients(detected);
       })
       .catch((error) => {
-        if (active)
+        if (active) {
+          setDetailError(String(error));
           toastError(
             translate("Couldn't refresh clients: {value1}", { value1: String(error) }),
           );
+        }
       });
     return () => {
       active = false;
@@ -550,13 +558,42 @@ function App() {
     };
   }, [applyRegistryChange]);
 
+  function selectServer(id: string, tab: "overview" | "tools" = "overview") {
+    detailReturnFocus.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setSelectedServerId(id);
+    setToolsServerId(tab === "tools" ? id : null);
+    setView("servers");
+  }
+
+  function backFromDetail(v: View) {
+    const previous = detailReturnFocus.current;
+    selectView(v);
+    requestAnimationFrame(() => {
+      if (previous?.isConnected) previous.focus();
+      else {
+        const id = v === "servers" ? selectedServerId : selectedClientId;
+        const attribute = v === "servers" ? "data-detail-open" : "data-client-id";
+        const row = [...document.querySelectorAll<HTMLElement>(`[${attribute}]`)].find(
+          (node) => node.getAttribute(attribute) === id,
+        );
+        (row ?? document.querySelector<HTMLElement>("main button"))?.focus();
+      }
+    });
+  }
+
   function selectClient(id: string) {
+    detailReturnFocus.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSelectedClientId(id);
     setView("clients");
   }
 
   // Top-level destinations leave any selected client detail behind.
   function selectView(v: View) {
+    setSelectedServerId(null);
+    setToolsServerId(null);
+    setDetailError(null);
     if (v === "settings") setSettingsPage("general");
     setSelectedClientId(null);
     setView(v);
@@ -682,6 +719,9 @@ function App() {
       importableServers(c, registry).map((s) => s.name.toLowerCase()),
     ),
   ).size;
+  const selectedServer = selectedServerId
+    ? registry?.servers.find((s) => s.id === selectedServerId)
+    : undefined;
   const selectedClient = selectedClientId
     ? clients.find((c) => c.id === selectedClientId)
     : undefined;
@@ -879,7 +919,7 @@ function App() {
               ? translate("Settings")
               : view === "clients"
                 ? (selectedClient?.name ?? translate("Clients"))
-                : translate("Servers");
+                : (selectedServer?.name ?? translate("Servers"));
   const pageSubtitle =
     view === "activity"
       ? t("Tool calls routed through Toolport")
@@ -897,17 +937,19 @@ function App() {
                 ? selectedClient
                   ? translate("MCP client")
                   : translate("Manage Toolport in your installed AI tools")
-                : error
-                  ? translate("Servers unavailable")
-                  : loading || !registry
-                    ? translate("Loading…")
-                    : translate("One gateway in front of every MCP server you run");
+                : selectedServer
+                  ? translate("MCP server")
+                  : error
+                    ? translate("Servers unavailable")
+                    : loading || !registry
+                      ? translate("Loading…")
+                      : translate("One gateway in front of every MCP server you run");
 
   const serverRow = (server: ServerEntry) => (
     <RegistryServerRow
       key={server.id}
       server={server}
-      openTools={toolsServerId === server.id}
+      onOpen={(tab) => selectServer(server.id, tab)}
       registry={registry}
       enabled={registry ? isEnabled(registry, server.id) : false}
       busy={busyId === server.id}
@@ -957,23 +999,35 @@ function App() {
                     ariaLabel: translate("Back to servers"),
                     onClick: () => selectView("servers"),
                   }
-                : view === "clients" && selectedClient
+                : view === "clients" && selectedClientId
                   ? {
                       label: t("Clients"),
                       ariaLabel: t("Back to clients"),
-                      onClick: () => selectView("clients"),
+                      onClick: () => backFromDetail("clients"),
                     }
-                  : undefined
+                  : view === "servers" && selectedServerId
+                    ? {
+                        label: t("Servers"),
+                        ariaLabel: t("Back to servers"),
+                        onClick: () => backFromDetail("servers"),
+                      }
+                    : undefined
             }
             leading={
               view === "clients" && selectedClient ? (
                 <ClientLogo id={selectedClient.id} name={selectedClient.name} size={32} />
+              ) : view === "servers" && selectedServer ? (
+                <ServerLogo
+                  name={selectedServer.name}
+                  transport={selectedServer.transport}
+                  size={32}
+                />
               ) : undefined
             }
             actionsSlotRef={setHeaderActionsSlot}
             actions={
               <>
-                {view === "servers" && (
+                {view === "servers" && !selectedServerId && (
                   <>
                     <div className="relative">
                       <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -1152,7 +1206,17 @@ function App() {
                 >
                   <Suspense fallback={<SkeletonRows label={t("Loading…")} />}>
                     {view === "clients" ? (
-                      selectedClient ? (
+                      selectedClientId && (error || detailError) ? (
+                        <ErrorState
+                          message={(error || detailError)!}
+                          onRetry={() => load(true)}
+                        />
+                      ) : selectedClientId && !selectedClient ? (
+                        <ErrorState
+                          message={t("Client is no longer available")}
+                          onRetry={() => backFromDetail("clients")}
+                        />
+                      ) : selectedClient ? (
                         <ClientDetail
                           client={selectedClient}
                           registry={registry}
@@ -1197,6 +1261,35 @@ function App() {
                         registry={registry}
                         onRegistryChange={applyRegistryChange}
                       />
+                    ) : selectedServerId ? (
+                      error || detailError ? (
+                        <ErrorState
+                          message={(error || detailError)!}
+                          onRetry={() => load(true)}
+                        />
+                      ) : selectedServer ? (
+                        <RegistryServerRow
+                          key={selectedServer.id}
+                          detail
+                          openTools={toolsServerId === selectedServer.id}
+                          server={selectedServer}
+                          registry={registry}
+                          enabled={!!registry && isEnabled(registry, selectedServer.id)}
+                          busy={busyId === selectedServer.id}
+                          health={health[selectedServer.id]}
+                          onToggle={(en) => handleToggle(selectedServer.id, en)}
+                          onRemove={() =>
+                            handleRemove(selectedServer.id, selectedServer.name)
+                          }
+                          onRegistryChange={applyRegistryChange}
+                          onReprobe={() => void reprobeAfterMutation().catch(() => {})}
+                        />
+                      ) : (
+                        <ErrorState
+                          message={t("Server is no longer available")}
+                          onRetry={() => backFromDetail("servers")}
+                        />
+                      )
                     ) : loading && registry === null ? (
                       <SkeletonRows label={t("Loading servers… ")} />
                     ) : error ? (
@@ -1305,12 +1398,12 @@ function App() {
             onProbe={reprobe}
             onOpenTools={() => {
               setShowOnboarding(false);
-              setToolsServerId(
-                registry?.servers.find((server) => isEnabled(registry, server.id))?.id ??
-                  registry?.servers[0]?.id ??
-                  null,
-              );
               selectView("servers");
+              const id =
+                registry?.servers.find((server) => isEnabled(registry, server.id))?.id ??
+                registry?.servers[0]?.id ??
+                null;
+              if (id) selectServer(id, "tools");
             }}
             onFinish={finishOnboarding}
           />
