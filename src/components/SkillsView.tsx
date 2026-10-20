@@ -305,69 +305,79 @@ function AgentHeader({
   const names = columnNames(agents.map((agent) => agent.name));
   const hovered = hover ? agents.find((agent) => agent.id === hover.agent) : undefined;
   return (
-    <div className="flex items-end justify-between gap-3 border-b px-2 pb-2">
-      <span className="flex min-w-0 items-baseline gap-2 pb-1">
-        <span className="shrink-0 text-xs font-semibold tracking-wider text-muted-foreground uppercase">
-          {label}
-        </span>
+    <div>
+      {/* The hovered column on a line of its own across the list, so it stays readable with
+          many agents and showing it never moves the header. */}
+      <p className="h-5 truncate px-2 text-meta text-muted-foreground" aria-live="off">
         {hovered && (
-          <span className="truncate text-meta text-muted-foreground">
+          <>
             <span className="font-semibold text-foreground">{hovered.name}</span>
             {hover?.detail && `: ${hover.detail}`}
-          </span>
+          </>
         )}
-      </span>
-      <span className="flex shrink-0">
-        {agents.map((agent, index) => (
-          // No tooltip: the line beside the label names the hovered column, and a tooltip
-          // trails the pointer across the logos as a second name.
-          <button
-            key={agent.id}
-            type="button"
-            aria-pressed={focus === agent.id}
-            aria-label={
-              skills
-                ? t("Show only skills {client} finds", { client: agent.name })
-                : t("Show only what {client} loads", { client: agent.name })
-            }
-            onClick={() => onFocus(focus === agent.id ? null : agent.id)}
-            onMouseEnter={() =>
-              onHover({
-                agent: agent.id,
-                detail: agent.verified
-                  ? undefined
-                  : t("folders from its docs, not checked on this machine"),
-              })
-            }
-            onMouseLeave={() => onHover(null)}
-            onFocus={() => onHeaderFocus({ agent: agent.id })}
-            onBlur={() => onHeaderFocus(null)}
-            className={cn(
-              "relative flex flex-col items-center justify-center gap-1 rounded-md py-1.5 text-xs text-muted-foreground transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
-              hover?.agent === agent.id && "bg-primary/8 text-foreground",
-              focus === agent.id && "bg-primary/12 text-foreground ring-1 ring-primary/60",
-            )}
-            style={{ width: column }}
-          >
-            <ClientLogo id={agent.id} name={agent.name} size={20} />
-            {/* Always there, empty when only logos fit, so the header keeps its height. */}
-            <span
-              aria-hidden={!wide}
-              className={cn("max-w-full truncate px-0.5 leading-none", !wide && "invisible")}
+      </p>
+      <div className="flex items-end justify-between gap-3 border-b px-2 pb-2">
+        <span className="flex min-w-0 items-baseline gap-2 pb-1">
+          <span className="shrink-0 text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+            {label}
+          </span>
+        </span>
+        <span className="flex shrink-0">
+          {agents.map((agent, index) => (
+            // No tooltip: the line above names the hovered column, and a tooltip
+            // trails the pointer across the logos as a second name.
+            <button
+              key={agent.id}
+              type="button"
+              aria-pressed={focus === agent.id}
+              aria-label={
+                skills
+                  ? t("Show only skills {client} finds", { client: agent.name })
+                  : t("Show only what {client} loads", { client: agent.name })
+              }
+              onClick={() => onFocus(focus === agent.id ? null : agent.id)}
+              onMouseEnter={() =>
+                onHover({
+                  agent: agent.id,
+                  detail: agent.verified
+                    ? undefined
+                    : t("folders from its docs, not checked on this machine"),
+                })
+              }
+              onMouseLeave={() => onHover(null)}
+              onFocus={() => onHeaderFocus({ agent: agent.id })}
+              onBlur={() => onHeaderFocus(null)}
+              className={cn(
+                "relative flex flex-col items-center justify-center gap-1 rounded-md py-1.5 text-xs text-muted-foreground transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
+                hover?.agent === agent.id && "bg-primary/8 text-foreground",
+                focus === agent.id &&
+                  "bg-primary/12 text-foreground ring-1 ring-primary/60",
+              )}
+              style={{ width: column }}
             >
-              {wide ? names[index] : "\u00a0"}
-            </span>
-            {!agent.verified && (
+              <ClientLogo id={agent.id} name={agent.name} size={20} />
+              {/* Always there, empty when only logos fit, so the header keeps its height. */}
               <span
+                aria-hidden={!wide}
                 className={cn(
-                  "absolute size-1.5 rounded-full bg-primary",
-                  wide ? "top-1 right-2" : "top-0.5 right-0.5",
+                  "max-w-full truncate px-0.5 leading-none",
+                  !wide && "invisible",
                 )}
-              />
-            )}
-          </button>
-        ))}
-      </span>
+              >
+                {wide ? names[index] : "\u00a0"}
+              </span>
+              {!agent.verified && (
+                <span
+                  className={cn(
+                    "absolute size-1.5 rounded-full bg-primary",
+                    wide ? "top-1 right-2" : "top-0.5 right-0.5",
+                  )}
+                />
+              )}
+            </button>
+          ))}
+        </span>
+      </div>
     </div>
   );
 }

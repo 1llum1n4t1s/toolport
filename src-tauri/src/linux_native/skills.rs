@@ -882,6 +882,14 @@ impl Pane {
         column.set_margin_bottom(12);
         let banner = gtk::Box::new(gtk::Orientation::Vertical, 0);
         column.append(&banner);
+        // The hovered column's name and state, on a line of its own across the whole list so it
+        // stays readable with many agents. It asks for one character and keeps its height when
+        // empty, so no hover moves anything else.
+        let hint = one_line("", &["caption", "toolport-muted", "toolport-skill-hint"]);
+        hint.set_max_width_chars(1);
+        hint.set_hexpand(true);
+        hint.set_opacity(0.0);
+        column.append(&hint);
         let head = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         head.add_css_class("toolport-skill-head");
         column.append(&head);
@@ -934,7 +942,7 @@ impl Pane {
                 names: (list_name, detail_name),
                 column: Rc::new(Cell::new(NARROW_COLUMN)),
                 cells: Rc::default(),
-                hint: Rc::default(),
+                hint: Rc::new(RefCell::new(Some(hint))),
                 hovered: Rc::default(),
                 focused: Rc::default(),
                 bin: Rc::default(),
@@ -1946,15 +1954,12 @@ impl SkillsPage {
             }
         }
         pane.column.set(pane.fitting_column(agents.len()));
+        if let Some(hint) = pane.hint.borrow().as_ref() {
+            hint.set_text("");
+            hint.set_opacity(0.0);
+        }
         let title_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
         title_box.set_hexpand(true);
-        let hint = one_line("", &["caption", "toolport-muted"]);
-        // Asks for one character, so a long or short hover note never resizes the header.
-        hint.set_max_width_chars(1);
-        hint.set_hexpand(true);
-        hint.set_opacity(0.0);
-        title_box.append(&hint);
-        pane.hint.replace(Some(hint));
         let title = section(label);
         title.set_valign(gtk::Align::End);
         title_box.append(&title);
@@ -1995,7 +2000,7 @@ impl SkillsPage {
                     .css_classes(["toolport-skill-col-name"])
                     .build(),
             );
-            // No tooltip: the line beside SKILL names the hovered column, and a tooltip lags
+            // No tooltip: the line above the header names the hovered column, and a tooltip lags
             // behind the pointer as a fading second name.
             let button = gtk::Button::builder()
                 .child(&column)

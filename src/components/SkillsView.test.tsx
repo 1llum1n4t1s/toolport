@@ -362,11 +362,9 @@ describe("SkillsView", () => {
         "Command Code",
       ]),
     ).toEqual(["claude", "claude2", "codex", "becca", "Cursor", "Command"]);
-    expect(columnNames(["Claude Code (claude)", "Codex (codex-work)", "Copilot CLI"])).toEqual([
-      "Claude",
-      "Codex",
-      "Copilot",
-    ]);
+    expect(
+      columnNames(["Claude Code (claude)", "Codex (codex-work)", "Copilot CLI"]),
+    ).toEqual(["Claude", "Codex", "Copilot"]);
     expect(columnNames(["Codex (codex-second-account)", "Codex (codex)"])).toEqual([
       "second-…",
       "codex",
