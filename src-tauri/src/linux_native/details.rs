@@ -1542,8 +1542,19 @@ mod tests {
             "gateway-only snapshot has no manageable destination"
         );
         page.feedback.set_text("");
-        // Parse errors intentionally recover backups. A directory gives the
-        // loader a genuine I/O failure without bypassing that recovery contract.
+        // Both parse and I/O failures intentionally recover valid backups.
+        // Model an unreadable store with no recoverable backup, inside this
+        // disposable fixture only, to exercise the action's actual error path.
+        for entry in std::fs::read_dir(&data.dir).unwrap() {
+            let entry = entry.unwrap();
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("registry.json.bak")
+            {
+                std::fs::remove_file(entry.path()).unwrap();
+            }
+        }
         std::fs::remove_file(data.dir.join("registry.json")).unwrap();
         std::fs::create_dir(data.dir.join("registry.json")).unwrap();
         gtk::prelude::ActionGroupExt::activate_action(&app, "show-server-tools", None);
