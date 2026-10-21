@@ -12,7 +12,8 @@ export function releaseInstaller(release, tag, repo) {
     !/^v\d+\.\d+\.\d+$/.test(tag) ||
     release.tag_name !== tag ||
     release.draft ||
-    release.prerelease
+    release.prerelease ||
+    !/^\d{4}-\d{2}-\d{2}T/.test(release.published_at ?? "")
   )
     throw new Error("Only a published stable release can go to winget");
   const version = tag.slice(1);
@@ -25,7 +26,12 @@ export function releaseInstaller(release, tag, repo) {
     !/^sha256:[a-f0-9]{64}$/i.test(assets[0].digest ?? "")
   )
     throw new Error("Release installer URL or SHA256 is missing or ambiguous");
-  return { version, url, sha256: assets[0].digest.slice(7).toUpperCase() };
+  return {
+    version,
+    url,
+    sha256: assets[0].digest.slice(7).toUpperCase(),
+    releaseDate: release.published_at.slice(0, 10),
+  };
 }
 
 export function manifests(templates, installer, bytes) {
@@ -39,7 +45,7 @@ export function manifests(templates, installer, bytes) {
       throw new Error("Wrong package identifier");
     doc.set("PackageVersion", installer.version);
     if (doc.get("ManifestType") === "installer") {
-      doc.delete("ReleaseDate");
+      doc.set("ReleaseDate", installer.releaseDate);
       doc.set("Installers", [
         {
           Architecture: "x64",
