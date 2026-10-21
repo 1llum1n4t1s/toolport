@@ -75,6 +75,19 @@ test("manifest versions, URLs and SHA256 come from the published release", () =>
   assert.throws(() => releaseInstaller(release, "v2.0.0-preview.1", "btsouth/toolport"));
 });
 
+test("manifests keep the schema header and template layout winget-pkgs requires", () => {
+  const files = manifests(templates, installer, bytes);
+  for (const [i, file] of files.entries()) {
+    assert.equal(file.content.split("\n")[0], templates[i].content.split("\n")[0]);
+    assert.match(file.content, /^# yaml-language-server: \$schema=https:\/\/aka\.ms\//);
+  }
+  assert.match(files[2].content, /^Description: \|-$/m);
+  assert.equal(
+    parse(files[2].content).Description,
+    parse(templates[2].content).Description,
+  );
+});
+
 test("stale fork is synced before branching, failed PR creation retries the same branch", async () => {
   const calls = [];
   let forkHead = "stale";
