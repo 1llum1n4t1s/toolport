@@ -1,7 +1,8 @@
 //! Offline integrity report for recorded tool lists, used by the ecosystem tracker.
 //! Reads JSON lines on stdin, each `{"server": "...", "previous": [tools] | null,
 //! "current": [tools]}`, and writes one JSON line per input with each current tool's
-//! fingerprints and scan findings plus the drift events against `previous`.
+//! fingerprints and scan findings plus the drift events against `previous`. A line
+//! that cannot be read or parsed gets an `{"error": ...}` line instead.
 //! Touches no registry, pin store, keychain or network.
 use conduit_lib::integrity;
 use serde_json::{json, Value};
@@ -14,7 +15,8 @@ fn tools(value: &Value) -> Result<Vec<Value>, String> {
         .ok_or_else(|| "tool list must be an array".to_string())
 }
 
-fn report(line: &str) -> Result<Value, String> {
+fn report(line: &[u8]) -> Result<Value, String> {
+    let line = std::str::from_utf8(line).map_err(|e| e.to_string())?;
     let input: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
     let server = input["server"].as_str().ok_or("missing server")?;
     let current = tools(&input["current"])?;
@@ -31,16 +33,25 @@ fn report(line: &str) -> Result<Value, String> {
     }))
 }
 
-fn main() {
-    let stdin = std::io::stdin();
+fn main() -> std::io::Result<()> {
     let mut out = std::io::BufWriter::new(std::io::stdout().lock());
-    for line in stdin.lock().lines() {
-        let line = line.expect("read stdin");
-        if line.trim().is_empty() {
+    for line in std::io::stdin().lock().split(b'\n') {
+        let line = line?;
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
         let value = report(&line).unwrap_or_else(|error| json!({"error": error}));
-        writeln!(out, "{value}").expect("write stdout");
+        if let Err(e) = writeln!(out, "{value}") {
+            // A closed pipe means the reader is done; anything else is a real failure.
+            return if e.kind() == std::io::ErrorKind::BrokenPipe {
+                Ok(())
+            } else {
+                Err(e)
+            };
+        }
     }
-    out.flush().expect("flush stdout");
+    match out.flush() {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => Err(e),
+        _ => Ok(()),
+    }
 }
