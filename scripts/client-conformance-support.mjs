@@ -154,13 +154,34 @@ export function wireMetadata(line) {
   }
   const safe = { jsonrpc: message.jsonrpc, id: message.id, method: message.method };
   if (message.method === "initialize") safe.params = message.params;
+  // Sessionless (2026-07-28) clients declare themselves per request in _meta.
+  if (["server/discover", "subscriptions/listen"].includes(message.method))
+    safe.params = protocolMeta(message.params);
   if (message.result?.protocolVersion)
     safe.result = {
       protocolVersion: message.result.protocolVersion,
       capabilities: message.result.capabilities,
     };
+  else if (message.result?.supportedVersions)
+    safe.result = {
+      supportedVersions: message.result.supportedVersions,
+      capabilities: message.result.capabilities,
+    };
   if (message.result?.tools) safe.toolCount = message.result.tools.length;
+  // Error codes only; messages can echo client or tool text.
+  if (Number.isInteger(message.error?.code)) safe.errorCode = message.error.code;
   return safe;
+}
+
+// Protocol fields only: standard `_meta` keys and non-meta subscription filters.
+function protocolMeta(params) {
+  if (!params || typeof params !== "object") return undefined;
+  const meta = Object.fromEntries(
+    Object.entries(params._meta || {}).filter(([key]) =>
+      key.startsWith("io.modelcontextprotocol/"),
+    ),
+  );
+  return { ...params, _meta: meta };
 }
 
 export function failed(reply) {

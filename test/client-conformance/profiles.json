@@ -11,12 +11,34 @@
         "detail": "unverified"
       },
       "source": "https://modelcontextprotocol.io/docs/develop/connect-local-servers",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": null,
+      "evidenceLevel": "documentation only",
+      "features": {
+        "roots": {
+          "status": "unverified"
+        },
+        "sampling": {
+          "status": "unverified"
+        },
+        "elicitation": {
+          "status": "unverified"
+        },
+        "resources": {
+          "status": "unverified"
+        },
+        "prompts": {
+          "status": "unverified"
+        }
+      }
     },
     {
       "id": "cursor",
       "evidence": "captured health command",
       "initialize": {
+        "jsonrpc": "2.0",
+        "id": 0,
         "method": "initialize",
         "params": {
           "protocolVersion": "2025-11-25",
@@ -29,9 +51,7 @@
             "name": "Cursor",
             "version": "1.0.0"
           }
-        },
-        "jsonrpc": "2.0",
-        "id": 0
+        }
       },
       "initialMethods": [
         "initialize",
@@ -45,31 +65,268 @@
         "detail": "Unverified for this installed CLI"
       },
       "source": "https://cursor.com/docs/mcp",
-      "observedSessionKind": "CLI health command, not model session"
+      "observedSessionKind": "CLI health command, not model session",
+      "clientVersion": "2026.10.22-27dcf5f",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "2026.10.22-27dcf5f",
+          "kind": "cursor-agent mcp list-tools health command",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "Cursor",
+            "version": "1.0.0"
+          },
+          "capabilities": {
+            "elicitation": {
+              "form": {}
+            }
+          },
+          "methods": [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "resources/list",
+            "prompts/list",
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "resources/list",
+            "prompts/list"
+          ],
+          "serverRequests": []
+        }
+      ],
+      "handshake": "initialize",
+      "evidenceLevel": "live capture",
+      "features": {
+        "roots": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "sampling": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "elicitation": {
+          "handshake": "declared",
+          "status": "declared"
+        },
+        "resources": {
+          "observed": ["resources/list"],
+          "status": "used"
+        },
+        "prompts": {
+          "observed": ["prompts/list"],
+          "status": "used"
+        }
+      }
     },
     {
       "id": "droid",
-      "evidence": "documentation only",
-      "initialize": null,
-      "initialMethods": [],
+      "evidence": "captured health command",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {},
+          "clientInfo": {
+            "name": "factory-cli",
+            "title": "Factory CLI",
+            "version": "0.247.0",
+            "websiteUrl": "https://factory.ai/"
+          }
+        }
+      },
+      "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
       "listChanged": {
         "supported": null,
         "detail": "unverified"
       },
       "source": "https://docs.factory.ai/cli/configuration/mcp",
-      "observedSessionKind": null
+      "observedSessionKind": "droid mcp list health command",
+      "clientVersion": "0.247.0",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "0.247.0",
+          "kind": "droid mcp list health command",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "factory-cli",
+            "title": "Factory CLI",
+            "version": "0.247.0",
+            "websiteUrl": "https://factory.ai/"
+          },
+          "capabilities": {},
+          "methods": ["initialize", "notifications/initialized", "tools/list"],
+          "serverRequests": []
+        }
+      ],
+      "handshake": "initialize",
+      "evidenceLevel": "live capture",
+      "features": {
+        "roots": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "sampling": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "elicitation": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "resources": {
+          "status": "not observed"
+        },
+        "prompts": {
+          "status": "not observed"
+        }
+      }
     },
     {
       "id": "crush",
-      "evidence": "documentation only",
+      "evidence": "captured run against mock model",
       "initialize": null,
       "initialMethods": [],
       "listChanged": {
-        "supported": null,
-        "detail": "unverified"
+        "supported": true,
+        "detail": "ToolListChangedHandler (also prompt and resource list-changed handlers) publishes an event that the TUI turns into RefreshTools (re-runs tools/list and updates the registry, then a state-changed event rebuilds the agent tool set via SetTools); PrepareStep reads the latest tool set each step and run() also rebuilds tools before each run, so changes apply on the next step or next run; no debounce; handlers are omitted entirely for servers marked Sessionless, and the event consumer found is the TUI (internal/ui/model/ui.go), so non-interactive runs were not shown to react. Crush v0.98.1 opened subscriptions/listen; `crush run` exited before a re-list could be observed.",
+        "source": "https://github.com/charmbracelet/crush/blob/8b1824282eccc78cc62c188c245cf375230a18ce/internal/agent/tools/mcp/init.go#L1072-L1091"
       },
       "source": "https://raw.githubusercontent.com/charmbracelet/crush/main/README.md",
-      "observedSessionKind": null
+      "observedSessionKind": "crush run against a loopback mock model",
+      "clientVersion": "0.98.1",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "0.98.1",
+          "kind": "crush run against a loopback mock model",
+          "discovery": "full",
+          "handshake": "server/discover",
+          "protocolVersion": "2026-07-28",
+          "clientInfo": {
+            "name": "crush",
+            "title": "Crush",
+            "version": "v0.98.1"
+          },
+          "capabilities": {
+            "roots": {
+              "listChanged": true
+            }
+          },
+          "methods": [
+            "server/discover",
+            "subscriptions/listen",
+            "tools/list",
+            "prompts/list"
+          ],
+          "serverRequests": [],
+          "subscriptions": {
+            "toolsListChanged": true,
+            "promptsListChanged": true,
+            "resourcesListChanged": true
+          },
+          "modelToolName": "mcp_toolport_mock__echo"
+        },
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "0.98.1",
+          "kind": "same, with the injected list_changed probe",
+          "discovery": "full",
+          "handshake": "server/discover",
+          "protocolVersion": "2026-07-28",
+          "clientInfo": {
+            "name": "crush",
+            "title": "Crush",
+            "version": "v0.98.1"
+          },
+          "capabilities": {
+            "roots": {
+              "listChanged": true
+            }
+          },
+          "methods": [
+            "server/discover",
+            "subscriptions/listen",
+            "tools/list",
+            "prompts/list"
+          ],
+          "serverRequests": [],
+          "subscriptions": {
+            "toolsListChanged": true,
+            "promptsListChanged": true,
+            "resourcesListChanged": true
+          },
+          "modelToolName": "mcp_toolport_mock__echo"
+        }
+      ],
+      "handshake": "server/discover",
+      "discover": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "server/discover",
+        "params": {
+          "_meta": {
+            "io.modelcontextprotocol/clientCapabilities": {
+              "roots": {
+                "listChanged": true
+              }
+            },
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "crush",
+              "title": "Crush",
+              "version": "v0.98.1"
+            },
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+          }
+        }
+      },
+      "evidenceLevel": "live capture",
+      "sourceReview": {
+        "repo": "charmbracelet/crush",
+        "version": "0.98.1",
+        "commit": "8b1824282eccc78cc62c188c245cf375230a18ce",
+        "url": "https://github.com/charmbracelet/crush/tree/8b1824282eccc78cc62c188c245cf375230a18ce"
+      },
+      "features": {
+        "roots": {
+          "status": "not found in the inspected source",
+          "handshake": "declared"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "handshake": "not declared"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "handshake": "not declared"
+        },
+        "resources": {
+          "status": "used",
+          "methods": ["resources/list", "resources/read"],
+          "source": "https://github.com/charmbracelet/crush/blob/8b1824282eccc78cc62c188c245cf375230a18ce/internal/agent/tools/mcp/resources.go#L26-L56",
+          "detail": "resources/list only when the server declares the resources capability (resources.go L88-L91); exposed to the model through built-in tools list_mcp_resources and read_mcp_resource (internal/agent/tools/list_mcp_resources.go L26, read_mcp_resource.go L28); resources/templates/list and resources/subscribe not found in the inspected source; resources/list_changed triggers RefreshResources."
+        },
+        "prompts": {
+          "status": "used",
+          "methods": ["prompts/list", "prompts/get"],
+          "source": "https://github.com/charmbracelet/crush/blob/8b1824282eccc78cc62c188c245cf375230a18ce/internal/agent/tools/mcp/prompts.go#L22-L91",
+          "detail": "prompts/list only when the server declares the prompts capability (prompts.go L78-L81); exposed to the user as commands keyed server:prompt (internal/commands/commands.go L89-L112) and expanded via prompts/get; prompts/list_changed triggers RefreshPrompts.",
+          "observed": ["prompts/list"]
+        }
+      }
     },
     {
       "id": "anythingllm",
@@ -77,11 +334,45 @@
       "initialize": null,
       "initialMethods": [],
       "listChanged": {
-        "supported": null,
-        "detail": "unverified"
+        "supported": false,
+        "detail": "No notifications/tools/list_changed handler found in the inspected source (the Client gets no setNotificationHandler calls); tools are fetched with a fresh tools/list each time an agent session attaches the @@mcp_<server> plugin (convertServerToolsToPlugins from AgentHandler #attachPlugins), so changes show up at the next agent invocation, not mid-session.",
+        "source": "https://github.com/Mintplex-Labs/anything-llm/blob/0acf0e896721d214df6a8c50282a6d118666a735/server/utils/MCP/index.js#L50-L60"
       },
       "source": "https://docs.anythingllm.com/mcp-compatibility/overview",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": "2026-10-22",
+      "evidenceLevel": "source review",
+      "sourceReview": {
+        "repo": "Mintplex-Labs/anything-llm",
+        "version": "main",
+        "commit": "0acf0e896721d214df6a8c50282a6d118666a735",
+        "url": "https://github.com/Mintplex-Labs/anything-llm/tree/0acf0e896721d214df6a8c50282a6d118666a735"
+      },
+      "features": {
+        "roots": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/Mintplex-Labs/anything-llm/blob/0acf0e896721d214df6a8c50282a6d118666a735/server/utils/MCP/hypervisor/index.js#L456"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/Mintplex-Labs/anything-llm/blob/0acf0e896721d214df6a8c50282a6d118666a735/server/utils/MCP/hypervisor/index.js#L456"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/Mintplex-Labs/anything-llm/blob/0acf0e896721d214df6a8c50282a6d118666a735/server/utils/MCP/hypervisor/index.js#L456"
+        },
+        "resources": {
+          "status": "not found in the inspected source",
+          "methods": [],
+          "detail": "No resources/* calls found in server/utils, endpoints or models of the inspected source; MCP use is tools only."
+        },
+        "prompts": {
+          "status": "not found in the inspected source",
+          "methods": [],
+          "detail": "No prompts/list or prompts/get calls found in server/utils, endpoints or models of the inspected source."
+        }
+      }
     },
     {
       "id": "vscode",
@@ -89,11 +380,53 @@
       "initialize": null,
       "initialMethods": [],
       "listChanged": {
-        "supported": null,
-        "detail": "unverified"
+        "supported": true,
+        "detail": "notifications/tools/list_changed fires onDidChangeToolList, which immediately re-runs tools/list (no debounce) and updates the observable tool set that an autorun re-registers with the language model tools service; prompts/list_changed likewise re-lists prompts, while resources/list_changed only fires an emitter with no listener found in the inspected source (resources are listed on demand).",
+        "source": "https://github.com/microsoft/vscode/blob/5aad04dde78def4aa84055a1a2013ef42fe94ca8/src/vs/workbench/contrib/mcp/common/mcpServer.ts#L1238-L1246"
       },
       "source": "https://code.visualstudio.com/docs/copilot/customization/mcp-servers",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": "2026-10-22",
+      "evidenceLevel": "source review",
+      "sourceReview": {
+        "repo": "microsoft/vscode",
+        "version": "main",
+        "commit": "5aad04dde78def4aa84055a1a2013ef42fe94ca8",
+        "url": "https://github.com/microsoft/vscode/tree/5aad04dde78def4aa84055a1a2013ef42fe94ca8"
+      },
+      "features": {
+        "roots": {
+          "status": "implemented",
+          "source": "https://github.com/microsoft/vscode/blob/5aad04dde78def4aa84055a1a2013ef42fe94ca8/src/vs/workbench/contrib/mcp/common/mcpServerRequestHandler.ts#L114-L119"
+        },
+        "sampling": {
+          "status": "implemented",
+          "source": "https://github.com/microsoft/vscode/blob/5aad04dde78def4aa84055a1a2013ef42fe94ca8/src/vs/workbench/contrib/mcp/common/mcpServerRequestHandler.ts#L305-L317"
+        },
+        "elicitation": {
+          "status": "implemented",
+          "source": "https://github.com/microsoft/vscode/blob/5aad04dde78def4aa84055a1a2013ef42fe94ca8/src/vs/workbench/contrib/mcp/common/mcpServerRequestHandler.ts#L318-L330",
+          "modes": "both"
+        },
+        "resources": {
+          "status": "used",
+          "methods": [
+            "resources/list",
+            "resources/read",
+            "resources/templates/list",
+            "resources/subscribe"
+          ],
+          "source": "https://github.com/microsoft/vscode/blob/5aad04dde78def4aa84055a1a2013ef42fe94ca8/src/vs/workbench/contrib/mcp/common/mcpServerRequestHandler.ts#L461-L484",
+          "detail": "resources/list and resources/templates/list are called on demand (McpServer.resources()/resourceTemplates(), mcpServer.ts#L688-L707) for the resource picker and attach-context UI; resources/read backs an mcp-resource filesystem provider (mcpResourceFilesystem.ts#L293) and resources/subscribe is used when that file is watched (mcpResourceFilesystem.ts#L132-L140); resources/unsubscribe also exists."
+        },
+        "prompts": {
+          "status": "used",
+          "methods": ["prompts/list", "prompts/get"],
+          "source": "https://github.com/microsoft/vscode/blob/5aad04dde78def4aa84055a1a2013ef42fe94ca8/src/vs/workbench/contrib/mcp/common/mcpServer.ts#L1233-L1236",
+          "detail": "prompts/list runs at connect and on prompts list_changed; prompts/get runs in McpPrompt.resolve (mcpServer.ts#L1287-L1288); prompts surface to the user as /mcp.<server>.<prompt> slash commands (mcpTypes.ts#L606-L609), with completion/complete for arguments."
+        }
+      }
     },
     {
       "id": "amp",
@@ -105,7 +438,32 @@
         "detail": "unverified"
       },
       "source": "https://ampcode.com/manual",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": "0.0.1792699242-g1cbc87",
+      "recordedAt": "2026-10-22",
+      "uncaptured": {
+        "recordedAt": "2026-10-22",
+        "clientVersion": "0.0.1792699242-g1cbc87",
+        "reason": "`amp tools list` and every session path start an ampcode.com device login first; no MCP traffic without an account."
+      },
+      "evidenceLevel": "documentation only",
+      "features": {
+        "roots": {
+          "status": "unverified"
+        },
+        "sampling": {
+          "status": "unverified"
+        },
+        "elicitation": {
+          "status": "unverified"
+        },
+        "resources": {
+          "status": "unverified"
+        },
+        "prompts": {
+          "status": "unverified"
+        }
+      }
     },
     {
       "id": "windsurf",
@@ -117,24 +475,116 @@
         "detail": "unverified"
       },
       "source": "https://docs.windsurf.com/windsurf/cascade/mcp",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": null,
+      "evidenceLevel": "documentation only",
+      "features": {
+        "roots": {
+          "status": "unverified"
+        },
+        "sampling": {
+          "status": "unverified"
+        },
+        "elicitation": {
+          "status": "unverified"
+        },
+        "resources": {
+          "status": "unverified"
+        },
+        "prompts": {
+          "status": "unverified"
+        }
+      }
     },
     {
       "id": "devin-cli",
-      "evidence": "documentation only",
+      "evidence": "partially captured ACP session",
       "initialize": null,
       "initialMethods": [],
       "listChanged": {
         "supported": null,
-        "detail": "unverified"
+        "detail": "Devin CLI 3000.11.92 (rmcp 3.2.0) connected with server/discover and opened no subscriptions/listen during ACP session/new; closed source, refresh unverified"
       },
       "source": "https://docs.devin.ai/work-with-devin/devin-cli",
-      "observedSessionKind": null
+      "observedSessionKind": "devin acp: initialize and session/new, no prompt",
+      "clientVersion": "3000.11.92",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "3000.11.92",
+          "kind": "devin acp: initialize and session/new, no prompt",
+          "discovery": "full",
+          "handshake": "server/discover",
+          "protocolVersion": "2026-07-28",
+          "clientInfo": {
+            "name": "rmcp",
+            "version": "3.2.0"
+          },
+          "capabilities": {
+            "extensions": {
+              "io.modelcontextprotocol/ui": {
+                "mimeTypes": ["text/html;profile=mcp-app"]
+              }
+            }
+          },
+          "methods": ["server/discover", "prompts/list"],
+          "serverRequests": []
+        }
+      ],
+      "handshake": "server/discover",
+      "discover": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "server/discover",
+        "params": {
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "rmcp",
+              "version": "3.2.0"
+            },
+            "io.modelcontextprotocol/clientCapabilities": {
+              "extensions": {
+                "io.modelcontextprotocol/ui": {
+                  "mimeTypes": ["text/html;profile=mcp-app"]
+                }
+              }
+            }
+          }
+        }
+      },
+      "evidenceLevel": "partial capture",
+      "captureNote": "server/discover and prompts/list during ACP session/new; tools are listed later, after login, so no tools/list was observed.",
+      "features": {
+        "roots": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "sampling": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "elicitation": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "resources": {
+          "status": "not observed"
+        },
+        "prompts": {
+          "observed": ["prompts/list"],
+          "status": "used"
+        }
+      }
     },
     {
       "id": "opencode",
       "evidence": "captured health command",
       "initialize": {
+        "jsonrpc": "2.0",
+        "id": 0,
         "method": "initialize",
         "params": {
           "protocolVersion": "2025-11-25",
@@ -143,24 +593,83 @@
           },
           "clientInfo": {
             "name": "opencode",
-            "version": "1.18.31"
+            "version": "1.19.4"
           }
-        },
-        "jsonrpc": "2.0",
-        "id": 0
+        }
       },
       "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
       "listChanged": {
         "supported": true,
-        "detail": "Yes, source handler directly re-lists; latency unmeasured"
+        "detail": "When the server advertises tools, a ToolListChangedNotification handler re-pages tools/list immediately (no debounce), replaces the cached s.defs[name] and publishes ToolsChanged; SessionTools.resolve reads mcp.tools() inside the session step loop, so new tools appear on the next model step; resources/prompts list_changed handlers not found in the inspected source (prompts/resources are listed live on each call instead).",
+        "source": "https://github.com/anomalyco/opencode/blob/148842ef7cb1bc34192b3fff57d0f9721ab9c801/packages/opencode/src/mcp/index.ts#L461-L472"
       },
       "source": "https://raw.githubusercontent.com/anomalyco/opencode/388406238bd5ca15564a762840a2362c3a45bd9c/packages/opencode/src/mcp/index.ts",
-      "observedSessionKind": "CLI health command, not model session"
+      "observedSessionKind": "CLI health command, not model session",
+      "clientVersion": "1.19.4",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "1.19.4",
+          "kind": "opencode mcp list health command",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "opencode",
+            "version": "1.19.4"
+          },
+          "capabilities": {
+            "roots": {}
+          },
+          "methods": ["initialize", "notifications/initialized", "tools/list"],
+          "serverRequests": ["roots/list"]
+        }
+      ],
+      "handshake": "initialize",
+      "evidenceLevel": "live capture",
+      "sourceReview": {
+        "repo": "anomalyco/opencode",
+        "version": "1.19.4",
+        "commit": "148842ef7cb1bc34192b3fff57d0f9721ab9c801",
+        "url": "https://github.com/anomalyco/opencode/tree/148842ef7cb1bc34192b3fff57d0f9721ab9c801"
+      },
+      "features": {
+        "roots": {
+          "status": "implemented",
+          "source": "https://github.com/anomalyco/opencode/blob/148842ef7cb1bc34192b3fff57d0f9721ab9c801/packages/opencode/src/mcp/index.ts#L39-L81",
+          "handshake": "declared"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/anomalyco/opencode/blob/148842ef7cb1bc34192b3fff57d0f9721ab9c801/packages/opencode/src/mcp/index.ts#L39-L50",
+          "handshake": "not declared"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/anomalyco/opencode/blob/148842ef7cb1bc34192b3fff57d0f9721ab9c801/packages/opencode/src/mcp/index.ts#L39-L50",
+          "handshake": "not declared"
+        },
+        "resources": {
+          "status": "used",
+          "methods": ["resources/list", "resources/templates/list", "resources/read"],
+          "source": "https://github.com/anomalyco/opencode/blob/148842ef7cb1bc34192b3fff57d0f9721ab9c801/packages/opencode/src/mcp/catalog.ts#L129-L143",
+          "detail": "Exposed to the model as three built-in tools `list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource` (packages/opencode/src/session/tools.ts L27-L31), registered only when some connected server advertises resources (L136-L139) and gated by the 'read' permission; listing is done live per call (index.ts L720-L738), read via client.readResource (index.ts L781-L785). resources/subscribe not found in the inspected source."
+        },
+        "prompts": {
+          "status": "used",
+          "methods": ["prompts/list", "prompts/get"],
+          "source": "https://github.com/anomalyco/opencode/blob/148842ef7cb1bc34192b3fff57d0f9721ab9c801/packages/opencode/src/command/index.ts#L105-L116",
+          "detail": "MCP prompts become user slash commands keyed `<sanitizedServer>:<sanitizedPrompt>` (catalog.ts L103-L108); the template is fetched with prompts/get when the command is used (index.ts L768-L776)."
+        }
+      }
     },
     {
       "id": "kilo-code",
       "evidence": "captured health command",
       "initialize": {
+        "jsonrpc": "2.0",
+        "id": 0,
         "method": "initialize",
         "params": {
           "protocolVersion": "2025-11-25",
@@ -169,31 +678,192 @@
           },
           "clientInfo": {
             "name": "kilo",
-            "version": "7.8.8"
+            "version": "7.8.15"
           }
-        },
-        "jsonrpc": "2.0",
-        "id": 0
+        }
       },
-      "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
+      "initialMethods": [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+        "tools/list"
+      ],
       "listChanged": {
-        "supported": null,
-        "detail": "Unverified, do not infer OpenCode parity"
+        "supported": true,
+        "detail": "Identical to upstream opencode: when the server advertises tools, a ToolListChangedNotification handler re-pages tools/list immediately (no debounce), replaces s.defs[name] and publishes ToolsChanged; SessionTools.resolve (called inside the session step loop, prompt.ts L1555/L1766) reads mcp.tools(), so new tools appear on the next model step; resources/prompts list_changed handlers not found in the inspected source.",
+        "source": "https://github.com/Kilo-Org/kilocode/blob/5cc65d1212b00609f9bba7bd25780aa5e64f516d/packages/opencode/src/mcp/index.ts#L574-L584",
+        "observed": {
+          "relisted": true,
+          "triggers": ["gateway"]
+        }
       },
       "source": "https://kilo.ai/docs/code-with-ai/mcp/using-mcp-in-kilo-code",
-      "observedSessionKind": "CLI health command, not model session"
+      "observedSessionKind": "CLI health command, not model session",
+      "clientVersion": "7.8.15",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "7.8.15",
+          "kind": "kilo mcp list health command",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "kilo",
+            "version": "7.8.15"
+          },
+          "capabilities": {
+            "roots": {}
+          },
+          "methods": [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "tools/list"
+          ],
+          "serverRequests": ["roots/list"],
+          "listChangedObserved": {
+            "trigger": "gateway",
+            "relisted": true
+          }
+        }
+      ],
+      "handshake": "initialize",
+      "evidenceLevel": "live capture",
+      "sourceReview": {
+        "repo": "Kilo-Org/kilocode",
+        "version": "@kilocode/cli 7.8.15",
+        "commit": "5cc65d1212b00609f9bba7bd25780aa5e64f516d",
+        "url": "https://github.com/Kilo-Org/kilocode/tree/5cc65d1212b00609f9bba7bd25780aa5e64f516d"
+      },
+      "features": {
+        "roots": {
+          "status": "implemented",
+          "source": "https://github.com/Kilo-Org/kilocode/blob/5cc65d1212b00609f9bba7bd25780aa5e64f516d/packages/opencode/src/mcp/index.ts#L107-L113",
+          "handshake": "declared"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/Kilo-Org/kilocode/blob/5cc65d1212b00609f9bba7bd25780aa5e64f516d/packages/opencode/src/mcp/index.ts#L55-L66",
+          "handshake": "not declared"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/Kilo-Org/kilocode/blob/5cc65d1212b00609f9bba7bd25780aa5e64f516d/packages/opencode/src/mcp/index.ts#L55-L66",
+          "handshake": "not declared"
+        },
+        "resources": {
+          "status": "used",
+          "methods": ["resources/list", "resources/templates/list", "resources/read"],
+          "source": "https://github.com/Kilo-Org/kilocode/blob/5cc65d1212b00609f9bba7bd25780aa5e64f516d/packages/opencode/src/session/tools.ts#L228-L232",
+          "detail": "Same as opencode: model tools `list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource` (session/tools.ts L40-L44) when a connected server advertises resources, but Kilo also hides them (and all MCP tools) when the session's sandbox network policy is restricted (L99, L231, L473). Lists are fetched live (mcp/index.ts L852-L870), reads via client.readResource (L913). Experimental MCP Apps (KILO_EXPERIMENTAL_MCP_APPS) adds HTTP endpoints that read UI resources and call tools (src/kilocode/mcp/apps.ts L36-L40). resources/subscribe not found in the inspected source."
+        },
+        "prompts": {
+          "status": "used",
+          "methods": ["prompts/list", "prompts/get"],
+          "source": "https://github.com/Kilo-Org/kilocode/blob/5cc65d1212b00609f9bba7bd25780aa5e64f516d/packages/opencode/src/command/index.ts#L144-L156",
+          "detail": "Prompts become slash commands keyed `<sanitizedServer>:<sanitizedPrompt>`, resolved with prompts/get on use (mcp/index.ts L900-L908); Kilo adds a `<name>:mcp` lookup form (command/index.ts L89-L91)."
+        }
+      }
     },
     {
       "id": "grok",
-      "evidence": "documentation only",
-      "initialize": null,
-      "initialMethods": [],
+      "evidence": "captured health command",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {
+            "extensions": {
+              "io.modelcontextprotocol/ui": {
+                "mimeTypes": ["text/html;profile=mcp-app"]
+              }
+            }
+          },
+          "clientInfo": {
+            "name": "grok-shell-toolport",
+            "version": "1.0.67"
+          }
+        }
+      },
+      "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
       "listChanged": {
         "supported": null,
         "detail": "unverified"
       },
       "source": "https://grok.com/build",
-      "observedSessionKind": null
+      "observedSessionKind": "grok mcp doctor health command, Full discovery",
+      "clientVersion": "1.0.67",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "1.0.67",
+          "kind": "grok mcp doctor health command, Full discovery",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "grok-shell-toolport",
+            "version": "1.0.67"
+          },
+          "capabilities": {
+            "extensions": {
+              "io.modelcontextprotocol/ui": {
+                "mimeTypes": ["text/html;profile=mcp-app"]
+              }
+            }
+          },
+          "methods": ["initialize", "notifications/initialized", "tools/list"],
+          "serverRequests": []
+        },
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "1.0.67",
+          "kind": "grok mcp doctor health command, Auto discovery",
+          "discovery": "auto",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "grok-shell-toolport",
+            "version": "1.0.67"
+          },
+          "capabilities": {
+            "extensions": {
+              "io.modelcontextprotocol/ui": {
+                "mimeTypes": ["text/html;profile=mcp-app"]
+              }
+            }
+          },
+          "methods": ["initialize", "notifications/initialized", "tools/list"],
+          "serverRequests": []
+        }
+      ],
+      "handshake": "initialize",
+      "evidenceLevel": "live capture",
+      "features": {
+        "roots": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "sampling": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "elicitation": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "resources": {
+          "status": "not observed"
+        },
+        "prompts": {
+          "status": "not observed"
+        }
+      }
     },
     {
       "id": "codex",
@@ -223,7 +893,8 @@
       "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
       "listChanged": {
         "supported": false,
-        "detail": "No generic list-change handler found in pinned source"
+        "detail": "The pinned source's on_tool_list_changed, on_resource_list_changed and on_prompt_list_changed handlers only write an info log; regular servers' tools are listed once at startup (list_tools_for_client_uncached with trigger \"initial\", codex-mcp/src/rmcp_client.rs L1026-L1036) and served from the client's catalog afterwards, and the refresh paths I found (refresh_codex_apps_*) only cover the built-in codex_apps server.",
+        "source": "https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/rmcp-client/src/logging_client_handler.rs#L82-L92"
       },
       "source": "docs/clients.md",
       "observedSessionKind": "unauthenticated CLI startup via exec; no successful model turn",
@@ -245,7 +916,7 @@
               "clientInfo": {
                 "name": "codex-mcp-client",
                 "title": "Codex",
-                "version": "0.159.3"
+                "version": "0.163.0"
               }
             }
           },
@@ -257,19 +928,213 @@
             "resources/templates/list"
           ]
         }
-      ]
+      ],
+      "clientVersion": "0.163.0",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "0.163.0",
+          "kind": "codex app-server mcpServerStatus/list, no model turn",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-06-18",
+          "clientInfo": {
+            "name": "codex-mcp-client",
+            "title": "Codex",
+            "version": "0.163.0"
+          },
+          "capabilities": {
+            "elicitation": {
+              "form": {},
+              "url": {}
+            }
+          },
+          "methods": [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "resources/list",
+            "resources/templates/list"
+          ],
+          "serverRequests": []
+        }
+      ],
+      "handshake": "initialize",
+      "evidenceLevel": "live capture",
+      "sourceReview": {
+        "repo": "openai/codex",
+        "version": "0.163.0",
+        "commit": "83086188ae0614bd882818ff1aa23f3194962012",
+        "url": "https://github.com/openai/codex/tree/83086188ae0614bd882818ff1aa23f3194962012"
+      },
+      "features": {
+        "roots": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/codex-mcp/src/rmcp_client.rs#L1112-L1135",
+          "handshake": "not declared"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/codex-mcp/src/rmcp_client.rs#L1112-L1135",
+          "handshake": "not declared"
+        },
+        "elicitation": {
+          "status": "implemented",
+          "source": "https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/rmcp-client/src/elicitation_client_service.rs#L202-L245",
+          "modes": "both",
+          "handshake": "declared"
+        },
+        "resources": {
+          "status": "used",
+          "methods": ["resources/list", "resources/templates/list", "resources/read"],
+          "source": "https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/rmcp-client/src/rmcp_client.rs#L755-L805",
+          "detail": "Exposed to the model as three built-in tools, list_mcp_resources, list_mcp_resource_templates and read_mcp_resource, each taking a server name (codex-rs/core/src/tools/handlers/mcp_resource_spec.rs L25, L54, L83). resources/subscribe was not found in the inspected source (on_resource_updated only logs, logging_client_handler.rs L74-L80).",
+          "observed": ["resources/list", "resources/templates/list"]
+        },
+        "prompts": {
+          "status": "not found in the inspected source",
+          "methods": [],
+          "detail": "No prompts/list or prompts/get call was found in codex-rs/rmcp-client or codex-rs/codex-mcp."
+        }
+      }
     },
     {
       "id": "github-copilot-cli",
-      "evidence": "documentation only",
+      "evidence": "captured offline BYOK prompt",
       "initialize": null,
       "initialMethods": [],
       "listChanged": {
-        "supported": null,
-        "detail": "unverified"
+        "supported": true,
+        "detail": "Copilot CLI 1.0.103 opened subscriptions/listen and re-listed tools after the gateway's notifications/tools/list_changed in two offline BYOK runs; closed source, latency unmeasured",
+        "observed": {
+          "relisted": true,
+          "triggers": ["gateway"]
+        }
       },
       "source": "https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli",
-      "observedSessionKind": null
+      "observedSessionKind": "copilot -p in offline BYOK mode against a loopback mock model",
+      "clientVersion": "1.0.103",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "1.0.103",
+          "kind": "copilot -p in offline BYOK mode against a loopback mock model",
+          "discovery": "full",
+          "handshake": "server/discover",
+          "protocolVersion": "2026-07-28",
+          "clientInfo": {
+            "name": "copilot-cli",
+            "version": "1.0.103"
+          },
+          "capabilities": {
+            "sampling": {},
+            "elicitation": {
+              "form": {},
+              "url": {}
+            }
+          },
+          "methods": [
+            "server/discover",
+            "subscriptions/listen",
+            "tools/list",
+            "tools/list",
+            "notifications/cancelled"
+          ],
+          "serverRequests": [],
+          "subscriptions": {
+            "toolsListChanged": true,
+            "promptsListChanged": true,
+            "resourcesListChanged": true
+          },
+          "modelToolName": "toolport-mock__echo",
+          "listChangedObserved": {
+            "trigger": "gateway",
+            "relisted": true
+          }
+        },
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "1.0.103",
+          "kind": "same, with the injected list_changed probe",
+          "discovery": "full",
+          "handshake": "server/discover",
+          "protocolVersion": "2026-07-28",
+          "clientInfo": {
+            "name": "copilot-cli",
+            "version": "1.0.103"
+          },
+          "capabilities": {
+            "sampling": {},
+            "elicitation": {
+              "form": {},
+              "url": {}
+            }
+          },
+          "methods": [
+            "server/discover",
+            "subscriptions/listen",
+            "tools/list",
+            "tools/list",
+            "notifications/cancelled"
+          ],
+          "serverRequests": [],
+          "subscriptions": {
+            "toolsListChanged": true,
+            "promptsListChanged": true,
+            "resourcesListChanged": true
+          },
+          "modelToolName": "toolport-mock__echo",
+          "listChangedObserved": {
+            "trigger": "gateway",
+            "relisted": true
+          }
+        }
+      ],
+      "handshake": "server/discover",
+      "discover": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "server/discover",
+        "params": {
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "copilot-cli",
+              "version": "1.0.103"
+            },
+            "io.modelcontextprotocol/clientCapabilities": {
+              "sampling": {},
+              "elicitation": {
+                "form": {},
+                "url": {}
+              }
+            }
+          }
+        }
+      },
+      "evidenceLevel": "live capture",
+      "features": {
+        "roots": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "sampling": {
+          "handshake": "declared",
+          "status": "declared"
+        },
+        "elicitation": {
+          "handshake": "declared",
+          "status": "declared"
+        },
+        "resources": {
+          "status": "not observed"
+        },
+        "prompts": {
+          "status": "not observed"
+        }
+      }
     },
     {
       "id": "antigravity",
@@ -281,7 +1146,27 @@
         "detail": "unverified"
       },
       "source": "https://antigravity.google/docs/mcp",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": null,
+      "evidenceLevel": "documentation only",
+      "features": {
+        "roots": {
+          "status": "unverified"
+        },
+        "sampling": {
+          "status": "unverified"
+        },
+        "elicitation": {
+          "status": "unverified"
+        },
+        "resources": {
+          "status": "unverified"
+        },
+        "prompts": {
+          "status": "unverified"
+        }
+      }
     },
     {
       "id": "claude-code",
@@ -313,12 +1198,102 @@
         "detail": "Yes, docs; latency unmeasured"
       },
       "source": "https://code.claude.com/docs/en/mcp.md",
-      "observedSessionKind": "CLI health command, not model session"
+      "observedSessionKind": "CLI health command, not model session",
+      "clientVersion": "2.1.309",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "2.1.309",
+          "kind": "claude mcp list health command",
+          "discovery": "full",
+          "handshake": "server/discover",
+          "protocolVersion": "2026-07-28",
+          "clientInfo": {
+            "name": "claude-code",
+            "title": "Claude Code",
+            "version": "2.1.309",
+            "description": "Anthropic's agentic coding tool",
+            "websiteUrl": "https://claude.com/claude-code"
+          },
+          "capabilities": {
+            "roots": {
+              "listChanged": true
+            },
+            "elicitation": {
+              "form": {},
+              "url": {}
+            }
+          },
+          "methods": [
+            "server/discover",
+            "subscriptions/listen",
+            "server/discover",
+            "tools/list"
+          ],
+          "serverRequests": [],
+          "subscriptions": {
+            "toolsListChanged": true,
+            "promptsListChanged": true,
+            "resourcesListChanged": true
+          }
+        }
+      ],
+      "handshake": "server/discover",
+      "discover": {
+        "jsonrpc": "2.0",
+        "id": "server-discover-probe-1",
+        "method": "server/discover",
+        "params": {
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "claude-code",
+              "title": "Claude Code",
+              "version": "2.1.309",
+              "description": "Anthropic's agentic coding tool",
+              "websiteUrl": "https://claude.com/claude-code"
+            },
+            "io.modelcontextprotocol/clientCapabilities": {
+              "roots": {
+                "listChanged": true
+              },
+              "elicitation": {
+                "form": {},
+                "url": {}
+              }
+            }
+          }
+        }
+      },
+      "evidenceLevel": "live capture",
+      "features": {
+        "roots": {
+          "handshake": "declared",
+          "status": "declared"
+        },
+        "sampling": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "elicitation": {
+          "handshake": "declared",
+          "status": "declared"
+        },
+        "resources": {
+          "status": "not observed"
+        },
+        "prompts": {
+          "status": "not observed"
+        }
+      }
     },
     {
       "id": "gemini-cli",
       "evidence": "captured health command",
       "initialize": {
+        "jsonrpc": "2.0",
+        "id": 0,
         "method": "initialize",
         "params": {
           "protocolVersion": "2025-06-18",
@@ -327,22 +1302,79 @@
             "name": "mcp-test-client",
             "version": "0.0.1"
           }
-        },
-        "jsonrpc": "2.0",
-        "id": 0
+        }
       },
       "initialMethods": ["initialize", "notifications/initialized", "ping"],
       "listChanged": {
         "supported": true,
-        "detail": "Yes, source refreshes tools/resources/prompts; latency unmeasured"
+        "detail": "When the server advertises a tools capability (listChanged declared or not) a ToolListChangedNotificationSchema handler calls refreshTools(), which coalesces bursts (in-progress flag plus pending loop), re-runs tools/list, retries once after 500 ms if the names look unchanged, replaces the server's tools in the ToolRegistry, then calls onContextUpdated, which goes through McpClientManager.scheduleMcpContextRefresh (300 ms coalescing on bursts) to Config.refreshMcpContext -> geminiClient.setTools(); so the new declarations apply to the active chat on its next model request. Resources and prompts list_changed get the same refresh treatment.",
+        "source": "https://github.com/google-gemini/gemini-cli/blob/6006c14a4decfe4b891c6263ad6ad5992e404b5b/packages/core/src/tools/mcp-client.ts#L405-L469"
       },
       "source": "docs/clients.md",
-      "observedSessionKind": "CLI health command, not model session"
+      "observedSessionKind": "CLI health command, not model session",
+      "clientVersion": "0.65.0",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "0.65.0",
+          "kind": "gemini mcp list health command (mcp-test-client)",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-06-18",
+          "clientInfo": {
+            "name": "mcp-test-client",
+            "version": "0.0.1"
+          },
+          "capabilities": {},
+          "methods": ["initialize", "notifications/initialized", "ping"],
+          "serverRequests": []
+        }
+      ],
+      "handshake": "initialize",
+      "evidenceLevel": "live capture",
+      "sourceReview": {
+        "repo": "google-gemini/gemini-cli",
+        "version": "0.65.0",
+        "commit": "6006c14a4decfe4b891c6263ad6ad5992e404b5b",
+        "url": "https://github.com/google-gemini/gemini-cli/tree/6006c14a4decfe4b891c6263ad6ad5992e404b5b"
+      },
+      "features": {
+        "roots": {
+          "status": "implemented",
+          "source": "https://github.com/google-gemini/gemini-cli/blob/6006c14a4decfe4b891c6263ad6ad5992e404b5b/packages/core/src/tools/mcp-client.ts#L1861-L1892",
+          "handshake": "not declared"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/google-gemini/gemini-cli/blob/6006c14a4decfe4b891c6263ad6ad5992e404b5b/packages/core/src/tools/mcp-client.ts#L1861-L1865",
+          "handshake": "not declared"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/google-gemini/gemini-cli/blob/6006c14a4decfe4b891c6263ad6ad5992e404b5b/packages/core/src/tools/mcp-client.ts#L1861-L1865",
+          "handshake": "not declared"
+        },
+        "resources": {
+          "status": "used",
+          "methods": ["resources/list", "resources/read"],
+          "source": "https://github.com/google-gemini/gemini-cli/blob/6006c14a4decfe4b891c6263ad6ad5992e404b5b/packages/core/src/tools/mcp-client.ts#L1557-L1592",
+          "detail": "resources/list is paginated by cursor and only called if the server declares a resources capability; results go into a ResourceRegistry. resources/read (mcp-client.ts L374-L387) is used when the user @-references a resource URI (packages/cli/src/ui/hooks/atCommandProcessor.ts L469) and by the model-facing read_mcp_resource tool (packages/core/src/tools/read-mcp-resource.ts L136). resources/templates/list and resources/subscribe were not found in the inspected source."
+        },
+        "prompts": {
+          "status": "used",
+          "methods": ["prompts/list", "prompts/get"],
+          "source": "https://github.com/google-gemini/gemini-cli/blob/6006c14a4decfe4b891c6263ad6ad5992e404b5b/packages/core/src/tools/mcp-client.ts#L1505-L1541",
+          "detail": "prompts/list runs only when the server declares prompts; McpPromptLoader turns each prompt into a user slash command (name whitespace replaced by '-') (packages/cli/src/services/McpPromptLoader.ts L25-L50), and invoking it calls prompts/get with stringified arguments (mcp-client.ts L1618-L1621)."
+        }
+      }
     },
     {
       "id": "qwen-code",
       "evidence": "captured health command",
       "initialize": {
+        "jsonrpc": "2.0",
+        "id": 0,
         "method": "initialize",
         "params": {
           "protocolVersion": "2025-11-25",
@@ -357,29 +1389,149 @@
             "name": "mcp-test-client",
             "version": "0.0.1"
           }
-        },
-        "jsonrpc": "2.0",
-        "id": 0
+        }
       },
       "initialMethods": ["initialize", "notifications/initialized"],
       "listChanged": {
-        "supported": null,
-        "detail": "Unverified, do not infer Gemini parity"
+        "supported": false,
+        "detail": "In the interactive CLI client path (McpClient / connectToMcpServer, mcp-client.ts) no handler for notifications/tools/list_changed (or prompts/resources list_changed) is registered and the SDK v2 listChanged option is not passed to new Client; tools are discovered at connect and re-applied to session registries only on reconnect/restart (mcp-pool-entry.ts L1141-L1175). Separately, the `qwen serve` managed MCP runtime intercepts tools/resources/prompts list_changed and only marks that catalog kind 'stale' (cli/src/serve/managed-mcp-runtime.ts L746-L770).",
+        "source": "https://github.com/QwenLM/qwen-code/blob/ac97ce7a70d9b2ea5d62b357e3d9b0851423afc9/packages/core/src/tools/mcp-client.ts#L448-L465"
       },
       "source": "https://qwenlm.github.io/qwen-code-docs/en/users/features/mcp/",
-      "observedSessionKind": "CLI health command, not model session"
+      "observedSessionKind": "CLI health command, not model session",
+      "clientVersion": "0.26.0",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "0.26.0",
+          "kind": "qwen mcp list health command (mcp-test-client)",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "mcp-test-client",
+            "version": "0.0.1"
+          },
+          "capabilities": {
+            "extensions": {
+              "io.modelcontextprotocol/ui": {
+                "mimeTypes": ["text/html;profile=mcp-app"]
+              }
+            }
+          },
+          "methods": ["initialize", "notifications/initialized"],
+          "serverRequests": []
+        }
+      ],
+      "handshake": "initialize",
+      "evidenceLevel": "live capture",
+      "sourceReview": {
+        "repo": "QwenLM/qwen-code",
+        "version": "0.26.0",
+        "commit": "ac97ce7a70d9b2ea5d62b357e3d9b0851423afc9",
+        "url": "https://github.com/QwenLM/qwen-code/tree/ac97ce7a70d9b2ea5d62b357e3d9b0851423afc9"
+      },
+      "features": {
+        "roots": {
+          "status": "implemented",
+          "source": "https://github.com/QwenLM/qwen-code/blob/ac97ce7a70d9b2ea5d62b357e3d9b0851423afc9/packages/core/src/tools/mcp-client.ts#L600-L615",
+          "handshake": "not declared"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "handshake": "not declared"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "handshake": "not declared"
+        },
+        "resources": {
+          "status": "used",
+          "methods": ["resources/list", "resources/read"],
+          "source": "https://github.com/QwenLM/qwen-code/blob/ac97ce7a70d9b2ea5d62b357e3d9b0851423afc9/packages/core/src/tools/mcp-client.ts#L2010-L2040",
+          "detail": "resources/list is called at discovery (raw request fallback when the server under-declares); reads go through McpClient.readResource (mcp-client.ts L932-L955). Exposed to the model as the built-in `read_mcp_resource` tool (server_name + uri; core/src/tools/read-mcp-resource.ts L154, tool-names.ts L63) and to the user as `@server:uri` references (cli/src/ui/hooks/atCommandProcessor.ts L195-L218). MCP Apps UI resources are also read. resources/templates/list and resources/subscribe not found in the inspected source."
+        },
+        "prompts": {
+          "status": "used",
+          "methods": ["prompts/list", "prompts/get"],
+          "source": "https://github.com/QwenLM/qwen-code/blob/ac97ce7a70d9b2ea5d62b357e3d9b0851423afc9/packages/core/src/tools/mcp-client.ts#L1910-L1993",
+          "detail": "prompts/list at discovery (raw request even if the server under-declares prompts), prompts/get when invoked; prompts become user slash commands via cli/src/services/McpPromptLoader.ts."
+        }
+      }
     },
     {
       "id": "junie",
-      "evidence": "documentation only",
-      "initialize": null,
-      "initialMethods": [],
+      "evidence": "partially captured startup",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-03-26",
+          "capabilities": {
+            "experimental": {},
+            "sampling": {}
+          },
+          "clientInfo": {
+            "name": "junie-client",
+            "version": "1.0.0"
+          },
+          "_meta": {}
+        }
+      },
+      "initialMethods": ["initialize"],
       "listChanged": {
         "supported": null,
         "detail": "unverified"
       },
       "source": "https://www.jetbrains.com/help/junie/model-context-protocol-mcp.html",
-      "observedSessionKind": null
+      "observedSessionKind": "junie task with a loopback LiteLLM URL, stopped at JetBrains auth",
+      "clientVersion": "26.9.7 (build 3110.7)",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "26.9.7 (build 3110.7)",
+          "kind": "junie task with a loopback LiteLLM URL, stopped at JetBrains auth",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-03-26",
+          "clientInfo": {
+            "name": "junie-client",
+            "version": "1.0.0"
+          },
+          "capabilities": {
+            "experimental": {},
+            "sampling": {}
+          },
+          "methods": ["initialize"],
+          "serverRequests": []
+        }
+      ],
+      "handshake": "initialize",
+      "evidenceLevel": "partial capture",
+      "captureNote": "Sent initialize, then stopped at JetBrains authentication before notifications/initialized or tools/list.",
+      "features": {
+        "roots": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "sampling": {
+          "handshake": "declared",
+          "status": "declared"
+        },
+        "elicitation": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "resources": {
+          "status": "not observed"
+        },
+        "prompts": {
+          "status": "not observed"
+        }
+      }
     },
     {
       "id": "cline",
@@ -388,10 +1540,46 @@
       "initialMethods": [],
       "listChanged": {
         "supported": true,
-        "detail": "Yes, source 300 ms debounce, max 2 s deferral, 3 retries"
+        "detail": "McpHub registers handlers for tools, resources and prompts list_changed that call scheduleListChangedRefresh, which debounces per server+kind for 300 ms (capped at 2 s total deferral), re-fetches the list, retries failed fetches up to 3 times with 1 s/2 s/4 s backoff, updates the cached server lists, and for tools fires a separately 300 ms-debounced fingerprint check whose callback (SdkMcpCoordinator.handleToolListChanged) restarts the active SDK session with the same session id and messages so the new tool set applies to the next model turn, or to the next task if there is no active session (apps/vscode/src/sdk/sdk-mcp-coordinator.ts L31-L41).",
+        "source": "https://github.com/cline/cline/blob/590785eff565f167b16d5f750d682c4d9d2b7128/apps/vscode/src/services/mcp/McpHub.ts#L766-L777"
       },
       "source": "https://raw.githubusercontent.com/cline/cline/main/src/services/mcp/McpHub.ts",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": "2026-10-22",
+      "evidenceLevel": "source review",
+      "sourceReview": {
+        "repo": "cline/cline",
+        "version": "main",
+        "commit": "590785eff565f167b16d5f750d682c4d9d2b7128",
+        "url": "https://github.com/cline/cline/tree/590785eff565f167b16d5f750d682c4d9d2b7128"
+      },
+      "features": {
+        "roots": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/cline/cline/blob/590785eff565f167b16d5f750d682c4d9d2b7128/apps/vscode/src/services/mcp/McpHub.ts#L466-L474"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/cline/cline/blob/590785eff565f167b16d5f750d682c4d9d2b7128/apps/vscode/src/services/mcp/McpHub.ts#L466-L474"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/cline/cline/blob/590785eff565f167b16d5f750d682c4d9d2b7128/apps/vscode/src/services/mcp/McpHub.ts#L466-L474"
+        },
+        "resources": {
+          "status": "used",
+          "methods": ["resources/list", "resources/templates/list", "resources/read"],
+          "source": "https://github.com/cline/cline/blob/590785eff565f167b16d5f750d682c4d9d2b7128/apps/vscode/src/services/mcp/McpHub.ts#L917-L970",
+          "detail": "resources/list and resources/templates/list are fetched at connect (fetchServerCapabilities, L832-L844) and on list_changed, and shown in the webview MCP server settings. resources/read is implemented in McpHub.readResource (L1756-L1776) and exposed through McpHubToolProvider.readResource (apps/vscode/src/sdk/vscode-runtime-builder.ts L49-L50), but I found no model-facing tool or UI caller for it in the VS Code SDK path at this commit (the access_mcp_resource enum in apps/vscode/src/shared/tools.ts L20 is a leftover name only). resources/subscribe was not found."
+        },
+        "prompts": {
+          "status": "used",
+          "methods": ["prompts/list"],
+          "source": "https://github.com/cline/cline/blob/590785eff565f167b16d5f750d682c4d9d2b7128/apps/vscode/src/services/mcp/McpHub.ts#L976-L1008",
+          "detail": "prompts/list results are only displayed in a Prompts tab of the server row in the MCP settings webview (apps/vscode/webview-ui/src/components/mcp/configuration/tabs/installed/server-row/ServerRow.tsx L326-L375). prompts/get was not found in the inspected source."
+        }
+      }
     },
     {
       "id": "roo-code",
@@ -399,11 +1587,46 @@
       "initialize": null,
       "initialMethods": [],
       "listChanged": {
-        "supported": null,
-        "detail": "No handler found in inspected source; not proof of absence in other versions"
+        "supported": false,
+        "detail": "No notifications/tools/list_changed (or resources/prompts list_changed) handler was found in McpHub; tools, resources and templates are fetched once after client.connect (L883-L886) and re-fetched only on reconnects, config-file changes, enable/disable toggles (L1467-L1474) or tool-setting edits (L1856-L1858), with the model tool list rebuilt from McpHub.getServers() when the next request's tools are built.",
+        "source": "https://github.com/RooCodeInc/Roo-Code/blob/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16/src/services/mcp/McpHub.ts#L878-L886"
       },
       "source": "https://raw.githubusercontent.com/RooCodeInc/Roo-Code/main/src/services/mcp/McpHub.ts",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": "2026-10-22",
+      "evidenceLevel": "source review",
+      "sourceReview": {
+        "repo": "RooCodeInc/Roo-Code",
+        "version": "main",
+        "commit": "b867ec9145750d0ae1ff7f02d35406e9bf2a0b16",
+        "url": "https://github.com/RooCodeInc/Roo-Code/tree/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16"
+      },
+      "features": {
+        "roots": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/RooCodeInc/Roo-Code/blob/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16/src/services/mcp/McpHub.ts#L688-L697"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/RooCodeInc/Roo-Code/blob/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16/src/services/mcp/McpHub.ts#L688-L697"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/RooCodeInc/Roo-Code/blob/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16/src/services/mcp/McpHub.ts#L688-L697"
+        },
+        "resources": {
+          "status": "used",
+          "methods": ["resources/list", "resources/templates/list", "resources/read"],
+          "source": "https://github.com/RooCodeInc/Roo-Code/blob/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16/src/services/mcp/McpHub.ts#L1040-L1075",
+          "detail": "resources/list and resources/templates/list (single requests, no cursor) run at connect and on the refresh paths above. resources/read (McpHub.readResource L1710-L1725) backs the model-facing access_mcp_resource native tool, which takes server_name and uri (src/core/tools/accessMcpResourceTool.ts, src/core/prompts/tools/native-tools/access_mcp_resource.ts). resources/subscribe was not found."
+        },
+        "prompts": {
+          "status": "not found in the inspected source",
+          "methods": [],
+          "detail": "No prompts/list or prompts/get call was found in src/ (grep for listPrompts, prompts/list, getPrompt)."
+        }
+      }
     },
     {
       "id": "warp",
@@ -415,7 +1638,27 @@
         "detail": "unverified"
       },
       "source": "https://docs.warp.dev/knowledge-and-collaboration/mcp",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": null,
+      "evidenceLevel": "documentation only",
+      "features": {
+        "roots": {
+          "status": "unverified"
+        },
+        "sampling": {
+          "status": "unverified"
+        },
+        "elicitation": {
+          "status": "unverified"
+        },
+        "resources": {
+          "status": "unverified"
+        },
+        "prompts": {
+          "status": "unverified"
+        }
+      }
     },
     {
       "id": "amazon-q",
@@ -423,11 +1666,47 @@
       "initialize": null,
       "initialMethods": [],
       "listChanged": {
-        "supported": null,
-        "detail": "unverified"
+        "supported": true,
+        "detail": "on_tool_list_changed re-runs a paginated tools/list and sends the result to the tool manager, which sets has_new_stuff; the new specs replace that server's tools in ConversationState::update_state, called from backend_conversation_state before the next model request (next turn, no debounce); prompts/list_changed likewise re-lists prompts, and resources/list_changed is an explicit no-op.",
+        "source": "https://github.com/aws/amazon-q-developer-cli/blob/15cc8f3cd18c4272925ce1c7053268eedff1ea0a/crates/chat-cli/src/mcp_client/client.rs#L503-L516"
       },
       "source": "https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line-mcp-configuration.html",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": "2026-10-22",
+      "evidenceLevel": "source review",
+      "sourceReview": {
+        "repo": "aws/amazon-q-developer-cli",
+        "version": "main",
+        "commit": "15cc8f3cd18c4272925ce1c7053268eedff1ea0a",
+        "url": "https://github.com/aws/amazon-q-developer-cli/tree/15cc8f3cd18c4272925ce1c7053268eedff1ea0a"
+      },
+      "features": {
+        "roots": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/aws/amazon-q-developer-cli/blob/15cc8f3cd18c4272925ce1c7053268eedff1ea0a/crates/chat-cli/src/mcp_client/client.rs#L545-L547"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/aws/amazon-q-developer-cli/blob/15cc8f3cd18c4272925ce1c7053268eedff1ea0a/crates/chat-cli/src/mcp_client/client.rs#L542-L544"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/aws/amazon-q-developer-cli/blob/15cc8f3cd18c4272925ce1c7053268eedff1ea0a/crates/chat-cli/src/mcp_client/client.rs#L548-L550"
+        },
+        "resources": {
+          "status": "not found in the inspected source",
+          "methods": [],
+          "source": "https://github.com/aws/amazon-q-developer-cli/blob/15cc8f3cd18c4272925ce1c7053268eedff1ea0a/crates/chat-cli/src/mcp_client/client.rs#L565-L569",
+          "detail": "No resources/list, resources/read or templates calls found in the inspected source; ResourceUpdated and ResourceListChanged notifications are explicit no-ops marked 'TODO: support these', and the messenger's ListResourcesResult event is ignored (tool_manager.rs#L1670)."
+        },
+        "prompts": {
+          "status": "used",
+          "methods": ["prompts/list", "prompts/get"],
+          "source": "https://github.com/aws/amazon-q-developer-cli/blob/15cc8f3cd18c4272925ce1c7053268eedff1ea0a/crates/chat-cli/src/mcp_client/client.rs#L351-L362",
+          "detail": "prompts/list (paginated) runs after init when the server advertises prompts and again on prompts/list_changed; prompts/get goes through RunningService::get_prompt with OAuth retry (client.rs#L263, tool_manager.rs#L1127); prompts are user-facing via the /prompts slash command, not given to the model as tools."
+        }
+      }
     },
     {
       "id": "kiro",
@@ -439,7 +1718,32 @@
         "detail": "unverified"
       },
       "source": "https://kiro.dev/docs/mcp/",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": "2.33.1",
+      "recordedAt": "2026-10-22",
+      "uncaptured": {
+        "recordedAt": "2026-10-22",
+        "clientVersion": "2.33.1",
+        "reason": "`kiro-cli mcp status` reads config without connecting; chat needs a Kiro login."
+      },
+      "evidenceLevel": "documentation only",
+      "features": {
+        "roots": {
+          "status": "unverified"
+        },
+        "sampling": {
+          "status": "unverified"
+        },
+        "elicitation": {
+          "status": "unverified"
+        },
+        "resources": {
+          "status": "unverified"
+        },
+        "prompts": {
+          "status": "unverified"
+        }
+      }
     },
     {
       "id": "auggie",
@@ -451,19 +1755,140 @@
         "detail": "unverified"
       },
       "source": "https://docs.augmentcode.com/cli/integrations",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": "0.36.0",
+      "recordedAt": "2026-10-22",
+      "uncaptured": {
+        "recordedAt": "2026-10-22",
+        "clientVersion": "0.36.0",
+        "reason": "`auggie mcp list` reads config without connecting; sessions need an Augment login."
+      },
+      "evidenceLevel": "documentation only",
+      "features": {
+        "roots": {
+          "status": "unverified"
+        },
+        "sampling": {
+          "status": "unverified"
+        },
+        "elicitation": {
+          "status": "unverified"
+        },
+        "resources": {
+          "status": "unverified"
+        },
+        "prompts": {
+          "status": "unverified"
+        }
+      }
     },
     {
       "id": "kimi-code",
-      "evidence": "documentation only",
-      "initialize": null,
-      "initialMethods": [],
+      "evidence": "captured ACP session",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {},
+          "clientInfo": {
+            "name": "kimi-code",
+            "version": "0.0.0"
+          }
+        }
+      },
+      "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
       "listChanged": {
-        "supported": null,
-        "detail": "unverified"
+        "supported": false,
+        "detail": "The pinned source calls tools/list once in connectAndDiscoverTools after connect and registers no notification handlers anywhere in the MCP client code, so tools/list_changed does not refresh the catalog; tools are re-discovered only when a server reconnects.",
+        "source": "https://github.com/MoonshotAI/kimi-code/blob/b5e28fd6beac752a2cdcc0ff2f5fdf40e6494fbb/packages/agent-core-v2/src/mcpCore/connection-manager.ts#L502-L515",
+        "observed": {
+          "relisted": false,
+          "triggers": ["gateway"]
+        }
       },
       "source": "https://moonshotai.github.io/kimi-cli/en/customization/mcp.html",
-      "observedSessionKind": null
+      "observedSessionKind": "kimi acp: initialize, session/new, one prompt to a loopback mock model",
+      "clientVersion": "2.3.0",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "2.3.0",
+          "kind": "kimi acp: initialize, session/new, one prompt to a loopback mock model",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "kimi-code",
+            "version": "0.0.0"
+          },
+          "capabilities": {},
+          "methods": ["initialize", "notifications/initialized", "tools/list"],
+          "serverRequests": [],
+          "modelToolName": "mcp__toolport__mock_echo",
+          "listChangedObserved": {
+            "trigger": "gateway",
+            "relisted": false
+          }
+        },
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "2.3.0",
+          "kind": "same, with the injected list_changed probe",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "kimi-code",
+            "version": "0.0.0"
+          },
+          "capabilities": {},
+          "methods": ["initialize", "notifications/initialized", "tools/list"],
+          "serverRequests": [],
+          "modelToolName": "mcp__toolport__mock_echo",
+          "listChangedObserved": {
+            "trigger": "gateway",
+            "relisted": false
+          }
+        }
+      ],
+      "handshake": "initialize",
+      "evidenceLevel": "live capture",
+      "sourceReview": {
+        "repo": "MoonshotAI/kimi-code",
+        "version": "2.3.0",
+        "commit": "b5e28fd6beac752a2cdcc0ff2f5fdf40e6494fbb",
+        "url": "https://github.com/MoonshotAI/kimi-code/tree/b5e28fd6beac752a2cdcc0ff2f5fdf40e6494fbb"
+      },
+      "features": {
+        "roots": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/MoonshotAI/kimi-code/blob/b5e28fd6beac752a2cdcc0ff2f5fdf40e6494fbb/packages/agent-core-v2/src/mcpCore/client-stdio.ts#L55-L58",
+          "handshake": "not declared"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/MoonshotAI/kimi-code/blob/b5e28fd6beac752a2cdcc0ff2f5fdf40e6494fbb/packages/agent-core-v2/src/mcpCore/client-stdio.ts#L55-L58",
+          "handshake": "not declared"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/MoonshotAI/kimi-code/blob/b5e28fd6beac752a2cdcc0ff2f5fdf40e6494fbb/packages/agent-core-v2/src/mcpCore/client-stdio.ts#L55-L58",
+          "handshake": "not declared"
+        },
+        "resources": {
+          "status": "not found in the inspected source",
+          "methods": [],
+          "detail": "The MCPClient interface only has listTools, callTool and ping (mcpCore/types.ts L34-L42); no resources calls found in the inspected source."
+        },
+        "prompts": {
+          "status": "not found in the inspected source",
+          "methods": [],
+          "detail": "No prompts/list or prompts/get calls found in the inspected source (matches for listPrompts/getPrompt in packages/kap-server and packages/transcript are Kimi session prompts, not MCP)."
+        }
+      }
     },
     {
       "id": "deepseek-harness",
@@ -487,7 +1912,30 @@
         "detail": "dsh 0.2.0-rc.2 re-lists tools after notifications/tools/list_changed (subscriptions/listen against toolport-gateway 2.2.0)"
       },
       "source": "https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md",
-      "observedSessionKind": "Web profile startup, not model session; initialize is dsh's fallback after a server without server/discover"
+      "observedSessionKind": "Web profile startup, not model session; initialize is dsh's fallback after a server without server/discover",
+      "clientVersion": "0.2.0-rc.2",
+      "recordedAt": "2026-10-18",
+      "evidenceLevel": "live capture",
+      "features": {
+        "roots": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "sampling": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "elicitation": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "resources": {
+          "status": "not observed"
+        },
+        "prompts": {
+          "status": "not observed"
+        }
+      }
     },
     {
       "id": "reasonix",
@@ -519,7 +1967,30 @@
         "detail": "Reasonix 2.44.0 uses server/discover with toolport-gateway 2.2.0 and opens no subscriptions/listen, so the gateway cannot deliver notifications/tools/list_changed"
       },
       "source": "https://github.com/esengine/DeepSeek-Reasonix/blob/studio/internal/ext/plugin/client_session.go",
-      "observedSessionKind": "Web startup, not model session; initialize is Reasonix's fallback after a server without server/discover"
+      "observedSessionKind": "Web startup, not model session; initialize is Reasonix's fallback after a server without server/discover",
+      "clientVersion": "2.44.0",
+      "recordedAt": "2026-10-18",
+      "evidenceLevel": "live capture",
+      "features": {
+        "roots": {
+          "handshake": "declared",
+          "status": "declared"
+        },
+        "sampling": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "elicitation": {
+          "handshake": "declared",
+          "status": "declared"
+        },
+        "resources": {
+          "status": "not observed"
+        },
+        "prompts": {
+          "status": "not observed"
+        }
+      }
     },
     {
       "id": "codewhale",
@@ -550,7 +2021,32 @@
         "detail": "Codewhale 0.10.1 has no notifications/tools/list_changed handler; /mcp reload re-reads servers"
       },
       "source": "https://github.com/codewhale-hq/Codewhale/blob/main/crates/tui/src/mcp.rs",
-      "observedSessionKind": "codewhale mcp tools in its own process, not a model session"
+      "observedSessionKind": "codewhale mcp tools in its own process, not a model session",
+      "clientVersion": "0.10.1",
+      "recordedAt": "2026-10-18",
+      "evidenceLevel": "live capture",
+      "features": {
+        "roots": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "sampling": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "elicitation": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "resources": {
+          "observed": ["resources/list", "resources/templates/list"],
+          "status": "used"
+        },
+        "prompts": {
+          "observed": ["prompts/list"],
+          "status": "used"
+        }
+      }
     },
     {
       "id": "openclaw",
@@ -574,7 +2070,30 @@
         "detail": "OpenClaw 2026.10.4's bundle MCP client handles notifications/tools/list_changed by refreshing the session catalog on the next turn"
       },
       "source": "https://github.com/openclaw/openclaw/blob/main/docs/tools/mcp.md",
-      "observedSessionKind": "openclaw mcp add probing the server before saving, the same client the agent runtime uses"
+      "observedSessionKind": "openclaw mcp add probing the server before saving, the same client the agent runtime uses",
+      "clientVersion": "2026.10.4",
+      "recordedAt": "2026-10-18",
+      "evidenceLevel": "live capture",
+      "features": {
+        "roots": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "sampling": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "elicitation": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "resources": {
+          "status": "not observed"
+        },
+        "prompts": {
+          "status": "not observed"
+        }
+      }
     },
     {
       "id": "openhands",
@@ -598,7 +2117,30 @@
         "detail": "OpenHands CLI 1.16.0 (SDK 1.21.0) uses server/discover with toolport-gateway 2.2.0, lists tools once and opens no subscriptions/listen; the SDK it pins has no tools/list_changed handler"
       },
       "source": "https://github.com/OpenHands/OpenHands-CLI/blob/main/openhands_cli/mcp/mcp_utils.py",
-      "observedSessionKind": "openhands --headless startup; initialize is the fallback after a server without server/discover"
+      "observedSessionKind": "openhands --headless startup; initialize is the fallback after a server without server/discover",
+      "clientVersion": "1.16.0",
+      "recordedAt": "2026-10-18",
+      "evidenceLevel": "live capture",
+      "features": {
+        "roots": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "sampling": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "elicitation": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "resources": {
+          "status": "not observed"
+        },
+        "prompts": {
+          "status": "not observed"
+        }
+      }
     },
     {
       "id": "nanobot",
@@ -628,7 +2170,32 @@
         "detail": "nanobot-ai 0.3.5 lists tools once and registers every MCP tool; no tools/list_changed handler"
       },
       "source": "https://github.com/HKUDS/nanobot/blob/b702ac6/nanobot/agent/tools/mcp.py",
-      "observedSessionKind": "nanobot agent -m hi with isolated HOME"
+      "observedSessionKind": "nanobot agent -m hi with isolated HOME",
+      "clientVersion": "0.3.5",
+      "recordedAt": "2026-10-18",
+      "evidenceLevel": "live capture",
+      "features": {
+        "roots": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "sampling": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "elicitation": {
+          "handshake": "not declared",
+          "status": "not declared"
+        },
+        "resources": {
+          "observed": ["resources/list"],
+          "status": "used"
+        },
+        "prompts": {
+          "observed": ["prompts/list"],
+          "status": "used"
+        }
+      }
     },
     {
       "id": "zcode",
@@ -640,7 +2207,32 @@
         "detail": "unverified"
       },
       "source": "https://zcode.z.ai/",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": null,
+      "uncaptured": {
+        "recordedAt": "2026-10-22",
+        "clientVersion": null,
+        "reason": "No public headless Linux CLI package was found; the npm `zcode` packages are unrelated."
+      },
+      "evidenceLevel": "documentation only",
+      "features": {
+        "roots": {
+          "status": "unverified"
+        },
+        "sampling": {
+          "status": "unverified"
+        },
+        "elicitation": {
+          "status": "unverified"
+        },
+        "resources": {
+          "status": "unverified"
+        },
+        "prompts": {
+          "status": "unverified"
+        }
+      }
     },
     {
       "id": "command-code",
@@ -652,7 +2244,32 @@
         "detail": "unverified"
       },
       "source": "https://commandcode.ai/docs/mcp",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": "1.87.3",
+      "recordedAt": "2026-10-22",
+      "uncaptured": {
+        "recordedAt": "2026-10-22",
+        "clientVersion": "1.87.3",
+        "reason": "`command-code acp` rejects session/new with 'Not authenticated. Run `cmd login`'; `mcp list` does not connect."
+      },
+      "evidenceLevel": "documentation only",
+      "features": {
+        "roots": {
+          "status": "unverified"
+        },
+        "sampling": {
+          "status": "unverified"
+        },
+        "elicitation": {
+          "status": "unverified"
+        },
+        "resources": {
+          "status": "unverified"
+        },
+        "prompts": {
+          "status": "unverified"
+        }
+      }
     },
     {
       "id": "tabnine",
@@ -664,7 +2281,32 @@
         "detail": "unverified"
       },
       "source": "https://docs.tabnine.com/main/getting-started/tabnine-agent/mcp-intro-and-setup",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": null,
+      "uncaptured": {
+        "recordedAt": "2026-10-22",
+        "clientVersion": null,
+        "reason": "No official headless Linux CLI package was found (the npm `tabnine` package is not Tabnine's)."
+      },
+      "evidenceLevel": "documentation only",
+      "features": {
+        "roots": {
+          "status": "unverified"
+        },
+        "sampling": {
+          "status": "unverified"
+        },
+        "elicitation": {
+          "status": "unverified"
+        },
+        "resources": {
+          "status": "unverified"
+        },
+        "prompts": {
+          "status": "unverified"
+        }
+      }
     },
     {
       "id": "zed",
@@ -673,10 +2315,46 @@
       "initialMethods": [],
       "listChanged": {
         "supported": true,
-        "detail": "Yes, official docs; latency unmeasured"
+        "detail": "If the server declares the tools capability, ContextServerRegistry subscribes to notifications/tools/list_changed and calls reload_tools_for_server, which re-runs tools/list (no debounce; each new load replaces the pending task), clears and rebuilds that server's tools, and emits ToolsChanged; the agent thread re-reads enabled_tools via refresh_turn_tools at the start of every completion iteration (crates/agent/src/thread.rs L3022-L3032), so new tools apply from the next model request, even mid-turn. No handler for resources/list_changed or prompts/list_changed was found; prompts reload only when the server (re)enters Running.",
+        "source": "https://github.com/zed-industries/zed/blob/cfb894a5dde8ccf3fba1659164f47fdd1c024e2e/crates/agent/src/tools/context_server_registry.rs#L124-L208"
       },
       "source": "https://zed.dev/docs/ai/mcp",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": "2026-10-22",
+      "evidenceLevel": "source review",
+      "sourceReview": {
+        "repo": "zed-industries/zed",
+        "version": "main",
+        "commit": "cfb894a5dde8ccf3fba1659164f47fdd1c024e2e",
+        "url": "https://github.com/zed-industries/zed/tree/cfb894a5dde8ccf3fba1659164f47fdd1c024e2e"
+      },
+      "features": {
+        "roots": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/zed-industries/zed/blob/cfb894a5dde8ccf3fba1659164f47fdd1c024e2e/crates/context_server/src/protocol.rs#L41-L50"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/zed-industries/zed/blob/cfb894a5dde8ccf3fba1659164f47fdd1c024e2e/crates/context_server/src/protocol.rs#L41-L50"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/zed-industries/zed/blob/cfb894a5dde8ccf3fba1659164f47fdd1c024e2e/crates/context_server/src/protocol.rs#L41-L50"
+        },
+        "resources": {
+          "status": "not found in the inspected source",
+          "methods": [],
+          "source": "https://github.com/zed-industries/zed/blob/cfb894a5dde8ccf3fba1659164f47fdd1c024e2e/crates/context_server/src/types.rs#L47-L59",
+          "detail": "Request types for resources/subscribe, resources/read, resources/list and resources/templates/list are defined in crates/context_server/src/types.rs, but grep across crates/ found no call sites for them outside that file at this commit."
+        },
+        "prompts": {
+          "status": "used",
+          "methods": ["prompts/list", "prompts/get"],
+          "source": "https://github.com/zed-industries/zed/blob/cfb894a5dde8ccf3fba1659164f47fdd1c024e2e/crates/agent/src/tools/context_server_registry.rs#L210-L250",
+          "detail": "prompts/list results become agent slash commands named after the prompt, prefixed as /<server>.<prompt> only when names clash or match the built-in /compact (crates/agent/src/agent.rs L1765-L1800); running one calls prompts/get via get_prompt (context_server_registry.rs L511-L541; agent.rs L2190)."
+        }
+      }
     },
     {
       "id": "lm-studio",
@@ -688,7 +2366,27 @@
         "detail": "unverified"
       },
       "source": "https://lmstudio.ai/docs/app/plugins/mcp",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": null,
+      "evidenceLevel": "documentation only",
+      "features": {
+        "roots": {
+          "status": "unverified"
+        },
+        "sampling": {
+          "status": "unverified"
+        },
+        "elicitation": {
+          "status": "unverified"
+        },
+        "resources": {
+          "status": "unverified"
+        },
+        "prompts": {
+          "status": "unverified"
+        }
+      }
     },
     {
       "id": "jan",
@@ -696,11 +2394,45 @@
       "initialize": null,
       "initialMethods": [],
       "listChanged": {
-        "supported": null,
-        "detail": "unverified"
+        "supported": false,
+        "detail": "JanClientHandler implements only get_info and on_progress, so notifications/tools/list_changed falls to rmcp 3.2.0's default no-op on_tool_list_changed; in practice tools are re-listed (list_all_tools) on every chat turn because refreshTools runs before each sendMessages request, so changes land on the next turn, except when Smart Tool Routing is on and the server set is unchanged, which reuses frozenRoutedTools.",
+        "source": "https://github.com/janhq/jan/blob/dd7bd4f5f348ba424d91cee3069c39fabca3d708/src-tauri/src/core/mcp/progress.rs#L76-L88"
       },
       "source": "https://jan.ai/docs/desktop/mcp",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": "2026-10-22",
+      "evidenceLevel": "source review",
+      "sourceReview": {
+        "repo": "janhq/jan",
+        "version": "main",
+        "commit": "dd7bd4f5f348ba424d91cee3069c39fabca3d708",
+        "url": "https://github.com/janhq/jan/tree/dd7bd4f5f348ba424d91cee3069c39fabca3d708"
+      },
+      "features": {
+        "roots": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/janhq/jan/blob/dd7bd4f5f348ba424d91cee3069c39fabca3d708/src-tauri/src/core/mcp/helpers.rs#L787-L792"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/janhq/jan/blob/dd7bd4f5f348ba424d91cee3069c39fabca3d708/src-tauri/src/core/mcp/helpers.rs#L787-L792"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/janhq/jan/blob/dd7bd4f5f348ba424d91cee3069c39fabca3d708/src-tauri/src/core/mcp/helpers.rs#L787-L792"
+        },
+        "resources": {
+          "status": "not found in the inspected source",
+          "methods": [],
+          "detail": "No resources/list, resources/read, templates or subscribe calls found in src-tauri/src or web-app/src of the inspected source."
+        },
+        "prompts": {
+          "status": "not found in the inspected source",
+          "methods": [],
+          "detail": "No prompts/list or prompts/get calls found in src-tauri/src or web-app/src of the inspected source."
+        }
+      }
     },
     {
       "id": "boltai",
@@ -712,43 +2444,442 @@
         "detail": "unverified"
       },
       "source": "https://docs.boltai.com/docs/plugins/mcp-servers",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": null,
+      "recordedAt": null,
+      "evidenceLevel": "documentation only",
+      "features": {
+        "roots": {
+          "status": "unverified"
+        },
+        "sampling": {
+          "status": "unverified"
+        },
+        "elicitation": {
+          "status": "unverified"
+        },
+        "resources": {
+          "status": "unverified"
+        },
+        "prompts": {
+          "status": "unverified"
+        }
+      }
     },
     {
       "id": "pi",
-      "evidence": "documentation only",
-      "initialize": null,
-      "initialMethods": [],
-      "listChanged": {
-        "supported": null,
-        "detail": "unverified"
+      "evidence": "captured RPC startup",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {
+            "roots": {}
+          },
+          "clientInfo": {
+            "name": "pi",
+            "version": "1.4.0"
+          }
+        }
       },
-      "source": "https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/README.md",
-      "observedSessionKind": null
+      "initialMethods": [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+        "tools/list"
+      ],
+      "listChanged": {
+        "supported": true,
+        "detail": "Pi 1.4.0's built-in mcp extension re-runs tools/list on notifications/tools/list_changed (refreshTools); resources/prompts list_changed handlers were not found in the inspected source.",
+        "source": "https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/coding-agent/src/extensions/mcp/runtime.ts#L380-L382",
+        "observed": {
+          "relisted": true,
+          "triggers": ["gateway"]
+        }
+      },
+      "source": "https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/coding-agent/src/extensions/mcp/runtime.ts",
+      "observedSessionKind": "pi --mode rpc startup, built-in mcp extension",
+      "clientVersion": "1.4.0",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "1.4.0",
+          "kind": "pi --mode rpc startup, built-in mcp extension",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "pi",
+            "version": "1.4.0"
+          },
+          "capabilities": {
+            "roots": {}
+          },
+          "methods": [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "tools/list"
+          ],
+          "serverRequests": ["roots/list"],
+          "listChangedObserved": {
+            "trigger": "gateway",
+            "relisted": true
+          }
+        },
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "1.4.0",
+          "kind": "same, with the injected list_changed probe",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "pi",
+            "version": "1.4.0"
+          },
+          "capabilities": {
+            "roots": {}
+          },
+          "methods": [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "tools/list",
+            "tools/list"
+          ],
+          "serverRequests": ["roots/list"],
+          "listChangedObserved": {
+            "trigger": "gateway",
+            "relisted": true
+          }
+        }
+      ],
+      "handshake": "initialize",
+      "evidenceLevel": "live capture",
+      "sourceReview": {
+        "repo": "earendil-works/pi",
+        "version": "1.4.0",
+        "commit": "4a080252f06caf63a525d7873c5d94d3c23887e0",
+        "url": "https://github.com/earendil-works/pi/tree/4a080252f06caf63a525d7873c5d94d3c23887e0"
+      },
+      "features": {
+        "roots": {
+          "status": "implemented",
+          "source": "https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/mcp/src/client.ts#L176-L181",
+          "handshake": "declared"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "handshake": "not declared"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "handshake": "not declared"
+        },
+        "resources": {
+          "status": "used",
+          "methods": ["resources/list", "resources/templates/list", "resources/read"],
+          "source": "https://github.com/earendil-works/pi/blob/4a080252f06caf63a525d7873c5d94d3c23887e0/packages/coding-agent/src/extensions/mcp/resources.ts#L253-L338",
+          "detail": "Exposed to the model as list/read tools when a server has the resources capability."
+        },
+        "prompts": {
+          "status": "not found in the inspected source",
+          "methods": [],
+          "detail": "Not found in the inspected source."
+        }
+      }
     },
     {
       "id": "omp",
-      "evidence": "documentation only",
-      "initialize": null,
-      "initialMethods": [],
+      "evidence": "captured RPC and ACP startup",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {
+            "roots": {
+              "listChanged": false
+            }
+          },
+          "clientInfo": {
+            "name": "omp-coding-agent",
+            "version": "1.0.0"
+          }
+        }
+      },
+      "initialMethods": [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+        "resources/list",
+        "resources/templates/list",
+        "prompts/list",
+        "resources/list",
+        "resources/templates/list",
+        "prompts/list",
+        "tools/list"
+      ],
       "listChanged": {
-        "supported": null,
-        "detail": "unverified"
+        "supported": true,
+        "detail": "notifications/tools/list_changed triggers refreshServerTools, a per-server single-flight tools/list re-run with one trailing pass for bursts (no timer debounce), which replaces that server's tools and calls the owner callback; the session's refreshMCPTools replaces MCP tools in the registry and enables them immediately (session/session-tools.ts L2367-L2378), so they apply to the next model request; resources/list_changed and prompts/list_changed also trigger refreshes, and prompt refresh rebuilds the MCP prompt slash commands (sdk.ts L5486-L5491).",
+        "source": "https://github.com/can1357/oh-my-pi/blob/45c35e40c46166dc726ccc52f5d27f40f2449f99/packages/coding-agent/src/mcp/manager.ts#L1086-L1120",
+        "observed": {
+          "relisted": true,
+          "triggers": ["gateway"]
+        }
       },
       "source": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/README.md",
-      "observedSessionKind": null
+      "observedSessionKind": "omp --mode rpc startup from ~/.omp/agent/mcp.json (exits for lack of a model)",
+      "clientVersion": "18.12.6",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "18.12.6",
+          "kind": "omp --mode rpc startup from ~/.omp/agent/mcp.json (exits for lack of a model)",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "omp-coding-agent",
+            "version": "1.0.0"
+          },
+          "capabilities": {
+            "roots": {
+              "listChanged": false
+            }
+          },
+          "methods": [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "resources/list",
+            "resources/templates/list",
+            "prompts/list",
+            "resources/list",
+            "resources/templates/list",
+            "prompts/list",
+            "tools/list"
+          ],
+          "serverRequests": ["roots/list"],
+          "listChangedObserved": {
+            "trigger": "gateway",
+            "relisted": true
+          }
+        },
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "18.12.6",
+          "kind": "omp acp with the server passed in session/new",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "omp-coding-agent",
+            "version": "1.0.0"
+          },
+          "capabilities": {
+            "roots": {
+              "listChanged": false
+            }
+          },
+          "methods": [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "resources/list",
+            "resources/templates/list",
+            "prompts/list",
+            "resources/list",
+            "resources/templates/list",
+            "prompts/list",
+            "tools/list"
+          ],
+          "serverRequests": ["roots/list"],
+          "listChangedObserved": {
+            "trigger": "gateway",
+            "relisted": true
+          }
+        },
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "18.12.6",
+          "kind": "same, with the injected list_changed probe",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "omp-coding-agent",
+            "version": "1.0.0"
+          },
+          "capabilities": {
+            "roots": {
+              "listChanged": false
+            }
+          },
+          "methods": [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "resources/list",
+            "resources/templates/list",
+            "prompts/list",
+            "resources/list",
+            "resources/templates/list",
+            "prompts/list",
+            "tools/list",
+            "tools/list"
+          ],
+          "serverRequests": ["roots/list"],
+          "listChangedObserved": {
+            "trigger": "gateway",
+            "relisted": true
+          }
+        }
+      ],
+      "handshake": "initialize",
+      "evidenceLevel": "live capture",
+      "sourceReview": {
+        "repo": "can1357/oh-my-pi",
+        "version": "18.12.6",
+        "commit": "45c35e40c46166dc726ccc52f5d27f40f2449f99",
+        "url": "https://github.com/can1357/oh-my-pi/tree/45c35e40c46166dc726ccc52f5d27f40f2449f99"
+      },
+      "features": {
+        "roots": {
+          "status": "implemented",
+          "source": "https://github.com/can1357/oh-my-pi/blob/45c35e40c46166dc726ccc52f5d27f40f2449f99/packages/coding-agent/src/mcp/manager.ts#L1153-L1173",
+          "handshake": "declared"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/can1357/oh-my-pi/blob/45c35e40c46166dc726ccc52f5d27f40f2449f99/packages/coding-agent/src/mcp/client.ts#L55-L68",
+          "handshake": "not declared"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/can1357/oh-my-pi/blob/45c35e40c46166dc726ccc52f5d27f40f2449f99/packages/coding-agent/src/mcp/client.ts#L55-L68",
+          "handshake": "not declared"
+        },
+        "resources": {
+          "status": "used",
+          "methods": [
+            "resources/list",
+            "resources/templates/list",
+            "resources/read",
+            "resources/subscribe"
+          ],
+          "source": "https://github.com/can1357/oh-my-pi/blob/45c35e40c46166dc726ccc52f5d27f40f2449f99/packages/coding-agent/src/mcp/client.ts#L294-L452",
+          "detail": "Gated on the server resources capability (subscribe only when resources.subscribe is true; resources/unsubscribe also used). Resources are read by the model through the read tool with mcp://<uri> paths (internal-urls/mcp-protocol.ts L162), and notifications/resources/updated for subscribed URIs is injected as an [MCP notification] user message pointing at read(path=\"mcp://<uri>\") (sdk.ts L479-L483).",
+          "observed": ["resources/list", "resources/templates/list"]
+        },
+        "prompts": {
+          "status": "used",
+          "methods": ["prompts/list", "prompts/get"],
+          "source": "https://github.com/can1357/oh-my-pi/blob/45c35e40c46166dc726ccc52f5d27f40f2449f99/packages/coding-agent/src/mcp/client.ts#L471-L520",
+          "detail": "Exposed to the user as slash commands named <server>:<prompt> with key=value arguments, executed via prompts/get (sdk.ts L1580-L1600, mcp/manager.ts L2011-L2019); rebuilt on prompts/list_changed.",
+          "observed": ["prompts/list"]
+        }
+      }
     },
     {
       "id": "goose",
-      "evidence": "documentation only",
+      "evidence": "captured ACP session",
       "initialize": null,
       "initialMethods": [],
       "listChanged": {
-        "supported": null,
-        "detail": "unverified"
+        "supported": true,
+        "detail": "on_tool_list_changed bumps a per-extension tools_version counter; the cached public tool list is only reused when its version matches, so the next ToolCatalog build re-runs tools/list (paginated); a fresh lease (and catalog) is taken in prepare_session for each inference request, so changes apply on the next model request, with no debounce; resources/prompts list_changed handlers were not found in the inspected source. Goose 1.55.0 connected to Toolport with server/discover and opened no subscriptions/listen, so the gateway has no channel to deliver the notification in that mode.",
+        "source": "https://github.com/aaif-goose/goose/blob/2bcb8583a18a0623eb78c9ed845d597ed99fae48/crates/goose/src/agents/mcp_client.rs#L358-L360"
       },
       "source": "https://block.github.io/goose/docs/getting-started/using-extensions/",
-      "observedSessionKind": null
+      "observedSessionKind": "goose acp: initialize, session/new, one prompt to a loopback mock model",
+      "clientVersion": "1.55.0",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "1.55.0",
+          "kind": "goose acp: initialize, session/new, one prompt to a loopback mock model",
+          "discovery": "full",
+          "handshake": "server/discover",
+          "protocolVersion": "2026-07-28",
+          "clientInfo": {
+            "name": "toolport-conformance",
+            "version": "1"
+          },
+          "capabilities": {
+            "extensions": {},
+            "roots": {},
+            "elicitation": {}
+          },
+          "methods": ["server/discover", "tools/list"],
+          "serverRequests": [],
+          "modelToolName": "toolport__mock__echo"
+        }
+      ],
+      "handshake": "server/discover",
+      "discover": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "server/discover",
+        "params": {
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "toolport-conformance",
+              "version": "1"
+            },
+            "io.modelcontextprotocol/clientCapabilities": {
+              "extensions": {},
+              "roots": {},
+              "elicitation": {}
+            }
+          }
+        }
+      },
+      "evidenceLevel": "live capture",
+      "sourceReview": {
+        "repo": "aaif-goose/goose",
+        "version": "1.55.0",
+        "commit": "2bcb8583a18a0623eb78c9ed845d597ed99fae48",
+        "url": "https://github.com/aaif-goose/goose/tree/2bcb8583a18a0623eb78c9ed845d597ed99fae48"
+      },
+      "features": {
+        "roots": {
+          "status": "implemented",
+          "source": "https://github.com/aaif-goose/goose/blob/2bcb8583a18a0623eb78c9ed845d597ed99fae48/crates/goose/src/agents/mcp_client.rs#L336-L343",
+          "handshake": "declared"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "handshake": "not declared"
+        },
+        "elicitation": {
+          "status": "implemented",
+          "source": "https://github.com/aaif-goose/goose/blob/2bcb8583a18a0623eb78c9ed845d597ed99fae48/crates/goose/src/agents/mcp_client.rs#L376-L441",
+          "modes": "both",
+          "handshake": "declared"
+        },
+        "resources": {
+          "status": "used",
+          "methods": ["resources/list", "resources/read"],
+          "source": "https://github.com/aaif-goose/goose/blob/2bcb8583a18a0623eb78c9ed845d597ed99fae48/crates/goose/src/agents/mcp_client.rs#L660-L716",
+          "detail": "Exposed to the model through the extension-manager platform tools list_resources and read_resource (agents/platform_extensions/ext_manager.rs L66-L67), which are hidden when no extension declares the resources capability (agents/extension_manager/lease.rs L149-L157). resources/templates/list and resources/subscribe not found in the inspected source."
+        },
+        "prompts": {
+          "status": "used",
+          "methods": ["prompts/list", "prompts/get"],
+          "source": "https://github.com/aaif-goose/goose/blob/2bcb8583a18a0623eb78c9ed845d597ed99fae48/crates/goose/src/agents/mcp_client.rs#L815-L881",
+          "detail": "Exposed to the user as slash commands /prompts (list, optional extension filter) and /prompt (get and insert) in agents/state_machine/ops_toolcalling.rs L832-L836; not exposed to the model as tools."
+        }
+      }
     },
     {
       "id": "hermes",
@@ -760,9 +2891,7 @@
         "params": {
           "protocolVersion": "2025-11-25",
           "capabilities": {
-            "sampling": {
-              "tools": {}
-            },
+            "sampling": {},
             "elicitation": {
               "form": {},
               "url": {}
@@ -771,29 +2900,171 @@
           "clientInfo": {
             "name": "mcp",
             "version": "0.1.0"
-          },
-          "_meta": {}
+          }
         }
       },
       "initialMethods": ["initialize", "notifications/initialized", "tools/list"],
       "listChanged": {
-        "supported": null,
-        "detail": "unverified"
+        "supported": true,
+        "detail": "The ClientSession message_handler schedules a background _refresh_tools task on notifications/tools/list_changed (serialized by a lock, no debounce), which re-pages tools/list, deregisters stale names and re-registers into the tool registry; the agent's frozen tools[] snapshot picks that up between turns via _refresh_mcp_tools_between_turns (append-only, preserve_prefix) before the next API call, so it takes effect next turn; prompts/list_changed and resources/list_changed are explicitly logged and ignored.",
+        "source": "https://github.com/NousResearch/hermes-agent/blob/4d04303818b61bf3aa09278af48356315515965b/tools/mcp_tool_health.py#L99-L169"
       },
       "source": "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp",
-      "observedSessionKind": "CLI health command, not model session"
+      "observedSessionKind": "CLI health command, not model session",
+      "clientVersion": "0.22.4",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "0.22.4",
+          "kind": "hermes mcp test health command",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "mcp",
+            "version": "0.1.0"
+          },
+          "capabilities": {
+            "sampling": {},
+            "elicitation": {
+              "form": {},
+              "url": {}
+            }
+          },
+          "methods": ["initialize", "notifications/initialized", "tools/list"],
+          "serverRequests": []
+        }
+      ],
+      "handshake": "initialize",
+      "evidenceLevel": "live capture",
+      "sourceReview": {
+        "repo": "NousResearch/hermes-agent",
+        "version": "0.22.4",
+        "commit": "4d04303818b61bf3aa09278af48356315515965b",
+        "url": "https://github.com/NousResearch/hermes-agent/tree/4d04303818b61bf3aa09278af48356315515965b"
+      },
+      "features": {
+        "roots": {
+          "status": "not found in the inspected source",
+          "handshake": "not declared"
+        },
+        "sampling": {
+          "status": "implemented",
+          "source": "https://github.com/NousResearch/hermes-agent/blob/4d04303818b61bf3aa09278af48356315515965b/tools/mcp_tool_sampling.py#L174-L182",
+          "handshake": "declared"
+        },
+        "elicitation": {
+          "status": "implemented",
+          "source": "https://github.com/NousResearch/hermes-agent/blob/4d04303818b61bf3aa09278af48356315515965b/tools/mcp_tool_sampling.py#L296-L324",
+          "modes": "form",
+          "handshake": "declared"
+        },
+        "resources": {
+          "status": "used",
+          "methods": ["resources/list", "resources/read"],
+          "source": "https://github.com/NousResearch/hermes-agent/blob/4d04303818b61bf3aa09278af48356315515965b/tools/mcp_tool_handlers.py#L758-L763",
+          "detail": "Exposed to the model as generated per-server utility tools `mcp__<server>__list_resources` and `mcp__<server>__read_resource` (tools/mcp_tool_schema.py L199-L212), only when the server advertises resources and config tools.resources is not false (tools/mcp_tool_registration.py L182-L200); a native tool of the same normalized name wins over the utility. resources/templates/list and resources/subscribe not found in the inspected source."
+        },
+        "prompts": {
+          "status": "used",
+          "methods": ["prompts/list", "prompts/get"],
+          "source": "https://github.com/NousResearch/hermes-agent/blob/4d04303818b61bf3aa09278af48356315515965b/tools/mcp_tool_handlers.py#L764-L770",
+          "detail": "Exposed to the model as utility tools `mcp__<server>__list_prompts` and `mcp__<server>__get_prompt` (name + arguments), gated on the server's prompts capability and config tools.prompts."
+        }
+      }
     },
     {
       "id": "continue",
-      "evidence": "documentation only",
-      "initialize": null,
-      "initialMethods": [],
+      "evidence": "captured prompt against mock model",
+      "initialize": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {},
+          "clientInfo": {
+            "name": "continue-cli-client",
+            "version": "1.0.0"
+          }
+        }
+      },
+      "initialMethods": [
+        "initialize",
+        "notifications/initialized",
+        "prompts/list",
+        "tools/list"
+      ],
       "listChanged": {
-        "supported": null,
-        "detail": "unverified"
+        "supported": false,
+        "detail": "The pinned CLI source calls tools/list and prompts/list once in connectServer and registers no notification handlers, so a tools/list_changed notification does not refresh the catalog; tools are re-listed only when the server is restarted (restartServer/restartAllServers). core/ also has no handler (a commented-out TODO at MCPConnection.ts L284-L288).",
+        "source": "https://github.com/continuedev/continue/blob/d3f60ba9dd3fb5bfd3c91d6fbb41ce1aa768db45/extensions/cli/src/services/MCPService.ts#L270-L320"
       },
       "source": "https://docs.continue.dev/customize/deep-dives/mcp",
-      "observedSessionKind": null
+      "observedSessionKind": "cn -p against a loopback mock model",
+      "clientVersion": "1.5.47",
+      "recordedAt": "2026-10-22",
+      "captures": [
+        {
+          "recordedAt": "2026-10-22",
+          "clientVersion": "1.5.47",
+          "kind": "cn -p against a loopback mock model",
+          "discovery": "full",
+          "handshake": "initialize",
+          "protocolVersion": "2025-11-25",
+          "clientInfo": {
+            "name": "continue-cli-client",
+            "version": "1.0.0"
+          },
+          "capabilities": {},
+          "methods": [
+            "initialize",
+            "notifications/initialized",
+            "prompts/list",
+            "tools/list"
+          ],
+          "serverRequests": [],
+          "modelToolName": "mock__echo"
+        }
+      ],
+      "handshake": "initialize",
+      "evidenceLevel": "live capture",
+      "sourceReview": {
+        "repo": "continuedev/continue",
+        "version": "@continuedev/cli 1.5.47",
+        "commit": "d3f60ba9dd3fb5bfd3c91d6fbb41ce1aa768db45",
+        "url": "https://github.com/continuedev/continue/tree/d3f60ba9dd3fb5bfd3c91d6fbb41ce1aa768db45"
+      },
+      "features": {
+        "roots": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/continuedev/continue/blob/d3f60ba9dd3fb5bfd3c91d6fbb41ce1aa768db45/extensions/cli/src/services/MCPService.ts#L405-L408",
+          "handshake": "not declared"
+        },
+        "sampling": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/continuedev/continue/blob/d3f60ba9dd3fb5bfd3c91d6fbb41ce1aa768db45/extensions/cli/src/services/MCPService.ts#L405-L408",
+          "handshake": "not declared"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source",
+          "source": "https://github.com/continuedev/continue/blob/d3f60ba9dd3fb5bfd3c91d6fbb41ce1aa768db45/extensions/cli/src/services/MCPService.ts#L405-L408",
+          "handshake": "not declared"
+        },
+        "resources": {
+          "status": "not found in the inspected source",
+          "methods": [],
+          "detail": "No resources calls were found in the CLI source (extensions/cli/src). core/ (IDE extension, not the CLI) calls resources/list, resources/templates/list and resources/read (core/context/mcp/MCPConnection.ts L292-L315 and L616) and exposes them as context items; resources/subscribe not found."
+        },
+        "prompts": {
+          "status": "used",
+          "methods": ["prompts/list"],
+          "source": "https://github.com/continuedev/continue/blob/d3f60ba9dd3fb5bfd3c91d6fbb41ce1aa768db45/extensions/cli/src/services/MCPService.ts#L278-L298",
+          "detail": "The CLI lists prompts only when the server declares the prompts capability and only displays them (extensions/cli/src/ui/IntroMessage.tsx L32-L56, ui/MCPSelector.tsx L185-L188); prompts/get was not found in the CLI source. core/ calls prompts/list and prompts/get and maps prompts to slash commands (core/context/mcp/MCPConnection.ts L342-L349, core/context/mcp/MCPManagerSingleton.ts L188-L200).",
+          "observed": ["prompts/list"]
+        }
+      }
     },
     {
       "id": "witsy",
@@ -801,11 +3072,43 @@
       "initialize": null,
       "initialMethods": [],
       "listChanged": {
-        "supported": null,
-        "detail": "unverified"
+        "supported": false,
+        "detail": "The notifications/tools/list_changed handler is commented out in connect(); tools come from a per-server tools/list cache with a 10-minute TTL (getCachedTools), so a changed list shows up only after the TTL expires or a reload, and the mapped tool names used to route calls (client.tools) are fixed at connect time.",
+        "source": "https://github.com/Kochava-Studios/witsy/blob/c81c7de417a6362825bced2e865184d6e3fb73ba/src/main/mcp.ts#L626-L629"
       },
       "source": "https://raw.githubusercontent.com/nbonamy/witsy/main/README.md",
-      "observedSessionKind": null
+      "observedSessionKind": null,
+      "clientVersion": "3.6.0",
+      "recordedAt": "2026-10-22",
+      "evidenceLevel": "source review",
+      "sourceReview": {
+        "repo": "Kochava-Studios/witsy",
+        "version": "3.6.0",
+        "commit": "c81c7de417a6362825bced2e865184d6e3fb73ba",
+        "url": "https://github.com/Kochava-Studios/witsy/tree/c81c7de417a6362825bced2e865184d6e3fb73ba"
+      },
+      "features": {
+        "roots": {
+          "status": "not found in the inspected source"
+        },
+        "sampling": {
+          "status": "not found in the inspected source"
+        },
+        "elicitation": {
+          "status": "not found in the inspected source"
+        },
+        "resources": {
+          "status": "not found in the inspected source",
+          "methods": [],
+          "detail": "No resources/* calls (listResources, readResource, listResourceTemplates, subscribe) found in src/ of the inspected source."
+        },
+        "prompts": {
+          "status": "not found in the inspected source",
+          "methods": [],
+          "detail": "No prompts/list or prompts/get calls found in src/ of the inspected source."
+        }
+      }
     }
-  ]
+  ],
+  "schemaNotes": "See docs/client-conformance.md#profile-fields"
 }
