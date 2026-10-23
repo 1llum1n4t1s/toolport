@@ -7093,8 +7093,8 @@ struct GatewayResponse {
     surface: Option<Arc<savings::SerializedSurface>>,
     observation: Option<Arc<observation::Session>>,
     tools_list: bool,
-    /// Digest of the scoped catalog this tools/list was built from, and the
-    /// connection record it is saved to once the reply is delivered.
+    /// Digest of the scoped catalog this tools/list was built from, when it was
+    /// a Full list, and the connection record it is saved to once delivered.
     listed_catalog: Option<[u8; 32]>,
     listed_tools: Option<ListedTools>,
 }
@@ -7132,13 +7132,23 @@ impl GatewayResponse {
         if let (Some(session), Some(catalog)) = (&self.observation, self.catalog_delivery()) {
             session.list_delivered(catalog);
         }
+    }
+
+    /// Saves what a delivered tools/list carried. Call it in delivery order.
+    fn record_listed(&self) {
         if let Some((record, digest)) = self.listed() {
             record_listed_tools(&record, digest);
         }
     }
 
-    fn listed(&self) -> Option<(ListedTools, [u8; 32])> {
-        Some((self.listed_tools.clone()?, self.listed_catalog?))
+    /// The record a delivered tools/list updates, and its digest. Every tools/list
+    /// updates it: one that is not a Full list clears it, so the next publication
+    /// still notifies.
+    fn listed(&self) -> Option<(ListedTools, Option<[u8; 32]>)> {
+        if !self.tools_list {
+            return None;
+        }
+        Some((self.listed_tools.clone()?, self.listed_catalog))
     }
 }
 
@@ -9517,9 +9527,21 @@ type RouteSubscriptions = (
     Option<Arc<AtomicBool>>,
 );
 
-/// The digest of the scoped catalog a connection's last delivered tools/list was
-/// built from. `None` until one is delivered.
-type ListedTools = Arc<Mutex<Option<[u8; 32]>>>;
+/// What a connection's last delivered tools/list was built from.
+type ListedTools = Arc<Mutex<ListedRecord>>;
+
+#[derive(Default)]
+struct ListedRecord {
+    /// Digest of the scoped catalog of the last delivered tools/list. `None` until
+    /// one is delivered, and after a list that was not Full: a Lazy or Grouped
+    /// surface, or an Auto list held on the Lazy floor while a server starts, can
+    /// change on re-list without its catalog changing.
+    digest: Option<[u8; 32]>,
+    /// HTTP replies being written now. Replies on separate connections have no
+    /// delivery order, so overlapping ones clear the record instead of guessing.
+    writing: usize,
+    overlapped: bool,
+}
 
 /// The scoped catalog a tools/list is built from, in policy names and sorted, so
 /// a client's alias view and the base catalog it derives from compare equal.
@@ -9560,10 +9582,37 @@ fn listed_catalog_digest(
     hasher.finalize().into()
 }
 
-fn record_listed_tools(record: &ListedTools, digest: [u8; 32]) {
-    *record
+fn record_listed_tools(record: &ListedTools, digest: Option<[u8; 32]>) {
+    record
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(digest);
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .digest = digest;
+}
+
+/// Marks an HTTP tools/list reply as being written. Pair with `finish_listed_write`.
+fn begin_listed_write(record: &ListedTools) {
+    let mut record = record
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    record.writing += 1;
+    if record.writing > 1 {
+        record.overlapped = true;
+    }
+}
+
+fn finish_listed_write(record: &ListedTools, delivered: bool, digest: Option<[u8; 32]>) {
+    let mut record = record
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    record.writing = record.writing.saturating_sub(1);
+    if record.overlapped {
+        record.digest = None;
+    } else if delivered {
+        record.digest = digest;
+    }
+    if record.writing == 0 {
+        record.overlapped = false;
+    }
 }
 
 /// Whether the client behind `record` was last sent exactly this catalog.
@@ -9571,6 +9620,7 @@ fn listed_tools_current(record: &ListedTools, digest: &[u8; 32]) -> bool {
     record
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .digest
         .as_ref()
         == Some(digest)
 }
@@ -17136,18 +17186,23 @@ fn process_request_wire_inner(
                 profile_snapshot.is_some() || allowed.is_some(),
             ),
         );
-        let listed = listed_catalog_digest(
-            &router,
-            &cache_snapshot.tools,
-            allowed,
-            &unique_prefix_owners(&reg),
-        );
+        // Only a Full list is fixed by its catalog. Any other surface, including
+        // an Auto list held on the Lazy floor while a server starts, stays
+        // unrecorded so the publication that changes it still notifies.
+        let listed = (discovery == DiscoveryMode::Full).then(|| {
+            listed_catalog_digest(
+                &router,
+                &cache_snapshot.tools,
+                allowed,
+                &unique_prefix_owners(&reg),
+            )
+        });
         return Some(GatewayResponse {
             envelope,
             surface: Some(exposed),
             observation: None,
             tools_list: true,
-            listed_catalog: Some(listed),
+            listed_catalog: listed,
             listed_tools: None,
         });
     }
@@ -17175,6 +17230,16 @@ fn process_request_wire_inner(
 }
 
 fn write_stdio_response(stdio: &SessionState, response: &impl serde::Serialize) -> bool {
+    write_stdio_response_then(stdio, response, || {})
+}
+
+/// Writes a response and runs `written` before releasing stdout, so whatever it
+/// records follows the order replies reach the client.
+fn write_stdio_response_then(
+    stdio: &SessionState,
+    response: &impl serde::Serialize,
+    written: impl FnOnce(),
+) -> bool {
     let Some(stdout) = stdio.stdio_stdout() else {
         // No stdio face means there is nobody to answer. Treat it as a broken pipe
         // so the reader loop stops instead of grinding through requests it can
@@ -17186,7 +17251,11 @@ fn write_stdio_response(stdio: &SessionState, response: &impl serde::Serialize) 
         let mut out = stdout
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        write_json_line(&mut *out, response)
+        let result = write_json_line(&mut *out, response);
+        if result.is_ok() {
+            written();
+        }
+        result
     };
     if let Err(err) = result {
         stdio.mark_stdio_broken();
@@ -17244,7 +17313,7 @@ fn handle_stdio_request(state: GatewayState, req: Value, request_key: String) {
         // the first thing it reads. This is the second of the two conditions in
         // `stdio_may_speak`; the peer's post-handshake message is the other, and
         // either one may land last.
-        if write_stdio_response(&state.stdio_upstream, &resp) {
+        if write_stdio_response_then(&state.stdio_upstream, &resp, || resp.record_listed()) {
             resp.delivered();
             state.stdio_upstream.mark_stdio_responded();
             drain_stdio_deferred(&state.stdio_upstream);
@@ -17642,7 +17711,7 @@ struct HttpOut {
     /// Long-lived MCP SSE listen stream (chunked response).
     mcp_listen: Option<McpListen>,
     catalog_delivery: Option<(Arc<observation::Session>, observation::CatalogDelivery)>,
-    listed: Option<(ListedTools, [u8; 32])>,
+    listed: Option<(ListedTools, Option<[u8; 32]>)>,
     observation: Option<Arc<observation::Session>>,
 }
 
@@ -21248,13 +21317,16 @@ fn handle_connection(
             response = response.with_header(h);
         }
     }
+    if let Some((record, _)) = &out.listed {
+        begin_listed_write(record);
+    }
     let delivered = respond_http(request, response);
+    if let Some((record, digest)) = out.listed {
+        finish_listed_write(&record, delivered, digest);
+    }
     if delivered {
         if let Some((session, catalog)) = out.catalog_delivery {
             session.list_delivered(catalog);
-        }
-        if let Some((record, digest)) = out.listed {
-            record_listed_tools(&record, digest);
         }
     }
     if let Some(session) = out.observation {
@@ -24180,6 +24252,7 @@ mod tests {
             )
             .unwrap();
             reply.delivered();
+            reply.record_listed();
             let value = reply.into_value();
             let names: Vec<_> = value["result"]["tools"]
                 .as_array()
@@ -24256,6 +24329,119 @@ mod tests {
         assert!(methods(&listed).contains(&tools_changed));
     }
 
+    /// An Auto client whose small catalog belongs to a starting server gets the
+    /// Lazy floor. The catalog stays the same once the server settles, but the
+    /// client now qualifies for Full, so the publication must still notify.
+    #[test]
+    fn catalog_publication_notifies_an_auto_client_held_on_the_lazy_floor() {
+        let _env = DataDirTestEnv::new("publication-auto-lazy-floor");
+        let state = http_state(false);
+        let mut router = cache_router();
+        let catalog = Arc::new(CatalogSnapshot::new(router.shared_tools()));
+        *state.cached_tools.lock().unwrap() = Arc::clone(&catalog);
+        let release = hanging_supervisor(&mut router, "hang");
+        router.prepare_lazy_use("hang");
+        let live = Arc::new(router);
+        assert!(live.any_starting(|_| true));
+        *state.router.lock().unwrap() = Arc::clone(&live);
+        let sid = mint_mcp_session(&state, None).unwrap_or_else(|_| panic!("mint session"));
+        let list = || {
+            let _session = McpSessionGuard::enter(Some(sid.clone()));
+            let reply = process_request_wire(
+                &state,
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+                &SearchGuard::default(),
+                None,
+                None,
+                None,
+                None,
+                Some("claude-code"),
+                None,
+                DiscoveryMode::Lazy,
+            )
+            .unwrap();
+            reply.record_listed();
+            let value = reply.into_value();
+            value["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        };
+        let session = Arc::clone(&state.mcp_sessions.lock().unwrap()[&sid]);
+        let notified = || {
+            let empty = CatalogSnapshot::new(Vec::<Value>::new());
+            let reg = state.registry.lock().unwrap().clone();
+            session.outbound.lock().unwrap().clear();
+            notify_tools_changed_for_catalog_diff(
+                &state.stdio_upstream,
+                Some(&state.mcp_sessions),
+                &empty.tools,
+                &catalog.tools,
+                &live,
+                &live,
+                &reg,
+                None,
+            );
+            session.outbound.lock().unwrap().iter().any(|message| {
+                let message: Value = serde_json::from_str(&message.json).unwrap();
+                message["method"] == "notifications/tools/list_changed"
+            })
+        };
+
+        let names = list();
+        assert!(
+            names.iter().any(|name| name == "toolport_search_tools"),
+            "{names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name == "cache__cached"),
+            "{names:?}"
+        );
+        assert!(
+            notified(),
+            "the Lazy floor must not suppress the Full re-list"
+        );
+
+        drop(release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while live.any_starting(|_| true) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!live.any_starting(|_| true));
+        let names = list();
+        assert!(
+            names.iter().any(|name| name == "cache__cached"),
+            "{names:?}"
+        );
+        assert!(!notified(), "the Full list already carried this catalog");
+    }
+
+    #[test]
+    fn overlapping_http_list_writes_clear_the_record() {
+        let record = ListedTools::default();
+        let digest = |byte| Some([byte; 32]);
+        begin_listed_write(&record);
+        finish_listed_write(&record, true, digest(1));
+        assert!(listed_tools_current(&record, &[1; 32]));
+
+        // Replies on two connections have no delivery order.
+        begin_listed_write(&record);
+        begin_listed_write(&record);
+        finish_listed_write(&record, true, digest(2));
+        finish_listed_write(&record, true, digest(3));
+        assert!(!listed_tools_current(&record, &[2; 32]));
+        assert!(!listed_tools_current(&record, &[3; 32]));
+
+        // The next reply on its own is ordered again, and a failed one changes nothing.
+        begin_listed_write(&record);
+        finish_listed_write(&record, true, digest(4));
+        begin_listed_write(&record);
+        finish_listed_write(&record, false, digest(5));
+        assert!(listed_tools_current(&record, &[4; 32]));
+    }
+
     #[test]
     fn stdio_publication_skips_a_peer_already_sent_its_catalog() {
         let _env = DataDirTestEnv::new("stdio-publication-already-listed");
@@ -24276,7 +24462,12 @@ mod tests {
         let owners = HashMap::new();
         record_listed_tools(
             &state.stdio_upstream.listed_tools,
-            listed_catalog_digest(&router, &current.tools, None, &owners),
+            Some(listed_catalog_digest(
+                &router,
+                &current.tools,
+                None,
+                &owners,
+            )),
         );
         let empty = CatalogSnapshot::new(Vec::<Value>::new());
         let notify = |previous: &CatalogSnapshot| {
@@ -24295,7 +24486,7 @@ mod tests {
         assert_eq!(deferred_count(&state.stdio_upstream, method), 0);
         record_listed_tools(
             &state.stdio_upstream.listed_tools,
-            listed_catalog_digest(&router, &empty.tools, None, &owners),
+            Some(listed_catalog_digest(&router, &empty.tools, None, &owners)),
         );
         notify(&empty);
         assert_eq!(deferred_count(&state.stdio_upstream, method), 1);
