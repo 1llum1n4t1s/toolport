@@ -155,6 +155,76 @@ test("wire metadata tolerates non-JSON output without retaining it", () => {
   );
 });
 
+test("wire metadata keeps only protocol _meta for sessionless requests", () => {
+  const meta = {
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientInfo": { name: "c", version: "1" },
+    "vendor/session": "private",
+  };
+  for (const method of ["server/discover", "subscriptions/listen"]) {
+    const filters = method === "subscriptions/listen" ? { notifications: ["tools"] } : {};
+    assert.deepEqual(
+      wireMetadata(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method,
+          params: { ...filters, _meta: meta },
+        }),
+      ),
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method,
+        params: {
+          ...filters,
+          _meta: {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": { name: "c", version: "1" },
+          },
+        },
+      },
+    );
+  }
+  assert.equal(
+    wireMetadata('{"jsonrpc":"2.0","id":2,"method":"server/discover","params":"text"}')
+      .params,
+    undefined,
+  );
+});
+
+test("wire metadata keeps discover versions and integer error codes only", () => {
+  assert.deepEqual(
+    wireMetadata(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        result: {
+          supportedVersions: ["2026-07-28"],
+          capabilities: { tools: {} },
+          instructions: "private",
+        },
+      }),
+    ),
+    {
+      jsonrpc: "2.0",
+      id: 3,
+      method: undefined,
+      result: { supportedVersions: ["2026-07-28"], capabilities: { tools: {} } },
+    },
+  );
+  assert.equal(
+    wireMetadata('{"jsonrpc":"2.0","id":4,"error":{"code":-32601,"message":"private"}}')
+      .errorCode,
+    -32601,
+  );
+  const fractional = wireMetadata(
+    '{"jsonrpc":"2.0","id":5,"error":{"code":1.5,"message":"private"}}',
+  );
+  assert.equal(fractional.errorCode, undefined);
+  assert.ok(!JSON.stringify(fractional).includes("private"));
+});
+
 test("live cleanup kills the CLI and its grandchild", async () => {
   const child = spawn(
     process.execPath,
