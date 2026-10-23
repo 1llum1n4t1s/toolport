@@ -343,9 +343,11 @@ fn failing_server_joins_without_a_restart() {
         );
         std::thread::sleep(Duration::from_millis(250));
     }
-    // The catalog cache and the notification follow the router swap.
+    // The catalog cache and the notification follow the router swap. Read
+    // messages without re-listing: this client's last list predates the join, and
+    // a client already sent the new catalog is not told again.
     wait_for("tools/list_changed", Duration::from_secs(10), || {
-        let _ = gateway.tool_names();
+        let _ = gateway.status();
         gateway.list_changed_seen()
     });
     let names = gateway.tool_names();
