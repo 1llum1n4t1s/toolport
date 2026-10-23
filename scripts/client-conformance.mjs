@@ -89,7 +89,9 @@ async function baseline(profile) {
     // Claude Code's Auto lists a catalog this small in full. OpenClaw's Auto is
     // Full with refresh, so it gets the plain list and no helpers.
     const full = native || ["claude-code", "openclaw"].includes(profile.id);
-    const tools = await catalog(client, full ? "mock__echo" : "toolport_search_tools");
+    // Grok drops tool names containing `__`, so its view lists `server-tool`.
+    const echo = profile.id === "grok" ? "mock-echo" : "mock__echo";
+    const tools = await catalog(client, full ? echo : "toolport_search_tools");
     assert.equal(
       tools.some((t) => t.name === "toolport_call_tool"),
       !full || native,
@@ -101,7 +103,7 @@ async function baseline(profile) {
         limit: 1,
       });
       success(search);
-      assert(textOf(search).includes("mock__echo"));
+      assert(textOf(search).includes(echo));
     }
     const reply = await client.call(
       "mock__echo",

@@ -213,13 +213,20 @@ struct CombinedToolNameBudget {
     separator: usize,
 }
 
+/// The tool names a client accepts, when they are narrower than the default.
+struct ToolNameRule {
+    combined_budget: Option<CombinedToolNameBudget>,
+    /// The client rejects a tool name containing `__`; see [`crate::router::AliasRule`].
+    dashed: bool,
+}
+
 struct ClientDef {
     id: &'static str,
     name: &'static str,
     location: Option<locations::ClientLocation>,
     format: Format,
     discovery: DiscoveryCapabilities,
-    combined_tool_name_budget: Option<CombinedToolNameBudget>,
+    tool_names: Option<ToolNameRule>,
     uses_connectors: bool,
     /// Resolves the absolute config path for the current OS, if determinable.
     path: fn() -> Option<PathBuf>,
@@ -330,21 +337,34 @@ pub fn discovery_capabilities(id: &str) -> DiscoveryCapabilities {
 
 /// Client limits apply to the registered server key, profile separator overhead and alias.
 pub fn client_tool_name_limit(id: Option<&str>, registered_key: &str) -> usize {
+    client_alias_rule(id, registered_key).limit
+}
+
+/// How the gateway spells tool aliases for one client.
+pub fn client_alias_rule(id: Option<&str>, registered_key: &str) -> crate::router::AliasRule {
     let id = id.unwrap_or("");
     let id = id.strip_prefix("adapter:").unwrap_or(id);
     let id = id.strip_prefix("client:").unwrap_or(id);
     let id = id.split('@').next().unwrap_or(id);
-    defs()
+    let Some(rule) = defs()
         .into_iter()
         .find(|profile| profile.id == id)
-        .and_then(|profile| profile.combined_tool_name_budget)
-        .map(|combined| {
-            combined
-                .total
-                .saturating_sub(registered_key.len() + combined.separator)
-                .min(64)
-        })
-        .unwrap_or(64)
+        .and_then(|profile| profile.tool_names)
+    else {
+        return crate::router::AliasRule::default();
+    };
+    crate::router::AliasRule {
+        limit: rule
+            .combined_budget
+            .map(|combined| {
+                combined
+                    .total
+                    .saturating_sub(registered_key.len() + combined.separator)
+                    .min(64)
+            })
+            .unwrap_or(64),
+        dashed: rule.dashed,
+    }
 }
 
 /// The name Toolport uses for its own entry when installed into a client config.
@@ -2318,7 +2338,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "claude-desktop",
             discovery: discovery::capabilities("claude-desktop"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Claude Desktop",
             format: Format::JsonMcpServers,
             uses_connectors: true,
@@ -2329,9 +2349,12 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "cursor",
             discovery: discovery::capabilities("cursor"),
-            combined_tool_name_budget: Some(CombinedToolNameBudget {
-                total: 60,
-                separator: 0,
+            tool_names: Some(ToolNameRule {
+                combined_budget: Some(CombinedToolNameBudget {
+                    total: 60,
+                    separator: 0,
+                }),
+                dashed: false,
             }),
             name: "Cursor",
             format: Format::JsonMcpServers,
@@ -2343,7 +2366,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "droid",
             discovery: discovery::capabilities("droid"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Factory Droid",
             format: Format::JsonDroidMcpServers,
             uses_connectors: false,
@@ -2354,7 +2377,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "crush",
             discovery: discovery::capabilities("crush"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Crush",
             format: Format::JsonMcp,
             uses_connectors: false,
@@ -2365,7 +2388,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "anythingllm",
             discovery: discovery::capabilities("anythingllm"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "AnythingLLM",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2376,7 +2399,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "vscode",
             discovery: discovery::capabilities("vscode"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "VS Code",
             format: Format::JsonServers,
             uses_connectors: false,
@@ -2387,7 +2410,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "amp",
             discovery: discovery::capabilities("amp"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Amp",
             format: Format::JsonAmpMcpServers,
             uses_connectors: false,
@@ -2398,7 +2421,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "windsurf",
             discovery: discovery::capabilities("windsurf"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Devin Desktop (Cascade)",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2409,7 +2432,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "devin-cli",
             discovery: discovery::capabilities("devin-cli"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Devin Local / CLI",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2420,7 +2443,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "opencode",
             discovery: discovery::capabilities("opencode"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "OpenCode",
             format: Format::JsonOpenCodeMcp,
             uses_connectors: false,
@@ -2433,7 +2456,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "kilo-code",
             discovery: discovery::capabilities("kilo-code"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Kilo Code",
             format: Format::JsonOpenCodeMcp,
             uses_connectors: false,
@@ -2448,7 +2471,11 @@ fn defs() -> Vec<ClientDef> {
             // [mcp_servers.<name>] - same TOML shape as Codex.
             id: "grok",
             discovery: discovery::capabilities("grok"),
-            combined_tool_name_budget: None,
+            // Grok 1.0.67 drops a tool when `toolport__<tool>` splits ambiguously.
+            tool_names: Some(ToolNameRule {
+                combined_budget: None,
+                dashed: true,
+            }),
             name: "Grok Build",
             format: Format::TomlMcpServers,
             uses_connectors: false,
@@ -2461,7 +2488,7 @@ fn defs() -> Vec<ClientDef> {
             // `CODEX_HOME` (default ~/.codex).
             id: "codex",
             discovery: discovery::capabilities("codex"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Codex",
             format: Format::TomlMcpServers,
             uses_connectors: false,
@@ -2472,7 +2499,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "github-copilot-cli",
             discovery: discovery::capabilities("github-copilot-cli"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "GitHub Copilot CLI",
             format: Format::JsonCopilotMcpServers,
             uses_connectors: false,
@@ -2483,7 +2510,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "antigravity",
             discovery: discovery::capabilities("antigravity"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Antigravity",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2494,7 +2521,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "claude-code",
             discovery: discovery::capabilities("claude-code"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Claude Code",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2505,7 +2532,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "gemini-cli",
             discovery: discovery::capabilities("gemini-cli"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Gemini CLI",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2516,7 +2543,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "qwen-code",
             discovery: discovery::capabilities("qwen-code"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Qwen Code",
             format: Format::JsonQwenMcpServers,
             uses_connectors: false,
@@ -2527,7 +2554,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "junie",
             discovery: discovery::capabilities("junie"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "JetBrains Junie",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2540,7 +2567,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "cline",
             discovery: discovery::capabilities("cline"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Cline",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2551,7 +2578,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "roo-code",
             discovery: discovery::capabilities("roo-code"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Roo Code",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2562,7 +2589,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "warp",
             discovery: discovery::capabilities("warp"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Warp",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2575,7 +2602,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "amazon-q",
             discovery: discovery::capabilities("amazon-q"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Amazon Q",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2589,7 +2616,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "kiro",
             discovery: discovery::capabilities("kiro"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Kiro",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2602,7 +2629,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "auggie",
             discovery: discovery::capabilities("auggie"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Auggie CLI",
             format: Format::JsonAuggieMcpServers,
             uses_connectors: false,
@@ -2616,7 +2643,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "kimi-code",
             discovery: discovery::capabilities("kimi-code"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Kimi Code",
             format: Format::JsonKimiMcpServers,
             uses_connectors: false,
@@ -2627,7 +2654,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "deepseek-harness",
             discovery: discovery::capabilities("deepseek-harness"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "DeepSeek Harness",
             format: Format::YamlDshPatch,
             uses_connectors: false,
@@ -2640,7 +2667,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "reasonix",
             discovery: discovery::capabilities("reasonix"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Reasonix",
             format: Format::TomlReasonixPlugins,
             uses_connectors: false,
@@ -2653,7 +2680,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "codewhale",
             discovery: discovery::capabilities("codewhale"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Codewhale",
             format: Format::JsonCodewhaleServers,
             uses_connectors: false,
@@ -2665,7 +2692,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "openclaw",
             discovery: discovery::capabilities("openclaw"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "OpenClaw",
             format: Format::JsonOpenClawMcp,
             uses_connectors: false,
@@ -2677,7 +2704,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "openhands",
             discovery: discovery::capabilities("openhands"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "OpenHands",
             format: Format::JsonOpenHandsMcpServers,
             uses_connectors: false,
@@ -2690,7 +2717,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "nanobot",
             discovery: discovery::capabilities("nanobot"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "nanobot",
             format: Format::JsonNanobotMcp,
             uses_connectors: false,
@@ -2703,7 +2730,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "zcode",
             discovery: discovery::capabilities("zcode"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "ZCode",
             format: Format::JsonZCodeMcp,
             uses_connectors: false,
@@ -2714,7 +2741,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "command-code",
             discovery: discovery::capabilities("command-code"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Command Code",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2729,7 +2756,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "tabnine",
             discovery: discovery::capabilities("tabnine"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Tabnine Agent",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2743,7 +2770,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "zed",
             discovery: discovery::capabilities("zed"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Zed",
             format: Format::JsonContextServers,
             uses_connectors: false,
@@ -2757,7 +2784,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "lm-studio",
             discovery: discovery::capabilities("lm-studio"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "LM Studio",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2770,7 +2797,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "jan",
             discovery: discovery::capabilities("jan"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Jan",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2785,7 +2812,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "boltai",
             discovery: discovery::capabilities("boltai"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "BoltAI",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2796,7 +2823,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "pi",
             discovery: discovery::capabilities("pi"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Pi",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2810,7 +2837,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "omp",
             discovery: discovery::capabilities("omp"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Oh My Pi",
             format: Format::JsonMcpServers,
             uses_connectors: false,
@@ -2823,7 +2850,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "goose",
             discovery: discovery::capabilities("goose"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Goose",
             format: Format::YamlExtensions,
             uses_connectors: false,
@@ -2834,7 +2861,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "hermes",
             discovery: discovery::capabilities("hermes"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Hermes",
             format: Format::YamlMcpServers,
             uses_connectors: false,
@@ -2845,7 +2872,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "continue",
             discovery: discovery::capabilities("continue"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Continue",
             format: Format::YamlMcpServersList,
             uses_connectors: false,
@@ -2856,7 +2883,7 @@ fn defs() -> Vec<ClientDef> {
             location: None,
             id: "witsy",
             discovery: discovery::capabilities("witsy"),
-            combined_tool_name_budget: None,
+            tool_names: None,
             name: "Witsy",
             format: Format::JsonMcpServers,
             uses_connectors: false,

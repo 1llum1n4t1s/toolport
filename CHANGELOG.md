@@ -6,6 +6,13 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ## [Unreleased]
 
+### Fixed
+
+- Grok Build keeps every tool in Full discovery. Grok drops any tool whose name
+  contains `__`, so its tools are listed as `server-tool` instead of
+  `server__tool`, and `toolport_call_tool` accepts either spelling. Access,
+  approvals, pins and quarantine still apply to the same tool.
+
 ## [2.3.0] - 2026-10-20
 
 Toolport 2.3 gives Servers, Clients and Skills a consistent layout, clearer
