@@ -8829,12 +8829,26 @@ fn owner_of_exposed_tool(
     if let Some(server) = router.and_then(|r| r.tool_owner(name)) {
         return Some(server.to_string());
     }
-    let prefix = match grouped_help_target(name) {
+    if let Some(target) = grouped_help_target(name) {
         // A grouped `help_<server>` browse tool: owned by the server it targets.
-        Some(target) => target,
-        None => split_namespaced(name).map(|(prefix, _)| prefix)?,
-    };
-    owners.get(&prefix.to_lowercase()).cloned()
+        return owners.get(&target.to_lowercase()).cloned();
+    }
+    // Try every separator rather than only the first: a server id holding `__`
+    // (`acme__prod`) is `acme-prod-` in a dashed view and must not resolve to
+    // `acme`. A name that two registry prefixes fit is ambiguous.
+    let name = name.to_lowercase();
+    let separator = if name.contains("__") { "__" } else { "-" };
+    let mut owner = None;
+    for (at, _) in name.match_indices(separator) {
+        let Some(id) = owners.get(&name[..at].replace('-', "__")) else {
+            continue;
+        };
+        if owner.is_some_and(|owner| owner != id) {
+            return None;
+        }
+        owner = Some(id);
+    }
+    owner.cloned()
 }
 
 /// Fail-closed merge of every profile's `tool_scope` for the shared HTTP-bridge router.
@@ -30630,6 +30644,28 @@ mod tests {
         assert!(names.contains(&"vercel__deploy".to_string()));
         assert!(names.contains(&"toolport_search_tools".to_string()));
         assert!(!names.contains(&"resend__send".to_string()));
+    }
+
+    #[test]
+    fn cold_owner_matches_whole_server_prefixes_in_both_spellings() {
+        let mut reg = Registry::default();
+        reg.servers.push(stub_server("acme--prod", "Acme prod"));
+        reg.servers.push(stub_server("github", "GitHub"));
+        let owners = unique_prefix_owners(&reg);
+        let cold = |n: &str| owner_of_exposed_tool(None, &owners, n);
+        assert_eq!(cold("acme-prod-list").as_deref(), Some("acme--prod"));
+        assert_eq!(cold("acme__prod__list").as_deref(), Some("acme--prod"));
+        assert_eq!(cold("github-create_issue").as_deref(), Some("github"));
+        assert_eq!(cold("acme-list"), None);
+        assert_eq!(cold("list"), None);
+
+        // Two registry prefixes fit: ambiguous, so it fails closed.
+        reg.servers.push(stub_server("acme", "Acme"));
+        let owners = unique_prefix_owners(&reg);
+        let cold = |n: &str| owner_of_exposed_tool(None, &owners, n);
+        assert_eq!(cold("acme-prod-list"), None);
+        assert_eq!(cold("acme__prod__list"), None);
+        assert_eq!(cold("acme-list").as_deref(), Some("acme"));
     }
 
     #[test]

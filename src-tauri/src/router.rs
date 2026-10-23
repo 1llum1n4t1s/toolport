@@ -2255,8 +2255,14 @@ impl Router {
                         None,
                         view.alias_rule,
                     ),
+                    // A reserved override keeps its `toolport_*` policy binding but
+                    // stays exposed under its namespaced name, never the gateway's.
                     None => bounded_alias(
-                        &canonical,
+                        if canonical.starts_with("toolport_") {
+                            &candidate.exposed
+                        } else {
+                            &canonical
+                        },
                         &(&candidate.server, &candidate.original),
                         Some(&candidate.server),
                         view.alias_rule,
@@ -8649,6 +8655,54 @@ for line in sys.stdin:
         next.requarantine(BTreeSet::from(["atlassian__t39".to_string()]));
         assert!(next.route_of("atlassian__t39").is_none());
         assert!(next.is_blocked("atlassian__t39"));
+    }
+
+    #[test]
+    fn dashed_view_keeps_a_restored_reserved_override_namespaced() {
+        let with_override = |n| {
+            let mut router = Router::new();
+            router.set_overrides(HashMap::from([(
+                "atlassian".to_string(),
+                HashMap::from([(
+                    "t39".to_string(),
+                    ToolOverride {
+                        name: Some("toolport_call_tool".into()),
+                        ..Default::default()
+                    },
+                )]),
+            )]));
+            router.add(catalog_server("atlassian", n));
+            router
+        };
+        let previous = with_override(40);
+        let mut guarded = with_override(3);
+        guarded.adopt_restored_routes(&previous, &previous.aggregated_tools());
+        assert_eq!(
+            guarded.route_of("atlassian__t39"),
+            Some(("atlassian", "t39"))
+        );
+        let grok = guarded.with_client_tool_view(
+            HashMap::new(),
+            AliasRule {
+                limit: 64,
+                dashed: true,
+            },
+        );
+        assert_eq!(grok.route_of("atlassian-t39"), Some(("atlassian", "t39")));
+        assert!(grok.route_of("toolport_call_tool").is_none());
+        let tool = grok
+            .aggregated_tools()
+            .into_iter()
+            .find(|tool| tool["name"] == "atlassian-t39")
+            .unwrap();
+        assert!(!grok
+            .aggregated_tools()
+            .iter()
+            .any(|tool| tool["name"] == "toolport_call_tool"));
+        assert_eq!(
+            grok.policy_definition(&tool)["name"],
+            json!("toolport_call_tool")
+        );
     }
 
     #[test]
