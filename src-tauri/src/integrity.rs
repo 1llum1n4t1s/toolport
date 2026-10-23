@@ -5088,9 +5088,17 @@ pub fn compare_catalogs(server: &str, previous: Option<&[Value]>, current: &[Val
     });
     let now = by_name(current);
     let mut events = Vec::new();
-    let mut scan_names = BTreeSet::new();
-    for (name, t) in &now {
+    // Compare and scan every distinct definition, not only the one `by_name` keeps, so a
+    // drifted or poisoned duplicate cannot hide behind a benign definition of the same name.
+    let mut seen = BTreeSet::new();
+    for t in current {
+        let Some(name) = t.get("name").and_then(Value::as_str) else {
+            continue;
+        };
         let pin = pin_with_source(t, None);
+        if !seen.insert((name, pin.fp.clone())) {
+            continue;
+        }
         let scan = match &before {
             Some(pins) => match pins.get(name) {
                 Some(old) if old.fp != pin.fp => {
@@ -5123,25 +5131,12 @@ pub fn compare_catalogs(server: &str, previous: Option<&[Value]>, current: &[Val
             }
         };
         if scan {
-            scan_names.insert(name.as_str());
-        }
-    }
-    // Scan every definition carrying a scanned name, not only the one drift keeps, so a
-    // poisoned duplicate cannot hide behind a benign definition of the same name.
-    let mut scanned = BTreeSet::new();
-    for t in current {
-        let Some(name) = t.get("name").and_then(Value::as_str) else {
-            continue;
-        };
-        let pin = pin_with_source(t, None);
-        if !scan_names.contains(name) || !scanned.insert((name, pin.fp.clone())) {
-            continue;
-        }
-        let (hits, score, evidence) = scan_definition_scored(t);
-        if !hits.is_empty() {
-            let mut finding = poison_event(server, name, &hits, score, evidence.as_deref());
-            finding["new_fp"] = json!(pin.fp);
-            events.push(finding);
+            let (hits, score, evidence) = scan_definition_scored(t);
+            if !hits.is_empty() {
+                let mut finding = poison_event(server, name, &hits, score, evidence.as_deref());
+                finding["new_fp"] = json!(pin.fp);
+                events.push(finding);
+            }
         }
     }
     if let Some(pins) = &before {
@@ -10666,6 +10661,26 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["type"], "tool_poison_flag");
         assert_eq!(events[0]["new_fp"], pin_of(&poisoned).fp);
+
+        // A duplicate stays visible when the kept definition still matches its pin.
+        let events = compare_catalogs(
+            "srv",
+            Some(std::slice::from_ref(&benign)),
+            &[poisoned.clone(), benign.clone()],
+        );
+        let types: Vec<_> = events.iter().map(|e| e["type"].clone()).collect();
+        assert!(
+            events
+                .iter()
+                .any(|e| e["change"] == "changed" && e["tool"] == "lookup"),
+            "drifted duplicate must be reported: {events:?}"
+        );
+        let flag = events
+            .iter()
+            .find(|e| e["type"] == "tool_poison_flag")
+            .unwrap_or_else(|| panic!("poisoned duplicate must be flagged: {types:?}"));
+        assert_eq!(flag["new_fp"], pin_of(&poisoned).fp);
+        assert!(!events.iter().any(|e| e["change"] == "removed"));
     }
 
     #[test]
