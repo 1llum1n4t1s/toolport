@@ -209,6 +209,10 @@ required-features = ["test-support"]
 name = "savings-report"
 required-features = ["test-support"]
 
+[[example]]
+name = "integrity-report"
+required-features = ["test-support"]
+
 # Transformer kernels must remain usable in debug gateways and parity tests.
 # Keep application code debuggable; these profiles do not change assertions.
 [profile.dev.package.candle-core]
