@@ -21,8 +21,12 @@ gets a clearly labeled synthetic protocol baseline, not a fabricated handshake.
 Gemini and Qwen's health commands use `mcp-test-client`; their advertised
 capabilities do not establish the model-session client's capabilities.
 
-The captured profiles cover Claude Code, Codex, Cursor, OpenCode, Gemini CLI,
-Qwen Code, Kilo Code and Hermes. Health commands may only initialize or ping, so their
+Profiles with a captured `initialize` are replayed: Claude Code, Codex, Cursor,
+OpenCode, Gemini CLI, Qwen Code, Kilo Code, Hermes, Factory Droid, Grok Build,
+Continue, Kimi Code, Oh My Pi, Pi, Junie and the 2026-10-18 captures. Clients
+captured only through sessionless `server/discover` (Copilot CLI, Crush, Goose,
+Devin CLI, and Claude Code since 2.1.309) keep their record in `discover` and get
+the synthetic baseline. Health commands may only initialize or ping, so their
 actual follow-up method sequence is replayed separately from synthetic calls.
 Cursor's health command opened two sessions; the profile represents one session.
 Codex has separate unauthenticated CLI startup and app-server status captures. A two-client check also
@@ -76,35 +80,82 @@ npm run test:client-conformance:live -- opencode /usr/local/bin/opencode /tmp/to
 npm run test:client-conformance:live -- codex /usr/bin/codex /tmp/toolport-codex-evidence
 ```
 
-The driver supports the eight captured clients and Copilot CLI. Each run creates a
-fresh HOME, XDG dirs, working directory and Toolport data/registry. It passes only
-OS/executable locators, writes only its disposable client config, and never copies
-auth from a real home. On macOS, Claude Code reads the login Keychain regardless
-of HOME, so a disposable HOME alone does not isolate its authentication. Use an
-isolated OS account/session with no saved Claude credentials for that probe.
+The driver's `clients` table lists every supported client with its disposable
+config and command. Add `--auto` to keep the client's Auto discovery mode (the
+default is Full, so proxied tools are listed) and `--probe-list-changed` to send
+one `notifications/tools/list_changed` 500 ms after the first `tools/list` reply.
+Each run creates a fresh HOME, XDG dirs, working directory and Toolport
+data/registry. It passes only OS/executable locators, writes only its disposable
+client config, and never copies auth from a real home.
+
+Some clients connect to MCP only inside a session. The `acp` driver sends ACP
+`initialize` and `session/new` and never a prompt, unless the client lists tools
+lazily (Goose, Kimi Code); then it sends one prompt. Clients that need a provider
+before they start a session (Crush, Goose, Continue, Kimi Code, Copilot CLI in
+offline BYOK mode, Junie) are pointed at a loopback OpenAI-compatible mock that
+answers "ok". No request leaves the machine and no model service is called.
+`model.jsonl` records only request paths and the tool names offered to the model.
+Pi 1.4.0 has a built-in MCP extension; `TOOLPORT_LIVE_PI_PACKAGE` can instead load
+an existing local `pi-mcp-adapter` package path.
+
+On macOS, Claude Code reads the login Keychain regardless of HOME, so a disposable
+HOME alone does not isolate its authentication. Use an isolated OS account/session with no saved Claude credentials for that probe.
 Gemini's disposable config disables folder trust so its
 health command can connect. Other approval/auth requirements are reported as
 uncaptured, not bypassed. Codex uses app-server MCP status, without a model turn.
-Copilot's `mcp list` may inspect config without opening a connection; that produces
-no handshake and a failing live result.
+Copilot's `mcp list` inspects config without opening a connection, so the driver
+runs an offline BYOK prompt against the loopback mock instead.
 
 Run CLIs that touch session services in an isolated desktop session. Use an
 absolute executable that does not depend on a user GUI launcher. Builds and client
 installs belong on a Linux build host, in a task-local prefix. No global installation or real
 client config mutation is needed. The live driver never installs a client.
 
-`traffic.jsonl` contains the offered handshake and message method/ID metadata,
-not environment values, auth headers or tool argument/result bodies.
+`traffic.jsonl` contains the offered handshake (`initialize` params, or the
+`io.modelcontextprotocol/*` `_meta` of `server/discover` and
+`subscriptions/listen`), message method/ID metadata and error codes, not
+environment values, auth headers or tool argument/result bodies.
+`gateway-stderr.log` holds the gateway's own stderr for that run.
 `summary.json` reports whether a handshake actually occurred. `status.txt` is
 bounded CLI health output from the disposable environment; the macOS Keychain
 caveat above applies.
 Cleanup targets only spawned children and daemons published in that fresh data
 folder. All requests and live commands have deadlines.
 
+## Profile fields
+
+`id`, `evidence`, `initialize`, `initialMethods`, `listChanged`, `source`,
+`observedSessionKind` and `variants` keep their original meaning. `initialize` and
+`initialMethods` are the latest captured legacy handshake and one session's
+startup methods; the offline suite replays them. Claude Code's `initialize` is
+from 2.1.286, its last version that sent one.
+
+| Field           | Meaning                                                                                                                                                                                                                                         |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `clientVersion` | Client version the newest evidence was recorded against, or `null` (branch-pinned source review, or no version known).                                                                                                                          |
+| `recordedAt`    | Date of the newest evidence for this profile. The file-level `recordedAt` is the original 2026-10-09 round.                                                                                                                                     |
+| `evidenceLevel` | `live capture`, `partial capture` (handshake seen, client stopped before listing tools), `source review` or `documentation only`.                                                                                                               |
+| `handshake`     | What the newest capture opened with: `initialize` or sessionless `server/discover` (protocol 2026-07-28).                                                                                                                                       |
+| `discover`      | The captured `server/discover` request metadata for sessionless clients.                                                                                                                                                                        |
+| `captures`      | Each live run of this round: kind, discovery mode, protocol version, clientInfo, capabilities, client methods, server-to-client requests, `subscriptions` filters, an example `modelToolName` and any `listChangedObserved`.                    |
+| `captureNote`   | Why a partial capture stopped.                                                                                                                                                                                                                  |
+| `uncaptured`    | A capture attempt that produced no MCP traffic, with the version and reason (usually a required login).                                                                                                                                         |
+| `sourceReview`  | Repository, version and commit of the pinned source review.                                                                                                                                                                                     |
+| `listChanged`   | Adds `source` (pinned permalink) and `observed`: `relisted` and `triggers` (`gateway` for Toolport's own notification, `injected` for the probe). Only a long-lived session's "no" is recorded; a health command exits before it could re-list. |
+| `features`      | `roots`, `sampling`, `elicitation`, `resources` and `prompts`, each with a `status` and optional `source`, `methods`, `observed` and `detail`.                                                                                                  |
+
+Feature `status` values: `implemented` (pinned source has a handler), `declared` (offered
+in a captured handshake, handler not reviewed), `not declared` (absent from the
+captured handshake of that version), `used` (source or captured traffic calls the
+methods), `not observed` (captured traffic did not call them; clients may list
+lazily), `not found in the inspected source` and `unverified`. "Not found" and
+"not observed" are not "unsupported". A handshake capability also records
+`handshake: declared | not declared` beside a source status.
+
 ## Verified notification evidence
 
-Checked 2026-10-09. Installed versions and current source may differ; these facts
-establish a supported behavior, not a latency guarantee for every release.
+Checked 2026-10-09 unless a row gives its own date. Installed versions and current
+source may differ; these facts establish a supported behavior, not a latency guarantee for every release.
 
 | Client           | Evidence                                                                                                                                                  | Refresh                                                                           |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -121,6 +172,15 @@ establish a supported behavior, not a latency guarantee for every release.
 | OpenClaw         | OpenClaw 2026.10.4 `mcp add` probe against toolport-gateway 2.2.0, checked 2026-10-18                                                                     | Refreshes its catalog on tools/list_changed (source)                              |
 | OpenHands        | OpenHands CLI 1.16.0 `--headless` startup against toolport-gateway 2.2.0, checked 2026-10-18                                                              | `server/discover`, no `subscriptions/listen`; tools stay as first listed          |
 | nanobot          | nanobot-ai 0.3.5 agent startup against toolport-gateway 2.2.0, checked 2026-10-18                                                                         | `initialize` 2025-11-25, tools, resources and prompts listed; no refresh handler  |
+| Copilot CLI      | Copilot CLI 1.0.103 offline BYOK run against a loopback mock model, checked 2026-10-22                                                                    | `server/discover`, `subscriptions/listen`; re-listed on gateway notification      |
+| Pi               | Pi 1.4.0 RPC startup and built-in MCP source, checked 2026-10-22                                                                                          | Re-lists tools on each notification (source and capture)                          |
+| Oh My Pi         | omp 18.12.6 RPC and ACP startup and pinned source, checked 2026-10-22                                                                                     | Re-lists tools on each notification (source and capture)                          |
+| Kilo Code        | Kilo 7.8.15 health command and pinned source, checked 2026-10-22                                                                                          | Re-lists immediately, same handler as OpenCode (source and capture)               |
+| Hermes           | Hermes 0.22.4 `mcp test` and pinned source, checked 2026-10-22                                                                                            | Background tools re-list on each notification (source)                            |
+| Goose            | Goose 1.55.0 ACP session against a loopback mock model, checked 2026-10-22                                                                                | Handler refreshes on next request, but no `subscriptions/listen`, so no channel   |
+| Crush            | Crush 0.98.1 run against a loopback mock model, checked 2026-10-22                                                                                        | `subscriptions/listen`; source refreshes tools, prompts and resources             |
+| Kimi Code        | Kimi Code 2.3.0 ACP session against a loopback mock model, checked 2026-10-22                                                                             | Lists tools once; no re-list in a live session (source and capture)               |
+| Continue CLI     | `cn` 1.5.47 prompt against a loopback mock model, checked 2026-10-22                                                                                      | Lists tools and prompts once; no notification handler (source)                    |
 
 Refresh support does not establish native tool search. OpenCode, Gemini, Cline,
 Zed and DeepSeek Harness retain Auto Lazy and their conservative five-second cold Full budget.
