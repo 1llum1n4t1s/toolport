@@ -157,31 +157,94 @@ pub fn sanitize_segment(s: &str) -> String {
         .collect()
 }
 
+/// How one client view spells tool aliases.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AliasRule {
+    /// The longest alias the client accepts.
+    pub limit: usize,
+    /// Spell each `__` as `-`. Grok Build qualifies tools as `<server>__<tool>`
+    /// and drops any tool whose own name contains `__` or starts with `_`.
+    pub dashed: bool,
+}
+
+impl Default for AliasRule {
+    fn default() -> Self {
+        AliasRule {
+            limit: 64,
+            dashed: false,
+        }
+    }
+}
+
+impl From<usize> for AliasRule {
+    fn from(limit: usize) -> Self {
+        AliasRule {
+            limit,
+            ..AliasRule::default()
+        }
+    }
+}
+
+impl AliasRule {
+    /// `__` becomes `-`, so a dashed name never holds `__`. Exposed names are
+    /// sanitized and never contain `-`, so this is reversible and the first `-`
+    /// still ends the server prefix. A leading `_` becomes `-` too; the caller's
+    /// collision check covers the rare name that then meets another.
+    fn spell(self, name: &str) -> String {
+        if !self.dashed {
+            return name.to_string();
+        }
+        let dashed = name.replace("__", "-");
+        match dashed.strip_prefix('_') {
+            Some(rest) => format!("-{rest}"),
+            None => dashed,
+        }
+    }
+
+    fn separator(self) -> &'static str {
+        if self.dashed {
+            "-"
+        } else {
+            "__"
+        }
+    }
+}
+
 /// Keep the established short spelling; hash the raw identity for long aliases.
 fn bounded_alias(
     name: &str,
     identity: &impl serde::Serialize,
     namespace: Option<&str>,
-    limit: usize,
+    rule: impl Into<AliasRule>,
 ) -> String {
+    let rule = rule.into();
+    let limit = rule.limit;
+    let name = rule.spell(name);
     if name.len() <= limit {
-        return name.to_string();
+        return name;
     }
     let hash = content_digest(identity);
     let suffix: String = hash[..6].iter().map(|byte| format!("{byte:02x}")).collect();
-    let namespace = namespace.map(sanitize_segment);
+    let namespace = namespace.map(|server| rule.spell(&sanitize_segment(server)));
+    let separator = rule.separator();
     let parts = namespace.as_deref().and_then(|server| {
-        name.strip_prefix(&format!("{server}__"))
+        name.strip_prefix(&format!("{server}{separator}"))
             .map(|tool| (server, tool))
     });
     let prefix_budget = limit - 13;
-    let prefix = if let Some((server, tool)) = parts {
+    let mut prefix = if let Some((server, tool)) = parts {
         let server = &server[..server.len().min(24).min(prefix_budget - 2)];
-        let tool = &tool[..tool.len().min(prefix_budget - server.len() - 2)];
-        format!("{server}__{tool}")
+        let tool = &tool[..tool
+            .len()
+            .min(prefix_budget - server.len() - separator.len())];
+        format!("{server}{separator}{tool}")
     } else {
         name[..prefix_budget].to_string()
     };
+    if rule.dashed {
+        // A cut can leave `_` before the `_` that joins the suffix.
+        prefix.truncate(prefix.trim_end_matches('_').len());
+    }
     format!("{prefix}_{suffix}")
 }
 
@@ -1680,7 +1743,7 @@ pub struct Router {
     legacy_names: HashMap<String, String>,
     tool_owners: HashMap<String, String>,
     model_hidden: HashSet<String>,
-    alias_limit: Option<usize>,
+    alias_rule: AliasRule,
     /// What may be exposed; applied as each server is added.
     policy: ToolPolicy,
     /// Per-tool exposure overrides (rename / re-describe), keyed by server id then ORIGINAL
@@ -2007,6 +2070,27 @@ impl Router {
             .map(|(s, t)| (s.as_str(), t.as_str()))
     }
 
+    /// In a dashed view, the alias that a canonical `server__tool` name, or the
+    /// client-qualified `<key>__<alias>` a Grok model sees, stands for. Both name the
+    /// same tool and still pass every policy check under the returned alias.
+    pub fn client_spelling(&self, name: &str) -> Option<String> {
+        let known =
+            |alias: &str| self.routes.contains_key(alias) || self.blocked.contains_key(alias);
+        if !self.alias_rule.dashed || known(name) {
+            return None;
+        }
+        let resolve = |name: &str| {
+            if known(name) {
+                return Some(name.to_string());
+            }
+            self.policy_names
+                .iter()
+                .find(|(_, policy)| policy.as_str() == name)
+                .map(|(alias, _)| alias.clone())
+        };
+        resolve(name).or_else(|| name.split_once("__").and_then(|(_, rest)| resolve(rest)))
+    }
+
     pub fn tool_owner(&self, name: &str) -> Option<&str> {
         self.tool_owners
             .get(name)
@@ -2137,16 +2221,20 @@ impl Router {
         view
     }
 
-    /// Reuse canonical policy bindings while publishing aliases for one client budget.
+    /// Reuse canonical policy bindings while publishing aliases for one client's rule.
     pub fn with_client_tool_view(
         &self,
         allow: HashMap<String, HashSet<String>>,
-        limit: usize,
+        rule: impl Into<AliasRule>,
     ) -> Self {
+        let rule = rule.into();
         let mut view = self.clone();
         view.policy.allow = allow;
-        view.alias_limit = Some(limit.clamp(16, 64));
-        if self.alias_limit.unwrap_or(64) != view.alias_limit.unwrap() {
+        view.alias_rule = AliasRule {
+            limit: rule.limit.clamp(16, 64),
+            ..rule
+        };
+        if self.alias_rule != view.alias_rule {
             view.canonical_policy = self.policy_by_original.clone();
             for candidate in &mut view.restored_candidates {
                 let canonical = candidate
@@ -2165,13 +2253,19 @@ impl Router {
                         &canonical,
                         &(&candidate.server, &candidate.original, name),
                         None,
-                        view.alias_limit.unwrap(),
+                        view.alias_rule,
                     ),
+                    // A reserved override keeps its `toolport_*` policy binding but
+                    // stays exposed under its namespaced name, never the gateway's.
                     None => bounded_alias(
-                        &canonical,
+                        if canonical.starts_with("toolport_") {
+                            &candidate.exposed
+                        } else {
+                            &canonical
+                        },
                         &(&candidate.server, &candidate.original),
                         Some(&candidate.server),
-                        view.alias_limit.unwrap(),
+                        view.alias_rule,
                     ),
                 };
                 candidate.policy_name = Some(canonical);
@@ -2345,16 +2439,13 @@ impl Router {
             let exposed = match ov_name {
                 Some(new) => {
                     let legacy = sanitize_segment(&new);
-                    let cand = bounded_alias(
-                        &legacy,
-                        &(server_id, orig, &new),
-                        None,
-                        self.alias_limit.unwrap_or(64),
-                    );
+                    let cand =
+                        bounded_alias(&legacy, &(server_id, orig, &new), None, self.alias_rule);
                     // The gateway owns the toolport_* helper/core namespace.
                     // Keep the original alias when an override would shadow it.
                     if !cand.is_empty()
                         && !cand.starts_with("toolport_")
+                        && !legacy.starts_with("toolport_")
                         && !self.legacy_seen.contains(&legacy)
                         && self.seen.insert(cand.clone())
                     {
@@ -3132,7 +3223,7 @@ impl Router {
         order.sort_by_key(|&i| {
             legacy[i]
                 .as_ref()
-                .is_some_and(|name| name.len() > self.alias_limit.unwrap_or(64))
+                .is_some_and(|name| self.alias_rule.spell(name).len() > self.alias_rule.limit)
         });
         for i in order {
             if let (Some(orig), Some(legacy)) = (names[i], legacy[i].as_ref()) {
@@ -3160,12 +3251,7 @@ impl Router {
     }
 
     fn exposed_name(&mut self, server_id: &str, tool: &str, legacy: &str) -> String {
-        let mut name = bounded_alias(
-            legacy,
-            &(server_id, tool),
-            Some(server_id),
-            self.alias_limit.unwrap_or(64),
-        );
+        let mut name = bounded_alias(legacy, &(server_id, tool), Some(server_id), self.alias_rule);
         let mut attempt = 0u64;
         while !self.seen.insert(name.clone()) {
             attempt += 1;
@@ -3174,7 +3260,7 @@ impl Router {
                 &candidate,
                 &(server_id, tool, attempt),
                 Some(server_id),
-                self.alias_limit.unwrap_or(64),
+                self.alias_rule,
             );
         }
         if name != legacy {
@@ -7043,6 +7129,137 @@ for line in sys.stdin:
         assert_eq!(router.routes, build(reversed).routes);
     }
 
+    /// Grok Build drops a tool whose name holds `__` or starts with `_`. Its
+    /// dashed view must still route each alias to the same tool and policy identity.
+    #[test]
+    fn dashed_view_spells_grok_safe_aliases_with_canonical_policy() {
+        let _data = crate::registry::DataDirTestEnv::new("dashed_view_canonical_policy");
+        struct Fixture(Vec<Value>, Arc<AtomicU32>);
+        impl Transport for Fixture {
+            fn request(&mut self, method: &str, _: Value) -> Result<Value, TransportError> {
+                match method {
+                    "initialize" => Ok(json!({"protocolVersion":"2025-06-18"})),
+                    "tools/list" => Ok(json!({"tools": self.0})),
+                    "tools/call" => {
+                        self.1.fetch_add(1, Ordering::SeqCst);
+                        Ok(json!({"content":[{"type":"text","text":"dispatched"}]}))
+                    }
+                    other => Err(TransportError::Fatal(format!("unexpected {other}"))),
+                }
+            }
+            fn notify(&mut self, _: &str, _: Value) -> Result<(), TransportError> {
+                Ok(())
+            }
+        }
+        let calls = Arc::new(AtomicU32::new(0));
+        let long = format!("read_{}", "item__".repeat(12));
+        let originals = [
+            "add",
+            "echo_meta",
+            "a__b",
+            "a_b",
+            "_lead",
+            "x-",
+            long.as_str(),
+            "private_export",
+        ];
+        let tools: Vec<Value> = originals.iter().map(|name| json!({"name": name})).collect();
+        let base_for = |tools: Vec<Value>| {
+            let mut base = Router::new();
+            base.set_overrides(HashMap::from([(
+                "my__files".to_string(),
+                HashMap::from([(
+                    "private_export".to_string(),
+                    ToolOverride {
+                        name: Some("my__export".into()),
+                        ..Default::default()
+                    },
+                )]),
+            )]));
+            base.add(
+                DownstreamServer::connect(
+                    "my__files".into(),
+                    Box::new(Fixture(tools, Arc::clone(&calls))),
+                )
+                .unwrap(),
+            );
+            base
+        };
+        let rule = AliasRule {
+            limit: 64,
+            dashed: true,
+        };
+        let mut base = base_for(tools.clone());
+        let grok = base.with_client_tool_view(HashMap::new(), rule);
+        let listed: Vec<String> = grok
+            .aggregated_tools()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(listed.len(), originals.len());
+        for name in &listed {
+            assert!(!name.contains("__") && !name.starts_with('_'), "{name}");
+            assert!(name.len() <= 64, "{name}");
+            assert!(
+                name.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            grok.exposed_tool_name("my__files", "add"),
+            Some("my-files-add")
+        );
+        assert_eq!(
+            grok.exposed_tool_name("my__files", "a__b"),
+            Some("my-files-a-b")
+        );
+        assert_eq!(
+            grok.exposed_tool_name("my__files", "a_b"),
+            Some("my-files-a_b")
+        );
+        assert_eq!(
+            grok.exposed_tool_name("my__files", "private_export"),
+            Some("my-export")
+        );
+        let policy_name = |router: &Router, exposed: &str| {
+            let tool = router
+                .aggregated_tools()
+                .into_iter()
+                .find(|tool| tool["name"] == exposed)
+                .unwrap();
+            router.policy_definition(&tool)["name"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        for original in originals {
+            let alias = grok.exposed_tool_name("my__files", original).unwrap();
+            let canonical = base.exposed_tool_name("my__files", original).unwrap();
+            assert_eq!(grok.route_of(alias), Some(("my__files", original)));
+            assert_eq!(policy_name(&grok, alias), policy_name(&base, canonical));
+        }
+        let mut reversed = tools;
+        reversed.reverse();
+        assert_eq!(
+            grok.routes,
+            base_for(reversed)
+                .with_client_tool_view(HashMap::new(), rule)
+                .routes
+        );
+
+        // Quarantine binds the canonical identity in every view.
+        base.requarantine(BTreeSet::from(["my__files__add".to_string()]));
+        assert!(grok
+            .recheck_live_policy(&base, DispatchTarget::Tool("my-files-add"))
+            .is_err());
+        let fresh = base.with_client_tool_view(HashMap::new(), rule);
+        assert!(fresh.exposed_tool_name("my__files", "add").is_none());
+        assert!(fresh.route_call("my-files-add", json!({})).is_err());
+        assert!(fresh.route_call("my-files-echo_meta", json!({})).is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
     /// A rename accepted in the full-length view can collide in a shorter client
     /// view and fall back to the base alias. Quarantine, pins and approvals must
     /// still bind the tool's canonical identity there (review on #1126).
@@ -8438,6 +8655,54 @@ for line in sys.stdin:
         next.requarantine(BTreeSet::from(["atlassian__t39".to_string()]));
         assert!(next.route_of("atlassian__t39").is_none());
         assert!(next.is_blocked("atlassian__t39"));
+    }
+
+    #[test]
+    fn dashed_view_keeps_a_restored_reserved_override_namespaced() {
+        let with_override = |n| {
+            let mut router = Router::new();
+            router.set_overrides(HashMap::from([(
+                "atlassian".to_string(),
+                HashMap::from([(
+                    "t39".to_string(),
+                    ToolOverride {
+                        name: Some("toolport_call_tool".into()),
+                        ..Default::default()
+                    },
+                )]),
+            )]));
+            router.add(catalog_server("atlassian", n));
+            router
+        };
+        let previous = with_override(40);
+        let mut guarded = with_override(3);
+        guarded.adopt_restored_routes(&previous, &previous.aggregated_tools());
+        assert_eq!(
+            guarded.route_of("atlassian__t39"),
+            Some(("atlassian", "t39"))
+        );
+        let grok = guarded.with_client_tool_view(
+            HashMap::new(),
+            AliasRule {
+                limit: 64,
+                dashed: true,
+            },
+        );
+        assert_eq!(grok.route_of("atlassian-t39"), Some(("atlassian", "t39")));
+        assert!(grok.route_of("toolport_call_tool").is_none());
+        let tool = grok
+            .aggregated_tools()
+            .into_iter()
+            .find(|tool| tool["name"] == "atlassian-t39")
+            .unwrap();
+        assert!(!grok
+            .aggregated_tools()
+            .iter()
+            .any(|tool| tool["name"] == "toolport_call_tool"));
+        assert_eq!(
+            grok.policy_definition(&tool)["name"],
+            json!("toolport_call_tool")
+        );
     }
 
     #[test]

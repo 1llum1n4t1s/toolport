@@ -59,7 +59,7 @@ async function withFixture(profile, full, run) {
 async function catalog(client, expected) {
   const deadline = performance.now() + deadlineMs;
   const tools = await client.list();
-  if (tools.some((t) => t.name === expected)) return tools;
+  if (tools.some((t) => t.name === client.spell(expected))) return tools;
   return changedCatalog(client, expected, deadline);
 }
 
@@ -76,7 +76,7 @@ async function changedCatalog(
       deadline - performance.now(),
     );
     const refreshed = await client.list(Math.max(1, deadline - performance.now()));
-    if (refreshed.some((t) => t.name === expected)) return refreshed;
+    if (refreshed.some((t) => t.name === client.spell(expected))) return refreshed;
   }
   assert.fail(`${client.profile.id}: missing ${expected} after notifications`);
 }
@@ -89,7 +89,8 @@ async function baseline(profile) {
     // Claude Code's Auto lists a catalog this small in full. OpenClaw's Auto is
     // Full with refresh, so it gets the plain list and no helpers.
     const full = native || ["claude-code", "openclaw"].includes(profile.id);
-    const tools = await catalog(client, full ? "mock__echo" : "toolport_search_tools");
+    const echo = client.spell("mock__echo");
+    const tools = await catalog(client, full ? echo : "toolport_search_tools");
     assert.equal(
       tools.some((t) => t.name === "toolport_call_tool"),
       !full || native,
@@ -101,7 +102,7 @@ async function baseline(profile) {
         limit: 1,
       });
       success(search);
-      assert(textOf(search).includes("mock__echo"));
+      assert(textOf(search).includes(echo));
     }
     const reply = await client.call(
       "mock__echo",
@@ -128,7 +129,7 @@ async function replay(profile) {
       success(reply);
     }
     const initial = await catalog(client, "mock__echo");
-    const typed = initial.find((t) => t.name === "mock__structured");
+    const typed = initial.find((t) => t.name === client.spell("mock__structured"));
     assert.equal(typed?.outputSchema?.properties?.answer?.type, "integer");
     const structured = await client.call("mock__structured");
     success(structured);

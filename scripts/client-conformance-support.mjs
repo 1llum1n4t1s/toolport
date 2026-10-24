@@ -506,12 +506,17 @@ export class RpcClient {
     assert(Array.isArray(reply.result.tools));
     return reply.result.tools;
   }
+  // Grok drops tool names containing `__`, so its view lists `server-tool`.
+  spell(name) {
+    return this.profile.id === "grok" ? name.replaceAll("__", "-") : name;
+  }
+
   call(name, args = {}, lazy = false, id) {
     return this.request(
       "tools/call",
       lazy
         ? { name: "toolport_call_tool", arguments: { name, arguments: args } }
-        : { name, arguments: args },
+        : { name: this.spell(name), arguments: args },
       id,
     );
   }

@@ -58,9 +58,16 @@ separator overhead (zero for Cursor) for a 52-character tool alias. Other profil
 names already within their budget keep their spelling. A bounded prefix and
 identity digest keep longer names deterministic, including collisions.
 
+Grok Build 1.0.67 qualifies tools as `<server>__<tool>` and drops a tool whose
+own name contains `__` or starts with `_` (checked with `grok mcp doctor`; names
+of 70 characters and hyphens pass). Its profile lists every `__` as `-`, so
+`mock__add` becomes `mock-add`. Sanitized names never contain `-`, so the
+spelling stays reversible, and search, browse tools and `toolport_call_tool`
+use the same names.
+
 Aliases route back to the same server and original tool. Access, overrides,
 integrity pins, approvals and quarantine use that canonical policy identity across
-client budgets. Fixture tests cover Cursor and Claude views; they do not establish
+client budgets. Fixture tests cover Cursor, Grok and Claude views; they do not establish
 acceptance by a running Cursor application.
 
 ## Opt-in real client tracing

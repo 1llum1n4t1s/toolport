@@ -8,6 +8,10 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ### Fixed
 
+- Grok Build keeps every tool in Full discovery. Grok drops any tool whose name
+  contains `__`, so its tools are listed as `server-tool` instead of
+  `server__tool`, and `toolport_call_tool` accepts either spelling. Access,
+  approvals, pins and quarantine still apply to the same tool.
 - Clients in Full discovery no longer get a `tools/list_changed` right after
   their first tool list at startup. When that list already waited for a server
   to connect, the catalog it announced was the one the client just received.

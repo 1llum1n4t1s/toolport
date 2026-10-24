@@ -49,9 +49,9 @@ use conduit_lib::remote;
 #[cfg(test)]
 use conduit_lib::router::ToolPolicy;
 use conduit_lib::router::{
-    is_destructive, sanitize_segment, started_supervisors, wait_for_started_supervisor, Connect,
-    ConnectFailure, DispatchTarget, PendingHandle, ReconnectBackoff, RegistryPolicy, Router,
-    SharedServerSlot, SERVER_IDLE_TIMEOUT,
+    is_destructive, sanitize_segment, started_supervisors, wait_for_started_supervisor, AliasRule,
+    Connect, ConnectFailure, DispatchTarget, PendingHandle, ReconnectBackoff, RegistryPolicy,
+    Router, SharedServerSlot, SERVER_IDLE_TIMEOUT,
 };
 use conduit_lib::savings;
 use conduit_lib::searchtrace;
@@ -1818,7 +1818,7 @@ fn resolve_mode_from(
 /// `tool_prefix` returns the whole name when there is no `__`.)
 fn namespaced_prefix(t: &Value) -> Option<String> {
     let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    if name.contains("__") {
+    if split_namespaced(name).is_some() {
         let p = tool_prefix(t);
         (!p.is_empty()).then_some(p)
     } else {
@@ -1958,14 +1958,23 @@ fn missing_call_tool_name(payload: &Value) -> Value {
     })
 }
 
+/// Split `server__tool`, or the `server-tool` spelling of a dashed client view
+/// (`router::AliasRule::dashed`). Sanitized names never contain `-`.
+fn split_namespaced(name: &str) -> Option<(&str, &str)> {
+    name.split_once("__").or_else(|| name.split_once('-'))
+}
+
+/// The rest of `name` after the sanitized `server` prefix, in either spelling.
+fn server_namespaced<'a>(name: &'a str, server: &str) -> Option<&'a str> {
+    name.strip_prefix(&format!("{server}__"))
+        .or_else(|| name.strip_prefix(&format!("{}-", server.replace("__", "-"))))
+}
+
 /// The server prefix of a namespaced tool name ("stripe_2__create" -> "stripe_2").
 fn tool_prefix(t: &Value) -> String {
-    t.get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .split("__")
-        .next()
-        .unwrap_or("")
+    let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    split_namespaced(name)
+        .map_or(name, |(server, _)| server)
         .to_lowercase()
 }
 
@@ -2470,9 +2479,7 @@ impl CatalogSearchIndex {
             let name = source.name;
             let description = source.description;
             let server_prefix = tool_prefix(tool);
-            let operation = name
-                .split_once("__")
-                .map_or(name, |(_, operation)| operation);
+            let operation = split_namespaced(name).map_or(name, |(_, operation)| operation);
             for key in [tool_name_key(name), tool_name_key(operation)] {
                 let positions = tool_names.entry(key).or_default();
                 if positions.last() != Some(&documents.len()) {
@@ -3984,13 +3991,11 @@ fn source_tool_hints(
     resource: Option<&str>,
     max: usize,
 ) -> Vec<String> {
-    let prefix = format!("{server}__");
     let mut hits: Vec<(bool, String)> = catalog
         .iter()
         .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
-        .filter(|n| n.starts_with(&prefix))
         .filter_map(|n| {
-            let bare = n[prefix.len()..].to_ascii_lowercase();
+            let bare = server_namespaced(n, server)?.to_ascii_lowercase();
             let is_source = bare.starts_with("list")
                 || bare.starts_with("get")
                 || bare.starts_with("retrieve")
@@ -4073,7 +4078,7 @@ fn recovery_hint(
 /// sanitize to the same prefix (SBS-866). Use [`owner_of_exposed_tool`], which
 /// resolves a prefix back to a raw id only when it is unambiguous registry-wide.
 fn server_of_tool(name: &str) -> &str {
-    name.split_once("__").map(|(s, _)| s).unwrap_or(name)
+    split_namespaced(name).map(|(s, _)| s).unwrap_or(name)
 }
 
 /// Count a flat aggregated catalog by owning server.
@@ -8327,11 +8332,14 @@ fn handle_request_with_cancel(
                             .unwrap_or_else(|| json!({})),
                     )
                 } else {
-                    let unwrapped = unwrap_call_tool(&arguments);
-                    if unwrapped.0.is_empty() {
+                    let (inner, inner_arguments) = unwrap_call_tool(&arguments);
+                    if inner.is_empty() {
                         return Some(success(id, missing_call_tool_name(&arguments)));
                     }
-                    unwrapped
+                    (
+                        router.client_spelling(&inner).unwrap_or(inner),
+                        inner_arguments,
+                    )
                 }
             } else {
                 (name, arguments)
@@ -8844,12 +8852,26 @@ fn owner_of_exposed_tool(
     if let Some(server) = router.and_then(|r| r.tool_owner(name)) {
         return Some(server.to_string());
     }
-    let prefix = match grouped_help_target(name) {
+    if let Some(target) = grouped_help_target(name) {
         // A grouped `help_<server>` browse tool: owned by the server it targets.
-        Some(target) => target,
-        None => name.split_once("__").map(|(prefix, _)| prefix)?,
-    };
-    owners.get(&prefix.to_lowercase()).cloned()
+        return owners.get(&target.to_lowercase()).cloned();
+    }
+    // Try every separator rather than only the first: a server id holding `__`
+    // (`acme__prod`) is `acme-prod-` in a dashed view and must not resolve to
+    // `acme`. A name that two registry prefixes fit is ambiguous.
+    let name = name.to_lowercase();
+    let separator = if name.contains("__") { "__" } else { "-" };
+    let mut owner = None;
+    for (at, _) in name.match_indices(separator) {
+        let Some(id) = owners.get(&name[..at].replace('-', "__")) else {
+            continue;
+        };
+        if owner.is_some_and(|owner| owner != id) {
+            return None;
+        }
+        owner = Some(id);
+    }
+    owner.cloned()
 }
 
 /// Fail-closed merge of every profile's `tool_scope` for the shared HTTP-bridge router.
@@ -13658,8 +13680,8 @@ impl HostState {
         let resolved = profile
             .map(|profile| reg.resolve_profile_id(profile))
             .unwrap_or_default();
-        let limit = clients::client_tool_name_limit(client, clients::GATEWAY_ENTRY_NAME);
-        let unscoped = limit == 64
+        let rule = clients::client_alias_rule(client, clients::GATEWAY_ENTRY_NAME);
+        let unscoped = rule == AliasRule::default()
             && !resolved.starts_with("@all-enabled:")
             && reg.access_profile(&resolved).is_none();
         let allow: HashMap<String, HashSet<String>> = if unscoped {
@@ -13672,7 +13694,7 @@ impl HostState {
         } else {
             base.registry_policy().allow
         };
-        let view_key = format!("{resolved}:{limit}");
+        let view_key = format!("{resolved}:{}:{}", rule.limit, rule.dashed);
         let live = self
             .router
             .lock()
@@ -13701,7 +13723,7 @@ impl HostState {
                 let catalog = Arc::new(CatalogSnapshot::new(base.shared_tools()));
                 return (base, catalog);
             }
-            let view = Arc::new(base.with_client_tool_view(allow, limit));
+            let view = Arc::new(base.with_client_tool_view(allow, rule));
             let catalog = Arc::new(CatalogSnapshot::new(view.shared_tools()));
             return (view, catalog);
         }
@@ -13744,7 +13766,7 @@ impl HostState {
                 return (Arc::clone(&view.router), Arc::clone(&view.catalog));
             }
         }
-        let router = Arc::new(base.with_client_tool_view(allow.clone(), limit));
+        let router = Arc::new(base.with_client_tool_view(allow.clone(), rule));
         let catalog = Arc::new(CatalogSnapshot::new(router.shared_tools()));
         scoped.by_profile.insert(
             view_key,
@@ -16895,10 +16917,10 @@ fn process_request_wire_inner(
                 return state.router_for_client_view(rooted, &reg, Some(profile), client);
             }
         }
-        if clients::client_tool_name_limit(
+        if clients::client_alias_rule(
             client.or(state.client_id.as_deref()),
             clients::GATEWAY_ENTRY_NAME,
-        ) < 64
+        ) != AliasRule::default()
         {
             return state.router_for_client_view(
                 rooted,
@@ -16979,8 +17001,9 @@ fn process_request_wire_inner(
             // the shared cache's live fallback; warm scoped search only needs it
             // when publication has not yet added this server's tools.
             let search_cache_lag = search_server.is_some_and(|server| {
-                let prefix = format!("{}__", sanitize_segment(server));
-                !cache_snapshot.has_tool_prefix(&prefix)
+                let prefix = sanitize_segment(server);
+                !cache_snapshot.has_tool_prefix(&format!("{prefix}__"))
+                    && !cache_snapshot.has_tool_prefix(&format!("{}-", prefix.replace("__", "-")))
             });
             if !daemon_adapter
                 && (cold && (method == "tools/list" || tool_search) || search_cache_lag)
@@ -17042,10 +17065,10 @@ fn process_request_wire_inner(
         adapter_profile.map(|profile| {
             adapter_live_view(&state.host, &reg, profile, adapter_root.clone(), client)
         })
-    } else if clients::client_tool_name_limit(
+    } else if clients::client_alias_rule(
         client.or(state.client_id.as_deref()),
         clients::GATEWAY_ENTRY_NAME,
-    ) < 64
+    ) != AliasRule::default()
     {
         let host = Arc::clone(&state.host);
         let client = client.or(state.client_id.as_deref()).map(str::to_string);
@@ -30667,6 +30690,141 @@ mod tests {
         );
     }
 
+    /// Grok Build drops any tool named with `__` (live capture 2026-10-22). Every
+    /// name its view hands out must be Grok-safe and still dispatch.
+    #[test]
+    fn grok_view_names_are_grok_safe_in_every_surface() {
+        let _env = DataDirTestEnv::new("grok-dashed-view");
+        struct EchoRoute;
+        impl conduit_lib::downstream::Transport for EchoRoute {
+            fn request(
+                &mut self,
+                method: &str,
+                params: Value,
+            ) -> Result<Value, conduit_lib::downstream::TransportError> {
+                match method {
+                    "initialize" => Ok(json!({ "protocolVersion": "2025-06-18" })),
+                    "tools/list" => Ok(json!({ "tools": [
+                        {"name":"add","description":"Add two numbers","inputSchema":{"type":"object"}},
+                        {"name":"echo_meta","description":"Echo request metadata","inputSchema":{"type":"object"}},
+                    ]})),
+                    "tools/call" => Ok(
+                        json!({"content":[{"type":"text","text":format!("called {}", params["name"].as_str().unwrap())}]}),
+                    ),
+                    other => Err(conduit_lib::downstream::TransportError::Fatal(format!(
+                        "unexpected {other}"
+                    ))),
+                }
+            }
+            fn notify(
+                &mut self,
+                _method: &str,
+                _params: Value,
+            ) -> Result<(), conduit_lib::downstream::TransportError> {
+                Ok(())
+            }
+        }
+        let state = http_state(false);
+        let mut live = Router::new();
+        live.add(DownstreamServer::connect("mock".into(), Box::new(EchoRoute)).unwrap());
+        let live = Arc::new(live);
+        *state.cached_tools.lock().unwrap() =
+            Arc::new(CatalogSnapshot::new(live.aggregated_tools()));
+        *state.router.lock().unwrap() = live;
+        let request = |client: &str, mode, body: Value| {
+            process_request(
+                &state,
+                &body,
+                &SearchGuard::default(),
+                None,
+                None,
+                None,
+                None,
+                Some(client),
+                None,
+                mode,
+            )
+            .unwrap()
+        };
+        let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
+        let call = |name: &str, arguments: Value| json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":arguments}});
+        let names = |reply: &Value| -> Vec<String> {
+            reply["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let text = |reply: &Value| {
+            reply["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let grok_safe = |name: &str| !name.contains("__") && !name.starts_with('_');
+
+        let full = names(&request("grok", DiscoveryMode::Full, list.clone()));
+        assert!(full.contains(&"mock-add".to_string()), "{full:?}");
+        assert!(full.contains(&"mock-echo_meta".to_string()), "{full:?}");
+        assert!(full.iter().all(|name| grok_safe(name)), "{full:?}");
+        let claude = names(&request("claude-code", DiscoveryMode::Full, list.clone()));
+        assert!(claude.contains(&"mock__add".to_string()), "{claude:?}");
+
+        let grouped = names(&request("grok", DiscoveryMode::Grouped, list.clone()));
+        assert!(grouped.contains(&"help_mock".to_string()), "{grouped:?}");
+        assert!(grouped.iter().all(|name| grok_safe(name)), "{grouped:?}");
+        let browse = text(&request(
+            "grok",
+            DiscoveryMode::Grouped,
+            call("help_mock", json!({})),
+        ));
+        assert!(
+            browse.contains("mock-add") && !browse.contains("mock__"),
+            "{browse}"
+        );
+
+        let search = text(&request(
+            "grok",
+            DiscoveryMode::Lazy,
+            call("toolport_search_tools", json!({"query":"add numbers"})),
+        ));
+        assert!(
+            search.contains("mock-add") && !search.contains("mock__"),
+            "{search}"
+        );
+
+        for name in [
+            "mock-add",
+            "mock__add",
+            "toolport__mock-add",
+            "toolport__mock__add",
+        ] {
+            let reply = request(
+                "grok",
+                DiscoveryMode::Lazy,
+                call("toolport_call_tool", json!({"name": name, "arguments": {}})),
+            );
+            assert_eq!(text(&reply), "called add", "{name}: {reply}");
+        }
+        let direct = request("grok", DiscoveryMode::Full, call("mock-add", json!({})));
+        assert_eq!(text(&direct), "called add", "{direct}");
+        assert_eq!(
+            clients::client_alias_rule(Some("client:grok"), "toolport"),
+            AliasRule {
+                limit: 64,
+                dashed: true
+            }
+        );
+        assert_eq!(
+            clients::client_alias_rule(Some("cursor"), "toolport"),
+            AliasRule {
+                limit: 52,
+                dashed: false
+            }
+        );
+    }
+
     #[test]
     fn client_name_budgets_share_canonical_policy_and_routes() {
         let _env = DataDirTestEnv::new("client-name-budgets");
@@ -30983,6 +31141,28 @@ mod tests {
         assert!(names.contains(&"vercel__deploy".to_string()));
         assert!(names.contains(&"toolport_search_tools".to_string()));
         assert!(!names.contains(&"resend__send".to_string()));
+    }
+
+    #[test]
+    fn cold_owner_matches_whole_server_prefixes_in_both_spellings() {
+        let mut reg = Registry::default();
+        reg.servers.push(stub_server("acme--prod", "Acme prod"));
+        reg.servers.push(stub_server("github", "GitHub"));
+        let owners = unique_prefix_owners(&reg);
+        let cold = |n: &str| owner_of_exposed_tool(None, &owners, n);
+        assert_eq!(cold("acme-prod-list").as_deref(), Some("acme--prod"));
+        assert_eq!(cold("acme__prod__list").as_deref(), Some("acme--prod"));
+        assert_eq!(cold("github-create_issue").as_deref(), Some("github"));
+        assert_eq!(cold("acme-list"), None);
+        assert_eq!(cold("list"), None);
+
+        // Two registry prefixes fit: ambiguous, so it fails closed.
+        reg.servers.push(stub_server("acme", "Acme"));
+        let owners = unique_prefix_owners(&reg);
+        let cold = |n: &str| owner_of_exposed_tool(None, &owners, n);
+        assert_eq!(cold("acme-prod-list"), None);
+        assert_eq!(cold("acme__prod__list"), None);
+        assert_eq!(cold("acme-list").as_deref(), Some("acme"));
     }
 
     #[test]
@@ -31671,6 +31851,15 @@ mod tests {
         assert!(!hits.iter().any(|h| h.starts_with("resend")));
         assert_eq!(resource_stem("teamId"), "team");
         assert_eq!(resource_stem("account_id"), "account");
+        // Grok's view spells the same tools with `-`.
+        let dashed = vec![
+            json!({ "name": "vercel-list_teams" }),
+            json!({ "name": "vercel_x-list_teams" }),
+        ];
+        assert_eq!(
+            source_tool_hints(&dashed, "vercel", Some("team"), 5),
+            vec!["vercel-list_teams"]
+        );
     }
 
     #[test]
