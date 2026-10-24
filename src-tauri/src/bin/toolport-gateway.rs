@@ -17420,7 +17420,6 @@ fn http_port() -> (Option<u16>, Option<String>) {
         .position(|a| a == "--http")
         .and_then(|i| args.get(i + 1))
         .and_then(|p| p.parse::<u16>().ok())
-        .filter(|p| *p > 0)
         .or_else(|| args.iter().any(|a| a == "--http").then_some(8765));
     let http = conduit_lib::brand::env_var("TOOLPORT_HTTP", "CONDUIT_HTTP");
     let http_port = conduit_lib::brand::env_var("TOOLPORT_HTTP_PORT", "CONDUIT_HTTP_PORT");
@@ -20294,6 +20293,18 @@ fn serve_http(state: GatewayState, port: u16) {
         catalog: savings::CatalogSession::unmeasured(),
     });
 
+    // Port 0 asks the OS for a free port, so nothing can take it between
+    // choosing and binding. Everything below reports the port actually bound.
+    let (server, _ingress, bound) =
+        match bind_deadline_http_server((host.as_str(), port), HttpReadDeadlines::default()) {
+            Ok(bound) => bound,
+            Err(e) => {
+                eprintln!("toolport-gateway: could not bind HTTP {host}:{port}: {e}");
+                conduit_lib::telemetry::exit_with(1);
+            }
+        };
+    let port = bound.port();
+
     // When binding the default IPv4 loopback, ALSO listen on the IPv6 loopback
     // (best-effort). Many systems resolve "localhost" to ::1 first, and clients
     // like Open WebUI try ::1 and don't fall back to 127.0.0.1, so an IPv4-only
@@ -20312,15 +20323,6 @@ fn serve_http(state: GatewayState, port: u16) {
             ));
         }
     }
-
-    let (server, _ingress, _) =
-        match bind_deadline_http_server((host.as_str(), port), HttpReadDeadlines::default()) {
-            Ok(bound) => bound,
-            Err(e) => {
-                eprintln!("toolport-gateway: could not bind HTTP {host}:{port}: {e}");
-                conduit_lib::telemetry::exit_with(1);
-            }
-        };
     glog(&format!(
         "HTTP mode on http://{host}:{port} (OpenAPI + MCP /mcp, auth={}, header_timeout={}s, body_timeout={}s)",
         auth_configured,
@@ -21539,7 +21541,7 @@ fn usage() -> String {
          USAGE:\n    toolport-gateway [FLAGS]\n\
          \n\
          FLAGS:\n\
-         \x20   --http [port]         Serve over HTTP instead of stdio (default port 8765)\n\
+         \x20   --http [port]         Serve over HTTP instead of stdio (default port 8765, 0 picks a free port)\n\
          \x20   --http-proxy [port]   Desktop HTTP bridge to the host daemon (internal)\n\
          \x20   {insecure}   Allow unauthenticated HTTP access on a loopback bind\n\
          \x20   --daemon             Run as the host daemon for this host (Phase 2;\n\

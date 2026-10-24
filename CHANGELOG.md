@@ -8,6 +8,8 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ### Fixed
 
+- `toolport-gateway --http 0` now binds a free port chosen by the system and
+  prints it, instead of falling back to port 8765.
 - Fewer false tool-poisoning warnings. Persian and emoji text, the IEX exchange
   and SCIEX instruments, enum lists like `python | css`, documented `curl`
   uploads and accuracy notes like "do not tell the user a refund is coming" no
