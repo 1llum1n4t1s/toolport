@@ -1,7 +1,6 @@
 //! Each serving mode sweeps an expired entry without another cache operation.
 #![cfg(feature = "test-support")]
 
-use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -49,7 +48,7 @@ fn check_mode(mode: &str) {
         .env("TOOLPORT_DAEMON_IDLE_GRACE_MS", "60000")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(std::fs::File::create(dir.path().join("stderr.log")).unwrap());
     std::fs::write(
         dir.path().join("registry.json"),
         r#"{"version":3,"servers":[],"profiles":[]}"#,
@@ -62,12 +61,11 @@ fn check_mode(mode: &str) {
         "private" => {
             command.arg("--private-gateway");
         }
+        // Port 0 lets the gateway bind a free port itself. A port reserved here
+        // and released before spawn can be taken by another process first.
         "http" => {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let port = listener.local_addr().unwrap().port();
-            drop(listener);
             command
-                .args(["--http", &port.to_string()])
+                .args(["--http", "0"])
                 .env("TOOLPORT_HTTP_TOKEN", "fixture-token");
         }
         // An explicit positional profile avoids the no-argument adapter path.
@@ -79,10 +77,12 @@ fn check_mode(mode: &str) {
     let mut process = Process(command.spawn().unwrap());
     let deadline = Instant::now() + Duration::from_secs(60);
     while !probe.exists() {
-        assert!(
-            process.0.try_wait().unwrap().is_none(),
-            "{mode} exited before maintenance"
-        );
+        if let Some(status) = process.0.try_wait().unwrap() {
+            panic!(
+                "{mode} exited before maintenance ({status}): {}",
+                std::fs::read_to_string(dir.path().join("stderr.log")).unwrap_or_default()
+            );
+        }
         assert!(
             Instant::now() < deadline,
             "{mode} never swept its expired entry"
@@ -93,6 +93,27 @@ fn check_mode(mode: &str) {
         std::fs::read_to_string(probe).unwrap(),
         "expired and trim consumed"
     );
+    if mode == "http" {
+        // The listener names the port the OS chose, not the requested 0 or a default.
+        let stderr = dir.path().join("stderr.log");
+        let port = loop {
+            let text = std::fs::read_to_string(&stderr).unwrap_or_default();
+            if let Some(port) = text
+                .split("HTTP on http://localhost:")
+                .nth(1)
+                .and_then(|rest| rest.split_whitespace().next())
+            {
+                break port.parse::<u16>().unwrap();
+            }
+            assert!(
+                process.0.try_wait().unwrap().is_none(),
+                "http exited before listening: {text}"
+            );
+            assert!(Instant::now() < deadline, "http never listened: {text}");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(port != 0 && port != 8765, "http reported port {port}");
+    }
     if mode == "private" || mode == "stdio" {
         drop(process.0.stdin.take());
         while process.0.try_wait().unwrap().is_none() {
