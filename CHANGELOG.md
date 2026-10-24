@@ -6,6 +6,13 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ## [Unreleased]
 
+### Fixed
+
+- Clients in Full discovery no longer get a `tools/list_changed` right after
+  their first tool list at startup. When that list already waited for a server
+  to connect, the catalog it announced was the one the client just received.
+  Toolport now notifies only when the client was sent a different catalog.
+
 ## [2.3.0] - 2026-10-20
 
 Toolport 2.3 gives Servers, Clients and Skills a consistent layout, clearer

@@ -7093,6 +7093,10 @@ struct GatewayResponse {
     surface: Option<Arc<savings::SerializedSurface>>,
     observation: Option<Arc<observation::Session>>,
     tools_list: bool,
+    /// Digest of the scoped catalog this tools/list was built from, when it was
+    /// a Full list, and the connection record it is saved to once delivered.
+    listed_catalog: Option<[u8; 32]>,
+    listed_tools: Option<ListedTools>,
 }
 
 impl From<Value> for GatewayResponse {
@@ -7102,6 +7106,8 @@ impl From<Value> for GatewayResponse {
             surface: None,
             observation: None,
             tools_list: false,
+            listed_catalog: None,
+            listed_tools: None,
         }
     }
 }
@@ -7126,6 +7132,23 @@ impl GatewayResponse {
         if let (Some(session), Some(catalog)) = (&self.observation, self.catalog_delivery()) {
             session.list_delivered(catalog);
         }
+    }
+
+    /// Saves what a delivered tools/list carried. Call it in delivery order.
+    fn record_listed(&self) {
+        if let Some((record, digest)) = self.listed() {
+            record_listed_tools(&record, digest);
+        }
+    }
+
+    /// The record a delivered tools/list updates, and its digest. Every tools/list
+    /// updates it: one that is not a Full list clears it, so the next publication
+    /// still notifies.
+    fn listed(&self) -> Option<(ListedTools, Option<[u8; 32]>)> {
+        if !self.tools_list {
+            return None;
+        }
+        Some((self.listed_tools.clone()?, self.listed_catalog))
     }
 }
 
@@ -9504,6 +9527,104 @@ type RouteSubscriptions = (
     Option<Arc<AtomicBool>>,
 );
 
+/// What a connection's last delivered tools/list was built from.
+type ListedTools = Arc<Mutex<ListedRecord>>;
+
+#[derive(Default)]
+struct ListedRecord {
+    /// Digest of the scoped catalog of the last delivered tools/list. `None` until
+    /// one is delivered, and after a list that was not Full: a Lazy or Grouped
+    /// surface, or an Auto list held on the Lazy floor while a server starts, can
+    /// change on re-list without its catalog changing.
+    digest: Option<[u8; 32]>,
+    /// HTTP replies being written now. Replies on separate connections have no
+    /// delivery order, so overlapping ones clear the record instead of guessing.
+    writing: usize,
+    overlapped: bool,
+}
+
+/// The scoped catalog a tools/list is built from, in policy names and sorted, so
+/// a client's alias view and the base catalog it derives from compare equal.
+fn listed_catalog_digest(
+    router: &Router,
+    tools: &dyn ToolCatalog,
+    allowed: Option<&HashSet<String>>,
+    owners: &HashMap<String, String>,
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let tools = tools.shared();
+    let mut digests: Vec<[u8; 32]> = tools
+        .0
+        .iter()
+        .filter(|tool| {
+            allowed.is_none_or(|set| {
+                tool.get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| {
+                        tool_in_scope(name, set, &|name| {
+                            owner_of_exposed_tool(Some(router), owners, name)
+                        })
+                    })
+            })
+        })
+        .map(|tool| match router.policy_definition(tool) {
+            std::borrow::Cow::Borrowed(_) => tool.digest,
+            std::borrow::Cow::Owned(definition) => {
+                conduit_lib::tool_definitions::content_digest(&definition)
+            }
+        })
+        .collect();
+    digests.sort_unstable();
+    let mut hasher = Sha256::new();
+    for digest in digests {
+        hasher.update(digest);
+    }
+    hasher.finalize().into()
+}
+
+fn record_listed_tools(record: &ListedTools, digest: Option<[u8; 32]>) {
+    record
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .digest = digest;
+}
+
+/// Marks an HTTP tools/list reply as being written. Pair with `finish_listed_write`.
+fn begin_listed_write(record: &ListedTools) {
+    let mut record = record
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    record.writing += 1;
+    if record.writing > 1 {
+        record.overlapped = true;
+    }
+}
+
+fn finish_listed_write(record: &ListedTools, delivered: bool, digest: Option<[u8; 32]>) {
+    let mut record = record
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    record.writing = record.writing.saturating_sub(1);
+    if record.overlapped {
+        record.digest = None;
+    } else if delivered {
+        record.digest = digest;
+    }
+    if record.writing == 0 {
+        record.overlapped = false;
+    }
+}
+
+/// Whether the client behind `record` was last sent exactly this catalog.
+fn listed_tools_current(record: &ListedTools, digest: &[u8; 32]) -> bool {
+    record
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .digest
+        .as_ref()
+        == Some(digest)
+}
+
 fn notify_tools_changed(stdio: &SessionState, mcp_sessions: Option<&McpSessions>) {
     notify_list_changed(stdio, mcp_sessions, "notifications/tools/list_changed");
 }
@@ -9523,11 +9644,18 @@ fn notify_tools_changed_for_catalog_diff(
     reg: &Registry,
     previous_adapter_tools: Option<&HashMap<String, Vec<[u8; 32]>>>,
 ) {
-    notify_list_changed(stdio, None, "notifications/tools/list_changed");
+    // A cold first tools/list can wait for the publication this announces and
+    // already carry its catalog. Only a client sent something else needs a re-list.
+    let owners = unique_prefix_owners(reg);
+    if !listed_tools_current(
+        &stdio.listed_tools,
+        &listed_catalog_digest(current_router, current, None, &owners),
+    ) {
+        notify_list_changed(stdio, None, "notifications/tools/list_changed");
+    }
     let Some(sessions) = mcp_sessions else {
         return;
     };
-    let owners = unique_prefix_owners(reg);
     let sessions: Vec<Arc<SessionState>> = sessions
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -9535,7 +9663,9 @@ fn notify_tools_changed_for_catalog_diff(
         .cloned()
         .collect();
     let msg = json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" });
-    let mut changed_by_scope: HashMap<Option<McpSessionOwner>, bool> = HashMap::new();
+    // Per scope: whether publication changed this scope's catalog, and the
+    // listed digest of the catalog it sees now.
+    let mut catalogs_by_scope: HashMap<Option<McpSessionOwner>, (bool, [u8; 32])> = HashMap::new();
     let mut scoped = 0usize;
     let mut queued = 0usize;
     let mut dropped = 0usize;
@@ -9545,51 +9675,67 @@ fn notify_tools_changed_for_catalog_diff(
             continue;
         }
         let owner = session.owner.clone();
-        let changed = *changed_by_scope.entry(owner.clone()).or_insert_with(|| {
-            let Some(owner) = owner else {
-                return previous.digests() != current.digests();
-            };
-            let Some(scope) = owner.scope else {
-                return previous.digests() != current.digests();
-            };
-            let allowed: std::collections::HashSet<String> = scope.into_iter().collect();
-            if let (Some(profile), Some(prior_tool_scope)) =
-                (owner.profile.as_deref(), owner.tool_scope)
-            {
-                let prior_allow = prior_tool_scope
-                    .into_iter()
-                    .map(|(server, tools)| (server, tools.into_iter().collect()))
-                    .collect();
-                let current_allow = adapter_tool_scope(reg, profile)
-                    .into_iter()
-                    .map(|(server, tools)| (server, tools.into_iter().collect()))
-                    .collect();
-                let before = previous_adapter_tools
-                    .and_then(|by_profile| by_profile.get(profile))
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        let before_router = previous_router.with_tool_allow(prior_allow);
-                        scoped_catalog_digests(
-                            &before_router.shared_tools(),
-                            Some(&allowed),
-                            |name| owner_of_exposed_tool(Some(&before_router), &owners, name),
-                        )
-                    });
-                let after_router = current_router.with_tool_allow(current_allow);
-                let after =
-                    scoped_catalog_digests(&after_router.shared_tools(), Some(&allowed), |name| {
+        let (published_change, now) =
+            *catalogs_by_scope.entry(owner.clone()).or_insert_with(|| {
+                let unscoped = || {
+                    (
+                        previous.digests() != current.digests(),
+                        listed_catalog_digest(current_router, current, None, &owners),
+                    )
+                };
+                let Some(owner) = owner else {
+                    return unscoped();
+                };
+                let Some(scope) = owner.scope else {
+                    return unscoped();
+                };
+                let allowed: std::collections::HashSet<String> = scope.into_iter().collect();
+                if let (Some(profile), Some(prior_tool_scope)) =
+                    (owner.profile.as_deref(), owner.tool_scope)
+                {
+                    let prior_allow = prior_tool_scope
+                        .into_iter()
+                        .map(|(server, tools)| (server, tools.into_iter().collect()))
+                        .collect();
+                    let current_allow = adapter_tool_scope(reg, profile)
+                        .into_iter()
+                        .map(|(server, tools)| (server, tools.into_iter().collect()))
+                        .collect();
+                    let before = previous_adapter_tools
+                        .and_then(|by_profile| by_profile.get(profile))
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            let before_router = previous_router.with_tool_allow(prior_allow);
+                            scoped_catalog_digests(
+                                &before_router.shared_tools(),
+                                Some(&allowed),
+                                |name| owner_of_exposed_tool(Some(&before_router), &owners, name),
+                            )
+                        });
+                    let after_router = current_router.with_tool_allow(current_allow);
+                    let after_tools = after_router.shared_tools();
+                    let after = scoped_catalog_digests(&after_tools, Some(&allowed), |name| {
                         owner_of_exposed_tool(Some(&after_router), &owners, name)
                     });
-                return before != after;
-            }
-            let before = scoped_catalog_digests(previous, Some(&allowed), |name| {
-                owner_of_exposed_tool(Some(previous_router), &owners, name)
+                    return (
+                        before != after,
+                        listed_catalog_digest(&after_router, &after_tools, Some(&allowed), &owners),
+                    );
+                }
+                let before = scoped_catalog_digests(previous, Some(&allowed), |name| {
+                    owner_of_exposed_tool(Some(previous_router), &owners, name)
+                });
+                let after = scoped_catalog_digests(current, Some(&allowed), |name| {
+                    owner_of_exposed_tool(Some(current_router), &owners, name)
+                });
+                (
+                    before != after,
+                    listed_catalog_digest(current_router, current, Some(&allowed), &owners),
+                )
             });
-            let after = scoped_catalog_digests(current, Some(&allowed), |name| {
-                owner_of_exposed_tool(Some(current_router), &owners, name)
-            });
-            before != after
-        });
+        // A cold first list can already carry this publication. The record only
+        // suppresses: a client sent exactly this catalog does not need a re-list.
+        let changed = published_change && !listed_tools_current(&session.listed_tools, &now);
         if !changed {
             suppressed += 1;
             continue;
@@ -14043,12 +14189,13 @@ fn register_modern_subscription(
     // stdio arm is reachable only from a stdio request (the HTTP path passes
     // Http), and it was resolved above before anything was subscribed.
     let session = match transport {
-        ModernSubscriptionTransport::Http => Arc::new(SessionState::new_modern(
-            owner.cloned(),
-            id,
-            filter,
-            transport,
-        )),
+        ModernSubscriptionTransport::Http => {
+            let mut session = SessionState::new_modern(owner.cloned(), id, filter, transport);
+            if let Some(lifetime) = adapter_lifetime(state, owner) {
+                session.listed_tools = Arc::clone(&lifetime.listed_tools);
+            }
+            Arc::new(session)
+        }
         ModernSubscriptionTransport::Stdio => {
             let Some(stdout) = stdio_face else {
                 return Err(error(
@@ -14057,7 +14204,9 @@ fn register_modern_subscription(
                     "Toolport: no stdio connection for this subscription",
                 ));
             };
-            Arc::new(SessionState::new_modern_stdio(id, filter, stdout))
+            let mut session = SessionState::new_modern_stdio(id, filter, stdout);
+            session.listed_tools = Arc::clone(&state.stdio_upstream.listed_tools);
+            Arc::new(session)
         }
     };
     if transport == ModernSubscriptionTransport::Http
@@ -14265,6 +14414,10 @@ struct SessionState {
     client_upstream: Mutex<ClientUpstreamCaps>,
     client_label: Mutex<Option<String>>,
     observation: Mutex<Option<Arc<observation::Session>>>,
+    /// What this client connection's last delivered tools/list was built from.
+    /// Shared with the sessions an adapter lifetime or stdio peer owns, so a
+    /// notification on any of them knows what the client already has.
+    listed_tools: ListedTools,
     parent_app: conduit_lib::client_process::ParentApp,
     observation_shared: AtomicBool,
     upstream_pending: Mutex<HashMap<String, std::sync::mpsc::Sender<Value>>>,
@@ -14361,6 +14514,7 @@ impl SessionState {
             client_upstream: Mutex::new(ClientUpstreamCaps::default()),
             client_label: Mutex::new(None),
             observation: Mutex::new(None),
+            listed_tools: ListedTools::default(),
             parent_app: conduit_lib::client_process::ParentApp::default(),
             observation_shared: AtomicBool::new(false),
             upstream_pending: Mutex::new(HashMap::new()),
@@ -14906,8 +15060,13 @@ fn mint_mcp_session(
     owner: Option<&McpSessionOwner>,
 ) -> Result<String, HttpOut> {
     let sid = new_mcp_session_id();
-    let session = Arc::new(SessionState::new_http(owner.cloned()));
-    if let Some(lifetime) = adapter_lifetime(state, owner) {
+    let mut session = SessionState::new_http(owner.cloned());
+    let lifetime = adapter_lifetime(state, owner);
+    if let Some(lifetime) = &lifetime {
+        session.listed_tools = Arc::clone(&lifetime.listed_tools);
+    }
+    let session = Arc::new(session);
+    if let Some(lifetime) = lifetime {
         let weak = Arc::downgrade(&session);
         let guard = lifetime
             .cancellations
@@ -16374,6 +16533,9 @@ fn process_request_wire(
     if let Some(response) = &mut response {
         response.observation = Some(observed.clone());
         response.tools_list = method == "tools/list";
+        response.listed_tools = holder
+            .as_ref()
+            .map(|holder| Arc::clone(&holder.listed_tools));
     }
     response
 }
@@ -17024,11 +17186,24 @@ fn process_request_wire_inner(
                 profile_snapshot.is_some() || allowed.is_some(),
             ),
         );
+        // Only a Full list is fixed by its catalog. Any other surface, including
+        // an Auto list held on the Lazy floor while a server starts, stays
+        // unrecorded so the publication that changes it still notifies.
+        let listed = (discovery == DiscoveryMode::Full).then(|| {
+            listed_catalog_digest(
+                &router,
+                &cache_snapshot.tools,
+                allowed,
+                &unique_prefix_owners(&reg),
+            )
+        });
         return Some(GatewayResponse {
             envelope,
             surface: Some(exposed),
             observation: None,
             tools_list: true,
+            listed_catalog: listed,
+            listed_tools: None,
         });
     }
     handle_request_with_cancel(
@@ -17055,6 +17230,16 @@ fn process_request_wire_inner(
 }
 
 fn write_stdio_response(stdio: &SessionState, response: &impl serde::Serialize) -> bool {
+    write_stdio_response_then(stdio, response, || {})
+}
+
+/// Writes a response and runs `written` before releasing stdout, so whatever it
+/// records follows the order replies reach the client.
+fn write_stdio_response_then(
+    stdio: &SessionState,
+    response: &impl serde::Serialize,
+    written: impl FnOnce(),
+) -> bool {
     let Some(stdout) = stdio.stdio_stdout() else {
         // No stdio face means there is nobody to answer. Treat it as a broken pipe
         // so the reader loop stops instead of grinding through requests it can
@@ -17066,7 +17251,11 @@ fn write_stdio_response(stdio: &SessionState, response: &impl serde::Serialize) 
         let mut out = stdout
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        write_json_line(&mut *out, response)
+        let result = write_json_line(&mut *out, response);
+        if result.is_ok() {
+            written();
+        }
+        result
     };
     if let Err(err) = result {
         stdio.mark_stdio_broken();
@@ -17124,7 +17313,7 @@ fn handle_stdio_request(state: GatewayState, req: Value, request_key: String) {
         // the first thing it reads. This is the second of the two conditions in
         // `stdio_may_speak`; the peer's post-handshake message is the other, and
         // either one may land last.
-        if write_stdio_response(&state.stdio_upstream, &resp) {
+        if write_stdio_response_then(&state.stdio_upstream, &resp, || resp.record_listed()) {
             resp.delivered();
             state.stdio_upstream.mark_stdio_responded();
             drain_stdio_deferred(&state.stdio_upstream);
@@ -17522,6 +17711,7 @@ struct HttpOut {
     /// Long-lived MCP SSE listen stream (chunked response).
     mcp_listen: Option<McpListen>,
     catalog_delivery: Option<(Arc<observation::Session>, observation::CatalogDelivery)>,
+    listed: Option<(ListedTools, Option<[u8; 32]>)>,
     observation: Option<Arc<observation::Session>>,
 }
 
@@ -17553,6 +17743,7 @@ impl HttpOut {
             extra: Vec::new(),
             mcp_listen: None,
             catalog_delivery: None,
+            listed: None,
             observation: None,
         }
     }
@@ -17564,6 +17755,7 @@ impl HttpOut {
             body: String::new(),
             extra: Vec::new(),
             catalog_delivery: None,
+            listed: None,
             observation: None,
             mcp_listen: Some(McpListen {
                 session,
@@ -17580,6 +17772,7 @@ impl HttpOut {
             body: String::new(),
             extra: Vec::new(),
             catalog_delivery: None,
+            listed: None,
             observation: None,
             mcp_listen: Some(McpListen {
                 session,
@@ -18284,6 +18477,7 @@ fn handle_mcp_http(
                         let mut out =
                             mcp_rpc_response(status, body, session_id.as_deref(), prefer_sse);
                         out.catalog_delivery = catalog_delivery;
+                        out.listed = resp.listed();
                         out.observation = resp.observation.clone();
                         return out;
                     }
@@ -18303,6 +18497,7 @@ fn handle_mcp_http(
                     let mut out =
                         mcp_rpc_response_ready(status, body, session_id.as_deref(), prefer_sse);
                     out.catalog_delivery = catalog_delivery;
+                    out.listed = resp.listed();
                     out.observation = resp.observation.clone();
                     out
                 }
@@ -21122,7 +21317,13 @@ fn handle_connection(
             response = response.with_header(h);
         }
     }
+    if let Some((record, _)) = &out.listed {
+        begin_listed_write(record);
+    }
     let delivered = respond_http(request, response);
+    if let Some((record, digest)) = out.listed {
+        finish_listed_write(&record, delivered, digest);
+    }
     if delivered {
         if let Some((session, catalog)) = out.catalog_delivery {
             session.list_delivered(catalog);
@@ -23993,6 +24194,302 @@ mod tests {
             let error = worker.join().unwrap().unwrap_err();
             assert!(error.contains("turned off"), "{error}");
         });
+    }
+
+    /// Live captures (2026-10-22): a cold Full first tools/list waits for the late
+    /// server and already carries its tools, then reconnect adoption announced the
+    /// same catalog again. Only a client sent something else needs to re-list.
+    #[test]
+    fn catalog_publication_skips_clients_already_sent_its_catalog() {
+        let _env = DataDirTestEnv::new("publication-already-listed");
+        let state = http_state(false);
+        // Fits the 64-character default but not Cursor's 52-character budget.
+        let long = format!("read_{}", "x".repeat(49));
+        let mut router = Router::new();
+        let tool = json!({"name": long, "inputSchema": {"type": "object"}});
+        router.add_supervised(
+            "cache".into(),
+            Vec::new(),
+            Arc::new(move || {
+                Ok(DownstreamServer::connect(
+                    "cache".into(),
+                    Box::new(MockRoute {
+                        tools: vec![tool.clone()],
+                    }),
+                )
+                .unwrap())
+            }),
+            ReconnectBackoff::default(),
+            json!({"revision":1}),
+        );
+        router.prepare_lazy_use("cache");
+        wait_for_supervisor_result(&router);
+        let previous_router = Arc::new(router);
+        *state.router.lock().unwrap() = Arc::clone(&previous_router);
+        let previous_adapter_tools = state.host.adapter_tools_before_refresh(&previous_router);
+        let mint = || mint_mcp_session(&state, None).unwrap_or_else(|_| panic!("mint session"));
+        let (listed, cursor, unlisted) = (mint(), mint(), mint());
+        // Publication swaps the router before it refreshes the cache and notifies.
+        let mut next = (*previous_router).clone();
+        assert_eq!(next.adopt_ready_reconnects(), vec!["cache"]);
+        let tools = publish_built_router(&state.registry, &state.router, next, None);
+        for (sid, client, expected) in [
+            (&listed, None, format!("cache__{long}")),
+            (&cursor, Some("cursor"), String::new()),
+        ] {
+            let _session = McpSessionGuard::enter(Some(sid.clone()));
+            let reply = process_request_wire(
+                &state,
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+                &SearchGuard::default(),
+                None,
+                None,
+                None,
+                None,
+                client,
+                None,
+                DiscoveryMode::Full,
+            )
+            .unwrap();
+            reply.delivered();
+            reply.record_listed();
+            let value = reply.into_value();
+            let names: Vec<_> = value["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|tool| tool["name"].as_str())
+                .filter(|name| name.starts_with("cache__"))
+                .collect();
+            assert_eq!(names.len(), 1, "{value}");
+            if client.is_some() {
+                assert!(names[0].len() <= 52 && names[0] != format!("cache__{long}"));
+            } else {
+                assert_eq!(names[0], expected);
+            }
+        }
+        state.host.persist_and_emit_with_sessions(
+            &tools,
+            &state.cached_tools,
+            &state.router,
+            Some(&previous_router),
+            &state.stdio_upstream,
+            Some(&state.mcp_sessions),
+            None,
+            true,
+            Some(&previous_adapter_tools),
+        );
+        let session = |sid: &str| Arc::clone(&state.mcp_sessions.lock().unwrap()[sid]);
+        let methods = |sid: &str| -> Vec<String> {
+            session(sid)
+                .outbound
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|message| {
+                    let message: Value = serde_json::from_str(&message.json).unwrap();
+                    message["method"].as_str().unwrap().to_string()
+                })
+                .collect()
+        };
+        let tools_changed = "notifications/tools/list_changed".to_string();
+        for sid in [&listed, &cursor] {
+            assert!(
+                !methods(sid).contains(&tools_changed),
+                "the client already has this catalog"
+            );
+        }
+        assert!(
+            methods(&unlisted).contains(&tools_changed),
+            "a client that never listed keeps the publication diff"
+        );
+
+        // A real change still reaches the client that listed.
+        let current = state.cached_tools.lock().unwrap().clone();
+        let mut grown = current
+            .tools
+            .0
+            .iter()
+            .map(|tool| (***tool).clone())
+            .collect::<Vec<_>>();
+        grown.push(json!({"name":"cache__grown", "inputSchema":{"type":"object"}}));
+        let grown = CatalogSnapshot::new(grown);
+        let live = state.router.lock().unwrap().clone();
+        let reg = state.registry.lock().unwrap().clone();
+        notify_tools_changed_for_catalog_diff(
+            &state.stdio_upstream,
+            Some(&state.mcp_sessions),
+            &current.tools,
+            &grown.tools,
+            &live,
+            &live,
+            &reg,
+            None,
+        );
+        assert!(methods(&listed).contains(&tools_changed));
+    }
+
+    /// An Auto client whose small catalog belongs to a starting server gets the
+    /// Lazy floor. The catalog stays the same once the server settles, but the
+    /// client now qualifies for Full, so the publication must still notify.
+    #[test]
+    fn catalog_publication_notifies_an_auto_client_held_on_the_lazy_floor() {
+        let _env = DataDirTestEnv::new("publication-auto-lazy-floor");
+        let state = http_state(false);
+        let mut router = cache_router();
+        let catalog = Arc::new(CatalogSnapshot::new(router.shared_tools()));
+        *state.cached_tools.lock().unwrap() = Arc::clone(&catalog);
+        let release = hanging_supervisor(&mut router, "hang");
+        router.prepare_lazy_use("hang");
+        let live = Arc::new(router);
+        assert!(live.any_starting(|_| true));
+        *state.router.lock().unwrap() = Arc::clone(&live);
+        let sid = mint_mcp_session(&state, None).unwrap_or_else(|_| panic!("mint session"));
+        let list = || {
+            let _session = McpSessionGuard::enter(Some(sid.clone()));
+            let reply = process_request_wire(
+                &state,
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+                &SearchGuard::default(),
+                None,
+                None,
+                None,
+                None,
+                Some("claude-code"),
+                None,
+                DiscoveryMode::Lazy,
+            )
+            .unwrap();
+            reply.record_listed();
+            let value = reply.into_value();
+            value["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        };
+        let session = Arc::clone(&state.mcp_sessions.lock().unwrap()[&sid]);
+        let notified = || {
+            let empty = CatalogSnapshot::new(Vec::<Value>::new());
+            let reg = state.registry.lock().unwrap().clone();
+            session.outbound.lock().unwrap().clear();
+            notify_tools_changed_for_catalog_diff(
+                &state.stdio_upstream,
+                Some(&state.mcp_sessions),
+                &empty.tools,
+                &catalog.tools,
+                &live,
+                &live,
+                &reg,
+                None,
+            );
+            session.outbound.lock().unwrap().iter().any(|message| {
+                let message: Value = serde_json::from_str(&message.json).unwrap();
+                message["method"] == "notifications/tools/list_changed"
+            })
+        };
+
+        let names = list();
+        assert!(
+            names.iter().any(|name| name == "toolport_search_tools"),
+            "{names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name == "cache__cached"),
+            "{names:?}"
+        );
+        assert!(
+            notified(),
+            "the Lazy floor must not suppress the Full re-list"
+        );
+
+        drop(release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while live.any_starting(|_| true) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!live.any_starting(|_| true));
+        let names = list();
+        assert!(
+            names.iter().any(|name| name == "cache__cached"),
+            "{names:?}"
+        );
+        assert!(!notified(), "the Full list already carried this catalog");
+    }
+
+    #[test]
+    fn overlapping_http_list_writes_clear_the_record() {
+        let record = ListedTools::default();
+        let digest = |byte| Some([byte; 32]);
+        begin_listed_write(&record);
+        finish_listed_write(&record, true, digest(1));
+        assert!(listed_tools_current(&record, &[1; 32]));
+
+        // Replies on two connections have no delivery order.
+        begin_listed_write(&record);
+        begin_listed_write(&record);
+        finish_listed_write(&record, true, digest(2));
+        finish_listed_write(&record, true, digest(3));
+        assert!(!listed_tools_current(&record, &[2; 32]));
+        assert!(!listed_tools_current(&record, &[3; 32]));
+
+        // The next reply on its own is ordered again, and a failed one changes nothing.
+        begin_listed_write(&record);
+        finish_listed_write(&record, true, digest(4));
+        begin_listed_write(&record);
+        finish_listed_write(&record, false, digest(5));
+        assert!(listed_tools_current(&record, &[4; 32]));
+    }
+
+    #[test]
+    fn stdio_publication_skips_a_peer_already_sent_its_catalog() {
+        let _env = DataDirTestEnv::new("stdio-publication-already-listed");
+        let state = http_state(false);
+        let mut router = Router::new();
+        router.add(
+            DownstreamServer::connect(
+                "one".into(),
+                Box::new(MockRoute {
+                    tools: vec![json!({"name":"echo"})],
+                }),
+            )
+            .unwrap(),
+        );
+        let current = CatalogSnapshot::new(router.shared_tools());
+        let reg = Registry::default();
+        let method = "notifications/tools/list_changed";
+        let owners = HashMap::new();
+        record_listed_tools(
+            &state.stdio_upstream.listed_tools,
+            Some(listed_catalog_digest(
+                &router,
+                &current.tools,
+                None,
+                &owners,
+            )),
+        );
+        let empty = CatalogSnapshot::new(Vec::<Value>::new());
+        let notify = |previous: &CatalogSnapshot| {
+            notify_tools_changed_for_catalog_diff(
+                &state.stdio_upstream,
+                None,
+                &previous.tools,
+                &current.tools,
+                &router,
+                &router,
+                &reg,
+                None,
+            )
+        };
+        notify(&empty);
+        assert_eq!(deferred_count(&state.stdio_upstream, method), 0);
+        record_listed_tools(
+            &state.stdio_upstream.listed_tools,
+            Some(listed_catalog_digest(&router, &empty.tools, None, &owners)),
+        );
+        notify(&empty);
+        assert_eq!(deferred_count(&state.stdio_upstream, method), 1);
     }
 
     #[test]
@@ -45251,6 +45748,8 @@ mod tests {
                 surface: Some(Arc::clone(&surface)),
                 observation: None,
                 tools_list: true,
+                listed_catalog: None,
+                listed_tools: None,
             };
             let expected = serde_json::to_string(&response).unwrap();
             let body = response.to_json().unwrap();
