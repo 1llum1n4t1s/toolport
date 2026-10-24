@@ -8,6 +8,11 @@ Entries before the rename below shipped under the project's former name, Conduit
 
 ### Fixed
 
+- Fewer false tool-poisoning warnings. Persian and emoji text, the IEX exchange
+  and SCIEX instruments, enum lists like `python | css`, documented `curl`
+  uploads and accuracy notes like "do not tell the user a refund is coming" no
+  longer flag. Bidi overrides, invisible tag characters, pipes into a shell and
+  instructions to hide an action from the user still do.
 - Grok Build keeps every tool in Full discovery. Grok drops any tool whose name
   contains `__`, so its tools are listed as `server-tool` instead of
   `server__tool`, and `toolport_call_tool` accepts either spelling. Access,
