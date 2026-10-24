@@ -10541,9 +10541,14 @@ mod tests {
     fn windows_job_terminates_launcher_grandchild() {
         use super::StdioTransport;
         use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, Thread32First, Thread32Next,
+            PROCESSENTRY32W, TH32CS_SNAPPROCESS, TH32CS_SNAPTHREAD, THREADENTRY32,
+        };
         use windows_sys::Win32::System::Threading::{
-            OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+            OpenProcess, OpenThread, ResumeThread, SuspendThread, WaitForSingleObject,
+            PROCESS_SYNCHRONIZE, THREAD_SUSPEND_RESUME,
         };
 
         fn process_is_running(pid: u32) -> bool {
@@ -10560,88 +10565,127 @@ mod tests {
             }
         }
 
+        // Suspend counts of every thread in `pid`. SuspendThread returns the
+        // previous count, and the matching ResumeThread restores it at once.
+        fn suspend_counts(pid: u32) -> Vec<u32> {
+            let mut counts = Vec::new();
+            // SAFETY: the snapshot and thread handles are checked before use
+            // and closed on every path.
+            unsafe {
+                let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+                assert!(snapshot != INVALID_HANDLE_VALUE, "thread snapshot");
+                let mut entry = THREADENTRY32 {
+                    dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+                    ..Default::default()
+                };
+                let mut has_entry = Thread32First(snapshot, &mut entry);
+                while has_entry != 0 {
+                    if entry.th32OwnerProcessID == pid {
+                        let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                        if !thread.is_null() {
+                            let previous = SuspendThread(thread);
+                            if previous != u32::MAX {
+                                ResumeThread(thread);
+                                counts.push(previous);
+                            }
+                            let _ = CloseHandle(thread);
+                        }
+                    }
+                    has_entry = Thread32Next(snapshot, &mut entry);
+                }
+                let _ = CloseHandle(snapshot);
+            }
+            counts
+        }
+
+        // The child of `parent` running `exe`, if it has started.
+        fn child_process(parent: u32, exe: &str) -> Option<u32> {
+            // SAFETY: the snapshot handle is checked before use and closed.
+            unsafe {
+                let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+                assert!(snapshot != INVALID_HANDLE_VALUE, "process snapshot");
+                let mut entry = PROCESSENTRY32W {
+                    dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+                    ..std::mem::zeroed()
+                };
+                let mut found = None;
+                let mut has_entry = Process32FirstW(snapshot, &mut entry);
+                while has_entry != 0 {
+                    let len = entry
+                        .szExeFile
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(entry.szExeFile.len());
+                    if entry.th32ParentProcessID == parent
+                        && String::from_utf16_lossy(&entry.szExeFile[..len])
+                            .eq_ignore_ascii_case(exe)
+                    {
+                        found = Some(entry.th32ProcessID);
+                        break;
+                    }
+                    has_entry = Process32NextW(snapshot, &mut entry);
+                }
+                let _ = CloseHandle(snapshot);
+                found
+            }
+        }
+
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let pid_file = std::env::temp_dir().join(format!(
-            "toolport-job-test-{}-{nonce}.pid",
+        // A .cmd launcher runs under cmd.exe and starts its long-lived child the
+        // way npx.cmd starts node. cmd.exe starts in milliseconds; PowerShell's
+        // cold start alone took most of the old 8 second budget on a loaded runner.
+        let script_file = std::env::temp_dir().join(format!(
+            "toolport-job-test-{}-{nonce}.cmd",
             std::process::id()
         ));
-        let script_file = pid_file.with_extension("ps1");
-        let diag_file = pid_file.with_extension("diag.txt");
-        let escaped_pid_file = pid_file.to_string_lossy().replace('\'', "''");
-        let escaped_diag_file = diag_file.to_string_lossy().replace('\'', "''");
-        // The parent launches its descendant immediately. The production spawn
-        // path must assign the suspended parent before allowing this code to run.
-        // A diag file records what the launcher saw and any Start-Process error, so
-        // a failure names the cause instead of only the missing pid.
-        let script = format!(
-            "$ErrorActionPreference = 'Continue'; \
-             $diag = 'PSVersion=' + $PSVersionTable.PSVersion.ToString() + \"`r`n\" + \
-               'PSModulePath=' + $env:PSModulePath + \"`r`n\" + \
-               'Path=' + $env:Path + \"`r`n\" + \
-               'StartProcess=' + [string][bool](Get-Command Start-Process -ErrorAction SilentlyContinue); \
-             [System.IO.File]::WriteAllText('{escaped_diag_file}', $diag); \
-             try {{ \
-               $grandchild = Start-Process -FilePath 'powershell.exe' \
-                 -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 60') \
-                 -WindowStyle Hidden -PassThru -ErrorAction Stop; \
-               [System.IO.File]::WriteAllText('{escaped_pid_file}', [string]$grandchild.Id); \
-               Wait-Process -Id $grandchild.Id \
-             }} catch {{ \
-               [System.IO.File]::AppendAllText('{escaped_diag_file}', \"`r`nERROR: \" + ($_ | Out-String)) \
-             }}"
-        );
-        std::fs::write(&script_file, script).expect("write launcher script");
-        let args = vec![
-            "-NoLogo".to_string(),
-            "-NoProfile".to_string(),
-            "-NonInteractive".to_string(),
-            "-ExecutionPolicy".to_string(),
-            "Bypass".to_string(),
-            "-File".to_string(),
-            script_file.to_string_lossy().into_owned(),
-        ];
-        let transport = StdioTransport::spawn("powershell.exe", &args, &[], None, false)
-            .expect("spawn Job Object-owned launcher");
+        std::fs::write(&script_file, "@ping -n 120 127.0.0.1 >nul\r\n")
+            .expect("write launcher script");
+        let transport =
+            StdioTransport::spawn(&script_file.to_string_lossy(), &[], &[], None, false)
+                .expect("spawn Job Object-owned launcher");
+        let launcher = transport
+            .core
+            .child
+            .lock()
+            .map(|child| child.id())
+            .expect("launcher pid");
 
-        // Poll for parsable CONTENT, not mere existence - the same fix the Unix sibling
-        // below already carries, and for the same reason. `WriteAllText` creates the file
-        // and fills it as separate operations, so a read landing between the two returns an
-        // empty string and `parse` panics on a test that was about to pass. Waiting on
-        // `exists()` is waiting on the wrong event.
+        // Spawn returns only after the suspended launcher is assigned to the Job
+        // Object and resumed. A thread still suspended here would never run.
+        let counts = suspend_counts(launcher);
+        assert!(
+            !counts.is_empty() && counts.iter().all(|&count| count == 0),
+            "spawn must resume the launcher after Job Object assignment: {counts:?}"
+        );
+
         let created_deadline = Instant::now() + Duration::from_secs(8);
-        let grandchild_pid: u32 = loop {
-            if let Some(pid) = std::fs::read_to_string(&pid_file)
-                .ok()
-                .and_then(|s| s.trim().parse::<u32>().ok())
-            {
+        let grandchild_pid = loop {
+            if let Some(pid) = child_process(launcher, "PING.EXE") {
                 break pid;
             }
+            let exited = transport
+                .core
+                .child
+                .lock()
+                .ok()
+                .and_then(|mut child| child.try_wait().ok().flatten());
             assert!(
-                Instant::now() < created_deadline,
-                "launcher should record its grandchild pid; diag: {}; launcher stderr: {}; \
-                 launcher exited: {:?}; child env: {}",
-                std::fs::read_to_string(&diag_file)
-                    .unwrap_or_else(|e| format!("<no diag file: {e}>")),
+                exited.is_none(),
+                "launcher exited before starting its child: {exited:?}; stderr: {}",
                 transport
                     .core
                     .stderr
                     .lock()
                     .map(|b| b.trim().to_string())
-                    .unwrap_or_default(),
-                transport
-                    .core
-                    .child
-                    .lock()
-                    .ok()
-                    .and_then(|mut child| child.try_wait().ok().flatten()),
-                super::child_environment(&super::process_env_map(), &[], false)
-                    .into_iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>()
-                    .join(" | ")
+                    .unwrap_or_default()
+            );
+            assert!(
+                Instant::now() < created_deadline,
+                "running launcher never started its child; thread suspend counts: {:?}",
+                suspend_counts(launcher)
             );
             std::thread::sleep(Duration::from_millis(25));
         };
@@ -10659,9 +10703,7 @@ mod tests {
             !process_is_running(grandchild_pid),
             "closing the Job Object must terminate launcher descendants"
         );
-        let _ = std::fs::remove_file(pid_file);
         let _ = std::fs::remove_file(script_file);
-        let _ = std::fs::remove_file(diag_file);
     }
 
     /// The unix counterpart to `windows_job_terminates_launcher_grandchild`:
