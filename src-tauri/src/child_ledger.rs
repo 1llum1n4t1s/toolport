@@ -302,13 +302,20 @@ pub fn process_start(pid: u32) -> Option<u64> {
 
 #[cfg(windows)]
 pub fn process_start(pid: u32) -> Option<u64> {
-    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, WAIT_TIMEOUT};
     use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        GetProcessTimes, OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SYNCHRONIZE,
     };
 
     // SAFETY: PID を渡し、所有するハンドルまたは null を受け取る。
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        )
+    };
     if handle.is_null() {
         return None;
     }
@@ -318,10 +325,12 @@ pub fn process_start(pid: u32) -> Option<u64> {
     let mut user = FILETIME::default();
     // SAFETY: 有効なハンドルと書込み可能な FILETIME を渡す。
     let ok = unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) };
+    // SAFETY: SYNCHRONIZE を持つ有効なハンドルを待機せず照会する。
+    let running = unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT;
     // SAFETY: 取得失敗時も含め、所有するハンドルを一度だけ閉じる。
     unsafe { CloseHandle(handle) };
-    // ハンドルが保持されている終了済みプロセスも照会できるため除外する。
-    (ok != 0 && exited.dwLowDateTime == 0 && exited.dwHighDateTime == 0)
+    // 生存中の exit FILETIME は未定義なので、プロセスのシグナル状態で判定する。
+    (ok != 0 && running)
         .then_some((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
 }
 

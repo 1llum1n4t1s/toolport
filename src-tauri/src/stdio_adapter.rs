@@ -76,6 +76,8 @@ pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// A single request may legitimately run long (a slow downstream call), so the
 /// HTTP budget is generous; the listen stream is separate and reconnects.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+// EOF が通常要求の長い予算を待たないよう、再生する handshake だけ短く制限する。
+const RECOVERY_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// A subscription's reply stays open for the life of the subscription, so it has
 /// no overall deadline. The daemon sends a keepalive every 30 seconds; three
 /// missed ones mean it is gone.
@@ -711,6 +713,18 @@ impl Session {
     /// already has its answer, but an error in its reply fails the replay. A
     /// transport failure marks the daemon lost and is returned as-is.
     fn post(&self, body: &str, forward: bool) -> Result<(), ExchangeError> {
+        self.post_with_timeout(body, forward, self.request_timeout)
+    }
+
+    fn post_with_timeout(
+        &self,
+        body: &str,
+        forward: bool,
+        timeout: Duration,
+    ) -> Result<(), ExchangeError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(ExchangeError::Failed("the adapter is closed".to_string()));
+        }
         let message = serde_json::from_str::<serde_json::Value>(body).unwrap_or_default();
         let id = message.get("id").filter(|id| !id.is_null());
         let expects_reply = id.is_some() && message.get("method").is_some();
@@ -730,7 +744,7 @@ impl Session {
             None => crate::http_client::agent()
                 .post(&url)
                 .config()
-                .timeout_global(Some(self.request_timeout))
+                .timeout_global(Some(timeout))
                 .build(),
         };
         let mut request = self.with_identity(
@@ -898,6 +912,9 @@ impl Session {
             .recovery
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.closed.load(Ordering::SeqCst) {
+            return Err("the adapter is closed".to_string());
+        }
         if stale >= DAEMON_WEDGED {
             let wedged = self
                 .wedged_endpoint
@@ -925,6 +942,9 @@ impl Session {
                 }
             }
         }
+        if self.closed.load(Ordering::SeqCst) {
+            return Err("the adapter is closed".to_string());
+        }
         let lifetime_endpoint = self
             .lifetime_endpoint
             .lock()
@@ -949,7 +969,12 @@ impl Session {
             .ok()
             .and_then(|value| value.clone());
         if let Some(body) = initialize {
-            self.post(&body, false).map_err(reopen)?;
+            self.post_with_timeout(
+                &body,
+                false,
+                self.request_timeout.min(RECOVERY_HANDSHAKE_TIMEOUT),
+            )
+            .map_err(reopen)?;
             if self.session_id().is_none() {
                 return Err(
                     "the host daemon session could not be reopened: no session id was issued"
@@ -963,7 +988,12 @@ impl Session {
             .ok()
             .and_then(|value| value.clone());
         if let Some(body) = initialized {
-            self.post(&body, false).map_err(reopen)?;
+            self.post_with_timeout(
+                &body,
+                false,
+                self.request_timeout.min(RECOVERY_HANDSHAKE_TIMEOUT),
+            )
+            .map_err(reopen)?;
         }
         Ok(())
     }
@@ -1020,7 +1050,20 @@ impl Session {
     /// Close the daemon-side session on client EOF so its per-session state is
     /// released immediately rather than waiting for a lease TTL.
     fn close(&self) {
-        self.closed.store(true, Ordering::SeqCst);
+        {
+            // gate の差替えやアイドル回復の開始と EOF の順序を確定する。
+            let _gate = self
+                .gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.closed.store(true, Ordering::SeqCst);
+        }
+        // 復旧だけを待ち、長時間の通常要求が持つ read gate は待たない。
+        // 復旧が既に置換先を作っていても、この後にその接続を閉じる。
+        let _serial = self
+            .recovery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let descriptor = self.descriptor();
         let _ = self
             .with_identity(
@@ -1377,6 +1420,9 @@ impl Session {
             return;
         };
         drop(gate);
+        if self.closed.load(Ordering::SeqCst) {
+            return;
+        }
         if self
             .stale
             .compare_exchange(DAEMON_LOST, HEALTHY, Ordering::SeqCst, Ordering::SeqCst)
@@ -1397,6 +1443,9 @@ impl Session {
     }
 
     fn open_lifetime_stream(&self) -> Result<(), String> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         let descriptor = self.descriptor();
         let mut endpoint = self
             .lifetime_endpoint
@@ -1941,6 +1990,7 @@ mod tests {
         endpoint: String,
         posted: Arc<Mutex<Vec<Posted>>>,
         lifetime_requests: Arc<AtomicUsize>,
+        deleted: Arc<Mutex<Vec<(String, Option<String>)>>>,
     }
 
     impl ScriptedDaemon {
@@ -1959,12 +2009,15 @@ mod tests {
             let record = Arc::clone(&posted);
             let lifetime_requests = Arc::new(AtomicUsize::new(0));
             let lifetime_record = Arc::clone(&lifetime_requests);
+            let deleted = Arc::new(Mutex::new(Vec::new()));
+            let delete_record = Arc::clone(&deleted);
             std::thread::spawn(move || {
                 for stream in listener.incoming().map_while(Result::ok) {
                     let script = Arc::clone(&script);
                     let record = Arc::clone(&record);
                     let identity = identity.clone();
                     let lifetime_record = Arc::clone(&lifetime_record);
+                    let delete_record = Arc::clone(&delete_record);
                     std::thread::spawn(move || {
                         let mut reader = BufReader::new(stream.try_clone().unwrap());
                         let mut request_line = String::new();
@@ -1989,6 +2042,15 @@ mod tests {
                                     _ => {}
                                 }
                             }
+                        }
+                        if request_line.starts_with("DELETE ") {
+                            delete_record.lock().unwrap().push((request_line, session));
+                            let mut stream = stream;
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"
+                            );
+                            return;
                         }
                         if request_line.starts_with("GET ") {
                             let body = if request_line.contains("/adapter/lifetime ") {
@@ -2029,6 +2091,7 @@ mod tests {
                 endpoint,
                 posted,
                 lifetime_requests,
+                deleted,
             }
         }
 
@@ -2163,6 +2226,126 @@ mod tests {
     }
 
     const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn eof_waits_for_a_started_handshake_and_deletes_its_new_session() {
+        let _env = crate::registry::DataDirTestEnv::new("adapter-eof-handshake");
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let held = Arc::clone(&release);
+        let daemon = ScriptedDaemon::start(move |posted| {
+            assert_eq!(posted.message["method"], "initialize");
+            started_tx.send(()).unwrap();
+            let (lock, ready) = &*held;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = ready.wait(released).unwrap();
+            }
+            Answer::result(posted, serde_json::json!({})).with_session("new-session".into())
+        });
+        let sink = Sink::default();
+        let session = Arc::new(scripted_session(&daemon, &sink, TEST_TIMEOUT));
+        session.remember_handshake(r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#);
+        session.remember_handshake(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+        *session.session_id.lock().unwrap() = Some("old".into());
+        let recovering = Arc::clone(&session);
+        let worker = std::thread::spawn(move || {
+            let gate = recovering.current_gate();
+            let _exclusive = gate.write().unwrap();
+            recovering.recover(SESSION_REFUSED)
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let closing = Arc::clone(&session);
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+        let closer = std::thread::spawn(move || {
+            closing.close();
+            closed_tx.send(()).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !session.closed.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "EOF did not arrive");
+            std::thread::yield_now();
+        }
+        assert!(closed_rx.try_recv().is_err());
+        {
+            let (lock, ready) = &*release;
+            *lock.lock().unwrap() = true;
+            ready.notify_all();
+        }
+        assert!(worker.join().unwrap().is_err());
+        closed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        closer.join().unwrap();
+        assert_eq!(daemon.posted("initialize").len(), 1);
+        assert!(daemon.posted("notifications/initialized").is_empty());
+        assert!(daemon
+            .deleted
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(request, session)| request.starts_with("DELETE /mcp ")
+                && session.as_deref() == Some("new-session")));
+        assert!(sink.messages().is_empty());
+    }
+
+    #[test]
+    fn eof_prevents_a_recovery_waiting_for_the_serial_gate() {
+        let env = crate::registry::DataDirTestEnv::new("adapter-eof-recovery");
+        let compat = CompatKey::new("test", env.dir.to_string_lossy());
+        let daemon = ScriptedDaemon::start_with_identity(
+            |posted| Answer::result(posted, serde_json::json!({})).with_session("new".into()),
+            Some(crate::daemon::DaemonIdentity {
+                compat: compat.fingerprint(),
+                protocol: crate::daemon::PROTOCOL_GENERATION,
+                pid: std::process::id(),
+                gateway_version: env!("CARGO_PKG_VERSION").to_string(),
+                telemetry: None,
+            }),
+        );
+        let descriptor = DaemonDescriptor::new(&daemon.endpoint, "test-token", &compat);
+        let rendezvous = Rendezvous::new(&env.dir, compat);
+        crate::daemon::write_descriptor(&rendezvous.descriptor_path(), &descriptor).unwrap();
+        let session = Arc::new(Session::new(rendezvous, descriptor.clone(), None));
+        session.remember_handshake(r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#);
+        *session.session_id.lock().unwrap() = Some("old".into());
+        let serial = session.recovery.lock().unwrap();
+        let recovering = Arc::clone(&session);
+        let worker = std::thread::spawn(move || recovering.recover_gone(&descriptor));
+        // write gate の取得を確認し、closed の最初の確認より後で EOF を入れる。
+        let gate = session.current_gate();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while gate.try_read().is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "recovery did not acquire its gate"
+            );
+            std::thread::yield_now();
+        }
+        let closing = Arc::clone(&session);
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+        let closer = std::thread::spawn(move || {
+            closing.close();
+            closed_tx.send(()).unwrap();
+        });
+        while !session.closed.load(Ordering::SeqCst) {
+            assert!(
+                Instant::now() < deadline,
+                "EOF did not mark the adapter closed"
+            );
+            std::thread::yield_now();
+        }
+        assert!(
+            closed_rx.try_recv().is_err(),
+            "close must wait for recovery cleanup"
+        );
+        drop(serial);
+        worker.join().unwrap();
+        closed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        closer.join().unwrap();
+        assert!(daemon.posted("initialize").is_empty());
+        assert_eq!(daemon.deleted.lock().unwrap().len(), 2);
+        assert!(session.exchange(&tool_call(2)).is_err());
+        assert!(daemon.posted("tools/call").is_empty());
+    }
 
     #[test]
     fn heartbeat_adopts_a_replacement_without_a_client_request() {
