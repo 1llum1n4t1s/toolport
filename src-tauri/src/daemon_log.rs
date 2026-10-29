@@ -228,7 +228,7 @@ pub fn end_run_cleanly(dir: &Path) {
     let _ = std::fs::remove_file(marker_path(dir, std::process::id()));
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
 mod tests {
     use super::*;
 
