@@ -85,7 +85,7 @@ fn ledger_dir(dir: &Path) -> PathBuf {
 
 /// Start recording this process's children under `dir`.
 pub fn bind_data_dir(dir: &Path) {
-    // Windows では Job Object が子を回収するため、台帳を有効にしない。
+    // Windows uses Job Objects for child cleanup, so keep the ledger disabled.
     if !cfg!(unix) {
         return;
     }
