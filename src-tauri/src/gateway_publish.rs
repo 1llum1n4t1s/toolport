@@ -1865,15 +1865,10 @@ pub fn pid_is_running(pid: u32) -> bool {
     {
         use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0};
         use windows_sys::Win32::System::Threading::{
-            OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SYNCHRONIZE,
+            OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
         };
         unsafe {
-            let handle = OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
-                0,
-                pid,
-            );
+            let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
             if !handle.is_null() {
                 // An exited process remains openable while another handle exists.
                 // A signaled process handle is definitive; all other results are inconclusive.
