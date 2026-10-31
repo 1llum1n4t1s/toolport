@@ -1863,15 +1863,23 @@ pub fn prune_published_gateways(
 pub fn pid_is_running(pid: u32) -> bool {
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
+        use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0};
         use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_SYNCHRONIZE,
         };
         unsafe {
-            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            let handle = OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            );
             if !handle.is_null() {
+                // An exited process remains openable while another handle exists.
+                // A signaled process handle is definitive; all other results are inconclusive.
+                let running = WaitForSingleObject(handle, 0) != WAIT_OBJECT_0;
                 CloseHandle(handle);
-                return true;
+                return running;
             }
             // Only ERROR_INVALID_PARAMETER positively means "no such pid". Access
             // denied means it exists and we cannot see it.
@@ -2579,6 +2587,35 @@ pub fn is_unversioned_install_gateway_path(stored: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn pid_liveness_distinguishes_running_and_exited_process_with_retained_handle() {
+        use std::process::Command;
+        use std::time::{Duration, Instant};
+
+        assert!(super::pid_is_running(std::process::id()));
+        let mut child = Command::new("cmd.exe")
+            .args(["/C", "exit", "/B", "259"])
+            .spawn()
+            .expect("start short-lived child");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("poll child") {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("child did not exit in time");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(status.code(), Some(259));
+        // Keep Child alive: on Windows its process handle keeps the exited PID openable.
+        assert!(!super::pid_is_running(child.id()));
+        drop(child);
+    }
+
     #[test]
     fn failed_manifest_publish_preserves_previous_state_and_retries() {
         let root =
