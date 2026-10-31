@@ -232,6 +232,8 @@ pub fn end_run_cleanly(dir: &Path) {
 mod tests {
     use super::*;
 
+    static RUN_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     fn scratch(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "toolport-daemon-log-{label}-{}-{}",
@@ -244,6 +246,9 @@ mod tests {
 
     #[test]
     fn a_dead_run_without_a_clean_exit_is_reported_with_its_panic() {
+        let _run = RUN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = scratch("unclean");
         let me = ProcessId::of(std::process::id()).unwrap();
         // A run whose pid is now someone else: same pid, another start time.
@@ -294,6 +299,9 @@ mod tests {
 
     #[test]
     fn a_reused_own_pid_is_reported_and_a_live_run_is_preserved() {
+        let _run = RUN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = scratch("reused-pid");
         let me = ProcessId::of(std::process::id()).unwrap();
         std::fs::create_dir_all(dir.join(RUNS_DIR)).unwrap();
