@@ -1527,6 +1527,36 @@ fn matrix_lifecycle_adapter_eof_releases_the_session_and_lets_the_daemon_exit() 
 }
 
 #[test]
+fn matrix_lifecycle_eof_drains_pipelined_requests() {
+    let _guard = CASE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (_fixture, dir) = Fixture::new("eof-pipeline");
+    write_registry(&dir, vec![], vec![]);
+    let mut client = spawn_adapter(&dir, &AdapterOptions::default());
+    client.initialize("eof-pipeline");
+    for id in 100..116 {
+        client.send(json!({"jsonrpc": "2.0", "id": id, "method": "tools/list"}));
+    }
+    client.close_stdin();
+    let mut replies = std::collections::HashSet::new();
+    while replies.len() < 16 {
+        let response = client.next_message();
+        let Some(id) = response["id"].as_i64() else {
+            continue;
+        };
+        assert!((100..116).contains(&id));
+        assert!(replies.insert(id), "duplicate reply: {response}");
+        assert!(
+            response.get("error").is_none(),
+            "queued reply at EOF: {response}"
+        );
+        assert!(response["result"]["tools"].is_array());
+    }
+    client.wait_exit(Duration::from_secs(20));
+}
+
+#[test]
 fn matrix_lifecycle_idle_recovery_delivers_fresh_catalog_notification() {
     let _guard = CASE_LOCK
         .lock()

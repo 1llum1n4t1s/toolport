@@ -555,16 +555,37 @@ pub(crate) fn attempt_identity_probe(
     identity_probe_with_timeout(descriptor, PROBE_TIMEOUT)
 }
 
-fn identity_probe_with_timeout(
+pub(crate) fn identity_probe_with_timeout(
     descriptor: &DaemonDescriptor,
     timeout: Duration,
 ) -> Result<DaemonIdentity, ProbeFailure> {
+    identity_probe_with_deadlines(descriptor, timeout, false)
+}
+
+pub(crate) fn identity_probe_for_recovery(
+    descriptor: &DaemonDescriptor,
+    timeout: Duration,
+) -> Result<DaemonIdentity, ProbeFailure> {
+    identity_probe_with_deadlines(descriptor, timeout, true)
+}
+
+fn identity_probe_with_deadlines(
+    descriptor: &DaemonDescriptor,
+    timeout: Duration,
+    recovery: bool,
+) -> Result<DaemonIdentity, ProbeFailure> {
     let url = format!("http://{}{}", descriptor.endpoint, IDENTITY_PATH);
-    let response = crate::http_client::agent()
+    let request = crate::http_client::agent()
         .get(&url)
         .set_header("Authorization", &format!("Bearer {}", descriptor.token))
         .config()
-        .timeout_global(Some(timeout))
+        .timeout_global(Some(timeout));
+    let request = if recovery {
+        request.timeout_connect(Some(timeout))
+    } else {
+        request
+    };
+    let response = request
         .build()
         .call()
         .retain_status_body()
@@ -613,6 +634,41 @@ pub struct Rendezvous {
     compat: CompatKey,
 }
 
+/// One recovery's existing handshake budget, shared by discovery and replay.
+pub(crate) struct RecoveryBudget<'a> {
+    deadline: Instant,
+    cancelled: &'a std::sync::atomic::AtomicBool,
+}
+
+impl<'a> RecoveryBudget<'a> {
+    pub(crate) fn new(timeout: Duration, cancelled: &'a std::sync::atomic::AtomicBool) -> Self {
+        Self {
+            deadline: Instant::now() + timeout,
+            cancelled,
+        }
+    }
+
+    pub(crate) fn remaining(&self) -> Result<Duration, String> {
+        if self.cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("the adapter is closing".into());
+        }
+        self.deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| "the host daemon recovery deadline expired".into())
+    }
+
+    fn lock(&self, path: &Path) -> Result<registry::FileLock, String> {
+        loop {
+            match registry::lock_at_for(path, self.remaining()?.min(READY_POLL)) {
+                Ok(lock) => return Ok(lock),
+                Err(error) if error.starts_with("The registry is locked") => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
 impl Rendezvous {
     pub fn new(data_dir: impl Into<PathBuf>, compat: CompatKey) -> Self {
         Self {
@@ -631,7 +687,15 @@ impl Rendezvous {
     /// concurrent cold start runs `spawn`.
     pub fn ensure(
         &self,
+        spawn: impl FnMut() -> Result<(), String>,
+    ) -> Result<DaemonDescriptor, EnsureError> {
+        self.ensure_with_budget(spawn, None)
+    }
+
+    pub(crate) fn ensure_with_budget(
+        &self,
         mut spawn: impl FnMut() -> Result<(), String>,
+        budget: Option<&RecoveryBudget<'_>>,
     ) -> Result<DaemonDescriptor, EnsureError> {
         let path = self.descriptor_path();
         // A descriptor may appear while we wait for the election lock. If it
@@ -641,7 +705,7 @@ impl Rendezvous {
         for _ in 0..2 {
             let observed_before_lock =
                 read_descriptor(&path).filter(|descriptor| descriptor.claims_compat(&self.compat));
-            match self.probe_for_reuse(&path) {
+            match self.probe_for_reuse_with_budget(&path, budget)? {
                 Probe::Live(descriptor) => return Ok(descriptor),
                 // A silent daemon may still be alive: reuse is unproven, and
                 // clearing or spawning beside it is the double-election defect.
@@ -651,7 +715,11 @@ impl Rendezvous {
 
             // Elect: `lock_at` appends `.lock` and creates parent directories.
             let lock_base = election_lock_base(&self.data_dir, &self.compat);
-            let election = registry::lock_at_for(&lock_base, ELECTION_TIMEOUT)?;
+            let election = if let Some(budget) = budget {
+                budget.lock(&lock_base)?
+            } else {
+                registry::lock_at_for(&lock_base, ELECTION_TIMEOUT)?
+            };
 
             // If another contender published while we waited, leave the lock
             // before probing it. A slow identity response must not make the
@@ -660,7 +728,7 @@ impl Rendezvous {
                 read_descriptor(&path).filter(|descriptor| descriptor.claims_compat(&self.compat));
             if current.is_some() && current != observed_before_lock {
                 drop(election);
-                match self.probe_for_reuse(&path) {
+                match self.probe_for_reuse_with_budget(&path, budget)? {
                     Probe::Live(descriptor) => return Ok(descriptor),
                     Probe::Silent(descriptor) => {
                         return Err(EnsureError::Unresponsive(descriptor));
@@ -672,11 +740,11 @@ impl Rendezvous {
             // Recheck under the lock: another contender may have started the
             // daemon while we waited. Silence needs the same patience as the
             // fast path, but must not hold the election lock during that wait.
-            match self.probe(&path) {
+            match self.probe_with_budget(&path, budget)? {
                 Probe::Live(descriptor) => return Ok(descriptor),
                 Probe::Silent(_) => {
                     drop(election);
-                    match self.probe_for_reuse(&path) {
+                    match self.probe_for_reuse_with_budget(&path, budget)? {
                         Probe::Live(descriptor) => return Ok(descriptor),
                         Probe::Silent(descriptor) => {
                             return Err(EnsureError::Unresponsive(descriptor));
@@ -689,8 +757,24 @@ impl Rendezvous {
 
             // We are the winner. Drop any stale pointer first so readiness
             // polling cannot mistake it for the daemon we are about to start.
-            clear_descriptor(&path);
+            if let Some(budget) = budget {
+                budget.remaining()?;
+            }
+            if let Some(budget) = budget {
+                let _descriptor_lock = budget.lock(&path)?;
+                budget.remaining()?;
+                clear_descriptor_locked(&path);
+            } else {
+                clear_descriptor(&path);
+            }
+            if let Some(budget) = budget {
+                budget.remaining()?;
+            }
             spawn()?;
+            // Once spawned, retain the existing readiness window under election.
+            // EOF must not release it early and let another adapter double-spawn.
+            let not_cancelled = std::sync::atomic::AtomicBool::new(false);
+            let startup_budget = budget.map(|_| RecoveryBudget::new(READY_TIMEOUT, &not_cancelled));
 
             // Wait for readiness while still holding the lock, so no second
             // contender spawns a daemon of its own. Until the daemon is ready,
@@ -698,7 +782,9 @@ impl Rendezvous {
             // non-live outcome keeps polling inside the budget.
             let deadline = Instant::now() + READY_TIMEOUT;
             while Instant::now() < deadline {
-                if let Probe::Live(descriptor) = self.probe(&path) {
+                if let Probe::Live(descriptor) =
+                    self.probe_with_budget(&path, startup_budget.as_ref())?
+                {
                     return Ok(descriptor);
                 }
                 std::thread::sleep(READY_POLL);
@@ -717,17 +803,32 @@ impl Rendezvous {
     /// live daemon"; a silent endpoint is not ([`Probe::Silent`]). One refusal
     /// is thin evidence for destroying a pointer, so the unreachable case
     /// rechecks once before declaring it stale.
-    fn probe(&self, path: &Path) -> Probe {
+    fn probe_with_budget(
+        &self,
+        path: &Path,
+        budget: Option<&RecoveryBudget<'_>>,
+    ) -> Result<Probe, String> {
+        let attempt = |descriptor: &DaemonDescriptor| {
+            let timeout = match budget {
+                Some(budget) => budget.remaining()?.min(PROBE_TIMEOUT),
+                None => PROBE_TIMEOUT,
+            };
+            Ok::<_, String>(if budget.is_some() {
+                identity_probe_for_recovery(descriptor, timeout)
+            } else {
+                identity_probe_with_timeout(descriptor, timeout)
+            })
+        };
         let Some(descriptor) = read_descriptor(path) else {
-            return Probe::Gone;
+            return Ok(Probe::Gone);
         };
         if !descriptor.claims_compat(&self.compat) {
-            return Probe::Gone;
+            return Ok(Probe::Gone);
         }
-        match attempt_identity_probe(&descriptor) {
+        Ok(match attempt(&descriptor)? {
             Ok(identity) if identity.is_compatible_with(&self.compat) => Probe::Live(descriptor),
             Ok(_) | Err(ProbeFailure::Answered(_)) => Probe::Gone,
-            Err(ProbeFailure::Unreachable) => match attempt_identity_probe(&descriptor) {
+            Err(ProbeFailure::Unreachable) => match attempt(&descriptor)? {
                 Ok(identity) if identity.is_compatible_with(&self.compat) => {
                     Probe::Live(descriptor)
                 }
@@ -735,18 +836,22 @@ impl Rendezvous {
                 _ => Probe::Gone,
             },
             Err(ProbeFailure::Silent) => Probe::Silent(descriptor),
-        }
+        })
     }
 
     /// The fast-path probe with bounded patience: give a live-but-slow daemon
     /// the whole [`SILENT_RETRY_TIMEOUT`] to answer before concluding
     /// anything about its pointer.
-    fn probe_for_reuse(&self, path: &Path) -> Probe {
+    fn probe_for_reuse_with_budget(
+        &self,
+        path: &Path,
+        budget: Option<&RecoveryBudget<'_>>,
+    ) -> Result<Probe, String> {
         let deadline = Instant::now() + SILENT_RETRY_TIMEOUT;
         loop {
-            match self.probe(path) {
+            match self.probe_with_budget(path, budget)? {
                 Probe::Silent(_) if Instant::now() < deadline => {}
-                outcome => return outcome,
+                outcome => return Ok(outcome),
             }
             std::thread::sleep(READY_POLL);
         }
@@ -885,6 +990,87 @@ mod tests {
 
     fn compat(version: &str, dir: &Path) -> CompatKey {
         CompatKey::new(version, dir.display().to_string())
+    }
+
+    #[test]
+    fn recovery_budget_bounds_election_and_stops_before_startup() {
+        let env = crate::registry::DataDirTestEnv::new("recovery-budget-election");
+        let key = compat("test", &env.dir);
+        let rendezvous = Rendezvous::new(&env.dir, key.clone());
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let election =
+            registry::lock_at_for(&election_lock_base(&env.dir, &key), Duration::from_secs(1))
+                .unwrap();
+        let budget = RecoveryBudget::new(Duration::from_millis(80), &cancelled);
+        let started = Instant::now();
+        let result = rendezvous.ensure_with_budget(|| panic!("must not spawn"), Some(&budget));
+        assert!(result.unwrap_err().to_string().contains("deadline"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        drop(election);
+        cancelled.store(true, Ordering::SeqCst);
+        let budget = RecoveryBudget::new(Duration::from_secs(10), &cancelled);
+        assert!(rendezvous
+            .ensure_with_budget(|| panic!("must not spawn after EOF"), Some(&budget))
+            .is_err());
+    }
+
+    #[test]
+    fn recovery_budget_includes_a_silent_identity_probe() {
+        let env = crate::registry::DataDirTestEnv::new("recovery-budget-probe");
+        let key = compat("test", &env.dir);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let descriptor =
+            DaemonDescriptor::new(listener.local_addr().unwrap().to_string(), "silent", &key);
+        write_descriptor(&descriptor_path(&env.dir, &key), &descriptor).unwrap();
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let budget = RecoveryBudget::new(Duration::from_millis(80), &cancelled);
+        let started = Instant::now();
+        let result = Rendezvous::new(&env.dir, key).ensure_with_budget(
+            || panic!("must not spawn beside a silent daemon"),
+            Some(&budget),
+        );
+        assert!(result.unwrap_err().to_string().contains("deadline"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn cancelled_startup_retains_election_until_its_daemon_is_ready() {
+        let env = crate::registry::DataDirTestEnv::new("recovery-startup-election");
+        let key = compat("test", &env.dir);
+        let dir = env.dir.clone();
+        let worker_key = key.clone();
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let first_spawns = Arc::clone(&spawns);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let first = std::thread::spawn(move || {
+            let cancelled = std::sync::atomic::AtomicBool::new(false);
+            let budget = RecoveryBudget::new(Duration::from_millis(80), &cancelled);
+            Rendezvous::new(&dir, worker_key.clone()).ensure_with_budget(
+                || {
+                    first_spawns.fetch_add(1, Ordering::SeqCst);
+                    let delayed_dir = dir.clone();
+                    let delayed_key = worker_key.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(200));
+                        start_listener(&delayed_dir, &delayed_key);
+                    });
+                    cancelled.store(true, Ordering::SeqCst);
+                    started_tx.send(()).unwrap();
+                    Ok(())
+                },
+                Some(&budget),
+            )
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let second = Rendezvous::new(&env.dir, key.clone())
+            .ensure(|| {
+                spawns.fetch_add(1, Ordering::SeqCst);
+                start_listener(&env.dir, &key);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(first.join().unwrap().unwrap(), second);
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
     }
 
     #[test]
