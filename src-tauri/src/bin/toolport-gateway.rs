@@ -8986,12 +8986,14 @@ fn root_servers_in_scope(
 fn root_launch_keys(specs: &[ServerEntry], root: &str, secrets_generation: u64) -> Vec<LaunchKey> {
     specs
         .iter()
-        .map(|server| LaunchKey {
-            server: server.id.clone(),
-            kind: "stdio",
-            digest: registry::sha256_hex(
-                &effective_server_spec(server, Some(root), secrets_generation).to_string(),
-            ),
+        .map(|server| {
+            let spec = effective_server_spec(server, Some(root), secrets_generation);
+            LaunchKey {
+                server: server.id.clone(),
+                kind: "stdio",
+                digest: registry::sha256_hex(&spec.to_string()),
+                catalog: Some(catalog_cache_digest(&spec)),
+            }
         })
         .collect()
 }
@@ -9693,7 +9695,7 @@ fn notify_tools_changed_for_catalog_diff(
     let mut dropped = 0usize;
     let mut suppressed = 0usize;
     for session in sessions {
-        if session.is_expired() || session.closed.load(Ordering::SeqCst) {
+        if !session.takes_notifications() {
             continue;
         }
         let owner = session.owner.clone();
@@ -9849,7 +9851,7 @@ fn notify_list_changed_for_router_diff(
     let msg = json!({ "jsonrpc": "2.0", "method": method });
     let mut changed_by_scope: HashMap<Option<Vec<String>>, bool> = HashMap::new();
     for session in sessions {
-        if session.is_expired() || session.closed.load(Ordering::SeqCst) {
+        if !session.takes_notifications() {
             continue;
         }
         let scope = session.owner.as_ref().and_then(|owner| owner.scope.clone());
@@ -10028,7 +10030,7 @@ fn fanout_mcp_notification(mcp_sessions: &McpSessions, msg: &Value) {
         .cloned()
         .collect();
     for session in sessions {
-        if session.is_expired() || session.closed.load(Ordering::SeqCst) {
+        if !session.takes_notifications() {
             continue;
         }
         let Some(json) = session.notification_json(msg) else {
@@ -10108,7 +10110,7 @@ fn deliver_resource_updated(
                 .collect()
         };
         for session in targets {
-            if session.is_expired() || session.closed.load(Ordering::SeqCst) {
+            if !session.takes_notifications() {
                 continue;
             }
             let Some(json) = session.notification_json(&msg) else {
@@ -11626,10 +11628,27 @@ fn load_server_catalogs(profile: Option<&str>) -> HashMap<String, Value> {
         .unwrap_or_default()
 }
 
+/// The key a server's cached catalog is stored under: its launch spec without the
+/// credential digest. OAuth refreshes rotate the stored access token and state, so
+/// keying on them missed the cache on nearly every cold start and left slow remote
+/// servers out of the first tools/list (issue #1286). A spec with no credentials
+/// hashes exactly as before, so existing cache files still match.
+fn catalog_cache_digest(spec: &Value) -> String {
+    let mut spec = spec.clone();
+    if let Some(revision) = spec.get_mut("credentialsRevision") {
+        *revision = Value::String(String::new());
+    }
+    registry::sha256_hex(&spec.to_string())
+}
+
 fn cached_server_tools(catalogs: &HashMap<String, Value>, id: &str, spec: &Value) -> Vec<Value> {
     catalogs
         .get(id)
-        .filter(|entry| entry["spec"] == registry::sha256_hex(&spec.to_string()))
+        .filter(|entry| {
+            // Files written before #1286 keyed on the full launch digest.
+            entry["spec"] == catalog_cache_digest(spec)
+                || entry["spec"] == registry::sha256_hex(&spec.to_string())
+        })
         .and_then(|entry| entry["tools"].as_array().cloned())
         .unwrap_or_default()
 }
@@ -11662,11 +11681,9 @@ fn save_server_catalogs_for_launches(router: &Router, profile: Option<&str>, key
                 let spec = keys
                     .iter()
                     .find(|key| key.server == id)
-                    .map(|key| key.digest.clone())
+                    .map(|key| key.catalog.clone().unwrap_or_else(|| key.digest.clone()))
                     .unwrap_or_else(|| {
-                        registry::sha256_hex(
-                            &router.launch_spec(&id).unwrap_or(&Value::Null).to_string(),
-                        )
+                        catalog_cache_digest(router.launch_spec(&id).unwrap_or(&Value::Null))
                     });
                 (id, ServerCatalog { spec, tools })
             })
@@ -12886,7 +12903,7 @@ impl HostState {
         }
 
         for (session, keys, kind, prior) in before {
-            if session.is_expired() || session.closed.load(Ordering::SeqCst) {
+            if !session.takes_notifications() {
                 continue;
             }
             let (Some(owner), Some(view)) = (session.owner.as_ref(), committed.get(&keys)) else {
@@ -14806,6 +14823,14 @@ impl SessionState {
         if let Ok(mut t) = self.last_seen.lock() {
             *t = Instant::now();
         }
+    }
+
+    /// Whether server-initiated notifications should be queued here. The adapter
+    /// lifetime stream only lets the daemon see the adapter exit; the adapter reads
+    /// and discards its frames, so a list_changed queued there reaches no client and
+    /// only inflated the `accepted` count in catalog_notification logs (issue #1286).
+    fn takes_notifications(&self) -> bool {
+        !self.adapter_lifetime && !self.is_expired() && !self.closed.load(Ordering::SeqCst)
     }
 
     fn is_expired(&self) -> bool {
@@ -24227,6 +24252,139 @@ mod tests {
         });
     }
 
+    /// Issue #1286: an OAuth refresh rewrites the stored access token and state,
+    /// which changes the launch spec's credential digest. Keying the per-server
+    /// catalog cache on that digest dropped every slow OAuth server from the cold
+    /// first tools/list even though its tools were cached.
+    #[test]
+    fn credential_rotation_keeps_the_cached_server_catalog() {
+        let _env = DataDirTestEnv::new("catalog-credential-rotation");
+        let spec =
+            json!({"url":"https://remote.invalid/mcp","credentialsRevision":"before-refresh"});
+        let tools = vec![json!({"name":"lookup"})];
+        let mut router = Router::new();
+        router.add_supervised(
+            "remote".into(),
+            tools.clone(),
+            Arc::new(|| {
+                Err(ConnectFailure {
+                    message: "not in this test".into(),
+                    needs_auth: false,
+                    auth_target: None,
+                })
+            }),
+            ReconnectBackoff::default(),
+            spec.clone(),
+        );
+        save_server_catalogs(&router, None);
+        let catalogs = load_server_catalogs(None);
+        let mut rotated = spec.clone();
+        rotated["credentialsRevision"] = json!("after-refresh");
+        assert_eq!(
+            cached_server_tools(&catalogs, "remote", &rotated),
+            tools,
+            "a token refresh must not discard the cached catalog"
+        );
+        let mut moved = spec.clone();
+        moved["url"] = json!("https://elsewhere.invalid/mcp");
+        assert!(cached_server_tools(&catalogs, "remote", &moved).is_empty());
+
+        // Rooted views save under their launch keys, which hash the full spec.
+        let key = LaunchKey {
+            server: "remote".into(),
+            kind: "stdio",
+            digest: registry::sha256_hex(&spec.to_string()),
+            catalog: Some(catalog_cache_digest(&spec)),
+        };
+        let rooted = Router::new().with_shared_server_slot(&router.server_slot("remote").unwrap());
+        save_server_catalogs_for_launches(&rooted, Some("root:rotation"), &[key]);
+        assert_eq!(
+            cached_server_tools(
+                &load_server_catalogs(Some("root:rotation")),
+                "remote",
+                &rotated
+            ),
+            tools,
+            "a rotated secret must not discard a rooted server's cached catalog"
+        );
+
+        // Files written before this change keyed on the full spec, and plain
+        // servers hash exactly as before.
+        std::fs::write(
+            server_catalog_path(None).unwrap(),
+            json!({"version":TOOL_CACHE_VERSION,"servers":{"remote":{
+                "spec":registry::sha256_hex(&spec.to_string()),"tools":tools}}})
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            cached_server_tools(&load_server_catalogs(None), "remote", &spec),
+            tools
+        );
+        let plain = json!({"command":"node","credentialsRevision":""});
+        assert_eq!(
+            catalog_cache_digest(&plain),
+            registry::sha256_hex(&plain.to_string())
+        );
+    }
+
+    /// Issue #1286: the adapter lifetime stream is a liveness socket whose frames
+    /// the adapter discards. Queuing list_changed there reached no client and made
+    /// catalog_notification count it as accepted.
+    #[test]
+    fn list_changed_skips_the_adapter_lifetime_stream() {
+        let _env = DataDirTestEnv::new("list-changed-skips-lifetime");
+        let state = http_state(false);
+        let mut lifetime = SessionState::new_http(None);
+        lifetime.adapter_lifetime = true;
+        let lifetime = Arc::new(lifetime);
+        state
+            .mcp_sessions
+            .lock()
+            .unwrap()
+            .insert("adapter-lifetime:issue-1286".into(), Arc::clone(&lifetime));
+        let sid = mint_mcp_session(&state, None).unwrap_or_else(|_| panic!("mint session"));
+        let session = Arc::clone(&state.mcp_sessions.lock().unwrap()[&sid]);
+        let methods = |session: &SessionState| -> Vec<String> {
+            session
+                .outbound
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|message| {
+                    let message: Value = serde_json::from_str(&message.json).unwrap();
+                    message["method"].as_str().unwrap_or_default().to_string()
+                })
+                .collect()
+        };
+        let tools_changed = "notifications/tools/list_changed".to_string();
+
+        notify_tools_changed(&state.stdio_upstream, Some(&state.mcp_sessions));
+        assert!(methods(&session).contains(&tools_changed));
+        assert!(!methods(&lifetime).contains(&tools_changed));
+
+        session.outbound.lock().unwrap().clear();
+        let router = cache_router();
+        let before = CatalogSnapshot::new(Vec::<Value>::new());
+        let after = CatalogSnapshot::new(router.shared_tools());
+        let reg = state.registry.lock().unwrap().clone();
+        notify_tools_changed_for_catalog_diff(
+            &state.stdio_upstream,
+            Some(&state.mcp_sessions),
+            &before.tools,
+            &after.tools,
+            &router,
+            &router,
+            &reg,
+            None,
+        );
+        assert!(methods(&session).contains(&tools_changed));
+        assert!(
+            !methods(&lifetime).contains(&tools_changed),
+            "the lifetime stream must not be counted as a delivery"
+        );
+    }
+
     /// Live captures (2026-10-22): a cold Full first tools/list waits for the late
     /// server and already carries its tools, then reconnect adoption announced the
     /// same catalog again. Only a client sent something else needs to re-list.
@@ -24919,6 +25077,7 @@ mod tests {
             server: "cache".into(),
             kind: "stdio",
             digest: registry::sha256_hex(&spec.to_string()),
+            catalog: None,
         };
         // Rooted compositions share slots without inheriting their launch_specs map.
         let rooted = Router::new().with_shared_server_slot(&router.server_slot("cache").unwrap());
@@ -27266,6 +27425,7 @@ mod tests {
                 server: "s".into(),
                 kind: "stdio",
                 digest: "fixture".into(),
+                catalog: None,
             }];
             if rooted {
                 host.check_rooted_integrity(&mut router, &scope, &keys);
@@ -35504,6 +35664,7 @@ mod tests {
             server: "cache".into(),
             kind: "stdio",
             digest: "fixture-root-launch".into(),
+            catalog: None,
         };
         {
             let mut pool = state.root_launch_pool.lock().unwrap();
@@ -41580,6 +41741,7 @@ mod tests {
             server: "srv".into(),
             kind: "stdio",
             digest: "fixture".into(),
+            catalog: None,
         }];
         for (profile, hidden) in [(Some(scope.as_str()), true), (None, false)] {
             let data = DataDirTestEnv::new("rooted-hidden-review-retry");
@@ -43171,6 +43333,7 @@ mod tests {
             server: "srv".into(),
             kind: "stdio",
             digest: "fixture".into(),
+            catalog: None,
         }];
         for version in ["v1", "v2"] {
             seed_legacy_review(&data.dir, Some(&scope), version);
@@ -43222,6 +43385,7 @@ mod tests {
             server: "rooted".into(),
             kind: "stdio",
             digest: "fixture".into(),
+            catalog: None,
         }];
         *INTEGRITY_GATE_OBSERVER.lock().unwrap() = Some((
             std::thread::current().id(),
