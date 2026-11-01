@@ -70,22 +70,29 @@ export async function coldRecoveryCatalog(
     observation = observe({ phase: "pending", elapsedMs: pendingElapsedMs });
   }, deadlineMs);
   let phase = "failed";
+  let result;
+  let requestError;
   try {
     const tools = await pending;
     phase = "completed";
-    return { tools, elapsedMs: Math.round(performance.now() - started) };
+    result = { tools, elapsedMs: Math.round(performance.now() - started) };
+  } catch (error) {
+    requestError = error;
   } finally {
     clearTimeout(timer);
     const elapsedMs = Math.round(performance.now() - started);
     if (observation) {
       await observation;
       await observe({ phase, elapsedMs, pendingElapsedMs });
-      if (observationError) {
-        if (phase === "completed") throw observationError;
-        console.error("cold recovery diagnostics failed:", observationError);
-      }
     }
   }
+  if (phase === "failed") {
+    if (observationError)
+      console.error("cold recovery diagnostics failed:", observationError);
+    throw requestError;
+  }
+  if (observationError) throw observationError;
+  return result;
 }
 
 export async function writeFixtureDiagnostics(fixture, observation) {
