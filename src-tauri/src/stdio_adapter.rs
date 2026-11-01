@@ -2883,6 +2883,79 @@ mod tests {
     }
 
     #[test]
+    fn cold_recovery_keeps_the_original_foreground_call_past_twenty_seconds() {
+        let env = crate::registry::DataDirTestEnv::new("adapter-cold-foreground-budget");
+        let compat = CompatKey::new("test", env.dir.to_string_lossy());
+        let replacement = ScriptedDaemon::start_with_identity(
+            |posted| match posted.message["method"].as_str() {
+                Some("initialize") => Answer::result(posted, serde_json::json!({}))
+                    .with_session("replacement-session".into())
+                    .after(Duration::from_secs(6)),
+                Some("notifications/initialized") => Answer::accepted(),
+                Some("tools/list") => Answer::result(posted, serde_json::json!({"tools": []})),
+                _ => panic!("unexpected cold recovery POST"),
+            },
+            Some(crate::daemon::DaemonIdentity {
+                compat: compat.fingerprint(),
+                protocol: crate::daemon::PROTOCOL_GENERATION,
+                pid: std::process::id(),
+                gateway_version: env!("CARGO_PKG_VERSION").into(),
+                telemetry: None,
+            }),
+        );
+        let rendezvous = Rendezvous::new(&env.dir, compat.clone());
+        let descriptor_path = rendezvous.descriptor_path();
+        let election = crate::registry::lock_at_for(
+            &crate::daemon::election_lock_base(&env.dir, &compat),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let old = DaemonDescriptor::new("127.0.0.1:9", "old", &compat);
+        let mut session = Session::new(rendezvous, old, None);
+        let sink = Sink::default();
+        session.stdout = Mutex::new(Box::new(sink.clone()));
+        session.request_timeout = TEST_TIMEOUT;
+        session.remember_handshake(r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#);
+        session.remember_handshake(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+        session.stale.store(DAEMON_LOST, Ordering::SeqCst);
+        let session = Arc::new(session);
+        let exchanging = Arc::clone(&session);
+        let worker = std::thread::spawn(move || {
+            let started = Instant::now();
+            let result = exchanging.exchange(r#"{"jsonrpc":"2.0","id":42,"method":"tools/list"}"#);
+            (result, started.elapsed())
+        });
+        let entered = Instant::now() + Duration::from_secs(2);
+        while session.recovery.try_lock().is_ok() {
+            assert!(
+                Instant::now() < entered,
+                "foreground did not start recovery"
+            );
+            std::thread::yield_now();
+        }
+        // Both delays are inside existing limits: election 20s and handshake 10s.
+        // Their sum intentionally exceeds the fixture's ordinary 20s RPC timer.
+        std::thread::sleep(Duration::from_secs(15));
+        let descriptor = DaemonDescriptor::new(&replacement.endpoint, "test-token", &compat);
+        crate::daemon::write_descriptor(&descriptor_path, &descriptor).unwrap();
+        drop(election);
+        let (result, elapsed) = worker.join().unwrap();
+        result.unwrap();
+        assert!(elapsed > Duration::from_secs(20));
+        assert_eq!(replacement.posted("initialize").len(), 1);
+        assert_eq!(replacement.posted("tools/list").len(), 1);
+        let messages = sink.messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["id"], 42);
+        assert!(messages[0]["result"]["tools"].is_array());
+        assert_eq!(session.stale.load(Ordering::SeqCst), HEALTHY);
+        println!(
+            "cold recovery: original foreground request completed once after {} ms",
+            elapsed.as_millis()
+        );
+    }
+
+    #[test]
     fn old_post_outcomes_do_not_mutate_a_recovered_session_or_replay_calls() {
         for outcome in ["disconnect", "refused", "success"] {
             let _env = crate::registry::DataDirTestEnv::new("adapter-old-post-outcome");
