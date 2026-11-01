@@ -2305,14 +2305,16 @@ mod tests {
                             return;
                         }
                         if request_line.starts_with("GET ") {
-                            let body = if request_line.contains("/adapter/lifetime ") {
+                            let (status, body) = if request_line.contains("/adapter/lifetime ") {
                                 lifetime_record.fetch_add(1, Ordering::SeqCst);
-                                String::new()
+                                ("200 OK", String::new())
+                            } else if let Some(identity) = &identity {
+                                ("200 OK", serde_json::to_string(identity).unwrap())
                             } else {
-                                serde_json::to_string(&identity.as_ref().unwrap()).unwrap()
+                                ("404 Not Found", String::new())
                             };
                             let mut stream = stream;
-                            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                            let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                             return;
                         }
                         let mut body = vec![0; length];
@@ -3263,13 +3265,10 @@ mod tests {
                 telemetry: None,
             }),
         );
-        let old_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let old = DaemonDescriptor::new(
-            old_listener.local_addr().unwrap().to_string(),
-            "old-token",
-            &compat,
-        );
-        drop(old_listener);
+        // This unit exercises Gone recovery, not OS-dependent dead-port timeouts.
+        // Lifetime closes immediately; the absent identity answers 404.
+        let old_daemon = ScriptedDaemon::start(|_| panic!("old daemon must not receive POSTs"));
+        let old = DaemonDescriptor::new(&old_daemon.endpoint, "old-token", &compat);
         let rendezvous = Rendezvous::new(&env.dir, compat.clone());
         let descriptor = DaemonDescriptor::new(&replacement.endpoint, "test-token", &compat);
         crate::daemon::write_descriptor(&rendezvous.descriptor_path(), &descriptor).unwrap();
@@ -3319,7 +3318,19 @@ mod tests {
             || replacement.posted("notifications/initialized").is_empty()
             || replacement.lifetime_requests.load(Ordering::SeqCst) < 2
         {
-            assert!(Instant::now() < deadline, "idle recovery did not finish");
+            assert!(
+                Instant::now() < deadline,
+                "idle recovery did not finish: stale={} session={:?} descriptor={} old_lifetime={} replacement_lifetime={} initializes={} initialized={} recovery_busy={} lifetime_marker={:?}",
+                session.stale.load(Ordering::SeqCst),
+                session.session_id(),
+                session.descriptor().endpoint,
+                old_daemon.lifetime_requests.load(Ordering::SeqCst),
+                replacement.lifetime_requests.load(Ordering::SeqCst),
+                replacement.posted("initialize").len(),
+                replacement.posted("notifications/initialized").len(),
+                session.recovery.try_lock().is_err(),
+                session.lifetime_endpoint.try_lock().map(|value| value.as_ref().map(|descriptor| descriptor.endpoint.clone())).map_err(|_| "locked or poisoned"),
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(session.descriptor().endpoint, replacement.endpoint);
