@@ -1322,6 +1322,143 @@ fn text_of(result: &Value) -> String {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn matrix_startup_logs_identify_a_blocked_election_and_keep_rpc_output_clean() {
+    let _guard = CASE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (_fixture, dir) = Fixture::new("startup-stage-log");
+    write_registry(&dir, vec![], vec![]);
+    let election = registry::lock_at(&election_lock_base(&dir, &compat_for(&dir)))
+        .expect("hold the real election lock");
+    let mut client = spawn_adapter(&dir, &AdapterOptions::default());
+    let pid = client.child.id().to_string();
+    let events = |pid: &str| {
+        std::fs::read_to_string(dir.join("gateway.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.split_once("startup: ").map(|(_, event)| event))
+            .map(|event| {
+                event
+                    .split_whitespace()
+                    .filter_map(|field| field.split_once('='))
+                    .map(|(key, value)| (key.to_string(), value.to_string()))
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            })
+            .filter(|event| event.get("pid").is_some_and(|value| value == pid))
+            .collect::<Vec<_>>()
+    };
+    let matches = |event: &std::collections::BTreeMap<String, String>, stage: &str, phase: &str| {
+        event.get("stage").is_some_and(|value| value == stage)
+            && event.get("event").is_some_and(|value| value == phase)
+    };
+    wait_until(
+        || {
+            events(&pid)
+                .iter()
+                .any(|event| matches(event, "election_lock", "start"))
+        },
+        "a persisted start event while the election is blocked",
+        RESPONSE_TIMEOUT,
+    );
+    assert!(
+        !events(&pid)
+            .iter()
+            .any(|event| matches(event, "election_lock", "end")),
+        "the contended stage must remain open until its lock is released"
+    );
+    drop(election);
+
+    let private_name = "startup-log-must-not-record-client-contents";
+    client.initialize(private_name);
+    wait_until(
+        || {
+            events(&pid)
+                .iter()
+                .any(|event| matches(event, "initialize_response", "end"))
+        },
+        "the completed initialization trace",
+        RESPONSE_TIMEOUT,
+    );
+    let startup = events(&pid);
+    let trace = startup[0].get("trace").expect("correlation ID").clone();
+    assert!(trace.parse::<u128>().is_ok());
+    for stage in [
+        "adapter_start",
+        "discovery",
+        "election_lock",
+        "descriptor_lock",
+        "spawn",
+        "readiness",
+        "tcp_connect",
+        "lifetime_open",
+        "first_input",
+        "initialize_headers",
+        "initialize_response",
+    ] {
+        let end = startup
+            .iter()
+            .find(|event| matches(event, stage, "end"))
+            .unwrap_or_else(|| panic!("missing completed {stage} stage"));
+        assert_eq!(end.get("trace"), Some(&trace));
+        assert_eq!(end.get("result").map(String::as_str), Some("ok"));
+        assert!(end.get("elapsed_ms").unwrap().parse::<u128>().is_ok());
+        assert!(startup.iter().any(|start| {
+            matches(start, stage, "start") && start.get("span") == end.get("span")
+        }));
+    }
+    let descriptor = first_descriptor(&dir).expect("published daemon descriptor");
+    let token = descriptor["token"].as_str().expect("daemon bearer");
+    for event in &startup {
+        assert_eq!(event.get("trace"), Some(&trace));
+        assert!(!event.values().any(|value| value.contains(private_name)));
+        assert!(!event.values().any(|value| value.contains(token)));
+    }
+    let startup_count = startup.len();
+    for _ in 0..2 {
+        let reply = client.request("tools/list", json!({}));
+        assert!(reply["result"]["tools"].is_array());
+    }
+    assert_eq!(
+        events(&pid).len(),
+        startup_count,
+        "ordinary RPCs stay quiet"
+    );
+
+    let mut warm = spawn_adapter(&dir, &AdapterOptions::default());
+    warm.initialize("startup-log-warm-client");
+    let warm_pid = warm.child.id().to_string();
+    wait_until(
+        || {
+            events(&warm_pid)
+                .iter()
+                .any(|event| matches(event, "initialize_response", "end"))
+        },
+        "a warm connection's initialization trace",
+        RESPONSE_TIMEOUT,
+    );
+    let warm_events = events(&warm_pid);
+    let warm_trace = warm_events[0].get("trace").expect("warm correlation ID");
+    assert_ne!(warm_trace, &trace);
+    assert!(warm_events
+        .iter()
+        .all(|event| event.get("trace") == Some(warm_trace)));
+    assert!(!warm_events.iter().any(|event| {
+        matches(event, "election_lock", "start") || matches(event, "spawn", "start")
+    }));
+    client.close_stdin();
+    warm.close_stdin();
+    assert!(client.wait_exit(RESPONSE_TIMEOUT).success());
+    assert!(warm.wait_exit(RESPONSE_TIMEOUT).success());
+    // Graceful exit flushes the existing asynchronous logger before this check.
+    assert_eq!(
+        events(&pid).len(),
+        startup_count,
+        "ordinary RPCs stay quiet"
+    );
+    assert_eq!(events(&warm_pid).len(), warm_events.len());
+}
+
+#[test]
 fn matrix_cold_start_twenty_simultaneous_adapters_elect_exactly_one_daemon() {
     let _guard = CASE_LOCK
         .lock()

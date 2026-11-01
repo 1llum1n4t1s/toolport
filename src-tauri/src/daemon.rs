@@ -559,8 +559,16 @@ fn identity_probe_with_timeout(
     descriptor: &DaemonDescriptor,
     timeout: Duration,
 ) -> Result<DaemonIdentity, ProbeFailure> {
+    identity_probe_with_agent(descriptor, timeout, crate::http_client::agent())
+}
+
+fn identity_probe_with_agent(
+    descriptor: &DaemonDescriptor,
+    timeout: Duration,
+    agent: ureq::Agent,
+) -> Result<DaemonIdentity, ProbeFailure> {
     let url = format!("http://{}{}", descriptor.endpoint, IDENTITY_PATH);
-    let response = crate::http_client::agent()
+    let response = agent
         .get(&url)
         .set_header("Authorization", &format!("Bearer {}", descriptor.token))
         .config()
@@ -631,6 +639,14 @@ impl Rendezvous {
     /// concurrent cold start runs `spawn`.
     pub fn ensure(
         &self,
+        spawn: impl FnMut() -> Result<(), String>,
+    ) -> Result<DaemonDescriptor, EnsureError> {
+        crate::startup_trace::Span::start(crate::startup_trace::Stage::Discovery)
+            .finish(self.ensure_inner(spawn))
+    }
+
+    fn ensure_inner(
+        &self,
         mut spawn: impl FnMut() -> Result<(), String>,
     ) -> Result<DaemonDescriptor, EnsureError> {
         let path = self.descriptor_path();
@@ -651,7 +667,9 @@ impl Rendezvous {
 
             // Elect: `lock_at` appends `.lock` and creates parent directories.
             let lock_base = election_lock_base(&self.data_dir, &self.compat);
-            let election = registry::lock_at_for(&lock_base, ELECTION_TIMEOUT)?;
+            let election =
+                crate::startup_trace::Span::start(crate::startup_trace::Stage::ElectionLock)
+                    .finish(registry::lock_at_for(&lock_base, ELECTION_TIMEOUT))?;
 
             // If another contender published while we waited, leave the lock
             // before probing it. A slow identity response must not make the
@@ -689,23 +707,32 @@ impl Rendezvous {
 
             // We are the winner. Drop any stale pointer first so readiness
             // polling cannot mistake it for the daemon we are about to start.
-            clear_descriptor(&path);
-            spawn()?;
+            // Only discovery records this wait; routine descriptor cleanup stays quiet.
+            let lock_span =
+                crate::startup_trace::Span::start(crate::startup_trace::Stage::DescriptorLock);
+            if let Ok(_lock) =
+                lock_span.finish(registry::lock_at_for(&path, DESCRIPTOR_LOCK_TIMEOUT))
+            {
+                clear_descriptor_locked(&path);
+            }
+            crate::startup_trace::Span::start(crate::startup_trace::Stage::Spawn).finish(spawn())?;
 
             // Wait for readiness while still holding the lock, so no second
             // contender spawns a daemon of its own. Until the daemon is ready,
             // silence and refusals both just mean "not answering yet", so every
             // non-live outcome keeps polling inside the budget.
+            let ready_span =
+                crate::startup_trace::Span::start(crate::startup_trace::Stage::Readiness);
             let deadline = Instant::now() + READY_TIMEOUT;
             while Instant::now() < deadline {
                 if let Probe::Live(descriptor) = self.probe(&path) {
-                    return Ok(descriptor);
+                    return ready_span.finish(Ok(descriptor));
                 }
                 std::thread::sleep(READY_POLL);
             }
-            return Err("the daemon did not become ready before the deadline"
+            return ready_span.finish(Err("the daemon did not become ready before the deadline"
                 .to_string()
-                .into());
+                .into()));
         }
         Err("the daemon descriptor changed repeatedly during startup"
             .to_string()
@@ -718,16 +745,31 @@ impl Rendezvous {
     /// is thin evidence for destroying a pointer, so the unreachable case
     /// rechecks once before declaring it stale.
     fn probe(&self, path: &Path) -> Probe {
+        self.probe_with_trace(path, false)
+    }
+
+    fn probe_with_trace(&self, path: &Path, startup: bool) -> Probe {
         let Some(descriptor) = read_descriptor(path) else {
             return Probe::Gone;
         };
         if !descriptor.claims_compat(&self.compat) {
             return Probe::Gone;
         }
-        match attempt_identity_probe(&descriptor) {
+        let attempt = || {
+            identity_probe_with_agent(
+                &descriptor,
+                PROBE_TIMEOUT,
+                if startup {
+                    crate::http_client::startup_agent()
+                } else {
+                    crate::http_client::agent()
+                },
+            )
+        };
+        match attempt() {
             Ok(identity) if identity.is_compatible_with(&self.compat) => Probe::Live(descriptor),
             Ok(_) | Err(ProbeFailure::Answered(_)) => Probe::Gone,
-            Err(ProbeFailure::Unreachable) => match attempt_identity_probe(&descriptor) {
+            Err(ProbeFailure::Unreachable) => match attempt() {
                 Ok(identity) if identity.is_compatible_with(&self.compat) => {
                     Probe::Live(descriptor)
                 }
@@ -743,8 +785,11 @@ impl Rendezvous {
     /// anything about its pointer.
     fn probe_for_reuse(&self, path: &Path) -> Probe {
         let deadline = Instant::now() + SILENT_RETRY_TIMEOUT;
+        let mut first = true;
         loop {
-            match self.probe(path) {
+            let probe = self.probe_with_trace(path, first);
+            first = false;
+            match probe {
                 Probe::Silent(_) if Instant::now() < deadline => {}
                 outcome => return outcome,
             }
