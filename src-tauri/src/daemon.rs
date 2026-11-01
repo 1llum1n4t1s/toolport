@@ -89,8 +89,9 @@ pub struct DaemonDescriptor {
     /// Random bearer both sides hold; only a process that can read the data
     /// directory can obtain it.
     pub token: String,
-    /// Daemon PID. Informational only: correctness never depends on a PID or an
-    /// open port, only on the authenticated handshake.
+    /// Advertised PID, replaced in memory by the authenticated identity's PID.
+    /// Existence never proves a live daemon; definitive death is negative evidence
+    /// only for an exact previously authenticated descriptor after connect timeout.
     pub pid: u32,
     /// [`CompatKey::fingerprint`] of the daemon.
     pub compat: String,
@@ -285,7 +286,7 @@ pub enum Health {
 
 /// One bounded liveness check against a daemon this process already trusts.
 pub fn probe_health(descriptor: &DaemonDescriptor) -> Health {
-    match attempt_identity_probe(descriptor) {
+    match identity_probe_with_deadlines(descriptor, PROBE_TIMEOUT, true, Some(descriptor)) {
         Ok(_) => Health::Answering,
         Err(ProbeFailure::Silent) => Health::Silent,
         Err(ProbeFailure::Answered(_) | ProbeFailure::Unreachable) => Health::Gone,
@@ -559,20 +560,51 @@ pub(crate) fn identity_probe_with_timeout(
     descriptor: &DaemonDescriptor,
     timeout: Duration,
 ) -> Result<DaemonIdentity, ProbeFailure> {
-    identity_probe_with_deadlines(descriptor, timeout, false)
+    identity_probe_with_deadlines(descriptor, timeout, false, None)
 }
 
 pub(crate) fn identity_probe_for_recovery(
     descriptor: &DaemonDescriptor,
     timeout: Duration,
 ) -> Result<DaemonIdentity, ProbeFailure> {
-    identity_probe_with_deadlines(descriptor, timeout, true)
+    identity_probe_with_deadlines(descriptor, timeout, true, None)
+}
+
+fn classify_identity_error(
+    descriptor: &DaemonDescriptor,
+    known: Option<&DaemonDescriptor>,
+    error: crate::http_client::Error,
+) -> ProbeFailure {
+    let connect_timeout = match &error {
+        crate::http_client::Error::Transport(transport) => {
+            if let Some(connect) = crate::http_client::connect_error(transport) {
+                match connect {
+                    ureq::Error::Timeout(_) => true,
+                    ureq::Error::Io(error) => matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ),
+                    _ => false,
+                }
+            } else {
+                matches!(transport, ureq::Error::Timeout(ureq::Timeout::Connect))
+            }
+        }
+        _ => false,
+    };
+    // A disk PID is not trusted. Only negative evidence for this exact, previously
+    // authenticated process can turn an unestablished TCP connection into loss.
+    if connect_timeout && known == Some(descriptor) && !process_exists(descriptor.pid) {
+        return ProbeFailure::Unreachable;
+    }
+    classify_probe_error(error)
 }
 
 fn identity_probe_with_deadlines(
     descriptor: &DaemonDescriptor,
     timeout: Duration,
     recovery: bool,
+    known: Option<&DaemonDescriptor>,
 ) -> Result<DaemonIdentity, ProbeFailure> {
     let url = format!("http://{}{}", descriptor.endpoint, IDENTITY_PATH);
     let request = crate::http_client::agent()
@@ -589,7 +621,7 @@ fn identity_probe_with_deadlines(
         .build()
         .call()
         .retain_status_body()
-        .map_err(classify_probe_error)?;
+        .map_err(|error| classify_identity_error(descriptor, known, error))?;
     response
         .into_body()
         .with_config()
@@ -712,8 +744,17 @@ impl Rendezvous {
 
     pub(crate) fn ensure_with_budget(
         &self,
+        spawn: impl FnMut() -> Result<(), String>,
+        budget: Option<&RecoveryBudget<'_>>,
+    ) -> Result<DaemonDescriptor, EnsureError> {
+        self.ensure_known_with_budget(spawn, budget, None)
+    }
+
+    pub(crate) fn ensure_known_with_budget(
+        &self,
         mut spawn: impl FnMut() -> Result<(), String>,
         budget: Option<&RecoveryBudget<'_>>,
+        known: Option<&DaemonDescriptor>,
     ) -> Result<DaemonDescriptor, EnsureError> {
         let path = self.descriptor_path();
         // A descriptor may appear while we wait for the election lock. If it
@@ -723,7 +764,7 @@ impl Rendezvous {
         for _ in 0..2 {
             let observed_before_lock =
                 read_descriptor(&path).filter(|descriptor| descriptor.claims_compat(&self.compat));
-            match self.probe_for_reuse_with_budget(&path, budget)? {
+            match self.probe_for_reuse_with_budget(&path, budget, known)? {
                 Probe::Live(descriptor) => return Ok(descriptor),
                 // A silent daemon may still be alive: reuse is unproven, and
                 // clearing or spawning beside it is the double-election defect.
@@ -746,7 +787,7 @@ impl Rendezvous {
                 read_descriptor(&path).filter(|descriptor| descriptor.claims_compat(&self.compat));
             if current.is_some() && current != observed_before_lock {
                 drop(election);
-                match self.probe_for_reuse_with_budget(&path, budget)? {
+                match self.probe_for_reuse_with_budget(&path, budget, known)? {
                     Probe::Live(descriptor) => return Ok(descriptor),
                     Probe::Silent(descriptor) => {
                         return Err(EnsureError::Unresponsive(descriptor));
@@ -758,11 +799,11 @@ impl Rendezvous {
             // Recheck under the lock: another contender may have started the
             // daemon while we waited. Silence needs the same patience as the
             // fast path, but must not hold the election lock during that wait.
-            match self.probe_with_budget(&path, budget)? {
+            match self.probe_with_budget(&path, budget, known)? {
                 Probe::Live(descriptor) => return Ok(descriptor),
                 Probe::Silent(_) => {
                     drop(election);
-                    match self.probe_for_reuse_with_budget(&path, budget)? {
+                    match self.probe_for_reuse_with_budget(&path, budget, known)? {
                         Probe::Live(descriptor) => return Ok(descriptor),
                         Probe::Silent(descriptor) => {
                             return Err(EnsureError::Unresponsive(descriptor));
@@ -801,7 +842,7 @@ impl Rendezvous {
             let deadline = Instant::now() + READY_TIMEOUT;
             while Instant::now() < deadline {
                 if let Probe::Live(descriptor) =
-                    self.probe_with_budget(&path, startup_budget.as_ref())?
+                    self.probe_with_budget(&path, startup_budget.as_ref(), known)?
                 {
                     return Ok(descriptor);
                 }
@@ -825,29 +866,35 @@ impl Rendezvous {
         &self,
         path: &Path,
         budget: Option<&RecoveryBudget<'_>>,
+        known: Option<&DaemonDescriptor>,
     ) -> Result<Probe, String> {
         let attempt = |descriptor: &DaemonDescriptor| {
             let timeout = match budget {
                 Some(budget) => budget.remaining()?.min(PROBE_TIMEOUT),
                 None => PROBE_TIMEOUT,
             };
-            Ok::<_, String>(if budget.is_some() {
-                identity_probe_for_recovery(descriptor, timeout)
-            } else {
-                identity_probe_with_timeout(descriptor, timeout)
-            })
+            Ok::<_, String>(identity_probe_with_deadlines(
+                descriptor,
+                timeout,
+                budget.is_some(),
+                known,
+            ))
         };
-        let Some(descriptor) = read_descriptor(path) else {
+        let Some(mut descriptor) = read_descriptor(path) else {
             return Ok(Probe::Gone);
         };
         if !descriptor.claims_compat(&self.compat) {
             return Ok(Probe::Gone);
         }
         Ok(match attempt(&descriptor)? {
-            Ok(identity) if identity.is_compatible_with(&self.compat) => Probe::Live(descriptor),
+            Ok(identity) if identity.is_compatible_with(&self.compat) => {
+                descriptor.pid = identity.pid;
+                Probe::Live(descriptor)
+            }
             Ok(_) | Err(ProbeFailure::Answered(_)) => Probe::Gone,
             Err(ProbeFailure::Unreachable) => match attempt(&descriptor)? {
                 Ok(identity) if identity.is_compatible_with(&self.compat) => {
+                    descriptor.pid = identity.pid;
                     Probe::Live(descriptor)
                 }
                 Err(ProbeFailure::Silent) => Probe::Silent(descriptor),
@@ -864,10 +911,11 @@ impl Rendezvous {
         &self,
         path: &Path,
         budget: Option<&RecoveryBudget<'_>>,
+        known: Option<&DaemonDescriptor>,
     ) -> Result<Probe, String> {
         let deadline = Instant::now() + SILENT_RETRY_TIMEOUT;
         loop {
-            match self.probe_with_budget(path, budget)? {
+            match self.probe_with_budget(path, budget, known)? {
                 Probe::Silent(_) if Instant::now() < deadline => {}
                 outcome => return Ok(outcome),
             }
@@ -1008,6 +1056,101 @@ mod tests {
 
     fn compat(version: &str, dir: &Path) -> CompatKey {
         CompatKey::new(version, dir.display().to_string())
+    }
+
+    fn exited_child() -> std::process::Child {
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/C", "exit", "/B", "0"])
+            .spawn()
+            .unwrap();
+        #[cfg(not(windows))]
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        child.wait().unwrap();
+        assert!(!process_exists(child.id()));
+        child
+    }
+
+    #[test]
+    fn only_a_known_dead_process_turns_connect_timeout_into_loss() {
+        let child = exited_child();
+        let key = CompatKey::new("test", "known-dead-process");
+        let mut descriptor = DaemonDescriptor::new("127.0.0.1:9", "known", &key);
+        descriptor.pid = child.id();
+        let connect_timeout =
+            || crate::http_client::Error::Transport(ureq::Error::Timeout(ureq::Timeout::Connect));
+        assert!(matches!(
+            classify_identity_error(&descriptor, Some(&descriptor), connect_timeout()),
+            ProbeFailure::Unreachable
+        ));
+        for kind in [std::io::ErrorKind::TimedOut, std::io::ErrorKind::WouldBlock] {
+            let raw =
+                crate::http_client::Error::Transport(ureq::Error::Io(std::io::Error::from(kind)));
+            assert!(matches!(
+                classify_identity_error(&descriptor, Some(&descriptor), raw),
+                ProbeFailure::Silent
+            ));
+            let wrapped =
+                crate::http_client::Error::Transport(crate::http_client::mark_connect_failure(
+                    ureq::Error::Io(std::io::Error::from(kind)),
+                ));
+            assert!(matches!(
+                classify_identity_error(&descriptor, Some(&descriptor), wrapped),
+                ProbeFailure::Unreachable
+            ));
+        }
+        assert!(matches!(
+            classify_identity_error(&descriptor, None, connect_timeout()),
+            ProbeFailure::Silent
+        ));
+        let mut other = descriptor.clone();
+        other.token = "different-daemon".into();
+        assert!(matches!(
+            classify_identity_error(&descriptor, Some(&other), connect_timeout()),
+            ProbeFailure::Silent
+        ));
+        let read_timeout =
+            crate::http_client::Error::Transport(ureq::Error::Timeout(ureq::Timeout::RecvBody));
+        assert!(matches!(
+            classify_identity_error(&descriptor, Some(&descriptor), read_timeout),
+            ProbeFailure::Silent
+        ));
+        for status in ["503 Service Unavailable", "429 Too Many Requests"] {
+            descriptor.endpoint = start_status_responder(status);
+            assert_eq!(probe_health(&descriptor), Health::Silent);
+        }
+        descriptor.pid = std::process::id();
+        assert!(matches!(
+            classify_identity_error(&descriptor, Some(&descriptor), connect_timeout()),
+            ProbeFailure::Silent
+        ));
+    }
+
+    #[test]
+    fn successful_identity_corrects_only_the_in_memory_pid() {
+        let env = crate::registry::DataDirTestEnv::new("authenticated-pid");
+        let key = compat("test", &env.dir);
+        let authenticated = start_listener(&env.dir, &key);
+        let child = exited_child();
+        let mut disk = authenticated.clone();
+        disk.pid = child.id();
+        let path = descriptor_path(&env.dir, &key);
+        write_descriptor(&path, &disk).unwrap();
+        let recovered = Rendezvous::new(&env.dir, key)
+            .ensure(|| panic!("authenticated live daemon must be reused"))
+            .unwrap();
+        assert_eq!(recovered, authenticated);
+        assert_eq!(read_descriptor(&path), Some(disk.clone()));
+        assert_eq!(probe_health(&recovered), Health::Answering);
+        let timeout =
+            crate::http_client::Error::Transport(ureq::Error::Timeout(ureq::Timeout::Connect));
+        assert!(matches!(
+            classify_identity_error(&disk, Some(&recovered), timeout),
+            ProbeFailure::Silent
+        ));
     }
 
     #[test]

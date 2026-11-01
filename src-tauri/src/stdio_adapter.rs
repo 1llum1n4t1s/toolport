@@ -358,7 +358,7 @@ fn start_private_gateway_with_budget(
             serde_json::from_str::<DaemonDescriptor>(line.trim())
                 .map_err(|error| format!("the private gateway's announcement was invalid: {error}"))
         })
-        .and_then(|descriptor| {
+        .and_then(|mut descriptor| {
             let timeout = match budget {
                 Some(budget) => budget.remaining()?,
                 None => crate::daemon::SILENT_RETRY_TIMEOUT,
@@ -369,7 +369,10 @@ fn start_private_gateway_with_budget(
                 crate::daemon::identity_probe_with_timeout(&descriptor, timeout)
             };
             identity
-                .map(|_| descriptor)
+                .map(|identity| {
+                    descriptor.pid = identity.pid;
+                    descriptor
+                })
                 .map_err(|error| format!("the private gateway did not answer: {error:?}"))
         });
     match ready {
@@ -1028,10 +1031,12 @@ impl Session {
             }
             self.use_private_gateway(&current)?;
         } else if stale >= DAEMON_LOST {
-            match self
-                .rendezvous
-                .ensure_with_budget(spawn_daemon, Some(&discovery))
-            {
+            let known = self.descriptor();
+            match self.rendezvous.ensure_known_with_budget(
+                spawn_daemon,
+                Some(&discovery),
+                Some(&known),
+            ) {
                 Ok(descriptor) => {
                     if let Ok(mut guard) = self.descriptor.lock() {
                         *guard = descriptor;
