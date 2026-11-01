@@ -1058,25 +1058,28 @@ mod tests {
         CompatKey::new(version, dir.display().to_string())
     }
 
-    fn exited_child() -> std::process::Child {
+    fn spawn_exiting_child() -> std::process::Child {
         #[cfg(windows)]
-        let mut child = std::process::Command::new("cmd.exe")
-            .args(["/C", "exit", "/B", "0"])
-            .spawn()
-            .unwrap();
+        {
+            std::process::Command::new("cmd.exe")
+                .args(["/C", "exit", "/B", "0"])
+                .spawn()
+                .unwrap()
+        }
         #[cfg(not(windows))]
-        let mut child = std::process::Command::new("sh")
-            .args(["-c", "exit 0"])
-            .spawn()
-            .unwrap();
-        child.wait().unwrap();
-        assert!(!process_exists(child.id()));
-        child
+        {
+            std::process::Command::new("sh")
+                .args(["-c", "exit 0"])
+                .spawn()
+                .unwrap()
+        }
     }
 
     #[test]
     fn only_a_known_dead_process_turns_connect_timeout_into_loss() {
-        let child = exited_child();
+        let mut child = spawn_exiting_child();
+        child.wait().unwrap();
+        assert!(!process_exists(child.id()));
         let key = CompatKey::new("test", "known-dead-process");
         let mut descriptor = DaemonDescriptor::new("127.0.0.1:9", "known", &key);
         descriptor.pid = child.id();
@@ -1134,7 +1137,9 @@ mod tests {
         let env = crate::registry::DataDirTestEnv::new("authenticated-pid");
         let key = compat("test", &env.dir);
         let authenticated = start_listener(&env.dir, &key);
-        let child = exited_child();
+        let mut child = spawn_exiting_child();
+        child.wait().unwrap();
+        assert!(!process_exists(child.id()));
         let mut disk = authenticated.clone();
         disk.pid = child.id();
         let path = descriptor_path(&env.dir, &key);
