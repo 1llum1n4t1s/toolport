@@ -974,17 +974,17 @@ impl Session {
     }
 
     /// Start a private gateway and point this session at it.
-    fn use_private_gateway(
-        &self,
-        wedged: &DaemonDescriptor,
-        budget: &crate::daemon::RecoveryBudget<'_>,
-    ) -> Result<(), String> {
+    fn use_private_gateway(&self, wedged: &DaemonDescriptor) -> Result<(), String> {
+        let budget = crate::daemon::RecoveryBudget::new(
+            self.request_timeout.min(RECOVERY_HANDSHAKE_TIMEOUT),
+            &self.stopping,
+        );
         let (child, descriptor) = start_private_gateway_with_budget(
             &format!(
                 "the daemon at {} (pid {}) did not answer its identity probe",
                 wedged.endpoint, wedged.pid
             ),
-            Some(budget),
+            Some(&budget),
         )?;
         *self
             .private_gateway
@@ -1010,11 +1010,8 @@ impl Session {
     }
 
     fn recover_serialized(&self, stale: u8) -> Result<(), String> {
-        let budget = crate::daemon::RecoveryBudget::new(
-            self.request_timeout.min(RECOVERY_HANDSHAKE_TIMEOUT),
-            &self.stopping,
-        );
-        budget.remaining()?;
+        let discovery = crate::daemon::RecoveryBudget::cancellable(&self.stopping);
+        discovery.remaining()?;
         if self.closed.load(Ordering::SeqCst) {
             return Err("the adapter is closed".to_string());
         }
@@ -1029,20 +1026,18 @@ impl Session {
                 // An overlapping recovery already moved this client.
                 return Ok(());
             }
-            self.use_private_gateway(&current, &budget)?;
+            self.use_private_gateway(&current)?;
         } else if stale >= DAEMON_LOST {
             match self
                 .rendezvous
-                .ensure_with_budget(spawn_daemon, Some(&budget))
+                .ensure_with_budget(spawn_daemon, Some(&discovery))
             {
                 Ok(descriptor) => {
                     if let Ok(mut guard) = self.descriptor.lock() {
                         *guard = descriptor;
                     }
                 }
-                Err(EnsureError::Unresponsive(wedged)) => {
-                    self.use_private_gateway(&wedged, &budget)?
-                }
+                Err(EnsureError::Unresponsive(wedged)) => self.use_private_gateway(&wedged)?,
                 Err(error) => {
                     return Err(format!(
                         "the host daemon could not be reached again: {error}"
@@ -1053,8 +1048,17 @@ impl Session {
         if self.closed.load(Ordering::SeqCst) {
             return Err("the adapter is closed".to_string());
         }
+        let lifetime = crate::daemon::RecoveryBudget::new(
+            self.request_timeout.min(RECOVERY_HANDSHAKE_TIMEOUT),
+            &self.stopping,
+        );
+        self.open_lifetime_stream_with_budget(Some(&lifetime))?;
+        // Discovery and stream setup must not consume the handshake's own cap.
+        let budget = crate::daemon::RecoveryBudget::new(
+            self.request_timeout.min(RECOVERY_HANDSHAKE_TIMEOUT),
+            &self.stopping,
+        );
         budget.remaining()?;
-        self.open_lifetime_stream_with_budget(Some(&budget))?;
         // The old session is gone either way, and `initialize` must not send it.
         if let Ok(mut guard) = self.session_id.lock() {
             *guard = None;
@@ -2639,7 +2643,8 @@ mod tests {
             Duration::from_secs(1),
         )
         .unwrap();
-        let descriptor = DaemonDescriptor::new("127.0.0.1:9", "unused", &compat);
+        let daemon = ScriptedDaemon::start(|_| panic!("election cancellation must not POST"));
+        let descriptor = DaemonDescriptor::new(&daemon.endpoint, "test-token", &compat);
         let session = Arc::new(Session::new(
             Rendezvous::new(&env.dir, compat),
             descriptor,
@@ -2670,6 +2675,7 @@ mod tests {
             promptly_closed,
             "EOF waited for the daemon election instead of cancelling it"
         );
+        assert_eq!(daemon.deleted.lock().unwrap().len(), 1);
     }
 
     #[test]

@@ -634,17 +634,32 @@ pub struct Rendezvous {
     compat: CompatKey,
 }
 
-/// One recovery's existing handshake budget, shared by discovery and replay.
+/// Cancellation shared by recovery stages, with an optional per-stage deadline.
 pub(crate) struct RecoveryBudget<'a> {
-    deadline: Instant,
+    deadline: Option<Instant>,
     cancelled: &'a std::sync::atomic::AtomicBool,
 }
 
 impl<'a> RecoveryBudget<'a> {
     pub(crate) fn new(timeout: Duration, cancelled: &'a std::sync::atomic::AtomicBool) -> Self {
         Self {
-            deadline: Instant::now() + timeout,
+            deadline: Some(Instant::now() + timeout),
             cancelled,
+        }
+    }
+
+    pub(crate) fn cancellable(cancelled: &'a std::sync::atomic::AtomicBool) -> Self {
+        Self {
+            deadline: None,
+            cancelled,
+        }
+    }
+
+    fn limited(&self, timeout: Duration) -> Self {
+        let deadline = Instant::now() + timeout;
+        Self {
+            deadline: Some(self.deadline.map_or(deadline, |outer| outer.min(deadline))),
+            cancelled: self.cancelled,
         }
     }
 
@@ -652,7 +667,10 @@ impl<'a> RecoveryBudget<'a> {
         if self.cancelled.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("the adapter is closing".into());
         }
-        self.deadline
+        let Some(deadline) = self.deadline else {
+            return Ok(Duration::MAX);
+        };
+        deadline
             .checked_duration_since(Instant::now())
             .filter(|remaining| !remaining.is_zero())
             .ok_or_else(|| "the host daemon recovery deadline expired".into())
@@ -716,7 +734,7 @@ impl Rendezvous {
             // Elect: `lock_at` appends `.lock` and creates parent directories.
             let lock_base = election_lock_base(&self.data_dir, &self.compat);
             let election = if let Some(budget) = budget {
-                budget.lock(&lock_base)?
+                budget.limited(ELECTION_TIMEOUT).lock(&lock_base)?
             } else {
                 registry::lock_at_for(&lock_base, ELECTION_TIMEOUT)?
             };
@@ -761,7 +779,7 @@ impl Rendezvous {
                 budget.remaining()?;
             }
             if let Some(budget) = budget {
-                let _descriptor_lock = budget.lock(&path)?;
+                let _descriptor_lock = budget.limited(DESCRIPTOR_LOCK_TIMEOUT).lock(&path)?;
                 budget.remaining()?;
                 clear_descriptor_locked(&path);
             } else {
@@ -1012,6 +1030,45 @@ mod tests {
         assert!(rendezvous
             .ensure_with_budget(|| panic!("must not spawn after EOF"), Some(&budget))
             .is_err());
+    }
+
+    #[test]
+    fn cancellable_discovery_preserves_each_lock_limit_and_cancellation() {
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let control = RecoveryBudget::cancellable(&cancelled);
+        let before = Instant::now();
+        let election = control.limited(ELECTION_TIMEOUT);
+        let descriptor = control.limited(DESCRIPTOR_LOCK_TIMEOUT);
+        let after = Instant::now();
+        assert!(election.deadline.unwrap() >= before + ELECTION_TIMEOUT);
+        assert!(election.deadline.unwrap() <= after + ELECTION_TIMEOUT);
+        assert!(descriptor.deadline.unwrap() >= before + DESCRIPTOR_LOCK_TIMEOUT);
+        assert!(descriptor.deadline.unwrap() <= after + DESCRIPTOR_LOCK_TIMEOUT);
+        let short = RecoveryBudget::new(Duration::from_millis(80), &cancelled);
+        assert_eq!(short.limited(ELECTION_TIMEOUT).deadline, short.deadline);
+        cancelled.store(true, Ordering::SeqCst);
+        assert_eq!(election.remaining().unwrap_err(), "the adapter is closing");
+        assert_eq!(
+            descriptor.remaining().unwrap_err(),
+            "the adapter is closing"
+        );
+    }
+
+    #[test]
+    fn cancellable_discovery_reaches_the_existing_silence_fallback() {
+        let env = crate::registry::DataDirTestEnv::new("recovery-silence-window");
+        let key = compat("test", &env.dir);
+        let descriptor = DaemonDescriptor::new(start_stalled_listener(), "silent", &key);
+        write_descriptor(&descriptor_path(&env.dir, &key), &descriptor).unwrap();
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let control = RecoveryBudget::cancellable(&cancelled);
+        let started = Instant::now();
+        let result = Rendezvous::new(&env.dir, key).ensure_with_budget(
+            || panic!("must not spawn beside a silent daemon"),
+            Some(&control),
+        );
+        assert_eq!(result.unwrap_err(), EnsureError::Unresponsive(descriptor));
+        assert!(started.elapsed() >= SILENT_RETRY_TIMEOUT);
     }
 
     #[test]
