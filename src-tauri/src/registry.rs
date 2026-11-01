@@ -3128,8 +3128,8 @@ static DATA_DIR_OVERRIDE_ACTIVE: std::sync::atomic::AtomicBool =
 #[cfg(any(debug_assertions, test, feature = "test-support"))]
 static DATA_DIR_OVERRIDE: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
 
-/// Optional sink for diagnostic-only unit-test records. Never resolves a real directory.
-#[cfg(test)]
+/// Optional sink for diagnostic-only test records. Never resolves a real directory.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn test_data_dir_override() -> Option<PathBuf> {
     if !DATA_DIR_OVERRIDE_ACTIVE.load(Ordering::SeqCst) {
         return None;

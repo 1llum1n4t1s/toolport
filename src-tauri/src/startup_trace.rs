@@ -102,11 +102,20 @@ impl Span {
             self.started.elapsed().as_millis(),
             std::process::id(),
         );
-        #[cfg(test)]
-        if let Some(dir) = crate::registry::test_data_dir_override() {
-            crate::gatewaylog::queue_at(&dir.join("gateway.log"), &line);
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            if let Some(dir) = crate::registry::test_data_dir_override() {
+                crate::gatewaylog::queue_at(&dir.join("gateway.log"), &line);
+            } else {
+                // Fixture binaries have an explicit directory; integration-test
+                // parents using pure APIs need no diagnostic filesystem side effect.
+                #[cfg(all(not(test), feature = "test-support"))]
+                if crate::brand::env_var("TOOLPORT_DATA_DIR", "CONDUIT_DATA_DIR").is_some() {
+                    crate::gatewaylog::append(&line);
+                }
+            }
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-support")))]
         crate::gatewaylog::append(&line);
     }
 }
